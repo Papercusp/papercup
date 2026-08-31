@@ -65,6 +65,12 @@ function deps(over: Partial<TscRedSweepDeps> = {}) {
     readObservationsFn: vi.fn(() => [{ ts: nowSec - 60, file: 'x', count: 1, project: '' }]),
     selectDwelledRedsFn: vi.fn((): DwelledRed[] => [red()]),
     workspaceIdFn: () => 'ws-test',
+    // The fixtures here are synthetic paths that do not exist on disk, and the sweep's filing
+    // precondition (EI-21985631427355996) rightly refuses to file for a path absent from the
+    // tree. Stubbing existence TRUE keeps every case below testing what it was written to test
+    // — debounce, cap, capture shape — instead of silently collapsing into that one guard.
+    // The guard has its own paired controls in `the filing precondition` describe below.
+    fileExistsFn: vi.fn((_f: string) => true),
   };
   const merged = { ...base, ...over };
   return merged as typeof base & TscRedSweepDeps;
@@ -392,5 +398,76 @@ describe('tscRedSweep — fail-soft', () => {
     });
     const out = await tscRedSweep(d);
     expect(out[0].outcome).toBe('filed');
+  });
+});
+
+/**
+ * THE FILING PRECONDITION — EI-21985631427355996.
+ *
+ * tsc cannot report an error for a file that is not in the tree, so a dwelled path that does
+ * not exist here is not a red this tree can have: it is an observation of some OTHER tree
+ * that reached the process-global store. Filing it manufactures a work-item nobody can act
+ * on, and — because `decideTscRedCleared` deliberately refuses to resolve on a vanished file
+ * ("ambiguous: deleted or renamed") — one that can never auto-close either.
+ *
+ * Measured 2026-08-31: `lib/old-peer.ts`, a fixture path written by `lint-tsc.test.ts` into a
+ * `mkdtempSync` root, was observed 10 times across 172 minutes and filed as a major bug.
+ *
+ * CONTROLS. `fileExistsFn` is the ONLY dimension separating the two cases below, so an
+ * implementation that files nothing fails the positive and one that files everything fails
+ * the negative. The cap case pins the ORDERING claim specifically — that a phantom is removed
+ * before MAX_FILES_PER_TICK is applied — which a guard placed inside the loop would fail.
+ */
+describe('the filing precondition — a path absent from the tree is not fileable', () => {
+  it('skips a dwelled red whose file is not in the tree, and files nothing for it', async () => {
+    const d = deps({
+      selectDwelledRedsFn: () => [red({ file: 'lib/old-peer.ts' })],
+      fileExistsFn: () => false,
+    });
+    const out = await tscRedSweep(d);
+    expect(d.captureFn).not.toHaveBeenCalled();
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ file: 'lib/old-peer.ts', outcome: 'skipped' });
+    expect(out[0].reason).toContain('absent from this tree');
+  });
+
+  it('files the SAME red when the file does exist — the paired positive', async () => {
+    const d = deps({
+      selectDwelledRedsFn: () => [red({ file: 'lib/old-peer.ts' })],
+      fileExistsFn: () => true,
+    });
+    const out = await tscRedSweep(d);
+    expect(d.captureFn).toHaveBeenCalledTimes(1);
+    expect(out[0].outcome).toBe('filed');
+  });
+
+  it('never lets a phantom consume a cap slot that a real red needed', async () => {
+    // Two phantoms sort ahead of the real red by dwell. With maxFiles=1 and the guard placed
+    // AFTER the cap, both would be 'capped'/'skipped' and `real.ts` would be deferred another
+    // tick — the exact starvation that let a fixture path crowd out live reds for hours.
+    const d = deps({
+      maxFiles: 1,
+      selectDwelledRedsFn: () => [
+        red({ file: 'lib/phantom-a.ts', spanSec: 9000 }),
+        red({ file: 'lib/phantom-b.ts', spanSec: 8000 }),
+        red({ file: 'lib/real.ts', spanSec: 3600 }),
+      ],
+      fileExistsFn: (f: string) => f === 'lib/real.ts',
+    });
+    const out = await tscRedSweep(d);
+    expect(d.captureFn).toHaveBeenCalledTimes(1);
+    expect((d.captureFn.mock.calls[0][0] as Record<string, unknown>).title).toContain('lib/real.ts');
+    expect(out.filter((r) => r.outcome === 'skipped').map((r) => r.file)).toEqual([
+      'lib/phantom-a.ts',
+      'lib/phantom-b.ts',
+    ]);
+    expect(out.some((r) => r.outcome === 'capped')).toBe(false);
+  });
+
+  it('scopes its observation read to repoRoot, so a foreign-root record cannot reach the sweep', async () => {
+    const readObservationsFn = vi.fn(() => [{ ts: nowSec - 60, file: 'x', count: 1, project: '' }]);
+    const d = deps({ readObservationsFn, repoRoot: '/repo' });
+    await tscRedSweep(d);
+    expect(readObservationsFn).toHaveBeenCalledWith(expect.objectContaining({ root: '/repo' }));
   });
 });

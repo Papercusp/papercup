@@ -36,6 +36,7 @@ import { remarkWorkRefs } from './remark-work-refs';
 import { HydratedWorkRefPill } from './HydratedWorkRefPill';
 import { MessageTimestamp } from './message-timestamp';
 import type { WorkRefKind } from './parse-work-refs';
+import { pickTopMessageIndex } from './session-turn-index';
 
 // ChatMessage / ChatToolCall were lifted to ./chat-types.ts while this
 // component was retired (design-simplification-2026-07-09 P-010) —
@@ -988,17 +989,16 @@ export function ChatConversation(props: ChatConversationProps) {
     const el = scrollerRef.current;
     if (!el || !onTopMessageIndex) return;
     const probe = el.getBoundingClientRect().top + TOP_INDEX_PROBE_PX;
-    let best = -1;
-    let firstRendered = -1;
-    for (const node of el.querySelectorAll<HTMLElement>('[data-message-index]')) {
-      const n = Number(node.dataset.messageIndex);
-      if (!Number.isFinite(n)) continue;
-      if (firstRendered < 0 || n < firstRendered) firstRendered = n;
-      if (node.getBoundingClientRect().top <= probe && n > best) best = n;
-    }
-    // Scrolled above the first rendered row: the reader is at the top of what
-    // exists, so that row is where they are. Not a guess — a clamp.
-    if (best < 0) best = firstRendered;
+    // Selection rule (incl. the above-the-first-row clamp) lives in
+    // session-turn-index.ts so it is testable without a layout engine; this
+    // callback's job is only to READ the geometry and feed it in.
+    const best = pickTopMessageIndex(
+      Array.from(el.querySelectorAll<HTMLElement>('[data-message-index]'), (node) => ({
+        index: Number(node.dataset.messageIndex),
+        top: node.getBoundingClientRect().top,
+      })),
+      probe,
+    );
     if (best === lastTopIndexRef.current) return;
     lastTopIndexRef.current = best;
     onTopMessageIndex(best);

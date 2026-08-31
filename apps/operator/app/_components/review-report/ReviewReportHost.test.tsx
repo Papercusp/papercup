@@ -15,9 +15,11 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  REVIEW_RUN_PHASES,
   reviewReportPresentation,
   reviewReportReadOnly,
   type ReviewReportGateInput,
+  type ReviewReportPresentation,
   type ReviewRunPhase,
 } from "./ReviewReportHost";
 
@@ -43,16 +45,58 @@ describe("reviewReportPresentation", () => {
     }
   });
 
-  it("maps each phase to its own presentation", () => {
-    const cases: Array<[ReviewRunPhase, string]> = [
-      ["review", "review"],
-      ["complete", "settled"],
-      ["failed", "failed"],
-      ["pending", "live"],
-      ["running", "live"],
-    ];
-    for (const [phase, expected] of cases) {
-      expect(reviewReportPresentation(gate({ phase }))).toBe(expected);
+  /**
+   * The acceptance drill for "every run phase is inspectable", written the way
+   * the criterion demands: the phases come from the type's OWN members
+   * (REVIEW_RUN_PHASES), never a literal list copied into the test.
+   *
+   * The expectation table is a Record keyed by the phase union, so a phase
+   * added to REVIEW_RUN_PHASES without an entry here fails to COMPILE. That is
+   * the "by construction" part — an unhandled phase cannot reach review by
+   * someone forgetting to extend a fixture, which is exactly what the previous
+   * literal `cases` array allowed.
+   */
+  const EXPECTED_PRESENTATION: Record<
+    ReviewRunPhase,
+    { foreground: ReviewReportPresentation | null; backgrounded: null }
+  > = {
+    review: { foreground: "review", backgrounded: null },
+    complete: { foreground: "settled", backgrounded: null },
+    failed: { foreground: "failed", backgrounded: null },
+    // D-005: a live run is the strip's until the owner explicitly opens it.
+    pending: { foreground: "live", backgrounded: null },
+    running: { foreground: "live", backgrounded: null },
+  };
+
+  it("maps EVERY declared phase to a presentation, across foreground x explicitOwner", () => {
+    // Guards the guard: if the union ever empties or the import degrades to a
+    // non-iterable, the loops below would vacuously pass.
+    expect(REVIEW_RUN_PHASES.length).toBeGreaterThan(0);
+
+    for (const phase of REVIEW_RUN_PHASES) {
+      const expected = EXPECTED_PRESENTATION[phase];
+
+      // Backgrounded never mounts, whoever asked.
+      for (const explicitOwner of [true, false]) {
+        expect(
+          reviewReportPresentation(
+            gate({ phase, foreground: false, explicitOwner }),
+          ),
+        ).toBe(expected.backgrounded);
+      }
+
+      // Foregrounded + explicitly opened by the owner always mounts, and every
+      // phase resolves to a real presentation family — no phase renders
+      // nothing, which is the whole point of the criterion.
+      const opened = reviewReportPresentation(
+        gate({ phase, foreground: true, explicitOwner: true }),
+      );
+      expect(opened).toBe(expected.foreground);
+      expect(opened).not.toBeNull();
+
+      // read-only is a property of the presentation, so it is asserted here
+      // rather than trusted: only a live run is read-only.
+      expect(reviewReportReadOnly(opened)).toBe(opened === "live");
     }
   });
 

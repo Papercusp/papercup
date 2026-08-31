@@ -386,6 +386,17 @@ function describeAdmissionCause(error: unknown): string {
 
 /** EI-1211660: default coalescing window for reconcileExpired() — see the field doc below. */
 const DEFAULT_RECONCILE_COALESCE_MS = 2_000;
+/**
+ * Reconciliation is invoked by every admission process, so the driver's in-memory
+ * coalescing window cannot collapse calls made by different Node processes.  Keep a
+ * single workspace-wide transaction lock as the cross-process gate; callers that
+ * lose the race skip this maintenance pass and continue with their own enqueue/lease.
+ * `pg_try_advisory_xact_lock` never waits, which is the important distinction from
+ * the row-lock contention that caused governed admission statement timeouts.
+ */
+const RECONCILE_LOCK_PREFIX = 'resource-governor-reconcile:';
+/** Limit each maintenance statement's row-lock and JSONB rewrite footprint. */
+const RECONCILE_BATCH_SIZE = 100;
 
 export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
   private readonly namespace: string;
@@ -755,18 +766,43 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     namespace: string | null,
     nowMs: number,
   ): Promise<QueueReconciliationResult> {
+    // Every admission process has its own driver instance.  An in-memory promise
+    // therefore cannot prevent N processes from entering these broad UPDATEs at
+    // once.  A transaction-scoped, workspace-wide try-lock gives one caller the
+    // maintenance turn and lets all others proceed without waiting.  The empty
+    // result allowance keeps lightweight injected SQL clients hermetic; production
+    // PostgreSQL always returns exactly one boolean row.
+    const reconcileLock = `${RECONCILE_LOCK_PREFIX}${this.workspaceId}`;
+    const lockRows = await tx<{ locked: boolean }[]>`
+      SELECT pg_try_advisory_xact_lock(hashtextextended(${reconcileLock}, 0)) AS locked`;
+    if (lockRows.length > 0 && lockRows[0]?.locked === false) {
+      return { requeued: 0, expired: 0, abandoned: 0, total: 0 };
+    }
     const namespacePredicate =
       namespace === null ? tx`` : tx`AND payload->'resource_governor'->>'namespace' = ${namespace}`;
     const requeued = await tx<QueueDbRow[]>`
-      UPDATE harness_shared.work_items
+      WITH candidates AS (
+        SELECT workspace_id, harness_slug, feature_id
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${this.workspaceId}
+           AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+           ${namespacePredicate}
+           AND payload->'resource_governor'->>'state' IN ('leased', 'running')
+           AND jsonb_typeof(payload->'resource_governor'->'lease'->'expiresAtMs') = 'number'
+           AND (payload->'resource_governor'->'lease'->>'expiresAtMs')::double precision <= ${nowMs}
+         ORDER BY updated_ts ASC, feature_id ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT ${RECONCILE_BATCH_SIZE}
+      )
+      UPDATE harness_shared.work_items AS item
          SET payload = jsonb_set(
-               payload,
+               item.payload,
                ARRAY['resource_governor']::text[],
-               ((payload->'resource_governor') - 'lease') || jsonb_build_object(
+               ((item.payload->'resource_governor') - 'lease') || jsonb_build_object(
                  'state', 'queued',
                  'updatedAtMs', ${nowMs}::bigint,
                  'decision', jsonb_build_object(
-                   'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
+                   'generation', COALESCE((item.payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
                    'atMs', ${nowMs}::bigint,
                    'reason', 'lease-expired',
                    'evidence', '{}'::jsonb
@@ -775,26 +811,35 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
                true
              ),
              status = 'open', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
-       WHERE workspace_id = ${this.workspaceId}
-         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-         ${namespacePredicate}
-         AND payload->'resource_governor'->>'state' IN ('leased', 'running')
-         AND jsonb_typeof(payload->'resource_governor'->'lease'->'expiresAtMs') = 'number'
-         AND (payload->'resource_governor'->'lease'->>'expiresAtMs')::double precision <= ${nowMs}
-       RETURNING feature_id, payload, status, taken_by, created_ts`;
+       WHERE (item.workspace_id, item.harness_slug, item.feature_id) IN
+             (SELECT workspace_id, harness_slug, feature_id FROM candidates)
+       RETURNING item.feature_id, item.payload, item.status, item.taken_by, item.created_ts`;
 
     const expired = await tx<QueueDbRow[]>`
-      UPDATE harness_shared.work_items
+      WITH candidates AS (
+        SELECT workspace_id, harness_slug, feature_id
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${this.workspaceId}
+           AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+           ${namespacePredicate}
+           AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
+           AND jsonb_typeof(payload->'resource_governor'->'deadlineAtMs') = 'number'
+           AND (payload->'resource_governor'->>'deadlineAtMs')::double precision <= ${nowMs}
+         ORDER BY updated_ts ASC, feature_id ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT ${RECONCILE_BATCH_SIZE}
+      )
+      UPDATE harness_shared.work_items AS item
          SET payload = jsonb_set(
-               COALESCE(payload, '{}'::jsonb)
+               COALESCE(item.payload, '{}'::jsonb)
                  - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
                  - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at',
                ARRAY['resource_governor']::text[],
-               ((COALESCE(payload, '{}'::jsonb)->'resource_governor') - 'lease') || jsonb_build_object(
+               ((COALESCE(item.payload, '{}'::jsonb)->'resource_governor') - 'lease') || jsonb_build_object(
                  'state', 'expired',
                  'updatedAtMs', ${nowMs}::bigint,
                  'decision', jsonb_build_object(
-                   'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
+                   'generation', COALESCE((item.payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
                    'atMs', ${nowMs}::bigint,
                    'reason', 'deadline-expired',
                    'evidence', '{}'::jsonb
@@ -803,13 +848,9 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
                true
              ),
              status = 'dropped', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
-       WHERE workspace_id = ${this.workspaceId}
-         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-         ${namespacePredicate}
-         AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
-         AND jsonb_typeof(payload->'resource_governor'->'deadlineAtMs') = 'number'
-         AND (payload->'resource_governor'->>'deadlineAtMs')::double precision <= ${nowMs}
-       RETURNING feature_id, payload, status, taken_by, created_ts`;
+       WHERE (item.workspace_id, item.harness_slug, item.feature_id) IN
+             (SELECT workspace_id, harness_slug, feature_id FROM candidates)
+       RETURNING item.feature_id, item.payload, item.status, item.taken_by, item.created_ts`;
 
     // The abandonment floor (WI-1741497). Only receipts holding NO lease are eligible,
     // so this can never reap a live execution; the deadline branch above already owns
@@ -822,17 +863,31 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     // whose deadline was never written. That is the same shape as the bug this branch
     // exists to close: a predicate that measures nothing while reporting a clean zero.
     const abandoned = await tx<QueueDbRow[]>`
-      UPDATE harness_shared.work_items
+      WITH candidates AS (
+        SELECT workspace_id, harness_slug, feature_id
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${this.workspaceId}
+           AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+           ${namespacePredicate}
+           AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
+           AND COALESCE(jsonb_typeof(payload->'resource_governor'->'deadlineAtMs'), 'null') <> 'number'
+           AND jsonb_typeof(payload->'resource_governor'->'updatedAtMs') = 'number'
+           AND updated_ts <= ${nowMs - this.abandonAfterMs}
+         ORDER BY updated_ts ASC, feature_id ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT ${RECONCILE_BATCH_SIZE}
+      )
+      UPDATE harness_shared.work_items AS item
          SET payload = jsonb_set(
-               COALESCE(payload, '{}'::jsonb)
+               COALESCE(item.payload, '{}'::jsonb)
                  - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
                  - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at',
                ARRAY['resource_governor']::text[],
-               ((COALESCE(payload, '{}'::jsonb)->'resource_governor') - 'lease') || jsonb_build_object(
+               ((COALESCE(item.payload, '{}'::jsonb)->'resource_governor') - 'lease') || jsonb_build_object(
                  'state', 'expired',
                  'updatedAtMs', ${nowMs}::bigint,
                  'decision', jsonb_build_object(
-                   'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
+                   'generation', COALESCE((item.payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
                    'atMs', ${nowMs}::bigint,
                    'reason', 'abandoned-without-deadline',
                    'evidence', '{}'::jsonb
@@ -841,14 +896,9 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
                true
              ),
              status = 'dropped', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
-       WHERE workspace_id = ${this.workspaceId}
-         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-         ${namespacePredicate}
-         AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
-         AND COALESCE(jsonb_typeof(payload->'resource_governor'->'deadlineAtMs'), 'null') <> 'number'
-         AND jsonb_typeof(payload->'resource_governor'->'updatedAtMs') = 'number'
-         AND (payload->'resource_governor'->>'updatedAtMs')::double precision <= ${nowMs - this.abandonAfterMs}
-       RETURNING feature_id, payload, status, taken_by, created_ts`;
+       WHERE (item.workspace_id, item.harness_slug, item.feature_id) IN
+             (SELECT workspace_id, harness_slug, feature_id FROM candidates)
+       RETURNING item.feature_id, item.payload, item.status, item.taken_by, item.created_ts`;
 
     return {
       requeued: requeued.length,

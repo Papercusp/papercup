@@ -71,7 +71,7 @@ import {
 /** One dwelled red, as the sweep resolved it. */
 export interface TscRedSweepResult {
   file: string;
-  outcome: 'filed' | 'debounced' | 'capped' | 'error' | 'resolved';
+  outcome: 'filed' | 'debounced' | 'capped' | 'error' | 'resolved' | 'skipped';
   /** How long the red was observed to persist, first sighting to last. */
   spanSec: number;
   sightings: number;
@@ -315,7 +315,7 @@ export async function resolveClearedTscReds(deps: TscRedSweepDeps = {}): Promise
     if (heartbeats.length === 0) return out;
 
     const latestSightingByFile = new Map<string, number>();
-    for (const o of readObservationsFn(path ? { path, nowMs } : { nowMs })) {
+    for (const o of readObservationsFn(path ? { path, nowMs, root: repoRoot } : { nowMs, root: repoRoot })) {
       latestSightingByFile.set(o.file, Math.max(latestSightingByFile.get(o.file) ?? 0, o.ts));
     }
 
@@ -378,6 +378,7 @@ export async function tscRedSweep(deps: TscRedSweepDeps = {}): Promise<TscRedSwe
     captureFn,
     workspaceIdFn = activeWorkspaceId,
     repoRoot = process.cwd(),
+    fileExistsFn = (file: string) => existsSync(join(repoRoot, file)),
     submodulePathsFn = () => readDeclaredSubmodulePaths(repoRoot),
   } = deps;
 
@@ -386,8 +387,38 @@ export async function tscRedSweep(deps: TscRedSweepDeps = {}): Promise<TscRedSwe
   // fail-soft `[]` a single decision rather than one per filed item.
   const submodulePaths = submodulePathsFn();
   try {
-    const observations = readObservationsFn(path ? { path, nowMs } : { nowMs });
-    const dwelled: DwelledRed[] = selectDwelledRedsFn(observations, { nowMs });
+    const observations = readObservationsFn(path ? { path, nowMs, root: repoRoot } : { nowMs, root: repoRoot });
+    const candidates: DwelledRed[] = selectDwelledRedsFn(observations, { nowMs });
+
+    // THE FILING PRECONDITION (EI-21985631427355996). tsc cannot report an error for a file
+    // that is not in the tree, so a dwelled path that does not exist here is not a red this
+    // tree can have — it is an observation of some OTHER tree that reached this store, and
+    // filing it manufactures a work-item nobody can ever act on. Measured: `lib/old-peer.ts`,
+    // a fixture path from `lint-tsc.test.ts`, dwelled 172min and was filed as a major bug.
+    //
+    // NOT in tension with `decideTscRedCleared`, which deliberately REFUSES to resolve on a
+    // vanished file ("ambiguous: deleted or renamed"). The polarities are duals and both are
+    // right: CLOSING an item on absence is an absence argument about a red that may have
+    // merely moved, while OPENING one demands positive evidence that there is something to
+    // fix. A rename is handled correctly here too — the red is observed again at its new
+    // path and files there, which is precisely why suppressing the stale path is safe.
+    //
+    // Placed BEFORE the cap on purpose: a phantom path sorts by dwell like any other, so
+    // leaving it in the list lets it consume a MAX_FILES_PER_TICK slot and defer a real red.
+    const dwelled: DwelledRed[] = [];
+    for (const red of candidates) {
+      if (fileExistsFn(red.file)) {
+        dwelled.push(red);
+        continue;
+      }
+      results.push({
+        file: red.file,
+        outcome: 'skipped',
+        spanSec: red.spanSec,
+        sightings: red.sightings,
+        reason: 'path absent from this tree — an observation of another root, not a fileable red',
+      });
+    }
     if (dwelled.length === 0) return results;
 
     const workspaceId = workspaceIdFn();

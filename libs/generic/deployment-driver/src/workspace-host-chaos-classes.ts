@@ -25,7 +25,17 @@ import {
 export function workspaceHostProviderRetryClass(
   error: unknown,
 ): WorkspaceHostRetryClass {
-  const status = (error as { status?: unknown } | null | undefined)?.status;
+  const signals = error as
+    | { status?: unknown; throttled?: unknown }
+    | null
+    | undefined;
+  // An explicit throttle statement OUTRANKS the status code, and must be read before the 4xx rule
+  // below. Not every provider throttles with 429: Google answers Compute rate limiting with 403,
+  // which the 4xx rule would settle as `terminal` -> `halt`, stopping a durable workflow forever
+  // on a fault that a bounded backoff clears. Adapters set this only for reasons a retry can fix
+  // (never a spent quota), so honouring it here cannot turn a real refusal into an infinite loop.
+  if (signals?.throttled === true) return "throttled";
+  const status = signals?.status;
   if (typeof status !== "number") return "ambiguous";
   if (status === 408 || status === 429) return "throttled";
   if (status === 409) return "ambiguous";

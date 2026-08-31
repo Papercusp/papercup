@@ -105,20 +105,38 @@ export const STALE_SEC = 30 * 60;
  * peer mid-edit and filing against it is the documented `uncommitted` false positive.
  * Callers get that split for free from `partitionNewFilesByLiveEdit`.
  *
+ * `root` is the tree the entries were MEASURED against, and stamping it is what keeps this
+ * store honest (EI-21985631427355996). The store path is process-global, but `file` is only
+ * ever relative to the root the gate ran from — so an observation is meaningless outside it.
+ * Measured 2026-08-31: 10+ suites here drive this gate, and `lint-tsc.test.ts` drives it
+ * against a synthetic `mkdtempSync` root. One run of its `old-peer.ts` case appended
+ * `lib/old-peer.ts` — a path that has never existed in this repository — straight into the
+ * fleet's live store; 15 such records accumulated over 172 minutes and the sweep filed a
+ * work-item for it. That one suite is all that was observed polluting, but the mechanism
+ * admits any of them, and per-test discipline cannot fix it (a new gate-driving test would
+ * simply forget). Scoping the record to its root does, because the reader then discards it
+ * without anyone having to remember.
+ *
+ * Omitting `root` writes no stamp, which readers admit — legacy lines and callers that
+ * genuinely do not know their root keep working exactly as before.
+ *
  * @param {object} opts
  * @param {{file: string, current?: number, baseline?: number}[]} opts.entries - standing reds
  * @param {string} [opts.path] - store path
  * @param {number} [opts.nowMs]
  * @param {string} [opts.project] - which tsc project observed it (several gates share the store)
+ * @param {string} [opts.root] - tree the entries are relative to; unstamped when omitted
  * @returns {{ok: boolean, written: number, error?: string}}
  */
-export function recordStandingReds({ entries, path = DEFAULT_OBSERVATION_PATH, nowMs = Date.now(), project = '' }) {
+export function recordStandingReds({ entries, path = DEFAULT_OBSERVATION_PATH, nowMs = Date.now(), project = '', root = '' }) {
   if (!Array.isArray(entries) || entries.length === 0) return { ok: true, written: 0 };
   try {
     const ts = Math.floor(nowMs / 1000);
     const lines = entries
       .filter((e) => e && typeof e.file === 'string' && e.file.length > 0)
-      .map((e) => JSON.stringify({ ts, file: e.file, count: e.current ?? null, project }))
+      .map((e) =>
+        JSON.stringify(root ? { ts, file: e.file, count: e.current ?? null, project, root } : { ts, file: e.file, count: e.current ?? null, project }),
+      )
       .join('\n');
     if (lines.length === 0) return { ok: true, written: 0 };
     mkdirSync(dirname(path), { recursive: true });
@@ -248,9 +266,16 @@ export function readRunHeartbeats({ path = DEFAULT_OBSERVATION_PATH, nowMs = Dat
  * at once) can in principle interleave a partial write, and one bad line must not blind the
  * sweeper to every good one.
  *
+ * `root` (when supplied) drops observations STAMPED with a different tree — see
+ * `recordStandingReds`. This is deliberately not symmetric: an UNSTAMPED line is admitted,
+ * because "no stamp" means unknown, and a reader that discarded unknowns would silently
+ * blind itself to every legacy line and to any caller that cannot name its root. So the
+ * filter only ever acts on positive evidence that a line belongs to some OTHER tree —
+ * which is exactly the fixture-pollution case and nothing else.
+ *
  * @returns {{ts: number, file: string, count: number|null, project: string}[]}
  */
-export function readObservations({ path = DEFAULT_OBSERVATION_PATH, nowMs = Date.now(), retentionSec = RETENTION_SEC } = {}) {
+export function readObservations({ path = DEFAULT_OBSERVATION_PATH, nowMs = Date.now(), retentionSec = RETENTION_SEC, root = '' } = {}) {
   if (!existsSync(path)) return [];
   let raw;
   try {
@@ -274,6 +299,9 @@ export function readObservations({ path = DEFAULT_OBSERVATION_PATH, nowMs = Date
     if (rec && rec.kind === 'run') continue;
     if (!rec || typeof rec.file !== 'string' || typeof rec.ts !== 'number') continue;
     if (rec.ts < cutoff) continue;
+    // Positive evidence of a foreign tree only — an absent/blank stamp is UNKNOWN, and
+    // unknown is admitted (see the header). `root` unset disables the filter entirely.
+    if (root && typeof rec.root === 'string' && rec.root && rec.root !== root) continue;
     out.push({ ts: rec.ts, file: rec.file, count: rec.count ?? null, project: rec.project ?? '' });
   }
   return out;

@@ -16,8 +16,11 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ReviewReportShell, {
   partitionReviewRows,
+  REVIEW_PARTITION_TILES,
+  REVIEW_ROW_ACCOUNTING,
   type ReviewReportGroup,
   type ReviewReportRow,
+  type ReviewRowAccounting,
 } from "./ReviewReportShell";
 
 const operatorRoot = existsSync(resolve(process.cwd(), "app/globals.css"))
@@ -332,6 +335,101 @@ describe("rendering", () => {
         partition.notAssessed +
         partition.notApplied,
     );
+  });
+
+  /**
+   * The acceptance drill for "the partition accounts for every row".
+   *
+   * The census is DERIVED from REVIEW_ROW_ACCOUNTING — the accounting type's
+   * own runtime members — rather than from a fixture someone has to remember
+   * to extend. An accounting value added later automatically gets a row here
+   * and must land in exactly one tile, so the drill fails by construction
+   * instead of silently under-counting.
+   */
+  const censusRows: ReviewReportRow[] = REVIEW_ROW_ACCOUNTING.map(
+    (accounting) => ({
+      id: accounting,
+      title: `${accounting} row`,
+      evidence: [],
+      confidence: "medium" as const,
+      accounting,
+    }),
+  );
+  const censusGroups: ReviewReportGroup[] = [
+    { id: "census", title: "Census", rows: censusRows },
+  ];
+
+  it("maps every accounting member to exactly one tile, in both directions", () => {
+    // Guards the guard: an empty union would make every loop below vacuous.
+    expect(REVIEW_ROW_ACCOUNTING.length).toBeGreaterThan(0);
+
+    const tileIds = REVIEW_PARTITION_TILES.map((tile) => tile.id);
+    // No duplicate tiles, and no tile for a value that is not an accounting
+    // member — the reverse direction, which a "does each member have a tile"
+    // check alone would miss.
+    expect(new Set(tileIds).size).toBe(tileIds.length);
+    expect([...tileIds].sort()).toEqual([...REVIEW_ROW_ACCOUNTING].sort());
+
+    for (const accounting of REVIEW_ROW_ACCOUNTING) {
+      expect(
+        REVIEW_PARTITION_TILES.filter((tile) => tile.id === accounting),
+      ).toHaveLength(1);
+    }
+  });
+
+  it("renders tiles that sum to the rendered rows, not-assessed included", () => {
+    renderShell({ groups: censusGroups });
+
+    let summed = 0;
+    for (const tile of REVIEW_PARTITION_TILES) {
+      const count = Number(
+        screen.getByTestId(`review-report-${tile.id}-count`).textContent,
+      );
+      expect(Number.isNaN(count)).toBe(false);
+      summed += count;
+    }
+
+    expect(summed).toBe(censusRows.length);
+    expect(
+      Number(
+        screen.getByTestId("review-report-not-assessed-count").textContent,
+      ),
+      // P-004: never-assessed is its own visible category. If this is ever 0
+      // while a not-assessed row is rendered, it has folded back into another
+      // bucket and the tiles no longer account for what is on screen.
+    ).toBeGreaterThan(0);
+  });
+
+  it("narrows the rendered rows to the tile the owner activates, and back", async () => {
+    const user = userEvent.setup();
+    renderShell({ groups: censusGroups });
+
+    // Everything is on screen before any tile is engaged.
+    for (const accounting of REVIEW_ROW_ACCOUNTING) {
+      expect(screen.queryByTestId(`review-row-${accounting}`)).not.toBeNull();
+    }
+
+    for (const target of REVIEW_ROW_ACCOUNTING) {
+      const filter = screen.getByTestId(`review-report-${target}-filter`);
+      await user.click(filter);
+      expect(filter.getAttribute("aria-pressed")).toBe("true");
+
+      for (const accounting of REVIEW_ROW_ACCOUNTING) {
+        const row = screen.queryByTestId(`review-row-${accounting}`);
+        if (accounting === target) expect(row).not.toBeNull();
+        else expect(row).toBeNull();
+      }
+
+      // Activating the engaged tile again clears the filter rather than
+      // trapping the owner in a narrowed report with no way back.
+      await user.click(screen.getByTestId(`review-report-${target}-filter`));
+      expect(
+        screen
+          .getByTestId(`review-report-${target}-filter`)
+          .getAttribute("aria-pressed"),
+      ).toBe("false");
+      expect(screen.queryByTestId(`review-row-${target}`)).not.toBeNull();
+    }
   });
 
   it("keeps all five metrics compact at tablet and narrow widths", () => {

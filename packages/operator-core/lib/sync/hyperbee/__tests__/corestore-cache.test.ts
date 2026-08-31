@@ -25,6 +25,7 @@ import {
   _resetCacheForTests,
   _resolveCorestoreCacheBlocksForTests,
   _DEFAULT_CORESTORE_CACHE_BLOCKS_FOR_TESTS,
+  _lockHolderIsProvablyStaleForTests,
 } from '../corestore';
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -135,6 +136,73 @@ describe('getHarnessStore — per-(workspaceRoot, harnessSlug) cache (A5)', () =
 
     await closeHarnessStore(opts);
     await expect(readFile(lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reclaims a lock when the PID is alive but belongs to a different process incarnation', async () => {
+    const root = tmpRoot();
+    const opts = { workspaceRoot: root, harnessSlug: 'pid-reused' };
+    const lockPath = harnessStoreLockPath(opts);
+    await mkdir(join(root, '.papercusp', 'pid-reused', 'hyperbee'), { recursive: true });
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        token: 'test-reused-pid',
+        processIdentity: 'not-this-process-incarnation',
+      }),
+      'utf8',
+    );
+
+    await getHarnessStore(opts);
+    const activeLock = JSON.parse(await readFile(lockPath, 'utf8')) as {
+      pid: number;
+      token: string;
+      processIdentity: string | null;
+    };
+    expect(activeLock.pid).toBe(process.pid);
+    expect(activeLock.token).not.toBe('test-reused-pid');
+    expect(activeLock.processIdentity).not.toBe('not-this-process-incarnation');
+
+    await closeHarnessStore(opts);
+    await expect(readFile(lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('fails closed when a live legacy lock has no process incarnation', () => {
+    expect(
+      _lockHolderIsProvablyStaleForTests(
+        { pid: 42 },
+        { isAlive: () => true, readIdentity: () => 'linux:boot:current' },
+      ),
+    ).toBe(false);
+  });
+
+  it('reclaims a legacy macOS lock when its ISO start time differs from the live PID', () => {
+    expect(
+      _lockHolderIsProvablyStaleForTests(
+        { pid: 42, startedAt: '2026-08-30T06:30:06.031Z' },
+        { isAlive: () => true, readIdentity: () => 'darwin:Sun Aug 30 21:47:19 2026' },
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps a legacy macOS lock when its start time matches the live PID', () => {
+    const liveIdentity = 'darwin:Sun Aug 30 21:47:19 2026';
+    const matchingStart = new Date(Date.parse(liveIdentity.slice('darwin:'.length))).toISOString();
+    expect(
+      _lockHolderIsProvablyStaleForTests(
+        { pid: 42, startedAt: matchingStart },
+        { isAlive: () => true, readIdentity: () => liveIdentity },
+      ),
+    ).toBe(false);
+  });
+
+  it('fails closed when the current process incarnation cannot be read', () => {
+    expect(
+      _lockHolderIsProvablyStaleForTests(
+        { pid: 42, processIdentity: 'linux:boot:original' },
+        { isAlive: () => true, readIdentity: () => null },
+      ),
+    ).toBe(false);
   });
 });
 

@@ -179,3 +179,80 @@ export function turnSizeRatios(turns: readonly SessionTurn[]): number[] {
   const max = Math.max(1, ...spans);
   return spans.map((s) => s / max);
 }
+
+/** A focus request arriving at the conversation from one of its two sources. */
+export interface FocusRequest {
+  /** The rail's click. A LIVE user gesture. */
+  jumpToIndex?: number | null;
+  /** Bumped per click so the same index can be re-requested (D-005). */
+  jumpNonce?: number | null;
+  /** The search anchor baked into the URL the popup was opened with. */
+  focusIndex?: number | null;
+  /** Whether this conversation is a projection (no anchor honoured). */
+  projection?: boolean;
+}
+
+export interface ResolvedFocus {
+  railJumpActive: boolean;
+  focusIndex: number | null | undefined;
+  focusNonce: number | null;
+}
+
+/**
+ * Which focus request wins (P-003).
+ *
+ * The rail's jump is a live gesture; the search anchor is a property of the URL
+ * and therefore fires once and then STAYS SET for the life of the popup. So the
+ * two are not symmetric and cannot be merged — without this precedence the stale
+ * anchor re-wins on every commit and the rail appears broken on every click
+ * after the first, which is the exact bug D-005's nonce was added to survive.
+ *
+ * Extracted from SessionChatModal so the rule is testable on its own. It was
+ * previously two inline ternaries inside a 2,000-line component, which is why
+ * the independent grading (EI-21986741094464185) found it had no coverage at
+ * all: nothing could reach it without mounting the whole popup.
+ */
+export function resolveFocusPrecedence(req: FocusRequest): ResolvedFocus {
+  const railJumpActive = typeof req.jumpToIndex === 'number' && req.jumpToIndex >= 0;
+  return {
+    railJumpActive,
+    focusIndex: railJumpActive ? req.jumpToIndex : req.projection ? undefined : req.focusIndex,
+    focusNonce: railJumpActive ? (req.jumpNonce ?? null) : null,
+  };
+}
+
+/** One rendered transcript row, reduced to what the top-index probe reads. */
+export interface RenderedRow {
+  /** The row's `data-message-index`. */
+  index: number;
+  /** Its viewport-space top edge, from getBoundingClientRect(). */
+  top: number;
+}
+
+/**
+ * Which message the reader is actually looking at (P-005) — the REVERSE of
+ * `resolveFocusPrecedence`, and the property D-003 says separates a position
+ * indicator from a menu. A rail that only sends scroll commands is a menu; it
+ * becomes a "you are here" marker only because this reports back.
+ *
+ * The rule: the LAST row whose top edge has passed the probe line. Rows are
+ * matched by rect rather than by the virtualizer's `start` offsets because the
+ * virtual container is a sibling of the load-earlier block, so virtual
+ * coordinates and scrollTop differ by whatever that block occupies; rects need
+ * no such correction and cannot go stale against it.
+ *
+ * When NOTHING has passed the probe the reader is scrolled above the first
+ * rendered row, so that row is where they are. That clamp is a real answer, not
+ * a fallback — returning -1 there would blank the live marker at the top of
+ * every transcript.
+ */
+export function pickTopMessageIndex(rows: Iterable<RenderedRow>, probeTop: number): number {
+  let best = -1;
+  let firstRendered = -1;
+  for (const row of rows) {
+    if (!Number.isFinite(row.index)) continue;
+    if (firstRendered < 0 || row.index < firstRendered) firstRendered = row.index;
+    if (row.top <= probeTop && row.index > best) best = row.index;
+  }
+  return best < 0 ? firstRendered : best;
+}

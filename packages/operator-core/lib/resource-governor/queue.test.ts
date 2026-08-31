@@ -308,6 +308,38 @@ describe('WorkItemAdmissionQueueDriver', () => {
       text: "SELECT set_config('statement_timeout', ?, true)",
       values: ['15000ms'],
     });
+
+    const reconcileQueries = queries.filter((query) => query.text.includes('harness_shared.work_items'));
+    expect(reconcileQueries).toHaveLength(3);
+    for (const query of reconcileQueries) {
+      expect(query.text).toContain('FOR UPDATE SKIP LOCKED');
+      expect(query.text).toContain('LIMIT ?');
+    }
+    expect(queries.some((query) => query.text.includes('pg_try_advisory_xact_lock'))).toBe(true);
+  });
+
+  it('skips reconciliation when another process owns the workspace turn', async () => {
+    const queries: string[] = [];
+    const tx = (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      queries.push(text);
+      return text.includes('pg_try_advisory_xact_lock')
+        ? Promise.resolve([{ locked: false }])
+        : Promise.resolve([] as unknown[]);
+    };
+    const client = {
+      begin: async (callback: (transaction: unknown) => Promise<unknown>) => callback(tx),
+    } as never;
+    const store = new PgWorkItemAdmissionQueueStore({ sql: client, workspaceId: 'workspace-test' });
+
+    await expect(store.reconcileExpired('test', 1_000)).resolves.toEqual({
+      requeued: 0,
+      expired: 0,
+      abandoned: 0,
+      total: 0,
+    });
+    expect(queries).toHaveLength(3); // bounded transaction setup + one non-blocking try-lock
+    expect(queries.filter((query) => query.includes('harness_shared.work_items'))).toHaveLength(0);
   });
 
   it('returns one stable durable receipt across process restart and rejects conflicting replay', async () => {

@@ -201,6 +201,33 @@
   line-height: 1;
 }
 
+/* The tile's count doubles as its filter control. It inherits the count's own
+ * type so filtering does not change the summary's visual rhythm — only the
+ * pointer, the focus ring and the pressed state say it is actionable. */
+.review-report__metric-filter {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.review-report__metric-filter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.review-report__metric--active {
+  background: var(--bg-2);
+}
+
+.review-report__metric--active dd {
+  color: var(--accent);
+}
+
 .review-report__metric--results {
   border-left-color: var(--review-accent);
 }

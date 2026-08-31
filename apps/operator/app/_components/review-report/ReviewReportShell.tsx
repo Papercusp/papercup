@@ -48,12 +48,27 @@ import "./review-report.css";
  * resolver contract instead of collapsing it into presentation-only aliases. */
 export type ReviewRowConfidence = BulkConfidence;
 export type ReviewRowStatus = "pending" | "applied" | "dismissed";
-export type ReviewRowAccounting =
-  | "ready"
-  | "handled"
-  | "manual"
-  | "not-assessed"
-  | "not-applied";
+/**
+ * Every bucket a rendered row can be accounted into, as RUNTIME members in the
+ * order the summary tiles present them.
+ *
+ * The member list is the definition and the type is derived from it. The
+ * partition criterion for this surface requires proving that every accounting
+ * value maps to exactly one tile by iterating the type's own members — a bare
+ * `type` union has no runtime members, so the only available check would be a
+ * hand-enumerated fixture that a later contributor must remember to extend.
+ * Deriving the tiles from this array (see REVIEW_PARTITION_TILES) makes an
+ * unaccounted value a compile error rather than a silently missing tile.
+ */
+export const REVIEW_ROW_ACCOUNTING = [
+  "ready",
+  "manual",
+  "handled",
+  "not-applied",
+  "not-assessed",
+] as const;
+
+export type ReviewRowAccounting = (typeof REVIEW_ROW_ACCOUNTING)[number];
 
 export interface ReviewReportTransition {
   from: string;
@@ -174,6 +189,17 @@ export interface ReviewReportShellProps {
    *  The exhaustive summary still accounts for every row, and the owner can
    *  expand the group on demand. Off by default for existing report flows. */
   collapseNonSelectableByDefault?: boolean;
+  /**
+   * Which summary tile is currently narrowing the rendered groups, if any.
+   *
+   * Controlled-optional: pass this together with `onActiveAccountingChange` to
+   * own the filter (a host with a router should put it in nuqs, since a
+   * narrowed report is a user-meaningful view the owner may want to share or
+   * restore). Omit both and the shell keeps the state itself, so neither
+   * consumer is forced to wire a router to get the filter.
+   */
+  activeAccounting?: ReviewRowAccounting | null;
+  onActiveAccountingChange?: (next: ReviewRowAccounting | null) => void;
   applyLabel?: string;
   dismissLabel?: string;
   /** The run's own state and controls (RunLifecycleBar), directly under the
@@ -281,43 +307,58 @@ export function partitionReviewRows(
  * vocabulary. These labels say what the owner has to DO instead, and the count
  * that answers "how much is left for me" leads.
  */
-export const REVIEW_PARTITION_TILES: ReadonlyArray<{
-  id: string;
+export interface ReviewPartitionTile {
+  id: ReviewRowAccounting;
   label: string;
   hint: string;
   read: (partition: ReviewReportPartition) => number;
-}> = [
-  {
-    id: "ready",
+}
+
+/**
+ * The tile presentation for each accounting bucket, keyed by the bucket.
+ *
+ * A `Record` over the accounting union — not an array of tiles — is what makes
+ * the partition exhaustive by construction: adding a member to
+ * REVIEW_ROW_ACCOUNTING without giving it a tile is a compile error here, so a
+ * row can never be rendered into a bucket that no tile counts. The
+ * owner-facing ORDER lives in REVIEW_ROW_ACCOUNTING, not in this map.
+ */
+const PARTITION_TILE_BY_ACCOUNTING: Record<
+  ReviewRowAccounting,
+  Omit<ReviewPartitionTile, "id">
+> = {
+  ready: {
     label: "Papercup can fix",
     hint: "Selected below. Apply commits exactly these.",
     read: (p) => p.ready,
   },
-  {
-    id: "manual",
+  manual: {
     label: "Needs you",
     hint: "No safe automatic action — each says what to do and where.",
     read: (p) => p.manual,
   },
-  {
-    id: "handled",
+  handled: {
     label: "Already fixed",
     hint: "Applied, with the evidence recorded.",
     read: (p) => p.handled,
   },
-  {
-    id: "not-applied",
+  "not-applied": {
     label: "Skipped",
     hint: "Dismissed or deliberately left alone.",
     read: (p) => p.notApplied,
   },
-  {
-    id: "not-assessed",
+  "not-assessed": {
     label: "Not assessed",
     hint: "Found by the scan but never judged — the run stopped first.",
     read: (p) => p.notAssessed,
   },
-];
+};
+
+export const REVIEW_PARTITION_TILES: ReadonlyArray<ReviewPartitionTile> =
+  REVIEW_ROW_ACCOUNTING.map((id) => ({
+    id,
+    ...PARTITION_TILE_BY_ACCOUNTING[id],
+  }));
 
 function initialSelection(
   groups: readonly ReviewReportGroup[],
@@ -782,6 +823,8 @@ export default function ReviewReportShell({
   groups,
   defaultSelected = "pending",
   collapseNonSelectableByDefault = false,
+  activeAccounting: activeAccountingProp,
+  onActiveAccountingChange,
   applyLabel = "Apply selected",
   dismissLabel = "Dismiss",
   runBar,
@@ -837,7 +880,43 @@ export default function ReviewReportShell({
     return ids;
   }, [groups]);
 
+  // The census is deliberately computed over ALL groups, never the filtered
+  // view: the tiles must keep answering "how much is there in total" while one
+  // of them is narrowing what is on screen. A partition that shrank with the
+  // filter would make the tiles disagree with themselves the moment they were
+  // used.
   const partition = useMemo(() => partitionReviewRows(groups), [groups]);
+
+  const [uncontrolledAccounting, setUncontrolledAccounting] =
+    useState<ReviewRowAccounting | null>(null);
+  const activeAccounting =
+    activeAccountingProp !== undefined
+      ? activeAccountingProp
+      : uncontrolledAccounting;
+  const setActiveAccounting = useCallback(
+    (next: ReviewRowAccounting | null) => {
+      if (activeAccountingProp === undefined) setUncontrolledAccounting(next);
+      onActiveAccountingChange?.(next);
+    },
+    [activeAccountingProp, onActiveAccountingChange],
+  );
+
+  /**
+   * The rendered view. Filtering drops rows that are not in the active bucket,
+   * then drops groups left empty, so a narrowed report shows only the category
+   * the owner asked about rather than a page of empty group headers.
+   */
+  const visibleGroups = useMemo(() => {
+    if (activeAccounting == null) return groups;
+    const narrowed: ReviewReportGroup[] = [];
+    for (const group of groups) {
+      const rows = group.rows.filter(
+        (row) => row.accounting === activeAccounting,
+      );
+      if (rows.length > 0) narrowed.push({ ...group, rows });
+    }
+    return narrowed;
+  }, [groups, activeAccounting]);
 
   // Service the run bar's `reveal` intent. Keyed on `seq` alone: re-revealing
   // the SAME group is the common case (click "Show only failures" twice after
@@ -1160,18 +1239,52 @@ export default function ReviewReportShell({
               {partition.results}
             </dd>
           </div>
-          {REVIEW_PARTITION_TILES.map((tile) => (
-            <div
-              key={tile.id}
-              className={`review-report__metric review-report__metric--${tile.id}`}
-              title={tile.hint}
-            >
-              <dt>{tile.label}</dt>
-              <dd data-testid={`review-report-${tile.id}-count`}>
-                {tile.read(partition)}
-              </dd>
-            </div>
-          ))}
+          {REVIEW_PARTITION_TILES.map((tile) => {
+            const count = tile.read(partition);
+            const active = activeAccounting === tile.id;
+            // An empty bucket has nothing to narrow to, so it stays a plain
+            // readout rather than a button that appears actionable and then
+            // shows an empty report — the same "no control misrepresents its
+            // affordance" rule the confidence indicator follows.
+            const filterable = count > 0;
+            return (
+              <div
+                key={tile.id}
+                className={`review-report__metric review-report__metric--${tile.id}${
+                  active ? " review-report__metric--active" : ""
+                }`}
+                title={tile.hint}
+              >
+                <dt>{tile.label}</dt>
+                <dd data-testid={`review-report-${tile.id}-count`}>
+                  {filterable ? (
+                    // The accessible name goes on aria-label, not an inline
+                    // sr-only span: the count element's textContent stays
+                    // exactly the number, so a reader (or a test) asking "how
+                    // many ready rows" gets "3" and not a sentence.
+                    <button
+                      type="button"
+                      className="review-report__metric-filter"
+                      data-testid={`review-report-${tile.id}-filter`}
+                      aria-pressed={active}
+                      aria-label={`${tile.label}: ${count}. ${
+                        active
+                          ? "Showing only these; activate to show all."
+                          : "Activate to show only these."
+                      }`}
+                      onClick={() =>
+                        setActiveAccounting(active ? null : tile.id)
+                      }
+                    >
+                      {count}
+                    </button>
+                  ) : (
+                    count
+                  )}
+                </dd>
+              </div>
+            );
+          })}
         </dl>
         <p
           className="pc-sr-only"
@@ -1195,7 +1308,7 @@ export default function ReviewReportShell({
       </span>
 
       <div className="review-report__groups">
-        {groups.map((group, index) => {
+        {visibleGroups.map((group, index) => {
           const groupPending = group.rows.filter(rowSelectable);
           const selCount = groupPending.filter((r) =>
             liveSelected.has(r.id),

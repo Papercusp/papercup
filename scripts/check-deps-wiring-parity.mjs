@@ -76,6 +76,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
 
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+
 const REPO_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const EXIT_NOT_CHECKED = 2;
 
@@ -826,6 +828,6 @@ function main() {
   process.exit(0);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   main();
 }

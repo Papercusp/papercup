@@ -18,6 +18,7 @@ import Corestore from 'corestore';
 import { mkdir, open, readFile, rename, unlink, type FileHandle } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { readProcessIdentity } from '../../process-identity';
 import { forgetStore, registerStoreMachine } from './remote-core-host';
 import { healRelocatedDeviceFileAndLog } from './device-file-heal';
 
@@ -27,6 +28,16 @@ const storeLocks = new Map<string, HarnessStoreLock>();
 interface HarnessStoreLock {
   release(): Promise<void>;
 }
+
+interface HarnessStoreLockHolder {
+  pid?: number;
+  token?: string;
+  /** Kernel-backed process incarnation. Absent on locks written before EI-218488. */
+  processIdentity?: string | null;
+  startedAt?: string;
+}
+
+const LEGACY_LOCK_START_TOLERANCE_MS = 2_000;
 
 export interface HarnessStoreOpts {
   /** Workspace root — typically resolved from `getWorkspaceRoot()`. */
@@ -112,6 +123,47 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+/**
+ * A durable PID is only an address in the process table, not an identity. On
+ * long-lived desktop rigs macOS routinely reuses a crashed operator's PID for
+ * an unrelated process; treating `kill(pid, 0)` as proof of ownership then
+ * strands every harness Corestore behind the stale lock forever.
+ *
+ * Fail closed for legacy locks (no process identity) and unreadable process
+ * identity: only a dead PID or a positively mismatched incarnation is stale.
+ */
+function lockHolderIsProvablyStale(
+  holder: HarnessStoreLockHolder,
+  deps: {
+    isAlive?: (pid: number) => boolean;
+    readIdentity?: (pid: number) => string | null;
+  } = {},
+): boolean {
+  if (!Number.isInteger(holder.pid) || holder.pid! <= 0) return false;
+  const isAlive = deps.isAlive ?? processIsAlive;
+  if (!isAlive(holder.pid!)) return true;
+
+  if (typeof holder.processIdentity !== 'string' || holder.processIdentity.length === 0) {
+    // Locks written before processIdentity was introduced still carry an ISO
+    // `startedAt`. On macOS, compare that timestamp with `ps lstart` from the
+    // currently live PID. This is the only safe way to recover the legacy
+    // locks already stranded on upgraded rigs; an age-only heuristic would
+    // eventually delete a genuinely long-lived owner's lock.
+    if (typeof holder.startedAt !== 'string' || holder.startedAt.trim() === '') return false;
+    const currentIdentity = (deps.readIdentity ?? readProcessIdentity)(holder.pid!);
+    if (!currentIdentity || !currentIdentity.startsWith('darwin:')) return false;
+    const recordedMs = Date.parse(holder.startedAt);
+    const currentMs = Date.parse(currentIdentity.slice('darwin:'.length));
+    return (
+      Number.isFinite(recordedMs) &&
+      Number.isFinite(currentMs) &&
+      Math.abs(recordedMs - currentMs) > LEGACY_LOCK_START_TOLERANCE_MS
+    );
+  }
+  const currentIdentity = (deps.readIdentity ?? readProcessIdentity)(holder.pid!);
+  return currentIdentity !== null && currentIdentity !== holder.processIdentity;
+}
+
 async function releaseLockFile(
   handle: FileHandle,
   lockPath: string,
@@ -144,7 +196,7 @@ async function acquireHarnessStoreLock(
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') throw error;
 
-      let holder: { pid?: number; token?: string };
+      let holder: HarnessStoreLockHolder;
       try {
         holder = JSON.parse(await readFile(lockPath, 'utf8')) as typeof holder;
       } catch {
@@ -154,7 +206,7 @@ async function acquireHarnessStoreLock(
         );
       }
 
-      if (!Number.isInteger(holder.pid) || processIsAlive(holder.pid!)) {
+      if (!lockHolderIsProvablyStale(holder)) {
         throw new Error(
           `Harness Corestore is already open by process ${holder.pid ?? 'unknown'} ` +
             `(lock: ${lockPath}). Stop the duplicate operator/sidecar process before retrying.`,
@@ -180,7 +232,12 @@ async function acquireHarnessStoreLock(
     const token = randomUUID();
     try {
       await handle.writeFile(
-        JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }),
+        JSON.stringify({
+          pid: process.pid,
+          token,
+          processIdentity: readProcessIdentity(process.pid),
+          startedAt: new Date().toISOString(),
+        }),
         'utf8',
       );
     } catch (error) {
@@ -322,3 +379,6 @@ export function _resolveCorestoreCacheBlocksForTests(): number {
 
 /** Test seam: read the default block cache constant. */
 export const _DEFAULT_CORESTORE_CACHE_BLOCKS_FOR_TESTS = DEFAULT_CORESTORE_CACHE_BLOCKS;
+
+/** Test seam for the PID-reuse safety boundary above. */
+export const _lockHolderIsProvablyStaleForTests = lockHolderIsProvablyStale;

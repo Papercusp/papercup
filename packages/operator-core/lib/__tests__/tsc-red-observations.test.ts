@@ -229,3 +229,76 @@ describe('the thresholds are internally consistent', () => {
     expect(RETENTION_SEC).toBeGreaterThan(DWELL_SEC + STALE_SEC);
   });
 });
+
+/**
+ * ROOT SCOPING — EI-21985631427355996.
+ *
+ * The store path is process-global but `file` is only ever relative to the tree the gate ran
+ * from, so an observation is meaningless outside that tree. `lint-tsc.test.ts` drives the gate
+ * against a synthetic `mkdtempSync` root; before this scoping, one run of its `old-peer.ts`
+ * case appended `lib/old-peer.ts` — a path that has never existed in this repository — into
+ * the fleet's live store, where 15 records accumulated over 172 minutes and the sweep filed a
+ * work-item for it.
+ *
+ * CONTROLS, per this file's standing discipline. The filter must act on POSITIVE evidence of
+ * a foreign tree and on nothing else, so each rejection is paired with an admission differing
+ * in exactly one dimension. An implementation that drops unstamped lines fails `admits an
+ * UNSTAMPED line`; one that never filters fails `drops a line stamped with a DIFFERENT root`;
+ * one that filters when the reader named no root fails `no root argument disables the filter`.
+ */
+describe('readObservations — root scoping', () => {
+  const stamped = (file: string, root?: string) => ({
+    ts: nowSec - 60,
+    file,
+    count: 1,
+    project: 'operator-core',
+    ...(root ? { root } : {}),
+  });
+
+  const write = (recs: object[]) => {
+    const path = tmpStore();
+    writeFileSync(path, recs.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    return path;
+  };
+
+  it('drops a line stamped with a DIFFERENT root', () => {
+    const path = write([stamped('lib/old-peer.ts', '/tmp/tsc-gate-unchanged-abc123')]);
+    expect(readObservations({ path, nowMs: NOW, root: '/repo' })).toEqual([]);
+  });
+
+  it('keeps a line stamped with the SAME root — the paired positive', () => {
+    const path = write([stamped('lib/real.ts', '/repo')]);
+    expect(readObservations({ path, nowMs: NOW, root: '/repo' }).map((o) => o.file)).toEqual(['lib/real.ts']);
+  });
+
+  it('admits an UNSTAMPED line: no stamp means UNKNOWN, and unknown is not foreign', () => {
+    // Legacy lines, and any caller that cannot name its root, must keep working. A reader
+    // that discarded unknowns would silently blind the sweeper to every pre-existing record.
+    const path = write([stamped('lib/legacy.ts')]);
+    expect(readObservations({ path, nowMs: NOW, root: '/repo' }).map((o) => o.file)).toEqual(['lib/legacy.ts']);
+  });
+
+  it('no root argument disables the filter entirely', () => {
+    const path = write([stamped('lib/a.ts', '/one'), stamped('lib/b.ts', '/two'), stamped('lib/c.ts')]);
+    expect(
+      readObservations({ path, nowMs: NOW })
+        .map((o) => o.file)
+        .sort(),
+    ).toEqual(['lib/a.ts', 'lib/b.ts', 'lib/c.ts']);
+  });
+
+  it('round-trips: what recordStandingReds stamps is what the same root reads back', () => {
+    const path = tmpStore();
+    recordStandingReds({ entries: [{ file: 'lib/x.ts', current: 2 }], path, nowMs: NOW, project: 'operator-core', root: '/repo' });
+    recordStandingReds({ entries: [{ file: 'lib/fixture.ts', current: 1 }], path, nowMs: NOW, project: 'test', root: '/tmp/fixture' });
+    expect(readObservations({ path, nowMs: NOW, root: '/repo' }).map((o) => o.file)).toEqual(['lib/x.ts']);
+    expect(readObservations({ path, nowMs: NOW, root: '/tmp/fixture' }).map((o) => o.file)).toEqual(['lib/fixture.ts']);
+  });
+
+  it('omitting root on the WRITE side stamps nothing, so every reader still admits it', () => {
+    const path = tmpStore();
+    recordStandingReds({ entries: [{ file: 'lib/y.ts', current: 1 }], path, nowMs: NOW, project: 'operator-core' });
+    expect(readFileSync(path, 'utf-8')).not.toContain('"root"');
+    expect(readObservations({ path, nowMs: NOW, root: '/any-root-at-all' }).map((o) => o.file)).toEqual(['lib/y.ts']);
+  });
+});

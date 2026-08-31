@@ -15,7 +15,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { deriveSessionTurns, turnAtMessageIndex, turnSizeRatios } from './session-turn-index';
+import {
+  deriveSessionTurns,
+  pickTopMessageIndex,
+  resolveFocusPrecedence,
+  turnAtMessageIndex,
+  turnSizeRatios,
+} from './session-turn-index';
 import type { ChatMessage } from './chat-types';
 
 const T0 = Date.parse('2026-08-31T09:14:00.000Z');
@@ -188,5 +194,103 @@ describe('turnSizeRatios', () => {
 
   it('never divides by zero on an empty session', () => {
     expect(turnSizeRatios([])).toEqual([]);
+  });
+});
+
+/*
+ * The two rules below had NO coverage until the independent acceptance grading
+ * (EI-21986741094464185) found that their audit citations resolved to files
+ * containing zero references to them. Both were inline in components; both are
+ * now pure, which is what makes these assertions possible at all.
+ */
+
+describe('resolveFocusPrecedence (P-003 — a live gesture beats a stale anchor)', () => {
+  it('lets the rail jump win over the URL search anchor', () => {
+    const r = resolveFocusPrecedence({ jumpToIndex: 7, jumpNonce: 3, focusIndex: 2 });
+    expect(r.railJumpActive).toBe(true);
+    expect(r.focusIndex).toBe(7);
+    expect(r.focusNonce).toBe(3);
+  });
+
+  it('THE REGRESSION: the anchor does not re-win on the click after the first', () => {
+    // The bug this rule exists to stop. The URL anchor is set for the life of
+    // the popup, so it is still 2 on every later click. If it ever re-won, the
+    // rail would scroll to turn 2 no matter which row the reader pressed.
+    const anchor = 2;
+    for (const clicked of [5, 9, 0, 4]) {
+      const r = resolveFocusPrecedence({ jumpToIndex: clicked, jumpNonce: 1, focusIndex: anchor });
+      expect(r.focusIndex).toBe(clicked);
+    }
+  });
+
+  it('falls back to the anchor only while no jump is active', () => {
+    const r = resolveFocusPrecedence({ jumpToIndex: null, focusIndex: 2 });
+    expect(r.railJumpActive).toBe(false);
+    expect(r.focusIndex).toBe(2);
+    // The nonce must go null too, or a stale one re-fires the previous jump.
+    expect(r.focusNonce).toBeNull();
+  });
+
+  it('treats a negative jump index as no jump, not as index -1', () => {
+    expect(resolveFocusPrecedence({ jumpToIndex: -1, focusIndex: 2 }).focusIndex).toBe(2);
+  });
+
+  it('suppresses the anchor on a projection, but never the rail jump', () => {
+    // A projection's indices are not the anchor's indices, so honouring it
+    // would scroll somewhere arbitrary. The rail's index IS projected-array
+    // relative, so it stays valid.
+    expect(resolveFocusPrecedence({ focusIndex: 2, projection: true }).focusIndex).toBeUndefined();
+    expect(
+      resolveFocusPrecedence({ jumpToIndex: 7, jumpNonce: 1, focusIndex: 2, projection: true })
+        .focusIndex,
+    ).toBe(7);
+  });
+
+  it('carries a missing nonce as null rather than undefined', () => {
+    expect(resolveFocusPrecedence({ jumpToIndex: 4 }).focusNonce).toBeNull();
+  });
+});
+
+describe('pickTopMessageIndex (P-005 — what makes the rail an indicator, not a menu)', () => {
+  const rows = [
+    { index: 0, top: -400 },
+    { index: 1, top: -120 },
+    { index: 2, top: 40 },
+    { index: 3, top: 300 },
+  ];
+
+  it('reports the last row whose top edge has passed the probe', () => {
+    expect(pickTopMessageIndex(rows, 32)).toBe(1);
+  });
+
+  it('follows the reader down the transcript', () => {
+    expect(pickTopMessageIndex(rows, 320)).toBe(3);
+  });
+
+  it('clamps to the first rendered row instead of blanking the marker', () => {
+    // Scrolled above everything rendered. -1 here would blank the live row at
+    // the top of every transcript, which is the visible bug.
+    expect(pickTopMessageIndex(rows, -500)).toBe(0);
+  });
+
+  it('clamps to the first RENDERED row, not row 0, when the top is virtualized away', () => {
+    const windowed = [
+      { index: 40, top: 500 },
+      { index: 41, top: 760 },
+    ];
+    expect(pickTopMessageIndex(windowed, 32)).toBe(40);
+  });
+
+  it('is order-independent — the virtualizer does not guarantee DOM order', () => {
+    expect(pickTopMessageIndex([...rows].reverse(), 32)).toBe(1);
+  });
+
+  it('ignores rows with an unparseable data-message-index', () => {
+    const dirty = [{ index: Number.NaN, top: -900 }, ...rows];
+    expect(pickTopMessageIndex(dirty, 32)).toBe(1);
+  });
+
+  it('returns -1 for an empty transcript', () => {
+    expect(pickTopMessageIndex([], 32)).toBe(-1);
   });
 });

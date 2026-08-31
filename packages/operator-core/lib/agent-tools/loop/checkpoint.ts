@@ -39,6 +39,7 @@ import {
   setLoopCarryNoteWithPrior,
   getLoopCarryNoteWithMeta,
   listLoopCarryNoteHarnesses,
+  listLoopCarryNoteScopes,
   shortCarryHash,
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_MAX_WALLS,
@@ -626,7 +627,9 @@ export default defineTool({
         .string()
         .max(120)
         .optional()
-        .describe('Harness the loop is scoped under (default: your session harness / home pot).'),
+        .describe(
+          'Harness the loop is scoped under (default: your session harness / home pot). Honoured on a READ — the way to reach a note stranded in another scope. On a WRITE an armed loop routine outranks it, so the note lands where the next cold wake reads; the reply then reports `explicitHarnessIgnored`.',
+        ),
     })
     .refine(
       (a) =>
@@ -716,9 +719,26 @@ export default defineTool({
     const briefHarness = hasConcreteContextHarness(sessionBrief?.harnessSlug)
       ? resolvePotHomeSlug(sessionBrief!.harnessSlug, undefined)
       : null;
+    // WI-1826126: on a READ the explicit `harness` argument WINS; on a write it does
+    // not, and that asymmetry is the whole point.
+    //
+    // A WRITE must land where the cold reader will look, so the armed routine keeps
+    // precedence: honouring an explicit override there would put the note in a store
+    // the next wake never reads — the exact stranding the rules above prevent.
+    //
+    // A READ cannot strand anything. It is also the ONLY way to reach a note that is
+    // already stranded, which is why the previous ordering made such a note
+    // unrecoverable through this tool at all: an agent that correctly diagnosed the
+    // split and passed the right harness got the OTHER scope's note back, with the
+    // resolved harness echoed as if the argument had been honoured. Recovering the
+    // real note took raw SQL against harness_shared.carry_notes.
+    const isReadRequest = args.read === true;
+    // Recorded so a write can SAY it discarded the argument instead of silently
+    // echoing a harness the caller did not ask for.
+    const explicitHarnessOverriddenByRoutine =
+      !isReadRequest && Boolean(explicitHarness) && Boolean(activeRoutineHarness) && explicitHarness !== activeRoutineHarness;
     let harness =
-      activeRoutineHarness ??
-      explicitHarness ??
+      (isReadRequest ? (explicitHarness ?? activeRoutineHarness) : (activeRoutineHarness ?? explicitHarness)) ??
       briefHarness ??
       contextHarness ??
       resolvePotHomeSlug(undefined, ctx.harnessSlug);
@@ -789,6 +809,39 @@ export default defineTool({
     if (args.read === true) {
       const current = await getLoopCarryNoteWithMeta({ harness, ownerId, workspaceId });
       const note = current.note;
+      // WI-1826126: resolving a scope successfully is NOT evidence that it holds this
+      // owner's newest note. carry_notes is keyed `loop:<harness>:<ownerId>`, so one
+      // owner can hold several divergent notes — measured on this box, 155 of 2,930
+      // note-holding owners hold them under up to 4 harnesses. Before this check the
+      // only consumer of that fact was the `no_harness` fallback below, which runs
+      // exclusively when resolution FAILS; a resolution that succeeded onto the older
+      // scope compared against nothing. Measured cost: a cold wake read a 13:19Z note
+      // while a 15:57Z note sat one scope over, skipping 2h38m of continuity and very
+      // nearly repeating settled work.
+      //
+      // REPORT, NEVER SWITCH — the same rule the harness list itself follows. Silently
+      // preferring the newest row would resume a cold wake from another hive's note,
+      // which is the stranding the resolution rules above exist to prevent. So this
+      // states the discrepancy and hands over the call that reaches the other note.
+      const otherScopes =
+        (
+          await withBoundedTimeout(() => listLoopCarryNoteScopes(ownerId), {
+            fallback: [] as { harness: string; updatedAtMs: number | null }[],
+            timeoutMs: CONTINUATION_READ_BUDGET_MS,
+            label: 'loop:checkpoint cross-harness staleness check',
+          })
+        ).value ?? [];
+      // A null updatedAtMs here means THIS scope holds no note at all, so any other
+      // scope holding one is strictly more informative than the empty result we are
+      // about to return — that case must report too, not just the older-note case.
+      const newerElsewhere = otherScopes
+        .filter(
+          (row) =>
+            row.harness !== harness &&
+            row.updatedAtMs != null &&
+            (current.updatedAtMs == null || row.updatedAtMs > current.updatedAtMs),
+        )
+        .map((row) => ({ harness: row.harness, updatedAtMs: row.updatedAtMs }));
       return {
         content: [
           {
@@ -797,6 +850,18 @@ export default defineTool({
               ok: true,
               read: true,
               harness,
+              ...(newerElsewhere.length > 0
+                ? {
+                    newerNoteElsewhere: newerElsewhere,
+                    staleScopeWarning:
+                      `⚠ This is NOT your newest carry-note. You hold a MORE RECENTLY WRITTEN loop ` +
+                      `carry-note under ${newerElsewhere.length === 1 ? 'another harness' : `${newerElsewhere.length} other harnesses`}: ` +
+                      `${newerElsewhere.map((row) => `${row.harness} (${row.updatedAtMs == null ? 'unknown' : new Date(row.updatedAtMs).toISOString()})`).join(', ')}. ` +
+                      `${current.updatedAtMs == null ? 'This scope holds no note at all.' : `The note returned here was written ${new Date(current.updatedAtMs).toISOString()}.`} ` +
+                      `Read the newer one with loop:checkpoint { read:true, harness:'${newerElsewhere[0].harness}' } — on a READ the explicit harness argument is honoured. ` +
+                      `Nothing is switched for you: a write still lands in the scope the armed routine resolves, so re-address it deliberately.`,
+                  }
+                : {}),
               // Say so when the scope was INFERRED rather than resolved from the
               // session: a silently inferred store is exactly what makes a
               // wrong-scope note expensive to diagnose later.
@@ -1574,6 +1639,20 @@ export default defineTool({
             // carry-note rather than from the session, say so — the write succeeded,
             // but the caller should know which store it landed in.
             ...(inferredScopeFrom ? { scopeInferredFrom: inferredScopeFrom } : {}),
+            /** WI-1826126: the caller passed `harness` and the ARMED ROUTINE outranked it.
+             *  That precedence is deliberate for a write — the note must land where the
+             *  cold reader will look — but echoing only the resolved harness made the
+             *  discarded argument invisible, so a caller trying to re-address a stranded
+             *  note believed it had succeeded. Name both, and say where a read can go. */
+            ...(explicitHarnessOverriddenByRoutine
+              ? {
+                  explicitHarnessIgnored: {
+                    requested: explicitHarness,
+                    wroteTo: harness,
+                    why: 'An armed loop routine outranks the `harness` argument on a WRITE, so the note lands where the next cold wake will read it. This is not overridable; to READ the other scope, pass the same argument to loop:checkpoint { read:true, harness } — reads honour it.',
+                  },
+                }
+              : {}),
             ownerId,
             cleared: stored === null,
             length: stored?.length ?? 0,

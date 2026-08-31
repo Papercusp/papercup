@@ -3333,7 +3333,12 @@ export async function runTscBaselineGate({
         // hot path) decides whether it has persisted long enough to deserve an owner. Local append
         // only, and every failure is swallowed inside recordStandingReds — the gate's verdict and
         // exit code must not depend on it. `standing` excludes dirty paths by construction.
-        recordStandingReds({ entries: standing, project: label ?? '' });
+        // `root` is what scopes the record to the tree it was measured against
+        // (EI-21985631427355996). Without it a gate run against a synthetic fixture root —
+        // `lint-tsc.test.ts` drives one — appends paths relative to THAT root into the same
+        // process-global store the fleet's sweeper reads, and the sweeper cannot tell them
+        // apart. Still a swallowed local append: the stamp cannot change TSC_EXIT.
+        recordStandingReds({ entries: standing, project: label ?? '', root });
       }
       // EI-19444246913245434 — THE DROPPED WRITE. Everything above is a report ABOUT PEERS; the
       // caller's own `--update` still has to happen. Before this, it silently did not: the run

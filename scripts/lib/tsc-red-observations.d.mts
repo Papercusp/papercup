@@ -62,12 +62,16 @@ export declare function recordStandingReds(opts: {
   path?: string;
   nowMs?: number;
   project?: string;
+  /** Tree the entries are relative to; omitted writes no stamp, which readers admit. */
+  root?: string;
 }): { ok: boolean; written: number; error?: string };
 
 export declare function readObservations(opts?: {
   path?: string;
   nowMs?: number;
   retentionSec?: number;
+  /** Drop observations STAMPED with a different tree. Unstamped lines are always admitted. */
+  root?: string;
 }): TscRedObservation[];
 
 export declare function selectDwelledReds(

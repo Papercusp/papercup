@@ -49,7 +49,12 @@ function isConcretePath(p: string): boolean {
   return p.length > 0 && !/[*?[\]{}]/.test(p);
 }
 
-function pathsOfPayload(payload: unknown): string[] | null {
+/**
+ * Exported so `sibling-path-overlap-claim-port` reads `payload.paths` through the SAME
+ * accessor this guard does. Two claim-time guards keying on the same stored field must
+ * not disagree about what counts as a usable path list.
+ */
+export function pathsOfPayload(payload: unknown): string[] | null {
   const raw = (payload as { paths?: unknown } | null | undefined)?.paths;
   if (!Array.isArray(raw)) return null;
   const paths = raw.filter((p): p is string => typeof p === 'string' && p.length > 0);

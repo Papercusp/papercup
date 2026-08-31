@@ -30,6 +30,9 @@ defineTool({
 const setLoopCarryNote = vi.fn();
 const getLoopCarryNote = vi.fn();
 const listLoopCarryNoteHarnesses = vi.fn(async (..._a: unknown[]) => [] as string[]);
+const listLoopCarryNoteScopes = vi.fn(
+  async (..._a: unknown[]) => [] as { harness: string; updatedAtMs: number | null }[],
+);
 const getLoopStatus = vi.fn();
 const getSessionBrief = vi.fn();
 const getPresence = vi.fn();
@@ -118,6 +121,7 @@ vi.mock('../../carry-note', async (importOriginal) => ({
     setLoopCarryNoteWithPrior(...a),
   getLoopCarryNote: (...a: unknown[]) => getLoopCarryNote(...a),
   listLoopCarryNoteHarnesses: (...a: unknown[]) => listLoopCarryNoteHarnesses(...a),
+  listLoopCarryNoteScopes: (...a: unknown[]) => listLoopCarryNoteScopes(...a),
   getLoopCarryNoteWithMeta: (...a: unknown[]) => getLoopCarryNoteWithMeta(...a),
   renderCarryNote: (f: Record<string, string | undefined>) => `RENDERED:${JSON.stringify(f)}`,
 }));
@@ -1003,6 +1007,104 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     });
     expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
     expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
+  describe('WI-1826126 — a newer carry-note stranded under another harness', () => {
+    // The production staleness check is wrapped in withBoundedTimeout, whose suite-wide
+    // double resolves `undefined` for every label. Run the real work for THIS label only,
+    // so every other test keeps the cheap double and stays unaffected.
+    const runStalenessCheckForReal = () =>
+      withBoundedTimeout.mockImplementation(async (work: unknown, opts: unknown) => {
+        if ((opts as { label?: string } | undefined)?.label !== 'loop:checkpoint cross-harness staleness check') {
+          return { value: undefined, degraded: false, elapsedMs: 0 };
+        }
+        return {
+          value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await work,
+          degraded: false,
+          elapsedMs: 0,
+        };
+      });
+
+    it('honours the explicit harness on a READ even while a routine is armed elsewhere', async () => {
+      // The measured incident: the armed routine pointed at one hive, the note the caller
+      // needed sat in another, and the caller passed the right one. The routine won, so the
+      // caller got the WRONG scope's note back with the resolved harness echoed as if the
+      // argument had been honoured — which made the stranded note unreachable via this tool.
+      getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive', active: true });
+      getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: '## Did\nthe one I asked for', updatedAtMs: 3_000 });
+
+      const b = body(await call({ read: true, harness: 'papercusp' }));
+
+      expect(getLoopCarryNoteWithMeta).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }));
+      expect(b).toMatchObject({ ok: true, read: true, harness: 'papercusp', note: '## Did\nthe one I asked for' });
+    });
+
+    it('keeps the armed routine authoritative on a WRITE, and reports the discarded argument', async () => {
+      // The asymmetry is deliberate and must NOT be "fixed": a write has to land where the
+      // cold wake will read, so an explicit override there would strand the note. What was
+      // missing is the disclosure — the reply echoed only the resolved harness, so a caller
+      // re-addressing a note believed the write had gone where they asked.
+      getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive', active: true });
+
+      const b = body(await call({ next: 'x', harness: 'papercusp' }));
+
+      expect(setLoopCarryNote).toHaveBeenCalledWith(
+        expect.objectContaining({ harness: 'sb-devboard-hive' }),
+        expect.any(String),
+      );
+      expect(b).toMatchObject({
+        harness: 'sb-devboard-hive',
+        explicitHarnessIgnored: { requested: 'papercusp', wroteTo: 'sb-devboard-hive' },
+      });
+    });
+
+    it('warns when the READ resolves an older scope while a newer note sits elsewhere', async () => {
+      runStalenessCheckForReal();
+      getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: '## Did\nthe stale one', updatedAtMs: 1_000 });
+      listLoopCarryNoteScopes.mockResolvedValueOnce([
+        { harness: 'sb-devboard-hive', updatedAtMs: 9_000 },
+        { harness: 'papercusp', updatedAtMs: 1_000 },
+      ]);
+
+      const b = body(await call({ read: true }));
+
+      expect(listLoopCarryNoteScopes).toHaveBeenCalledWith('su-caller');
+      expect(b.newerNoteElsewhere).toEqual([{ harness: 'sb-devboard-hive', updatedAtMs: 9_000 }]);
+      expect(String(b.staleScopeWarning)).toContain('sb-devboard-hive');
+      // REPORTS, never switches: the resolved scope and its note are returned unchanged.
+      // Auto-preferring the newest row is the wrong-hive resumption this warning exists
+      // to prevent, so a test that accepted a switched harness would enshrine the bug.
+      expect(b).toMatchObject({ ok: true, harness: 'papercusp', note: '## Did\nthe stale one' });
+    });
+
+    it('stays silent when the resolved scope already holds the newest note', async () => {
+      runStalenessCheckForReal();
+      getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: 'current', updatedAtMs: 9_000 });
+      listLoopCarryNoteScopes.mockResolvedValueOnce([
+        { harness: 'papercusp', updatedAtMs: 9_000 },
+        { harness: 'sb-devboard-hive', updatedAtMs: 1_000 },
+      ]);
+
+      const b = body(await call({ read: true }));
+
+      // An always-on caveat is worse than none: it trains the reader to skip the one
+      // occasion the warning is real. Holding notes elsewhere is NOT itself the defect.
+      expect(b.newerNoteElsewhere).toBeUndefined();
+      expect(b.staleScopeWarning).toBeUndefined();
+    });
+
+    it('warns when THIS scope holds no note at all but another one does', async () => {
+      runStalenessCheckForReal();
+      getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: null, updatedAtMs: null });
+      listLoopCarryNoteScopes.mockResolvedValueOnce([{ harness: 'sb-devboard-hive', updatedAtMs: 5_000 }]);
+
+      const b = body(await call({ read: true }));
+
+      // The most dangerous reading of the three: an agent told it has NO carry-note
+      // writes a fresh one over continuity it still owns one scope away.
+      expect(b.newerNoteElsewhere).toEqual([{ harness: 'sb-devboard-hive', updatedAtMs: 5_000 }]);
+      expect(String(b.staleScopeWarning)).toContain('no note at all');
+    });
   });
 
   it('read:true reports an absent note with null metadata', async () => {

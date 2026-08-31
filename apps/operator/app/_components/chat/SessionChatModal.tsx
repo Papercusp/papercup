@@ -78,7 +78,12 @@ import FleetPeersRail from './FleetPeersRail';
 // place the rendered messages exist) and renders the rail one level up, as a
 // sibling of the conversation region — see D-002.
 import TurnRail from './TurnRail';
-import { deriveSessionTurns, turnAtMessageIndex, type SessionTurn } from './session-turn-index';
+import {
+  deriveSessionTurns,
+  resolveFocusPrecedence,
+  turnAtMessageIndex,
+  type SessionTurn,
+} from './session-turn-index';
 import { deriveFleetPeers, isUnknownSession } from './fleet-peers';
 import { deriveLeaderBriefAlerts } from './leader-brief-alerts';
 import { useChatClock } from './message-timestamp';
@@ -338,8 +343,18 @@ const ORDERS_RAIL_OVERLAY_STYLE: React.CSSProperties = {
    There is NO overlay style here, unlike the other three. Under width pressure
    this rail DEGRADES to spine density rather than becoming a drawer (D-003) —
    a "you are here" marker you have to open something to see has stopped being
-   one. That is also why it is last in the give-way order: Fleet (1400px) →
-   Orders (1180px) → Activity (860px) → this, which never goes away at all. */
+   one.
+
+   It is the only one that never DISAPPEARS, but it is not the last to give way.
+   The real order is Fleet (1400px) → Orders (1180px) → THIS (1000px, full rail
+   → spine) → Activity (860px). Third of four. An earlier version of this
+   comment claimed it was last, which the TURNS_NARROW_MEDIA_QUERY constant
+   twenty lines below has always contradicted; the independent acceptance
+   grading (EI-21986741094464185) caught it by checking the breakpoints against
+   the prose instead of trusting the prose. Degrading EARLY is deliberate — at
+   214px the rail costs a third of what Orders does, so giving way before
+   Activity buys back real content width while still leaving a position
+   indicator on screen. */
 const TURN_RAIL_WIDTH = 214;
 const TURN_SPINE_WIDTH = 42;
 
@@ -1150,13 +1165,15 @@ export function LiveSessionChat({
     onTurnIndex?.(turns);
   }, [turns, onTurnIndex]);
 
-  /* Which focus request wins. The rail's jump is a LIVE user gesture; the search
-     anchor is a property of the URL the popup was opened with, so it fires once
-     and then stays set for the life of the popup. Without this precedence the
-     stale anchor keeps re-winning and the rail appears broken on every click
-     after the first. */
-  const railJumpActive = typeof jumpToIndex === 'number' && jumpToIndex >= 0;
-  const effectiveFocusIndex = railJumpActive ? jumpToIndex : projection ? undefined : focusIndex;
+  /* Which focus request wins — the rule itself lives in session-turn-index.ts
+     (resolveFocusPrecedence) so it is testable without mounting this component.
+     Inlined here it had no coverage at all, which is what the independent
+     acceptance grading caught (EI-21986741094464185). */
+  const {
+    railJumpActive,
+    focusIndex: effectiveFocusIndex,
+    focusNonce: effectiveFocusNonce,
+  } = resolveFocusPrecedence({ jumpToIndex, jumpNonce, focusIndex, projection: Boolean(projection) });
 
   // D-004: the chip is READ-ONLY (no click handler) — a plain span, only for
   // the assistant's own turns. Declining (null) on a USER turn is what hands
@@ -1241,7 +1258,7 @@ export function LiveSessionChat({
           // — unless the RAIL asked for a specific message, which is an index
           // into the projected array and so is valid either way.
           focusIndex={effectiveFocusIndex}
-          focusNonce={railJumpActive ? jumpNonce : null}
+          focusNonce={effectiveFocusNonce}
           onTopMessageIndex={onTopMessageIndex}
           busy={sending}
           peerBusy={thinking}
@@ -2116,12 +2133,22 @@ export default function SessionChatModal({
             AGENT, this one describes the transcript it sits against, so it
             belongs next to it.
 
-            A SIBLING of the conversation region like the other three (D-002) —
-            which is also what puts it inside the maximize target for free. Do
-            NOT move it into the conversation element to make something line up.
+            A SIBLING of the conversation region like the other three
+            (chat-popup-turn-rail-2026-08-31 D-002) — which is also what puts it
+            inside the maximize target for free. Do NOT move it into the
+            conversation element to make something line up. That instruction is
+            now TESTED: SessionChatModal.test.tsx asserts both nesting directions
+            and that the rail stays inside the popup container. Before those
+            tests it was prose only, which is exactly the state D-002 warns about.
 
-            No overlay branch by design (D-003): under width pressure this rail
-            changes DENSITY rather than becoming a drawer. ── */}
+            No overlay branch by design (chat-popup-turn-rail-2026-08-31 D-003):
+            under width pressure this rail changes DENSITY rather than becoming a
+            drawer.
+
+            ⚠ Decision ids are PLAN-LOCAL and collide in this file: the
+            `D-007 superseded D-002` note further down belongs to a DIFFERENT
+            plan, as does the `D-002 seam` cited in the ref-pill tests. Always
+            qualify a D-NNN here with its plan slug. ── */}
         {turnsVisible ? (
           <div
             className="pc-zone pc-zone--turns"
@@ -2423,9 +2450,11 @@ export default function SessionChatModal({
                 sessionId: focusSessionId || resolved.session_id,
                 harness: actionRosterEntry?.harnessSlug ?? null,
               } : null}
-              /* The turn rail's two wires (D-002): the index comes UP from here,
-                 because this is the only component that holds the rendered
-                 messages; the jump goes back DOWN. */
+              /* The turn rail's two wires (chat-popup-turn-rail-2026-08-31
+                 D-002 — plan-qualified, because bare D-NNN ids collide in this
+                 file): the index comes UP from here, because this is the only
+                 component that holds the rendered messages; the jump goes back
+                 DOWN. */
               onTurnIndex={setTurns}
               onTopMessageIndex={setTopMessageIndex}
               jumpToIndex={jump?.index ?? null}

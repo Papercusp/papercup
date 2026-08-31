@@ -1921,9 +1921,9 @@
         "curator"
       ],
       "guidance": {
-        "when": "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Mug's triage path: grade each ungraded routed draft).",
-        "notWhen": "Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller identity (Mug, resolved agent ownerId, or the human owner surface).",
-        "chaining": "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. The originator auto-notify is reported as revisionWake (thresholds in the description). applied:false + reason 'owner-grade-sovereign' (Mug regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade."
+        "when": "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the triage path: grade each ungraded routed draft).",
+        "notWhen": "Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller identity (resolved agent ownerId, or the human owner surface).",
+        "chaining": "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. The originator auto-notify is reported as revisionWake (thresholds in the description). applied:false + reason 'owner-grade-sovereign' (an agent regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade."
       }
     },
     {
@@ -1994,7 +1994,7 @@
           "POST"
         ]
       },
-      "description": "Route an su idea onto the PLAN rail: create a DRAFT plan (Queen/owner greenlights it) and record it in the routed-idea ledger (origin='su-ideate') so grade→outcome→feedback learning attributes back to it. Pass `draft {title, framing, mechanism, bet?, cheapExperiment?, lens?}` for a fresh idea, OR `featureId` to re-route an already-filed su feature — that path links the wi to the plan and leaves the wi OPEN for triage. Only rail:'plan' is supported (gym/instance land later).",
+      "description": "Route an su idea onto the PLAN rail: create a DRAFT plan (the owner greenlights it) and record it in the routed-idea ledger (origin='su-ideate') so grade→outcome→feedback learning attributes back to it. Pass `draft {title, framing, mechanism, bet?, cheapExperiment?, lens?}` for a fresh idea, OR `featureId` to re-route an already-filed su feature — that path links the wi to the plan and leaves the wi OPEN for triage. Only rail:'plan' is supported (gym/instance land later).",
       "capabilities": [
         "harness:write"
       ],
@@ -2011,9 +2011,9 @@
         "curator"
       ],
       "guidance": {
-        "when": "You have an su IDEATE-pass idea worth a real plan (not just a backlog item). Route a fresh idea with `draft`, or promote an already-filed feature with `featureId`. The draft lands in the Create tab as `status: draft` for Mug/owner review.",
+        "when": "You have an su IDEATE-pass idea worth a real plan (not just a backlog item). Route a fresh idea with `draft`, or promote an already-filed feature with `featureId`. The draft lands in the Create tab as `status: draft` for owner review.",
         "notWhen": "A small fix or friction — that is improvements:capture (kind bug/change). Grading a routed idea — blender:grade-idea. gym/instance rails — not wired here yet.",
-        "chaining": "blender:route-idea → the draft plan appears for Mug/owner triage; greenlighting it (promoting the draft) starts the normal plan lifecycle, and classifyIdeaOutcome follows the plan:<slug> terminal state so the idea earns won/lost credit automatically."
+        "chaining": "blender:route-idea → the draft plan appears for owner triage; greenlighting it (promoting the draft) starts the normal plan lifecycle, and classifyIdeaOutcome follows the plan:<slug> terminal state so the idea earns won/lost credit automatically."
       }
     },
     {
@@ -11147,7 +11147,7 @@
       "guidance": {
         "when": "Standing up a NEW named fleet — e.g. routing option (3), a new desktop fleet: fleet:create then capability:terminal { terminals: [...] } to launch the member windows.",
         "notWhen": "Joining a fleet that already has members → fleet:join. Taking over an existing fleet to drive a plan → fleet:take-leadership (create does NOT seize an existing fleet from its leader).",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows. Donate/spend/debug prose set (D-004): the fleet must EXIST before it can receive seats — 'launch on remote seats' with no fleet yet → fleet:create first, then resource:delegate (donate seats to it) or fleet:request_remote_spawn (spend a seat-offer already made to it)."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\"). Donate/spend/debug prose set (D-004): the fleet must EXIST before it can receive seats — 'launch on remote seats' with no fleet yet → fleet:create first, then resource:delegate (donate seats to it) or fleet:request_remote_spawn (spend a seat-offer already made to it)."
       }
     },
     {
@@ -11390,7 +11390,7 @@
       "guidance": {
         "when": "Becoming a member of an existing fleet (as:'member'), or taking it over as leader in one call (as:'leader').",
         "notWhen": "Creating a brand-new fleet → fleet:create.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -11526,7 +11526,7 @@
       "guidance": {
         "when": "Stepping out of a fleet you are a member or leader of.",
         "notWhen": "Switching to a different fleet → just fleet:join the other one (it re-labels you).",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -11557,7 +11557,7 @@
       "guidance": {
         "when": "Choosing a fleet — to join (fleet:join), inspect (fleet:status), or hand a plan to (fleet:take-leadership). `available` fleets have a live desktop MEMBER (driver) right now — beeCount is background autonomous-loop workers, not a driver.",
         "notWhen": "For who is IN one fleet and what each is doing, use fleet:status { fleet }.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -11618,7 +11618,7 @@
       "guidance": {
         "when": "You'd say 'pause the fleet' — same semantics as fleet:wind-down.",
         "notWhen": "To pause the Mug/pot — pot:pause. To pause one plan — plans:pause.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -11682,7 +11682,7 @@
       "guidance": {
         "when": "Changing a fleet's color — updates both its persisted identity and all of its currently-open windows.",
         "notWhen": "A brand-new fleet already gets a scheme at fleet:create, and joiners recolor at fleet:join — only use recolor to OVERRIDE an existing binding.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -11693,7 +11693,7 @@
           "POST"
         ]
       },
-      "description": "Reconfigure ONE live fleet member's RUNTIME settings WITHOUT a respawn (as its leader/queen/owner): `compactionLimit` (rejected above the member's own spec+role ceiling; no clamped write), `claimSpec` (its versioned claim spec — validated, applied on its next scheduler:get_next), and/or `brief` (a next-wake message it reads on its next orient). `fleet` defaults to the one fleet you lead. For BOOT-BAKED settings (model/effort/account/carry/contextSize/agent) use fleet:respawn-member instead.",
+      "description": "Reconfigure ONE live fleet member's RUNTIME settings WITHOUT a respawn (as its leader, an Overwatch pane, or the owner): `compactionLimit` (rejected above the member's own spec+role ceiling; no clamped write), `claimSpec` (its versioned claim spec — validated, applied on its next scheduler:get_next), and/or `brief` (a next-wake message it reads on its next orient). `fleet` defaults to the one fleet you lead. For BOOT-BAKED settings (model/effort/account/carry/contextSize/agent) use fleet:respawn-member instead.",
       "capabilities": [
         "fleet:reconfigure-member"
       ],
@@ -11712,7 +11712,7 @@
       "guidance": {
         "when": "Adjust a member you lead in place — retune its compaction window, re-steer its claim lane, or stage a next-wake brief — without the cost of a respawn. Pass just the fields you want to change.",
         "notWhen": "To change boot-baked settings (model/effort/account/carry/contextSize/agent) — those need fleet:respawn-member. To steer with the write-time pool-collapse guard — scheduler:set_claim_spec directly. To stand the whole fleet down — fleet:wind-down.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -11742,7 +11742,7 @@
       "guidance": {
         "when": "Your fleet holds a REMOTE seat-offer (another machine ran resource:delegate kind:'agent_slot' for your fleet) and you want those seats actually running members. Pick the target from the fleet's open seat-offers (auto-picked when there is exactly one).",
         "notWhen": "Spawning from seats delegated on THIS machine → fleet:launch-on-plan (it consumes local seats directly). Spreading members across SEVERAL machines' seat-offers in one call → fleet:launch-on-plan placement:'remote' (it composes this request per target). Delegating seats in the first place → resource:delegate on the contributing machine.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -11790,7 +11790,7 @@
           "POST"
         ]
       },
-      "description": "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader/queen/owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `carry`/`claimKinds` are not settable here.",
+      "description": "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `carry`/`claimKinds` are not settable here.",
       "capabilities": [
         "fleet:respawn-member"
       ],
@@ -11809,7 +11809,7 @@
       "guidance": {
         "when": "Move a member to a different model/effort/account/context-size/agent/role — anything fixed at launch. It kills the old session and relaunches a replacement in the same fleet.",
         "notWhen": "For a RUNTIME tweak with no respawn (compaction limit, claim lane, a next-wake brief) — fleet:reconfigure-member. To change carry or seed claimKinds — fleet:launch-on-plan. To stand the whole fleet down — fleet:wind-down. To just kill (no replacement) — fleet:kill.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -11839,7 +11839,7 @@
       "guidance": {
         "when": "Lifting a stand-down: the risky change landed, the incident cleared, the mission is back on.",
         "notWhen": "The fleet was never wound down — a no-op resume just refreshes reason/by/ts (reported alreadyInState).",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -11933,7 +11933,7 @@
       "guidance": {
         "when": "Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.",
         "notWhen": "For the catalog of ALL fleets with availability, use fleet:list.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -12001,7 +12001,7 @@
       "guidance": {
         "when": "Routing option (2): handing a plan to an existing named fleet. Taking the leader role makes you its driver (D-002). Also the FIRST act when the owner designates you a fleet's leader — claim it (this is identity-establishing, not a confirm-gated write).",
         "notWhen": "Just becoming a worker in a fleet → fleet:join. Creating a fresh fleet → fleet:create (you are already its leader). Joining-as-leader in one call → fleet:join { as:'leader' }.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -12048,7 +12048,7 @@
           "POST"
         ]
       },
-      "description": "WIND DOWN a named fleet — a TYPED, BINDING control state (registry control_state=winding-down + reason/by/ts), not a free-text ask: live members get a fleet-scoped control cue (checkpoint → release claims/locks → loop:end → ack leader; pull no new work), and LATE JOINERS see the state at orient. Invokers: the owner (su session), THAT fleet's leader, or the queen — anyone else is refused (EI-9501 class). Reverse with fleet:resume; fleet:pause is an alias of this.",
+      "description": "WIND DOWN a named fleet — a TYPED, BINDING control state (registry control_state=winding-down + reason/by/ts), not a free-text ask: live members get a fleet-scoped control cue (checkpoint → release claims/locks → loop:end → ack leader; pull no new work), and LATE JOINERS see the state at orient. Invokers: the owner (su session), THAT fleet's leader, or an Overwatch (system-authority) pane — anyone else is refused (EI-9501 class). Reverse with fleet:resume; fleet:pause is an alias of this.",
       "capabilities": [
         "fleet:wind-down"
       ],
@@ -12067,7 +12067,7 @@
       "guidance": {
         "when": "Standing a fleet down at end-of-mission, before a risky shared-tree change, or on the owner's stand-down order — anywhere 'stop pulling work' must bind members who haven't read chat.",
         "notWhen": "To stop ONE member — coord:send them a yield / turn:interrupt. To pause a plan — plans:pause. To evict nursery cups — fleet:drain (the cup-fleet surface). A free-text \"please pause\" stays advisory by definition; this verb is the binding form.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
       }
     },
     {
@@ -14352,7 +14352,7 @@
           "POST"
         ]
       },
-      "description": "Mug-turn triage: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier's lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.",
+      "description": "Triage turn: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier's lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.",
       "capabilities": [
         "coord:write"
       ],
@@ -14376,7 +14376,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item's rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Mug's judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the open-idea WINDOW after a taxonomy/policy change — every mode returns `coverage`; retriage-all adds `complete`, and complete:false means ideas beyond the window KEPT their old routing.",
+        "when": "To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item's rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record your judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the open-idea WINDOW after a taxonomy/policy change — every mode returns `coverage`; retriage-all adds `complete`, and complete:false means ideas beyond the window KEPT their old routing.",
         "notWhen": "You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.",
         "chaining": "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas. A rank breakdown showing a 'calibration' contribution → calibration:summary { predictor } to weigh the bettor's claim before deciding."
       }
@@ -15131,7 +15131,7 @@
         "memory:read"
       ],
       "guidance": {
-        "when": "Periodic hygiene (a Mug idle-turn task), after installing a pack into a hive with many organic learnings, or when agents seem to be following contradictory guidance.",
+        "when": "Periodic hygiene (an idle-turn task), after installing a pack into a hive with many organic learnings, or when agents seem to be following contradictory guidance.",
         "notWhen": "At install time — knowledge_packs:install runs its own per-item review.",
         "chaining": "Resolve a reported pair deliberately: memory:forget the wrong side, or memory:update it to reconcile."
       }
@@ -16412,7 +16412,7 @@
           "POST"
         ]
       },
-      "description": "Read the machine-checkable production-readiness gate for one hive over a rolling 12–24h window: bg-host stability, infra-curse rate, bee/queen/overwatch turn success, escalation backlog, green-checkpoint ratio, deploy latency, and context-burn telemetry (per-wake injected overhead, compactions/session, post-compaction error markers), plus a READY/NOT-READY verdict with reasons.",
+      "description": "Read the machine-checkable production-readiness gate for one hive over a rolling 12–24h window: bg-host stability, infra-curse rate, agent + Overwatch turn success, escalation backlog, green-checkpoint ratio, deploy latency, and context-burn telemetry (per-wake injected overhead, compactions/session, post-compaction error markers), plus a READY/NOT-READY verdict with reasons.",
       "capabilities": [
         "harness:read"
       ],
@@ -16887,7 +16887,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A `kind:\"promotion\"` pending review (harness:pending_reviews) is ready — its review was approved (review:approve, if it also gated on one) and criteria are met — and you (Queen/operator) want to actually run the merge.",
+        "when": "A `kind:\"promotion\"` pending review (harness:pending_reviews) is ready — its review was approved (review:approve, if it also gated on one) and criteria are met — and you (operator / the owner) want to actually run the merge.",
         "notWhen": "The item is a plain (non-promotion) pending review — use review:approve; there is no merge to confirm.",
         "chaining": "harness:pending_reviews (find the promotion id) → [review:approve, if gated] → merge:approve { slug, id }."
       }
@@ -19187,7 +19187,7 @@
           "POST"
         ]
       },
-      "description": "Arm a scheduled plan so it starts firing runs on its cadence (materializes its routine + sets schedule_active). Authoring (plans:set-schedule) does not arm; this does. Autonomy-gated (schedule-arm category): the Mug escalates unless graduated; the owner arms directly.",
+      "description": "Arm a scheduled plan so it starts firing runs on its cadence (materializes its routine + sets schedule_active). Authoring (plans:set-schedule) does not arm; this does. Autonomy-gated (schedule-arm category): an autonomous arm is escalated to the owner until that category graduates; the owner arms directly.",
       "capabilities": [
         "plans:write"
       ],
@@ -25173,7 +25173,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "Periodic hygiene (a Mug idle-turn task) to clear the long tail of one-off recipes that were authored on a single run and never reused. ALWAYS run it once with the default dryRun:true to review the candidates, then dryRun:false to retire them.",
+        "when": "Periodic hygiene (an idle-turn task) to clear the long tail of one-off recipes that were authored on a single run and never reused. ALWAYS run it once with the default dryRun:true to review the candidates, then dryRun:false to retire them.",
         "notWhen": "To merge near-duplicates (recipes:merge) or to find promote candidates (recipes:candidates). Don't lower staleDays/raise maxRunCount to reach ONE specific recipe — that is what `ids` is for; widening the heuristic retires the whole long tail with it (on this corpus the 30-day default matches 0 while staleDays:1 matches thousands).",
         "chaining": "recipes:sweep { dryRun: true } (review the would-retire list) → recipes:sweep { dryRun: false } (commit). recipes:get { id } to inspect any candidate before committing."
       }
@@ -25470,7 +25470,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "harness:pending_reviews lists an unresolved review you (Queen/operator) want to accept or answer, unblocking the feature it gated.",
+        "when": "harness:pending_reviews lists an unresolved review you (operator / the owner) want to accept or answer, unblocking the feature it gated.",
         "notWhen": "The review is `kind:\"promotion\"` (a phase-merge gate) and you also want the merge itself to run — approve here, then call merge:approve with the same id to actually merge the phase forward.",
         "chaining": "harness:pending_reviews (find the review id) → review:approve { slug, id }."
       }
@@ -25989,7 +25989,7 @@
           "POST"
         ]
       },
-      "description": "Qualitative health TREND for a rubric — aggregates the Kettle scorecard rating time-series per criterion: direction (improving | worsening | stable | unknown), rating distribution, first/latest (\"queen-placement-health: degraded, worsening over 5 ratings\"). Chronological series returned as compact RLE runs only when includeSeries=true. Also a `staleness` signal (P-011): criteria persistently rated \"unknown\" (unassessable — the model may have drifted; re-ratify via the queen↔scout loop). Unknowns with `idle:`-prefixed evidence (the stage did not run) are excluded from staleness. Reads scorecards (P-013) — no new data.",
+      "description": "Qualitative health TREND for a rubric — aggregates the Overwatch scorecard rating time-series per criterion: direction (improving | worsening | stable | unknown), rating distribution, first/latest (\"placement-health: degraded, worsening over 5 ratings\"). Chronological series returned as compact RLE runs only when includeSeries=true. Also a `staleness` signal (P-011): criteria persistently rated \"unknown\" (unassessable — the model may have drifted; re-ratify via the rubric↔scout loop). Unknowns with `idle:`-prefixed evidence (the stage did not run) are excluded from staleness. Reads scorecards (P-013) — no new data.",
       "capabilities": [
         "coord:read"
       ],
@@ -26015,7 +26015,7 @@
       "guidance": {
         "when": "You want to see how a rubric's criteria have trended OVER TIME — is a characteristic improving or worsening? which criteria are degrading across recent wakes? Or whether the rubric ITSELF is STALE (its model drifted — `staleness.stale`). The qualitative health-over-time view, vs a single point-in-time scorecard.",
         "notWhen": "You want the raw recent scorecards (point-in-time standing + completeness via missingKeys) — scorecards:list. You want the rubric DEFINITION (criteria/model/method) — rubrics:get. You want the cross-corpus ideation rollup — curation:state-of-pot.",
-        "chaining": "rubrics:list { status: \"active\" } → rubrics:trend { rubricRef, since } → drill a worsening criterion via scorecards:list { rubricRef, since } → work_items:get on a scorecard issueId. If `staleness.stale`, re-ratify the rubric via the queen↔scout loop (revise template_data → plans:set-plan-status)."
+        "chaining": "rubrics:list { status: \"active\" } → rubrics:trend { rubricRef, since } → drill a worsening criterion via scorecards:list { rubricRef, since } → work_items:get on a scorecard issueId. If `staleness.stale`, re-ratify the rubric via the rubric↔scout loop (revise template_data → plans:set-plan-status)."
       }
     },
     {
@@ -26140,7 +26140,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A self-pulling cup or su fleet member pulls from the Mug/leader spec instead of scanning. Pass { harness, heldPaths?, states?, rigAvailable? }; do NOT pass specId, revision, fleet, workspace, or claimSpec; claimedUnder reports it. This call returns at most one claim and has no `limit` argument.",
+        "when": "A self-pulling su fleet member pulls from the leader claim spec instead of scanning. Pass { harness, heldPaths?, states?, rigAvailable? }; do NOT pass specId, revision, fleet, workspace, or claimSpec; claimedUnder reports it. This call returns at most one claim and has no `limit` argument.",
         "notWhen": "Coding-factory roles are pushed a FEATURE_ID and do not self-pull. For a specific id use work_items:claim; for plain non-fleet oldest-first use work_items:claim_next.",
         "chaining": "After a claim, set state and eventually release/complete it; leaders re-steer with scheduler:set_claim_spec. On a fleet miss with windDown:true, checkpoint/release and park until a spec revision or claimable event. windDown:false plus excludedBreakdown.claimable>0 is a claim-path bug."
       }
@@ -26340,7 +26340,7 @@
           "POST"
         ]
       },
-      "description": "Has the Kettle emitted a COMPLETE scorecard for a rubric since a given time (its last wake)? The emission-freshness check (monitor-the-monitor): returns status = fresh (a COMPLETE scorecard landed in-window) | partial-only (scorecards landed but ALL incomplete — a silent truncation) | stale (NOTHING landed — a silent emission gap), plus emitted / complete / count / partialCount, lastEmittedAt, lastCompleteAt, and latestMissingKeys (what is unrated right now). Reads scorecards:list (P-013); a \"complete\" scorecard rates every rubric criterion.",
+      "description": "Has Overwatch emitted a COMPLETE scorecard for a rubric since a given time (its last wake)? The emission-freshness check (monitor-the-monitor): returns status = fresh (a COMPLETE scorecard landed in-window) | partial-only (scorecards landed but ALL incomplete — a silent truncation) | stale (NOTHING landed — a silent emission gap), plus emitted / complete / count / partialCount, lastEmittedAt, lastCompleteAt, and latestMissingKeys (what is unrated right now). Reads scorecards:list (P-013); a \"complete\" scorecard rates every rubric criterion.",
       "capabilities": [
         "coord:read"
       ],
@@ -26364,9 +26364,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to know whether the Kettle is actually emitting COMPLETE scorecards, not just whether it emitted anything — monitor-the-monitor. Did a complete pot-coordination-health scorecard land since the last wake (status fresh), or is it silently skipping (stale) / truncating to partials (partial-only)? Pass `since` = the last wake for a precise check.",
+        "when": "You want to know whether Overwatch is actually emitting COMPLETE scorecards, not just whether it emitted anything — monitor-the-monitor. Did a complete pot-coordination-health scorecard land since the last wake (status fresh), or is it silently skipping (stale) / truncating to partials (partial-only)? Pass `since` = the last wake for a precise check.",
         "notWhen": "You want the scorecard ROWS + their ratings — scorecards:list. You want a criterion's rating TREND over time — rubrics:trend. You are FILING a scorecard — scorecards:emit.",
-        "chaining": "scorecards:freshness { rubricRef: \"pot-coordination-health\", since } → status stale/partial-only ⇒ the Kettle missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped."
+        "chaining": "scorecards:freshness { rubricRef: \"pot-coordination-health\", since } → status stale/partial-only ⇒ Overwatch missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped."
       }
     },
     {
@@ -27267,7 +27267,7 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the mug, a UI 'run this on that agent' action, a mug placing a precise command (not prose) onto a cup.",
+        "when": "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to another agent, a UI 'run this on that agent' action, or a leader placing a precise command (not prose) onto a fleet member.",
         "notWhen": "Running the tool YOURSELF — just call it directly (the slash layer adds nothing in-session). Free-form coordination prose — coord:send. Reviewing what a manual-mode target staged — coord:wake-queue."
       }
     },
@@ -29702,7 +29702,7 @@
           "POST"
         ]
       },
-      "description": "Record a structural decision on a plan-run node (split | drop | reapproach | expand | note) durably, in one call. The Mug/operator disposes; a bee proposes. A disruptive amend on an in-flight node is flagged NEEDS-COMPENSATION (coordinate, never silently yank). The record is the commit-before-dispatch truth — amend BEFORE dispatching the dependent work.",
+      "description": "Record a structural decision on a plan-run node (split | drop | reapproach | expand | note) durably, in one call. The steerer (operator / su / the fleet leader) disposes; the agent executing the node proposes. A disruptive amend on an in-flight node is flagged NEEDS-COMPENSATION (coordinate, never silently yank). The record is the commit-before-dispatch truth — amend BEFORE dispatching the dependent work.",
       "capabilities": [
         "work_items:write"
       ],
@@ -29728,7 +29728,7 @@
       "guidance": {
         "when": "You are making (or, as a cup, PROPOSING) a non-re-derivable structural change to a plan-run node — split it, drop/re-approach the approach, expand a deferred region. Record it here in ONE call before dispatching the dependent work; the durable record is the resumable truth.",
         "notWhen": "A routine progress update / finding → work_items:comment. Re-prioritizing the frontier (re-derivable, costs nothing to lose) → no amend needed. Finishing a node → work_items:complete / set_state.",
-        "chaining": "work_items:get → work_items:amend { id, kind, rationale }. A bee PROPOSES (disposition=proposed); the Mug DISPOSES. requiresCompensation=true ⇒ a worker is mid-execution on the node — coordinate (coord:send) before/with the change."
+        "chaining": "work_items:get → work_items:amend { id, kind, rationale }. The executing agent PROPOSES (disposition=proposed); a steerer DISPOSES. requiresCompensation=true ⇒ a worker is mid-execution on the node — coordinate (coord:send) before/with the change."
       }
     },
     {
@@ -30502,7 +30502,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Pass `q` for a case-insensitive literal substring over title and body/summary. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Mug can read the whole backlog's order in one call before steering it with work_items:set_priority.",
+        "when": "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Pass `q` for a case-insensitive literal substring over title and body/summary. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so a steerer can read the whole backlog's order in one call before steering it with work_items:set_priority.",
         "notWhen": "EI-7589: a row's `assignee:null` does NOT by itself mean 'unclaimed' when the row carries a `plan_item`/`plan_ref` link (payload.plan_item, or the trimmed/standard `plan_ref` field) — a plan-item can be under active coverage (effectiveStatus 'wip', a live worker holding it) while the work-item row's own assignee stays null. Before self-claiming a plan-linked row, cross-check `plans:items { slug }` for that item's effectiveStatus — do not trust the bare assignee field alone, or you risk duplicating in-flight work.",
         "chaining": "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog."
       }
@@ -30988,7 +30988,7 @@
           "POST"
         ]
       },
-      "description": "The Mug's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[…], counts:{ ok, failed, written, proposed } }. Gate on `written` (or counts.written/proposed), NOT `ok`: a non-lease-holder proposal returns ok:true but writes nothing (issue-family items too). ⚠ EI-6835: `priority`/`position:'bottom'` set an EXPLICIT value, which under NULLS LAST ALWAYS sorts BEFORE the (usually much larger) unprioritized pool — do NOT use a 'large number' or 'bottom' to try to DEPRIORITIZE an item; that PROMOTES it instead. To deprioritize, clear it (`priority: null`) or (feature-family) flip it to `blocked`.",
+      "description": "The steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[…], counts:{ ok, failed, written, proposed } }. Gate on `written` (or counts.written/proposed), NOT `ok`: a non-lease-holder proposal returns ok:true but writes nothing (issue-family items too). ⚠ EI-6835: `priority`/`position:'bottom'` set an EXPLICIT value, which under NULLS LAST ALWAYS sorts BEFORE the (usually much larger) unprioritized pool — do NOT use a 'large number' or 'bottom' to try to DEPRIORITIZE an item; that PROMOTES it instead. To deprioritize, clear it (`priority: null`) or (feature-family) flip it to `blocked`.",
       "capabilities": [
         "work_items:write"
       ],
@@ -31012,7 +31012,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The Mug steering the SHARED backlog: promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits (others get proposed:true).",
+        "when": "You are steering the SHARED backlog: promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits (others get proposed:true).",
         "notWhen": "Ranking a single bee's already-claimed work-list (work_items:reorder), pinning to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order (incl. issue-family). To DEPRIORITIZE, don't use this — see the EI-6835 warning above.",
         "chaining": "work_items:list (the backlog) → set_priority { workItem, position:'top' } → the next claim_next pulls it first."
       }

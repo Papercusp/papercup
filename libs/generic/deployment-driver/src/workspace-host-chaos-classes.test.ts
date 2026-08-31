@@ -94,6 +94,26 @@ describe("workspaceHostProviderRetryClass", () => {
     expect(workspaceHostProviderRetryClass({ status })).toBe(expected);
   });
 
+  // WI-1818869. Not every provider throttles with 429 — Google answers Compute rate limiting with
+  // 403 — so the 4xx rule alone settles a transient throttle as `terminal`, which
+  // workspaceHostRecoveryAction turns into `halt`: a durable workflow stopped forever by a fault a
+  // bounded backoff clears. An adapter's explicit throttle statement has to outrank the status.
+  it("lets an explicit provider throttle outrank the status code", () => {
+    expect(workspaceHostProviderRetryClass({ status: 403, throttled: true })).toBe("throttled");
+    expect(workspaceHostProviderRetryClass({ status: 400, throttled: true })).toBe("throttled");
+    // No status at all: the statement still stands on its own.
+    expect(workspaceHostProviderRetryClass({ throttled: true })).toBe("throttled");
+  });
+
+  // The guard that keeps the signal from becoming a way to retry anything forever: only a literal
+  // `true` counts, so a truthy-but-unmeant value cannot silently un-terminate a real refusal.
+  it("keeps a 403 terminal unless the provider actually said throttled", () => {
+    expect(workspaceHostProviderRetryClass({ status: 403 })).toBe("terminal");
+    expect(workspaceHostProviderRetryClass({ status: 403, throttled: false })).toBe("terminal");
+    expect(workspaceHostProviderRetryClass({ status: 403, throttled: "yes" })).toBe("terminal");
+    expect(workspaceHostProviderRetryClass({ status: 403, throttled: 1 })).toBe("terminal");
+  });
+
   it("defaults to ambiguous when no numeric status is present", () => {
     // A lost response carries no verdict; assuming failure here would duplicate a live resource.
     expect(workspaceHostProviderRetryClass({ message: "socket hang up" })).toBe("ambiguous");
