@@ -3047,8 +3047,23 @@ async function installClaudeHooks(
     console.warn(`[desktop-install] cc hooks: removed ${gcd.length} stranded temp file(s) from an interrupted install`);
   }
 
+  // EI-21974793277035753: does `sourceSha` actually DESCRIBE what we are about to install?
+  // resolveSourceGitProvenance answers "last commit TOUCHING these paths", which is not the
+  // same question — so without this the stamp names a sha whose blob differs from the bytes
+  // on disk, with the authority of a machine-generated record. Tri-state: `undefined` means
+  // "could not tell" (no git, packaged app), NOT "clean".
+  const uncommitted = await resolveUncommittedSources(srcDir, CC_HOOK_FILES);
+
+  // T3: uncommitted hooks reach every agent on this box on the next launch, with no commit,
+  // no green-checkpoint verdict and no deploy. Refusing by default makes that window an
+  // explicit, deliberate choice instead of an invisible default. Opt in while developing a
+  // hook — the escape hatch is the point, not a loophole: it keeps the fast iteration loop
+  // available to whoever knowingly wants it.
+  const allowDirty = process.env.PAPERCUSP_ALLOW_DIRTY_HOOKS === '1';
+
   const installed: string[] = [];
   const refused: string[] = [];
+  const refusedDirty: string[] = [];
   for (const name of CC_HOOK_FILES) {
     try {
       const data = await fs.readFile(path.join(srcDir, name));
@@ -3064,6 +3079,22 @@ async function installClaudeHooks(
       const current = await fs.readFile(dst).catch(() => null);
       if (current && current.equals(data)) {
         installed.push(name);
+        continue;
+      }
+
+      // T3 (EI-21974793277035753): refuse to publish an UNCOMMITTED hook fleet-wide.
+      //
+      // Gated on `current` existing, and that condition is load-bearing rather than
+      // defensive: "keep the last known-good copy" needs a last known-good copy to keep.
+      // With no previously installed file, refusing leaves the hook ABSENT — and for a
+      // guard hook, absent and ungated are the same outcome, so refusing would cause the
+      // very thing it is meant to prevent. Present-but-uncommitted beats missing, so a
+      // first install proceeds and is reported loudly below.
+      //
+      // Unreachable when git cannot answer (`uncommitted` undefined), which keeps the
+      // packaged-app path and any non-repo checkout installing exactly as before.
+      if (!allowDirty && current && uncommitted?.includes(name)) {
+        refusedDirty.push(name);
         continue;
       }
       // EI-18755593630003816: write to a same-directory temp file then rename() into
@@ -3103,23 +3134,25 @@ async function installClaudeHooks(
   // WI-37405 #3 — record WHERE these came from, so "which build are my hooks?" is one
   // read instead of hashing every file against four checkouts (what EI-19956921121874213
   // actually cost). Written after the copies so it always describes what is on disk.
-  // EI-21974793277035753: does `sourceSha` actually DESCRIBE what we just installed?
-  // resolveSourceGitProvenance answers "last commit touching these paths", which is not
-  // the same question, so without this the stamp can name a sha whose blob differs from
-  // the bytes on disk — and it looks authoritative while doing it. Resolved after the
-  // loop so the downgrade-refusal path never pays for it. Tri-state: `undefined` means
-  // "could not tell" (no git), NOT "clean".
-  const uncommitted = await resolveUncommittedSources(srcDir, CC_HOOK_FILES);
-  if (uncommitted && uncommitted.length > 0) {
+  if (refused.length > 0) {
+    console.error(
+      `[desktop-install] cc hooks: ${refused.length} file(s) refused as unparseable: ${refused.join(', ')}`,
+    );
+  }
+  if (refusedDirty.length > 0) {
+    console.error(
+      `[desktop-install] cc hooks: ${refusedDirty.length} file(s) refused as UNCOMMITTED — they ` +
+        `would go live for every agent on this box ungated. Commit them, or set ` +
+        `PAPERCUSP_ALLOW_DIRTY_HOOKS=1 to install them deliberately: ${refusedDirty.join(', ')}`,
+    );
+  } else if (uncommitted && uncommitted.length > 0) {
+    // Reached when the dirty hooks were installed anyway: either the opt-in is set, or
+    // there was no previously installed copy to fall back to. Either way they are LIVE and
+    // the stamp's sha does not contain them, so say so rather than leaving it to the stamp.
     console.warn(
       `[desktop-install] cc hooks: ${uncommitted.length} file(s) UNCOMMITTED in ${srcDir} — ` +
         `now live for every agent on this box, and NOT contained in ` +
         `sha=${incomingProvenance.sourceSha ?? 'unknown'}: ${uncommitted.join(', ')}`,
-    );
-  }
-  if (refused.length > 0) {
-    console.error(
-      `[desktop-install] cc hooks: ${refused.length} file(s) refused as unparseable: ${refused.join(', ')}`,
     );
   }
 

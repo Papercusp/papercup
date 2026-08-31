@@ -405,6 +405,123 @@ describe('installInjectionHooks — install provenance', () => {
     );
   });
 
+  /**
+   * EI-21974793277035753 T3 — an UNCOMMITTED hook reaches every agent on this box on the
+   * next launch, with no commit, no green-checkpoint verdict and no deploy. Measured
+   * 2026-08-31: a PreToolUse gate edit was live fleet-wide ~4.5h before it was committed.
+   */
+  describe('uncommitted CC hooks', () => {
+    const ccDest = () => path.join(home, '.papercusp', 'hooks', 'cc');
+    // Resolved from the list rather than hardcoded, so renaming a hook cannot silently
+    // turn these into no-ops. Not the locks hook: refusing THAT one also skips the
+    // settings merge, which would confound what these tests are measuring.
+    const target = CC_HOOK_FILES.find(
+      (n) => n.endsWith('.sh') && n !== 'pretooluse-locks-acquire.sh',
+    ) as string;
+
+    let priorEnv: string | undefined;
+    beforeEach(() => {
+      priorEnv = process.env.PAPERCUSP_ALLOW_DIRTY_HOOKS;
+      delete process.env.PAPERCUSP_ALLOW_DIRTY_HOOKS;
+    });
+    afterEach(() => {
+      if (priorEnv === undefined) delete process.env.PAPERCUSP_ALLOW_DIRTY_HOOKS;
+      else process.env.PAPERCUSP_ALLOW_DIRTY_HOOKS = priorEnv;
+    });
+
+    const install = (repo: string) =>
+      installPapercuspFiles({
+        home,
+        operatorAppRoot: repo,
+        playbookSource: path.join(repo, 'missing-playbook.md'),
+        extensionSource: path.join(repo, 'missing-extension.ts'),
+      });
+
+    it('refuses to publish one over an already-installed copy, and keeps that copy', async () => {
+      const repo = path.join(root, 'cc-dirty-refuse');
+      await fs.mkdir(repo, { recursive: true });
+      const src = await makeGitCcHookSource(repo, 'cc-clean', '2026-08-13T12:05:00Z');
+      await install(repo);
+      const committedBody = await fs.readFile(path.join(ccDest(), target), 'utf8');
+
+      // Edit the source WITHOUT committing — exactly the 2026-08-31 shape.
+      await fs.writeFile(path.join(src.ccDir, target), '#!/bin/bash\n# UNCOMMITTED EDIT\n');
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await install(repo);
+
+      expect(await fs.readFile(path.join(ccDest(), target), 'utf8')).toBe(committedBody);
+      const logged = error.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toMatch(/refused as UNCOMMITTED/);
+      // The remedy must be IN the message: a refusal nobody can act on is its own defect.
+      expect(logged).toMatch(/PAPERCUSP_ALLOW_DIRTY_HOOKS=1/);
+    });
+
+    it('publishes it anyway under the explicit opt-in', async () => {
+      const repo = path.join(root, 'cc-dirty-optin');
+      await fs.mkdir(repo, { recursive: true });
+      const src = await makeGitCcHookSource(repo, 'cc-optin', '2026-08-13T12:05:00Z');
+      await install(repo);
+
+      const edited = '#!/bin/bash\n# DELIBERATE UNCOMMITTED EDIT\n';
+      await fs.writeFile(path.join(src.ccDir, target), edited);
+      process.env.PAPERCUSP_ALLOW_DIRTY_HOOKS = '1';
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      await install(repo);
+
+      expect(await fs.readFile(path.join(ccDest(), target), 'utf8')).toBe(edited);
+      // Still announced: opting in makes it deliberate, not invisible.
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/UNCOMMITTED/);
+    });
+
+    it('publishes it on a FIRST install, because absent is worse than ungated', async () => {
+      // The safety condition. With no previously installed copy there is no known-good to
+      // fall back to, so refusing would leave the hook MISSING — and for a guard hook,
+      // missing and ungated are the same outcome. Refusing here would cause the exact
+      // failure the refusal exists to prevent.
+      const repo = path.join(root, 'cc-dirty-first');
+      await fs.mkdir(repo, { recursive: true });
+      const src = await makeGitCcHookSource(repo, 'cc-first', '2026-08-13T12:05:00Z');
+      const edited = '#!/bin/bash\n# UNCOMMITTED ON A FRESH BOX\n';
+      await fs.writeFile(path.join(src.ccDir, target), edited);
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      const result = await install(repo);
+
+      expect(result.claudeHooksInstalled).toContain(target);
+      expect(await fs.readFile(path.join(ccDest(), target), 'utf8')).toBe(edited);
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/UNCOMMITTED/);
+    });
+
+    it('records the uncommitted set on the stamp, so the sha is never read as describing them', async () => {
+      const repo = path.join(root, 'cc-dirty-stamp');
+      await fs.mkdir(repo, { recursive: true });
+      const src = await makeGitCcHookSource(repo, 'cc-stamp', '2026-08-13T12:05:00Z');
+      await fs.writeFile(path.join(src.ccDir, target), '#!/bin/bash\n# UNCOMMITTED\n');
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      await install(repo);
+
+      const stamp = await readInstallStamp(ccDest());
+      expect(stamp?.uncommittedFiles).toEqual([target]);
+      expect(stamp?.sourceSha).toMatch(/^[0-9a-f]{40}$/);
+    });
+
+    it('records [] — not undefined — when everything matches its commit', async () => {
+      // The positive control for the case above: a stamp that always reported "dirty"
+      // would pass that test, and one that never populated the field would pass a laxer
+      // version of this one. Both directions have to be pinned.
+      const repo = path.join(root, 'cc-clean-stamp');
+      await fs.mkdir(repo, { recursive: true });
+      await makeGitCcHookSource(repo, 'cc-clean-stamp', '2026-08-13T12:05:00Z');
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      await install(repo);
+
+      expect((await readInstallStamp(ccDest()))?.uncommittedFiles).toEqual([]);
+    });
+  });
+
   it('refuses a newer-installed CC hook bundle even when the stale source is only minutes older', async () => {
     const newerRepo = path.join(root, 'cc-newer-checkout');
     const staleRepo = path.join(root, 'cc-stale-checkout');
