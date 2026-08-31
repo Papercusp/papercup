@@ -250,8 +250,12 @@ describe('full-replacement mock guard: the live tree', () => {
     // test above trivially green while protecting nothing.
     expect(PROTECTED_MODULES.length).toBeGreaterThan(0);
     expect(candidates.length).toBeGreaterThan(10);
+    // Pass the path: it selects the ScriptKind (.ts vs .tsx) exactly as checkFile does above,
+    // so this census masks each file under the SAME key and reuses that one mask instead of
+    // re-parsing the whole candidate corpus a second time (P-007). Verified 2026-08-31 to be a
+    // behavioural no-op — 0 of 3,059 candidates analyze differently with the path than without.
     const advMockers = candidates.filter((c: { path: string; text: string }) =>
-      analyzeMockCalls(c.text).some(
+      analyzeMockCalls(c.text, c.path).some(
         (call: { spec: string }) =>
           resolveSpec(c.path, call.spec) === 'packages/operator-core/lib/adv-sessions',
       ),
