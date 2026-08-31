@@ -58,9 +58,10 @@ export type AcceptanceGraderLifecycle = {
    * Discovery outcome (state 'assigned'): the ordered grader MENU, head first.
    * A MENU rather than one grader since
    * unified-responder-selection-critique-and-grading-2026-08-30 D-001/D-003
-   * [owner] — min 1 / max 2 under the shared ACCEPTANCE_GRADING_POLICY, and the
-   * tail is NOT woken here: grader k+1 is woken by the cascade only after k
-   * replies, declines or expires, carrying k's card.
+   * [owner] — bounded by the shared ACCEPTANCE_GRADING_POLICY (see
+   * `selection-policies.ts` for the current min/max), and the tail is NOT
+   * woken here: grader k+1 is woken by the cascade only after k replies,
+   * declines or expires, carrying k's card.
    */
   graders?: AssignedGrader[];
   /** The grading cascade's conversation (state 'assigned') — the thread the
@@ -493,9 +494,10 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
  *
  * SUPERSEDED IN ONE RESPECT by
  * unified-responder-selection-critique-and-grading-2026-08-30 D-001/D-002/D-003
- * [owner]: this no longer resolves ONE above-floor grader. It resolves a MENU of
- * min 1 / max 2 under the shared ACCEPTANCE_GRADING_POLICY, below-floor
- * MINIMUM-FILLS rather than minting a fresh session, and delivery is a cascade —
+ * [owner]: this no longer resolves ONE above-floor grader. It resolves a MENU
+ * bounded by the shared ACCEPTANCE_GRADING_POLICY (see `selection-policies.ts`
+ * for the current min/max), below-floor MINIMUM-FILLS rather than minting a
+ * fresh session, and delivery is a cascade —
  * only the head is woken here. Fresh-mint survives strictly for an EMPTY menu
  * (nobody eligible, nobody reachable, or relevance unmeasurable). Discovery is
  * still a service, never a new failure mode: any discovery fault falls through

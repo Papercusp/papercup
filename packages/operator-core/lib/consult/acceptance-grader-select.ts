@@ -24,8 +24,10 @@
  * D-002 states the cost plainly rather than denying it: a below-floor grader IS
  * the confidently-stale grader D-009 preferred to avoid. What makes it
  * acceptable is that grading is no longer n=1 — under this plan's D-001/D-003
- * the menu is min 1 / max 2 delivered as a cascade, so a minimum-fill pick is
- * normally a SECOND opinion arriving after an above-floor grader, and P-004
+ * the menu is bounded by the shared ACCEPTANCE_GRADING_POLICY (see
+ * `selection-policies.ts` for the current min/max) and delivered as a
+ * cascade, so a minimum-fill pick is normally a SECOND opinion arriving after
+ * an above-floor grader, and P-004
  * makes the gate refuse to let a `via:'minimum'` card supersede an above-floor
  * one. Where no above-floor grader exists at all, this is a knowing regression
  * against D-009's intent.

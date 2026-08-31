@@ -100,9 +100,32 @@ const BOUND_PATTERNS: ReadonlyArray<{ re: RegExp; reason: string }> = Object.fre
  * non-vacuity floor: a guarded subject that has stopped mentioning the flow is
  * no longer evidence of anything, and silence is the failure mode a doc guard is
  * least able to notice on its own.
+ *
+ * This is the DEFAULT floor, scoped to the rubric-vetting flow specifically. A
+ * caller judging a different policy's prose (see `JudgeOptions.stillOnTopic`
+ * below — e.g. `acceptance-grading-prose.test.ts`, EI-21929043331389136 /
+ * WI-1409611) supplies its own predicate rather than reusing this one.
  */
 function mentionsVettingFlow(text: string): boolean {
   return /rubric-vetting/.test(text) || (/vett/i.test(text) && /get_feedback/.test(text));
+}
+
+/**
+ * Overrides for judging a SIBLING policy's prose with the same mechanism
+ * (WI-1409611): the registry (`selection-policies.ts`) holds more than one
+ * bound, and P-006's fix — name the key, never the number — applies to all of
+ * them, not only `rubric-vetting`. Every field defaults to the rubric-vetting
+ * behavior, so an existing zero-arg call is byte-for-byte unchanged.
+ */
+export interface JudgeOptions {
+  /** The registry key a `kind:'prose'` subject must name instead of a number. */
+  policyKey?: string;
+  /** The renderer a `kind:'source'` subject must call instead of hand-rendering. */
+  requiredRenderer?: string;
+  /** Non-vacuity floor: does this text still describe the flow this policy governs? */
+  stillOnTopic?: (text: string) => boolean;
+  /** Human phrase for violation messages, e.g. "rubric-vetting consult". */
+  flowLabel?: string;
 }
 
 /** Line number (1-indexed) of a character offset. */
@@ -118,7 +141,14 @@ function excerptAt(text: string, index: number): string {
   return text.slice(start, end === -1 ? text.length : end).trim().slice(0, 200);
 }
 
-export function judgeSelectionPolicyProse(subjects: readonly ProseSubject[]): SelectionPolicyProseVerdict {
+export function judgeSelectionPolicyProse(
+  subjects: readonly ProseSubject[],
+  options: JudgeOptions = {},
+): SelectionPolicyProseVerdict {
+  const policyKey = options.policyKey ?? REQUIRED_POLICY_KEY;
+  const requiredRenderer = options.requiredRenderer ?? REQUIRED_RENDERER;
+  const stillOnTopic = options.stillOnTopic ?? mentionsVettingFlow;
+  const flowLabel = options.flowLabel ?? 'rubric-vetting consult';
   const violations: SelectionPolicyViolation[] = [];
 
   if (subjects.length === 0) {
@@ -162,32 +192,31 @@ export function judgeSelectionPolicyProse(subjects: readonly ProseSubject[]): Se
       }
     }
 
-    if (!mentionsVettingFlow(subject.text)) {
+    if (!stillOnTopic(subject.text)) {
       violations.push({
         subject: subject.label,
         line: 0,
         excerpt: '',
-        reason:
-          'no longer describes the rubric-vetting consult — either the claim moved (re-point this guard) or it was dropped',
+        reason: `no longer describes the ${flowLabel} — either the claim moved (re-point this guard) or it was dropped`,
       });
       continue;
     }
 
-    if (subject.kind === 'prose' && !subject.text.includes(REQUIRED_POLICY_KEY)) {
+    if (subject.kind === 'prose' && !subject.text.includes(policyKey)) {
       violations.push({
         subject: subject.label,
         line: 0,
         excerpt: '',
-        reason: `describes the vetting consult without naming the '${REQUIRED_POLICY_KEY}' policy key — the bound would be back in prose`,
+        reason: `describes the ${flowLabel} without naming the '${policyKey}' policy key — the bound would be back in prose`,
       });
     }
 
-    if (subject.kind === 'source' && !subject.text.includes(REQUIRED_RENDERER)) {
+    if (subject.kind === 'source' && !subject.text.includes(requiredRenderer)) {
       violations.push({
         subject: subject.label,
         line: 0,
         excerpt: '',
-        reason: `agent-facing vetting message does not call ${REQUIRED_RENDERER}() — its bound is no longer derived from the registry`,
+        reason: `agent-facing ${flowLabel.replace(/ consult$/, '')} message does not call ${requiredRenderer}() — its bound is no longer derived from the registry`,
       });
     }
   }
