@@ -25644,7 +25644,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {

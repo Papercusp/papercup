@@ -609,8 +609,23 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
     async teardown({ handle, workspaceId }) {
       // Unregister + drop the schema (the inverse of create). Best-effort throughout (teardown must not
       // mask the run's outcome). LEAVE the clone — the caller owns `checkout.cleanup`.
+      //
+      // ⚠ The learning rows do NOT live in `harness_<slug>` — they are in the SHARED schema keyed by
+      // slug (`gym_autoloop_config`, `learning_governor_loops`, the per-install `routines`), so
+      // dropHarnessSchema cannot reach them and deregistering only makes them INVISIBLE. Every such
+      // row then outlives its pot as an orphan that no surface enumerates: measured 2026-08-30, 28
+      // orphaned arming rows in each of gym_autoloop_config and learning_governor_loops, all of them
+      // `xbench-su-*` / `xb*` bench slugs from this exact path (pot:dissolve and pot:obliterate have
+      // called teardownPotLearningLoop since P-021; this teardown never did).
+      const { teardownPotLearningLoop } = await import('../pot/provision-learning-loop');
       const { removeHarnessFromWorkspace } = await import('../harness-membership');
       const { dropHarnessSchema } = await import('../scaffold-harness-schema');
+      // BEFORE deregistering, while the slug still resolves.
+      try {
+        await teardownPotLearningLoop({ sql: await sqlClient(), workspaceId, potSlug: handle.slug });
+      } catch {
+        /* best-effort, exactly like the two calls below — teardown must never mask the run's outcome */
+      }
       await removeHarnessFromWorkspace(workspaceId, handle.slug).catch(() => {});
       await dropHarnessSchema(handle.slug).catch(() => {});
     },

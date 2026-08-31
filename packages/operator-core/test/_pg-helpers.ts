@@ -342,6 +342,23 @@ export function formatStaleMigrationList(audit: MigrationListAudit, label: strin
         (m) =>
           `  + '${m.file}'   (touches ${[...m.tables, ...(m.objects ?? [])].join(', ')})`,
       ),
+      ``,
+      `IF ADDING ONE FAILS instead of fixing it — typically "cannot drop columns from`,
+      `view" / "cannot change name of view column" from a CREATE OR REPLACE VIEW, or a`,
+      `"column already exists" / missing-relation error — that migration is STRUCTURALLY`,
+      `INAPPLICABLE to this fixture: the canonical DDL already carries its effects at a`,
+      `LATER shape, so replaying it re-declares them at their older, narrower one. Do NOT`,
+      `widen the fixture's DDL to satisfy it, and do NOT reach for audit:false. Move it`,
+      `out of the declared list and acknowledge it instead:`,
+      ``,
+      `    applyMigrationsForTest(sql, [...], {`,
+      `      label: '...',`,
+      `      knownInapplicable: [{ file: '<the migration>', reason: '<why it cannot apply>' }],`,
+      `    })`,
+      ``,
+      `That subtracts ONLY that file from this check; every other gap still fails loudly.`,
+      `Note this audit throws BEFORE applying anything, so while it is red NO migration in`,
+      `the list has run — silencing it can surface a second, older conflict underneath.`,
     );
   }
   if (audit.runtimeMissing.length) {

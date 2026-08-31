@@ -267,6 +267,33 @@ describe('formatStaleMigrationList', () => {
     expect(msg).toContain('632-event-key-fire-latch.sql');
     expect(msg).toContain('Runtime-used tables');
   });
+
+  // WI-1413193. The remedy used to say ONLY "add them (in numeric order) to fix
+  // this". For a migration the fixture structurally CANNOT apply, following that
+  // literally does not fix anything — it satisfies the audit, which then stops
+  // short-circuiting, and the run fails again underneath with a Postgres DDL
+  // error that names a view or a column and never mentions the migration list.
+  // That is what happened to work-items-terminal-attribution-preserve: 721's
+  // CREATE OR REPLACE VIEW re-declared the canonical fixture's views at their
+  // older, narrower select list ("cannot drop columns from view"), so all 7 of
+  // its assertions were collected and never run. `knownInapplicable` was already
+  // the designed escape and was already documented on applyMigrationsForTest —
+  // it was simply absent from the message a failing agent actually reads.
+  it('points at knownInapplicable — a stale-list remedy that only ever says "add it" is wrong for a migration the fixture cannot apply', () => {
+    const audit = auditMigrationList(['444-agent-facts.sql'], MIGRATIONS);
+    const msg = formatStaleMigrationList(audit, 'dead-end-matcher-io');
+
+    // the escape hatch is NAMED, so it is discoverable from the failure alone
+    expect(msg).toContain('knownInapplicable');
+    // ...with the shape needed to actually use it, not just the noun
+    expect(msg).toContain('reason');
+    // ...and the symptom that should send you there, in the words Postgres uses
+    expect(msg).toContain('cannot drop columns from');
+    // the two wrong turns are called out explicitly
+    expect(msg).toContain('audit:false');
+    // and the non-obvious ordering fact that makes the second failure surprising
+    expect(msg).toContain('BEFORE applying anything');
+  });
 });
 
 describe('the REAL migration directory', () => {

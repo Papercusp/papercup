@@ -100,6 +100,30 @@ const DF_PROBE_CAP = 2000;
 const ANCHOR_DF_BUDGET = 0;
 
 /**
+ * EI-21924046411702156: the `work_item` / `session_turn` lexical legs run on a
+ * BARE `getOrgPg()` admin pool handle (their host tools declare `crossWorkspace:
+ * true`, which routes `ctx.tx` straight to `getOrgPg().sql` — see
+ * `_mcp-handler.ts`'s `dispatchWithSynthesizedTx` — bypassing the
+ * `withWorkspace`/`inWorkspaceTxn` wrappers that install a `statement_timeout`
+ * for every OTHER tool). The `coverage-graded` shape's `df` CTE computes a
+ * per-lexeme document-frequency probe for EVERY query lexeme, so a long,
+ * multi-word query against a large table can cost materially more than the
+ * single-lexeme case `DF_PROBE_CAP`/`ANCHOR_DF_BUDGET` were tuned against.
+ * Measured live: 35.7s for one such query, entirely unbounded, on the SHARED
+ * org-admin pool — and it was the single query setting the floor under the
+ * fleet-wide `harness_admin` role-default `statement_timeout` decision
+ * (WI-1194246), because every other heavy family already self-bounds via its
+ * own `SET LOCAL` (see `readiness-reconcile.ts`, the pattern mirrored below).
+ *
+ * A search is interactive and user-facing, so a few seconds is generous: a
+ * cancelled statement here degrades that ONE source's lexical leg to `null`
+ * (see `hybrid.ts`'s `runLeg` catch — `callsFailed`, never a thrown 500) while
+ * every other source/leg still returns normally, so bounding this is a
+ * strict improvement with no failure-mode downside.
+ */
+const LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS = 8_000;
+
+/**
  * P-017 / D-062 — the lexical leg's term-combination mode, as SQL fragments.
  *
  * Both modes share ONE query shape (`ORDER BY coverage DESC, rank DESC`), which
@@ -545,7 +569,15 @@ const workItem: SearchSource = {
     const { sql, workspaceId, scopeFilter, limit } = p;
     // P-017 / D-062 — see lexicalSql. Byte-identical without `lexicalMode`.
     const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`);
-    const rows = (await sql`
+    // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. This tool
+    // runs `ctx.tx` = a bare `getOrgPg()` handle with no ambient bound, so the
+    // bound must be installed HERE, per the readiness-reconcile.ts pattern
+    // (`SET LOCAL`, never a session-level `SET` — this is a shared pool
+    // checkout, and `SET LOCAL` reverts at COMMIT instead of leaking onto
+    // whatever runs next on the same connection).
+    const rows = (await sql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
+      return tx`
       ${lex.with}
       SELECT issue_id, scope, title, body, kind, state, severity, lane,
              coalesce(updated_at, created_at) AS updated_at,
@@ -561,7 +593,8 @@ const workItem: SearchSource = {
          AND (${scopeFilter}::text IS NULL OR scope = 'harness:' || ${scopeFilter}::text)
          AND ${lex.match}
     ORDER BY coverage DESC, rank DESC LIMIT ${limit}
-    `) as unknown as Array<{
+    `;
+    })) as unknown as Array<{
       issue_id: string;
       scope: string;
       title: string;
@@ -707,7 +740,14 @@ const sessionTurn: SearchSource = {
     // `lexicalMode: 'coverage-graded'` this is byte-identical to the pre-P-017
     // query — `coverage` is the constant 1, so the ordering is `rank DESC`.
     const lex = lexicalSql(p, p.sql`text_tsv`, p.sql`harness_shared.session_turns`);
-    const rows = (await p.sql`
+    // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. Same
+    // bare-`getOrgPg()`-pool exposure as `workItem.lexical` above — this tool's
+    // `ctx.tx` also bypasses `withWorkspace`'s ambient bound (`crossWorkspace:
+    // true`), so the bound is installed HERE, per the readiness-reconcile.ts
+    // `SET LOCAL` pattern.
+    const rows = (await p.sql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
+      return tx`
       ${lex.with}
       SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
              ${lex.coverage} AS coverage,
@@ -731,7 +771,8 @@ const sessionTurn: SearchSource = {
          AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
          AND ${lex.match}
     ORDER BY coverage DESC, rank DESC LIMIT ${p.limit}
-    `) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; highlight: string }>;
+    `;
+    })) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; highlight: string }>;
     return rows.map((r) => ({
       key: `session_turn:${r.source_kind}:${r.session_id}:${r.turn_idx}`,
       score: r.rank,
