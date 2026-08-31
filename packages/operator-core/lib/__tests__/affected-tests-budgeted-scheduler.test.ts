@@ -1377,6 +1377,80 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     // the scheduler's `console.error` default, which never reaches RUN_LOG_PATH.
     expect(AFFECTED_TESTS_SRC).toMatch(/onAdmissionNotice:\s*\(line\)\s*=>\s*errSync\(line\)/);
   });
+
+  describe('WI-1746759: the release gate rides its own admission lane', () => {
+    // Why a separate lane at all: `runBudgetedTasks` takes the mutex ONCE PER SHARD, so on the
+    // shared lane the gate re-queues per shard and each re-entry lands behind whoever arrived
+    // meanwhile. Measured 2026-08-31T12:23:04Z — shards=17, 46 queued notices, ZERO acquisitions
+    // in 45 min, then death on the run budget with 130/130 tasks undetermined. Not a red: a
+    // non-verdict.
+
+    it('routes the gate off the shared lane, keyed on PC_HEAVY_RELEASE_GATE', () => {
+      expect(admissionMutexName({ PC_HEAVY_RELEASE_GATE: '1' })).toBe(
+        'papercusp-test-process-admission-release-gate',
+      );
+      expect(admissionMutexName({})).toBe('papercusp-test-process-admission');
+      // pc-heavy.sh tests the literal "1", not truthiness — an empty or odd value is NOT the gate.
+      expect(admissionMutexName({ PC_HEAVY_RELEASE_GATE: '' })).toBe(
+        'papercusp-test-process-admission',
+      );
+      expect(admissionMutexName({ PC_HEAVY_RELEASE_GATE: '0' })).toBe(
+        'papercusp-test-process-admission',
+      );
+    });
+
+    it('does NOT let GREEN_CHECKPOINT=1 buy a private lane — the hole pc-heavy.sh already closed once', () => {
+      // The load-bearing control. GREEN_CHECKPOINT is double-duty: it also drives
+      // `describe.skipIf` in load-/network-sensitive tests, so agents legitimately export it BY
+      // HAND to reproduce the gate's skip-set. pc-heavy.sh records that keying ADMISSION off it
+      // once meant `GREEN_CHECKPOINT=1 npm run test:affected` bypassed that semaphore at nice 0,
+      // "re-opening the very hole this wrapper closes". Keying a private LANE off it would repeat
+      // the incident one layer down: any agent exporting the marker would silently leave the
+      // queue its peers are waiting in. Only the dedicated key may do this.
+      expect(admissionMutexName({ GREEN_CHECKPOINT: '1' })).toBe(
+        'papercusp-test-process-admission',
+      );
+      // ...and the gate itself carries BOTH, so the dedicated key still decides.
+      expect(admissionMutexName({ GREEN_CHECKPOINT: '1', PC_HEAVY_RELEASE_GATE: '1' })).toBe(
+        'papercusp-test-process-admission-release-gate',
+      );
+    });
+
+    it('keeps a GATE-lane timeout classified as admission starvation, not a lost run', () => {
+      // WI-1490656's failure mode, reachable only through this change. `isSharedAdmissionTimeout`
+      // classifies by `message.includes(<shared name>)`, and `affected-tests.mjs` re-throws
+      // anything it rejects. So an unrelated gate-lane name would make the gate's OWN timeouts
+      // re-throw instead of becoming `status=refused reason=admission-starved` — no
+      // AFFECTED_TESTS_RESULT line, and green-checkpoint records a lost run. Deriving the gate
+      // name from the shared one makes the containment structural rather than coincidental.
+      const gateLane = admissionMutexName({ PC_HEAVY_RELEASE_GATE: '1' });
+      expect(gateLane).toContain(admissionMutexName({}));
+      expect(
+        isSharedAdmissionTimeout(
+          new Error(
+            `Timed out after 2700000ms waiting for fs-mutex "${gateLane}" ` +
+              `(/tmp/pcv/fs-mutex-locks/${gateLane}.lock)`,
+          ),
+        ),
+      ).toBe(true);
+      // CONTROL: the containment must not be so loose that a genuinely unrelated lock passes.
+      expect(
+        isSharedAdmissionTimeout(
+          new Error('Timed out after 60ms waiting for fs-mutex "papercusp-something-else" (/tmp/x)'),
+        ),
+      ).toBe(false);
+    });
+
+    it('is wired into the acquisition itself, not just exported', () => {
+      // Structural pin: the export existing proves nothing if `runBudgetedTasks` still passes the
+      // bare constant. Guards the one-line regression that would silently restore the shared lane.
+      expect(SCHEDULER_SRC).toMatch(/withFsMutex\(\s*(?:\/\/[^\n]*\n\s*)*admissionMutexName\(\),/);
+      // And the gate name must stay DERIVED, so it cannot drift out of that containment.
+      expect(SCHEDULER_SRC).toMatch(
+        /RELEASE_GATE_ADMISSION_MUTEX\s*=\s*`\$\{SHARED_TEST_PROCESS_ADMISSION_MUTEX\}-release-gate`/,
+      );
+    });
+  });
 });
 
 // EI-21917992245424964: a blocked peer could see THAT a holder existed and never whether it
