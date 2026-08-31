@@ -151,6 +151,53 @@ const n = (v: number): string =>
  * the blind spot this report exists to remove. `packages/operator-core/lib/doc-projection/
  * eviction-delta.test.ts` pins that property against a 40-part eviction.
  */
+/** The subset of a `docPartIdentityProblems` finding this module reads. */
+export interface IdentityProblem {
+  part_key: string;
+  code: string;
+  detail: string;
+}
+
+/** `docPartIdentityProblems`, injected — see `identityProblemDelta`. */
+export type DetectIdentityProblemsFn = (
+  rows: ProjectionRow[],
+) => IdentityProblem[];
+
+/**
+ * EI-21968678099053129 — which identity problems would THIS edit introduce?
+ *
+ * `project-doc-parts` refuses to write ANY client file while a canonical row disagrees
+ * with its own generated key, and that refusal is GLOBAL: one bad row blocks CLAUDE.md,
+ * AGENTS.md and the corpus for every other part in the batch. Checked only there, the
+ * split is silent in the direction that matters — canonical Postgres accepts the write
+ * and every file that projects it stays stale, which no test detects because the
+ * projection is self-consistent and merely old.
+ *
+ * Reported ABSOLUTELY it would also be unattributable: the author is shown somebody
+ * else's broken row and cannot tell whether they caused it. So this is a DELTA, for the
+ * same reason `evictionDelta` is one. `introduced` is the author's to fix and is worth
+ * refusing over; `preexisting` is already blocking their projection and must still be
+ * surfaced — but never as their doing.
+ *
+ * `detect` is INJECTED, exactly like `projectClient` above: the identity rule has one
+ * definition, in the projector that enforces it, and a second copy here would predict
+ * something other than what actually refuses.
+ */
+export function identityProblemDelta(opts: {
+  before: ProjectionRow[];
+  after: ProjectionRow[];
+  detect: DetectIdentityProblemsFn;
+}): { introduced: IdentityProblem[]; preexisting: IdentityProblem[] } {
+  const identify = (p: IdentityProblem) => JSON.stringify([p.part_key, p.code]);
+  const prior = new Set(opts.detect(opts.before).map(identify));
+  const introduced: IdentityProblem[] = [];
+  const preexisting: IdentityProblem[] = [];
+  for (const problem of opts.detect(opts.after)) {
+    (prior.has(identify(problem)) ? preexisting : introduced).push(problem);
+  }
+  return { introduced, preexisting };
+}
+
 export function renderImpact(
   impacts: ClientImpact[],
   partKey: string,
