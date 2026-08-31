@@ -494,10 +494,14 @@ export function resolveProjectRoot(
   // It does not hold one: this repository has NO root tsconfig.json (only
   // tsconfig.base.json) and ~100 per-project ones. An earlier comment here
   // asserted "the monorepo root carries the tsconfig"; that was never true.
-  // It stayed harmless for position-addressed ops precisely because they open
-  // a document and let tsserver do the walking — and it is exactly why
-  // workspace_symbols, which opens no document at all, could never work.
-  // See resolveSymbolSearchScope below.
+  // It stays harmless for position-addressed ops precisely because they open a
+  // document and let tsserver do the walking.
+  //
+  // ⚠ The symbol search does NOT get to reuse that reasoning, and must not be
+  // "simplified" to call this function for TypeScript. navto searches the
+  // server's LOADED PROJECTS rather than the open document, so it needs a root
+  // that actually holds a tsconfig.json — see nearestTsProjectRoot, used by
+  // resolveSymbolSearchScope below.
   if (language !== 'rust') return { root: fallbackRoot, error: null };
 
   let dir = dirname(file);
@@ -588,7 +592,55 @@ export function resolveSymbolSearchScope(
         `other ninety-nine.`,
     };
   }
-  return { root: rootPath, anchor, error: null };
+
+  // Opening the anchor is necessary but NOT sufficient. navto
+  // (getFullNavigateToItems) iterates the session's LOADED PROJECTS, and
+  // tsserver loads a project from its own root URI — not from the document it
+  // is handed. Rooted at a directory holding no tsconfig.json it files the
+  // anchor under an inferred project that navto does not search, so every
+  // symbol comes back empty. That empty is honest here (the caveat below marks
+  // it degraded), but it is still useless, and it is why repairing the rust
+  // leg made this one newly visible rather than newly broken.
+  //
+  // MEASURED 2026-08-31 (EI-21929741479590036) on one host, one symbol:
+  //   root = <repo root>            -> sites: [] — 6/6, three symbols, two anchors
+  //   root = packages/operator-core -> found on the first call (591ms), again at 2ms
+  // So root the search at the anchor's OWN tsconfig project, exactly as the
+  // rust branch above roots at the anchor's own Cargo.toml.
+  const tsRoot = nearestTsProjectRoot(anchor, rootPath);
+  if (!tsRoot) {
+    return {
+      root: rootPath,
+      anchor: null,
+      error:
+        `no tsconfig.json found between ${anchor} and ${rootPath}, so tsserver would file that ` +
+        `anchor under an inferred project that navto does not search and would answer EMPTY for ` +
+        `every symbol. Pass a 'file' inside a directory covered by a tsconfig.json. Refusing ` +
+        `rather than returning a false-empty that reads as "no such symbol".`,
+    };
+  }
+  return { root: tsRoot, anchor, error: null };
+}
+
+/**
+ * The nearest ancestor of `file` holding a `tsconfig.json`, or null.
+ *
+ * The TypeScript analogue of the `Cargo.toml` walk in resolveProjectRoot, and
+ * deliberately NOT folded into it: position-addressed ops must keep rooting at
+ * the caller's workspace, because they open a document and let tsserver do the
+ * walking, and re-rooting them per file would spawn one server per package
+ * (clients are cached by `${language}::${rootPath}`). Only the symbol search
+ * needs the project actually LOADED at the server root.
+ */
+function nearestTsProjectRoot(file: string, fallbackRoot: string): string | null {
+  let dir = dirname(file);
+  while (dir.startsWith(fallbackRoot)) {
+    if (existsSync(join(dir, 'tsconfig.json'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
 }
 
 /**

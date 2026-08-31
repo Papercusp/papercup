@@ -502,11 +502,36 @@ describe('workspace_symbols search scope', () => {
     expect(scope.error).toMatch(/'file'/);
   });
 
-  it('accepts an anchored TypeScript search', () => {
-    const anchor = join(dir, 'packages', 'operator-core', 'lib', 'x.ts');
+  it("roots an anchored TypeScript search at the anchor's OWN tsconfig project", async () => {
+    const pkg = join(dir, 'packages', 'operator-core');
+    await mkdir(join(pkg, 'lib'), { recursive: true });
+    await writeFile(join(pkg, 'tsconfig.json'), '{"compilerOptions":{}}\n');
+    const anchor = join(pkg, 'lib', 'x.ts');
+    await writeFile(anchor, 'export const x = 1;\n');
+
     const scope = resolveSymbolSearchScope('typescript', anchor, dir);
     expect(scope.error).toBeNull();
     expect(scope.anchor).toBe(anchor);
+    // The PROJECT, not the workspace root it was invoked from — the same rule
+    // the rust branch applies to Cargo.toml. navto searches the server's LOADED
+    // projects and tsserver loads from its own root URI, so rooted at `dir`
+    // (which holds no tsconfig) the anchor lands in an inferred project navto
+    // never searches. Measured 2026-08-31 on the live host, EI-21929741479590036:
+    // repo-root 6/6 empty for symbols that exist; package-root found at 591ms.
+    expect(scope.root).toBe(pkg);
+  });
+
+  it('refuses an anchored TypeScript search with no tsconfig above the anchor', async () => {
+    await mkdir(join(dir, 'loose'), { recursive: true });
+    const anchor = join(dir, 'loose', 'x.ts');
+    await writeFile(anchor, 'export const x = 1;\n');
+
+    // Refusing beats rooting somewhere arbitrary: an inferred-project search
+    // answers `sites: []` for symbols that plainly exist, which is the exact
+    // false-absence shape this whole module exists to prevent.
+    const scope = resolveSymbolSearchScope('typescript', anchor, dir);
+    expect(scope.error).toMatch(/tsconfig\.json/);
+    expect(scope.error).toMatch(/'file'/);
   });
 
   /**
