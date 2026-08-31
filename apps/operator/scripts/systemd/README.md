@@ -174,6 +174,63 @@ Verify the live unit resolves to this repo source and that its effective
 
 ---
 
+# Cloud Portal backend — installation (EI-21983147886595945)
+
+`papercusp-cloud-portal.service` supervises the Portal's upstream Next.js
+development server on `127.0.0.1:3801`. The checked-in
+`papercusp-cloud-portal.service.in` is a machine-neutral template; the deploy
+helper resolves the external Portal checkout and Node binary at install time.
+The Portal's own `.env.local` remains in that external checkout and is loaded by
+Next from the unit's `WorkingDirectory`.
+
+Validate/render and install the unit without touching the currently running
+backend:
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+export PAPERCUSP_CLOUD_PORTAL_ROOT="$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal"
+export PAPERCUSP_CLOUD_PORTAL_NODE="$HOME/.local/node25/bin/node"
+bash ./deploy-cloud-portal.sh --install-only
+systemd-analyze verify "$HOME/.config/systemd/user/papercusp-cloud-portal.service"
+systemctl --user show papercusp-cloud-portal.service \
+  -p ActiveState -p MainPID -p ControlGroup -p ExecStart
+```
+
+Use the explicit handoff mode for an existing terminal-scoped `next dev`:
+
+```bash
+bash ./deploy-cloud-portal.sh --handoff
+curl --fail --silent --show-error http://127.0.0.1:3801/
+curl --fail --silent --show-error http://127.0.0.1:3081/
+```
+
+The helper validates the listener's PID, user, Portal cwd, and `next dev`
+lineage before sending SIGTERM to its process group. Because both generations
+must bind the same TCP port, the cutover has a bounded outage window; the
+helper health-checks the new unit and restores the prior command if startup or
+health fails. It never stops or restarts `papercusp-cloud-portal-3081.service`,
+the persistent front-door proxy. Re-running handoff against a healthy managed
+unit is idempotent.
+
+The helper stages the unit in a same-filesystem temporary directory before the
+atomic rename. It uses `$TMPDIR` (or `/tmp`) by default and automatically falls
+back to `/var/tmp` when `/tmp` is a separate `tmpfs`;
+set `PAPERCUSP_CLOUD_PORTAL_TMPDIR` explicitly only to a directory on the same
+filesystem as the user-unit directory.
+
+Rollback after a successful handoff:
+
+```bash
+systemctl --user disable --now papercusp-cloud-portal.service
+systemctl --user daemon-reload
+```
+
+If the helper reports that its automatic rollback could not restore the legacy
+listener, inspect `$HOME/.papercusp/logs/cloud-portal-legacy.log` and start the
+same command from the Portal checkout manually; do not stop the `:3081` proxy.
+
+---
+
 # Dedicated bg-host bundled entry — installation (EI-21434335931587523)
 
 `papercup-bg-host.service` owns the DBOS routines, git-sync, and substrate
