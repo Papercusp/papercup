@@ -102,7 +102,7 @@ describe('voice-turn router policy', () => {
     expect(deps.getOrCreateActiveOperatorConversation).not.toHaveBeenCalled();
   });
 
-  it('ignores caller-supplied owner identity and capabilities', async () => {
+  it('L4 counterexample: client fields cannot elevate a caller into owner policy or conversation', async () => {
     const { deps, route } = harness();
     const malicious = {
       ...baseTurn(),
@@ -119,6 +119,11 @@ describe('voice-turn router policy', () => {
         write: ['draft'],
         tools: ['*'],
       },
+      conversation: {
+        kind: 'operator',
+        id: 'stolen-owner-thread',
+        parentOperatorConversationId: null,
+      },
     } as VoiceTurnRoutingInput & Record<string, unknown>;
 
     const result = await route(malicious);
@@ -128,9 +133,22 @@ describe('voice-turn router policy', () => {
       write: ['conversation-turn', 'call-outcome'],
       tools: [],
     });
+    expect(result.turn.capabilities.read).not.toContain('calendar');
+    expect(result.turn.capabilities.read).not.toContain('email');
+    expect(result.turn.conversation).toEqual({
+      kind: 'phone-call',
+      id: 'call:caller-room',
+      parentOperatorConversationId: null,
+    });
     expect(result.turn.conversation.parentOperatorConversationId).toBeNull();
     expect(deps.resolveOwnerTools).not.toHaveBeenCalled();
     expect(deps.getOrCreateActiveOperatorConversation).not.toHaveBeenCalled();
+    expect(deps.getOrCreateCallConversation).toHaveBeenCalledWith({
+      workspaceId: 'workspace-1',
+      callSessionId: 'caller-room',
+      transport: 'papercup-local',
+      principal: malicious.resolvedPrincipal,
+    });
   });
 
   it('fails closed on an incompatible server-resolved authority source', async () => {
