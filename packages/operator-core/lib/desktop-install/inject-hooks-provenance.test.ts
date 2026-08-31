@@ -406,6 +406,45 @@ describe('installInjectionHooks — install provenance', () => {
   });
 
   /**
+   * EI-21974793277035753 — the unchanged-bytes fast path must not become a hole.
+   *
+   * Skipping the rewrite for byte-identical hooks is what keeps a steady-state launch at
+   * zero cost, but the code it skips used to chmod on EVERY launch. Mode drift is real
+   * (a 775 hook was observed in the live dir), and a hook that loses its +x does not
+   * error — it silently stops running, which for the fail-open bash gate is silent
+   * ungating: the very failure this work exists to close.
+   */
+  describe('unchanged hooks', () => {
+    const ccDest = () => path.join(home, '.papercusp', 'hooks', 'cc');
+    const target = CC_HOOK_FILES.find((n) => n.endsWith('.sh')) as string;
+
+    it('repairs drifted permissions even when the bytes are identical', async () => {
+      const repo = path.join(root, 'cc-mode-drift');
+      await fs.mkdir(repo, { recursive: true });
+      await makeGitCcHookSource(repo, 'cc-mode', '2026-08-13T12:05:00Z');
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      const opts = {
+        home,
+        operatorAppRoot: repo,
+        playbookSource: path.join(repo, 'missing-playbook.md'),
+        extensionSource: path.join(repo, 'missing-extension.ts'),
+      };
+      await installPapercuspFiles(opts);
+
+      const dst = path.join(ccDest(), target);
+      const before = await fs.readFile(dst);
+      await fs.chmod(dst, 0o644); // strip +x, leaving the bytes untouched
+      expect((await fs.stat(dst)).mode & 0o777).toBe(0o644);
+
+      await installPapercuspFiles(opts);
+
+      expect((await fs.stat(dst)).mode & 0o777).toBe(0o755);
+      // And the fast path still held: the bytes were never rewritten to get there.
+      expect(await fs.readFile(dst)).toEqual(before);
+    });
+  });
+
+  /**
    * EI-21974793277035753 T3 — an UNCOMMITTED hook reaches every agent on this box on the
    * next launch, with no commit, no green-checkpoint verdict and no deploy. Measured
    * 2026-08-31: a PreToolUse gate edit was live fleet-wide ~4.5h before it was committed.

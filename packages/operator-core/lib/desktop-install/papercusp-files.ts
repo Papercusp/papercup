@@ -3078,6 +3078,15 @@ async function installClaudeHooks(
       // is gated on that, and a no-op pass must not silently un-gate it.
       const current = await fs.readFile(dst).catch(() => null);
       if (current && current.equals(data)) {
+        // Bytes match, so there is nothing to publish — but this path previously chmod'd
+        // on EVERY launch, and skipping the write must not silently also skip mode repair.
+        // A hook that has lost its +x does not error: it simply stops running, which for
+        // the fail-open bash gate is silent ungating — the exact class this work closes.
+        // Not hypothetical: a 775 hook was observed drifted in the live dir on 2026-08-31.
+        const st = await fs.stat(dst).catch(() => null);
+        if (st && (st.mode & 0o777) !== mode) {
+          await fs.chmod(dst, mode).catch(() => {});
+        }
         installed.push(name);
         continue;
       }
