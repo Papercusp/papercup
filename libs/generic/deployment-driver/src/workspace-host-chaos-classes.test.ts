@@ -6,7 +6,13 @@ import {
   workspaceHostProviderRetryClass,
   type WorkspaceHostChaosClass,
 } from "./workspace-host-chaos-classes";
-import { workspaceHostRecoveryAction } from "./workspace-host-workflow";
+import {
+  nextWorkspaceHostControllerAction,
+  workspaceHostRecoveryAction,
+  type WorkspaceHostControllerAction,
+  type WorkspaceHostDurableWorkflowSpec,
+  type WorkspaceHostResourceCheckpoint,
+} from "./workspace-host-workflow";
 
 /**
  * The failure classes P-024 enumerates, verbatim and in its order.
@@ -152,5 +158,298 @@ describe("the ceiling that makes a terminal classification load-bearing", () => 
       WORKSPACE_HOST_CHAOS_MAX_APPLY_ATTEMPTS,
     );
     expect(exhausted).toBe("reconcile");
+  });
+});
+
+/**
+ * The two remaining `checkpoint-state` classes, driven through the REAL controller oracle.
+ *
+ * The registry suite above proves each class resolves to its recovery ACTION. That is a claim
+ * about one function; it says nothing about whether a controller holding a real workflow spec
+ * ever reaches that action, nor whether the operation converges once it does. These drills run
+ * {@link nextWorkspaceHostControllerAction} to completion against a real multi-resource spec —
+ * the half a pure-registry test cannot claim, and the standard `controller crash between create
+ * and record` already meets against the shipped runner in `lifecycle-runner.chaos.test.ts`.
+ *
+ * The injected rows come from the registry itself, so a drill cannot drift from the class it
+ * claims to exercise.
+ */
+function chaosCheckpoint(id: string): WorkspaceHostResourceCheckpoint {
+  const entry = WORKSPACE_HOST_CHAOS_CLASSES.find((candidate) => candidate.id === id);
+  if (!entry) throw new Error(`no chaos class '${id}'`);
+  if (entry.probe.kind !== "checkpoint-state") {
+    throw new Error(`chaos class '${id}' is not a checkpoint-state probe`);
+  }
+  return { ...entry.probe.checkpoint };
+}
+
+function put(
+  checkpoints: WorkspaceHostResourceCheckpoint[],
+  next: WorkspaceHostResourceCheckpoint,
+): void {
+  const index = checkpoints.findIndex((entry) => entry.logicalKey === next.logicalKey);
+  if (index === -1) checkpoints.push(next);
+  else checkpoints[index] = next;
+}
+
+/**
+ * Run the oracle to convergence, letting `respond` persist the outcome of each action.
+ *
+ * Bounded deliberately: a controller that cannot make progress must surface here as a named
+ * action cycle. An unbounded loop would hang the suite, and a single-call assertion would not
+ * notice a controller that reaches the right action and then never leaves it.
+ */
+function drive(
+  spec: WorkspaceHostDurableWorkflowSpec,
+  checkpoints: WorkspaceHostResourceCheckpoint[],
+  respond: (action: WorkspaceHostControllerAction) => void,
+  options: { cancellationRequested?: boolean } = {},
+): { actions: readonly WorkspaceHostControllerAction[]; final: WorkspaceHostControllerAction } {
+  const actions: WorkspaceHostControllerAction[] = [];
+  for (let pass = 0; pass < 12; pass += 1) {
+    const action = nextWorkspaceHostControllerAction(spec, checkpoints, options);
+    actions.push(action);
+    if (action.kind === "complete" || action.kind === "blocked") return { actions, final: action };
+    respond(action);
+  }
+  throw new Error(`controller did not converge: ${actions.map((entry) => entry.kind).join(" -> ")}`);
+}
+
+const CONFIRMED_AT = "2026-08-31T00:00:00Z";
+
+function confirmedAbsent(logicalKey: string, providerId: string): WorkspaceHostResourceCheckpoint {
+  return {
+    logicalKey,
+    state: "absent",
+    attempts: 1,
+    providerResource: { target: "gcp", kind: logicalKey, providerId },
+    deletionConfirmation: {
+      hostId: "host-1",
+      providerResourceId: providerId,
+      confirmedAbsentAt: CONFIRMED_AT,
+      source: "provider-read",
+    },
+  };
+}
+
+function destroySpec(): WorkspaceHostDurableWorkflowSpec {
+  return {
+    identity: {
+      workspaceId: "workspace-1",
+      hostId: "host-1",
+      operationId: "op-destroy-1",
+      planId: "plan-destroy-1",
+      target: "gcp",
+      desiredGeneration: 3,
+    },
+    action: "destroy",
+    maxApplyAttempts: WORKSPACE_HOST_CHAOS_MAX_APPLY_ATTEMPTS,
+    resources: [
+      {
+        logicalKey: "vm",
+        step: {
+          id: "delete-instance",
+          action: "destroy",
+          resourceKind: "vm",
+          dependsOn: [],
+          idempotencyKey: "delete-instance-key",
+          destructive: true,
+          input: { op: "delete-instance" },
+        },
+        createdByOperation: false,
+        deleteOnDestroy: true,
+      },
+      {
+        logicalKey: "network",
+        step: {
+          id: "delete-network",
+          action: "destroy",
+          resourceKind: "network",
+          dependsOn: ["delete-instance"],
+          idempotencyKey: "delete-network-key",
+          destructive: true,
+          input: { op: "delete-network" },
+        },
+        createdByOperation: false,
+        deleteOnDestroy: true,
+      },
+    ],
+  };
+}
+
+describe("P-024 partial destroy — driven through the controller", () => {
+  /** The teardown that deleted the VM, issued the network delete, and lost the answer. */
+  function partiallyDestroyed(): WorkspaceHostResourceCheckpoint[] {
+    return [confirmedAbsent("vm", "pc-host-vm"), chaosCheckpoint("partial-destroy")];
+  }
+
+  it("reconciles the delete that lost its answer, and completes once the receipt is real", () => {
+    const spec = destroySpec();
+    const checkpoints = partiallyDestroyed();
+
+    const { actions, final } = drive(spec, checkpoints, (action) => {
+      // The reconcile reads provider truth and finds the network really is gone.
+      expect(action).toMatchObject({ kind: "reconcile", resource: { logicalKey: "network" } });
+      put(checkpoints, confirmedAbsent("network", "pc-host-net"));
+    });
+
+    expect(actions.map((entry) => entry.kind)).toEqual(["reconcile", "complete"]);
+    expect(final).toEqual({ kind: "complete", status: "succeeded" });
+  });
+
+  it("never re-issues the delete it already sent — the lost answer is read, not replayed", () => {
+    // The whole point of `ambiguous`: the delete may have landed. Re-applying a destructive step
+    // is the mirror of the duplicate-create hazard, and would report a second, spurious failure
+    // for a resource that was already gone.
+    const action = nextWorkspaceHostControllerAction(destroySpec(), partiallyDestroyed());
+    expect(action.kind).not.toBe("apply");
+    expect(action.kind).not.toBe("retry");
+    expect(action).toMatchObject({ kind: "reconcile", resource: { logicalKey: "network" } });
+  });
+
+  it("refuses to call the destroy done on an absence with no provider-read receipt", () => {
+    // WI-1762411 ran the other way — a settled census read as failure. This is its inverse and
+    // the more dangerous direction: an unwitnessed `absent` reported as a finished teardown
+    // leaves a billed resource alive with nothing left watching it.
+    const spec = destroySpec();
+    const checkpoints = partiallyDestroyed();
+
+    const { actions, final } = drive(spec, checkpoints, () => {
+      put(checkpoints, { logicalKey: "network", state: "absent", attempts: 2 });
+    });
+
+    // Pin the SEQUENCE, not just the verdict: a controller that blocked immediately would never
+    // run the callback, and an end-state-only assertion would pass without the reconcile ever
+    // happening — the same shape as a mocked rejection that never fires.
+    expect(actions.map((entry) => entry.kind)).toEqual(["reconcile", "blocked"]);
+    expect(final).toEqual({ kind: "blocked", reason: "destroy-unconfirmed" });
+  });
+
+  it("refuses a receipt that names a different resource than the row it would close out", () => {
+    // A confirmation is only evidence about the id it names. Accepting a mismatched one would
+    // let one successful delete close out every outstanding row.
+    const spec = destroySpec();
+    const checkpoints = partiallyDestroyed();
+
+    const { actions, final } = drive(spec, checkpoints, () => {
+      put(checkpoints, {
+        ...confirmedAbsent("network", "pc-host-net"),
+        deletionConfirmation: {
+          hostId: "host-1",
+          providerResourceId: "pc-host-vm",
+          confirmedAbsentAt: CONFIRMED_AT,
+          source: "provider-read",
+        },
+      });
+    });
+
+    expect(actions.map((entry) => entry.kind)).toEqual(["reconcile", "blocked"]);
+    expect(final).toEqual({ kind: "blocked", reason: "destroy-unconfirmed" });
+  });
+});
+
+function provisionSpec(): WorkspaceHostDurableWorkflowSpec {
+  return {
+    identity: {
+      workspaceId: "workspace-1",
+      hostId: "host-1",
+      operationId: "op-provision-1",
+      planId: "plan-provision-1",
+      target: "gcp",
+      desiredGeneration: 1,
+    },
+    action: "provision",
+    maxApplyAttempts: WORKSPACE_HOST_CHAOS_MAX_APPLY_ATTEMPTS,
+    resources: [
+      {
+        logicalKey: "disk",
+        step: {
+          id: "create-disk",
+          action: "provision",
+          resourceKind: "disk",
+          dependsOn: [],
+          idempotencyKey: "create-disk-key",
+          destructive: false,
+          input: { op: "create-disk" },
+        },
+        createdByOperation: true,
+        compensation: { action: "destroy", idempotencyKey: "delete-disk-key" },
+        deleteOnDestroy: false,
+      },
+      {
+        logicalKey: "vm",
+        step: {
+          id: "create-instance",
+          action: "provision",
+          resourceKind: "vm",
+          dependsOn: ["create-disk"],
+          idempotencyKey: "create-instance-key",
+          destructive: false,
+          input: { op: "create-instance" },
+        },
+        createdByOperation: true,
+        compensation: { action: "destroy", idempotencyKey: "delete-instance-key" },
+        deleteOnDestroy: false,
+      },
+    ],
+  };
+}
+
+describe("P-024 orphan reaper recovery — driven through the controller", () => {
+  const refusedVm: WorkspaceHostResourceCheckpoint = {
+    logicalKey: "vm",
+    state: "failed",
+    attempts: 1,
+    retryClass: "terminal",
+    error: "Quota 'CPUS' exceeded",
+  };
+
+  it("resumes the interrupted compensation and only then reaches a terminal verdict", () => {
+    // A reachable state, not a contrived one: the disk was created, the VM was refused, rollback
+    // began on the disk, and the controller died with that delete in flight.
+    const spec = provisionSpec();
+    const checkpoints = [chaosCheckpoint("orphan-reaper-recovery"), { ...refusedVm }];
+
+    const { actions, final } = drive(spec, checkpoints, (action) => {
+      expect(action).toMatchObject({ kind: "compensate", resource: { logicalKey: "disk" } });
+      put(checkpoints, { logicalKey: "disk", state: "compensated", attempts: 2 });
+    });
+
+    // Collect the orphan FIRST, then fail. Completing first would strand a billed disk with
+    // nothing left to delete it — the zero-orphan guarantee breaking silently.
+    expect(actions.map((entry) => entry.kind)).toEqual(["compensate", "complete"]);
+    expect(final).toEqual({ kind: "complete", status: "failed" });
+  });
+
+  it("never re-applies the resource it was in the middle of deleting", () => {
+    const action = nextWorkspaceHostControllerAction(provisionSpec(), [
+      chaosCheckpoint("orphan-reaper-recovery"),
+      { ...refusedVm },
+    ]);
+    expect(action.kind).not.toBe("apply");
+    expect(action).toMatchObject({ kind: "compensate", resource: { logicalKey: "disk" } });
+  });
+
+  it("carries the compensation obligation in the durable row, not in a caller's rollback flag", () => {
+    // The reaper's guarantee has to survive a restart that lost every in-memory hint. Here the VM
+    // row was never even written back as failed and no cancellation is requested — the
+    // `compensating` row alone must still resume the delete.
+    expect(
+      nextWorkspaceHostControllerAction(provisionSpec(), [
+        chaosCheckpoint("orphan-reaper-recovery"),
+        { logicalKey: "vm", state: "planned", attempts: 0 },
+      ]),
+    ).toMatchObject({ kind: "compensate", resource: { logicalKey: "disk" } });
+  });
+
+  it("does not compensate a healthy row — the verdict comes from the checkpoint, not the spec shape", () => {
+    // Calibration. Without it, every assertion above would still pass if `compensate` were
+    // returned for any compensable resource in a workflow that happens to be rolling back.
+    expect(
+      nextWorkspaceHostControllerAction(provisionSpec(), [
+        { logicalKey: "disk", state: "applied", attempts: 1 },
+        { logicalKey: "vm", state: "planned", attempts: 0 },
+      ]),
+    ).toMatchObject({ kind: "apply", resource: { logicalKey: "vm" } });
   });
 });
