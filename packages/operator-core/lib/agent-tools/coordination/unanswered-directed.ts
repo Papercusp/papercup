@@ -313,6 +313,23 @@ export async function fetchUnansweredDirected(
         CROSS JOIN LATERAL jsonb_array_elements_text(e.body->'to') AS r
        WHERE e.workspace_id = ${workspaceId}
          AND e.surface = 'messages'
+         -- WI-7048 ROW PRE-FILTER — load-bearing for the PLAN, not for the RESULT.
+         -- The real recipient test is \`r = ANY(recipientIds)\` below, on a value CROSS
+         -- JOIN LATERAL only produces AFTER the row is read, so no index can reach it and
+         -- this CTE was a full Parallel Seq Scan: 3,015,763 buffers / 1,988ms measured
+         -- 2026-08-31 against 442,827 rows. \`?|\` asks the same question of the ROW
+         -- ("does this 'to' array contain any of these ids"), which GIN can answer from
+         -- coord_event_log_msgs_to_gin (migration 1053): 85 buffers / 0.28ms.
+         --
+         -- EXACTLY EQUIVALENCE-PRESERVING, not a heuristic narrowing: a row can only
+         -- yield a matching \`r\` if its 'to' array contains one of these ids, so every row
+         -- this removes would have been discarded by the LATERAL filter anyway. Verified
+         -- as an identity on live data (100 = 100 rows, non-empty in both directions).
+         --
+         -- NOTE the surviving \`ts\` bound below does NOT bound this scan and never did:
+         -- \`body->>'ts'\` is SENDER-SUPPLIED text, so it is a post-scan filter on an
+         -- unindexable expression. Adding time bounds here is not the lever; this is.
+         AND e.body->'to' ?| ${recipientIds}::text[]
          AND (e.body->>'kind' IS NULL OR e.body->>'kind' = 'message')
          AND NOT (e.body ? 'audience')
          AND jsonb_typeof(e.body->'to') = 'array'
