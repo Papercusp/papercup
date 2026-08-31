@@ -10,7 +10,10 @@ import {
   writeFrozenCandidateRepairQueue,
 } from '../../harness/routines/release-actions';
 import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
-import { diagnoseFrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
+import {
+  diagnoseFrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueue,
+} from '../../release/frozen-candidate-repair-queue';
 import {
   assessConvergeRepairHead,
   containmentForPaths,
@@ -19,6 +22,105 @@ import { readIdentity } from '../locks/identity';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
+
+export type FrozenRepairFixerAuthorizationStatus =
+  | 'not-applicable'
+  | 'unsigned-caller'
+  | 'missing-spawn-id'
+  | 'no-repair-queue'
+  | 'wrong-phase'
+  | 'queue-unassigned'
+  | 'different-fixer'
+  | 'authorized-delegate';
+
+export interface FrozenRepairFixerAuthorization {
+  status: FrozenRepairFixerAuthorizationStatus;
+  authorized: boolean | null;
+  callerSpawnId: string | null;
+  queueFixerSpawnId: string | null;
+  safeAction: string;
+}
+
+/**
+ * Authenticate a frozen-candidate release-fixer against the queue that launched it.
+ *
+ * A live su owns LIVE_GATE_OPS while the queue delegates the file/test repair to one
+ * child. The generic ownership cell cannot distinguish that child from an unrelated
+ * would-be fixer, so the child used to see the parent's live hold and self-cancel.
+ * The signed MCP spawn id is the non-forgeable join: only the queue's current
+ * `fixerSpawnId` is the delegated worker. Every missing/mismatched state fails closed.
+ */
+export function assessFrozenRepairFixerAuthorization(
+  queue: FrozenCandidateRepairQueue | null,
+  caller: { role?: string | null; spawnId?: string | null; sigVerifiedSpawn?: boolean | null },
+): FrozenRepairFixerAuthorization {
+  const callerSpawnId = typeof caller.spawnId === 'string' && caller.spawnId.trim()
+    ? caller.spawnId.trim()
+    : null;
+  const queueFixerSpawnId = queue?.fixerSpawnId ?? null;
+  const result = (
+    status: FrozenRepairFixerAuthorizationStatus,
+    authorized: boolean | null,
+    safeAction: string,
+  ): FrozenRepairFixerAuthorization => ({
+    status,
+    authorized,
+    callerSpawnId,
+    queueFixerSpawnId,
+    safeAction,
+  });
+
+  if (caller.role !== 'release-fixer') {
+    return result(
+      'not-applicable',
+      null,
+      'This caller is not a release-fixer; use the ordinary operator/su queue policy.',
+    );
+  }
+  if (caller.sigVerifiedSpawn !== true) {
+    return result(
+      'unsigned-caller',
+      false,
+      'STOP: the caller has no verified signed-spawn provenance, so it cannot inherit delegated repair authority.',
+    );
+  }
+  if (!callerSpawnId) {
+    return result(
+      'missing-spawn-id',
+      false,
+      'STOP: the signed request carried no usable spawn id.',
+    );
+  }
+  if (!queue) {
+    return result('no-repair-queue', false, 'STOP: no frozen repair queue currently delegates work.');
+  }
+  if (queue.phase !== 'awaiting-fixer') {
+    return result(
+      'wrong-phase',
+      false,
+      `STOP: the repair queue is ${queue.phase}, not awaiting-fixer.`,
+    );
+  }
+  if (!queue.fixerSpawnId) {
+    return result(
+      'queue-unassigned',
+      false,
+      'STOP: the queue has not durably assigned a fixer spawn yet; retry the read after dispatch finalization rather than guessing.',
+    );
+  }
+  if (queue.fixerSpawnId !== callerSpawnId) {
+    return result(
+      'different-fixer',
+      false,
+      `STOP: this queue is delegated to ${queue.fixerSpawnId}, not this caller.`,
+    );
+  }
+  return result(
+    'authorized-delegate',
+    true,
+    'Proceed only with the assigned repair inside repairQueue.worktreePath. A separate held-live LIVE_GATE_OPS owner is your delegator, not a competing fixer. Do not claim the gate, launch a checkpoint, mutate deployment, or work outside this queue identity.',
+  );
+}
 
 async function inspectQueue() {
   const queueTarget = target();
@@ -69,7 +171,7 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect, converge, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. get returns phase/age/fixer/reservation/decision diagnostics. converge is THE sanctioned route for landing a gate-red fix on the judged lineage: it fast-forwards the movable repairHead to the staging tip while that is still safe, never touches the immutable candidate, and with paths reports whether the judged sha carries your fix. retire is dry-run unless confirm:true and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.',
+    'Inspect, converge, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. get returns phase/age/fixer/reservation/decision diagnostics plus callerAuthorization: a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId. converge is THE sanctioned route for landing a gate-red fix on the judged lineage: it fast-forwards the movable repairHead to the staging tip while that is still safe, never touches the immutable candidate, and with paths reports whether the judged sha carries your fix. retire is dry-run unless confirm:true and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.',
   capability: 'operator:write',
   effectForCall: (args) =>
     args.op === 'get' || (args.op === 'converge' && args.confirm !== true) ? 'read' : 'write',
@@ -109,8 +211,19 @@ export default defineTool({
   ]),
   async handler(args, ctx) {
     const inspected = await inspectQueue();
+    const callerAuthorization = assessFrozenRepairFixerAuthorization(inspected.queue, {
+      role: ctx.role,
+      spawnId: ctx.spawnId,
+      sigVerifiedSpawn: ctx.sigVerifiedSpawn,
+    });
     if (args.op === 'get') {
-      return json({ ok: true, op: 'get', target: inspected.target, repairQueue: inspected.diagnostic });
+      return json({
+        ok: true,
+        op: 'get',
+        target: inspected.target,
+        repairQueue: inspected.diagnostic,
+        callerAuthorization,
+      });
     }
     if (args.op === 'converge') {
       const assessment = assessConvergeRepairHead(inspected.queue);
@@ -127,13 +240,20 @@ export default defineTool({
         nextAction: assessment.nextAction,
         containment,
         repairQueue: inspected.diagnostic,
+        callerAuthorization,
       };
       // Only 'would-converge' is a state change; every other verdict is a read.
       if (assessment.verdict !== 'would-converge' || !assessment.newRepairHead || !inspected.queue) {
         return json({ ok: true, converged: false, ...base });
       }
-      if (ctx.role !== 'su' && !isOperatorConfigWriteRole(ctx.role)) {
-        throw new Error('release:repair-queue converge requires operator, architect, mug, or su authority');
+      if (
+        ctx.role !== 'su' &&
+        !isOperatorConfigWriteRole(ctx.role) &&
+        callerAuthorization.authorized !== true
+      ) {
+        throw new Error(
+          'release:repair-queue converge requires operator, architect, mug, su, or the exact signed release-fixer delegated by this queue',
+        );
       }
       if (args.confirm !== true) {
         return json({

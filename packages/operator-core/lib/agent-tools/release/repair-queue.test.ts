@@ -32,7 +32,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: { unsafe: mocks.audit } }),
 }));
 
-const tool = (await import('./repair-queue')).default;
+const repairQueueModule = await import('./repair-queue');
+const tool = repairQueueModule.default;
+const { assessFrozenRepairFixerAuthorization } = repairQueueModule;
 type Out = { content: { text: string }[] };
 const body = (value: unknown) => JSON.parse((value as Out).content[0]!.text);
 
@@ -68,6 +70,54 @@ describe('release:repair-queue', () => {
     // paste-ready call that would destroy a queue the gate is about to recover.
     expect(result.repairQueue.nextAction).not.toContain('expectedUpdatedAtMs: 2');
     expect(result.repairQueue.nextAction).toContain("op: 'converge'");
+    expect(result.callerAuthorization).toMatchObject({
+      status: 'not-applicable',
+      authorized: null,
+    });
+  });
+
+  it('authorizes only the exact verified signed fixer delegated by the queue', async () => {
+    const authorized = assessFrozenRepairFixerAuthorization(queue, {
+      role: 'release-fixer',
+      spawnId: 'fixer-1',
+      sigVerifiedSpawn: true,
+    });
+    expect(authorized).toMatchObject({
+      status: 'authorized-delegate',
+      authorized: true,
+      callerSpawnId: 'fixer-1',
+      queueFixerSpawnId: 'fixer-1',
+    });
+    expect(authorized.safeAction).toContain('delegator, not a competing fixer');
+
+    expect(
+      assessFrozenRepairFixerAuthorization(queue, {
+        role: 'release-fixer',
+        spawnId: 'fixer-2',
+        sigVerifiedSpawn: true,
+      }),
+    ).toMatchObject({ status: 'different-fixer', authorized: false });
+    expect(
+      assessFrozenRepairFixerAuthorization(queue, {
+        role: 'release-fixer',
+        spawnId: 'fixer-1',
+        sigVerifiedSpawn: false,
+      }),
+    ).toMatchObject({ status: 'unsigned-caller', authorized: false });
+  });
+
+  it('get derives the authorization verdict from the handler signed-spawn context', async () => {
+    const result = body(
+      await tool.handler(
+        { op: 'get' } as never,
+        { role: 'release-fixer', spawnId: 'fixer-1', sigVerifiedSpawn: true } as never,
+      ),
+    );
+    expect(result.callerAuthorization).toMatchObject({
+      status: 'authorized-delegate',
+      authorized: true,
+      callerSpawnId: 'fixer-1',
+    });
   });
 
   it('refuses retirement while the fixer is live', async () => {

@@ -172,6 +172,7 @@ import {
   recordPendingCheckpointVerdict,
   trackGateStall,
   buildCheckpointDetail,
+  buildReleaseFixerKickoff,
   buildScheduledCheckpointShell,
   checkpointRunLogPaths,
   readFrozenCandidateRepairQueue,
@@ -2859,7 +2860,7 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
     for (const args of calls) {
       expect(args).toMatchObject({
         source: 'green-checkpoint',
-        summary: `[${EXPECTED_PIPELINE}] green-checkpoint: abc123de not green — main held`,
+        summary: `[pipeline:${EXPECTED_PIPELINE}] green-checkpoint: abc123de not green — main held`,
         cancelSiblingKeysFor: ['release:green', `release:green:${EXPECTED_PIPELINE}`],
         payload: {
           sha: 'abc123def456789',
@@ -2891,6 +2892,45 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     fakeSql.unsafe.mockClear();
     fireLaunchBlueprintForEvent.mockClear();
     fireLaunchBlueprintForEvent.mockResolvedValue(null);
+  });
+
+  it('builds a frozen-fixer brief that distinguishes the delegated child from the parent gate owner', () => {
+    const repairQueue: FrozenCandidateRepairQueue = {
+      schemaVersion: 1,
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(40),
+      base: 'b'.repeat(40),
+      repairHead: 'c'.repeat(40),
+      affectedTestProofGroup: 'proof-1',
+      worktreePath: '/tmp/frozen-repair',
+      attempts: 2,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      fixerSpawnId: null,
+      failingTests: ['lib/red.test.ts'],
+    };
+
+    const brief = buildReleaseFixerKickoff({
+      candidate: repairQueue.repairHead,
+      failingTests: repairQueue.failingTests,
+      repairQueue,
+      flakeAnnotation: 'historical flake: none',
+    });
+
+    expect(brief).toContain('AUTHORIZED delegated repair child, not a second LIVE_GATE_OPS owner');
+    expect(brief).toContain('parent gate owner intentionally retains the singleton hold');
+    expect(brief).toContain("callerAuthorization.status='authorized-delegate'");
+    expect(brief).toContain('VERIFIED signed spawn id must exactly equal repairQueue.fixerSpawnId');
+    expect(brief).toContain('status is queue-unassigned');
+    expect(brief).toContain('/tmp/frozen-repair');
+    expect(brief).toContain('historical flake: none');
+  });
+
+  it('keeps the legacy moving-tip brief free of frozen-child authorization instructions', () => {
+    const brief = buildReleaseFixerKickoff({ candidate: 'a'.repeat(40), failingTests: ['lib/red.test.ts'] });
+    expect(brief).toContain('failed the gate suite');
+    expect(brief).not.toContain('authorized-delegate');
+    expect(brief).not.toContain('repairQueue.fixerSpawnId');
   });
 
   it('⭐ a manual run (release:checkpoint-run) — which self-records via recordCheckpointVerdict and never touches the routine handler — still fires the release-fixer for a fresh red', async () => {

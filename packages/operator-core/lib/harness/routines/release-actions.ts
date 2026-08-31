@@ -3697,6 +3697,45 @@ export function isStaleReleaseFixerCandidate(check: ReleaseFixerCandidateStaleCh
   return !check.candidateExists || check.candidatePromoted;
 }
 
+/**
+ * Build the release-fixer's task brief at the single dispatch seam.
+ *
+ * Frozen repairs are delegated children of the gate owner. The parent keeps the
+ * LIVE_GATE_OPS singleton, while this child owns only the already-authorized
+ * repair worktree. The old inline brief described the worktree but never stated
+ * that distinction, so the shared no-duplicate rule interpreted the parent's
+ * live hold as a competing fixer and exited before testing. Keep the exception
+ * explicit and machine-verifiable: the child must call release:repair-queue{op:get}
+ * and proceed only when callerAuthorization.status is `authorized-delegate`, which
+ * means its verified signed spawn id equals the queue's fixerSpawnId.
+ */
+export function buildReleaseFixerKickoff(input: {
+  candidate: string;
+  failingTests?: readonly string[];
+  repairQueue?: FrozenCandidateRepairQueue | null;
+  flakeAnnotation?: string;
+}): string {
+  const queue = input.repairQueue;
+  const kickoff = queue
+    ? `green-checkpoint froze candidate ${queue.candidate.slice(0, 8)} and assigned you repair attempt ${queue.attempts + 1}. ` +
+      `You are the AUTHORIZED delegated repair child, not a second LIVE_GATE_OPS owner. ` +
+      `The parent gate owner intentionally retains the singleton hold; do NOT stop because ` +
+      `gate.greenCheckpoint.ownership reports held-live. Before editing, call ` +
+      `release:repair-queue { op: 'get' } and require ` +
+      `callerAuthorization.status='authorized-delegate' (authorized=true): your VERIFIED ` +
+      `signed spawn id must exactly equal repairQueue.fixerSpawnId. If the status is queue-unassigned, ` +
+      `retry that read for a bounded handoff window; any other status is a fail-closed STOP, not permission ` +
+      `to take over. Once authorized, work ONLY from ${queue.worktreePath}, starting at ${queue.repairHead}. ` +
+      `Repair forward there, run focused tests, and apply the identical source edits to the canonical ` +
+      `staging checkout under its normal file locks. Do NOT claim the gate, launch a checkpoint, mutate ` +
+      `deployment, commit, or push — the gate finalizer owns those steps.`
+    : `green-checkpoint held \`main\`: candidate ${input.candidate.slice(0, 8)} failed the gate suite. ` +
+      `Read the exact supplied checkpoint artifact, reproduce the failing test(s) locally to classify ` +
+      `regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). ` +
+      `Do NOT push — the next checkpoint re-verifies.`;
+  return kickoff + (input.flakeAnnotation ? `\n\n${input.flakeAnnotation}` : '');
+}
+
 /** Live-compute {@link ReleaseFixerCandidateStaleCheck} for `candidate` in `root`. */
 export async function checkReleaseFixerCandidateStale(
   root: string,
@@ -4199,14 +4238,16 @@ export async function dispatchReleaseFixer(
   const { fireLaunchBlueprintForEvent } = await import('../../blueprint/launch-blueprint');
   let fired: Awaited<ReturnType<typeof fireLaunchBlueprintForEvent>> = null;
   try {
+    const kickoff = buildReleaseFixerKickoff({
+      candidate,
+      failingTests,
+      repairQueue,
+      flakeAnnotation,
+    });
     fired = await fireLaunchBlueprintForEvent('green-checkpoint:red', {
       installSlug: ctx.installSlug,
       workspaceId: ctx.workspaceId,
-      kickoff:
-        (repairQueue
-          ? `green-checkpoint froze candidate ${repairQueue.candidate.slice(0, 8)} and assigned you repair attempt ${repairQueue.attempts + 1}. Work ONLY from ${repairQueue.worktreePath}, starting at ${repairQueue.repairHead}. Repair forward there, run focused tests, and apply the identical source edits to the canonical staging checkout under its normal file locks. Do NOT commit or push — the gate commits the isolated repair after your process exits and promotes only after the exact patch is observed on staging.`
-          : `green-checkpoint held \`main\`: candidate ${candidate.slice(0, 8)} failed the gate suite. Read the newest ~/.papercusp/checkpoint-logs/*.log, reproduce the failing test(s) locally to classify regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). Do NOT push — the next checkpoint re-verifies.`) +
-        (flakeAnnotation ? `\n\n${flakeAnnotation}` : ''),
+      kickoff,
       extra: ['--green-checkpoint-red', JSON.stringify({ candidate })],
       bodyExtra: {
         releaseFixerContext: {
