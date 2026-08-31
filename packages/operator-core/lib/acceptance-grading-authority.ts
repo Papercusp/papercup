@@ -178,3 +178,135 @@ export function gradingViaOf(
 ): SelectionVia | null {
   return (card.createdBy != null ? byOwner.get(card.createdBy) : undefined) ?? null;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Is this grading SETTLED? (WI-1699998)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The scorecard fields a settlement verdict reads. Structural on purpose:
+ * `ScorecardRow` satisfies it, and stating the five fields here keeps this
+ * module from importing the scorecard surface just to name a shape.
+ */
+export interface SettlementCard {
+  issueId: string;
+  /** False when the rubric could not be resolved — `missingKeys` is then meaningless. */
+  rubricResolved: boolean;
+  missingKeys: readonly string[];
+  synthesized: boolean;
+  supersededBy?: string;
+  /** The rubric's plan-row revision at emit. Absent on pre-P-004 historical cards. */
+  rubricRevision?: number;
+  /** Present only on the rubric AUTHOR's post-grading verdict (enforced by scorecards:emit). */
+  acceptance?: unknown;
+}
+
+/**
+ * Why a grading is (or is not) settled. Every non-`settled` reason is a reason to
+ * DISPATCH — the read fails open, because suppressing a needed grading strands a
+ * plan permanently while a redundant dispatch merely costs a wake.
+ */
+export type AcceptanceGradingSettlementReason =
+  | 'settled'
+  | 'revision_unreadable'
+  | 'scorecards_unreadable'
+  | 'no_independent_card'
+  | 'no_author_acceptance';
+
+export interface AcceptanceGradingSettlement {
+  settled: boolean;
+  reason: AcceptanceGradingSettlementReason;
+  /** The revision the verdict was computed AT (absent when the revision was unreadable). */
+  rubricRevision?: number;
+  independentCardId?: string;
+  acceptanceCardId?: string;
+}
+
+/**
+ * Is this rubric's acceptance grading already SETTLED at its CURRENT revision?
+ *
+ * WHY THIS IS NOT `evaluatePlanAcceptanceGate` (the whole point of the helper).
+ * The obvious implementation is "skip when the ship gate is satisfied", and it is
+ * wrong in exactly the case that produced WI-1699998. The gate answers *can this
+ * plan ship*; a standing author REJECT makes it answer `satisfied:false` while the
+ * grading is completely settled — an independent grader graded it and the author
+ * ruled on it. Re-dispatching there re-routes a decided question to a fresh grader
+ * and burns them: D-009 independence makes the eligible pool non-replenishable, so
+ * the waste compounds until a plan has no eligible graders left. The predicate we
+ * need is *is this grading DECIDED*, and it must be verdict-agnostic.
+ *
+ * WHY NO IDENTITY RESOLUTION. The gate needs `isImplementerScorecard` (and its
+ * lineage walk) because it must decide which card is INDEPENDENT. This read does
+ * not: `scorecards:emit` refuses an `acceptance` block from anyone but the rubric
+ * author, and refuses it again unless a complete independent grading already
+ * exists (emit.ts — "acceptance must follow a complete independent grading by
+ * someone other than …"). So a standing complete card carrying `acceptance` IS the
+ * author's call, and its existence already implies the independent half. Requiring
+ * both halves explicitly is the belt to that braces: it can only make the skip
+ * stricter, never looser.
+ *
+ * WHY REVISION-SCOPED. A settled grading must be able to REOPEN, and the only
+ * machine-readable reopen signal is the rubric revision — bump it and the cards
+ * pinned to the old one stop counting. A standing reject states its own
+ * supersession condition in prose, which nothing here can evaluate, so revision
+ * scoping is the defensible line. A card with no `rubricRevision` (historical)
+ * never equals a live revision and therefore never suppresses a dispatch.
+ *
+ * FAIL-OPEN, DELIBERATELY. An unreadable revision or scorecard read reports
+ * `settled:false` with the reason naming which read failed, rather than guessing.
+ */
+export async function readAcceptanceGradingSettlement(
+  rubricId: string,
+  deps: {
+    listScorecards?: (filter: { rubricRef: string; limit: number }) => Promise<readonly SettlementCard[]>;
+    readRubricPlanRevision?: (rubricId: string) => Promise<{ ok: boolean; revision: number | null }>;
+  } = {},
+): Promise<AcceptanceGradingSettlement> {
+  const readRevision =
+    deps.readRubricPlanRevision ?? (async (id: string) => (await import('./rubrics')).readRubricPlanRevision(id));
+  const listCards =
+    deps.listScorecards ??
+    (async (filter: { rubricRef: string; limit: number }) =>
+      (await import('./scorecards')).listScorecards(filter) as Promise<readonly SettlementCard[]>);
+
+  let revision: number | null;
+  try {
+    const read = await readRevision(rubricId);
+    revision = read.ok ? read.revision : null;
+  } catch {
+    revision = null;
+  }
+  // An unversioned rubric and a failed read are both `null` here, and both mean the
+  // same thing for this decision: there is no revision to scope a skip to.
+  if (revision == null) return { settled: false, reason: 'revision_unreadable' };
+
+  let cards: readonly SettlementCard[];
+  try {
+    cards = await listCards({ rubricRef: rubricId, limit: 50 });
+  } catch {
+    return { settled: false, reason: 'scorecards_unreadable', rubricRevision: revision };
+  }
+
+  // Same completeness predicate the ship gate uses (plan-acceptance-gate.ts), plus
+  // the revision pin. `supersededBy` is filtered here as well as by the default
+  // read, so the predicate stays correct if a caller ever passes includeSuperseded.
+  const complete = cards.filter(
+    (c) =>
+      c.rubricResolved &&
+      c.missingKeys.length === 0 &&
+      !c.synthesized &&
+      !c.supersededBy &&
+      c.rubricRevision === revision,
+  );
+  const independent = complete.find((c) => c.acceptance == null);
+  const authorCall = complete.find((c) => c.acceptance != null);
+  if (!independent) return { settled: false, reason: 'no_independent_card', rubricRevision: revision };
+  if (!authorCall) return { settled: false, reason: 'no_author_acceptance', rubricRevision: revision };
+  return {
+    settled: true,
+    reason: 'settled',
+    rubricRevision: revision,
+    independentCardId: independent.issueId,
+    acceptanceCardId: authorCall.issueId,
+  };
+}
