@@ -177,6 +177,211 @@ export function arrayItemConstraintText(input: unknown): string {
   return itemType && !['object', 'array'].includes(itemType) ? `<${itemType}>` : '';
 }
 
+/**
+ * A caller-facing alias relationship in a JSON-Schema projection.
+ *
+ * `properties` is a lossy view of the validator: two accepted spellings for
+ * one logical value look like two unrelated optional fields. Keep the
+ * relationship as a compact, path-aware annotation so discovery callers do
+ * not confidently send both names. `path` is empty for the root object and
+ * uses `[]` for an array item's object (for example `items[]`).
+ */
+export interface SchemaAliasGroup {
+  path: string;
+  fields: string[];
+}
+
+type AliasSchemaRecord = Record<string, unknown>;
+
+const ALIAS_FIELD_METADATA_KEYS = [
+  'x-papercusp-aliases',
+  'x-aliases',
+  'aliases',
+  'aliasOf',
+  'aliasFor',
+] as const;
+const ALIAS_GROUP_METADATA_KEYS = [
+  'x-papercusp-alias-group',
+  'x-papercusp-aliasGroup',
+  'aliasGroup',
+] as const;
+const ALIAS_GROUPS_METADATA_KEYS = [
+  'x-papercusp-alias-groups',
+  'x-papercusp-aliasGroups',
+  'aliasGroups',
+] as const;
+const ALIAS_FIELD_NAME = /^[A-Za-z_$][\w$.-]*$/;
+
+function aliasSchemaRecord(value: unknown): AliasSchemaRecord | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as AliasSchemaRecord) : null;
+}
+
+function aliasFieldName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const name = value.trim();
+  return ALIAS_FIELD_NAME.test(name) ? name : null;
+}
+
+function aliasFieldNames(value: unknown): string[] {
+  const direct = aliasFieldName(value);
+  if (direct) return [direct];
+  if (Array.isArray(value)) return value.flatMap((entry) => aliasFieldNames(entry));
+  const record = aliasSchemaRecord(value);
+  if (!record) return [];
+  for (const key of ['fields', 'members', 'aliases', 'keys', 'names', 'targets', 'fieldNames']) {
+    const names = aliasFieldNames(record[key]);
+    if (names.length > 0) return names;
+  }
+  return [];
+}
+
+function descriptionAliasTargets(description: unknown): string[] {
+  if (typeof description !== 'string') return [];
+  const targets: string[] = [];
+  // Descriptions are the only metadata available for existing Zod schemas.
+  // Keep these patterns deliberately narrow: a generic mention of "alias"
+  // must not turn an unrelated pair of fields into a false contract hint.
+  const patterns = [
+    /\b(?:compatibility\s+)?alias(?:ed)?\s+(?:for|of)\s+[`'\"]?([A-Za-z_$][\w$.-]*)/gi,
+    /\b(?:same|equivalent)\s+(?:logical\s+)?field\s+as\s+[`'\"]?([A-Za-z_$][\w$.-]*)/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of description.matchAll(pattern)) {
+      const name = aliasFieldName(match[1]);
+      if (name) targets.push(name);
+    }
+  }
+  return [...new Set(targets)];
+}
+
+function aliasTargetsForField(field: unknown): string[] {
+  const record = aliasSchemaRecord(field);
+  if (!record) return [];
+  return [
+    ...ALIAS_FIELD_METADATA_KEYS.flatMap((key) => aliasFieldNames(record[key])),
+    ...descriptionAliasTargets(record.description),
+  ];
+}
+
+function aliasGroupValues(record: AliasSchemaRecord): unknown[] {
+  return ALIAS_GROUPS_METADATA_KEYS.flatMap((key) => {
+    const value = record[key];
+    return Array.isArray(value) ? value : value == null ? [] : [value];
+  });
+}
+
+function localAliasName(name: string, declared: ReadonlySet<string>): string | null {
+  if (declared.has(name)) return name;
+  // Explicit metadata may use a dotted path for a field already scoped to this
+  // object. Accept only its final segment; unrelated paths remain ignored.
+  const tail = name.split('.').pop()?.replace(/\[\]$/, '');
+  return tail && declared.has(tail) ? tail : null;
+}
+
+/** Add a field set, merging overlapping declarations transitively. */
+function addAliasGroup(groups: Set<string>[], names: Iterable<string>, declared: ReadonlySet<string>): void {
+  const local = [...new Set([...names].map((name) => localAliasName(name, declared)).filter((name): name is string => name != null))];
+  if (local.length < 2) return;
+  const overlapping = groups.filter((group) => local.some((name) => group.has(name)));
+  const merged = new Set(local);
+  for (const group of overlapping) {
+    for (const name of group) merged.add(name);
+  }
+  for (const group of overlapping) groups.splice(groups.indexOf(group), 1);
+  groups.push(merged);
+}
+
+function collectLocalAliasGroups(record: AliasSchemaRecord): string[][] {
+  const properties = aliasSchemaRecord(record.properties);
+  if (!properties) return [];
+  const declared = new Set(Object.keys(properties));
+  const declarationOrder = new Map(Object.keys(properties).map((name, index) => [name, index]));
+  const groups: Set<string>[] = [];
+  const namedGroups = new Map<string, Set<string>>();
+
+  for (const [name, field] of Object.entries(properties)) {
+    addAliasGroup(groups, [name, ...aliasTargetsForField(field)], declared);
+    const fieldRecord = aliasSchemaRecord(field);
+    for (const key of ALIAS_GROUP_METADATA_KEYS) {
+      const value = fieldRecord?.[key];
+      const names = aliasFieldNames(value).filter((candidate) => candidate !== value);
+      if (names.length > 0) {
+        addAliasGroup(groups, [name, ...names], declared);
+      } else if (typeof value === 'string' && value.trim()) {
+        const group = namedGroups.get(value.trim()) ?? new Set<string>();
+        group.add(name);
+        namedGroups.set(value.trim(), group);
+      }
+    }
+  }
+
+  for (const value of aliasGroupValues(record)) {
+    addAliasGroup(groups, aliasFieldNames(value), declared);
+  }
+  for (const names of namedGroups.values()) addAliasGroup(groups, names, declared);
+
+  return groups.map((group) =>
+    [...group].sort((left, right) => (declarationOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (declarationOrder.get(right) ?? Number.MAX_SAFE_INTEGER)),
+  );
+}
+
+/**
+ * Find alias groups throughout a JSON-Schema tree, including union branches
+ * and object schemas nested beneath `items`. The result is intentionally
+ * independent of a renderer so the corpus text and compact result projection
+ * share exactly one alias detector.
+ */
+export function schemaAliasGroups(inputSchema: unknown): SchemaAliasGroup[] {
+  const found: SchemaAliasGroup[] = [];
+  const seen = new Set<string>();
+  const ancestors = new Set<object>();
+
+  const add = (path: string, fields: string[]) => {
+    const key = `${path}\u0000${fields.join('\u0000')}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push({ path, fields });
+  };
+
+  const walk = (value: unknown, path: string): void => {
+    const record = aliasSchemaRecord(value);
+    if (!record || ancestors.has(record)) return;
+    ancestors.add(record);
+
+    for (const fields of collectLocalAliasGroups(record)) add(path, fields);
+
+    for (const key of ['anyOf', 'oneOf']) {
+      const branches = record[key];
+      if (Array.isArray(branches)) {
+        for (const branch of branches) walk(branch, path);
+      }
+    }
+    if (record.items && typeof record.items === 'object') {
+      walk(record.items, `${path}[]`);
+    }
+    const properties = aliasSchemaRecord(record.properties);
+    if (properties) {
+      for (const [name, property] of Object.entries(properties)) {
+        walk(property, path ? `${path}.${name}` : name);
+      }
+    }
+    if (record.additionalProperties && typeof record.additionalProperties === 'object') {
+      walk(record.additionalProperties, `${path}.*`);
+    }
+    ancestors.delete(record);
+  };
+
+  walk(inputSchema, '');
+  return found;
+}
+
+/** Compact annotation used by both searchable and returned discovery schemas. */
+export function schemaAliasAnnotation(inputSchema: unknown): string {
+  return schemaAliasGroups(inputSchema)
+    .map(({ path, fields }) => `alias-group:${path ? `${path}.` : ''}${fields.join('|')}`)
+    .join('; ');
+}
+
 type NumericSchemaBound = { value: number; exclusive: boolean };
 
 /**
@@ -466,6 +671,7 @@ export function schemaToText(inputSchema: unknown): string | null {
 
   const unionHint = branches.length > 1 ? unionRequiredKeyHint(branches) : '';
   const conditionalHint = branches.length > 1 ? unionConditionalHint(branches) : '';
+  const aliasHint = schemaAliasAnnotation(inputSchema);
   const parts: string[] = [];
   for (const [name, entry] of merged) {
     const raw = entry.raw;
@@ -552,7 +758,7 @@ export function schemaToText(inputSchema: unknown): string | null {
     parts.push(desc ? `${rendered} ${desc}` : rendered);
   }
   return parts.length > 0
-    ? `${unionHint ? `one-of:${unionHint}; ` : ''}${conditionalHint ? `${conditionalHint}; ` : ''}${parts.join('; ')}`
+    ? `${unionHint ? `one-of:${unionHint}; ` : ''}${conditionalHint ? `${conditionalHint}; ` : ''}${aliasHint ? `${aliasHint}; ` : ''}${parts.join('; ')}`
     : null;
 }
 
