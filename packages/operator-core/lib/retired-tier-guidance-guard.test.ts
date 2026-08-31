@@ -118,6 +118,20 @@ describe('retired-tier current-guidance live verdict', () => {
         // routed draft for 1d 13h with no reviewer that could exist.
         'packages/operator-core/lib/scout',
         'libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
+        // WI-1726926: the same reasoning, applied to the three highest-blast-radius
+        // prompt BUILDERS. `deriveLaunchPromptText` composes the routing-gate kickoff
+        // and is consumed by plans/launch.ts, bootstrap-su AND carry-respawn, so its
+        // text reaches essentially every su; the other two compose the launch/respawn
+        // context around it. Admitted only after each measured ZERO offenders — this
+        // family has no baseline, so a dirty path turns the gate red on arrival.
+        //
+        // Until 2026-08-31 the routing gate offered "(B) hand it to the Mug" in both
+        // profiles — a recipient no agent could reach — and it outlived the tier's
+        // whole retirement precisely because nothing scanned this file
+        // (EI-21972876172423322).
+        'packages/operator-core/lib/agent-tools/plans/launch-prompt.ts',
+        'packages/operator-core/lib/carry-respawn.ts',
+        'packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts',
       ]),
     );
   });
