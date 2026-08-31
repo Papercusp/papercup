@@ -1078,6 +1078,54 @@ describe('mergeRosterEntries — activity + loop-armed (WI-1488)', () => {
     expect(none.modes).toEqual([]);
   });
 
+  it('does not render durable mode registrations as staffing after the session ended', () => {
+    const mode = { mode: 'grade', ownerDirected: false, since: iso(NOW - 60_000), subject: null };
+    const modes = new Map([['a', [mode]]]);
+    const endedVerdict = new Map([
+      [
+        'a',
+        {
+          sessionState: 'ended' as const,
+          liveTurn: false,
+          heartbeatFresh: false,
+        },
+      ],
+    ]);
+    const unknownVerdict = new Map([
+      [
+        'a',
+        {
+          sessionState: null,
+          liveTurn: false,
+          heartbeatFresh: false,
+        },
+      ],
+    ]);
+
+    const build = (verdictByOwner: typeof endedVerdict | typeof unknownVerdict) =>
+      mergeRosterEntries(
+        [presence({ ownerId: 'a' })],
+        new Map(),
+        NOW,
+        new Map(),
+        new Map(),
+        new Map(),
+        'auto',
+        new Map(),
+        new Map(),
+        new Map(),
+        new Map(),
+        new Set(),
+        modes,
+        { verdictByOwner },
+      )[0];
+
+    expect(build(endedVerdict).modes).toEqual([]);
+    // Unknown is not death: preserve the registration until the oracle can
+    // make a positive determination.
+    expect(build(unknownVerdict).modes).toEqual([mode]);
+  });
+
   it('a loop-owned monitor is not declared-unclaimed between wakes', () => {
     const [monitor] = mergeRosterEntries(
       [presence({ ownerId: 'monitor', currentPlanSlug: 'watch-plan' })],

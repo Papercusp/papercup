@@ -12,7 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { MODES } from '../../modes/registry';
-import { getModes } from '../../modes/store';
+import { getModesWithLiveness } from '../../modes/liveness';
 
 export default defineTool({
   name: 'mode:list',
@@ -31,12 +31,14 @@ export default defineTool({
   args: z.object({}),
   async handler(_args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const active = await getModes(ident.workspaceId ?? 'default', ident.ownerId).catch(() => []);
-    const activeIds = new Set(active.map((r) => r.mode));
+    const resolved = await getModesWithLiveness(ident.workspaceId ?? 'default', ident.ownerId).catch(() => null);
+    const activeIds = new Set((resolved?.modes ?? []).map((r) => r.mode));
     const catalog = MODES.map((m) => ({ mode: m.id, axis: m.axis, title: m.title, oneLiner: m.oneLiner, active: activeIds.has(m.id) }));
     return {
       data: {
         ok: true,
+        sessionState: resolved?.sessionState ?? null,
+        live: resolved?.live ?? null,
         axes: 'same-axis modes exclude each other (auto-switch on set); cross-axis modes stack; overlays stack with everything',
         modes: catalog,
       },

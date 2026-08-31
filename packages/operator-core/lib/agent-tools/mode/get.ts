@@ -10,14 +10,14 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { modeById } from '../../modes/registry';
-import { getModes } from '../../modes/store';
+import { getModesWithLiveness } from '../../modes/liveness';
 
 export default defineTool({
   name: 'mode:get',
   profile: 'engineer',
   description:
-    "Read an agent's current modes: { agent? (default you), contracts? }. Returns active modes with axis, reason, " +
-    'who set them, owner-sticky flag, and (contracts:true) the full binding contract text.',
+    "Read an agent's registered modes and live session state: { agent? (default you), contracts? }. Returns " +
+    'tri-state live (true | false | null), sessionState, mode provenance, and optionally the full contracts.',
   guidance: {
     when:
       "Before redirecting a peer (is it owner-directed? then request, don't override) or to re-read your own binding " +
@@ -35,8 +35,8 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const target = args.agent?.trim() || ident.ownerId;
-    const rows = await getModes(ident.workspaceId ?? 'default', target);
-    const modes = rows.map((r) => {
+    const resolved = await getModesWithLiveness(ident.workspaceId ?? 'default', target);
+    const modes = resolved.modes.map((r) => {
       const def = modeById(r.mode);
       return {
         mode: r.mode,
@@ -48,6 +48,14 @@ export default defineTool({
         ...(args.contracts && def ? { contract: def.contract } : {}),
       };
     });
-    return { data: { ok: true, agent: target, modes } };
+    return {
+      data: {
+        ok: true,
+        agent: target,
+        sessionState: resolved.sessionState,
+        live: resolved.live,
+        modes,
+      },
+    };
   },
 });
