@@ -27,17 +27,18 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep'],
   description:
-    'Reply to one email the owner already has, named by its canonical messageId. You supply TEXT ONLY: the server resolves recipient, thread, subject and reply headers from the stored message, so this tool cannot redirect a reply or read the credential. Drafts by default; mode:"send" sends.',
+    'Reply to one email the owner already has, named by its canonical messageId and optional sourceId. You supply no addressee: the server resolves recipient, thread, subject, reply headers, and the exact connected account from the stored message. Drafts by default; mode:"send" sends.',
   guidance: {
-    when: 'The owner asks you to answer a specific email. Locate it with personal:search { scopes:["personal:gmail"] } and pass the externalId it returns as messageId.',
+    when: 'The owner asks you to answer a specific email. Locate it with personal:search { scopes:["personal:gmail"] } and pass both externalId as messageId and sourceId when returned.',
     notWhen:
       'Writing to a NEW recipient or starting a fresh thread — that is mail:send, which checks the addressee. Not for Slack (chat:reply). You cannot choose who this reaches.',
     chaining:
-      'personal:search → externalId → mail:reply. Report the echoed to/subject/threadId back to the owner as evidence of where it actually went.',
+      'personal:search → { externalId, sourceId } → mail:reply. Report the echoed to/subject/threadId back to the owner as evidence of where it actually went.',
   },
   args: z
     .object({
       messageId: z.string().trim().min(1).max(512),
+      sourceId: z.string().uuid().optional(),
       text: z.string().trim().min(1).max(100_000),
       mode: z.enum(['draft', 'send']).optional(),
     })
@@ -54,6 +55,7 @@ export default defineTool({
       workspaceId,
       userId: user.id,
       messageId: args.messageId,
+      sourceId: args.sourceId,
       text: args.text,
       mode: args.mode ?? 'draft',
     });

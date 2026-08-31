@@ -80,7 +80,9 @@ export function resolveMailReplyCoordinates(doc: CanonicalDocument): MailReplyCo
 }
 
 /**
- * `mail:reply` — the caller supplies TEXT ONLY.
+ * `mail:reply` — the caller supplies text plus canonical message coordinates
+ * minted by the server. Recipient, subject, thread, headers, and credential
+ * remain server-resolved.
  *
  * `mode:'send'` is permitted per D-020 (owner-asked sends execute; draft-only
  * is not the posture). It is still safe under rail 1 because the destination
@@ -92,6 +94,7 @@ export async function replyToCanonicalMail(
     workspaceId: string;
     userId: string;
     messageId: string;
+    sourceId?: string | null;
     text: string;
     mode?: 'draft' | 'send';
   },
@@ -106,12 +109,14 @@ export async function replyToCanonicalMail(
     userId: params.userId,
     source: 'gmail',
     externalId: params.messageId,
+    sourceId: params.sourceId,
   });
   const coordinates = resolveMailReplyCoordinates(doc);
   const ctx = await resolveOutboundContext(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
     vaultSource: 'gmail',
+    sourceId: doc.sourceId,
   });
   const token = await (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(ctx.source, ctx.installSlug);
   const transport = { fetch: deps.fetch, apiOrigin: deps.apiOrigin };

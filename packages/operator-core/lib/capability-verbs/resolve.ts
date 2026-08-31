@@ -51,6 +51,10 @@ const TRIGGER_KIND_BY_VAULT_SOURCE: Record<string, string> = {
 export interface CanonicalDocument {
   id: string;
   source: string;
+  /** Immutable trigger-source identity that owns this stored document. */
+  sourceId?: string | null;
+  /** Provider-native account identity retained for audit/display. */
+  providerAccountId?: string | null;
   kind: string;
   externalId: string;
   occurredAt: string | null;
@@ -84,16 +88,19 @@ export function string(value: unknown): string {
  */
 export async function resolveCanonicalDocument(
   sql: Db,
-  params: { workspaceId: string; userId: string; source: string; externalId: string },
+  params: { workspaceId: string; userId: string; source: string; externalId: string; sourceId?: string | null },
 ): Promise<CanonicalDocument> {
   const source = string(params.source);
   const externalId = string(params.externalId);
+  const sourceId = string(params.sourceId);
   if (!source) throw new Error('canonical_source_required');
   if (!externalId) throw new Error('canonical_external_id_required');
   const rows = await sql<
     Array<{
       id: string;
       source: string;
+      sourceId: string | null;
+      providerAccountId: string | null;
       kind: string;
       externalId: string | null;
       occurredAt: string | null;
@@ -105,6 +112,8 @@ export async function resolveCanonicalDocument(
   >`
     SELECT d.id::text,
            d.source,
+           d.source_id::text AS "sourceId",
+           d.provider_account_id AS "providerAccountId",
            d.kind,
            d.external_id AS "externalId",
            d.occurred_at::text AS "occurredAt",
@@ -117,12 +126,17 @@ export async function resolveCanonicalDocument(
        AND d.user_id = ${params.userId}::uuid
        AND d.source = ${source}
        AND d.external_id = ${externalId}
-     LIMIT 1`;
+       AND (${sourceId || null}::text IS NULL OR d.source_id = ${sourceId || null}::uuid)
+     ORDER BY d.id
+     LIMIT 2`;
+  if (rows.length > 1) throw new Error(`canonical_document_ambiguous:${source}:${externalId}`);
   const row = rows[0];
   if (!row) throw new Error(`canonical_document_not_found:${source}:${externalId}`);
   return {
     id: row.id,
     source: row.source,
+    sourceId: row.sourceId,
+    providerAccountId: row.providerAccountId,
     kind: row.kind,
     externalId: row.externalId ?? externalId,
     occurredAt: row.occurredAt,
@@ -134,21 +148,25 @@ export async function resolveCanonicalDocument(
 }
 
 /**
- * Resolve the owner's ONE connected source for a vault source name, plus the
- * install slug its OAuth credential is filed under.
- *
- * `889-owned-trigger-source-uniqueness` guarantees at most one owned source per
- * (workspace, user, kind), so this is a lookup rather than a choice — a second
- * row would be a schema violation, not an ambiguity for this code to resolve.
+ * Resolve an exact connected account when a canonical source id is available.
+ * Legacy callers without one remain supported only while the kind has a single
+ * owned source; choosing the first of several accounts would silently act as
+ * the wrong identity.
  */
 export async function resolveOutboundContext(
   sql: postgres.Sql,
-  params: { workspaceId: string; userId: string; vaultSource: string; defaultInstallSlug?: string },
+  params: { workspaceId: string; userId: string; vaultSource: string; sourceId?: string | null; defaultInstallSlug?: string },
 ): Promise<OutboundContext> {
   const kind = TRIGGER_KIND_BY_VAULT_SOURCE[string(params.vaultSource)];
   if (!kind) throw new Error(`outbound_source_unsupported:${params.vaultSource}`);
   const owned = await listOwnedExternalTriggerSources(sql, params.workspaceId, params.userId);
-  const source = owned.find((row) => row.kind === kind);
+  const candidates = owned.filter((row) => row.kind === kind);
+  const sourceId = string(params.sourceId);
+  const source = sourceId
+    ? candidates.find((row) => row.id === sourceId)
+    : candidates.length === 1 ? candidates[0] : undefined;
+  if (!source && sourceId) throw new Error(`outbound_source_not_connected:${kind}:${sourceId}`);
+  if (!source && candidates.length > 1) throw new Error(`outbound_source_ambiguous:${kind}`);
   if (!source) throw new Error(`outbound_source_not_connected:${kind}`);
   if (!source.credentialRef) throw new Error(`outbound_source_credential_missing:${kind}`);
   if (source.status === 'disabled' || source.status === 'error') {
