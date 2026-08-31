@@ -1377,7 +1377,7 @@
           "POST"
         ]
       },
-      "description": "The autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. The policy is ARMED (all 13 categories at ceiling `critical`): `auto` when within ceiling + reversible + system-authority; `gated` only for protected surfaces, authority=owner, or above-ceiling / graduation asks. With the owner full-autonomy grant ON, even that residue is `auto`. Kettle callers get the overwatch envelope (B-06) instead: nudge/observe/escalate/wake bookkeeping auto, structural escalate-only.",
+      "description": "The autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. The policy is ARMED (all 13 categories at ceiling `critical`): `auto` when within ceiling + reversible + system-authority; `gated` only for protected surfaces, authority=owner, or above-ceiling / graduation asks. With the owner full-autonomy grant ON, even that residue is `auto`. Overwatch callers get the overwatch envelope (B-06) instead: nudge/observe/escalate/wake bookkeeping auto, structural escalate-only — selected by `role:\"kettle\"` (OVERWATCH_ROLE, a LIVE id).",
       "capabilities": [
         "intel:read"
       ],
@@ -1401,9 +1401,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are the Mug (or a cup) deciding whether to auto-handle a queue item / answer a card without the owner — or the Kettle deciding whether to nudge/observe/escalate (auto) vs escalate a structural change (gated). Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",
+        "when": "You are deciding whether to auto-handle a queue item / answer a card without the owner — or you are Overwatch (`role:\"kettle\"`, OVERWATCH_ROLE) deciding whether to nudge/observe/escalate (auto) vs escalate a structural change (gated). Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",
         "notWhen": "To READ or render the whole policy use autonomy:policy_get. To CHANGE a ceiling use autonomy:policy_set (owner-authority). This tool DECIDES one action; it never mutates.",
-        "chaining": "improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue. Kettle: per anomaly suggestedAction → autonomy:decide → perform the `auto` ones, coord:escalate the `gated` ones."
+        "chaining": "improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue. Overwatch (OVERWATCH_ROLE): per anomaly suggestedAction → autonomy:decide → perform the `auto` ones, coord:escalate the `gated` ones."
       }
     },
     {
@@ -1414,7 +1414,7 @@
           "POST"
         ]
       },
-      "description": "Read the Mug trust-graduation standings: per-(category, class) clean-auto-pass streaks from the tripwire ledger, each category's earned graduated_level vs its current level + ceiling, and which classes are graduation-eligible (an owner ratification ask to raise a ceiling). Read-only.",
+      "description": "Read the trust-graduation standings: per-(category, class) clean-auto-pass streaks from the tripwire ledger, each category's earned graduated_level vs its current level + ceiling, and which classes are graduation-eligible (an owner ratification ask to raise a ceiling). Read-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -1438,7 +1438,7 @@
           "POST"
         ]
       },
-      "description": "Read the Mug autonomy policy (per-category risk ceilings, locks, graduated levels, and the derived effective ceiling) for this workspace.",
+      "description": "Read the autonomy policy (per-category risk ceilings, locks, graduated levels, and the derived effective ceiling) for this workspace.",
       "capabilities": [
         "intel:read"
       ],
@@ -1450,7 +1450,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Inspecting the Mug's per-category autonomy ceilings — the decider checking whether a category may auto-decide, or the owner settings surface rendering the policy. Pass `category` for one row; omit for all 13.",
+        "when": "Inspecting this workspace's per-category autonomy ceilings — the deciding agent checking whether a category may auto-decide, or the owner settings surface rendering the policy. Pass `category` for one row; omit for all 13.",
         "notWhen": "To CHANGE a ceiling use autonomy:policy_set. For feature flags use flags:get."
       }
     },
@@ -1462,7 +1462,7 @@
           "POST"
         ]
       },
-      "description": "Set the Mug autonomy ceiling / lock / graduated level for one category. High-risk: widens or narrows what the Mug may auto-decide without asking. Audited; provide a reason.",
+      "description": "Set the autonomy ceiling / lock / graduated level for one category. High-risk: widens or narrows what the deciding agent may auto-decide without asking. Audited; provide a reason.",
       "capabilities": [
         "audit:write"
       ],
@@ -1483,7 +1483,7 @@
           "POST"
         ]
       },
-      "description": "Log the Mug's disposition of a considered item to the decision ledger (P-111): act | defer | reject | route-to-research | no-op. Resolves the autonomy gate from the action + risk/authority/reversibility (same as autonomy:decide), then records one disposition row with the decision axes, the chosen disposition, why, and links (the item, a realized action row, or a routed research task). Behavior-neutral record-keeping.",
+      "description": "Log your disposition of a considered item to the decision ledger (P-111): act | defer | reject | route-to-research | no-op. Resolves the autonomy gate from the action + risk/authority/reversibility (same as autonomy:decide), then records one disposition row with the decision axes, the chosen disposition, why, and links (the item, a realized action row, or a routed research task). Behavior-neutral record-keeping.",
       "capabilities": [
         "coord:write"
       ],
@@ -1507,7 +1507,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are the Mug and you've DECIDED what to do with a queue item — record the disposition so it lands in the decision ledger / the owner's recent-auto-decisions feed. Use disposition='act' (links the action row), 'defer' (+revisitAt), 'reject' (+why), 'route-to-research' (+researchTaskId), or 'no-op' (+why).",
+        "when": "You have DECIDED what to do with a queue item — record the disposition so it lands in the decision ledger / the owner's recent-auto-decisions feed. Use disposition='act' (links the action row), 'defer' (+revisitAt), 'reject' (+why), 'route-to-research' (+researchTaskId), or 'no-op' (+why).",
         "notWhen": "Just QUERYING whether you may auto-handle something (no commitment yet) → autonomy:decide. Changing a category ceiling → autonomy:policy_set.",
         "chaining": "autonomy:decide (or the same inputs) → act on the item → autonomy:record_disposition to log what you did. The worked example: a plan that \"needs more research\" → record_disposition { action:\"plans:add-item\", disposition:\"route-to-research\", researchTaskId } → a plan-governance disposition linked to the spawned research task."
       }
@@ -1520,7 +1520,7 @@
           "POST"
         ]
       },
-      "description": "List recent Mug auto-decisions and their auto-revert tripwires (category, class, action, watch status armed/cleared/tripped/reverted, revert handle). Backs the settings recent-auto-decisions feed. Read-only.",
+      "description": "List recent auto-decisions and their auto-revert tripwires (category, class, action, watch status armed/cleared/tripped/reverted, revert handle). Backs the settings recent-auto-decisions feed. Read-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -1544,7 +1544,7 @@
           "POST"
         ]
       },
-      "description": "Owner one-click undo of a Mug auto-decision: trip its tripwire (owner-thumbs-down), revert the action, and demote the category one step. Owner-authority; the strongest counter-signal.",
+      "description": "Owner one-click undo of an auto-decision: trip its tripwire (owner-thumbs-down), revert the action, and demote the category one step. Owner-authority; the strongest counter-signal.",
       "capabilities": [
         "audit:write"
       ],
@@ -8407,7 +8407,7 @@
           "POST"
         ]
       },
-      "description": "The Mug's decision ledger newest-first: governed actions (layer=action — what ran, with posture auto/gated/rejected) and the Mug's per-item dispositions (layer=disposition — act/defer/reject/route-to-research/no-op + why). Filter by layer/category/posture/disposition/time. Each row carries the autonomy axes (category, risk_tier, reversibility, authority) + provenance links. Read-only.",
+      "description": "The decision ledger newest-first: governed actions (layer=action — what ran, with posture auto/gated/rejected) and the deciding agent's per-item dispositions (layer=disposition — act/defer/reject/route-to-research/no-op + why). Filter by layer/category/posture/disposition/time. Each row carries the autonomy axes (category, risk_tier, reversibility, authority) + provenance links. Read-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -8431,7 +8431,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Auditing what the Mug has decided / what the fleet has done: 'what auto-decisions happened?', 'show the gated actions in spend-budget', 'what did it defer?'. Pair with autonomy:policy_get to see why a category gates.",
+        "when": "Auditing what has been decided / what the fleet has done: 'what auto-decisions happened?', 'show the gated actions in spend-budget', 'what did it defer?'. Pair with autonomy:policy_get to see why a category gates.",
         "notWhen": "A roll-up of counts by posture/category — decision_ledger:summary. Prompt/rule mutations specifically — change_ledger:list. The live policy ceilings — autonomy:policy_get.",
         "chaining": "decision_ledger:summary (the shape) → decision_ledger:list { layer, category, posture } for the rows → a row.links (runId/spawnId/itemRef) to drill to the transcript / item."
       }
@@ -8444,7 +8444,7 @@
           "POST"
         ]
       },
-      "description": "Roll-up of the Mug decision ledger: total + counts by layer (action/disposition), posture (auto/proposed/gated/rejected), category, and disposition verb, over a time window. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The cheap shape-read before decision_ledger:list. Read-only.",
+      "description": "Roll-up of the decision ledger: total + counts by layer (action/disposition), posture (auto/proposed/gated/rejected), category, and disposition verb, over a time window. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The cheap shape-read before decision_ledger:list. Read-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -8468,7 +8468,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Getting oriented: 'how much is the Mug auto-deciding vs gating?', 'which categories see the most gated actions?', 'what's the disposition mix this week?'. Then decision_ledger:list for the rows.",
+        "when": "Getting oriented: 'how much is being auto-decided vs gated?', 'which categories see the most gated actions?', 'what's the disposition mix this week?'. Then decision_ledger:list for the rows.",
         "notWhen": "You want the actual rows — decision_ledger:list. Live ceilings — autonomy:policy_get.",
         "chaining": "decision_ledger:summary → decision_ledger:list { the posture/category that stands out }."
       }

@@ -913,6 +913,24 @@ function formatRow(r) {
 }
 
 /**
+ * Is this file's own commit age old enough that its NEW diagnostic cannot be its own doing?
+ *
+ * Exported and shared so the ROW wording and the caller's `unchangedCount` (which drives the
+ * footer) can never disagree about which rows are unchanged — a divergence that would print the
+ * per-file explanation with the wrong count, or omit it while rows are marked UNCHANGED.
+ *
+ * `null` (unknown) is deliberately NOT unchanged: `lastCommitTimes` fails soft to `null`, and a
+ * path inside a submodule also reads `null` from the superproject, so treating unknown as
+ * "unchanged" would manufacture an exoneration out of an absence of evidence.
+ *
+ * @param {number | null} [commitAgeSec]
+ * @returns {boolean}
+ */
+export function isUnchangedForAttribution(commitAgeSec) {
+  return typeof commitAgeSec === 'number' && commitAgeSec > LANDING_RACE_WINDOW_SEC;
+}
+
+/**
  * Describe a clean diagnostic site without inventing its causal provenance.
  *
  * A clean file is genuinely committed, but its NEW diagnostic may still be caused by another

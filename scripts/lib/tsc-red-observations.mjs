@@ -12,7 +12,15 @@
  * On a causally settled tree that line is correct and was thrown away every time. When other
  * paths are still uncommitted, the hot-path reporter now withholds the stronger "COMMITTED"
  * attribution because TypeScript names the diagnostic site rather than the edit that caused it;
- * persistence across later samples is what establishes a real standing red. Measured 2026-08-02:
+ * persistence across later samples is what establishes a real standing red.
+ *
+ * EI-19340874432965755 added a THIRD wording to that same line — when the named file's own last
+ * commit is older than the landing-race window it reads `← UNCHANGED <n>min; error SURFACES here,
+ * so the cause is a change ELSEWHERE`. This module is unaffected: `recordStandingReds` takes
+ * STRUCTURED entries, never the rendered text, so the illustration above is documentation rather
+ * than a parsed contract. Note that an UNCHANGED file is still passed to this sampler on purpose —
+ * its red is real and does persist (it clears only when the file that CAUSED it is fixed), and
+ * suppressing it here would trade a mis-attribution problem for an invisible-red one. Measured 2026-08-02:
  * 20 heavy jobs queued on this box in one 10-minute window, 9 of them identical
  * `lint-tsc --files` compiles — so the finding is computed ~9x/hour and recorded ZERO
  * times. Meanwhile a scoped run deliberately does NOT fail you for a new file you did
