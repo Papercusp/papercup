@@ -55,6 +55,11 @@ import type {
   AutomationScoutCeiling,
 } from '@papercusp/operator-core/lib/automation/catalog';
 
+import {
+  DEFAULT_SCOUT_BUDGET,
+  type ScoutBudget,
+} from '@papercusp/operator-core/lib/scout/budget';
+
 import { potArmingDetail, potMasterSwitch, type PotSegmentState } from './learning-pot-rail';
 
 /**
@@ -103,7 +108,64 @@ export interface PotDrawerBudget {
 /** The write that changes one field, named by the tool it actually calls. */
 export type PotDrawerWrite =
   | { tool: 'gym:arm'; harness: string }
-  | { tool: 'governor:arm'; loopId: string };
+  | { tool: 'governor:arm'; loopId: string }
+  | { tool: 'hive.overrideSet'; potSlug: string; section: 'budget'; field: PotDrawerBudgetKey };
+
+/**
+ * THE POT'S SCOUT-CYCLE BUDGET (P-013 / D-011) — the CONFIG, not the mirror.
+ *
+ * Keyed off `ScoutBudget` itself rather than re-listed, so a new key on the
+ * server is a COMPILE ERROR here instead of a knob that silently stops being
+ * editable — the same discipline `PotDrawerBudgetKind` follows above.
+ *
+ * These are deliberately NOT `PotDrawerBudget`: only `maxCostUsd` is money.
+ * The other two are fan-out COUNTS, and forcing them through `budgetUnit()`
+ * would print "USD per cycle" next to a number of critics.
+ */
+export type PotDrawerBudgetKey = keyof Required<ScoutBudget>;
+
+interface BudgetKeySpec {
+  label: string;
+  /** Spelled out, and not all of these are USD. */
+  unit: string;
+  /** Whole numbers only? (`resolveScoutBudget` floors the two counts.) */
+  integer: boolean;
+  /**
+   * The smallest value the ENGINE will honour. 0 is a real cost cap — "no LLM
+   * spend this cycle" (budget.ts EI-305) — but `resolveScoutBudget` runs the two
+   * counts through `pos()`, so a 0 there is discarded and the default returns.
+   * Encoding that here stops the UI from offering a value the engine ignores.
+   */
+  min: number;
+}
+
+const BUDGET_KEY_SPEC: Record<PotDrawerBudgetKey, BudgetKeySpec> = {
+  maxCostUsd: { label: 'Cost cap', unit: 'USD per cycle', integer: false, min: 0 },
+  maxIdeators: { label: 'Ideators', unit: 'ideators per cycle', integer: true, min: 1 },
+  maxCriticsPerIdea: { label: 'Critics per idea', unit: 'critics per idea', integer: true, min: 1 },
+};
+
+/** Stable render order, derived from the spec so it cannot fall out of sync with it. */
+export const POT_DRAWER_BUDGET_KEYS = Object.keys(BUDGET_KEY_SPEC) as PotDrawerBudgetKey[];
+
+export interface PotDrawerConfigField {
+  /** Stable id for the write, the React key, and the test hook. */
+  key: string;
+  field: PotDrawerBudgetKey;
+  label: string;
+  unit: string;
+  integer: boolean;
+  min: number;
+  /** null = UNSET, which means the engine default applies. Never coerced to 0. */
+  value: number | null;
+  /** What runs when `value` is null. Read off DEFAULT_SCOUT_BUDGET, never retyped. */
+  engineDefault: number;
+  /** The number the engine will actually use right now. */
+  effective: number;
+  /** Said out loud, because an empty box reads as "zero" to everyone who did not write it. */
+  note: string;
+  write: PotDrawerWrite;
+}
 
 export interface PotDrawerField {
   /** Stable id for the write, the React key, and the test hook. */
@@ -131,7 +193,17 @@ export interface PotDrawerSection {
   /** One line: what this section is, and where its control lives if not here. */
   note: string;
   fields: PotDrawerField[];
-  /** True when this pot has no rows here. Rendered as a STATED absence, never hidden. */
+  /**
+   * Editable CONFIG knobs for this section (P-013). Distinct from `fields`,
+   * which are governor/gym ROWS: these write the pot's settings config, which
+   * is the source the governor rows are rebuilt from.
+   */
+  configFields: PotDrawerConfigField[];
+  /**
+   * True when this pot has no rows here. Rendered as a STATED absence, never
+   * hidden. A section carrying only `configFields` is NOT empty — the scout
+   * budget is editable for a pot that has never registered a lane.
+   */
   empty: boolean;
 }
 
@@ -191,6 +263,48 @@ export function drawerBudget(
           ? 'A per-cycle cap bounds one run; spend accumulates past it, so there is no remaining balance'
           : 'No budget set — the governor refuses unattended spend until one is',
   };
+}
+
+/**
+ * The pot's scout-cycle budget, read from its settings config (P-013 / D-011).
+ *
+ * `config` arrives from the `hive.overrides` sync query as `unknown` — it is a
+ * user-authored JSON delta, so every key is validated here rather than trusted.
+ * A missing or non-finite key is UNSET (null), never 0: `maxCostUsd: 0` is a
+ * real instruction ("no LLM spend this cycle"), so collapsing the two would
+ * silently switch a pot's scout off and call it a default.
+ */
+export function drawerScoutBudget(
+  potSlug: string,
+  config: unknown,
+): PotDrawerConfigField[] {
+  const delta =
+    config && typeof config === 'object' && !Array.isArray(config)
+      ? (config as Record<string, unknown>)
+      : {};
+
+  return POT_DRAWER_BUDGET_KEYS.map<PotDrawerConfigField>((field) => {
+    const spec = BUDGET_KEY_SPEC[field];
+    const engineDefault = DEFAULT_SCOUT_BUDGET[field];
+    const raw = delta[field];
+    const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+    return {
+      key: `budget/${field}`,
+      field,
+      label: spec.label,
+      unit: spec.unit,
+      integer: spec.integer,
+      min: spec.min,
+      value,
+      engineDefault,
+      effective: value ?? engineDefault,
+      note:
+        value === null
+          ? `Unset — the engine default of ${engineDefault} ${spec.unit} applies.`
+          : `Overrides the engine default of ${engineDefault} ${spec.unit}.`,
+      write: { tool: 'hive.overrideSet', potSlug, section: 'budget', field },
+    };
+  });
 }
 
 function enforcementNote(enforcement: string): string {
@@ -268,10 +382,27 @@ function laneField(lane: AutomationLaneArm): PotDrawerField {
     // per-cycle row in the Frontier section is a real possibility and the unit
     // must follow the ROW, not the heading it happens to sit under.
     budget: drawerBudget(lane.budgetUsd, lane.budgetKind ?? 'lifetime', lane.spentUsd),
-    write: { tool: 'governor:arm', loopId: lane.loopId },
-    readOnlyReason: null,
+    // P-013 / D-011: a `blender:` row is a MIRROR, not a control. The scout tick
+    // re-registers it after every cycle with `budgetUsd` AND `enabled` taken from
+    // the pot's budget CONFIG (scout-cycle-action.ts:121-136 -> run.ts:301,368 ->
+    // scoutRegistrationInput -> an upsert that sets both from EXCLUDED, while
+    // deliberately omitting spent_usd so THAT survives). So a `governor:arm` here
+    // is reverted on the next tick. Offering it would be a control that lies —
+    // the same reason D-009 made the Scout ceiling read-only on this surface.
+    ...(isBlenderLane(lane.loopId)
+      ? {
+          write: null,
+          readOnlyReason:
+            'The scout cadence rewrites this row from the pot’s budget config after every cycle, so an edit here would not survive the next tick. The Scout cycle budget fields in this section are the real control.',
+        }
+      : { write: { tool: 'governor:arm' as const, loopId: lane.loopId }, readOnlyReason: null }),
     status: null,
   };
+}
+
+/** A `blender:` lane is the scout-cadence registrant — see `laneField` and D-011. */
+function isBlenderLane(loopId: string): boolean {
+  return laneSectionId(loopId) === 'blender';
 }
 
 const SECTION_TITLE: Record<PotDrawerSectionId, string> = {
@@ -288,7 +419,7 @@ const SECTION_NOTE: Record<PotDrawerSectionId, string> = {
   gym: 'This pot’s gym autoloop. Its budget accumulates over the lane’s lifetime.',
   frontier: 'Frontier lanes (loop ids beginning frontier:), gated by the learning-governor preflight.',
   blender:
-    'Loop ids beginning blender: — this prefix IS the scout-cadence registrant, so this is where this pot’s scout cycle is armed and budgeted. The Scout section above is the workspace ceiling that bounds every one of them.',
+    'Loop ids beginning blender: — this prefix IS the scout-cadence registrant, so this is where this pot’s scout cycle is armed and budgeted. Edit the cycle budget below: the lane row is a mirror the next tick rewrites from it. The Scout section above is the workspace ceiling that bounds every one of them.',
   other:
     'Every remaining lane for this pot, named individually. Most lanes carry no family prefix, so this is usually where they are — nothing is filtered out.',
 };
@@ -311,6 +442,13 @@ const EMPTY_NOTE: Record<PotDrawerSectionId, string> = {
 export function buildPotDrawer(
   arming: AutomationArming | null | undefined,
   potSlug: string,
+  /**
+   * The pot's `budget` settings override (P-013 / D-011), straight off the
+   * `hive.overrides` sync query. Optional and `unknown` on purpose: it is a
+   * user-authored JSON delta, validated in `drawerScoutBudget`, and a caller
+   * that has not loaded it yet gets the engine defaults rather than a crash.
+   */
+  budgetConfig?: unknown,
 ): PotDrawerModel {
   const learning = arming ? potMasterSwitch(arming, potSlug) : 'unknown';
   const detail = potArmingDetail(arming, potSlug);
@@ -327,15 +465,39 @@ export function buildPotDrawer(
     bySection.get(laneSectionId(lane.loopId))!.push(laneField(lane));
   }
 
+  // P-013 / D-011: the pot's scout-cycle budget lives in the Blender section,
+  // because `blender:<pot>` IS the scout-cadence registrant grain (D-009) and
+  // this config is what that row is rebuilt from after every tick.
+  const scoutCycleBudget = drawerScoutBudget(potSlug, budgetConfig);
+
   const sections = POT_DRAWER_SECTION_IDS.map<PotDrawerSection>((id) => {
     const fields = bySection.get(id)!;
+    const configFields = id === 'blender' ? scoutCycleBudget : [];
     // The scout row always exists; it is "empty" only when the ceiling is unreadable.
-    const empty = id === 'scout' ? arming?.scoutCeiling == null : fields.length === 0;
+    // A section holding CONFIG fields is never empty even with no lanes: a pot that
+    // has never registered a blender lane can still set the budget the first cycle
+    // will run under, and hiding that would strand exactly the pots D-009 measured
+    // as owning no lanes at all.
+    const empty =
+      id === 'scout'
+        ? arming?.scoutCeiling == null
+        : fields.length === 0 && configFields.length === 0;
+    // Blender can no longer BE empty (the budget is always editable), so its
+    // "no lane registered" line would become dead text. It is still the true
+    // thing to say for a pot with no `blender:` row, so it is said here instead
+    // of quietly disappearing along with the empty state that used to carry it.
+    const note =
+      empty
+        ? EMPTY_NOTE[id]
+        : id === 'blender' && fields.length === 0
+          ? `${EMPTY_NOTE.blender} Its cycle budget is still editable below — that is what the first registration will run under.`
+          : SECTION_NOTE[id];
     return {
       id,
       title: SECTION_TITLE[id],
-      note: empty ? EMPTY_NOTE[id] : SECTION_NOTE[id],
+      note,
       fields,
+      configFields,
       empty,
     };
   });
