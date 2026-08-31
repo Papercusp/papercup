@@ -1225,6 +1225,94 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
   });
 });
 
+// EI-21971731335245747: the wake reader selects the carry-note by the wake MARKER's
+// harness; loop:status selects it by the LIVE routine's install slug — and
+// agent-tools/loop/status.ts asserts that slug is authoritative "just as it is for the
+// cold wake reader", an agreement this reader does not honour. A PROVEN divergence is
+// already caught as a lineage-mismatch, but only when the status read succeeded and
+// named a harness. Otherwise the divergence degrades into a SILENT FALSE ABSENCE — and
+// absence is the one answer that invites an overwrite, because the banner's own remedy
+// is "write loop:checkpoint before ending this turn".
+describe('rehydrateLoopWakeText — EI-21971731335245747 (an unverified reader scope never renders as a clean absence)', () => {
+  const STALE = 'Loop wake. Fire-time snapshot.';
+  const absentNote = () => vi.fn(async () => ({ note: null, updatedAtMs: null }));
+
+  it('QUALIFIES the absence when the status read THREW — scope agreement was never established', async () => {
+    const getLoopCarryNoteWithMetaFn = absentNote();
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () => {
+      throw new Error('pg unavailable');
+    });
+    const d = work({ payload: { harness: 'marker-harness', wakeCount: 2 }, subscriberId: 'su-scope-throw' });
+
+    const out = await rehydrateLoopWakeText(d, STALE, { getLoopCarryNoteWithMetaFn, getLoopStatusFn });
+
+    expect(out).toContain('THE SCOPE OF THAT READ IS UNVERIFIED');
+    expect(out).toContain('the live loop status could not be read at delivery time');
+    expect(out).toContain('WRONG-SCOPE read');
+    // The actual hazard: an unqualified absence reads as licence to overwrite the very
+    // checkpoint the reader failed to see, under the other scope.
+    expect(out).toContain('do NOT let it justify an overwrite');
+    // And it must route the reader to the authority that CAN settle the scope.
+    expect(out).toContain('call loop:status');
+  });
+
+  it('QUALIFIES the absence when the status read SUCCEEDED but named no harness to compare against', async () => {
+    const getLoopCarryNoteWithMetaFn = absentNote();
+    const getLoopStatusFn = vi.fn(async () => ({ active: true, harnessSlug: '   ' })) as never;
+    const d = work({ payload: { harness: 'marker-harness', wakeCount: 3 }, subscriberId: 'su-scope-blank' });
+
+    const out = await rehydrateLoopWakeText(d, STALE, { getLoopCarryNoteWithMetaFn, getLoopStatusFn });
+
+    expect(out).toContain('THE SCOPE OF THAT READ IS UNVERIFIED');
+    expect(out).toContain('the live loop status named no harness to compare against');
+  });
+
+  // CALIBRATION — without this the three assertions above would also pass if the banner
+  // were unconditionally qualified, which would make every clean absence unreadable.
+  it('leaves a CONFIRMED-scope absence exactly as it was — the qualification is conditional, not blanket', async () => {
+    const getLoopCarryNoteWithMetaFn = absentNote();
+    const getLoopStatusFn = vi.fn(async () => ({ active: true, harnessSlug: 'papercusp' })) as never;
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 4 }, subscriberId: 'su-scope-agreed' });
+
+    const out = await rehydrateLoopWakeText(d, STALE, { getLoopCarryNoteWithMetaFn, getLoopStatusFn });
+
+    expect(out).toContain('NO delivery-time loop:checkpoint was found');
+    expect(out).not.toContain('THE SCOPE OF THAT READ IS UNVERIFIED');
+    // The EI-21969383091076581 ordering guidance must survive on the clean branch.
+    expect(out).toContain('NOT about the whole turn');
+  });
+
+  it('does NOT downgrade a PROVEN divergence — a readable status that disagrees still takes the louder lineage-mismatch branch', async () => {
+    const getLoopCarryNoteWithMetaFn = absentNote();
+    const getLoopStatusFn = vi.fn(async () => ({ active: true, harnessSlug: 'current-harness' })) as never;
+    const d = work({ payload: { harness: 'stale-harness', wakeCount: 5 }, subscriberId: 'su-scope-proven' });
+
+    const out = await rehydrateLoopWakeText(d, STALE, { getLoopCarryNoteWithMetaFn, getLoopStatusFn });
+
+    expect(out).toContain('LOOP DELIVERY LINEAGE MISMATCH');
+    expect(out).not.toContain('THE SCOPE OF THAT READ IS UNVERIFIED');
+    // A proven mismatch must not read the marker-scoped row at all.
+    expect(getLoopCarryNoteWithMetaFn).not.toHaveBeenCalled();
+  });
+
+  it('a FOUND note is unaffected by an unverified scope — the row existing is its own evidence', async () => {
+    const writtenAtMs = Date.now() - 3_000;
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({
+      note: '## Did\nReal work.\n\n## Next action\nCarry on.',
+      updatedAtMs: writtenAtMs,
+    }));
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () => {
+      throw new Error('pg unavailable');
+    });
+    const d = work({ payload: { harness: 'marker-harness', wakeCount: 6 }, subscriberId: 'su-scope-found' });
+
+    const out = await rehydrateLoopWakeText(d, STALE, { getLoopCarryNoteWithMetaFn, getLoopStatusFn });
+
+    expect(out).toContain('Current verified loop:checkpoint');
+    expect(out).not.toContain('THE SCOPE OF THAT READ IS UNVERIFIED');
+  });
+});
+
 describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does not drain an already-queued fire)', () => {
   const FROZEN_TEXT =
     'Loop wake. Continue working plan foo. Current loop:checkpoint — this is the authority for what to do this wake.';
