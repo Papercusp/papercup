@@ -14,12 +14,45 @@ const MAX_CANDIDATES = 200;
 export type SettlementResidualReason = 'identity-unavailable' | 'missing-from-commit' | 'content-mismatch';
 export type SettlementResidualPath = { path: string; reason: SettlementResidualReason };
 
+/**
+ * WI-1409142: restore the two blob-sha keys the terminal payload write used to drop.
+ *
+ * `jsonb_strip_nulls` is RECURSIVE. Applied to completion evidence it deleted
+ * `contentIdentity[].headBlobSha` / `.workingTreeBlobSha` whenever the value was a
+ * meaningful `null` — a declared path not yet in HEAD, which is simply what a close
+ * looks like before git-sync sweeps. `CompletionSettlementManifestSchema` requires
+ * those keys, so the stored manifest failed `safeParse`, `residualPathsForCommit`
+ * returned undefined, and the reconciler skipped the row: 110 closes could never
+ * settle, and showed up in neither the settled nor the unsettled count.
+ *
+ * Both write sites now exempt the evidence subtree, so new rows keep their nulls.
+ * This exists for the rows ALREADY on disk — it lets them settle on the next pass
+ * instead of needing a backfill. An absent key and an explicit null mean the same
+ * thing here ("this side was not resolved"), so filling one in loses nothing.
+ *
+ * Defaults are spread FIRST so a key that IS present — including an explicit null —
+ * always wins; only a genuinely missing key is filled.
+ */
+export function normalizeStoredSettlementManifest(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const manifest = raw as { contentIdentity?: unknown };
+  if (!Array.isArray(manifest.contentIdentity)) return raw;
+  return {
+    ...manifest,
+    contentIdentity: manifest.contentIdentity.map((entry) =>
+      entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? { workingTreeBlobSha: null, headBlobSha: null, ...(entry as Record<string, unknown>) }
+        : entry,
+    ),
+  };
+}
+
 export function residualPathsForCommit(
   manifest: unknown,
   commitSha: string,
   lookup: typeof completionHeadBlobMap = completionHeadBlobMap,
 ): SettlementResidualPath[] | undefined {
-  const parsed = CompletionSettlementManifestSchema.safeParse(manifest);
+  const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
   if (!parsed.success || !SHA_RE.test(commitSha)) return undefined;
   const receipt = parsed.data;
   const committed = lookup(receipt.repositoryRoot, commitSha, receipt.normalizedPaths);
@@ -70,7 +103,12 @@ function confirmedTreeStampForSettlement(
 ): CompletionTreeStamp | undefined {
   const normalized = new Set(manifest.normalizedPaths);
   const contentIdentity = manifest.contentIdentity
-    .filter((entry) => normalized.has(entry.path) && entry.workingTreeBlobSha !== null)
+    // WI-1409142: `!= null` also excludes an ABSENT key. The schema now accepts a
+    // missing sha as null, so a strict `!== null` would let `undefined` through and
+    // write a treeStamp entry whose shas are undefined — which
+    // completionTreeContentIdentityMatches would then have to reject, silently
+    // undoing the very upgrade this function exists to make survive the trigger.
+    .filter((entry) => normalized.has(entry.path) && entry.workingTreeBlobSha != null)
     .map((entry) => ({
       path: entry.path,
       workingTreeBlobSha: entry.workingTreeBlobSha,
@@ -94,8 +132,8 @@ export async function reconcileProposedCompletionsAtCommit(
   commitSha: string,
   scope: { installSlug: string; workspaceId: string },
   deps: CompletionSettlementReconcilerDeps = {},
-): Promise<{ inspected: number; upgraded: string[]; residual: number }> {
-  if (!SHA_RE.test(commitSha)) return { inspected: 0, upgraded: [], residual: 0 };
+): Promise<{ inspected: number; upgraded: string[]; residual: number; unreadable: string[] }> {
+  if (!SHA_RE.test(commitSha)) return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
   const sql = deps.sql ?? getOrgPg().sql;
   const lookup = deps.lookup ?? completionHeadBlobMap;
   const emit = deps.emit ?? emitAwaitedEvent;
@@ -111,6 +149,13 @@ export async function reconcileProposedCompletionsAtCommit(
 
   const upgraded: string[] = [];
   let residualCount = 0;
+  // WI-1409142: a candidate this pass could not READ is the failure mode that hurts
+  // most, because it is indistinguishable from one that settled cleanly: the row is
+  // skipped, no residualPaths are written, and it therefore shows up in NEITHER the
+  // settled nor the unsettled count. 110 closes sat permanently stuck that way for
+  // four days with not one line of output. Skipping is still correct — one malformed
+  // row must not stall the batch — but it must never again be SILENT.
+  const unreadable: string[] = [];
   for (const row of rows) {
     let payload: Record<string, unknown>;
     try {
@@ -118,12 +163,16 @@ export async function reconcileProposedCompletionsAtCommit(
         ? JSON.parse(row.payload) as Record<string, unknown>
         : row.payload as Record<string, unknown>;
     } catch {
+      unreadable.push(row.feature_id);
       continue;
     }
     const evidence = payload?.[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown> | undefined;
     const manifest = evidence?.settlementManifest;
-    const parsed = CompletionSettlementManifestSchema.safeParse(manifest);
-    if (!parsed.success) continue;
+    const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
+    if (!parsed.success) {
+      unreadable.push(row.feature_id);
+      continue;
+    }
     const residualPaths = residualPathsForCommit(parsed.data, commitSha, lookup);
     if (!residualPaths) continue;
     residualCount += residualPaths.length;
@@ -175,5 +224,14 @@ export async function reconcileProposedCompletionsAtCommit(
       });
     }
   }
-  return { inspected: rows.length, upgraded, residual: residualCount };
+  if (unreadable.length > 0) {
+    // Named ids, not just a count: the whole point is that someone can go LOOK at one.
+    console.warn(
+      `[git-sync-completion-settlement] ${scope.installSlug}: ${unreadable.length} of ${rows.length} ` +
+        'proposed completion(s) carry a settlementManifest this pass could not read; they were skipped ' +
+        'and stay unsettled, counted as neither settled nor residual: ' +
+        `${unreadable.slice(0, 10).join(', ')}${unreadable.length > 10 ? ` (+${unreadable.length - 10} more)` : ''}`,
+    );
+  }
+  return { inspected: rows.length, upgraded, residual: residualCount, unreadable };
 }

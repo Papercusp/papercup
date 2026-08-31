@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  normalizeStoredSettlementManifest,
   reconcileProposedCompletionsAtCommit,
   residualPathsForCommit,
   type CompletionSettlementReconcilerDeps,
@@ -344,5 +345,57 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
       key: 'work-item:settled:WI-FIXTURE',
       payload: expect.objectContaining({ commitSha: completeSha, generation: manifest.generation }),
     }));
+  });
+});
+
+describe('normalizeStoredSettlementManifest — WI-1409142 stripped-null tolerance', () => {
+  /**
+   * The exact on-disk shape a recursive `jsonb_strip_nulls` produced: the null-valued
+   * key is GONE, not null. `CompletionSettlementManifestSchema` requires it, so before
+   * this fix every function below returned undefined and the reconciler skipped the
+   * row in silence — permanently, since no later commit can restore a key.
+   */
+  const stripped = {
+    ...manifest,
+    contentIdentity: [
+      { path: 'a.ts', workingTreeBlobSha: 'd'.repeat(40) },
+      { path: 'nested/b.ts', workingTreeBlobSha: 'e'.repeat(40) },
+    ],
+  };
+
+  it('settles a stripped manifest whose blobs are all present in the commit', () => {
+    expect(residualPathsForCommit(stripped, SHA, () => new Map([
+      ['a.ts', resolved('d'.repeat(40))],
+      ['nested/b.ts', resolved('e'.repeat(40))],
+    ]))).toEqual([]);
+  });
+
+  it('still reports honest residue for a stripped manifest that does not match', () => {
+    expect(residualPathsForCommit(stripped, SHA, () => new Map([
+      ['a.ts', resolved('d'.repeat(40))],
+      ['nested/b.ts', resolved('f'.repeat(40))],
+    ]))).toEqual([{ path: 'nested/b.ts', reason: 'content-mismatch' }]);
+  });
+
+  it('fills ONLY a missing key — an explicit null and a real sha both survive', () => {
+    const out = normalizeStoredSettlementManifest({
+      contentIdentity: [
+        { path: 'a.ts', workingTreeBlobSha: 'd'.repeat(40) },
+        { path: 'b.ts', workingTreeBlobSha: null, headBlobSha: 'e'.repeat(40) },
+      ],
+    }) as { contentIdentity: Record<string, unknown>[] };
+    expect(out.contentIdentity[0]).toEqual({
+      path: 'a.ts', workingTreeBlobSha: 'd'.repeat(40), headBlobSha: null,
+    });
+    expect(out.contentIdentity[1]).toEqual({
+      path: 'b.ts', workingTreeBlobSha: null, headBlobSha: 'e'.repeat(40),
+    });
+  });
+
+  it('leaves a value that is not a manifest untouched', () => {
+    expect(normalizeStoredSettlementManifest(null)).toBeNull();
+    expect(normalizeStoredSettlementManifest('nope')).toBe('nope');
+    expect(normalizeStoredSettlementManifest({ contentIdentity: 'nope' }))
+      .toEqual({ contentIdentity: 'nope' });
   });
 });
