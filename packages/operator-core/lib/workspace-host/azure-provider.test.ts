@@ -243,6 +243,34 @@ async function provision(
 }
 
 describe('Azure workspace-host provider planning', () => {
+  it('lets Azure derive the default OS disk size from the source image', async () => {
+    const { provider } = providerAndClient();
+    const defaultDesired = desired();
+    defaultDesired.provider = Object.fromEntries(
+      Object.entries(defaultDesired.provider ?? {}).filter(([key]) => key !== 'bootDiskGiB'),
+    );
+
+    const plan = await provider.plan(
+      {
+        action: 'provision',
+        operationId: 'operation-default-disk',
+        idempotencyKey: 'operation-default-disk',
+        desired: defaultDesired,
+      },
+      context(),
+    );
+    const vm = plan.steps.find((step) => step.id === 'create-vm')!.input as unknown as {
+      request: AzureArmPutInput;
+    };
+    const osDisk = (vm.request.properties.storageProfile as { osDisk: Record<string, unknown> }).osDisk;
+
+    expect(osDisk).toMatchObject({
+      createOption: 'FromImage',
+      managedDisk: { storageAccountType: 'Premium_LRS' },
+    });
+    expect(osDisk).not.toHaveProperty('diskSizeGB');
+  });
+
   it('builds deterministic ARM ids, dependency ordering, encrypted disks, identity, NIC, image, cloud-init, and extension inputs', async () => {
     const { provider } = providerAndClient();
     const request = {
@@ -423,10 +451,7 @@ describe('Azure workspace-host provider contract and lifecycle', () => {
     const { client, provider } = providerAndClient();
     const { host } = await provision(client, provider);
 
-    const bastionKey = await provider.getTransportProfile(
-      host,
-      context({ transportPreference: 'azure-bastion-ssh' }),
-    );
+    const bastionKey = await provider.getTransportProfile(host, context({ transportPreference: 'azure-bastion-ssh' }));
     expect(bastionKey).toMatchObject({ kind: 'azure-bastion-ssh', audited: true });
     expect(bastionKey.compatibility.requirements.map(({ id }) => id)).not.toContain('azure-ssh-extension');
 

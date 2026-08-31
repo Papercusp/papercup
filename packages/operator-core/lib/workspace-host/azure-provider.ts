@@ -172,7 +172,8 @@ export interface AzureWorkspaceHostDesiredProviderSettings {
   networkInterfaceName: string;
   dataDiskName: string;
   extensionName: string;
-  bootDiskGiB: number;
+  /** Optional: Azure derives the OS disk floor from the source image when omitted. */
+  bootDiskGiB?: number;
   diskSku: string;
   diskEncryptionSetId?: string;
   cloudInit?: string;
@@ -496,10 +497,9 @@ function readSettings(desired: WorkspaceHostDesiredSpec): AzureWorkspaceHostDesi
     dataDiskName: optionalString(provider.dataDiskName, 'azure.desired.provider.dataDiskName') ?? `${base}-data`,
     extensionName:
       optionalString(provider.extensionName, 'azure.desired.provider.extensionName') ?? `${base}-bootstrap`,
-    bootDiskGiB:
-      provider.bootDiskGiB === undefined
-        ? 30
-        : positiveInteger(provider.bootDiskGiB, 'azure.desired.provider.bootDiskGiB'),
+    ...(provider.bootDiskGiB === undefined
+      ? {}
+      : { bootDiskGiB: positiveInteger(provider.bootDiskGiB, 'azure.desired.provider.bootDiskGiB') }),
     diskSku: optionalString(provider.diskSku, 'azure.desired.provider.diskSku') ?? 'Premium_LRS',
     diskEncryptionSetId: optionalString(provider.diskEncryptionSetId, 'azure.desired.provider.diskEncryptionSetId'),
     cloudInit: optionalPayload(provider.cloudInit, 'azure.desired.provider.cloudInit'),
@@ -1032,7 +1032,7 @@ export class AzureWorkspaceHostProvider implements WorkspaceHostProvider {
             imageReference: { id: desired.image.id },
             osDisk: {
               createOption: 'FromImage',
-              diskSizeGB: settings.bootDiskGiB,
+              ...(settings.bootDiskGiB === undefined ? {} : { diskSizeGB: settings.bootDiskGiB }),
               managedDisk: { storageAccountType: settings.diskSku },
               encryption: diskEncryption(settings.diskEncryptionSetId),
             },
@@ -1422,8 +1422,7 @@ export class AzureWorkspaceHostProvider implements WorkspaceHostProvider {
     const vm = requireKnownResource(host.resources, [VM_KIND], 'get-transport-profile');
     const provider = ctx.connection.provider ?? {};
     const requested =
-      optionalString(provider.transportPreference, 'Azure connection transportPreference') ??
-      'azure-bastion-entra-ssh';
+      optionalString(provider.transportPreference, 'Azure connection transportPreference') ?? 'azure-bastion-entra-ssh';
     if (!(AZURE_WORKSPACE_HOST_TRANSPORTS as readonly string[]).includes(requested)) {
       throw new Error(`Azure transportPreference must be one of ${AZURE_WORKSPACE_HOST_TRANSPORTS.join(', ')}`);
     }
@@ -1435,11 +1434,7 @@ export class AzureWorkspaceHostProvider implements WorkspaceHostProvider {
         : {}),
       ...(provider.directSshSourceRanges !== undefined
         ? {
-            directSshSourceRanges: stringArray(
-              provider.directSshSourceRanges,
-              'Azure direct SSH source ranges',
-              [],
-            ),
+            directSshSourceRanges: stringArray(provider.directSshSourceRanges, 'Azure direct SSH source ranges', []),
           }
         : {}),
     });
