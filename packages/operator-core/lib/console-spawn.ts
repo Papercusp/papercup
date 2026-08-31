@@ -1206,11 +1206,94 @@ export interface KickoffProofResult {
   reason: string | null;
 }
 
+/** Environment keys for the opt-in detached kickoff proof handshake.
+ *
+ * These intentionally use the existing PAPERCUSP_* propagation contract: the
+ * parent creates the receipt path, buildConsoleOneliner exports both values,
+ * and psu-launcher preserves them through its runWrapper env merge. Keeping
+ * this handshake out of psu-launcher.mjs avoids another launcher-only env
+ * allowlist that could silently drop the proof.
+ */
+export const KICKOFF_PROOF_PATH_ENV = 'PAPERCUSP_KICKOFF_PROOF_PATH';
+export const KICKOFF_PROOF_TOKEN_ENV = 'PAPERCUSP_KICKOFF_PROOF_TOKEN';
+
+/** How long an opted-in parent waits for the detached host's proof receipt. */
+export const KICKOFF_PROOF_WINDOW_MS = 30_000;
+
 /** Injectable seams for the detached kickoff-proof receipt poll. */
 export interface KickoffProofProbes {
   readReceipt?: (path: string) => string;
   sleep?: (ms: number) => Promise<void>;
   windowMs?: number;
+  pollMs?: number;
+}
+
+interface KickoffProofRequest {
+  path: string;
+  token: string;
+}
+
+/** Create a parent-owned, single-launch receipt rendezvous. */
+function createKickoffProofRequest(): KickoffProofRequest {
+  const token = randomBytes(24).toString('hex');
+  const path = join(
+    tmpdir(),
+    `papercup-kickoff-proof-${process.pid}-${Date.now()}-${randomBytes(12).toString('hex')}.json`,
+  );
+  const fd = openSync(path, 'wx', 0o600);
+  closeSync(fd);
+  // `wx` applies the mode at creation; chmod makes the invariant explicit even
+  // when a host has an unusual umask or an intercepted fs implementation.
+  chmodSync(path, 0o600);
+  return { path, token };
+}
+
+/** Remove a proof placeholder/receipt without turning cleanup into a launch
+ * failure. The host checks the placeholder before replacing it, so a timed-out
+ * parent cleanup also prevents a late host from creating a new file. */
+function cleanupKickoffProofRequest(request: KickoffProofRequest | null): void {
+  if (!request) return;
+  try { unlinkSync(request.path); } catch { /* already consumed / never created */ }
+}
+
+function parseKickoffProofReceipt(raw: string, token: string): KickoffProofResult | null {
+  try {
+    const receipt = JSON.parse(String(raw));
+    if (!receipt || receipt.token !== token || typeof receipt.persisted !== 'boolean') return null;
+    if (receipt.nativeRef !== null && typeof receipt.nativeRef !== 'string') return null;
+    if (receipt.reason !== null && typeof receipt.reason !== 'string') return null;
+    return {
+      persisted: receipt.persisted,
+      nativeRef: receipt.nativeRef ?? null,
+      reason: receipt.reason ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Poll one parent-created receipt with a bounded attempt count. The attempt
+ * cap keeps injected no-op sleeps bounded in tests as well as in production. */
+async function waitForKickoffProof(
+  request: KickoffProofRequest,
+  probes?: KickoffProofProbes,
+): Promise<KickoffProofResult> {
+  const readReceipt = probes?.readReceipt ?? ((path: string) => {
+    try { return readFileSync(path, 'utf8'); } catch { return ''; }
+  });
+  const sleep = probes?.sleep
+    ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); }));
+  const windowMs = Math.max(0, probes?.windowMs ?? KICKOFF_PROOF_WINDOW_MS);
+  const pollMs = Math.max(1, probes?.pollMs ?? 250);
+  const attempts = Math.max(1, Math.ceil(windowMs / pollMs) + 1);
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let proof: KickoffProofResult | null = null;
+    try { proof = parseKickoffProofReceipt(readReceipt(request.path), request.token); }
+    catch { proof = null; }
+    if (proof) return proof;
+    if (attempt + 1 < attempts) await sleep(pollMs);
+  }
+  return { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout' };
 }
 
 /** Keep observing a detached child after the bounded early-exit probe ends. */
