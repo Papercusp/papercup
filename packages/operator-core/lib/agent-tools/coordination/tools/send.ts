@@ -2473,7 +2473,9 @@ export default defineTool({
           message:
             `\`body\` is REQUIRED when expects is '${expects}' — you are asking the recipient to act ` +
             'on or answer something, so put the substance in sections rather than compressing it into ' +
-            "`summary`. Minimum: body: [{ text: \"...\" }]. An FYI (expects:'none') and a receipt " +
+            "`summary`. Minimum: body: [{ text: \"...\" }] — this ADDS to `summary`, it does not " +
+            'replace it: `summary` stays required as the one-line inbox headline (it is what survives ' +
+            "inbox truncation; `body` is clipped). An FYI (expects:'none') and a receipt " +
             "request (expects:'ack') may still omit it. A section also carries `premises`, " +
             '`forYouBecause`, `youMayNotKnow` and — the one most worth filling — `couldNotDetermine`, ' +
             'which is how you hand over a gap instead of letting silence read as certainty.',
