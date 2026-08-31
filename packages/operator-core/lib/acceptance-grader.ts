@@ -65,6 +65,11 @@ export type AcceptanceGraderLifecycle = {
    * (state launched/deduped). Below-floor is no longer among these reasons —
    * D-002 replaced it with minimum-fill; see acceptance-grader-select.ts. */
   freshReason?: 'no_eligible_non_excluded' | 'all_eligible_unselectable' | 'degraded' | 'discovery_error';
+  /** Set only alongside freshReason:'discovery_error' — the caught error's
+   * message, truncated, so a discovery throw is distinguishable from a
+   * genuinely empty pool instead of presenting identically to a normal
+   * fresh-judge launch (EI-21925808460100711). */
+  discoveryError?: string;
   /** Wake delivery for the HEAD grader ({ woke: 0 } = parked; they read the
    * grading request on their next turn — the subscribe is durable). */
   notified?: { woke: number };
@@ -844,14 +849,17 @@ export async function resolveAcceptanceGrader(
         eligibility?: GraderEligibility;
         escalation?: GraderEscalation;
         freshReason: NonNullable<AcceptanceGraderLifecycle['freshReason']>;
+        discoveryError?: string;
       }
     | undefined;
+  let discoveryRubricId: string | undefined;
   try {
     const plan = await (deps.readPlan ?? readPlanBySlug)(planSlug, {
       ...(ctx.harnessSlug && ctx.harnessSlug !== '*' ? { harnessSlug: ctx.harnessSlug } : {}),
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
     });
     const rubric = plan ? await (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug) : null;
+    if (rubric) discoveryRubricId = String((rubric as unknown as { rubricId: string }).rubricId);
     if (plan && rubric) {
       const selection = await (deps.discover ?? prodDiscoverGrader)(plan, rubric, ctx);
       if (selection.verdict === 'assigned' && selection.graders.length > 0) {
@@ -895,8 +903,14 @@ export async function resolveAcceptanceGrader(
         freshReason: selection.freshReason ?? 'no_eligible_non_excluded',
       };
     }
-  } catch {
-    discovery = { excluded: [], freshReason: 'discovery_error' };
+  } catch (err) {
+    const msg = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+    console.warn(
+      `[acceptance-grader] discovery failed for plan ${planSlug}` +
+        (discoveryRubricId ? ` (rubric ${discoveryRubricId})` : '') +
+        `: ${msg}`,
+    );
+    discovery = { excluded: [], freshReason: 'discovery_error', discoveryError: msg };
   }
   const launched = await launchAcceptanceGrader(planSlug, ctx, deps);
   return { ...launched, ...(discovery ?? {}) };
