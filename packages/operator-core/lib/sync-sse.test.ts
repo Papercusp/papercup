@@ -9,6 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetPinnedModuleStateForTest } from '@papercusp/module-singleton';
 
 let capturedListen: ((raw: string) => void) | null = null;
 let capturedOnListen: (() => void) | null = null;
@@ -33,9 +34,12 @@ beforeEach(() => {
   bridgeReturn = () => [];
   emitSysEvt.mockClear();
   listenFailuresRemaining = 0;
-  // The dedupe Map is pinned to globalThis → clear it so each test starts fresh.
-  delete (globalThis as unknown as { __syncNotifyDedupe?: unknown }).__syncNotifyDedupe;
-  delete (globalThis as unknown as { __papercuspInvalidationListenHooks__?: unknown }).__papercuspInvalidationListenHooks__;
+  // Module state is pinned to the realm and SURVIVES `vi.resetModules()` — that
+  // is the whole point of the pin — so each test must clear it explicitly or the
+  // LISTEN rebuild hooks leak between tests. Since the migration to
+  // `pinModuleState`, the state lives under a `Symbol.for` slot that a
+  // `delete globalThis[name]` cannot reach; this is the supported reset.
+  resetPinnedModuleStateForTest();
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.useFakeTimers();

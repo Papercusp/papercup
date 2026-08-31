@@ -25,6 +25,7 @@ import {
   type NotifyInvalidateOpts,
 } from '@papercusp/sync/server';
 import { createPgListenSource, createPgNotifySink, type PgSqlLike } from '@papercusp/sync/server/pg';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { queryNamesForTriggerEvent } from './sync-resolver/table-to-query-names';
 import { getOperatorCache } from './cache/instance';
@@ -43,19 +44,22 @@ const CHANNEL = 'sync_invalidate';
 // reuse-port cluster by rebuilding them whenever this process establishes (or
 // re-establishes) its LISTEN. A bare NOTIFY is not replayed after a disconnect;
 // the reconnect hook is therefore the durable catch-up half of the push rail.
-// Pin the set to globalThis so dev module re-evaluation cannot register the same
-// rebuild hook repeatedly.
-const INVALIDATION_LISTEN_HOOKS_KEY = '__papercuspInvalidationListenHooks__';
+// Pin the set to the realm so dev module re-evaluation cannot register the same
+// rebuild hook repeatedly. Pinned through the primitive rather than by hand: a
+// hand-rolled `globalThis` slot fixes correctness but is invisible to
+// `listModuleDuplications()`, so the central report answers a confident `[]`
+// while this module is split. Pinned at MODULE SCOPE exactly once — pinning
+// inside the accessor would count every call as an evaluation and manufacture a
+// false duplication in that same report.
 type InvalidationListenHook = () => void | Promise<void>;
 
+const invalidationListenHooksState = pinModuleState<{ hooks: Set<InvalidationListenHook> }>(
+  '__papercuspInvalidationListenHooks__',
+  () => ({ hooks: new Set<InvalidationListenHook>() }),
+);
+
 function invalidationListenHooks(): Set<InvalidationListenHook> {
-  const g = globalThis as Record<string, unknown>;
-  let hooks = g[INVALIDATION_LISTEN_HOOKS_KEY] as Set<InvalidationListenHook> | undefined;
-  if (!hooks) {
-    hooks = new Set();
-    g[INVALIDATION_LISTEN_HOOKS_KEY] = hooks;
-  }
-  return hooks;
+  return invalidationListenHooksState.hooks;
 }
 
 /**

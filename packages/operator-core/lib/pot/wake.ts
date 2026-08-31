@@ -28,6 +28,7 @@
 import type { Sql } from 'postgres';
 import type { DataCondition } from '@papercusp/rules';
 import { clampToFloor, withinFloor } from '@papercusp/debounce-coalesce';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { getOrgPg, upsertRoutine, setRoutineActive, deleteRoutine } from '@papercusp/db-org';
 import { computeNextFireAt } from '../harness/routines/cron';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
@@ -310,16 +311,18 @@ type PotWakeRuleSyncRuntime = {
   handle?: { close: () => void };
   removeListenHook?: () => void;
 };
-const POT_WAKE_RULE_SYNC_RUNTIME_KEY = '__papercuspPotWakeRuleSyncRuntime__';
+// Pinned through the primitive rather than by hand: a hand-rolled `globalThis`
+// slot fixes correctness but is invisible to `listModuleDuplications()`, so the
+// central report answers a confident `[]` while this module is split. Pinned at
+// MODULE SCOPE exactly once — pinning inside the accessor would count every call
+// as an evaluation and manufacture a false duplication in that same report.
+const potWakeRuleSyncRuntimeState = pinModuleState<PotWakeRuleSyncRuntime>(
+  '__papercuspPotWakeRuleSyncRuntime__',
+  () => ({}),
+);
 
 function potWakeRuleSyncRuntime(): PotWakeRuleSyncRuntime {
-  const g = globalThis as Record<string, unknown>;
-  let runtime = g[POT_WAKE_RULE_SYNC_RUNTIME_KEY] as PotWakeRuleSyncRuntime | undefined;
-  if (!runtime) {
-    runtime = {};
-    g[POT_WAKE_RULE_SYNC_RUNTIME_KEY] = runtime;
-  }
-  return runtime;
+  return potWakeRuleSyncRuntimeState;
 }
 
 /** Read the persisted pot wake state for a workspace. */
@@ -448,13 +451,21 @@ export async function ensurePotWakeRuleSync(): Promise<boolean> {
   return runtime.start;
 }
 
-/** Test-only: tear down the process-global sync subscription + guard. */
+/**
+ * Test-only: tear down the process-global sync subscription + guard.
+ *
+ * The state is pinned at module scope, so its OBJECT IDENTITY is fixed for the
+ * realm — dropping the slot (the old `delete globalThis[key]`) would strand the
+ * live reference this module already closed over. Clear every field instead,
+ * which is what "a fresh runtime" actually has to mean once the state is pinned.
+ */
 export function _resetPotWakeRuleSyncForTests(): void {
-  const g = globalThis as Record<string, unknown>;
-  const runtime = g[POT_WAKE_RULE_SYNC_RUNTIME_KEY] as PotWakeRuleSyncRuntime | undefined;
-  runtime?.handle?.close();
-  runtime?.removeListenHook?.();
-  delete g[POT_WAKE_RULE_SYNC_RUNTIME_KEY];
+  const runtime = potWakeRuleSyncRuntimeState;
+  runtime.handle?.close();
+  runtime.removeListenHook?.();
+  runtime.handle = undefined;
+  runtime.removeListenHook = undefined;
+  runtime.start = undefined;
 }
 
 /**
