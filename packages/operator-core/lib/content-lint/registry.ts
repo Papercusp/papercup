@@ -32,6 +32,7 @@ import {
   defaultExemptionLoader,
   type ExemptionLoader,
 } from './secrets';
+import { findIdentityLeakError, identityLeakScopeMatches } from './identity-leak';
 
 /**
  * The registry's shared runtime-exemption reader for the `secrets` detector.
@@ -77,6 +78,20 @@ export interface ContentDetector {
    * same fix). Omit for detectors with no safe deterministic repair (smart-quotes).
    */
   autoFix?: (text: string) => { fixed: string; changed: boolean };
+  /**
+   * Optional REPO SCOPE (EI-19381677675617429). git-sync sweeps the superproject AND
+   * every submodule with this same detector list, and `matches` only ever receives a
+   * path relative to whichever repo is being guarded — so a detector cannot tell the
+   * two apart on its own. Declaring `'superproject-only'` makes the content guard skip
+   * this detector entirely inside a submodule.
+   *
+   * Needed by any rule whose CI lint is deliberately superproject-only. The identity
+   * lints are: 45 submodule files carry identity literals BY DESIGN (redacted at tar
+   * time by bin/stage-source-tree.sh), so an unscoped identity detector would quarantine
+   * all 45 from every submodule commit. Omit for a detector that applies everywhere
+   * (mdx, smart-quotes, secrets, …) — that stays the default.
+   */
+  repoScope?: 'superproject-only';
 }
 
 /** Shared exclusions — retired trees, vendored code, build output (mirror the lint scripts).
@@ -544,12 +559,36 @@ export const secretsDetector: ContentDetector = {
  * entry (a new `{ key, glob, matches, detect, fixerRole }`); the guard + escalation
  * + fixer dispatch pick it up with no further change.
  */
+/**
+ * The identity-leak detector (EI-19381677675617429) — the route-independent half of a
+ * rule that already had an edit-time advisory. That advisory only ever fires on
+ * Edit/Write/MultiEdit, so a unit `cp`'d in from the host bypassed it entirely and was
+ * committed 4m39s before its fix. This one sees the dirty set however it was written.
+ *
+ * SUPERPROJECT-ONLY (see `repoScope`): 45 submodule files carry identity literals by
+ * design and are redacted at tar time, so enforcing there would quarantine all of them.
+ *
+ * No `autoFix`: unlike the MDX/NUL repairs there is no single safe substitution — the
+ * correct fix is context-dependent (`%h` in a systemd unit, `"$HOME"` in shell,
+ * `os.homedir()` in node, a redacted `<user>` in a doc or fixture), so this quarantines
+ * for the fixer rather than guessing, exactly as smart-quotes does.
+ */
+export const identityLeakDetector: ContentDetector = {
+  key: 'identity-leak',
+  glob: '**/*',
+  matches: identityLeakScopeMatches,
+  detect: (file, text) => findIdentityLeakError(file, text),
+  fixerRole: CONTENT_FIXER_ROLE,
+  repoScope: 'superproject-only',
+};
+
 export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   // Ordered FIRST: a file carrying a credential shape is the one offence here whose
   // cost is unbounded and unrecoverable (a permanent egress freeze) rather than a
   // broken build, so when a file trips several detectors this is the message that
   // gets recorded and escalated first.
   secretsDetector,
+  identityLeakDetector,
   mdxDetector,
   smartQuotesDetector,
   nulBytesDetector,

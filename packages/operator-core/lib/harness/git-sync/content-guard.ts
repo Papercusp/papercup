@@ -94,13 +94,39 @@ const MAX_READ_CONCURRENCY = 16;
 export async function detectContentOffenders(deps: ContentGuardDeps): Promise<ContentOffender[]> {
   const { runGit, repoPath, readText, writeText, detectors, log } = deps;
   if (detectors.length === 0) return [];
+
+  // EI-19381677675617429 — honour `repoScope`. git-sync runs this guard for the
+  // superproject AND for every submodule with the SAME detector list, while `matches`
+  // only ever sees a path relative to whichever repo is being guarded — so a
+  // superproject-only rule cannot scope itself and must be filtered here, where
+  // `repoPath` is known.
+  //
+  // Resolved ONCE per invocation and ONLY when some detector actually asks, so a repo
+  // with no scoped detector pays no extra git call. FAILS OPEN IN THE SAFE DIRECTION:
+  // "unknown" is treated like "submodule" and DROPS the scoped detector, because the
+  // costly mistake is the other way round — 45 submodule files carry identity literals
+  // by design (redacted at tar time), so wrongly running a superproject-only detector
+  // inside a submodule would quarantine them from every commit, fleet-wide.
+  let active = detectors;
+  if (detectors.some((d) => d.repoScope === 'superproject-only')) {
+    const superproject = await isSuperprojectRepo(runGit, repoPath, log);
+    if (!superproject) {
+      active = detectors.filter((d) => d.repoScope !== 'superproject-only');
+      log?.(
+        `[content-guard] ${repoPath}: skipping ${detectors.length - active.length} ` +
+          `superproject-only detector(s) here`,
+      );
+    }
+  }
+  if (active.length === 0) return [];
+
   const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
   if (r.code !== 0) return []; // can't list — fail open (the commit proceeds as today)
 
   // Pair each dirty path with the detectors that target it; drop paths no detector wants.
   const targets: Array<{ file: string; dets: ContentDetector[] }> = [];
   for (const file of parseDirtyPaths(r.stdout)) {
-    const dets = detectors.filter((d) => {
+    const dets = active.filter((d) => {
       try {
         return d.matches(file);
       } catch (e) {
@@ -211,6 +237,35 @@ async function tryAutoFix(
   }
   io.log?.(`[content-guard] auto-repaired ${file} [${d.key}] deterministically — committing this tick (no LLM fixer / no build block)`);
   return fixed;
+}
+
+/**
+ * Is `repoPath` the SUPERPROJECT (rather than a submodule checkout)?
+ *
+ * `git rev-parse --show-superproject-working-tree` prints the parent's working tree
+ * inside a submodule and NOTHING in the superproject — the cheapest reliable
+ * discriminator, and it needs no knowledge of where the superproject actually is.
+ *
+ * @returns true only when we POSITIVELY established this is the superproject. A
+ *   non-zero exit or a throw returns false, so the caller drops superproject-only
+ *   detectors rather than risk running them where they do not belong.
+ */
+async function isSuperprojectRepo(
+  runGit: RunGit,
+  repoPath: string,
+  log?: (m: string) => void,
+): Promise<boolean> {
+  try {
+    const r = await runGit(['rev-parse', '--show-superproject-working-tree'], repoPath);
+    if (r.code !== 0) {
+      log?.(`[content-guard] ${repoPath}: could not resolve repo kind — treating as submodule`);
+      return false;
+    }
+    return r.stdout.trim().length === 0;
+  } catch (e) {
+    log?.(`[content-guard] ${repoPath}: repo-kind probe threw — treating as submodule: ${errMsg(e)}`);
+    return false;
+  }
 }
 
 function errMsg(e: unknown): string {

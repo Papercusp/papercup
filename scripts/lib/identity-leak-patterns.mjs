@@ -85,6 +85,14 @@ export const SKIP = [
   /(^|\/)coverage\//, /(^|\/)_retired\//, /(^|\/)\.papercusp\//, /(^|\/)docs\.old\.\d+\//,
   /(^|\/)agent-briefs\//, /^docs\/plans\//, /(^|\/)public\/internal\/docs\//,
   /(^|\/)\.harness\//, /(^|\/)\.tmp(-[^/]*)?\//, /(^|\/)\.claude\//,
+  // Dot-prefixed TOOL CACHES (`.tsx-tmp/`, `.content-fixer-tmp/`): regenerated V8
+  // compile-cache blobs, same category as dist/ and build/ above. The `.tmp(-…)/`
+  // entry on the previous line matches a `.tmp` PREFIX and so misses these, which
+  // END in `-tmp` — measured 2026-08-31: 410 tracked cache files (275 in
+  // .content-fixer-tmp/, 135 in .tsx-tmp/) carried this box's home path and made
+  // check-no-box-identity.mjs report 412 findings when only 2 were real source.
+  // Matched by SHAPE, not by a hardcoded pair, so a future `.<tool>-tmp/` is covered.
+  /(^|\/)\.[\w.-]+-tmp\//,
   /(^|\/)__pycache__\//, /\.pyc$/,
   /\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|zst|gz|tgz|zip|pdf|mp[34]|wav|lock)$/i,
   /(^|\/)package-lock\.json$/, /(^|\/)junit\.xml$/,
