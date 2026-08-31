@@ -289,27 +289,45 @@ describe('projectGreenCheckpointFireFreshness', () => {
 });
 
 describe('projectGreenCheckpointPause', () => {
+  const NOW = 1_786_780_600_000;
   const paused = {
     name: 'green-checkpoint',
     active: false,
     cron: '0 0 * * * *',
     lastFiredAtMs: 1_786_779_000_000,
     nextFireAtMs: null,
+    groupSlug: 'release',
     pause: {
       reason: 'hold while the repaired staging checkout is verified',
       pausedBy: 'su-release-owner',
       pausedAtMs: 1_786_780_000_000,
+      expiresAtMs: 1_786_780_000_000 + 4 * 3_600_000,
     },
   };
 
-  it('projects an inactive routine pause as a deliberate fire hold with its reason', () => {
-    expect(projectGreenCheckpointPause(paused)).toEqual({
-      pause: paused.pause,
-      fireStale: true,
-      fireStaleReason:
-        'green-checkpoint is deliberately PAUSED (active:false): hold while the repaired staging checkout is verified — ' +
-        'no scheduled fire can occur until the hold is resumed',
-    });
+  it('projects an inactive routine pause as the standing GATE PAUSED banner (P-004)', () => {
+    const projected = projectGreenCheckpointPause(paused, NOW);
+    expect(projected.pause).toEqual(paused.pause);
+    expect(projected.fireStale).toBe(true);
+    // The banner must name WHO holds it, SINCE when, WHY, and WHEN it auto-resumes —
+    // the four facts whose absence made a 99h deliberate pause read as a red gate.
+    expect(projected.fireStaleReason).toContain('GREEN-CHECKPOINT PAUSED');
+    expect(projected.fireStaleReason).toContain('su-release-owner');
+    expect(projected.fireStaleReason).toContain('hold while the repaired staging checkout is verified');
+    expect(projected.fireStaleReason).toContain(new Date(paused.pause.pausedAtMs).toISOString());
+    expect(projected.fireStaleReason).toContain(`auto-resumes ${new Date(paused.pause.expiresAtMs).toISOString()}`);
+    expect(projected.fireStaleReason).toContain('A PAUSED gate is not a FAILING gate');
+  });
+
+  it('says so LOUDLY when a hold carries no auto-resume at all', () => {
+    const untimed = {
+      ...paused,
+      groupSlug: null,
+      pause: { ...paused.pause, expiresAtMs: null },
+    };
+    const reason = projectGreenCheckpointPause(untimed, NOW).fireStaleReason ?? '';
+    expect(reason).toContain('NO auto-resume is scheduled');
+    expect(reason).toContain('NOTHING will re-arm it');
   });
 
   it('does not carry stale pause metadata onto an active routine', () => {

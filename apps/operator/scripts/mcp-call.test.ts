@@ -6,6 +6,7 @@ import {
   parseArgs,
   jsonSourceKind,
   readJsonArgs,
+  resolveMcpClientId,
   // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
 
@@ -137,6 +138,29 @@ describe('mcp-call result-format contract', () => {
         (path: string) => path,
       ),
     ).toBe(false);
+  });
+});
+
+describe('mcp-call client identity', () => {
+  it('keeps the same launch identity across helper processes', () => {
+    const env = { PAPERCUSP_SPAWN_ID: 'content-fixer-spawn-42' };
+
+    expect(resolveMcpClientId({}, env, 101)).toBe('content-fixer-spawn-42');
+    expect(resolveMcpClientId({}, env, 202)).toBe('content-fixer-spawn-42');
+  });
+
+  it('preserves explicit and full-session identities ahead of the spawn fallback', () => {
+    const env = {
+      PAPERCUSP_SID: 'su-session',
+      PAPERCUSP_SPAWN_ID: 'content-fixer-spawn-42',
+    };
+
+    expect(resolveMcpClientId({ client: 'explicit-client' }, env, 101)).toBe('explicit-client');
+    expect(resolveMcpClientId({ client: '   ' }, env, 101)).toBe('su-session');
+  });
+
+  it('retains the per-process fallback for an ordinary terminal', () => {
+    expect(resolveMcpClientId({}, {}, 303)).toBe('mcp-call-303');
   });
 });
 

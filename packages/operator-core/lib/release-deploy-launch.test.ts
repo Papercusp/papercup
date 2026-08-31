@@ -243,6 +243,8 @@ describe('computeDeployStatus — decision tree', () => {
         reason: 'hold until checkout repair is included in a fresh green pin',
         pausedBy: 'su-release-owner',
         pausedAtMs: Date.parse('2026-08-15T09:07:00Z'),
+        // P-004: null = no auto-resume scheduled for this fixture's hold.
+        expiresAtMs: null,
       },
     };
     const s = computeDeployStatus(snap);
@@ -925,6 +927,7 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
       cron: '0 15 * * * *',
       lastFiredAtMs: 1,
       nextFireAtMs: 2,
+      groupSlug: 'release',
       pause: null,
     };
     idle.activeRun = {
@@ -949,6 +952,9 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
         reason: 'D-012/D-013 live quiescence hold under WI-40086: waiting for immutable deps',
         pausedBy: 'su-owner',
         pausedAtMs: 1,
+        // P-004: the structured serializer quiescence hold is deliberately NOT TTL'd —
+        // it is re-armed on owner non-liveness, not on a clock (release-pause-ttl.ts).
+        expiresAtMs: null,
       },
     };
     paused.activeRun = idle.activeRun;
