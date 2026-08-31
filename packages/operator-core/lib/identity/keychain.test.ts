@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -277,6 +277,99 @@ describe('keychain (encrypted-file fallback)', () => {
       }
       expect(await readFile(primaryPath)).toEqual(primaryBefore);
       expect(await readFile(encPath(id))).toEqual(legacyBefore);
+    } finally {
+      rmSync(primaryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a store that cannot converge both mirrors publishes NEITHER — no divergent primary (EI-21987155936742109)', async () => {
+    // Live recurrence on Avis-iMac.local 2026-08-31: the configured shared mirror
+    // held a fresh device key while the legacy HOME mirror still held the ATTESTED
+    // one, so `fileLoad` fail-closed forever and all three P2P substrates stayed
+    // unbooted. No rogue writer is needed to mint that split — `fileStore` is the
+    // only writer, and it converged the mirrors in a bare sequential loop, primary
+    // FIRST. Any interruption after the first write and before the second (crash,
+    // kill, ENOSPC, an unmounted share, EACCES) leaves exactly the observed state.
+    // Each individual file write was already atomic; the PAIR was not.
+    if (process.getuid?.() === 0) return; // root ignores the mode bits this test turns on
+
+    const primaryDir = mkdtempSync(join(tmpdir(), 'pc-keychain-partial-store-'));
+    const legacyDir = join(TMP_HOME, '.papercusp', 'identity');
+    process.env.PAPERCUSP_IDENTITY_DIR = primaryDir;
+    const id = '1567022:Avis-iMac_local-aviweiss';
+    const primaryPath = join(primaryDir, 'keypair-' + id.replace(/[^a-zA-Z0-9_-]/g, '_') + '.enc');
+    const attestedDer = Buffer.from('attested-device-key-the-gist-binds');
+    const freshDer = Buffer.from('fresh-device-key-nothing-attests--');
+
+    try {
+      // A healthy rig: the attested identity is converged across both mirrors.
+      const { keychainStore } = await loadKeychain();
+      await keychainStore(id, attestedDer);
+      expect(existsSync(primaryPath)).toBe(true);
+      expect(existsSync(encPath(id))).toBe(true);
+
+      // The legacy root stops accepting writes (share drops / perms change).
+      chmodSync(legacyDir, 0o500);
+      await expect(keychainStore(id, freshDer)).rejects.toThrow();
+      chmodSync(legacyDir, 0o700);
+
+      // The rig must still boot. A store that could not reach every mirror must
+      // not have published a primary the attestation cannot vouch for — that is
+      // what bricks the device, because `fileLoad` then refuses both copies.
+      vi.resetModules();
+      const loaded = await (await loadKeychain()).keychainLoad(id);
+      expect(loaded.kind).toBe('ok');
+      if (loaded.kind === 'ok') expect(loaded.value.equals(attestedDer)).toBe(true);
+    } finally {
+      try {
+        chmodSync(legacyDir, 0o700);
+      } catch {
+        /* best-effort: the test may have failed before the mode was restored */
+      }
+      rmSync(primaryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('probeTiers reports DIVERGED mirrors rather than a healthy-looking first match (EI-21987155936742109)', async () => {
+    // The WI-2018 probe stopped at the first mirror that read, so the split it
+    // was added to diagnose rendered as a perfectly healthy `file:'primary'`.
+    const id = 'hive:default:probe-divergence';
+    const attestedDer = Buffer.from('attested-key-for-probe-divergence-');
+    const divergentDer = Buffer.from('divergent-key-for-probe-divergenc');
+
+    const primaryDir = mkdtempSync(join(tmpdir(), 'pc-keychain-probe-divergent-'));
+    process.env.PAPERCUSP_IDENTITY_DIR = primaryDir;
+    try {
+      const { keychainStore, keychainProbeTiers } = await loadKeychain();
+      await keychainStore(id, attestedDer);
+      const attestedLegacyBlob = await readFile(encPath(id));
+
+      // CONTROL: two mirrors present and converged must NOT report divergence,
+      // or the flag below would be indistinguishable from always-true.
+      //
+      // This is also the guard's sharpest edge. Each mirror is encrypted under
+      // its OWN random salt+IV, so two mirrors holding the SAME key still have
+      // completely different ciphertext — verified on the live rig 2026-08-31,
+      // where the healthy swarm key's two mirrors differed in every byte. A
+      // divergence check written as a byte compare therefore reports every
+      // healthy box as split; only a decrypted-plaintext compare is correct.
+      const convergedPrimaryBlob = await readFile(join(primaryDir, 'keypair-hive_default_probe-divergence.enc'));
+      expect(convergedPrimaryBlob.equals(attestedLegacyBlob)).toBe(false);
+
+      const converged = await keychainProbeTiers(id);
+      expect(converged.file).toBe('primary');
+      expect(converged.mirrorsDiverged).toBe(false);
+
+      // Restore the earlier legacy ciphertext to reproduce the live split
+      // without adding a test-only encryption seam to the production module.
+      vi.resetModules();
+      await (await loadKeychain()).keychainStore(id, divergentDer);
+      writeFileSync(encPath(id), attestedLegacyBlob);
+
+      vi.resetModules();
+      const split = await (await loadKeychain()).keychainProbeTiers(id);
+      expect(split.mirrorsDiverged).toBe(true);
+      expect(split.file).toBe('primary'); // the pre-existing field keeps its meaning
     } finally {
       rmSync(primaryDir, { recursive: true, force: true });
     }
