@@ -234,19 +234,141 @@ function collectSpreadNames(expr) {
   return null; // bare identifier spread — opaque
 }
 
+/** The simple name a callee expression resolves to (`f`, `obj.f`), else null. */
+function calleeName(expr) {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isIdentifier(e)) return e.text;
+  if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) return e.name.text;
+  return null;
+}
+
+/** The interface name a type node names directly (`Foo`), else null. */
+function typeRefName(typeNode) {
+  if (!typeNode) return null;
+  if (ts.isTypeReferenceNode(typeNode) && ts.isIdentifier(typeNode.typeName)) return typeNode.typeName.text;
+  return null;
+}
+
+/**
+ * WI-1745363: the declared PARAMETER TYPES of every function this file names, keyed by
+ * the callee's simple name. This is what lets a literal be attributed to the interface
+ * its CONSUMER declares instead of to whatever interface it happens to fit.
+ *
+ * Returns [{ name, params:(string|null)[] }] — one row per declaration, so a name
+ * declared twice with different signatures can be detected and treated as ambiguous
+ * rather than resolved to an arbitrary one of them.
+ */
+export function findCalleeParamTypesInSource(sourceText, fileName = 'f.ts') {
+  const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  const found = [];
+  const record = (name, parameters) => {
+    if (!name) return;
+    found.push({ name, params: parameters.map((p) => typeRefName(p.type)) });
+  };
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name) record(node.name.text, node.parameters);
+    else if (
+      (ts.isMethodDeclaration(node) || ts.isMethodSignature(node)) &&
+      node.name &&
+      ts.isIdentifier(node.name)
+    )
+      record(node.name.text, node.parameters);
+    else if (
+      ts.isVariableDeclaration(node) &&
+      node.name &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+    )
+      record(node.name.text, node.initializer.parameters);
+    ts.forEachChild(node, visit);
+  }
+  visit(sf);
+  return found;
+}
+
+/**
+ * The ANCHOR that ties an object literal to a named consumer, or null when nothing in
+ * the syntax says what the literal is. Three forms, in descending directness:
+ *
+ *   { typeName }          — `satisfies I`, `as I`, or `const x: I = {…}`
+ *   { callee, argIndex }  — the literal is passed directly to `f(…)` / `new F(…)`
+ *   { varName }           — `const d = {…}` whose later use in this file supplies one
+ *
+ * `varName` is resolved by {@link findDepsLiteralsInSource}'s second pass, because the
+ * use site (`runScoutCycle(d)`) is what names the consumer, not the declaration.
+ */
+function literalAnchor(node) {
+  let n = node;
+  let p = n.parent;
+  while (p && (ts.isParenthesizedExpression(p) || ts.isAsExpression(p) || ts.isSatisfiesExpression(p))) {
+    if (ts.isAsExpression(p) || ts.isSatisfiesExpression(p)) {
+      const t = typeRefName(p.type);
+      if (t) return { typeName: t };
+    }
+    n = p;
+    p = p.parent;
+  }
+  if (!p) return null;
+  if (ts.isVariableDeclaration(p) && p.initializer === n) {
+    const t = typeRefName(p.type);
+    if (t) return { typeName: t };
+    if (ts.isIdentifier(p.name)) return { varName: p.name.text };
+    return null;
+  }
+  if ((ts.isCallExpression(p) || ts.isNewExpression(p)) && p.arguments) {
+    const argIndex = p.arguments.indexOf(n);
+    const callee = calleeName(p.expression);
+    if (argIndex >= 0 && callee) return { callee, argIndex };
+  }
+  return null;
+}
+
 /**
  * Construction sites of deps-shaped object literals in one source file.
- * [{ file, line, names:Set }]
+ * [{ file, line, names:Set, anchor }]
+ *
+ * ⚠ WI-1745363 — a literal with NO anchor is DROPPED, not guessed at. Before that, a
+ * literal was attributed to any deps interface whose members happened to be a superset
+ * of its keys, which made every wide all-optional interface a structural magnet: the
+ * six narrow helper args in git-sync (`{ runGit, repoPath, log }` → detectUnsafeDeletions
+ * and friends) were all reported as diverging `RunGitSyncOpts` constructions, on a
+ * `--fail` blocking path, against the tree's ONE real one. Precision is what this guard
+ * needs: a false positive reds the fleet, a false negative only restores the status quo
+ * before the guard existed.
  */
 export function findDepsLiteralsInSource(sourceText, fileName = 'f.ts') {
   const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
   const sites = [];
+  /** varName -> {callee,argIndex} | AMBIGUOUS(null), from `f(d)` uses in this file. */
+  const varUses = new Map();
+  function collectVarUses(node) {
+    if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && node.arguments) {
+      const callee = calleeName(node.expression);
+      if (callee) {
+        node.arguments.forEach((a, argIndex) => {
+          if (!ts.isIdentifier(a)) return;
+          const prev = varUses.get(a.text);
+          const here = { callee, argIndex };
+          if (prev === undefined) varUses.set(a.text, here);
+          else if (prev === null || prev.callee !== callee || prev.argIndex !== argIndex)
+            varUses.set(a.text, null); // used two different ways — not a reliable anchor
+        });
+      }
+    }
+    ts.forEachChild(node, collectVarUses);
+  }
+  collectVarUses(sf);
+
   function visit(node) {
     if (ts.isObjectLiteralExpression(node)) {
       const names = objectLiteralPropertyNames(node);
       if (names && names.size >= 2) {
         const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
-        sites.push({ file: fileName, line: line + 1, names });
+        let anchor = literalAnchor(node);
+        if (anchor && anchor.varName !== undefined) anchor = varUses.get(anchor.varName) ?? null;
+        if (anchor) sites.push({ file: fileName, line: line + 1, names, anchor });
       }
     }
     ts.forEachChild(node, visit);
@@ -256,48 +378,45 @@ export function findDepsLiteralsInSource(sourceText, fileName = 'f.ts') {
 }
 
 /**
- * Attribute a literal to the deps interface it most plausibly constructs:
- * every property name must be a member, and every REQUIRED member must be present.
- * On a tie the literal is ambiguous and is dropped rather than guessed.
+ * Index every function name -> the interface name declared at each parameter position.
+ * A name declared more than once with DIFFERENT types at a position is recorded as
+ * ambiguous (null): resolving it to an arbitrary one of them is exactly the guessing
+ * WI-1745363 removed.
+ *
+ * Returns Map<`${calleeName}#${argIndex}`, string|null>.
  */
-export function attributeLiteral(names, interfaces) {
-  const candidates = [];
-  for (const iface of interfaces) {
-    let subset = true;
-    for (const n of names) {
-      if (!iface.members.has(n)) {
-        subset = false;
-        break;
-      }
-    }
-    if (!subset) continue;
-    let coversRequired = true;
-    for (const r of iface.required) {
-      if (!names.has(r)) {
-        coversRequired = false;
-        break;
-      }
-    }
-    if (!coversRequired) continue;
-    candidates.push(iface);
-  }
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1) return candidates[0];
-  let best = candidates[0];
-  let bestScore = -1;
-  let tied = false;
-  for (const c of candidates) {
-    let score = 0;
-    for (const n of names) if (c.optionalSeams.has(n)) score += 1;
-    if (score > bestScore) {
-      bestScore = score;
-      best = c;
-      tied = false;
-    } else if (score === bestScore) {
-      tied = true;
+export function buildCalleeParamTypeIndex(sources) {
+  /** key -> { type:string|null, ambiguous:boolean } */
+  const acc = new Map();
+  for (const { fileName, text } of sources) {
+    for (const { name, params } of findCalleeParamTypesInSource(text, fileName)) {
+      params.forEach((type, i) => {
+        if (!type) return;
+        const key = `${name}#${i}`;
+        const prev = acc.get(key);
+        if (prev === undefined) acc.set(key, { type, ambiguous: false });
+        else if (prev.type !== type) acc.set(key, { type: null, ambiguous: true });
+      });
     }
   }
-  return tied ? null : best;
+  const out = new Map();
+  for (const [k, v] of acc) out.set(k, v.ambiguous ? null : v.type);
+  return out;
+}
+
+/**
+ * Resolve the deps interface a literal actually constructs, from its ANCHOR — the
+ * consumer named in the syntax — never from its shape.
+ *
+ * `interfacesByName` maps an interface name to its descriptor, or to null when two
+ * files export that name (ambiguous: attributing to either would be a guess).
+ */
+export function resolveLiteralInterface(site, interfacesByName, calleeParamTypes) {
+  const a = site.anchor;
+  if (!a) return null;
+  const name = a.typeName ?? (a.callee !== undefined ? calleeParamTypes.get(`${a.callee}#${a.argIndex}`) : null);
+  if (!name) return null;
+  return interfacesByName.get(name) ?? null;
 }
 
 /**
@@ -312,11 +431,21 @@ export function findWiringParityGaps(sources, opts = {}) {
   }
   if (interfaces.length === 0) return [];
 
+  /** name -> descriptor, or null when the name is exported from two files (ambiguous). */
+  const interfacesByName = new Map();
+  for (const iface of interfaces) {
+    if (interfacesByName.has(iface.name)) {
+      const prev = interfacesByName.get(iface.name);
+      if (!prev || prev.file !== iface.file) interfacesByName.set(iface.name, null);
+    } else interfacesByName.set(iface.name, iface);
+  }
+  const calleeParamTypes = buildCalleeParamTypeIndex(sources);
+
   /** interfaceName -> [{ file, line, names }] */
   const sitesByInterface = new Map();
   for (const { fileName, text } of sources) {
     for (const site of findDepsLiteralsInSource(text, fileName)) {
-      const iface = attributeLiteral(site.names, interfaces);
+      const iface = resolveLiteralInterface(site, interfacesByName, calleeParamTypes);
       if (!iface) continue;
       // A literal wiring no optional seam at all is an option-bag, not a deps object.
       let wiresASeam = false;
@@ -377,42 +506,57 @@ export function findWiringParityGaps(sources, opts = {}) {
  */
 const NOT_ADJUDICATED = 'pre-existing at guard wiring (WI-1728261) — recorded, not adjudicated';
 
+/**
+ * WI-1745363 — `LockAuthorityDeps.fetchPresenceRows` and `.fetchHivePresenceRows` are a
+ * MUTUALLY-EXCLUSIVE scope-variant pair, not two halves of one concern. `lockAuthorityFor`
+ * / `routeToAuthority` read only the harness half (lock-authority.ts:582); `lockAuthorityForHive`
+ * / `routeToAuthorityForHive` read only the hive half (:655); neither function falls back to
+ * the other. Each site below injects exactly the half the entry point it calls will read, so
+ * the "missing" one is unreachable there. Only `routeFileLockOp` (file-lock-routing.ts:128)
+ * picks scope at RUNTIME and would need both — and all four of its production callers
+ * (locks/{acquire,release,release-all-owned,file-lock-authority-wiring}.ts) inject NEITHER,
+ * taking the real defaults. Correct as written; do not "fix" by adding the other half.
+ */
+const SCOPE_VARIANT_PAIR =
+  'WI-1745363 adjudicated: harness-vs-hive scope-variant pair; this site injects the half its entry point reads';
+
+/**
+ * WI-1745363 — a LOAD-TEST harness and the production sidecar legitimately carry different
+ * concerns. `load-test.ts:56` drives a synthetic gateway on port 0 and has no local backends
+ * to resolve; `sidecar-main.ts:147` is the real entry point and uses the default logger
+ * rather than the harness's console tap. Both are `startGatewayService` callers, correctly
+ * attributed — this is a deliberate asymmetry, not a skipped concern.
+ */
+const HARNESS_VS_PRODUCTION =
+  'WI-1745363 adjudicated: load-test harness vs production sidecar — deliberate, concern is inapplicable at the other site';
+
 const FAIL_BASELINE = new Map([
-  // Seeded from the measured `--list` run, 2026-08-31: 44 findings / 33 distinct rows
-  // over 7,147 files. Wiring the guard unbaselined would have red-pinned the fleet on
-  // debt that accrued over the whole period this check did not exist.
+  // Re-seeded from the measured `--list` run after the WI-1745363 attribution fix:
+  // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
+  // attribution). The 11 rows that disappeared were NOT fixed divergences — they were
+  // misattributed literals that are no longer in the population at all, so re-seeding is
+  // the only correct move: hand-pruning would have implied an adjudication nobody made.
   ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|verifyBindingOverride', NOT_ADJUDICATED],
-  ['CalibrationCaptureDeps|apps/operator/bin/host-bootstrap.ts|getSql,insert,nowMs,workspaceId', NOT_ADJUDICATED],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|reach,revive', NOT_ADJUDICATED],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem,settleConversation', NOT_ADJUDICATED],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/reply.ts|mintGraduationWorkItem,settleConversation', NOT_ADJUDICATED],
-  ['DurableGatewayAdmissionOptions|packages/operator-core/lib/resource-governor/execution.ts|now', NOT_ADJUDICATED],
   ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_get.ts|progress', NOT_ADJUDICATED],
   ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_outline.ts|progress', NOT_ADJUDICATED],
   ['EngineCtx|packages/operator-core/lib/agent-tools/docs/get.ts|progress', NOT_ADJUDICATED],
   ['EngineCtx|packages/operator-core/lib/agent-tools/docs/outline.ts|progress', NOT_ADJUDICATED],
+  ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/load-test.ts|resolveLocalBackends', HARNESS_VS_PRODUCTION],
+  ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/sidecar-main.ts|log', HARNESS_VS_PRODUCTION],
   ['GetInProcessStatusOpts|packages/operator-core/lib/agent-tools/dev/dogfood_substrate_status.ts|resolveDhtBootstrapProbeStaleMs,resolveSidecarLive', NOT_ADJUDICATED],
   ['GetInProcessStatusOpts|packages/operator-core/lib/endpoint-route/routes/discovery/build-federation-status.ts|resolveClaimStats,resolveRemoteBootedHandles', NOT_ADJUDICATED],
   ['GovernedOperationInput|packages/operator-core/lib/agent-tools/testing/run.ts|measureActualDemand', NOT_ADJUDICATED],
   ['GracefulRecycleOpts|apps/operator/bin/hono-host.ts|closeSubstrate,dropReplicationTracking,exit,isSaturated,killSelf', NOT_ADJUDICATED],
-  ['InterruptDeps|packages/operator-core/lib/agent-tools/turn/interrupt.ts|sendYield', NOT_ADJUDICATED],
-  ['KillDeps|packages/operator-core/lib/agent-tools/fleet/kill.ts|audit,cancelNursery,clearPresence,deactivateLoop,findHost,findLiveUnmanaged,markSessionEnded,presenceExists,releaseSeatConsumptions,repairStaleAdvSessionTerminalMarkers', NOT_ADJUDICATED],
-  ['KillDeps|packages/operator-core/lib/agent-tools/fleet/kill.ts|alive,kill,sleep', NOT_ADJUDICATED],
-  ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts|fetchPresenceRows', NOT_ADJUDICATED],
-  ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-agent.ts|fetchHivePresenceRows', NOT_ADJUDICATED],
-  ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts|fetchPresenceRows', NOT_ADJUDICATED],
-  ['LockAuthorityDeps|packages/operator-core/lib/shared-pot-loop/composition-rig.ts|fetchPresenceRows', NOT_ADJUDICATED],
-  ['LockAuthorityDeps|packages/operator-core/lib/shared-pot/suite/checks.ts|fetchHivePresenceRows,fetchPresenceRows', NOT_ADJUDICATED],
-  ['LockAuthorityDeps|packages/operator-core/lib/shared-pot/suite/checks.ts|fetchPresenceRows', NOT_ADJUDICATED],
+  ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
+  ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-agent.ts|fetchHivePresenceRows', SCOPE_VARIANT_PAIR],
+  ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
+  ['LockAuthorityDeps|packages/operator-core/lib/shared-pot/suite/checks.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
   ['PgRetryOpts|packages/operator-core/lib/pot/soak-report.ts|sleep', NOT_ADJUDICATED],
   ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice', NOT_ADJUDICATED],
   ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice,resolveHomeLogKeyHex', NOT_ADJUDICATED],
-  ['RunGitSyncOpts|packages/operator-core/lib/harness/git-sync/content-guard.ts|loadRoster', NOT_ADJUDICATED],
-  ['RunGitSyncOpts|packages/operator-core/lib/harness/git-sync/git-sync-action.ts|log,readText,writeText', NOT_ADJUDICATED],
-  ['RunGitSyncOpts|packages/operator-core/lib/harness/git-sync/run-git-sync.ts|loadRoster,readText,writeText', NOT_ADJUDICATED],
-  ['RunGitSyncOpts|packages/operator-core/lib/harness/git-sync/run-git-sync.ts|loadRoster,writeText', NOT_ADJUDICATED],
-  ['ScoutTickDeps|packages/operator-core/lib/scout/capacity-storm-drill.ts|ackRevisionRequests,claimFire,fireGate,persistStageArtifacts,readRevisionRequests,recordFire,refreshOutcomes', NOT_ADJUDICATED],
-  ['ScoutTickDeps|packages/operator-core/lib/scout/scheduler.ts|newCycleId', NOT_ADJUDICATED],
   ['WireCrossHiveBoundaryDeps|packages/operator-core/lib/deployment/cross-hive-frame.ts|loadOutboundGrants', NOT_ADJUDICATED],
 ]);
 

@@ -18,7 +18,14 @@ import { describe, expect, it } from 'vitest';
 import { findWiringParityGaps, objectLiteralPropertyNames } from '../../../../scripts/check-deps-wiring-parity.mjs';
 import * as ts from 'typescript';
 
-/** The shared orchestrator's deps interface, in the shape the real one takes. */
+/**
+ * The shared orchestrator's deps interface, in the shape the real one takes — plus the
+ * CONSUMER that names it. WI-1745363: a literal is attributed to an interface only via
+ * an anchor (a type annotation, or the declared parameter type of the callee it is
+ * passed to), never by its shape, so a fixture without a consumer is not a deps site at
+ * all. This mirrors the real Scout pair, where both entry points hand their literal to
+ * `buildScoutCycleDeps(...)`.
+ */
 const DEPS_IFACE = `
   export interface CycleDeps {
     runCycle: CycleRunner;
@@ -26,11 +33,12 @@ const DEPS_IFACE = `
     ceilingGate?: typeof realCeilingGate;
     hiveRunnerGate?: (i: { workspaceId: string }) => Promise<{ run: boolean }>;
   }
+  export function startCycle(deps: CycleDeps) { return deps; }
 `;
 
 /** The entry point that wires everything (the blueprint op's role). */
 const FULLY_WIRED = `
-  const deps = {
+  const deps: CycleDeps = {
     runCycle: productionRunner,
     potGate: realPotGate,
     ceilingGate: realCeilingGate,
@@ -40,20 +48,20 @@ const FULLY_WIRED = `
 
 /** The entry point that threads seams through params (the routine action's role). */
 const THREADED_MISSING_ONE = `
-  const deps = {
+  startCycle({
     runCycle,
     ...(potGate ? { potGate } : {}),
     ...(ceilingGate ? { ceilingGate } : {}),
-  };
+  });
 `;
 
 const THREADED_COMPLETE = `
-  const deps = {
+  startCycle({
     runCycle,
     ...(potGate ? { potGate } : {}),
     ...(ceilingGate ? { ceilingGate } : {}),
     ...(hiveRunnerGate ? { hiveRunnerGate } : {}),
-  };
+  });
 `;
 
 const sources = (...files: string[]) =>
@@ -109,9 +117,10 @@ describe('findWiringParityGaps', () => {
         gate?: typeof realGate;
         onProgress?: (p: number) => void;
       }
+      export function watch(d: WatchDeps) { return d; }
     `;
-    const a = `const d = { run: r, loadRoster: lr, gate: g, onProgress: (p) => log(p) };`;
-    const b = `const d = { run: r, loadRoster: lr, gate: g };`;
+    const a = `watch({ run: r, loadRoster: lr, gate: g, onProgress: (p) => log(p) });`;
+    const b = `watch({ run: r, loadRoster: lr, gate: g });`;
     // An optional observer left unwired is the INTENDED semantics of a callback.
     expect(findWiringParityGaps(sources(iface, a, b))).toHaveLength(0);
     // ...but the wider population stays measurable, so the narrowing is a stated bound.
@@ -128,16 +137,43 @@ describe('findWiringParityGaps', () => {
         retries?: number;
         hook?: (x: number) => void;
       }
+      export function build(o: Opts) { return o; }
     `;
-    const a = `const o = { id: 'a', label: 'x', hook: (n) => n };`;
-    const b = `const o = { id: 'b', label: 'y' };`;
+    const a = `build({ id: 'a', label: 'x', hook: (n) => n });`;
+    const b = `build({ id: 'b', label: 'y' });`;
     expect(findWiringParityGaps(sources(iface, a, b))).toHaveLength(0);
   });
 
-  it('does not attribute a literal that omits a REQUIRED member of the interface', () => {
-    // Without `runCycle` this is not a CycleDeps instance, whatever else it looks like.
-    const notAnInstance = `const partial = { potGate: realPotGate, ceilingGate: realCeilingGate };`;
-    expect(findWiringParityGaps(sources(DEPS_IFACE, FULLY_WIRED, notAnInstance))).toHaveLength(0);
+  it('drops an UNANCHORED literal rather than attributing it by shape', () => {
+    // Nothing in the syntax says this bare literal is a CycleDeps. Before WI-1745363 it
+    // was attributed anyway, because its keys happened to fit.
+    const bare = `const partial = { runCycle, potGate: realPotGate, ceilingGate: realCeilingGate };`;
+    expect(findWiringParityGaps(sources(DEPS_IFACE, FULLY_WIRED, bare))).toHaveLength(0);
+  });
+
+  it('does not attribute a narrow helper argument to a WIDE all-optional interface (WI-1745363)', () => {
+    // The measured git-sync shape: RunGitSyncOpts declares repoPath/runGit/log/readText/
+    // writeText/loadRoster and has ZERO required members, so it was a structural magnet —
+    // every `{ runGit, repoPath, log }` helper arg in the package was reported as a
+    // diverging RunGitSyncOpts construction against the tree's ONE real one. A guard on a
+    // --fail path must not invent that: a false positive reds the whole fleet.
+    const iface = `
+      export interface WideOpts {
+        repoPath?: string;
+        runGit?: RunGit;
+        log?: (m: string) => void;
+        readText?: (p: string) => Promise<string | null>;
+        writeText?: (p: string, t: string) => Promise<void>;
+        loadRoster?: () => Promise<string[]>;
+      }
+      export function runWide(slug: string, opts: WideOpts) { return opts; }
+      export function detectDeletions(o: DeletionOpts) { return o; }
+      export function regenerate(o: DeletionOpts) { return o; }
+    `;
+    const real = `runWide('s', { runGit, repoPath, log, loadRoster: () => roster() });`;
+    const helperA = `detectDeletions({ runGit, repoPath, log });`;
+    const helperB = `regenerate({ runGit, repoPath, log });`;
+    expect(findWiringParityGaps(sources(iface, real, helperA, helperB))).toHaveLength(0);
   });
 });
 
