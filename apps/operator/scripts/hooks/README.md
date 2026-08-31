@@ -43,10 +43,12 @@ PreToolUse/PostToolUse matchers for `Bash`, `apply_patch` (plus `Edit`/`Write`
 aliases), and MCP tools; missing hook scripts still degrade fail-open, so
 diagnostics tell agents when explicit `locks:*` calls are required.
 
-The edit hook coordinates canonical-tree files by repo-relative path and hidden
-home configuration (`~/.config`, `~/.papercusp`, `~/.codex`, etc.) through the
-reserved `@external/home/*` keyspace. Explicit callers use
-`locks:acquire { external_paths:["/absolute/home/path"] }`; other repositories
+The edit hook coordinates canonical-tree files and managed suite-app checkouts
+(`~/.papercusp-workspaces/<workspace>/.papercusp/apps/<app>`) by repo-relative
+path plus physical repository domain. Hidden home configuration (`~/.config`,
+`~/.papercusp`, `~/.codex`, etc.) uses the reserved `@external/home/*` keyspace;
+explicit callers acquire it with
+`locks:acquire { external_paths:["/absolute/home/path"] }`. Other repositories
 remain outside Papercusp coordination. `/api/su-locks/hook-health` exposes the
 last automatic decision (owner, tool, logical paths, lock id) as well as
 success/error health, so enforcement is inspectable instead of inferred.

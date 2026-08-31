@@ -17,7 +17,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runHookProcess } from "./spawn-hook";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createServer, type Server } from "node:http";
 
 const HOOK = join(__dirname, "..", "pretooluse-locks-acquire.sh");
@@ -247,6 +247,55 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(fs.readFileSync(join(cache, "tu-grant.domain"), "utf8")).toBe(
       fs.realpathSync(repo),
     );
+  });
+
+  it("keeps a managed suite app in the repository-domain namespace", async () => {
+    const portal = join(
+      home,
+      ".papercusp-workspaces",
+      "papercusp-workspace",
+      ".papercusp",
+      "apps",
+      "portal",
+    );
+    const target = join(portal, "packages", "contracts", "src", "index.ts");
+    fs.mkdirSync(join(portal, ".git"), { recursive: true });
+    fs.writeFileSync(join(portal, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.mkdirSync(dirname(target), { recursive: true });
+    fs.writeFileSync(target, "export {};\n");
+
+    nextInner = { ok: true, lock_id: "suite-app-lock" };
+    const r = await run({
+      tool_name: "Edit",
+      tool_input: { file_path: target },
+      tool_use_id: "tu-suite-app",
+      session_id: "s",
+      cwd: portal,
+    });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("");
+    expect(lastRequest?.body.params.arguments).toMatchObject({
+      paths: ["packages/contracts/src/index.ts"],
+      coordination_domain: fs.realpathSync(portal),
+    });
+    expect(lastRequest?.body.params.arguments.paths).not.toEqual([
+      "@external/home/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/contracts/src/index.ts",
+    ]);
+    expect(fs.readFileSync(join(cache, "tu-suite-app.domain"), "utf8")).toBe(
+      fs.realpathSync(portal),
+    );
+    const post = await runPost({
+      tool_use_id: "tu-suite-app",
+      session_id: "s",
+    });
+    expect(post.status).toBe(0);
+    expect(lastRequest?.body.params.name).toBe("locks:release");
+    expect(lastRequest?.body.params.arguments).toMatchObject({
+      lock_id: "suite-app-lock",
+      paths: ["packages/contracts/src/index.ts"],
+      coordination_domain: fs.realpathSync(portal),
+    });
   });
 
   it("Claude native two-Edit batch → one union acquire and terminal follower grants", async () => {

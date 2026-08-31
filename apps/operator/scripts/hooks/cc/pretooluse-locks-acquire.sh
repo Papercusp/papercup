@@ -717,6 +717,33 @@ def _workspace_repo_root(repo_root):
     return candidate if _valid_git_entry(candidate) else None
 
 
+def _managed_suite_app_repo(repo_root):
+    """Whether this is a workspace-owned suite app checkout.
+
+    Portal, email, calendar, phone, and future suite apps are separate Git
+    repositories materialized at
+    ``~/.papercusp-workspaces/<workspace>/.papercusp/apps/<app>``. They are not
+    children of ``PAPERCUSP_WORKSPACE_ROOT``, but they are managed edit trees,
+    not arbitrary hidden-home configuration. Key them by physical repository
+    domain so a deliberate ``locks:acquire { coordination_domain, paths }``
+    and the automatic edit guard serialize on the same lock.
+    """
+    try:
+        workspaces_root = os.path.realpath(
+            os.environ.get('PAPERCUSP_WORKSPACES_ROOT')
+            or os.path.expanduser('~/.papercusp-workspaces'))
+        rel = os.path.relpath(os.path.realpath(repo_root), workspaces_root)
+        parts = rel.split(os.sep)
+        return (len(parts) == 4
+                and parts[0] not in ('', '.', '..')
+                and parts[1] == '.papercusp'
+                and parts[2] == 'apps'
+                and parts[3] not in ('', '.', '..')
+                and _valid_git_entry(repo_root))
+    except Exception:
+        return False
+
+
 def _is_isolation_worktree(repo_root, canonical_tree):
     """Migration/synthesis isolation worktrees stay outside automatic locks."""
     marker = os.path.join(canonical_tree, '.papercusp', 'worktrees')
@@ -857,6 +884,8 @@ for p in raw_paths:
     _scope_real = None
     try:
         _scope_root = _workspace_repo_root(root)
+        if _scope_root is None and _managed_suite_app_repo(root):
+            _scope_root = root
         if _scope_root is None:
             _external_key = _external_home_key(abs_p)
             if _external_key:
