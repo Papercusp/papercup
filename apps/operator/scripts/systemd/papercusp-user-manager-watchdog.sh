@@ -10,6 +10,11 @@ TARGET_UID="${PAPERCUSP_USER_MANAGER_WATCHDOG_UID:-1000}"
 GRACE_SEC="${PAPERCUSP_USER_MANAGER_WATCHDOG_GRACE_SEC:-60}"
 STATE_DIR="${PAPERCUSP_USER_MANAGER_WATCHDOG_STATE_DIR:-/run/papercusp-user-manager-watchdog}"
 NOW_SEC="${PAPERCUSP_USER_MANAGER_WATCHDOG_NOW_SEC:-}"
+# systemd's DURABLE record of linger: `loginctl enable-linger` creates
+# $LINGER_DIR/<username>, `disable-linger` removes it. It is root-owned, exists
+# on disk, and — unlike logind's live user object — survives the user manager
+# dying, which is the only state this watchdog is ever asked to repair.
+LINGER_DIR="${PAPERCUSP_USER_MANAGER_WATCHDOG_LINGER_DIR:-/var/lib/systemd/linger}"
 
 fail() {
   echo "[$SCRIPT_NAME] ERROR: $*" >&2
@@ -33,7 +38,9 @@ case "$NOW_SEC" in
   ''|*[!0-9]*) fail "current time must be a non-negative integer (got '$NOW_SEC')" ;;
 esac
 
-command -v loginctl >/dev/null 2>&1 || fail "loginctl is unavailable"
+# loginctl is deliberately NOT required: it can only answer while logind still
+# holds a user object, so demanding it up front reintroduces the very coupling
+# that made this watchdog inert during the 2026-08-30 outage (WI-1430770).
 command -v systemctl >/dev/null 2>&1 || fail "systemctl is unavailable"
 mkdir -p -- "$STATE_DIR" || fail "could not create state directory $STATE_DIR"
 chmod 0755 "$STATE_DIR" || fail "could not secure state directory $STATE_DIR"
@@ -53,14 +60,73 @@ record_down_since() {
   mv -f -- "$tmp" "$MARKER" || fail "could not publish $MARKER"
 }
 
-if ! linger="$(loginctl show-user "$TARGET_UID" --property=Linger --value 2>/dev/null)"; then
-  fail "could not read linger state for uid $TARGET_UID"
+resolve_username() {
+  local uid="$1" name=""
+  if command -v getent >/dev/null 2>&1; then
+    name="$(getent passwd "$uid" 2>/dev/null | cut -d: -f1)" || name=""
+  fi
+  if [[ -z "$name" ]] && command -v id >/dev/null 2>&1; then
+    name="$(id -nu "$uid" 2>/dev/null)" || name=""
+  fi
+  printf '%s' "$name"
+}
+
+# Resolve linger from the DURABLE on-disk marker first, and fall back to logind
+# only when that cannot answer.
+#
+# WI-1430770 — why the order matters. This script used to gate on
+# `loginctl show-user`, which reads logind's LIVE user object. logind destroys
+# that object once the user manager exits and the last session is removed, so
+# the call returns "User ID N is not logged in or lingering" and exits 1
+# EXACTLY when the manager is down. The old code treated that as fatal, so the
+# watchdog aborted before reaching any recovery: its enabling check could only
+# succeed while it had nothing to do. On 2026-08-30 that left user@1000 — and
+# with it the desktop session and the entire agent fleet — down for 13m52s
+# across 13 consecutive one-per-minute runs, each dying on that single line,
+# until the owner logged back in by hand.
+TARGET_USER="$(resolve_username "$TARGET_UID")"
+LINGER_MARKER=""
+linger="unknown"
+linger_source=""
+
+if [[ -n "$TARGET_USER" && -d "$LINGER_DIR" ]]; then
+  LINGER_MARKER="$LINGER_DIR/$TARGET_USER"
+  if [[ -e "$LINGER_MARKER" ]]; then
+    linger="yes"
+  else
+    linger="no"
+  fi
+  linger_source="$LINGER_MARKER"
 fi
-if [[ "$linger" != "yes" ]]; then
-  clear_marker
-  echo "[$SCRIPT_NAME] skip: uid $TARGET_UID does not have linger enabled"
-  exit 0
+
+# logind: corroboration when the durable marker already answered, fallback when
+# it could not. A failure here is an ordinary observation of a down manager,
+# never a reason to abort.
+if command -v loginctl >/dev/null 2>&1 &&
+  live_linger="$(loginctl show-user "$TARGET_UID" --property=Linger --value 2>/dev/null)"; then
+  if [[ "$linger" == "unknown" ]]; then
+    [[ "$live_linger" == "yes" ]] && linger="yes" || linger="no"
+    linger_source="loginctl"
+  elif [[ "$linger" == "no" && "$live_linger" == "yes" ]]; then
+    # logind knows about a linger this host records somewhere else. Prefer the
+    # answer that keeps the manager alive; a false "enabled" only restarts a
+    # service, while a false "disabled" is the outage above.
+    linger="yes"
+    linger_source="loginctl (no durable marker at ${LINGER_MARKER:-$LINGER_DIR})"
+  fi
 fi
+
+case "$linger" in
+  yes) ;;
+  no)
+    clear_marker
+    echo "[$SCRIPT_NAME] skip: uid $TARGET_UID does not have linger enabled (per $linger_source)"
+    exit 0
+    ;;
+  *)
+    fail "could not determine linger state for uid $TARGET_UID: could not resolve its username or read $LINGER_DIR, and logind could not answer either"
+    ;;
+esac
 
 if ! active_state="$(systemctl show "$UNIT" --property=ActiveState --value 2>/dev/null)"; then
   fail "could not read ActiveState for $UNIT"
