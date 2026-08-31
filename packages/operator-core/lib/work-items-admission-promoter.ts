@@ -20,6 +20,7 @@ import { admissionIdentity } from './harness/improvements/digest';
 import { selectCanonicalIssue, recordIssueOccurrence } from './issue-occurrence-ledger';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
+import { DEFAULT_PROMOTER_TICK_MINUTES } from './work-items-admission';
 import type { OrgSql } from './work-items';
 
 export const WORK_ITEM_ADMISSION_PROMOTER = 'work-item-admission-promoter';
@@ -27,7 +28,13 @@ export const WORK_ITEM_ADMISSION_FAIL_OPEN = 'work-item-admission-fail-open';
 export const PROMOTER_ACTOR = `system:${WORK_ITEM_ADMISSION_PROMOTER}`;
 export const FAIL_OPEN_ACTOR = `system:${WORK_ITEM_ADMISSION_FAIL_OPEN}`;
 export const DEFAULT_PROMOTER_BATCH_SIZE = 20;
-export const DEFAULT_PROMOTER_TICK_MINUTES = 30;
+/**
+ * EI-21973318733042066: the cadence now lives in work-items-admission.ts beside the
+ * admission predicate itself, so the CLAIM path can state the bound a pending row clears
+ * within without importing this batched-LLM runner. Re-exported here so every existing
+ * consumer (the two seed scripts, the routine action) is unchanged.
+ */
+export { DEFAULT_PROMOTER_TICK_MINUTES };
 export const DEFAULT_PROMOTER_LIVENESS_MINUTES = 90;
 export const DEFAULT_RECENT_TERMINAL_DAYS = 30;
 export const PROMOTER_COSINE_FLOOR = 0.85;

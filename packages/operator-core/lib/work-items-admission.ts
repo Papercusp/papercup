@@ -144,6 +144,87 @@ export function isAdmitted(admission: string | null | undefined): boolean {
 }
 
 /**
+ * The model promoter's cadence, owned HERE rather than in work-items-admission-promoter.ts
+ * (which re-exports it, so its existing consumers are unchanged).
+ *
+ * EI-21973318733042066: the claim path has to be able to STATE the bound a pending row
+ * clears within, and it must not pull a batched-LLM runner's whole module graph into every
+ * claim to read one number. Owning it beside {@link isAdmitted} keeps the predicate and its
+ * cadence in one module.
+ */
+export const DEFAULT_PROMOTER_TICK_MINUTES = 30;
+
+/**
+ * How many promoter ticks a row may sit pending before the INDEPENDENT deterministic
+ * fail-open runner admits it as 'unreviewed' — `runAdmissionFailOpen`'s
+ * `startedAt - 2 * tickMinutes` cutoff. This is what makes admission-pending a WAIT rather
+ * than a refusal: nobody has to act for it to clear, even if the promoter is dead.
+ */
+export const ADMISSION_FAIL_OPEN_TICKS = 2;
+
+/** Seconds until the promoter's next tick would normally admit a pending row. */
+export function admissionPromoterTickSec(tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES): number {
+  return tickMinutes * 60;
+}
+
+/** Seconds until the fail-open backstop admits a pending row regardless of the promoter. */
+export function admissionFailOpenSec(tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES): number {
+  return ADMISSION_FAIL_OPEN_TICKS * tickMinutes * 60;
+}
+
+/**
+ * The create-time admission bypasses: the durable `admitted_by` value each one writes,
+ * paired with the caller-facing condition that earns it. ONE source — the create path
+ * mints from these literals (typed as {@link AdmissionBypassReason}, so removing one is a
+ * compile error there) and the claim path's admission-pending remedy is RENDERED from this
+ * record, so a bypass added or removed cannot leave either surface behind.
+ *
+ * EI-21973318733042066 is why the remedy has to be rendered rather than written out: the
+ * reporter proposed "let an item's creator name a specific intended owner, so it bypasses
+ * screening" as a NEW mechanism. `bypass:explicit-assignment` already IS that mechanism —
+ * 235 uses in the three days before the report — and nothing on the refusal path said so,
+ * so a launched agent hit a 30-minute wall that its creator could have avoided for free.
+ */
+export const ADMISSION_CREATE_BYPASSES = [
+  { reason: 'bypass:plan-item', condition: 'the item implements a plan item' },
+  { reason: 'bypass:severity-critical', condition: "severity:'critical'" },
+  { reason: 'bypass:topic-security', condition: "a 'security' topic" },
+  { reason: 'bypass:explicit-assignment', condition: 'assign_to names the intended owner' },
+] as const satisfies readonly { reason: string; condition: string }[];
+
+export type AdmissionBypassReason = (typeof ADMISSION_CREATE_BYPASSES)[number]['reason'];
+
+/**
+ * The operator-facing explanation of the `admission-pending` claim floor, with its bound
+ * DERIVED from the cadence above rather than restated. The old string said only "wait for
+ * admitted/unreviewed", which is why the reporter could not tell "not yet" from "never".
+ */
+export function admissionPendingExplanation(tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES): string {
+  return (
+    'duplicate screening is pending — the durable promoter owns admission. This floor CLEARS ON ITS ' +
+    `OWN: the promoter runs on a ${tickMinutes}-minute tick, and an independent fail-open runner ` +
+    `admits anything still pending after ${ADMISSION_FAIL_OPEN_TICKS} ticks ` +
+    `(${ADMISSION_FAIL_OPEN_TICKS * tickMinutes} min) as 'unreviewed'. It is a WAIT, not a permanent ` +
+    'refusal — but a just-created item is typically unclaimable for most of a tick, which outlives ' +
+    'many short-lived agents, so waiting is often the wrong move.'
+  );
+}
+
+/**
+ * What the caller can actually DO about an admission-pending refusal. Rendered from
+ * {@link ADMISSION_CREATE_BYPASSES} so it cannot drift from the create path that honours it.
+ */
+export function admissionPendingCreateRemedy(): string {
+  return (
+    'An item created FOR a named agent should not be born pending. Any one of these makes it born ' +
+    'admitted and claimable in the same write: ' +
+    ADMISSION_CREATE_BYPASSES.map((b) => b.condition).join('; ') +
+    '. For an item that already exists, the choice is wait for the tick or have its creator re-file ' +
+    'it with one of those — the item cannot be promoted on request.'
+  );
+}
+
+/**
  * SQL form of {@link isAdmitted} — UNQUALIFIED columns, for single-table queries over
  * `harness_features_consolidated` / `work_items`, matching {@link autoPickableWhereSql}.
  *

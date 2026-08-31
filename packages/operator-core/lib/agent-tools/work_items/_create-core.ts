@@ -47,6 +47,7 @@ import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { admissionIdentity, type AdmissionIdentity } from '../../harness/improvements/digest';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import type { AdmissionBypassReason } from '../../work-items-admission';
 import {
   adoptConditionIncumbent,
   settleConditionClaim,
@@ -1000,7 +1001,10 @@ export async function createOneWorkItem(
     // reaches for. A forced item lands pending and is promoted on the normal tick; if
     // the promoter is dead or lagging, the fail-open path admits it as 'unreviewed'
     // rather than starving the queue.
-    const admissionBypass: string | null =
+    // EI-21973318733042066: typed against ADMISSION_CREATE_BYPASSES rather than `string`, so
+    // the reasons this path mints and the remedy the claim-path refusal RENDERS from that same
+    // record cannot drift apart — dropping an entry there is a compile error here.
+    const admissionBypass: AdmissionBypassReason | null =
       planItemIdentities.size > 0
         ? 'bypass:plan-item'
         : args.severity === 'critical'
