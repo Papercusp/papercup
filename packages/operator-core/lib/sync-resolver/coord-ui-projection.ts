@@ -87,5 +87,72 @@ export function projectCoordPlansForUi(rows: unknown): unknown {
     if ('now_next' in rest) rest.now_next = clipPreview(rest.now_next, COORD_TEXT_PREVIEW_MAX);
     out.push(rest);
   }
-  return out;
+  return windowCoordPlansForUi(out);
+}
+
+/**
+ * Most-recently-updated plans kept in the SYNC payload (WI-7256).
+ *
+ * ## Why a window and NOT another ceiling raise
+ *
+ * WI-7246 removed the per-row waste; every surviving field is rendered. What
+ * was left is a read with NO BOUND, and its own allowlist entry said so:
+ * "authored plans accrue at ~45-50/week ... THAT RED IS THE WINDOWING TRIGGER
+ * — WI-7256's second half — NOT ANOTHER RAISE."
+ *
+ * That red arrived. Measured 2026-08-31, papercusp: 1,486 projected rows /
+ * 634,634 B — 63% past the raised 390,000 ceiling, having been 973 rows /
+ * 395,430 B on 2026-08-03. A ceiling only ever moves the next breach.
+ *
+ * NOTE the accrual is dominated by ORDINARY authored plans, not the
+ * `<slug>@run-<epochms>` snapshots the title of WI-7256 names: only 83 of
+ * 1,681 live rows are snapshots, and the terminal ones are already dropped
+ * above. Windowing is what bounds the LARGER term.
+ *
+ * 400 rows measured 182,946 B — inside the 250,000 DEFAULT budget with 27%
+ * headroom, which is why `coord.plans` no longer needs an allowlist entry at
+ * all. The payload is now bounded by the window rather than by the corpus:
+ * new plans rotate the oldest out instead of growing the feed.
+ *
+ * ## Why this is safe here
+ *
+ * PlansPanel has no filter or search predicate — it renders a flat list and
+ * loads a full body on demand — so windowing cannot silently degrade a search
+ * the way it would for a filtered feed. Nothing becomes unreachable: the
+ * unprojected `/api/coord/plans` HTTP route (pui TUI) and `plans:list` still
+ * serve the whole corpus, and the panel is told when its list is windowed.
+ */
+export const COORD_PLANS_UI_WINDOW = 400;
+
+/**
+ * Newest-first by `updated`, rows with no `updated` last, ties broken by slug.
+ *
+ * The tie-break is load-bearing, not cosmetic. `updated` is DATE-granularity
+ * (`YYYY-MM-DD`), so many rows share a key at the cutoff, and `coord.plans` is
+ * a DELTA-encoded resource (sync-delta-codec DELTA_RESOURCES). Without a total
+ * order the membership of the last page could differ between two polls of
+ * unchanged data, emitting spurious add/remove deltas. Sorting on the RESOLVED
+ * `updated` (the loader already collapses row ?? frontmatter) also means this
+ * never re-derives identity from markdown — the WI-7246 invariant.
+ */
+function windowCoordPlansForUi(rows: unknown[]): unknown[] {
+  if (rows.length <= COORD_PLANS_UI_WINDOW) return rows;
+  const updatedOf = (r: unknown): string =>
+    r && typeof r === 'object' && typeof (r as Record<string, unknown>).updated === 'string'
+      ? ((r as Record<string, unknown>).updated as string)
+      : '';
+  const slugOf = (r: unknown): string =>
+    r && typeof r === 'object' ? String((r as Record<string, unknown>).slug ?? '') : '';
+  return [...rows]
+    .sort((a, b) => {
+      const au = updatedOf(a);
+      const bu = updatedOf(b);
+      if (au !== bu) {
+        if (!au) return 1;
+        if (!bu) return -1;
+        return bu.localeCompare(au);
+      }
+      return slugOf(a).localeCompare(slugOf(b));
+    })
+    .slice(0, COORD_PLANS_UI_WINDOW);
 }
