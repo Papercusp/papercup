@@ -4,9 +4,11 @@ import { DARK_FLAGS, FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { GOAL_HOLDER_PRODUCTIVITY_GRACE_MS } from '../goals/activity';
+import type { GoalPortfolioThroughputRead } from '../goals/portfolio-throughput';
 import {
   GOAL_LIVENESS_GRACE_MS,
   classifyGoalLiveness,
+  classifyGoalPortfolioIdle,
   classifyGoalReadiness,
   classifyGoalWedge,
   goalEligibleForHolderRespawn,
@@ -21,6 +23,7 @@ import {
   type GoalHolderLike,
   type GoalLiveHold,
   type GoalLivenessAlert,
+  type GoalPortfolioIdleAlert,
   type GoalReadinessAlert,
   type GoalRowLike,
   type GoalWedgeAlert,
@@ -350,6 +353,12 @@ describe('runGoalLivenessSweepOnce', () => {
     // dedicated describe block below.
     readReadiness: async () => new Map<string, GoalReadiness>(),
     escalateReadiness: async () => {},
+    // P-002: the portfolio-idle leg injected INERT, same as the readiness leg
+    // above and for the same reason — its behaviour has a dedicated describe
+    // block. This also keeps the `sql = {}` contract below literally true: the
+    // leg's default measurement is the only other PG dep in the sweep.
+    readPortfolioThroughput: async () => new Map<string, GoalPortfolioThroughputRead>(),
+    escalatePortfolioIdle: async () => {},
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -371,6 +380,9 @@ describe('runGoalLivenessSweepOnce', () => {
       readinessEscalated: 0,
       autoStarted: 0,
       wedgeEscalated: 0,
+      // P-002: a DARK goal is `lost`, not `held`, so the portfolio leg does not
+      // judge it — placing nothing is only a finding about a steward who is there.
+      portfolioIdleEscalated: 0,
       skipped: false,
     });
     expect(seen[0]?.reason).toBe('abandoned');
@@ -393,6 +405,7 @@ describe('runGoalLivenessSweepOnce', () => {
       escalated: 0,
       readinessEscalated: 0,
       autoStarted: 0,
+      portfolioIdleEscalated: 0,
       wedgeEscalated: 0,
       skipped: true,
     });
@@ -1333,6 +1346,11 @@ describe('the wedge leg inside runGoalLivenessSweepOnce', () => {
     escalate: async () => {},
     readReadiness: async () => new Map<string, GoalReadiness>(),
     escalateReadiness: async () => {},
+    // P-002: inert here. These deps hold a LIVE goal, so unlike the dark-goal
+    // block above they DO reach the portfolio leg — without this stub its
+    // default measurement would run real SQL against the `{}` sql stub.
+    readPortfolioThroughput: async () => new Map<string, GoalPortfolioThroughputRead>(),
+    escalatePortfolioIdle: async () => {},
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -1473,5 +1491,246 @@ describe('makeReadHolderProductivity', () => {
     const { tag, queries } = captureSql();
     await makeReadHolderProductivity(tag)([hold]);
     expect(queries[0]).toMatch(/ti\.invoked_at\s*>=\s*h\.since/);
+  });
+});
+
+/* ── the PORTFOLIO-IDLE leg (goal-mode-drift-guards-2026-08-31 P-002) ──────── */
+
+describe('classifyGoalPortfolioIdle', () => {
+  const GOAL_ID = 'make-sidestage-web-ios-and-android-ready-for-pub-dd62af';
+  const KEY = `papercusp-workspace:${GOAL_ID}`;
+  const live = vmap(verdict('su-2c130be1', 'live'));
+  const held = [holder({ setAtMs: JUST_NOW })];
+
+  /** A throughput reading, defaulting to the IDLE shape the leg exists to catch. */
+  const reading = (
+    over: Partial<GoalPortfolioThroughputRead> = {},
+  ): GoalPortfolioThroughputRead =>
+    ({
+      goalId: GOAL_ID,
+      workspaceId: 'papercusp-workspace',
+      windowMinutes: 60,
+      actsInWindow: 0,
+      actsPerHour: 0,
+      lastActAtMs: null,
+      lastActTool: null,
+      lastActFacet: null,
+      idleMinutes: 240,
+      idleAfterMinutes: 20,
+      measuredOwnerIds: 1,
+      holderLiveness: 'held',
+      idle: true,
+      reason: 'idle',
+      assessment: 'idle-past-threshold',
+      unavailable: null,
+      ...over,
+    }) as GoalPortfolioThroughputRead;
+
+  const map = (r?: GoalPortfolioThroughputRead) =>
+    new Map<string, GoalPortfolioThroughputRead>(r ? [[KEY, r]] : []);
+
+  it('alerts on a held goal that has placed nothing past the threshold', () => {
+    const alert = classifyGoalPortfolioIdle(goal(), held, live, map(reading()), NOW);
+    expect(alert).not.toBeNull();
+    expect(alert?.idleMinutes).toBe(240);
+    expect(alert?.idleAfterMinutes).toBe(20);
+    expect(alert?.actsInWindow).toBe(0);
+    expect(alert?.holders).toEqual([{ ownerId: 'su-2c130be1', sessionState: 'live' }]);
+  });
+
+  it('carries the last act through, when there was one', () => {
+    const alert = classifyGoalPortfolioIdle(
+      goal(),
+      held,
+      live,
+      map(reading({ lastActTool: 'plans:set-status', lastActAtMs: NOW - 77 * 60_000 })),
+      NOW,
+    );
+    expect(alert?.lastActTool).toBe('plans:set-status');
+  });
+
+  it('stays silent when the reading is not idle', () => {
+    expect(
+      classifyGoalPortfolioIdle(
+        goal(),
+        held,
+        live,
+        map(reading({ idle: false, reason: 'placing', assessment: 'placing', actsInWindow: 4 })),
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  /**
+   * The conservative rule every leg in this file shares: an ABSENT measurement
+   * suppresses. A degraded throughput read must cost silence, never a wave of
+   * "every goal is idle".
+   */
+  it('stays silent when the goal is ABSENT from the throughput map', () => {
+    expect(classifyGoalPortfolioIdle(goal(), held, live, map(), NOW)).toBeNull();
+  });
+
+  it('stays silent when idleMinutes is null even if `idle` somehow says true', () => {
+    expect(
+      classifyGoalPortfolioIdle(goal(), held, live, map(reading({ idleMinutes: null })), NOW),
+    ).toBeNull();
+  });
+
+  /**
+   * Placing nothing is only a finding about a steward who is THERE. A dark goal
+   * is `unheld`/`lost` — the liveness leg's subject, with a different repair
+   * (find a holder, not rethink the goal). Reporting both would send someone to
+   * do the wrong one.
+   */
+  it('does NOT judge a goal whose holder is dead — that is the liveness leg', () => {
+    const dead = vmap(verdict('su-2c130be1', 'ended'));
+    expect(classifyGoalPortfolioIdle(goal(), held, dead, map(reading()), NOW)).toBeNull();
+  });
+
+  it.each(['paused', 'achieved', 'killed'])(
+    'does NOT judge a %s goal — it places nothing by design or is over',
+    (status) => {
+      expect(
+        classifyGoalPortfolioIdle(goal({ status }), held, live, map(reading()), NOW),
+      ).toBeNull();
+    },
+  );
+});
+
+describe('runGoalLivenessSweepOnce — the portfolio-idle leg', () => {
+  const GOAL_ID = 'make-sidestage-web-ios-and-android-ready-for-pub-dd62af';
+  const KEY = `papercusp-workspace:${GOAL_ID}`;
+  const sql = {} as never;
+
+  const idleReading = {
+    goalId: GOAL_ID,
+    workspaceId: 'papercusp-workspace',
+    windowMinutes: 60,
+    actsInWindow: 0,
+    actsPerHour: 0,
+    lastActAtMs: null,
+    lastActTool: null,
+    lastActFacet: null,
+    idleMinutes: 240,
+    idleAfterMinutes: 20,
+    measuredOwnerIds: 1,
+    holderLiveness: 'held',
+    idle: true,
+    reason: 'idle',
+    assessment: 'idle-past-threshold',
+    unavailable: null,
+  } as GoalPortfolioThroughputRead;
+
+  const base = (over: Record<string, unknown> = {}) => ({
+    readGoals: async () => ({ goals: [goal()], holders: [holder({ setAtMs: JUST_NOW })] }),
+    resolveLiveness: async () => vmap(verdict('su-2c130be1', 'live')),
+    escalate: async () => {},
+    readReadiness: async () => new Map<string, GoalReadiness>(),
+    escalateReadiness: async () => {},
+    readHolderProductivity: async () => new Map<string, number>([[KEY, 99]]),
+    escalateWedge: async () => {},
+    flagEnabled: async () => true,
+    now: () => NOW,
+    graceMs: GOAL_LIVENESS_GRACE_MS,
+    ...over,
+  });
+
+  it('escalates an idle steward and counts it', async () => {
+    const seen: GoalPortfolioIdleAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readPortfolioThroughput: async () =>
+          new Map<string, GoalPortfolioThroughputRead>([[KEY, idleReading]]),
+        escalatePortfolioIdle: async (a: GoalPortfolioIdleAlert) => {
+          seen.push(a);
+        },
+      }),
+    );
+    expect(r.portfolioIdleEscalated).toBe(1);
+    expect(seen[0]?.idleMinutes).toBe(240);
+  });
+
+  /**
+   * The leg receives the ALREADY-FOLDED holders rather than re-resolving them,
+   * so the wedge verdict and this one cannot disagree about who is held within a
+   * single tick.
+   */
+  it('is handed the folded holders for exactly the HELD goals', async () => {
+    let got: ReadonlyMap<string, unknown> | null = null;
+    await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        readPortfolioThroughput: async (h: ReadonlyMap<string, unknown>) => {
+          got = h;
+          return new Map();
+        },
+        escalatePortfolioIdle: async () => {},
+      }),
+    );
+    expect([...(got as unknown as Map<string, unknown>).keys()]).toEqual([KEY]);
+  });
+
+  it('hands the leg NOTHING when no goal is held', async () => {
+    let called = false;
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      base({
+        // An ENDED holder ⇒ liveness `lost` ⇒ the held map is empty ⇒ the
+        // measurement is never even attempted.
+        resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+        readPortfolioThroughput: async () => {
+          called = true;
+          return new Map();
+        },
+        escalatePortfolioIdle: async () => {},
+      }),
+    );
+    expect(called).toBe(false);
+    expect(r.portfolioIdleEscalated).toBe(0);
+  });
+
+  // A degraded measurement costs SILENCE, never a wave of false idles.
+  it('survives a throwing throughput read and escalates nothing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const escalatePortfolioIdle = vi.fn();
+      const r = await runGoalLivenessSweepOnce(
+        sql,
+        base({
+          readPortfolioThroughput: async () => {
+            throw new Error('pg down');
+          },
+          escalatePortfolioIdle,
+        }),
+      );
+      expect(r.portfolioIdleEscalated).toBe(0);
+      expect(escalatePortfolioIdle).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // A failing escalation must not abort the sweep — same non-fatal contract the
+  // wedge and readiness legs hold.
+  it('survives a throwing escalation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await runGoalLivenessSweepOnce(
+        sql,
+        base({
+          readPortfolioThroughput: async () =>
+            new Map<string, GoalPortfolioThroughputRead>([[KEY, idleReading]]),
+          escalatePortfolioIdle: async () => {
+            throw new Error('escalation store unavailable');
+          },
+        }),
+      );
+      expect(r.portfolioIdleEscalated).toBe(0);
+      expect(r.skipped).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
