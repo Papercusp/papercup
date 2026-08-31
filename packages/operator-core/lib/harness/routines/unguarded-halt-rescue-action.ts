@@ -130,6 +130,8 @@ export interface HaltCandidate {
   agentId: string;
   /** The fleet it belongs to; a non-member is never a rescue target. */
   fleetSlug: string | null;
+  /** Only workers are auto-repaired here; fleet leaders own their own loop policy. */
+  fleetRole?: string | null;
   /** Work-items currently held. Only an EMPTY-handed agent is a rescue target. */
   load: number;
   /** Epoch ms of the agent's last tool call — its last real TURN activity. */
@@ -165,7 +167,7 @@ export function selectSweepCandidates(
       if (!c.agentId) return false;
       if (recentlyRescued.has(c.agentId)) return false;
       // (1) still belongs to a fleet that is doing something.
-      if (!c.fleetSlug || !activeFleets.has(c.fleetSlug)) return false;
+      if (!c.fleetSlug || (c.fleetRole != null && c.fleetRole !== 'member') || !activeFleets.has(c.fleetSlug)) return false;
       // (2) empty-handed — an agent holding work has something to resume.
       if (c.load > 0) return false;
       // (3) idle INSIDE the window: past a plausible long turn, short of abandoned.
@@ -201,7 +203,22 @@ export function rescueSummary(): string {
   return `${RESCUE_PREFIX} no wake source, and work is waiting`;
 }
 
-export function rescueBody(fleetSlug: string, claimable: number): string {
+export function rescueBody(
+  fleetSlug: string,
+  claimable: number,
+  loopRepair?: { armed: boolean; reason: string; loopName?: string },
+): string {
+  const repair = loopRepair?.armed || loopRepair?.reason === 'already-armed'
+    ? [
+        `SYSTEM REPAIR: your recurring loop is now armed (${loopRepair.loopName ?? 'engine loop'}).`,
+        `Verify with loop:status; do not replace it with a second recurrence mechanism.`,
+        ``,
+      ]
+    : [
+        `SYSTEM REPAIR COULD NOT ARM YOUR LOOP (${loopRepair?.reason ?? 'not attempted'}).`,
+        `After pulling work, restore recurrence with loop:arm before ending this turn.`,
+        ``,
+      ];
   return [
     `You ended a turn under an autonomous mode with NO guaranteed re-wake: no armed`,
     `engine loop, no registered event-await (the always-armed coord:inbox-wake keepalive`,
@@ -209,6 +226,7 @@ export function rescueBody(fleetSlug: string, claimable: number): string {
     `present to speak next. Nothing was going to re-invoke you. This wake came from the`,
     `system-side unguarded-halt sweep, not from a peer — there is no one to reply to.`,
     ``,
+    ...repair,
     `You were woken because WORK IS ACTUALLY WAITING: ${claimable} item(s) are claimable`,
     `right now under your effective claim spec inside fleet "${fleetSlug}". If you stopped because your`,
     `lane looked drained, that verdict had a TIMESTAMP and is stale — "drained" is a`,
@@ -237,6 +255,7 @@ export async function readHaltCandidates(): Promise<HaltCandidate[]> {
     return {
       agentId: a.agentId,
       fleetSlug: a.fleetSlug ?? null,
+      fleetRole: a.fleetRole ?? null,
       load: a.load ?? 0,
       lastToolCallMs: Number.isFinite(ms) ? ms : null,
     };
@@ -250,20 +269,25 @@ export async function readHaltCandidates(): Promise<HaltCandidate[]> {
  * floor must receive the same member/fleet context as `scheduler:get_next`.
  * Fail-soft to 0, i.e. "rescue nobody", the safe direction for a billable wake.
  */
-export async function claimableForCandidate(
+export interface ClaimabilityForCandidate {
+  claimable: number;
+  harnessSlug: string;
+}
+
+export async function claimabilityForCandidate(
   candidate: Pick<HaltCandidate, 'agentId' | 'fleetSlug'>,
   workspaceId: string,
-): Promise<number> {
-  if (!candidate.agentId || !candidate.fleetSlug) return 0;
+): Promise<ClaimabilityForCandidate | null> {
+  if (!candidate.agentId || !candidate.fleetSlug) return null;
   try {
     const resolved = await getClaimSpecRecord({ cupId: candidate.agentId, workspaceId });
     // A fleet member whose sentinel is missing/invalid is in the same
     // fail-closed transition state as scheduler:get_next. Never turn that
     // uncertainty into a broad default-backlog rescue wake.
-    if (resolved.source === 'default' && resolved.fleetSlug) return 0;
+    if (resolved.source === 'default') return null;
     const spec = resolved.spec;
     const harness = resolved.harnessSlug;
-    if (!spec || !harness) return 0;
+    if (!spec || !harness) return null;
     const { breakdown } = await readIssueClaimability(
       spec.view?.filter,
       {
@@ -277,10 +301,18 @@ export async function claimableForCandidate(
       },
       { limit: 1, breakdownOnly: true },
     );
-    return breakdown.claimable;
+    return { claimable: breakdown.claimable, harnessSlug: harness };
   } catch {
-    return 0;
+    return null;
   }
+}
+
+/** Compatibility/count-only projection retained for the focused scope tests. */
+export async function claimableForCandidate(
+  candidate: Pick<HaltCandidate, 'agentId' | 'fleetSlug'>,
+  workspaceId: string,
+): Promise<number> {
+  return (await claimabilityForCandidate(candidate, workspaceId))?.claimable ?? 0;
 }
 
 registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
@@ -357,16 +389,16 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
 
   // Is there work for each candidate? The effective spec, assignee-relative
   // cooldown, and fleet authorization can differ even within one fleet.
-  const claimableByCandidate = new Map<string, number>();
+  const claimabilityByCandidate = new Map<string, ClaimabilityForCandidate>();
   await Promise.all(
     rescuable.map(async (candidate) => {
-      claimableByCandidate.set(
-        candidate.agentId,
-        await claimableForCandidate(candidate, ctx.workspaceId),
-      );
+      const result = await claimabilityForCandidate(candidate, ctx.workspaceId);
+      if (result) claimabilityByCandidate.set(candidate.agentId, result);
     }),
   );
-  const withWork = rescuable.filter((c) => (claimableByCandidate.get(c.agentId) ?? 0) > 0);
+  const withWork = rescuable.filter(
+    (c) => (claimabilityByCandidate.get(c.agentId)?.claimable ?? 0) > 0,
+  );
 
   // Only now — for agents that are idle in an active fleet WITH work waiting — is
   // the (more expensive, per-agent) halt predicate worth evaluating.
@@ -382,15 +414,30 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
   const halted = verdicts.filter((v) => v.tripwire != null);
   const rescuing = halted.slice(0, cap);
 
+  const { autoArmFleetMemberLoop } = await import('./loop');
   for (const { c } of rescuing) {
     const slug = c.fleetSlug!;
-    const claimable = claimableByCandidate.get(c.agentId) ?? 0;
+    const claimability = claimabilityByCandidate.get(c.agentId)!;
+    // EI-21275400284931421: wake is the immediate recovery; arming the existing
+    // engine loop is the recurrence fix. Planless members are admitted only
+    // because claimabilityForCandidate already resolved their effective authored
+    // claim spec and harness. autoArm repeats that fail-closed check at the write
+    // boundary so a concurrent sentinel removal cannot widen the member.
+    const loopRepair = await autoArmFleetMemberLoop({
+      workspaceId: ctx.workspaceId,
+      ownerId: c.agentId,
+      harnessSlug: claimability.harnessSlug,
+      planSlug: null,
+      fleetSlug: slug,
+      fleetRole: 'member',
+    });
+    const claimable = claimability.claimable;
     // Durable inbox row first (the record survives even if the wake fan fails),
     // then the wake — the same ordering coord:send uses.
     await sendMessage(RESCUE_IDENTITY, {
       to: [c.agentId],
       summary: rescueSummary(),
-      body: rescueBody(slug, claimable),
+      body: rescueBody(slug, claimable, loopRepair),
     }).catch((e) =>
       console.warn(`[unguarded-halt-rescue] inbox write for ${c.agentId} failed:`, (e as Error)?.message ?? e),
     );

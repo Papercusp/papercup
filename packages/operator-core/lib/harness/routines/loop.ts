@@ -2232,9 +2232,10 @@ export async function readActiveLoopFacts(ownerId: string, opts: { sql?: Sql } =
  *   - MEMBER only, never the leader — a leader's arming is part of a more
  *     involved, explicitly-sequenced bring-up (e.g. DRAIN's canary-first
  *     leadership-then-arm order); auto-arming ahead of that could race it.
- *   - PLAN-bound only — the goal is derived from the bound plan; with no plan
- *     there is nothing to derive one from, so this is a silent no-op (the
- *     kickoff's self-arm instruction still applies for an unplanned member).
+ *   - MISSION-bound — a plan supplies the historical plan goal; a planless
+ *     member must resolve a real per-member/inherited fleet claim spec, and the
+ *     goal names that scheduler lane. A fleet member whose sentinel is absent or
+ *     invalid stays fail-closed instead of being armed onto the default backlog.
  *   - IDEMPOTENT — never clobbers an existing loop for this owner (self-armed,
  *     armed on a prior boot, or already retuned): a live active loop is left
  *     completely untouched, and an inactive predecessor's cadence/lifecycle/
@@ -2264,7 +2265,6 @@ export async function autoArmFleetMemberLoop(opts: {
   sql?: Sql;
 }): Promise<{ armed: boolean; reason: string; loopName?: string }> {
   if (opts.fleetRole !== 'member') return { armed: false, reason: 'not-a-member' };
-  if (!opts.planSlug) return { armed: false, reason: 'no-plan-bound' };
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([import('@papercusp/flags/server'), import('@papercusp/flags')]);
     if (!(await getFlag(FLAGS.LOOPS, 'system'))) {
@@ -2276,6 +2276,36 @@ export async function autoArmFleetMemberLoop(opts: {
   try {
     const existing = await getLoopStatus(opts.ownerId, { sql: opts.sql });
     if (existing?.active) return { armed: false, reason: 'already-armed', loopName: existing.name };
+
+    let derivedGoal: string;
+    if (opts.planSlug) {
+      derivedGoal =
+        `Drive plan \`${opts.planSlug}\` per your member role in fleet ` +
+        `\`${opts.fleetSlug}\` (coord:orient to pull your lane).`;
+    } else {
+      // EI-21275400284931421: planless fleets are not missionless. Their durable
+      // mission is the effective scheduler claim spec. Resolve it only after the
+      // membership stamp has landed (bootstrap-su calls this at that boundary),
+      // and reject the default/missing-sentinel path exactly as scheduler:get_next
+      // does. This is what prevents a planless fleet from becoming loopless while
+      // also preventing an auto-arm from widening it onto the generic backlog.
+      const { getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
+      const record = await getClaimSpecRecord(
+        { cupId: opts.ownerId, workspaceId: opts.workspaceId },
+        opts.sql as never,
+      );
+      if (record.source === 'default') {
+        return {
+          armed: false,
+          reason: record.fleetSlug ? 'fleet-claim-spec-unresolved' : 'no-claim-spec-bound',
+        };
+      }
+      const specId = record.spec.specId?.trim();
+      if (!specId) return { armed: false, reason: 'claim-spec-missing-id' };
+      derivedGoal =
+        `Drive claim-spec lane \`${specId}\` in fleet \`${opts.fleetSlug}\` ` +
+        `(scheduler:get_next in harness \`${opts.harnessSlug}\` pulls your lane).`;
+    }
 
     // A boot/recovery path can see the owner's prior loop after loop:end or a
     // session teardown. Replacing that inactive row with the fleet default is a
@@ -2300,7 +2330,7 @@ export async function autoArmFleetMemberLoop(opts: {
     const goal =
       priorLoopFacts?.goal ??
       existing?.goal ??
-      `Drive plan \`${opts.planSlug}\` per your member role in fleet \`${opts.fleetSlug}\` (coord:orient to pull your lane).`;
+      derivedGoal;
     const carry = opts.carry ?? existing?.carry ?? priorLoopFacts?.carry ?? 'warm';
     const continuation = existing?.continuation ?? priorLoopFacts?.continuation ?? 'settle';
     const mode = existing?.mode ?? priorLoopFacts?.mode ?? 'work';
@@ -2326,6 +2356,10 @@ export async function autoArmFleetMemberLoop(opts: {
       carry,
       continuation,
       mode,
+      // The rescue reconciler can race an explicit member loop:arm. The explicit
+      // arm wins; a stale system repair must never overwrite its newer mission or
+      // cadence after the initial status read above.
+      onlyIfInactive: true,
       ...(priorLoopFacts?.customWakePrompt === true ? { customWakePrompt: true } : {}),
       sql: opts.sql,
     });
