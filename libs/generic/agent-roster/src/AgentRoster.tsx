@@ -18,9 +18,9 @@
  *     affordance is not rendered at all, which is how a read-only host stays
  *     honest instead of showing dead buttons.
  *
- * Hovering a row previews that agent in the detail strip; clicking pins it, or
- * opens its live thinking when the host offers an inspector and the agent has a
- * resolvable stream.
+ * Hovering a row previews that agent in the detail strip. Clicking uses the
+ * host's row-activation seam when present; otherwise it pins the row, or opens
+ * live thinking when the host offers an inspector and the agent has a stream.
  */
 import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
@@ -62,6 +62,13 @@ export interface AgentRosterProps {
   bulk?: RosterBulkActions | null;
   /** Omit to render with no inspect affordance anywhere. */
   onInspect?: (a: RosterAgent) => void;
+  /**
+   * Host-owned row activation. When supplied, this runs for every row (including
+   * rows without a transcript handle), allowing a host to navigate to its own
+   * conversation surface. It takes precedence over `onInspect`; the latter
+   * remains the desktop inspector seam for hosts that do not need custom routing.
+   */
+  onRowActivate?: (a: RosterAgent) => void;
   /** Rendered inside the roster root, after the detail strip — where the host
    *  mounts its own inspector modal so it sits in the same stacking context. */
   children?: ReactNode;
@@ -77,6 +84,7 @@ export function AgentRoster({
   onMachineTabChange,
   bulk = null,
   onInspect,
+  onRowActivate,
   children,
 }: AgentRosterProps): JSX.Element {
   const { Tooltip, LivenessDot, ThinkingDot } = chrome;
@@ -272,10 +280,14 @@ export function AgentRoster({
     + `${a.ownerId === pinned ? ' is-pinned' : ''}`
     + `${selected.has(a.ownerId) ? ' is-selected' : ''}`;
 
-  /** Click/Enter on a row: open its live thinking when the host offers an
-   *  inspector and the agent has a resolvable stream; otherwise toggle its pin.
+  /** Click/Enter on a row: run the host's primary action when supplied; otherwise
+   *  open live thinking when an inspector + stream exist, or toggle its pin.
    *  Hover always previews. */
   const activateRow = (a: RosterAgent) => {
+    if (onRowActivate) {
+      onRowActivate(a);
+      return;
+    }
     if (onInspect && hasThinking(a)) onInspect(a);
     else setPinned((p) => (p === a.ownerId ? null : a.ownerId));
   };
