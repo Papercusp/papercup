@@ -4007,3 +4007,188 @@ describe("P-005 / D-033: the frozen-repair materializer narrows to the same corr
     expect(materialize.args).toContain("--exclusive-all-slots");
   });
 });
+
+describe("WI-1634331: prepareFrozenRepairWorktree re-syncs an ALREADY-BUILT stale worktree", () => {
+  // The wedge EI-21036544613774607 left behind. That fix converges the MOVABLE `repairHead`
+  // forward, and its own contract doc concedes `prepareFrozenRepairWorktree` "only ever
+  // builds the worktree ONCE per queue ... see its worktree-exists early return" — so it
+  // repaired only the FIRST-build case. From the second dispatch onward the worktree stays
+  // pinned where it was built while `repairHead` walks away from it, a fixer commits on the
+  // stale head, finalize's isAncestor check fails, and the attempt burns on a state that can
+  // never reach ready-to-verify. Every hourly converge widens the gap.
+  const gitAt = (cwd: string, ...args: string[]) => {
+    const result = spawnSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+      },
+    });
+    if (result.status !== 0) {
+      throw new Error(
+        `git ${args.join(" ")} failed: ${result.stderr || result.stdout}`,
+      );
+    }
+    return result.stdout.trim();
+  };
+
+  /**
+   * Builds a repo whose staging tip has moved past an ALREADY-EXISTING repair worktree,
+   * which is the state the early return could never repair. The worktree is created
+   * directly with `git worktree add` so this drives ONLY the re-sync branch — the
+   * first-build path's submodule init and dependency materialization are not the subject.
+   */
+  const wedgedFixture = (label: string) => {
+    const root = mkdtempSync(join(tmpdir(), label));
+    const repo = join(root, "work");
+    mkdirSync(repo);
+    gitAt(repo, "init", "-q", "-b", "staging");
+    gitAt(repo, "config", "user.email", "fixture@example.invalid");
+    gitAt(repo, "config", "user.name", "fixture");
+    writeFileSync(join(repo, "a"), "1");
+    gitAt(repo, "add", "-A");
+    gitAt(repo, "commit", "-qm", "frozen candidate");
+    const frozenCandidate = gitAt(repo, "rev-parse", "HEAD");
+
+    // The worktree is built ONCE, here, at the frozen candidate.
+    const worktreePath = join(root, "repair-worktree");
+    gitAt(repo, "worktree", "add", "--detach", worktreePath, frozenCandidate);
+
+    // ...and only THEN does staging move, exactly as it does every hour in the real gate.
+    writeFileSync(join(repo, "b"), "a fix that landed after the freeze");
+    gitAt(repo, "add", "-A");
+    gitAt(repo, "commit", "-qm", "later staging fix");
+    const stagingTip = gitAt(repo, "rev-parse", "HEAD");
+
+    return { root, repo, worktreePath, frozenCandidate, stagingTip };
+  };
+
+  const queueFor = (f: ReturnType<typeof wedgedFixture>, repairHead: string) => ({
+    schemaVersion: 3 as const,
+    phase: "awaiting-fixer" as const,
+    candidate: f.frozenCandidate,
+    base: f.frozenCandidate,
+    repairHead,
+    worktreePath: f.worktreePath,
+    attempts: 1,
+    openedAtMs: Date.now() - 1_000,
+    updatedAtMs: Date.now(),
+    fixerSpawnId: null,
+    failingTests: ["lib/a.test.ts"],
+  });
+
+  it("fast-forwards a CLEAN worktree onto a repairHead that converge moved past it", async () => {
+    const f = wedgedFixture("green-cp-repair-resync-");
+    const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+    const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+    try {
+      process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
+      process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+      const deps = realCheckpointDeps({
+        ...cfg,
+        integrationRoot: f.repo,
+        releaseRoot: f.repo,
+        checkpointRoot: f.repo,
+        integrationBranch: "staging",
+      });
+
+      // Precondition: this is the wedge. The worktree is behind the converged repairHead.
+      expect(gitAt(f.worktreePath, "rev-parse", "HEAD")).toBe(f.frozenCandidate);
+      expect(f.stagingTip).not.toBe(f.frozenCandidate);
+
+      await deps.prepareFrozenRepairWorktree?.(queueFor(f, f.stagingTip));
+
+      // THE GUARD: restore the `.git`-exists early return and the worktree stays at
+      // frozenCandidate, which is precisely the state that burns every remaining attempt.
+      expect(gitAt(f.worktreePath, "rev-parse", "HEAD")).toBe(f.stagingTip);
+      // The post-freeze staging fix is now actually present for the fixer to build on.
+      expect(existsSync(join(f.worktreePath, "b"))).toBe(true);
+    } finally {
+      if (priorWorkspace === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+      else process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = priorWorkspace;
+      if (priorHarness === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+      else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("NEVER clobbers a DIRTY worktree, even though it is strictly behind", async () => {
+    // A repair worktree is the only place a dead fixer's uncommitted work still exists, and
+    // finalizeFrozenRepairWorktree is the path that commits it. Widen the re-sync to move a
+    // dirty tree and that work is destroyed with no second copy anywhere.
+    const f = wedgedFixture("green-cp-repair-resync-dirty-");
+    const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+    const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+    try {
+      process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
+      process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+      const deps = realCheckpointDeps({
+        ...cfg,
+        integrationRoot: f.repo,
+        releaseRoot: f.repo,
+        checkpointRoot: f.repo,
+        integrationBranch: "staging",
+      });
+
+      const inFlight = join(f.worktreePath, "fixer-work-in-progress");
+      writeFileSync(inFlight, "a dead fixer's uncommitted repair");
+
+      await deps.prepareFrozenRepairWorktree?.(queueFor(f, f.stagingTip));
+
+      expect(gitAt(f.worktreePath, "rev-parse", "HEAD")).toBe(f.frozenCandidate);
+      expect(existsSync(inFlight)).toBe(true);
+      expect(readFileSync(inFlight, "utf8")).toBe(
+        "a dead fixer's uncommitted repair",
+      );
+    } finally {
+      if (priorWorkspace === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+      else process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = priorWorkspace;
+      if (priorHarness === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+      else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a worktree holding its OWN commit alone (finalize adjudicates that)", async () => {
+    // A real fixer commit exists on the worktree: it is no longer an ancestor of
+    // repairHead, so no re-sync may silently discard it.
+    const f = wedgedFixture("green-cp-repair-resync-diverged-");
+    const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+    const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+    try {
+      process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
+      process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+      const deps = realCheckpointDeps({
+        ...cfg,
+        integrationRoot: f.repo,
+        releaseRoot: f.repo,
+        checkpointRoot: f.repo,
+        integrationBranch: "staging",
+      });
+
+      writeFileSync(join(f.worktreePath, "fixer-commit"), "the repair itself");
+      gitAt(f.worktreePath, "add", "-A");
+      gitAt(f.worktreePath, "commit", "-qm", "fixer repair commit");
+      const fixerCommit = gitAt(f.worktreePath, "rev-parse", "HEAD");
+
+      await deps.prepareFrozenRepairWorktree?.(queueFor(f, f.stagingTip));
+
+      expect(gitAt(f.worktreePath, "rev-parse", "HEAD")).toBe(fixerCommit);
+      expect(existsSync(join(f.worktreePath, "fixer-commit"))).toBe(true);
+    } finally {
+      if (priorWorkspace === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+      else process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = priorWorkspace;
+      if (priorHarness === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+      else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+});
