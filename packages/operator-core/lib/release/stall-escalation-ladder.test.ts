@@ -197,6 +197,88 @@ describe('decideStallNotification — the age axis (the livelocked gate)', () =>
   });
 });
 
+describe('decideStallNotification — the fixer-succession axis', () => {
+  const FIXER_GAP_MS = 15 * 60_000;
+
+  it('fires when an awaiting-fixer ownership gap reaches its first threshold', () => {
+    const d = decideStallNotification(
+      input({
+        fixerSuccessionAgeMs: FIXER_GAP_MS,
+        fixerSuccessionThresholdMs: FIXER_GAP_MS,
+      }),
+    );
+    expect(d.shouldNotify).toBe(true);
+    expect(d.axis).toBe('fixer');
+    expect(d.rung).toBe(FIXER_GAP_MS);
+    expect(d.marks.stallAlertedAtFixerAgeMs).toBe(FIXER_GAP_MS);
+    expect(d.reason).toContain('awaiting-fixer');
+  });
+
+  it('is independent of the legacy stall one-shot — a later fixer death is still new', () => {
+    const d = decideStallNotification(
+      input({
+        consecutiveReds: STALL_REDS,
+        fixerSuccessionAgeMs: FIXER_GAP_MS,
+        fixerSuccessionThresholdMs: FIXER_GAP_MS,
+        marks: { stallAlerted: true },
+      }),
+    );
+    expect(d.shouldNotify).toBe(true);
+    expect(d.axis).toBe('fixer');
+    // The old boolean seeds only the two axes it historically represented.
+    expect(d.marks.stallAlertedAtFixerAgeMs).toBe(FIXER_GAP_MS);
+  });
+
+  it('holds between fixer rungs and re-alerts only at the next geometric rung', () => {
+    const marks: StallLadderMarks = { stallAlertedAtFixerAgeMs: FIXER_GAP_MS };
+    for (const age of [FIXER_GAP_MS, FIXER_GAP_MS * 2, FIXER_GAP_MS * 3 - 1]) {
+      expect(
+        decideStallNotification(
+          input({ fixerSuccessionAgeMs: age, fixerSuccessionThresholdMs: FIXER_GAP_MS, marks }),
+        ).shouldNotify,
+      ).toBe(false);
+    }
+    const next = decideStallNotification(
+      input({
+        fixerSuccessionAgeMs: FIXER_GAP_MS * STALL_LADDER_GROWTH,
+        fixerSuccessionThresholdMs: FIXER_GAP_MS,
+        marks,
+      }),
+    );
+    expect(next.shouldNotify).toBe(true);
+    expect(next.axis).toBe('fixer');
+    expect(next.rungIndex).toBe(1);
+  });
+
+  it('wins attribution when several axes cross together, while all marks advance', () => {
+    const d = decideStallNotification(
+      input({
+        consecutiveReds: STALL_REDS,
+        stallAgeMs: STALL_AGE_MS,
+        fixerSuccessionAgeMs: FIXER_GAP_MS,
+        fixerSuccessionThresholdMs: FIXER_GAP_MS,
+      }),
+    );
+    expect(d.axis).toBe('fixer');
+    expect(d.marks).toMatchObject({
+      stallAlertedAtReds: STALL_REDS,
+      stallAlertedAtAgeMs: STALL_AGE_MS,
+      stallAlertedAtFixerAgeMs: FIXER_GAP_MS,
+    });
+  });
+
+  it('describes the fixer-succession rung independently of the gate age', () => {
+    const s = describeLadderPosition(
+      input({
+        fixerSuccessionAgeMs: FIXER_GAP_MS,
+        fixerSuccessionThresholdMs: FIXER_GAP_MS,
+      }),
+    );
+    expect(s).toContain('fixer-succession axis');
+    expect(s).toContain('15m');
+  });
+});
+
 describe('the sparsity property — the whole point of the ladder', () => {
   /**
    * Replays the MEASURED papercusp stall: hourly ticks, red count and age both advancing,
