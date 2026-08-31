@@ -305,6 +305,46 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       );
     });
 
+    it('never prints failed=N without the per-FILE break set, on the same red path', () => {
+      // EI-19391062507470442. `failed=N` counts TASKS — a (workspace × leg) unit that can
+      // carry several failing FILES. Read as a file count it under-reports in the CONFIDENT
+      // direction, and the two counts diverge only when more than one file fails in the same
+      // workspace, i.e. precisely on the messier reds where the miscount costs most.
+      // Measured 2026-08-03: `failed=2` for 3 failing files composed with "two of them are
+      // already fixed" into "the gate is one run from green", and a wrong hive-wide
+      // stand-down went out while four agents were converging on the real blocker.
+      //
+      // The remedy that landed was NOT widening this verdict line. WI-38300 ruled against
+      // that in source ("widening a VERDICT contract to carry an ADVISORY is how advisories
+      // come to be read as verdicts"), and green-checkpoint.ts names this same trap at the
+      // point where it deliberately reads the per-file line instead. What landed
+      // (EI-19395701908500754) is a SEPARATE per-file block, printed on this same red path,
+      // whose first line states the tasks-vs-files distinction in words.
+      //
+      // That makes the whole remedy a CO-OCCURRENCE property — and nothing guarded it.
+      // affected-tests-failing-files-line.test.ts proves the renderer RENDERS; it stays
+      // green if the call is deleted, moved off the red path, or fed a different counter,
+      // while every real red silently goes back to naming tasks only. Reachability is the
+      // blind spot this file's own header names, so the binding is asserted against the red
+      // block itself, where the two lines have to keep sharing a path.
+      const failedBlock = source.match(/if \(failed\) \{[\s\S]*?\n\}/)?.[0];
+      expect(failedBlock).toBeTruthy();
+      expect(failedBlock).toContain('renderFailingFilesSummary({');
+      // ORDER: the per-file set prints BEFORE the verdict line, so a triager who stops at
+      // the first `AFFECTED_TESTS_RESULT` hit has already scrolled past the file list.
+      expect(failedBlock!.indexOf('renderFailingFilesSummary({')).toBeLessThan(
+        failedBlock!.indexOf("errSync(resultLine('failed'));"),
+      );
+      // SAME COUNTER. The caveat prose renders `failed=${failedTaskCount}` and the verdict
+      // line renders `failed=${failed}`. Fed from different variables, the red block would
+      // confidently contradict itself: two different numbers, both labelled `failed=`, a few
+      // lines apart — a worse failure than the one being fixed, and invisible to the
+      // renderer's own unit tests, which pass the count as a literal.
+      expect(failedBlock).toMatch(
+        /renderFailingFilesSummary\(\{[^}]*failedTaskCount: failed,/,
+      );
+    });
+
     it("emits resultLine('passed') on the clean-run success path", () => {
       // CODE token only. This used to also pin the prose '\nAll affected tests
       // passed.' — a latent third instance of the copy-edit-reds-the-gate bug
