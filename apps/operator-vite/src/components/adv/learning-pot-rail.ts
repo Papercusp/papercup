@@ -272,16 +272,22 @@ export function buildLearningPotRail(arming: AutomationArming | null | undefined
  * `dormant` is returned alongside `active` so the rail can account for all of
  * them in one affordance and hand them to the picker.
  *
- *   - `learning === 'off'` — switched off deliberately, and therefore DORMANT
- *     (D-008), whatever its lanes have armed: the pot gate is the OUTER switch,
- *     so an off pot is not learning even with an armed lane under it. This
- *     REVERSES D-005, which kept off pots on the rail "because the rail chip is
- *     what switches it back on". That premise expired when P-008 shipped the
- *     every-pot picker: it lists every pot regardless of gate state and its
- *     footer switches a selection back on in one write, so burying an off pot
- *     no longer strands it and the chip only bought width. This is not a rare
- *     case — switching every pot off is exactly what an owner does to stop
- *     spend, and under the old rule that turned the whole rail into chips.
+ *   - `learning === 'off'` — no longer forces a chip. D-008 drops D-005's
+ *     blanket "a decided pot is never dormant" and subjects an off pot to the
+ *     SAME armed-check as an on one, because D-005's stated reason ("the rail
+ *     chip is what switches it back on") expired when P-008 shipped the
+ *     every-pot picker, whose footer switches a selection back on in one write.
+ *     It matters because switching every pot off is exactly what an owner does
+ *     to stop spend, and under the old rule that turned the entire rail into
+ *     chips — the display got bigger the moment you tried to quiet it.
+ *
+ *     But the narrowing stops at ARMING, deliberately. An off pot that still
+ *     has a lane armed KEEPS its chip, because the picker restores the GATE and
+ *     nothing else: D-007 put per-lane control off the picker on purpose, and
+ *     P-012's per-pot drawer does not exist yet — so burying an off pot that
+ *     owns lane switches would strand the only surface that operates them. An
+ *     off pot with nothing armed has no such switches to strand, which is why
+ *     it is safe to summarise and it alone.
  *   - `learning === 'unknown'` — the scope read failed, and this case is
  *     UNCHANGED: still never dormant. Hiding a pot whose state we could not
  *     read would silently under-report the rail, which is the same fail-open
@@ -290,7 +296,6 @@ export function buildLearningPotRail(arming: AutomationArming | null | undefined
  */
 export function isPotChipDormant(chip: LearningPotChip): boolean {
   if (chip.learning === 'unknown') return false;
-  if (chip.learning === 'off') return true;
   return chip.gym.state !== 'on' && chip.lanes.state !== 'on';
 }
 

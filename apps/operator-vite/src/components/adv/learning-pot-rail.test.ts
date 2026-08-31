@@ -220,17 +220,18 @@ describe('the dormant split — a setup is not the same as learning', () => {
     expect(isPotChipDormant(chip)).toBe(true);
   });
 
-  // The gate is the OUTER switch, so 'off' beats an armed lane underneath it.
-  // Without this case the rule could be satisfied by an implementation that only
-  // checks arming, which would still render a chip for every paused pot that has
-  // a lane configured — the exact population that made the rail gigantic.
-  it('treats a switched-off pot as dormant EVEN WITH an armed lane under it', () => {
+  // Where D-008's narrowing STOPS, and why. Burying an off pot is only safe when
+  // it has nothing armed: the picker restores the GATE and nothing else (D-007
+  // keeps per-lane control off that surface deliberately) and P-012's drawer does
+  // not exist yet, so an off pot that still owns lane switches would be stranded
+  // with no surface to operate them. It keeps its chip.
+  it('KEEPS a switched-off pot on the rail when a lane is still armed under it', () => {
     const [chip] = buildLearningPotRail(
       arming({ lanes: [lane('l1', 'paused', true)], potScope: scope(['paused']) }),
     );
     expect(chip.learning).toBe('off');
     expect(chip.lanes.state).toBe('on');
-    expect(isPotChipDormant(chip)).toBe(true);
+    expect(isPotChipDormant(chip)).toBe(false);
   });
 
   it('NEVER hides a pot whose scope could not be read', () => {
@@ -257,21 +258,20 @@ describe('the dormant split — a setup is not the same as learning', () => {
   // those pots became 'off', 'off' was never dormant, and the rail rendered a
   // chip for every one — so the display got bigger the moment you tried to quiet
   // it. Live measurement after the real 28-pot pause: 26 chips, 522px, clipped.
-  it('collapses to nothing on the rail when EVERY pot is switched off', () => {
+  it('collapses to nothing on the rail when EVERY pot is switched off and idle', () => {
     const slugs = ['alpha', 'beta', 'gamma', 'delta'];
     const rail = buildLearningPotRail(
       arming({
-        // Two of them are armed underneath, so this also pins that the gate wins.
-        gymPots: [gym('alpha', true, 3), gym('beta', false), gym('gamma', true, 1), gym('delta', false)],
+        gymPots: slugs.map((s) => gym(s, false)),
         potScope: scope(slugs),
       }),
     );
     const { active, dormant } = partitionLearningPotRail(rail);
     expect(rail).toHaveLength(4);
     expect(potsOf(active)).toEqual([]);
-    // Sorted: the rail orders by armed-then-spend-then-slug, not alphabetically,
-    // and this case is about WHICH pots land in each half, not their order.
-    expect([...potsOf(dormant)].sort()).toEqual(slugs);
+    // Sorted both sides: the rail orders by armed-then-spend-then-slug, not
+    // alphabetically, and this case is about WHICH half each pot lands in.
+    expect([...potsOf(dormant)].sort()).toEqual([...slugs].sort());
   });
 });
 
