@@ -45,6 +45,11 @@ EnvironmentFile=%h/.config/papercusp-phone/portal.env
 # WITHOUT the origin env var — but a pinned port means a portal restart that
 # forgets the env still lands on the right place.
 Environment=PHONE_HTTP_PORT=8793
+# The transcript bridge is server-to-server and deliberately targets the
+# loopback-only agent-chat append route. The harness is fixed here rather than
+# accepted from a worker payload.
+Environment=PHONE_OPERATOR_ORIGIN=http://127.0.0.1:3070
+Environment=PHONE_OPERATOR_HARNESS=portal
 
 ExecStart=${NODE_BIN} --import tsx src/index.ts
 Restart=on-failure

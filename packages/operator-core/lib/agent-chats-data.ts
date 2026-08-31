@@ -61,6 +61,10 @@ export interface TranscriptTurn {
   error?: boolean;
   /** Number of terminal usage frames whose cost/token fields were absent. */
   unreportedFrames?: number;
+  /** Stable idempotency key for a server-to-server external turn (P-010). */
+  source_id?: string;
+  /** Origin of a server-to-server turn; never accepted from browser chat routes. */
+  source?: 'phone-livekit';
 }
 
 /**
@@ -433,5 +437,70 @@ export async function archiveChat(input: ArchiveChatInput): Promise<Result<{ ok:
     return { ok: true, data: { ok: true } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to archive chat: ${(e as Error).message}` };
+  }
+}
+
+export interface AppendExternalChatTurnInput {
+  slug: string;
+  chatId: string;
+  role: Extract<TranscriptTurn['role'], 'user' | 'assistant'>;
+  content: string;
+  sourceId: string;
+  source: 'phone-livekit';
+  ts?: string;
+}
+
+/**
+ * Append one trusted server-originated turn without starting an agent run.
+ *
+ * Phone speech is finalized by the LiveKit worker and arrives here through a
+ * loopback-only route. The update is atomic and idempotent: PostgreSQL's row
+ * lock serializes concurrent typed/voice writes, while the JSONB predicate
+ * drops a retried `(room, seq)` source id instead of duplicating it.
+ */
+export async function appendExternalChatTurn(
+  input: AppendExternalChatTurnInput,
+): Promise<Result<{ appended: boolean }>> {
+  const content = input.content.trim();
+  const sourceId = input.sourceId.trim();
+  if (!content) return { ok: false, status: 400, error: 'content is required' };
+  if (!sourceId) return { ok: false, status: 400, error: 'sourceId is required' };
+  if (input.role !== 'user' && input.role !== 'assistant') {
+    return { ok: false, status: 400, error: 'role must be user or assistant' };
+  }
+  try {
+    const db = dbForSlug(input.slug);
+    const ts = input.ts && Number.isFinite(Date.parse(input.ts))
+      ? new Date(input.ts).toISOString()
+      : new Date().toISOString();
+    const turn: TranscriptTurn = {
+      role: input.role,
+      content,
+      ts,
+      source: input.source,
+      source_id: sourceId,
+    };
+    const updated = (await db.prepare(
+      `UPDATE agent_chats
+          SET transcript = COALESCE(transcript, '[]'::jsonb) || ?::jsonb,
+              updated_at = ?
+        WHERE workspace_id = ? AND id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(COALESCE(transcript, '[]'::jsonb)) AS turn
+             WHERE turn->>'source_id' = ?
+          )
+        RETURNING id`,
+    ).get(JSON.stringify([turn]), Date.now(), activeWorkspaceId(), input.chatId, sourceId)) as
+      | { id?: string }
+      | undefined;
+    if (updated?.id) return { ok: true, data: { appended: true } };
+
+    const existing = (await db.prepare(
+      'SELECT id FROM agent_chats WHERE workspace_id = ? AND id = ? LIMIT 1',
+    ).get(activeWorkspaceId(), input.chatId)) as { id?: string } | undefined;
+    if (!existing?.id) return { ok: false, status: 404, error: 'chat not found' };
+    return { ok: true, data: { appended: false } };
+  } catch (e) {
+    return { ok: false, status: 500, error: `failed to append external turn: ${(e as Error).message}` };
   }
 }

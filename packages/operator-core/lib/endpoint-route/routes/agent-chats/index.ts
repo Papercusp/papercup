@@ -42,6 +42,7 @@ import { MODEL_EFFORT_LEVELS } from '../../../agent-config-constants';
 import { listPendingLoopApprovals, resolveLoopApproval } from '../../../agent-loop/approval-store';
 import { taskOpsRoute } from './task-ops';
 import { suSessionRoutes } from './su-session';
+import externalTurnRoutes from './external-turns';
 
 /**
  * P-008 (own-tui-full-divorce-2026-08-24): doors whose calls route through
@@ -1153,5 +1154,6 @@ export default [
   messagesRoute,
   listApprovalsRoute,
   resolveApprovalRoute,
+  ...externalTurnRoutes,
   ...suSessionRoutes,
 ];

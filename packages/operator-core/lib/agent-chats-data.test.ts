@@ -83,6 +83,7 @@ import {
   getChat,
   createChat,
   archiveChat,
+  appendExternalChatTurn,
   LIST_CHATS_DEFAULT_LIMIT,
   toPuiSessionRuntimeClass,
 } from './agent-chats-data';
@@ -560,5 +561,43 @@ describe('archiveChat (AC2 — orphaned `pre` SELECT removed)', () => {
     runMock.mockRejectedValueOnce(new Error('deadlock'));
     const r = await archiveChat({ slug: 'foo', chatId: 'c1' });
     expect(r).toEqual({ ok: false, status: 500, error: 'failed to archive chat: deadlock' });
+  });
+});
+
+describe('appendExternalChatTurn (P-010)', () => {
+  it('appends a server-originated turn with source metadata and active workspace scope', async () => {
+    getMock.mockResolvedValueOnce({ id: 'c1' });
+    const result = await appendExternalChatTurn({
+      slug: 'portal', chatId: 'c1', role: 'user', content: 'spoken hello',
+      sourceId: 'room-1:0', source: 'phone-livekit', ts: '2026-08-31T18:00:00.000Z',
+    });
+    expect(result).toEqual({ ok: true, data: { appended: true } });
+    expect(calls[0]?.sql).toContain("source_id");
+    expect(calls[0]?.sql).toContain('workspace_id = ?');
+    expect(calls[0]?.args[2]).toBe(TEST_WS);
+    expect(JSON.parse(String(calls[0]?.args[0]))).toEqual([expect.objectContaining({
+      role: 'user', content: 'spoken hello', source: 'phone-livekit', source_id: 'room-1:0',
+    })]);
+  });
+
+  it('returns appended=false for a duplicate source id without another write', async () => {
+    getMock.mockResolvedValueOnce(undefined); // UPDATE ... RETURNING: duplicate/no row
+    getMock.mockResolvedValueOnce({ id: 'c1' });
+    const result = await appendExternalChatTurn({
+      slug: 'portal', chatId: 'c1', role: 'assistant', content: 'spoken reply',
+      sourceId: 'room-1:0', source: 'phone-livekit',
+    });
+    expect(result).toEqual({ ok: true, data: { appended: false } });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.sql).toContain('SELECT id FROM agent_chats');
+  });
+
+  it('reports a missing chat distinctly from an idempotent duplicate', async () => {
+    getMock.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
+    const result = await appendExternalChatTurn({
+      slug: 'portal', chatId: 'missing', role: 'user', content: 'spoken',
+      sourceId: 'room-1:1', source: 'phone-livekit',
+    });
+    expect(result).toEqual({ ok: false, status: 404, error: 'chat not found' });
   });
 });
