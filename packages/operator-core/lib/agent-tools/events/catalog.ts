@@ -16,6 +16,7 @@ import {
   mergeInstalledEventCatalog,
   renderCatalog,
   familyKeyPrefix,
+  familyKeyLikePattern,
   SUBJECT_SCOPE_GLOSS,
   type CatalogRow,
   type EventFamilyCollision,
@@ -23,7 +24,11 @@ import {
   type SubjectScope,
 } from '../../events/await/catalog';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
-import { countActiveAwaitsByPrefixes, listActiveAnnouncements } from '../../events/await/store';
+import {
+  countActiveAwaitsByKeyShapes,
+  countActiveAwaitsByPrefixes,
+  listActiveAnnouncements,
+} from '../../events/await/store';
 import { announcementVisibleTo } from '../../events/await/announce-key';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
@@ -187,14 +192,17 @@ export default defineTool({
     if (args.liveAwaiters !== false && rows.length > 0) {
       const wanted = new Set(rows.map((r) => r.family));
       const entries = merged.entries.filter((e) => wanted.has(e.family));
-      const prefixByFamily = new Map(entries.map((e) => [e.family, familyKeyPrefix(e)]));
+      // WI-1611805: matched by the family's derived SHAPE (prefix + arity), not by
+      // `prefix || '%'` — for a placeholder-first template the bare prefix is only
+      // the namespace, so the old join counted unrelated families' awaits as this
+      // family's (`plan-event` read 5 over a true 4). Shape comes from the catalog
+      // so the count and the orphan guard can never disagree about the population.
+      const counted = new Set(entries.map((e) => e.family));
       try {
-        const counts = await countActiveAwaitsByPrefixes([...prefixByFamily.values()]);
-        rows = rows.map((r) => {
-          const prefix = prefixByFamily.get(r.family);
-          const live_awaiters = prefix !== undefined ? (counts.get(prefix) ?? 0) : undefined;
-          return live_awaiters !== undefined ? { ...r, live_awaiters } : r;
-        });
+        const counts = await countActiveAwaitsByKeyShapes(
+          entries.map((e) => ({ family: e.family, exact: familyKeyPrefix(e), like: familyKeyLikePattern(e) })),
+        );
+        rows = rows.map((r) => (counted.has(r.family) ? { ...r, live_awaiters: counts.get(r.family) ?? 0 } : r));
       } catch {
         /* best-effort — omit live_awaiters rather than fail catalog discovery */
       }

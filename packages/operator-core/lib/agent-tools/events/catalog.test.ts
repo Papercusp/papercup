@@ -14,8 +14,10 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 
 const countMock = vi.fn();
 const listAnnouncementsMock = vi.fn();
+const prefixCountMock = vi.fn();
 vi.mock('../../events/await/store', () => ({
-  countActiveAwaitsByPrefixes: (...args: unknown[]) => countMock(...args),
+  countActiveAwaitsByKeyShapes: (...args: unknown[]) => countMock(...args),
+  countActiveAwaitsByPrefixes: (...args: unknown[]) => prefixCountMock(...args),
   listActiveAnnouncements: (...args: unknown[]) => listAnnouncementsMock(...args),
 }));
 
@@ -206,16 +208,37 @@ describe('events:catalog — live_awaiters', () => {
     ]);
   });
 
-  it('attaches live_awaiters per row by default, keyed via familyKeyPrefix', async () => {
-    countMock.mockImplementation(async (prefixes: string[]) => {
-      const m = new Map(prefixes.map((p) => [p, 0]));
-      m.set(familyKeyPrefix(EVENT_CATALOG.find((e) => e.family === 'deploy')!), 3);
+  it('attaches live_awaiters per row by default, keyed by FAMILY', async () => {
+    countMock.mockImplementation(async (shapes: Array<{ family: string }>) => {
+      const m = new Map(shapes.map((s) => [s.family, 0]));
+      m.set('deploy', 3);
       return m;
     });
     const out = await call({ family: 'deploy' });
     expect(out.families).toHaveLength(1);
     expect(out.families[0]).toMatchObject({ family: 'deploy', live_awaiters: 3 });
     expect(countMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * WI-1611805. The old join matched `familyKeyPrefix(e) || '%'`, which is not even
+   * `:`-bounded: `plan-event`'s derived prefix is the bare namespace `plan`, so its
+   * count swept in `plan-item:` and `plan-run:` awaits (measured live 2026-08-31: 5
+   * reported over a true 4). The tool must hand the store the family's SHAPE — the
+   * arity-bounded LIKE pattern — so the count and the orphan guard can never
+   * disagree about which awaits belong to a family.
+   */
+  it('WI-1611805 — passes the arity-bounded SHAPE, not a bare `prefix%`', async () => {
+    countMock.mockImplementation(async (shapes: Array<{ family: string }>) => new Map(shapes.map((s) => [s.family, 0])));
+    await call({ family: 'plan-event' });
+    expect(countMock).toHaveBeenCalledWith([
+      // `plan:%:%` requires two `:`-separated tail segments; `plan-item:done:x` and
+      // `plan-run:finished:x` cannot match it, and neither can the bare `plan%`-era
+      // over-count. `exact` keeps the bare-prefix await counted, as familyAdmitsKey does.
+      { family: 'plan-event', exact: 'plan', like: 'plan:%:%' },
+    ]);
+    // The unbounded prefix reader must not be reached from this path at all.
+    expect(prefixCountMock).not.toHaveBeenCalled();
   });
 
   it('zero-fills a family with no live registrations', async () => {

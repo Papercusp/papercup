@@ -24,8 +24,13 @@ import { describe, it, expect } from 'vitest';
 import {
   EVENT_CATALOG,
   SUBJECT_SCOPE_GLOSS,
+  buildKey,
   deriveSubjectScope,
   subjectScopeOf,
+  familyKeyArity,
+  keyMatchesCatalog,
+  findRequiredParamPrefixMatch,
+  findZeroParamSuffixMismatch,
   findUnknownSubjectScopes,
   findFamilyPrefixShadowing,
   findRedundantSubjectScopeOverrides,
@@ -149,6 +154,97 @@ describe('the builtin catalog', () => {
     expect(deriveSubjectScope(e)).toBe('id');
     expect(subjectScopeOf(e)).toBe('global');
     expect(findRedundantSubjectScopeOverrides([e])).toEqual([]);
+  });
+});
+
+describe('WI-1611805 — the derived ARITY bound on keyMatchesCatalog', () => {
+  /**
+   * `familyKeyPrefix` truncates at the FIRST placeholder, so `plan:<slug>:<gate>`
+   * registered the bare namespace `plan` and `keyMatchesCatalog` answered true for
+   * everything under it. The EI-10870 orphan guard consumes that `true` as PROOF AN
+   * EMITTER EXISTS, so it was silently OFF across all of `plan:` and `ext:` — the
+   * namespaces whose keys are hand-typed from chat, i.e. the case it was built for.
+   */
+  it('REJECTS a key with too few segments for a placeholder-first family (the bug)', () => {
+    // Before this bound every one of these answered `true`, and the orphan guard
+    // consumed that as "an emitter exists".
+    for (const key of ['plan:typo', 'plan:draft-redy', 'ext:gmail']) {
+      expect(keyMatchesCatalog(key), key).toBe(false);
+    }
+  });
+
+  it('the BARE namespace stays delegated to EI-13089, which words it better', () => {
+    // `plan` / `ext` are exactly a family prefix, so familyAdmitsKey keeps matching
+    // them on purpose: findRequiredParamPrefixMatch then names the dropped param
+    // instead of the vaguer "nothing emits this key". Asserting the delegation, not
+    // just the `true`, is what stops a future "tighten this too" from going silent.
+    for (const key of ['plan', 'ext']) {
+      expect(keyMatchesCatalog(key), key).toBe(true);
+      expect(findRequiredParamPrefixMatch(key), key).toBeTruthy();
+    }
+  });
+
+  it('still admits every real key those families produce — measured against live awaits', () => {
+    // 2026-08-31, harness_shared.event_awaits: 811 `plan:` awaits at 3 segments,
+    // 1 at 5 (a plan slug that itself contains colons), 1 `ext:` at 3. ZERO below
+    // the bound, which is why this tightening strands no live await.
+    expect(keyMatchesCatalog('plan:byoc-cloud-workspaces-gcp-aws-azure-2026-08-22:p026-ownership-repaired')).toBe(true);
+    expect(
+      keyMatchesCatalog('plan:coord-hook-fold-load-repair-2026-08-30:fleet:non-p2p-feature-drain-2026-08-29:wi36147'),
+    ).toBe(true);
+    expect(keyMatchesCatalog('ext:gmail:message-received')).toBe(true);
+  });
+
+  it('IRREDUCIBLE RESIDUE — a same-arity typo is still admitted, and that is not a bug in this fix', () => {
+    // `<slug>` and `<gate>` are free, so `plan:draft-redy:x` IS a well-formed
+    // instance of `plan:<slug>:<gate>`; no catalog knows that no plan is named
+    // `draft-redy`. Pinned deliberately so nobody reads the arity bound as "typos
+    // are caught now" — removing this needs a re-template + await migration, which
+    // is why findFamilyPrefixShadowing still reports the pair below.
+    expect(keyMatchesCatalog('plan:draft-redy:x')).toBe(true);
+    expect(keyMatchesCatalog('plan:total:garbage')).toBe(true);
+  });
+
+  it('leaves both DELEGATED cases permissive, so their better-worded guards still own them', () => {
+    // EI-13089 owns the bare-prefix-with-required-param message…
+    expect(keyMatchesCatalog('work-item:done')).toBe(true);
+    expect(findRequiredParamPrefixMatch('work-item:done')).toBeTruthy();
+    // …and P-004/D-002 owns the zero-param-family-with-a-suffix message.
+    expect(keyMatchesCatalog('work-item:claimable:papercusp:backlog-drain')).toBe(true);
+    expect(findZeroParamSuffixMismatch('work-item:claimable:papercusp:backlog-drain')).toBeTruthy();
+    // An optional trailing param still collapses to a real global key (buildKey rule).
+    expect(keyMatchesCatalog('release:deployed')).toBe(true);
+  });
+
+  it('NEGATIVE CONTROL — the bound is derived from REQUIRED params, not from segment count', () => {
+    // Same template, same three segments; only the `required` flags differ. An
+    // arity bound that counted placeholders instead would reject the second key,
+    // stranding every family whose trailing param legitimately collapses.
+    const required = entry({ family: 'r', keyTemplate: 'r:<a>:<b>', params: [param('a'), param('b')] });
+    const optional = entry({ family: 'o', keyTemplate: 'o:<a>:<b>', params: [param('a'), param('b', false)] });
+    expect(familyKeyArity(required)).toMatchObject({ prefix: 'r', requiredTailSegments: 2, decidable: true });
+    expect(familyKeyArity(optional)).toMatchObject({ prefix: 'o', requiredTailSegments: 1, decidable: true });
+    expect(keyMatchesCatalog('r:one', [required])).toBe(false);
+    expect(keyMatchesCatalog('o:one', [optional])).toBe(true);
+  });
+
+  it('NEGATIVE CONTROL — an undecidable template stays PERMISSIVE, never confidently orphaned', () => {
+    // A literal after the first placeholder, and a placeholder with no declared
+    // param, are both outside what this bound can read. Answering "nothing emits
+    // this" there would be the exact failure EI-10870 warns about, so it must not.
+    const literalTail = entry({ family: 'lt', keyTemplate: 'lt:<a>:done', params: [param('a')] });
+    const undeclared = entry({ family: 'ud', keyTemplate: 'ud:<a>:<b>', params: [param('a')] });
+    expect(familyKeyArity(literalTail).decidable).toBe(false);
+    expect(familyKeyArity(undeclared).decidable).toBe(false);
+    expect(keyMatchesCatalog('lt:anything', [literalTail])).toBe(true);
+    expect(keyMatchesCatalog('ud:anything', [undeclared])).toBe(true);
+  });
+
+  it('every builtin family still matches its own fully-interpolated key', () => {
+    for (const e of EVENT_CATALOG) {
+      const params = Object.fromEntries(e.params.map((p) => [p.name, 'x']));
+      expect(keyMatchesCatalog(buildKey(e.family, params)), e.family).toBe(true);
+    }
   });
 });
 

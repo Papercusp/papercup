@@ -1533,6 +1533,48 @@ export async function countActiveAwaitsByPrefixes(prefixes: readonly string[]): 
 }
 
 /**
+ * WI-1611805 — the family-scoped twin of {@link countActiveAwaitsByPrefixes}, for
+ * callers that have a catalog ENTRY rather than a bare key.
+ *
+ * `countActiveAwaitsByPrefixes` matches `prefix || '%'`, which is not `:`-bounded:
+ * for `plan-event`, whose derived prefix is the bare namespace `plan`, that swept in
+ * every `plan-item:` / `plan-run:` await as well (measured live: 5 reported over a
+ * true 4). The bound the template already knows is arity, so this takes the
+ * per-family shape — `exact` (the bare prefix, which familyAdmitsKey still matches)
+ * plus `like` from `familyKeyLikePattern` — and keys the result by FAMILY, so the
+ * caller never has to re-derive or re-key anything. Same best-effort contract and
+ * same zero-fill: a family with no live awaits comes back 0, not absent.
+ */
+export async function countActiveAwaitsByKeyShapes(
+  shapes: readonly { family: string; exact: string; like: string }[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const usable = shapes.filter((s) => s.family.length > 0 && s.exact.length > 0 && s.like.length > 0);
+  if (usable.length === 0) return out;
+  for (const s of usable) out.set(s.family, 0);
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT s.family AS family, count(a.id)::int AS n
+      FROM unnest(
+             ${usable.map((s) => s.family)}::text[],
+             ${usable.map((s) => s.exact)}::text[],
+             ${usable.map((s) => s.like)}::text[]
+           ) AS s(family, exact, like_pattern)
+      LEFT JOIN harness_shared.event_awaits a
+        ON a.workspace_id = ${ws}
+       AND (a.event_key = s.exact OR a.event_key LIKE s.like_pattern)
+       AND a.fired_at IS NULL AND a.cancelled_at IS NULL
+       AND a.policy <> 'announce'
+     GROUP BY s.family
+  `;
+  for (const r of rows as unknown as Array<{ family: string; n: number }>) {
+    out.set(r.family, Number(r.n) || 0);
+  }
+  return out;
+}
+
+/**
  * Fire every active watch on a key, returning the rows fired BY THIS CALL.
  *
  * Cardinality is honored (unify-watch-primitive D-001/D-004):

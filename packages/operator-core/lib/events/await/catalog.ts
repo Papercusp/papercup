@@ -972,6 +972,101 @@ export function familyKeyPrefix(entry: EventCatalogEntry): string {
 }
 
 /**
+ * WI-1611805 — the ARITY half of a family's derived match shape.
+ *
+ * {@link familyKeyPrefix} answers "what text does every key of this family start
+ * with", which for a PLACEHOLDER-FIRST template (`plan:<slug>:<gate>`) is only the
+ * bare namespace `plan`. A prefix test alone therefore admits the WHOLE namespace,
+ * and since {@link keyMatchesCatalog}'s `true` is consumed as PROOF AN EMITTER
+ * EXISTS, the EI-10870 orphan guard went silent across all of `plan:` and `ext:`.
+ *
+ * The template already knows the missing bound: how many `:`-segments a real key
+ * must carry. This DERIVES it rather than adding a hand-written field per entry
+ * (the repo's derived-truth ladder — a registry field restating what code already
+ * owns is the named review smell), so it cannot drift from the template.
+ *
+ * Two deliberate limits, both in the SAFE direction:
+ *  · `requiredTailSegments` counts only REQUIRED params, because buildKey collapses
+ *    an omitted optional one (`release:deployed` is a real global key). It is a
+ *    LOWER bound only — the last placeholder stays greedy, so an over-long key and
+ *    a value that itself contains `:` keep matching exactly as they do today.
+ *  · `decidable:false` when the tail is not a clean run of lone `<placeholder>`
+ *    segments (a literal after the first placeholder, a mixed segment, a
+ *    placeholder with no declared param). Callers stay permissive there — an
+ *    unclassified template must never produce a confident "nothing emits this".
+ */
+export function familyKeyArity(entry: EventCatalogEntry): {
+  prefix: string;
+  requiredTailSegments: number;
+  decidable: boolean;
+} {
+  const prefix = familyKeyPrefix(entry);
+  const template = String(entry.keyTemplate ?? '');
+  const idx = template.indexOf('<');
+  // No placeholder at all: the prefix IS the whole key. Zero required tail
+  // segments keeps the permissive suffix behaviour that findZeroParamSuffixMismatch
+  // is built on top of — that case has its own, better-worded guard.
+  if (idx === -1) return { prefix, requiredTailSegments: 0, decidable: true };
+  const declared = new Map((entry.params ?? []).map((p) => [p.name, p]));
+  let requiredTailSegments = 0;
+  for (const seg of template.slice(idx).split(':')) {
+    const m = /^<([^<>]+)>$/.exec(seg);
+    if (!m) return { prefix, requiredTailSegments: 0, decidable: false };
+    const param = declared.get(m[1]);
+    if (!param) return { prefix, requiredTailSegments: 0, decidable: false };
+    if (param.required) requiredTailSegments += 1;
+  }
+  return { prefix, requiredTailSegments, decidable: true };
+}
+
+/**
+ * WI-1611805 — {@link familyAdmitsKey} expressed as a SQL LIKE pattern, for the
+ * live-awaiter count join (`countActiveAwaitsByKeyShapes` in ./store).
+ *
+ * The count carried the same defect as the orphan guard, from the same source: it
+ * LIKE-matched `familyKeyPrefix(e) || '%'`, which for `plan-event` is `plan%` — not
+ * even `:`-bounded, so it swept in whole unrelated families. Measured 2026-08-31 on
+ * live rows: `plan-event` reported 5 live awaiters over a true population of 4, the
+ * extra being a `plan-item:` await. `%` spans `:` so `P:%:%` is exactly the arity
+ * bound (at least R tail segments, last one greedy) — the same predicate, pushed
+ * down to Postgres rather than re-derived there.
+ *
+ * Pair it with an equality test on the prefix itself: the bare-prefix case is a
+ * match for {@link familyAdmitsKey} and must stay one here (see its carve-outs).
+ */
+export function familyKeyLikePattern(entry: EventCatalogEntry): string {
+  const { prefix, requiredTailSegments, decidable } = familyKeyArity(entry);
+  const segments = Math.max(decidable ? requiredTailSegments : 1, 1);
+  return `${prefix}${':%'.repeat(segments)}`;
+}
+
+/**
+ * WI-1611805 — can THIS family produce this concrete key? The single place the
+ * prefix and the arity bound are combined; {@link keyMatchesCatalog} is its `some`.
+ *
+ * The three carve-outs are not laziness — each hands the case to a guard that says
+ * something more useful than "unknown key", and each is pinned by a test:
+ *  · `k === prefix` (a bare family prefix whose required param was dropped) stays a
+ *    match, so {@link findRequiredParamPrefixMatch} owns the message.
+ *  · `requiredTailSegments === 0` (a zero-param family with a suffix) stays a match,
+ *    so {@link findZeroParamSuffixMismatch} owns the message.
+ *  · an undecidable template stays a match — see {@link familyKeyArity}.
+ */
+export function familyAdmitsKey(entry: EventCatalogEntry, key: string): boolean {
+  const k = String(key ?? '').trim();
+  if (!k) return false;
+  const { prefix, requiredTailSegments, decidable } = familyKeyArity(entry);
+  if (prefix.length === 0) return false;
+  if (k === prefix) return true;
+  if (!k.startsWith(`${prefix}:`)) return false;
+  if (!decidable) return true;
+  // Segments after the prefix. Always >= 1 here, so a 0- or 1-required-segment
+  // family is unchanged by this bound; it bites only on a multi-required template.
+  const tailSegments = k.slice(prefix.length + 1).split(':').length;
+  return tailSegments >= requiredTailSegments;
+}
+
+/**
  * EI-10870 — the ORPHAN-AWAIT guard: does ANY known family emit this concrete key?
  *
  * `events:await` accepts an arbitrary key string, so an invented or mistyped key
@@ -981,10 +1076,19 @@ export function familyKeyPrefix(entry: EventCatalogEntry): string {
  * settled awaits, 0 real fires ever, and appears NOWHERE in the tree. The catalog
  * always knew every family's emitter; it was just never consulted at await time.
  *
- * Matches by family PREFIX, not exact string — a templated key must match every
+ * Matches by family SHAPE, not exact string — a templated key must match every
  * concrete instantiation (`release:deployed:<sha>` → any sha). Mirrors buildKey's
  * collapse rule via familyKeyPrefix, so the global (`release:deployed`) and the
- * scoped (`release:deployed:abc123`) both resolve to the `deploy` family.
+ * scoped (`release:deployed:abc123`) both resolve to the `deploy` family, and bounds
+ * it by {@link familyKeyArity} so a placeholder-FIRST template stops admitting its
+ * entire namespace (WI-1611805).
+ *
+ * ⚠ WHAT THIS STILL CANNOT DECIDE, by construction: a free placeholder cannot tell a
+ * typo from a real value. `plan:<slug>:<gate>` legitimately admits `plan:draft-redy:x`
+ * — three segments is a well-formed instance, and no catalog knows that no plan is
+ * named `draft-redy`. The arity bound closes the NAMESPACE-WIDTH hole (`plan:typo`,
+ * `ext:whatever`); the same-arity residue is irreducible here and is pinned as such
+ * in subject-scope.test.ts so this fix is never read as "typos are caught now".
  *
  * Pass the MERGED catalog (builtin + installed `provides.events`) so a key emitted
  * by an installed pack is never misreported as an orphan.
@@ -992,10 +1096,7 @@ export function familyKeyPrefix(entry: EventCatalogEntry): string {
 export function keyMatchesCatalog(key: string, entries: readonly EventCatalogEntry[] = EVENT_CATALOG): boolean {
   const k = String(key ?? '').trim();
   if (!k) return false;
-  return entries.some((e) => {
-    const prefix = familyKeyPrefix(e);
-    return prefix.length > 0 && (k === prefix || k.startsWith(`${prefix}:`));
-  });
+  return entries.some((e) => familyAdmitsKey(e, k));
 }
 
 /**
@@ -1107,7 +1208,17 @@ export function findZeroParamSuffixMismatch(
  * ⚠ NOT HYPOTHETICAL — measured 2026-08-31, this returns exactly ONE pair today:
  *   · `plan-event` `plan:<slug>:<gate>` → prefix `plan`, which shadows
  *     `plan-draft-ready` (`plan:draft-ready`) and makes {@link keyMatchesCatalog}
- *     answer true for `plan:draft-redy:x`, `plan:typo`, `plan:total:garbage`.
+ *     answer true for `plan:draft-redy:x` and `plan:total:garbage`.
+ *
+ * ⚠ WI-1611805 NARROWED THIS, AND THE NARROWING IS THE POINT. Shadowing is now
+ * measured through {@link familyAdmitsKey} — "does `a` admit the keys `b` actually
+ * builds" — not through raw prefix text, so it tracks the real matcher instead of a
+ * proxy for it. The arity bound removed the namespace-width half of the damage
+ * (`plan:typo` and `plan` are no longer admitted at all), leaving the SAME-ARITY
+ * residue this row still reports: `plan:draft-redy:x` remains admitted because a
+ * free `<slug>` cannot be distinguished from a typo of a sibling's literal segment.
+ * That residue is only removable by re-templating (`plan-gate:<slug>:<gate>`) with a
+ * migration for live awaits — hence a reported row, not a silent normalisation.
  *
  * ⚠ AND READ WHAT IT DOES **NOT** RETURN. This finds catalog-internal SHADOWING —
  * one family swallowing another — which is a strictly narrower population than
@@ -1130,20 +1241,45 @@ export function findFamilyPrefixShadowing(
   entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
 ): Array<{ shadower: string; shadowerPrefix: string; shadowed: string; shadowedPrefix: string }> {
   const rows: Array<{ shadower: string; shadowerPrefix: string; shadowed: string; shadowedPrefix: string }> = [];
-  const prefixes = entries.map((e) => ({ family: e.family, prefix: familyKeyPrefix(e) }));
-  for (const a of prefixes) {
-    if (a.prefix.length === 0) continue;
-    for (const b of prefixes) {
-      if (a.family === b.family || b.prefix.length === 0) continue;
-      // `b` is swallowed by `a` when a's prefix IS b's, or is a strict `:`-bounded
-      // ancestor of it. Segment-bounded on purpose: `plan` must shadow `plan:x` but
-      // NOT the unrelated top-level family `plan-item:done`.
-      if (b.prefix === a.prefix || b.prefix.startsWith(`${a.prefix}:`)) {
-        rows.push({ shadower: a.family, shadowerPrefix: a.prefix, shadowed: b.family, shadowedPrefix: b.prefix });
-      }
+  for (const a of entries) {
+    const aPrefix = familyKeyPrefix(a);
+    if (aPrefix.length === 0) continue;
+    for (const b of entries) {
+      if (a.family === b.family) continue;
+      const bPrefix = familyKeyPrefix(b);
+      if (bPrefix.length === 0) continue;
+      // `b` is swallowed by `a` when every key `b` can BUILD is one `a` admits.
+      // Probed through the real matcher (never raw prefix text) so this guard can
+      // never disagree with keyMatchesCatalog about what is admitted, and probed
+      // against keys generated from b's own template so it cannot drift from the
+      // shape b really emits. Segment-bounded by familyAdmitsKey: `plan` shadows
+      // `plan:draft-ready:x` but NOT the unrelated top-level `plan-item:done:…`.
+      const probes = buildableKeysFor(b);
+      if (probes.length === 0 || !probes.every((k) => familyAdmitsKey(a, k))) continue;
+      rows.push({ shadower: a.family, shadowerPrefix: aPrefix, shadowed: b.family, shadowedPrefix: bPrefix });
     }
   }
   return rows;
+}
+
+/**
+ * The concrete keys a family can actually build, for catalog-vs-itself probing:
+ * the fully-interpolated form, plus the collapsed GLOBAL form when no param is
+ * required (buildKey's collapse rule). Deliberately NOT {@link buildKey}, which
+ * resolves the family against the module-level EVENT_CATALOG — these guards must
+ * work on a caller-supplied entry list (installed packs, test fixtures) too.
+ */
+function buildableKeysFor(entry: EventCatalogEntry, value = 'x'): string[] {
+  const params = entry.params ?? [];
+  let concrete = String(entry.keyTemplate ?? '');
+  let global: string | null = concrete;
+  for (const p of params) {
+    concrete = concrete.replace(`<${p.name}>`, value);
+    if (p.required) global = null;
+    else if (global !== null) global = global.replace(`:<${p.name}>`, '');
+  }
+  if (concrete.includes('<')) return []; // a placeholder with no declared param — undecidable
+  return global !== null && global !== concrete ? [concrete, global] : [concrete];
 }
 
 /**

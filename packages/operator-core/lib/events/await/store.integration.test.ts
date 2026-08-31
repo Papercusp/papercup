@@ -54,6 +54,7 @@ const {
   listParkedAwaitsForSubscribers,
   listVerifiedWaitTakeoversForSubscribers,
   countActiveAwaitsByPrefixes,
+  countActiveAwaitsByKeyShapes,
   recordKeyFire,
   getKeyFireLatch,
   inspectEventKey,
@@ -1326,6 +1327,40 @@ describe('await-event store (PG)', () => {
 
     // empty input short-circuits to an empty map
     expect((await countActiveAwaitsByPrefixes([])).size).toBe(0);
+  });
+
+  /**
+   * WI-1611805 — the shape-aware twin. The prefix join above matches `prefix || '%'`,
+   * which is not `:`-bounded, so a family whose derived prefix is a bare namespace
+   * (`plan-event` → `plan`) counted unrelated families' awaits as its own. Measured on
+   * live rows 2026-08-31: `plan-event` reported 5 over a true population of 4, the extra
+   * being a `plan-item:` await. This pins BOTH directions — the bleed is excluded, and
+   * every key the family really produces is still counted.
+   */
+  it('countActiveAwaitsByKeyShapes bounds a bare-namespace family by arity, keyed by family', async () => {
+    await registerAwait({ subscriberId: 'p1', eventKey: 'plan:my-plan:gate-one' });
+    await registerAwait({ subscriberId: 'p2', eventKey: 'plan:my-plan:gate-two' });
+    // a plan slug that itself contains a colon — the live 5-segment case; the last
+    // placeholder is greedy, so this must still count.
+    await registerAwait({ subscriberId: 'p3', eventKey: 'plan:weird:slug:gate-three' });
+    // the sibling family the old `plan%` join swallowed — must NOT count as plan-event
+    await registerAwait({ subscriberId: 'q1', eventKey: 'plan-item:done:my-plan:P-014' });
+    // the narrower family under the same namespace — its own row, not plan-event's
+    await registerAwait({ subscriberId: 'r1', eventKey: 'plan:draft-ready:my-plan' });
+
+    const counts = await countActiveAwaitsByKeyShapes([
+      { family: 'plan-event', exact: 'plan', like: 'plan:%:%' },
+      { family: 'plan-item', exact: 'plan-item:done', like: 'plan-item:done:%:%' },
+      { family: 'nobody', exact: 'nobody:listening', like: 'nobody:listening:%' },
+    ]);
+    // p1, p2, p3 — and NOT q1. r1 is a genuine same-arity `plan:<slug>:<gate>` instance
+    // and is counted here too: that overlap is the irreducible residue findFamilyPrefixShadowing
+    // still reports, not something this bound claims to have fixed.
+    expect(counts.get('plan-event')).toBe(4);
+    expect(counts.get('plan-item')).toBe(1);
+    expect(counts.get('nobody')).toBe(0); // zero-filled, not absent
+
+    expect((await countActiveAwaitsByKeyShapes([])).size).toBe(0);
   });
 });
 
