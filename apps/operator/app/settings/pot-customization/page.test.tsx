@@ -142,17 +142,32 @@ describe('HiveCustomizationPage', () => {
    * the learning drawer now owns — whose whole-object save would clobber the
    * drawer's keys — would have left every bound check green.
    *
-   * These two assertions are a matched pair. The first is the detector; the
-   * second is the positive control WITHOUT WHICH THE FIRST PASSES VACUOUSLY,
-   * since a page that ignored `?section=` entirely would also render scout.
+   * The fallback assertion below is NOT self-sufficient: a page that ignored
+   * `?section=` entirely would also render scout copy. What stops it passing
+   * vacuously is the separate POSITIVE CONTROL test that follows.
+   *
+   * ⛔ Do NOT re-add a `queryByPlaceholderText(/maxCostUsd/i)` absence check
+   * here. It stood on this line until independent grading (EI-21961376952734798)
+   * measured it INERT: no rendered placeholder on this page has ever contained
+   * `maxCostUsd` — the only two are SCOUT_PLACEHOLDER and CADENCE_PLACEHOLDER
+   * (page.tsx:74, :82) and the sole `maxCostUsd` occurrence is prose in a
+   * comment at :68 — so it returned null whatever CONFIG_SECTIONS held. It read
+   * like a second detector while carrying nothing.
    */
   it('normalizes a stale ?section=budget URL instead of rendering the retired editor', () => {
     initialParams = { hive: 'acme-hive', section: 'budget' };
     render(<HiveCustomizationPage />);
     // Falls back to CONFIG_SECTIONS[0] === 'scout'.
     expect(screen.getByText(/loop ideates, critiques, and routes/i)).toBeTruthy();
-    // And the retired editor's own placeholder is nowhere on the page.
-    expect(screen.queryByPlaceholderText(/maxCostUsd/i)).toBeNull();
+
+    // The selector trigger renders the RESOLVED section's label, which is where
+    // a re-added `budget` surfaces even though the Radix option list stays
+    // unmounted until opened. The `scout` half is this assertion's own positive
+    // control: it fails loudly if the trigger stops rendering a label at all,
+    // which is the only way the `budget` half could pass for the wrong reason.
+    const sectionSelect = screen.getByLabelText('Config section');
+    expect(sectionSelect.textContent).toMatch(/scout/i);
+    expect(sectionSelect.textContent).not.toMatch(/budget/i);
   });
 
   it('POSITIVE CONTROL: ?section= is genuinely read, so the fallback above is not vacuous', () => {
