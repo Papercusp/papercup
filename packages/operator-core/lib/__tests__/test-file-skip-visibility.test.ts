@@ -17,6 +17,7 @@ import { join } from 'node:path';
 
 import {
   aggregateGroupResults,
+  allSkippedVerdict,
   assertionOutcomesFromReport,
   callerChoseReporting,
   parseCli,
@@ -250,5 +251,80 @@ describe('aggregateGroupResults — skipped counts aggregate three-state, like e
     const summary = aggregateGroupResults([group({ testsSkipped: null })]);
     expect(summary.testsSkipped).toBeNull();
     expect(summary.skippedUnmeasuredGroups).toBe(1);
+  });
+});
+
+/**
+ * EI-21974750710808305 — the same absent-measurement-wearing-a-pass this file opens with, one level
+ * up: not one skipped assertion inside a green run, but a run in which EVERY collected test was
+ * skipped and the verdict line still said `passed`.
+ *
+ * The incident: /tmp/p002-omp-d052.log, 2026-08-30T23:54Z. The P-002 real-backend acceptance matrix
+ * ran without `PAPERCUSP_REAL_BACKEND_MATRIX=1`, skipped all 14 tests, printed 14 `TEST_FILE_SKIPPED
+ * name=` lines — and still emitted `status=passed ... skippedTests=14` with exit 0. Its runner read
+ * the verdict line and recorded `STOP reason=green attempts_used=1` for an acceptance leg that never
+ * executed a single test. The 14 advisory lines changed nothing, which is the point: advisory output
+ * does not beat the verdict line, so the countermeasure has to BE the verdict.
+ */
+describe('allSkippedVerdict — a run that executed ZERO of its collected tests is not a pass', () => {
+  const summaryOf = (over: Record<string, unknown> = {}) => ({
+    anyFailed: false,
+    skippedUnmeasuredGroups: 0,
+    skippedNames: [] as { name: string; file: string }[],
+    executedNames: [] as string[],
+    ...over,
+  });
+  const skips = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      name: `SU-session real-backend acceptance matrix omp CASE ${i}`,
+      file: 'lib/su-session-real-backend-matrix.integration.test.ts',
+    }));
+
+  it('REFUSES the incident shape — 14 collected, 14 skipped, 0 executed', () => {
+    const verdict = allSkippedVerdict(summaryOf({ skippedNames: skips(14) }));
+    expect(verdict.vacuous).toBe(true);
+    expect(verdict.reason).toBe('every-collected-test-was-skipped');
+  });
+
+  it('does NOT refuse when even ONE test executed — a partially-skipped run still measured something', () => {
+    const verdict = allSkippedVerdict(
+      summaryOf({ skippedNames: skips(13), executedNames: ['matrix omp CREATE'] }),
+    );
+    expect(verdict.vacuous).toBe(false);
+    expect(verdict.reason).toBe('tests-executed');
+  });
+
+  it('does NOT refuse an ordinary green run', () => {
+    expect(allSkippedVerdict(summaryOf({ executedNames: ['a', 'b'] })).vacuous).toBe(false);
+  });
+
+  it('leaves a GENUINE FAILURE reported as failed instead of softening it into a refusal', () => {
+    const verdict = allSkippedVerdict(summaryOf({ anyFailed: true, skippedNames: skips(14) }));
+    expect(verdict.vacuous).toBe(false);
+    expect(verdict.reason).toBe('genuine-failure');
+  });
+
+  it('FAILS OPEN when no report was readable — empty name lists must not fabricate a refusal', () => {
+    // Load-bearing control, and the reason the guard keys on NAMES rather than a zero count: when no
+    // json report is readable both lists are empty, which is indistinguishable from "nothing ran".
+    // Refusing there would invent a verdict out of a hole — the same collapse of "unreadable" into a
+    // confident value that EI-19380376466745152 above closed for the skip COUNT.
+    const verdict = allSkippedVerdict(summaryOf({ skippedNames: [], executedNames: [] }));
+    expect(verdict.vacuous).toBe(false);
+    expect(verdict.reason).toBe('no-collected-skips');
+  });
+
+  it('does NOT refuse while any group’s skip count is UNMEASURED', () => {
+    const verdict = allSkippedVerdict(
+      summaryOf({ skippedNames: skips(3), skippedUnmeasuredGroups: 1 }),
+    );
+    expect(verdict.vacuous).toBe(false);
+    expect(verdict.reason).toBe('skip-count-unmeasured');
+  });
+
+  it('tolerates a summary missing the name arrays entirely rather than throwing', () => {
+    // aggregateGroupResults always supplies both, but main() reads `?? []` on them for a reason:
+    // an early-return summary shape must degrade to "no verdict", never to a crash in the refusal.
+    expect(allSkippedVerdict({ anyFailed: false, skippedUnmeasuredGroups: 0 }).vacuous).toBe(false);
   });
 });

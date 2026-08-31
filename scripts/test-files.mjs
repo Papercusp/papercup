@@ -1191,6 +1191,36 @@ export function requireRanVerdict(pattern, outcomes) {
   return { status: 'absent', matches: [] };
 }
 
+/**
+ * EI-21974750710808305 — a run that COLLECTED tests and executed ZERO of them measured nothing,
+ * so it is evidence in NEITHER direction and must never be reported as `status=passed`.
+ *
+ * Extracted as a pure verdict (the `requireRanVerdict` pattern above) precisely so the decision is
+ * testable at all: buried inside `main()` it could only be exercised by running the whole router.
+ *
+ * THREE-STATE-SAFE, and that is the whole design. It fires only on POSITIVE evidence from a
+ * READABLE report — names of collected-and-skipped tests, with no executed names beside them. When
+ * no report was readable both lists are empty, so an unreadable run yields `no-collected-skips` and
+ * keeps its existing behaviour rather than being turned into a fabricated refusal. Collapsing
+ * "unreadable" into "nothing executed" is the exact mistake this file already learned twice
+ * (EI-19380376466745152, and the `??`-not-`||` note at the testsExecuted push site).
+ *
+ * @returns {{ vacuous: boolean, reason: string }}
+ */
+export function allSkippedVerdict(summary) {
+  const executedNames = summary?.executedNames ?? [];
+  const skippedNames = summary?.skippedNames ?? [];
+  // A genuine red anywhere in the request is a real measurement — report it as `failed`, never
+  // soften it into a refusal.
+  if (summary?.anyFailed) return { vacuous: false, reason: 'genuine-failure' };
+  // An unmeasured skip count means the run's own accounting is incomplete; refusing on it would be
+  // fabricating a verdict from a hole.
+  if (summary?.skippedUnmeasuredGroups !== 0) return { vacuous: false, reason: 'skip-count-unmeasured' };
+  if (skippedNames.length === 0) return { vacuous: false, reason: 'no-collected-skips' };
+  if (executedNames.length > 0) return { vacuous: false, reason: 'tests-executed' };
+  return { vacuous: true, reason: 'every-collected-test-was-skipped' };
+}
+
 export function aggregateGroupResults(groupResults) {
   const requested = groupResults.reduce((sum, g) => sum + g.requested, 0);
   const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
@@ -2697,6 +2727,38 @@ export async function main(
         'it finished; no test-failure verdict was produced. Widen with ' +
         'PAPERCUSP_TEST_FILE_TIMEOUT_MS=<milliseconds> and rerun the same command. Refusing to report ' +
         'a TEST_FILE_RESULT verdict for a run that was not measured.',
+    );
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
+  // EI-21974750710808305: a run that COLLECTED tests and executed ZERO of them is not evidence in
+  // EITHER direction, and reported as `status=passed` it becomes a FALSE GREEN in the one line
+  // callers paste as proof. This is the SAME vacuity the name-filter branch above already refuses
+  // (`TEST_FILE_NAME_FILTER_NO_MATCH`), arriving by a different route: an env-gated suite whose gate
+  // was never set, `describe.skipIf`, `.skip`. That guard cannot simply be hoisted, because
+  // `testsExecuted` is measured ONLY under a name filter (see the push site, `: undefined`), whereas
+  // skipped/executed NAMES are measured on every run (EI-19380376466745152) — so they are the signal.
+  //
+  // MEASURED, 2026-08-30T23:54Z, /tmp/p002-omp-d052.log — the P-002 real-backend acceptance matrix
+  // ran with `PAPERCUSP_REAL_BACKEND_MATRIX` unset, skipped all 14 of its tests, printed 14
+  // `TEST_FILE_SKIPPED name=` lines, and still emitted `status=passed ... skippedTests=14` with exit
+  // 0. Its runner read that verdict line and recorded `STOP reason=green attempts_used=1` for an
+  // acceptance leg that never executed a single test. The 14 advisory lines did not stop it:
+  // advisory output does not beat the verdict line, which is exactly why this refusal is not one.
+  //
+  // Three-state-safe by construction: it fires only on POSITIVE evidence from a readable report —
+  // names of tests that were collected-and-skipped, with no executed names beside them. When no
+  // report was readable BOTH name lists are empty, so an unreadable run can never be turned into a
+  // fabricated refusal; it keeps its existing behaviour. A genuine failure anywhere in the request
+  // still reports `status=failed` below, and a partially-skipped run is untouched.
+  const allSkipped = allSkippedVerdict(summary);
+  if (allSkipped.vacuous) {
+    console.error(
+      `TEST_FILE_ALL_SKIPPED requested=${summary.requested} executed=${summary.executed} ` +
+        `matched=${summary.matched} testsExecuted=0 testsSkipped=${summary.testsSkipped} ` +
+        `status=not-measured reason=${allSkipped.reason} — this run executed NO tests, ` +
+        'so it is not evidence that anything passed. Find the gate that skipped them (an unset env ' +
+        'flag, `describe.skipIf`, `.skip`) and rerun. Refusing to report a TEST_FILE_RESULT verdict ' +
+        'for a run that measured nothing.',
     );
     return TEST_FILE_EXIT_NOT_MEASURED;
   }
