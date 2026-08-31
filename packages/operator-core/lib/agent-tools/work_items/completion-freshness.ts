@@ -276,6 +276,113 @@ export function unresolvableContentIdentityPaths(
   );
 }
 
+/**
+ * EI-21970667079827352 — WHICH declared paths failed content identity, and whether
+ * WAITING can ever settle them.
+ *
+ * The `proposed` warning named the RULE ("could not prove that every declared path
+ * has the same blob...") but never the FACT, and three situations produce that one
+ * sentence: git-sync has not swept yet; ONE path of several missed the last tick (a
+ * single logical change landing across two sweeps, routine on this tree); or a
+ * declared path is misspelled / reverted / never existed. The first two settle
+ * themselves; the third NEVER does. Indistinguishable from the text, the natural
+ * move is to wait — which in the third case is an unbounded wait, on an item that
+ * has already left the claimable pool, for something that cannot happen.
+ *
+ * `settles` is the field that matters, and it is derivable from identities the
+ * server already computed:
+ *  - a path present in the working tree but not yet in HEAD is mid-sweep      -> 'sweep'
+ *  - a path whose two blobs merely DIFFER moved after the commit              -> 'sweep'
+ *  - a path in NEITHER tree cannot become committed by any amount of waiting  -> 'never'
+ *  - a path in HEAD but gone from the working tree is likewise unprovable     -> 'never'
+ *
+ * Entries carrying `headBlobUnresolvable` are deliberately EXCLUDED: that is the
+ * server's own resolution failure (WI-42441), it already has its own reason-specific
+ * remedy, and folding it in here would re-conflate the two opposite remedies that
+ * type was split apart to keep separate.
+ */
+export type UnprovenContentIdentityReason =
+  | 'missing-from-commit'
+  | 'content-mismatch'
+  | 'absent-from-both'
+  | 'absent-from-working-tree';
+
+export type UnprovenContentIdentityRow = {
+  path: string;
+  reason: UnprovenContentIdentityReason;
+  settles: 'sweep' | 'never';
+};
+
+/**
+ * EI-21970667079827352 — render the per-path facts as the remedy the caller should follow.
+ *
+ * Pure and exported so the SENTENCE is testable. It previously lived inline in a ~3,000-line
+ * function with no seam, which is why the one thing the caller actually reads was the one
+ * thing no test covered.
+ *
+ * The lead is always whether WAITING works, because that is the only branch where the
+ * caller's next action differs: `sweep` means re-send the identical completion later,
+ * `never` means the evidence itself is wrong and no amount of waiting fixes it.
+ */
+export function describeUnprovenContentIdentity(
+  rows: readonly UnprovenContentIdentityRow[],
+  declaredPathCount: number,
+): string | undefined {
+  if (rows.length === 0) return undefined;
+  const render = (subset: readonly UnprovenContentIdentityRow[]) =>
+    subset.map((row) => `\`${row.path}\` (${row.reason})`).join('; ');
+  const willSettle = rows.filter((row) => row.settles === 'sweep');
+  const neverSettles = rows.filter((row) => row.settles === 'never');
+  const total = declaredPathCount > 0 ? declaredPathCount : rows.length;
+  const head = `Content identity was not proven for ${rows.length} of ${total} declared \`filesChanged\` path(s): ${render(rows)}. `;
+  const neverRemedy =
+    `${render(neverSettles)} ${neverSettles.length === 1 ? 'is' : 'are'} absent from the working tree, so NO ` +
+    `sweep can ever commit ${neverSettles.length === 1 ? 'it' : 'them'} — that is a misspelled, renamed, ` +
+    `reverted, or never-created path in your completion evidence. Re-call work_items:complete for this id with ` +
+    `the REAL path(s), never a plausible-looking guess.`;
+  if (neverSettles.length === 0) {
+    return (
+      head +
+      `WAITING SETTLES THIS — your evidence was accepted and nothing is wrong with your tree. Those path(s) are ` +
+      `present in the working tree but not yet in the commit, and git-sync sweeps this tree on a schedule, so ONE ` +
+      `logical change routinely lands across TWO ticks. Wait for the sweep, then re-send this IDENTICAL completion ` +
+      `to upgrade it to \`committed\`. Do not re-verify work that is already correct, and do not re-word the evidence.`
+    );
+  }
+  if (willSettle.length === 0) {
+    return head + `WAITING WILL NOT SETTLE THIS — do not sit on it. ${neverRemedy}`;
+  }
+  return (
+    head +
+    `MIXED — only one half is worth waiting on. ${render(willSettle)} will settle on the next git-sync sweep, ` +
+    `but ${neverRemedy} Waiting alone leaves this close \`proposed\` indefinitely.`
+  );
+}
+
+export function unprovenContentIdentityPaths(
+  stamp: { contentIdentity?: readonly CompletionTreeContentIdentity[] } | undefined | null,
+): UnprovenContentIdentityRow[] {
+  return (stamp?.contentIdentity ?? []).flatMap((entry): UnprovenContentIdentityRow[] => {
+    // The server could not READ the HEAD side — a different failure with a different
+    // remedy, reported by unresolvableContentIdentityPaths. Not ours.
+    if (entry.headBlobUnresolvable) return [];
+    const inTree = entry.workingTreeBlobSha !== null;
+    const inHead = entry.headBlobSha !== null;
+    if (inTree && inHead) {
+      return entry.workingTreeBlobSha === entry.headBlobSha
+        ? [] // proven — this path is fine
+        : [{ path: entry.path, reason: 'content-mismatch' as const, settles: 'sweep' as const }];
+    }
+    if (inTree && !inHead) {
+      return [{ path: entry.path, reason: 'missing-from-commit' as const, settles: 'sweep' as const }];
+    }
+    if (!inTree && inHead) {
+      return [{ path: entry.path, reason: 'absent-from-working-tree' as const, settles: 'never' as const }];
+    }
+    return [{ path: entry.path, reason: 'absent-from-both' as const, settles: 'never' as const }];
+  });
+}
+
 export function completionTreeContentIdentityMatches(
   identity: readonly CompletionTreeContentIdentity[] | undefined,
 ): boolean {

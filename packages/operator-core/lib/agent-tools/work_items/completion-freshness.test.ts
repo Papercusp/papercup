@@ -6,7 +6,12 @@
  * current, changed, and not observable.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { completionFreshnessForEvidence, completionTreeContentIdentityMatches } from './completion-freshness';
+import {
+  completionFreshnessForEvidence,
+  completionTreeContentIdentityMatches,
+  unprovenContentIdentityPaths,
+  describeUnprovenContentIdentity,
+} from './completion-freshness';
 import type { CompletionTreeContentIdentity } from '../../coord-lifecycle/records';
 
 const identity: CompletionTreeContentIdentity[] = [
@@ -231,5 +236,152 @@ describe('completionTreeContentIdentityMatches — WI-1409142 absent-key hole', 
     expect(completionTreeContentIdentityMatches([
       { path: 'src/fix.ts', workingTreeBlobSha: 'c'.repeat(40), headBlobSha: null },
     ])).toBe(false);
+  });
+});
+
+// EI-21970667079827352: the `proposed` warning named the RULE but never the FACT, so a
+// close whose only problem was an unswept path looked identical to one naming a path that
+// does not exist. The first settles itself; the second never does. `settles` is the field
+// that changes what the caller actually does, so it is what these pin.
+describe('unprovenContentIdentityPaths (EI-21970667079827352)', () => {
+  const sha = (c: string) => c.repeat(40);
+
+  it('returns nothing when every declared path is proven — a clean stamp names no paths', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [{ path: 'a.ts', workingTreeBlobSha: sha('c'), headBlobSha: sha('c') }],
+      }),
+    ).toEqual([]);
+  });
+
+  it('in the tree but not yet in the commit is missing-from-commit, and a SWEEP settles it', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [{ path: 'a.ts', workingTreeBlobSha: sha('c'), headBlobSha: null }],
+      }),
+    ).toEqual([{ path: 'a.ts', reason: 'missing-from-commit', settles: 'sweep' }]);
+  });
+
+  it('two differing blobs is content-mismatch, and a SWEEP settles it', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [{ path: 'a.ts', workingTreeBlobSha: sha('c'), headBlobSha: sha('d') }],
+      }),
+    ).toEqual([{ path: 'a.ts', reason: 'content-mismatch', settles: 'sweep' }]);
+  });
+
+  // The whole point of the change: this is the case where waiting is futile, and the old
+  // text was indistinguishable from the two above.
+  it('absent from BOTH trees can NEVER be settled by waiting — the misspelled/reverted path', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [{ path: 'typo.ts', workingTreeBlobSha: null, headBlobSha: null }],
+      }),
+    ).toEqual([{ path: 'typo.ts', reason: 'absent-from-both', settles: 'never' }]);
+  });
+
+  it('in the commit but gone from the working tree also never settles', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [{ path: 'deleted.ts', workingTreeBlobSha: null, headBlobSha: sha('d') }],
+      }),
+    ).toEqual([{ path: 'deleted.ts', reason: 'absent-from-working-tree', settles: 'never' }]);
+  });
+
+  // WI-42441 split server-side resolution failure away from "the closer's path is wrong"
+  // precisely because they carry opposite remedies. Folding it back in here would undo that.
+  it('EXCLUDES a server-side resolution failure — that is WI-42441s branch, with the opposite remedy', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [
+          {
+            path: 'sub/mod.ts',
+            workingTreeBlobSha: sha('c'),
+            headBlobSha: null,
+            headBlobUnresolvable: 'submodule-not-initialized',
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it('separates a mixed set so the caller can act on each half differently', () => {
+    const out = unprovenContentIdentityPaths({
+      contentIdentity: [
+        { path: 'proven.ts', workingTreeBlobSha: sha('c'), headBlobSha: sha('c') },
+        { path: 'pending.ts', workingTreeBlobSha: sha('c'), headBlobSha: null },
+        { path: 'typo.ts', workingTreeBlobSha: null, headBlobSha: null },
+      ],
+    });
+    expect(out).toEqual([
+      { path: 'pending.ts', reason: 'missing-from-commit', settles: 'sweep' },
+      { path: 'typo.ts', reason: 'absent-from-both', settles: 'never' },
+    ]);
+    expect(out.filter((e) => e.settles === 'never').map((e) => e.path)).toEqual(['typo.ts']);
+  });
+
+  it('is empty for a missing or empty stamp rather than throwing', () => {
+    expect(unprovenContentIdentityPaths(undefined)).toEqual([]);
+    expect(unprovenContentIdentityPaths(null)).toEqual([]);
+    expect(unprovenContentIdentityPaths({})).toEqual([]);
+  });
+});
+
+// The sentence is the deliverable: it is the only part of this a closing agent reads, and
+// the whole defect was that it described the RULE instead of the FACT. These pin the one
+// distinction that changes the caller's next action.
+describe('describeUnprovenContentIdentity (EI-21970667079827352)', () => {
+  const pending = { path: 'a.ts', reason: 'missing-from-commit' as const, settles: 'sweep' as const };
+  const typo = { path: 'typo.ts', reason: 'absent-from-both' as const, settles: 'never' as const };
+
+  it('says nothing when nothing is unproven — no rows, no sentence', () => {
+    expect(describeUnprovenContentIdentity([], 3)).toBeUndefined();
+  });
+
+  it('names the offending path and the declared total, so 1-of-6 does not read as all-of-6', () => {
+    const out = describeUnprovenContentIdentity([pending], 6)!;
+    expect(out).toContain('1 of 6 declared');
+    expect(out).toContain('`a.ts` (missing-from-commit)');
+  });
+
+  it('an all-sweep set tells the caller WAITING SETTLES IT and to re-send the identical completion', () => {
+    const out = describeUnprovenContentIdentity([pending], 6)!;
+    expect(out).toContain('WAITING SETTLES THIS');
+    expect(out).toContain('re-send this IDENTICAL completion');
+    // It must NOT send them to re-verify work that is already correct — the old text did.
+    expect(out).toContain('Do not re-verify work that is already correct');
+    expect(out).not.toContain('WAITING WILL NOT SETTLE');
+  });
+
+  // The case the old single sentence could not express, and the reason this item existed:
+  // an unbounded wait for something that can never happen.
+  it('an all-never set says WAITING WILL NOT SETTLE and sends them to fix the path', () => {
+    const out = describeUnprovenContentIdentity([typo], 2)!;
+    expect(out).toContain('WAITING WILL NOT SETTLE THIS');
+    expect(out).toContain('`typo.ts` (absent-from-both)');
+    expect(out).toContain('never a plausible-looking guess');
+    expect(out).not.toContain('WAITING SETTLES THIS');
+  });
+
+  it('a MIXED set separates the halves — waiting alone must not read as sufficient', () => {
+    const out = describeUnprovenContentIdentity([pending, typo], 5)!;
+    expect(out).toContain('MIXED');
+    expect(out).toContain('2 of 5 declared');
+    expect(out).toContain('`a.ts` (missing-from-commit) will settle on the next git-sync sweep');
+    // Singular here on purpose: one never-settling path, so "is", not "are".
+    expect(out).toContain('`typo.ts` (absent-from-both) is absent from the working tree');
+    expect(out).toContain('leaves this close `proposed` indefinitely');
+  });
+
+  it('falls back to the row count when no declared count is available, never reporting "of 0"', () => {
+    const out = describeUnprovenContentIdentity([pending], 0)!;
+    expect(out).toContain('1 of 1 declared');
+    expect(out).not.toContain('of 0');
+  });
+
+  it('agrees in number for a single never-settling path (is/it, not are/them)', () => {
+    const out = describeUnprovenContentIdentity([typo], 1)!;
+    expect(out).toContain('is absent from the working tree');
+    expect(out).toContain('can ever commit it');
   });
 });

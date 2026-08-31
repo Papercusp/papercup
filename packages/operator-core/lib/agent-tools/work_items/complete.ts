@@ -82,6 +82,8 @@ import {
   completionTreeStamp,
   completionTreeStampForEvidence,
   unresolvableContentIdentityPaths,
+  unprovenContentIdentityPaths,
+  describeUnprovenContentIdentity,
 } from './completion-freshness';
 export { completionSettlementManifest, completionTreeStamp, completionTreeStampForEvidence };
 export type {
@@ -2996,6 +2998,14 @@ async function completeOne(
   // ALREADY carries verifiedHow + testsRun, so handing it the generic advice below would tell
   // it to re-send the exact fields it just sent — a refusal loop whose own instructions can
   // never clear it (EI-18685043434033870).
+  // EI-21970667079827352: name the FACT, not only the rule. The old text described the
+  // gate ("could not prove that every declared path...") and left the caller to discover
+  // WHICH path and, far more importantly, whether waiting could ever settle it. The
+  // per-path identities behind that verdict are already computed; this only surfaces them.
+  const contentIdentityDetail = describeUnprovenContentIdentity(
+    unprovenContentIdentityPaths(treeStamp),
+    completionEvidenceForGate?.filesChanged?.length ?? 0,
+  );
   const authorityWarning =
     stampedAuthority === 'proposed'
       ? `${it.id} is CLOSED but its completion landed authority:'proposed' — recorded and out of the ` +
@@ -3012,7 +3022,10 @@ async function completeOne(
               `re-closing from a committed tree will reproduce it identically. Your other evidence was accepted. ` +
               `Settlement will upgrade this close automatically once the path resolves; if it persists, file it ` +
               `against the completion content-identity resolver rather than re-verifying.`
-            : `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`
+            : // No per-path identity was recorded at all, so there is no fact to name here.
+              // Keep the rule-level text rather than inventing a per-path story we do not have.
+              contentIdentityDetail ??
+              `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`
           : insufficientEvidenceReason(completionEvidenceForGate) === 'added-tests-without-path'
           ? `Its evidence says \`addedTests: true\` but names no file in \`filesChanged\`. Those cannot both ` +
             `be true: if this close added or changed tests, it changed at least one file, and a completion ` +
