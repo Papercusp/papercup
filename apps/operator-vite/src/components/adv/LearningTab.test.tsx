@@ -772,6 +772,15 @@ beforeEach(() => {
   // P-009 rail keys (useOpenArming / the orientation banner write these).
   nuqsState.lsb = null;
   nuqsState.lst = null;
+  // P-009: `useOpenArming` now opens the every-pot scope picker, whose open
+  // state is the nuqs key `lpick`. This bag is MODULE-level, so without a reset
+  // the first test that clicks "Open Arming" leaves the picker open for the
+  // whole rest of the file — and it is a Radix MODAL, so every later
+  // getByRole/getByText searches a page Radix has made inert and fails with
+  // "unable to find an accessible element", naming a control that is present
+  // and simply behind the dialog. That reads as six unrelated regressions.
+  nuqsState.lpick = null;
+  nuqsState.lpickq = null;
   window.localStorage.removeItem("pc-learning-orientation-dismissed");
   for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
   for (const k of Object.keys(seenArgs)) delete seenArgs[k];
