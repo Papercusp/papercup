@@ -48,7 +48,7 @@ import {
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
 import { describeRefusal, refuseAnswer, type RefusedAnswer } from './field-reliability';
 import { describeRefireBudget } from './release/in-flight-retriage';
-import { gateAbortLever, gateAbortRefireClause } from './release/gate-abort-status';
+import { gateAbortLever, gateAbortRefireClause, gateAbortVintage } from './release/gate-abort-status';
 import { reconcileGateVerdictFreshnessWithCheckpointRun } from './release/gate-verdict-freshness';
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
@@ -5029,6 +5029,31 @@ export async function gitPipelinePosition(
             ? ' A green-checkpoint run is already active and its verdict is pending — do NOT fire release:checkpoint-run or fix the named failure while it runs; wait for this run to finish.'
             : ' Re-judge at tip (release:checkpoint-run) or wait for the next verdict before spending time on the named failure.'),
     );
+  }
+
+  // WI-1752145: the same hoist for the ABORT record, which had none. `inconclusive.status` is a
+  // load-bearing claim — it outranks the red streak in the gate sentence — and it is LATCHED:
+  // release-actions.ts writes it through a scoped jsonb_set that deliberately does not disturb
+  // the verdict blob, so the top-level `observedAt` (and therefore every other age on this
+  // payload) keeps describing the VERDICT while this record silently ages beside it. Measured
+  // drift on live rows: +4s on one install, +5.7 DAYS on another.
+  //
+  // Gated on the record being provably stale or provably unstamped, exactly like the note above
+  // is gated on `stalled`: a caveat that prints on every read is one a reader stops seeing, and
+  // the fresh case is already served by the age now printed in the gate sentence itself.
+  if (gate.inconclusive) {
+    const abortVintage = gateAbortVintage({
+      status: gate.inconclusive.status,
+      observedAtMs: gate.inconclusive.observedAtMs,
+      nowMs: Date.now(),
+    });
+    if (abortVintage.warning) {
+      notes.push(
+        `${abortVintage.warning} (Gate abort '${gate.inconclusive.status}'${
+          gate.inconclusive.candidate ? ` on ${gate.inconclusive.candidate}` : ''
+        }.)`,
+      );
+    }
   }
 
   // EI-7846: verdict provenance, derived from the snapshot's already-loaded deploy

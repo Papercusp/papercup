@@ -306,11 +306,14 @@ export function gateAbortVintage(args: {
     ageMs,
     age: formatIdleAge(ageMs / 1000),
     stale,
+    // Deliberately status-AGNOSTIC. An earlier draft named the originating incident's status
+    // inline, which would have stamped 'migrations-pending' onto the disclosure for every OTHER
+    // abort — a generic caveat that lies about the specific case in front of the reader is the
+    // same defect one level down. The example lives in this module's header instead.
     warning: stale
       ? `⚠ This abort was observed ${formatIdleAge(ageMs / 1000)} ago and is LATCHED — it persists until a ` +
-        `later tick overwrites it, so it describes that observation, not necessarily now. The condition it ` +
-        `names may already have cleared (measured 2026-08-31: a 'migrations-pending' abort served ~1h after ` +
-        `its migration had applied). Confirm it first-hand before acting on it.`
+        `later tick overwrites it, so it describes THAT observation, not necessarily now. The condition it ` +
+        `names may already have cleared. Confirm it first-hand before acting on it.`
       : null,
   };
 }

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GATE_ABORT_VINTAGE_STALE_MS,
   RECORDED_INCONCLUSIVE_STATUSES,
   classifyGateAbort,
   gateAbortLever,
   gateAbortRefireClause,
+  gateAbortVintage,
   isRecordedInconclusiveStatus,
   type RecordedInconclusiveStatus,
 } from './gate-abort-status';
@@ -133,5 +135,79 @@ describe('unknown statuses fall back conservatively', () => {
   it('does not claim a re-fire is safe', () => {
     expect(gateAbortLever(madeUp)).toContain(CLEAR_CLAIM);
     expect(gateAbortRefireClause(madeUp)).not.toContain('nothing about it blocks a re-fire');
+  });
+});
+
+/**
+ * WI-1752145 — the abort record's own vintage.
+ *
+ * The defect: `gate_health.inconclusive` is LATCHED (written by a scoped jsonb_set that does
+ * not advance the top-level `observedAt`), so it persists until a later tick overwrites it
+ * while every other age on the payload describes the VERDICT instead. Measured live
+ * 2026-08-31: +4s skew on one install, +5.7 DAYS on another. The originating incident is the
+ * other direction — a `migrations-pending` abort observed at 11:23:52Z still served ~1h after
+ * migration 1044 APPLIED at 11:27:20Z, and repeated downstream as current fact.
+ *
+ * Three directions are guarded, and the last two are what stop this passing vacuously.
+ */
+describe('gateAbortVintage: a latched abort carries its own age', () => {
+  const NOW = Date.parse('2026-08-31T15:00:00.000Z');
+
+  it('reports the age and warns when the record is older than the threshold', () => {
+    const v = gateAbortVintage({
+      status: 'migrations-pending',
+      observedAtMs: NOW - GATE_ABORT_VINTAGE_STALE_MS - 60_000,
+      nowMs: NOW,
+    });
+    expect(v.stale).toBe(true);
+    expect(v.ageMs).toBe(GATE_ABORT_VINTAGE_STALE_MS + 60_000);
+    expect(v.age).toBe('1h31m');
+    expect(v.warning).toBeTruthy();
+    // The warning must say the record is LATCHED — that is the fact a reader needs in
+    // order to know the condition may already have cleared, and it is the exact thing the
+    // originating incident's reader did not have.
+    expect(v.warning).toContain('LATCHED');
+  });
+
+  /**
+   * NEGATIVE DIRECTION #1 — the control that makes the guard above meaningful. A projection
+   * that decorates every read is one a reader learns to skip, so a fresh abort gets its age
+   * and NO staleness marker.
+   */
+  it('does NOT decorate a fresh record with a staleness marker', () => {
+    const v = gateAbortVintage({
+      status: 'migrations-pending',
+      observedAtMs: NOW - 4_000,
+      nowMs: NOW,
+    });
+    expect(v.stale).toBe(false);
+    expect(v.warning).toBeNull();
+    // The vintage is still stated — the age is the stamp; the warning is the escalation.
+    expect(v.age).toBe('4s');
+    expect(v.ageMs).toBe(4_000);
+  });
+
+  /**
+   * NEGATIVE DIRECTION #2 — the one that matters most to this lane. A blob predating the
+   * stamp has an UNKNOWN vintage, and reporting that as `stale: false` would manufacture
+   * exactly the confident-measurement-of-nothing this item exists to remove. `null` must
+   * never collapse into `false`.
+   */
+  it('reports an unstamped record as UNKNOWN vintage, never as fresh', () => {
+    for (const missing of [undefined, null, Number.NaN]) {
+      const v = gateAbortVintage({ status: 'error', observedAtMs: missing, nowMs: NOW });
+      expect(v.stale).toBeNull();
+      expect(v.stale).not.toBe(false);
+      expect(v.ageMs).toBeNull();
+      expect(v.age).toBeNull();
+      // Unknown vintage is still disclosed — silence here would read as "no concern".
+      expect(v.warning).toContain('NO observation timestamp');
+    }
+  });
+
+  it('never returns a negative age for a clock that ran backwards', () => {
+    const v = gateAbortVintage({ status: 'cancelled', observedAtMs: NOW + 60_000, nowMs: NOW });
+    expect(v.ageMs).toBe(0);
+    expect(v.stale).toBe(false);
   });
 });
