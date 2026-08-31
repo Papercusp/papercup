@@ -1347,6 +1347,28 @@ export async function getPlanContentsBySlugs(
   return new Map(rows.map((r) => [r.plan_slug, r.content]));
 }
 
+/**
+ * Return only plan slugs whose canonical content declares the spec-triad
+ * policy. This metadata probe lets `plans:items` preserve declaration
+ * precedence without transferring every plan body on the index path.
+ */
+export async function getPlanSlugsWithSpecTriadDeclaration(
+  opts: PlanSourceOpts & { includeArchived?: boolean } = {},
+): Promise<Set<string>> {
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<Array<{ plan_slug: string }>>`
+      SELECT plan_slug
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${harnessSlug}
+         ${opts.includeArchived ? tx`` : tx`AND archived = false`}
+         AND content LIKE '%specTriad:%'
+    `;
+  });
+  return new Set(rows.map((row) => row.plan_slug));
+}
+
 /** Escape LIKE/ILIKE wildcards in a user token so it matches literally. */
 function escapeLike(token: string): string {
   return token.replace(/[\\%_]/g, (c) => `\\${c}`);

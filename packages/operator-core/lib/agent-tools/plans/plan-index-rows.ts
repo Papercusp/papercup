@@ -73,6 +73,7 @@ export async function writePlanIndexRows(
     status: typeof it.status === 'string' && it.status !== '' ? it.status : 'todo',
     importance: typeof it.importance === 'string' ? it.importance : null,
     phase: typeof it.phase === 'string' ? it.phase : null,
+    ownerGateMarker: typeof it.ownerGateMarker === 'string' ? it.ownerGateMarker : null,
     blockedBy: asStringArray(it.blockedBy),
     decisionRefs: asStringArray(it.decisionRefs),
   }));
@@ -107,14 +108,16 @@ export async function writePlanIndexRows(
     await tx`
       INSERT INTO harness_shared.plan_items (
         workspace_id, harness_slug, plan_slug,
-        item_id, seq, item_text, status, importance, phase, blocked_by, decision_refs
+        item_id, seq, item_text, status, importance, phase, owner_gate_marker, blocked_by, decision_refs
       )
       SELECT ${workspaceId}, ${harnessSlug}, ${planSlug},
              e.id, e.seq, e."itemText", e.status, e.importance, e.phase,
+             e."ownerGateMarker",
              COALESCE(e."blockedBy", '{}'), COALESCE(e."decisionRefs", '{}')
         FROM jsonb_to_recordset(${JSON.stringify(items)}::text::jsonb) AS e(
                id text, seq integer, "itemText" text, status text,
-               importance text, phase text, "blockedBy" text[], "decisionRefs" text[]
+               importance text, phase text, "ownerGateMarker" text,
+               "blockedBy" text[], "decisionRefs" text[]
              )
     `;
   }
