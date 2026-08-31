@@ -501,7 +501,106 @@ export default function PlanDashboard({
         ) : null}
       </div>
 
-      <div className="plan-dash__sec">
+      <div className="plan-dash__body">
+        <div className="plan-dash__colmain">
+          {nowState || nowNext ? (
+            <div className="plan-dash__card plan-dash__now" data-testid="plan-dash-now">
+              <div className="plan-dash__sec-h plan-dash__sec-h--accent">
+                Now
+                <span className="plan-dash__sec-line" aria-hidden="true" />
+                <span className="plan-dash__sec-h-note">where this plan is, in its own words</span>
+              </div>
+              {nowState ? <div className="plan-dash__now-text">{nowState}</div> : null}
+              {nowNext ? (
+                <div className="plan-dash__now-chips">
+                  <span className="plan-dash__chip plan-dash__chip--accent" title={nowNext}>
+                    next: {nowNext}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {itemGroups.length > 0 ? (
+            <div className="plan-dash__card plan-dash__items" data-testid="plan-dash-items">
+              {itemGroups.map((g) => (
+                <div key={g.key} className="plan-dash__igroup">
+                  <div
+                    className={`plan-dash__sec-h${
+                      g.key === 'wip'
+                        ? ' plan-dash__sec-h--accent'
+                        : g.key === 'attention'
+                          ? ' plan-dash__sec-h--warn'
+                          : ''
+                    }`}
+                  >
+                    {g.label} · {g.items.length}
+                    <span className="plan-dash__sec-line" aria-hidden="true" />
+                  </div>
+                  {g.items.map((it) => {
+                    const linked = plan?.linkedFeatures?.[it.id];
+                    const terminal = g.key === 'doneish';
+                    const inner = (
+                      <>
+                        <span
+                          className={`plan-dash__iic plan-dash__iic--${it.effectiveStatus}`}
+                          aria-hidden="true"
+                        >
+                          {itemIcon(it.effectiveStatus)}
+                        </span>
+                        <span className="plan-dash__iref">{linked?.featureId ?? it.id}</span>
+                        <span
+                          className={`plan-dash__itext${terminal ? ' plan-dash__itext--dim' : ''}${
+                            it.effectiveStatus === 'dropped' ? ' plan-dash__itext--dropped' : ''
+                          }`}
+                          title={it.text}
+                        >
+                          {it.text}
+                        </span>
+                        <span className="plan-dash__imeta">
+                          {it.importance === 'urgent' || it.importance === 'high' ? (
+                            <span className={`plan-dash__ibadge plan-dash__ibadge--${it.importance}`}>
+                              {it.importance}
+                            </span>
+                          ) : null}
+                        </span>
+                      </>
+                    );
+                    return linked ? (
+                      <button
+                        key={it.id}
+                        type="button"
+                        className="plan-dash__irow plan-dash__irow--link"
+                        onClick={() =>
+                          void setOpenWorkItem(encodeScopedRef(harness, linked.featureId))
+                        }
+                        aria-label={`Open ${linked.featureId}`}
+                        data-testid={`plan-dash-item-${it.id}`}
+                      >
+                        {inner}
+                      </button>
+                    ) : (
+                      <div
+                        key={it.id}
+                        className="plan-dash__irow"
+                        data-testid={`plan-dash-item-${it.id}`}
+                      >
+                        {inner}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="plan-dash__empty">
+              {planQuery.loading ? 'Loading plan…' : 'No items in this plan yet.'}
+            </div>
+          )}
+        </div>
+
+        <div className="plan-dash__rail">
+      <div className="plan-dash__sec plan-dash__card">
         <div className="plan-dash__sec-h">
           Working now · {liveRows.length} agent{liveRows.length === 1 ? '' : 's'}
         </div>
@@ -574,10 +673,33 @@ export default function PlanDashboard({
         )}
       </div>
 
-      <div className="plan-dash__sec">
+      {railDecisions.length > 0 ? (
+        <div className="plan-dash__sec plan-dash__card" data-testid="plan-dash-decisions">
+          <div className="plan-dash__sec-h">
+            Decisions
+            <span className="plan-dash__sec-line" aria-hidden="true" />
+            <span className="plan-dash__sec-h-note">
+              newest {railDecisions.length} of {plan?.decisions?.length ?? railDecisions.length}
+            </span>
+          </div>
+          {railDecisions.map((d) => (
+            <div key={d.id} className="plan-dash__drow">
+              <span className="plan-dash__dref">{d.id}</span>
+              <span className="plan-dash__dtext" title={d.title ?? d.body ?? d.id}>
+                {d.title?.trim() || d.body?.trim().split('\n')[0] || d.id}
+              </span>
+              {d.date ? <span className="plan-dash__dago">{d.date}</span> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="plan-dash__sec plan-dash__card">
         <div className="plan-dash__sec-h">
           Recent activity
-          <span className="plan-dash__sec-h-note">edits + work, newest first</span>
+          <span className="plan-dash__sec-h-note">
+            {collapsedEdits > 0 ? `${collapsedEdits} edits collapsed` : 'edits + work, newest first'}
+          </span>
         </div>
         {activity.loading && (activity.data ?? []).length === 0 ? (
           <div className="plan-dash__empty">Loading activity…</div>
@@ -587,7 +709,56 @@ export default function PlanDashboard({
           </div>
         ) : (
           <div className="plan-dash__feed" data-testid="plan-dash-feed">
-            {(activity.data ?? []).map((row, i) => {
+            {feedEntries.map((entry, i) => {
+              // ≥2 consecutive generic "Plan edited (rev N)" rows by one
+              // author fold into a single run line (P-006).
+              if (entry.type === 'run') {
+                return (
+                  <div
+                    key={`run-${i}`}
+                    className="plan-dash__fitem plan-dash__frun"
+                    data-testid="plan-dash-feed-run"
+                  >
+                    <span className="plan-dash__fic plan-dash__fic--edit" aria-hidden="true">
+                      <Pencil size={11} />
+                    </span>
+                    <span className="plan-dash__ftext plan-dash__ftext--dim">
+                      Plan edited ×{entry.count}
+                      {entry.revLo != null && entry.revHi != null ? (
+                        <span className="plan-dash__frun-rev">
+                          rev {entry.revLo}–{entry.revHi}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="plan-dash__fwho" title={entry.who}>
+                      {entry.who ? shortOwnerId(entry.who) : ''}
+                    </span>
+                    <span className="plan-dash__fago">
+                      {runAgo(entry.tsNewestMs, entry.tsOldestMs)}
+                    </span>
+                  </div>
+                );
+              }
+              const row = entry.row;
+              // A substantive rationale (checkpoint / handoff note) is the
+              // feed's real signal — promoted to a note card (P-006).
+              if (entry.type === 'note') {
+                return (
+                  <div
+                    key={`note-${row.tsMs}-${i}`}
+                    className="plan-dash__fnote"
+                    data-testid="plan-dash-feed-note"
+                  >
+                    <span className="plan-dash__fnote-text" title={row.text}>
+                      {row.text ?? ''}
+                    </span>
+                    <span className="plan-dash__fnote-meta">
+                      {row.who ? `${shortOwnerId(row.who)} · ` : ''}
+                      {typeof row.tsMs === 'number' ? agoLabelMs(row.tsMs) : '—'}
+                    </span>
+                  </div>
+                );
+              }
               const kind = row.kind === 'edit' ? 'edit' : 'work';
               const inner = (
                 <>
@@ -627,6 +798,8 @@ export default function PlanDashboard({
             })}
           </div>
         )}
+      </div>
+        </div>
       </div>
 
       <SessionChatModal

@@ -129,6 +129,9 @@ function plan(over: {
   updated?: string;
   harness?: string;
   items?: PlanItem[];
+  now?: PlanGetResult['now'];
+  decisions?: PlanGetResult['decisions'];
+  linkedFeatures?: PlanGetResult['linkedFeatures'];
 }): PlanGetResult {
   return {
     slug: over.slug,
@@ -144,6 +147,9 @@ function plan(over: {
     // exercised, not bypassed.
     frontmatter: { updated: over.updated ?? new Date(Date.now() - 2 * 60_000).toISOString() },
     items: over.items ?? [],
+    now: over.now,
+    decisions: over.decisions,
+    linkedFeatures: over.linkedFeatures,
   };
 }
 
@@ -483,6 +489,100 @@ describe('PlanDashboard activity feed', () => {
     seed({ activity: false });
     renderDash();
     expect(screen.getByTestId('plan-dash-no-activity')).toBeTruthy();
+  });
+});
+
+describe('PlanDashboard direction-A surfaces (plan-dashboard-mission-control-2026-08-31)', () => {
+  it('renders the Now card, the segmented band, and the newest-2 decisions', () => {
+    seed();
+    planData.value = plan({
+      slug: 'p1',
+      title: 'Security posture closure',
+      startStatus: 'started',
+      items: itemsOf({ done: 3, wip: 2, todo: 4 }),
+      now: { state: 'Closing the last leg.', next: 'P-006 measure it' },
+      decisions: [
+        { id: 'D-001', title: 'Oldest ruling' },
+        { id: 'D-007', title: 'Latest ruling' },
+        { id: 'D-003', title: 'Middle ruling' },
+      ],
+    });
+    renderDash();
+    const now = screen.getByTestId('plan-dash-now');
+    expect(now.textContent).toContain('Closing the last leg.');
+    expect(now.textContent).toContain('next: P-006 measure it');
+    // Band: count text (same testid/format as ever) + one segment per bucket.
+    const band = screen.getByTestId('plan-dash-band');
+    expect(screen.getByTestId('plan-dash-progress').textContent).toBe('3 of 9 items done');
+    expect(band.querySelectorAll('.plan-dash__band-seg').length).toBe(3); // done, wip, todo
+    expect(band.textContent).toContain('2 in progress');
+    expect(band.textContent).toContain('nothing needs you');
+    // Decisions: newest 2 by numeric id, newest first; the third is elided.
+    const dec = screen.getByTestId('plan-dash-decisions');
+    const refs = Array.from(dec.querySelectorAll('.plan-dash__dref')).map((n) => n.textContent);
+    expect(refs).toEqual(['D-007', 'D-003']);
+    expect(dec.textContent).toContain('newest 2 of 3');
+    expect(dec.textContent).not.toContain('Oldest ruling');
+  });
+
+  it('groups items by status and deep-links a promoted row to ?wpop via its featureId', () => {
+    seed();
+    planData.value = plan({
+      slug: 'p1',
+      startStatus: 'started',
+      items: [
+        { id: 'P-001', storedStatus: 'done', effectiveStatus: 'done', text: 'shipped bit' },
+        { id: 'P-002', storedStatus: 'wip', effectiveStatus: 'wip', text: 'active bit' },
+        { id: 'P-003', storedStatus: 'todo', effectiveStatus: 'todo', text: 'queued bit' },
+        { id: 'P-004', storedStatus: 'blocked', effectiveStatus: 'blocked', text: 'stuck bit' },
+      ],
+      linkedFeatures: { 'P-002': { featureId: 'WI-77', status: 'wip' } },
+    });
+    renderDash();
+    const items = screen.getByTestId('plan-dash-items');
+    // Group order: attention → wip → todo → done; labels carry counts.
+    expect(items.textContent).toContain('Needs attention · 1');
+    expect(items.textContent).toContain('In progress · 1');
+    expect(items.textContent).toContain('Up next · 1');
+    expect(items.textContent).toContain('Done · 1');
+    // The promoted item renders its work-item ref and deep-links it.
+    const promoted = screen.getByTestId('plan-dash-item-P-002');
+    expect(promoted.tagName).toBe('BUTTON');
+    expect(promoted.textContent).toContain('WI-77');
+    fireEvent.click(promoted);
+    expect(setters['wpop']).toHaveBeenCalledWith('papercusp::WI-77');
+    // Unpromoted rows are plain divs showing their P-id.
+    expect(screen.getByTestId('plan-dash-item-P-003').tagName).toBe('DIV');
+    expect(screen.getByTestId('plan-dash-item-P-003').textContent).toContain('P-003');
+  });
+
+  it('collapses consecutive generic edit rows into a run and promotes rationales to notes', () => {
+    seed();
+    const t = Date.now();
+    syncData.value['planActivity.list'] = {
+      data: [
+        { kind: 'work', tsMs: t - 10_000, text: 'WI-40729 wip — serializer verified', who: OWNER_A, ref: 'WI-40729' },
+        { kind: 'edit', tsMs: t - 20_000, text: 'Plan edited (rev 5)', who: OWNER_A, ref: 'rev:5' },
+        { kind: 'edit', tsMs: t - 30_000, text: 'Plan edited (rev 4)', who: OWNER_A, ref: 'rev:4' },
+        { kind: 'edit', tsMs: t - 40_000, text: 'Plan edited (rev 3)', who: OWNER_A, ref: 'rev:3' },
+        { kind: 'edit', tsMs: t - 50_000, text: 'Recorded the first acceptance measurement.', who: OWNER_A, ref: 'rev:2' },
+        { kind: 'edit', tsMs: t - 60_000, text: 'Plan edited (rev 1)', who: OWNER_B, ref: 'rev:1' },
+      ],
+    };
+    renderDash();
+    // One run row folding rev 3–5; the rationale is a note card; the
+    // other-author singleton stays a plain verbatim row.
+    const run = screen.getByTestId('plan-dash-feed-run');
+    expect(run.textContent).toContain('Plan edited ×3');
+    expect(run.textContent).toContain('rev 3–5');
+    const note = screen.getByTestId('plan-dash-feed-note');
+    expect(note.textContent).toContain('Recorded the first acceptance measurement.');
+    expect(note.textContent).toContain('su-76a83'); // author short id on the note meta line
+    expect(screen.getByText('Plan edited (rev 1)')).toBeTruthy();
+    // Header note reports how much noise was folded.
+    expect(screen.getByText('3 edits collapsed')).toBeTruthy();
+    // The work row still deep-links.
+    expect(screen.getByTestId('plan-dash-feed-ref-WI-40729').tagName).toBe('BUTTON');
   });
 });
 
