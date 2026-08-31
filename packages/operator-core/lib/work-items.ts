@@ -7993,9 +7993,11 @@ export async function releaseWorkItem(
   }
   // EI-6832: this item is about to RETURN to the unclaimed pool — clear any lease a
   // prior claim_next left on it under the WORKITEM_CLAIM_LEASE flag, so it doesn't sit
-  // visibly-unclaimed-yet-lease-poisoned for up to the lease TTL (fire-and-forget,
-  // never blocks the release itself; see releaseWorkItemLease's doc comment).
-  if (wi.harness) void releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
+  // visibly-unclaimed-yet-lease-poisoned for up to the lease TTL. Await the
+  // already-fail-soft cleanup so the release promise's contract is honest: when
+  // it resolves, both the work-item row and its coordination claim ledger have
+  // settled (see releaseWorkItemLease's doc comment for the bounded no-throw path).
+  if (wi.harness) await releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
   // P-105: claim:released:<id> — wake anyone awaiting this item's claim to free, the
   // moment it returns to the pool (both the voluntary work_items:release tool AND the
   // stale-claim reaper route through here). Fire-and-forget + lazy import (work-items-
