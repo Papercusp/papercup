@@ -22,7 +22,10 @@ Environment=NODE_ENV=production
 Environment=HOSTNAME=127.0.0.1
 Environment=PORT=@PORT@
 Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=@NODE@ @STANDALONE_ENTRY@
+# start-web resolves .portal-runtime/current once at process start, then runs
+# that immutable generation. A concurrent build can publish a new `current`
+# without deleting files from the process that is already serving.
+ExecStart=@NODE@ @START_WEB@
 Restart=on-failure
 RestartSec=3s
 TimeoutStartSec=120s

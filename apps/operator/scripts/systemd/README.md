@@ -178,7 +178,13 @@ Verify the live unit resolves to this repo source and that its effective
 
 `papercusp-cloud-portal.service` supervises the Portal's built Next.js
 standalone production artifact on `127.0.0.1:3801`. Run `npm run build` in the
-Portal checkout first; the checked-in
+Portal checkout first; the build uses a unique private `distDir`, moves the
+completed output into `.portal-runtime/releases/<generation>`, and atomically
+retargets `.portal-runtime/current`. The service launches through
+`scripts/start-web.mjs`, which resolves that pointer once and keeps serving the
+immutable selected generation. A later or concurrent build therefore cannot
+delete the running process's JS/CSS/static files while preparing the next
+generation. The checked-in
 `papercusp-cloud-portal.service.in` is a machine-neutral template; the deploy
 helper resolves the external Portal checkout and Node binary at install time.
 The Portal's own `.env.local` remains in that external checkout and is loaded by

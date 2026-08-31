@@ -102,9 +102,15 @@ validate_inputs() {
 
   NEXT_BIN="$PORTAL_ROOT/node_modules/.bin/next"
   [[ -x "$NEXT_BIN" ]] || die "Next executable is not executable: $NEXT_BIN"
-  STANDALONE_ENTRY="$PORTAL_ROOT/.next/standalone/standalone-entry.mjs"
-  [[ -f "$STANDALONE_ENTRY" ]] ||
-    die "portal production artifact is missing: $STANDALONE_ENTRY (run npm run build first)"
+  START_WEB="$PORTAL_ROOT/scripts/start-web.mjs"
+  CURRENT_RELEASE_LINK="$PORTAL_ROOT/.portal-runtime/current"
+  CURRENT_STANDALONE_ENTRY="$CURRENT_RELEASE_LINK/standalone-entry.mjs"
+  [[ -f "$START_WEB" ]] || die "portal runtime launcher is missing: $START_WEB"
+  [[ -f "$CURRENT_STANDALONE_ENTRY" ]] ||
+    die "portal production artifact is missing: $CURRENT_STANDALONE_ENTRY (run npm run build first)"
+  CURRENT_RELEASE_REAL="$("$READLINK_BIN" -f "$CURRENT_RELEASE_LINK" 2>/dev/null || true)"
+  [[ -n "$CURRENT_RELEASE_REAL" && -d "$CURRENT_RELEASE_REAL" ]] ||
+    die "portal current release link is invalid: $CURRENT_RELEASE_LINK"
   NODE_DIR="$(dirname -- "$NODE_BIN")"
 
   require_uint_range PORTAL_PORT "$PORTAL_PORT" 1 65535
@@ -115,7 +121,7 @@ validate_inputs() {
 
   # These values become systemd syntax. Reject control bytes and specifier
   # markers rather than allowing a path to alter a unit's meaning.
-  for value in "$PORTAL_ROOT" "$NODE_BIN" "$NEXT_BIN" "$STANDALONE_ENTRY" "$NODE_DIR"; do
+  for value in "$PORTAL_ROOT" "$NODE_BIN" "$NEXT_BIN" "$START_WEB" "$CURRENT_RELEASE_LINK" "$NODE_DIR"; do
     [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *%* ]] ||
       die "portal paths may not contain newlines or systemd '%' specifiers"
   done
@@ -133,11 +139,11 @@ unit_escape() {
 }
 
 render_unit() {
-  local root node next standalone node_dir
+  local root node next start_web node_dir
   root="$(unit_escape "$PORTAL_ROOT")"
   node="$(unit_escape "$NODE_BIN")"
   next="$(unit_escape "$NEXT_BIN")"
-  standalone="$(unit_escape "$STANDALONE_ENTRY")"
+  start_web="$(unit_escape "$START_WEB")"
   node_dir="$(unit_escape "$NODE_DIR")"
 
   local line
@@ -146,7 +152,7 @@ render_unit() {
     line=${line//@PORTAL_ROOT@/$root}
     line=${line//@NODE@/$node}
     line=${line//@NEXT_BIN@/$next}
-    line=${line//@STANDALONE_ENTRY@/$standalone}
+    line=${line//@START_WEB@/$start_web}
     line=${line//@NODE_DIR@/$node_dir}
     printf '%s\n' "$line"
   done < "$TEMPLATE"
@@ -230,12 +236,37 @@ start_managed() {
 }
 
 managed_unit_runs_current_artifact() {
-  local main_pid arg
+  local main_pid arg current_real saw_launcher=0
   main_pid="$(systemctl_user show "$UNIT_NAME" --property=MainPID --value 2>/dev/null || true)"
   [[ "$main_pid" =~ ^[0-9]+$ && "$main_pid" != 0 && -r "$PROC_ROOT/$main_pid/cmdline" ]] || return 1
   while IFS= read -r -d '' arg; do
-    [[ "$arg" == "$STANDALONE_ENTRY" ]] && return 0
+    [[ "$arg" == "$START_WEB" ]] && saw_launcher=1
   done < "$PROC_ROOT/$main_pid/cmdline"
+  ((saw_launcher)) || return 1
+
+  current_real="$("$READLINK_BIN" -f "$CURRENT_RELEASE_LINK" 2>/dev/null || true)"
+  [[ -n "$current_real" ]] || return 1
+
+  # start-web -> standalone-entry -> Next server is a short process chain.
+  # Walk descendants rather than assuming the launcher is MainPID's direct
+  # child; systemd and Node can insert one wrapper on different Node releases.
+  local -a frontier=("$main_pid")
+  local -a next_frontier=()
+  local depth pid child cwd
+  for depth in 1 2 3 4 5 6; do
+    next_frontier=()
+    for pid in "${frontier[@]}"; do
+      [[ -r "$PROC_ROOT/$pid/task/$pid/children" ]] || continue
+      while read -r child; do
+        [[ "$child" =~ ^[0-9]+$ ]] || continue
+        cwd="$("$READLINK_BIN" -f "$PROC_ROOT/$child/cwd" 2>/dev/null || true)"
+        [[ "$cwd" == "$current_real" || "$cwd" == "$current_real/"* ]] && return 0
+        next_frontier+=("$child")
+      done < "$PROC_ROOT/$pid/task/$pid/children"
+    done
+    frontier=("${next_frontier[@]}")
+    ((${#frontier[@]})) || break
+  done
   return 1
 }
 
@@ -320,7 +351,9 @@ handoff() {
   # artifact instead of returning a false idempotent success.
   if systemctl_user is-active --quiet "$UNIT_NAME" 2>/dev/null; then
     log "$UNIT_NAME is healthy but running a stale command; restarting onto the standalone artifact"
-    if systemctl_user restart "$UNIT_NAME" && wait_for_health "$PORTAL_PORT"; then
+    if systemctl_user restart "$UNIT_NAME" &&
+      wait_for_health "$PORTAL_PORT" &&
+      managed_unit_runs_current_artifact; then
       log "handoff complete: $UNIT_NAME runs the standalone production artifact and passed health check"
       return 0
     fi
