@@ -578,6 +578,33 @@ export function buildCoordHealthPatterns(
     });
   }
 
+  // 4c. `youMayNotKnow.provenance` mechanism check (coord-derived-fields P-008 /
+  //     D-004) — the couplingDivergence consumption contract: ONE corpus-wide
+  //     aggregate, no sender dimension, never a per-message marker.
+  const pv = input.provenanceCheck;
+  if (pv && pv.checked >= minComputedClaims) {
+    const rate = pv.matched / pv.checked;
+    const pct = (n: number) => `${Math.round(n * 100)}%`;
+    const sampleLine = pv.samples
+      .slice(0, 3)
+      .map((s) => trunc(s.ref, 60))
+      .join('; ');
+    out.push({
+      category: 'coord-health',
+      ref: 'coord:computed-provenance-check',
+      summary: `youMayNotKnow provenance:'computed' claims: ${pv.matched}/${pv.checked} (${pct(rate)}) had an args-derivable read of the cited ref in the sender's window`,
+      detail:
+        `${pv.computedSeen} computed-labelled entr(y|ies) from agent-authored messages in 24h; ${pv.unknown} unknown (the probe failed — our gap, outside the rate). ` +
+        `ONE-SIDED both ways: matched = "not refuted", never verified (nothing proves a diff ran); unmatched = "no args-derivable source" — query-shaped reads (list/search) have no ledger ref BY DESIGN, so this is a labelling-quality signal, not a catch.` +
+        (sampleLine ? ` Unmatched: ${sampleLine}.` : '') +
+        ` The authored ref itself stays ungraded (D-090: being wrong is the payload); only the MECHANISM claim is checked. ` +
+        `AGGREGATE-ONLY, no sender dimension ever (D-004/D-091): attach a per-agent consequence and "label everything authored" becomes dominant, erasing the distinction. Never a gate, warning, nag, score, or refusal.`,
+      // Ranks by the unmatched share, capped below the live-breakdown floods —
+      // this is a data-quality reading, not an incident.
+      weight: Math.min(0.65, 0.2 + 0.45 * (1 - rate)),
+    });
+  }
+
   // 4b. AUTHORED-STRUCTURE ADOPTION, reported as THREE levels and never as one
   //     number (coordination-spec-adoption-2026-08-03 D-091). The summary leads
   //     with L3 because L3 is the only level that says the spec is working: L1
@@ -1086,6 +1113,134 @@ export async function loadCoordEnforcementCensus(
   }
 }
 
+/** Cap on computed-provenance claims examined per window — a sampled labelling-quality reading, not a census. */
+export const PROVENANCE_CLAIMS_MAX = 50;
+
+/**
+ * PURE: does any ledger ref cover the cited claim ref? Ledger refs are in the
+ * READ_REF_MAPPERS `kind:id` grammar; authored citations are free-form, so a
+ * bare-id citation (`WI-9`) matches its kinded ledger row (`work-item:WI-9`).
+ * Conservative by design — a miss is WEAK evidence (see CoordProvenanceCheck).
+ */
+export function computedClaimMatchesLedger(
+  claimRef: string,
+  ledgerRefs: readonly string[],
+): boolean {
+  const c = claimRef.trim();
+  if (!c) return false;
+  for (const lr of ledgerRefs) {
+    if (lr === c) return true;
+    const sep = lr.indexOf(':');
+    if (sep > 0 && lr.slice(sep + 1) === c) return true; // bare-id citation of a kind:id read
+  }
+  return false;
+}
+
+/**
+ * The `provenance:'computed'` mechanism check (coord-derived-fields P-008 /
+ * D-004): for each computed-labelled `youMayNotKnow` entry from an agent-authored
+ * message, was there an args-derivable read of the cited ref in the sender's
+ * invocation-ledger window — the SAME ledger, grammar (READ_REF_MAPPERS) and
+ * window (BASED_ON_WINDOW_MS) `deriveBasedOn` uses, so this probe and the stamp
+ * it audits cannot drift apart.
+ *
+ * Fail-soft to `undefined` like its siblings; a per-sender ledger failure lands
+ * those claims in `unknown` (OUR failure, outside the rate), never a verdict.
+ */
+export async function loadCoordProvenanceCheck(
+  ws: string,
+): Promise<CoordProvenanceCheck | undefined> {
+  try {
+    const { sql } = getOrgPg();
+    const [{ MACHINE_SENDER_PATTERN }, basedOn] = await Promise.all([
+      import('../agent-tools/coordination/machine-authored'),
+      import('../agent-tools/coordination/based-on'),
+    ]);
+    const { READ_TOOL_NAMES, refsFromInvocations, BASED_ON_WINDOW_MS } = basedOn;
+
+    const claims = await sql<Array<{ sender: string; ts: Date; ref: string }>>`
+      SELECT e.body->>'from' AS sender, e.ts, y->>'ref' AS ref
+        FROM harness_shared.coord_event_log e
+        CROSS JOIN LATERAL jsonb_array_elements(e.body->'sections') s
+        CROSS JOIN LATERAL jsonb_array_elements(s->'youMayNotKnow') y
+       WHERE e.workspace_id = ${ws}
+         AND e.surface = 'messages'
+         AND e.ts > now() - interval '24 hours'
+         AND jsonb_typeof(e.body->'sections') = 'array'
+         AND jsonb_typeof(s->'youMayNotKnow') = 'array'
+         AND y->>'provenance' = 'computed'
+         AND coalesce(y->>'ref', '') <> ''
+         AND NOT (coalesce(e.body->>'from', '') ~ ${MACHINE_SENDER_PATTERN})
+       LIMIT ${PROVENANCE_CLAIMS_MAX}`;
+    if (claims.length === 0) return undefined;
+
+    // Group by sender: ONE ledger query per sender over the union of that
+    // sender's claim windows, then judge each claim against its OWN
+    // [ts - WINDOW, ts] slice — a read after the send is not a source.
+    const bySender = new Map<string, { ts: number; ref: string }[]>();
+    for (const c of claims) {
+      const sender = (c.sender ?? '').trim();
+      const tsMs = (c.ts instanceof Date ? c.ts : new Date(c.ts)).getTime();
+      if (!sender || !Number.isFinite(tsMs)) continue;
+      const list = bySender.get(sender) ?? [];
+      list.push({ ts: tsMs, ref: c.ref });
+      bySender.set(sender, list);
+    }
+
+    let checked = 0;
+    let matched = 0;
+    let unmatched = 0;
+    let unknown = 0;
+    const samples: { ref: string }[] = [];
+
+    for (const [sender, entries] of bySender) {
+      try {
+        const minTs = Math.min(...entries.map((e) => e.ts));
+        const maxTs = Math.max(...entries.map((e) => e.ts));
+        const rows = await sql<Array<{ tool_name: string; args_json: unknown; invoked_at: Date }>>`
+          SELECT tool_name, args_json, invoked_at
+            FROM harness_shared.tool_invocations
+           WHERE workspace_id = ${ws}
+             AND coord_owner_id = ${sender}
+             AND invoked_at >= ${new Date(minTs - BASED_ON_WINDOW_MS)}
+             AND invoked_at <= ${new Date(maxTs)}
+             AND status = 'ok'
+             AND tool_name = ANY(${[...READ_TOOL_NAMES]})
+           ORDER BY invoked_at DESC
+           LIMIT 200`;
+        const invocations = rows.map((r) => ({
+          tool: r.tool_name,
+          args: r.args_json,
+          readAt: (r.invoked_at instanceof Date ? r.invoked_at : new Date(r.invoked_at)).toISOString(),
+        }));
+        for (const entry of entries) {
+          const windowRefs = refsFromInvocations(
+            invocations.filter((iv) => {
+              const at = Date.parse(iv.readAt);
+              return at >= entry.ts - BASED_ON_WINDOW_MS && at <= entry.ts;
+            }),
+            PROVENANCE_CLAIMS_MAX * 4,
+          ).map((r) => r.ref);
+          checked += 1;
+          if (computedClaimMatchesLedger(entry.ref, windowRefs)) {
+            matched += 1;
+          } else {
+            unmatched += 1;
+            if (samples.length < 5) samples.push({ ref: entry.ref });
+          }
+        }
+      } catch {
+        unknown += entries.length; // OUR probe failed for this sender — outside the rate
+      }
+    }
+
+    if (checked + unknown === 0) return undefined;
+    return { computedSeen: claims.length, checked, matched, unmatched, unknown, samples };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function loadCoordAuthoredAdoption(
   ws: string,
 ): Promise<CoordAuthoredAdoption | undefined> {
@@ -1372,6 +1527,15 @@ export async function buildCoordHealthLane(
       /* best-effort — the clarify signal is optional decoration */
     }
 
+    // `youMayNotKnow.provenance` mechanism check (coord-derived-fields P-008 /
+    // D-004) — independently fail-soft like its siblings.
+    let provenanceCheck: CoordProvenanceCheck | undefined;
+    try {
+      provenanceCheck = await loadCoordProvenanceCheck(ws);
+    } catch {
+      /* best-effort — the provenance signal is optional decoration */
+    }
+
     // L1/L2/L3 authored-structure adoption (coordination-spec-adoption P-001) —
     // independently fail-soft for the same reason as its two siblings above.
     let authoredAdoption: CoordAuthoredAdoption | undefined;
@@ -1412,6 +1576,7 @@ export async function buildCoordHealthLane(
     return buildCoordHealthPatterns({
       premiseResolve,
       clarifyAdoption,
+      provenanceCheck,
       authoredAdoption,
       enforcementCensus,
       dispatchAdoption,
