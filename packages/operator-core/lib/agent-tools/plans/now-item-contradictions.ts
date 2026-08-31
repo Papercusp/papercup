@@ -6,6 +6,18 @@ export interface NowItemContradiction {
   mention: string;
 }
 
+/**
+ * An exhaustive Now/Next claim named a closed list of remaining items but
+ * omitted one or more non-terminal structured items.  This is the inverse of
+ * `NowItemContradiction`: the mentioned item may itself be open, but the word
+ * "only" (or an equivalent suffix) makes the list read as complete.
+ */
+export interface NowItemOmission {
+  omitted: string[];
+  listed: string[];
+  mention: string;
+}
+
 type TerminalStatus = NowItemContradiction['status'];
 
 const PLAN_ITEM_REF_RE = /\bP-\d{3,}\b/g;
@@ -44,11 +56,65 @@ const NOW_NEGATED_OR_FUTURE_RE =
   /\b(?:not|never|still|yet|will|would|should|must|need(?:s)?(?:\s+to)?|to)\b/i;
 const NOW_HISTORICAL_RE =
   /\b(?:histor(?:y|ical)|prior|previous(?:ly)?|earlier|former(?:ly)?|legacy|archived?|record(?:ed)?)\b/i;
+// A Now sentence may describe the old state of several terminal items in one
+// semicolon-delimited clause and resolve that group in the next clause, e.g.
+// "P-003 and P-005 were ... with ZERO coverage; both are now extracted and
+// tested." The regular clause-local closure checks above intentionally cannot
+// see across that semicolon. Keep this detector narrow: it requires historical
+// or incomplete-state wording, a collective subject in the following clause,
+// and an affirmative present completion phrase. Future/negated forms are
+// excluded so "both will now be fixed" and "both are not now fixed" remain
+// contradictions.
+const NOW_RETROSPECTIVE_STATE_RE =
+  /\b(?:was|were|had|previous(?:ly)?|earlier|former(?:ly)?|zero|no|stale|untested|uncovered|inlined?|missing|lacked|without)\b/i;
+const NOW_AFFIRMATIVE_RESOLUTION_RE =
+  /\b(?:now|already)\s+(?:(?:is|are)\s+)?(?!being\b)(?:fully\s+)?(?:fixed|covered|tested|extracted|implemented|addressed|resolved|corrected|repaired|closed|complete(?:d)?|shipped|merged|landed|validated|verified)\b|\b(?:is|are|has\s+been|have\s+been)\s+(?:now\s+|already\s+)?(?!being\b)(?:fully\s+)?(?:fixed|covered|tested|extracted|implemented|addressed|resolved|corrected|repaired|closed|complete(?:d)?|shipped|merged|landed|validated|verified)\b/i;
+// A slash-separated P-NNN group can be a technical field prefix rather than
+// a list of plan items, e.g. "P-003/P-004 blobShas went stale". Treat this as
+// neutral artifact history only when every item in the group is terminal and
+// the field is described with an unambiguously past/status construction. A
+// direct instruction such as "refresh P-003/P-004 blobShas" does not match.
+const NOW_METADATA_REFERENCE_RE =
+  /(?:\bP-\d{3,}\s*\/\s*)+\bP-\d{3,}\b\s+(?:blob\s*shas?|commit\s*shas?|sha(?:s)?|hash(?:es)?|citation(?:s)?|reference(?:s)?|links?)\b/i;
+const NOW_METADATA_STATUS_RE =
+  /\b(?:went|became|turned|grew|was|were|is|are|remained?|became)\s+(?:now\s+)?(?:stale|outdated|invalid|incorrect|wrong|missing|unavailable)\b/i;
 const NOW_ACTION_RE =
   /\b(?:address|audit|claim|close|complete|continue|finish|fix|handle|implement|investigate|pick(?:\s+up)?|reopen|repair|revisit|review|resume|retry|run|start|validate|verify|work)\b/i;
 const NOW_ACTIVE_RE = /\b(?:active|assigned|in\s+progress|ongoing|open|pending|underway)\b/i;
 const NOW_CROSS_LEDGER_REF_BEFORE_RE = /\bWI-\d+\s*\/\s*$/i;
 const NOW_CROSS_LEDGER_REF_AFTER_RE = /^\s*\/\s*WI-\d+\b/i;
+
+// Exhaustive-list wording is intentionally narrow.  These are the two
+// shapes that have caused real successor drops: "only P-002 remains" and
+// "P-002 only" (usually followed by a qualifier such as "and it is blocked").
+// The list itself may contain comma/and-separated P-NNN references, but it
+// must stay within one sentence so an unrelated historical mention cannot
+// satisfy the claim.
+const NOW_ITEM_LIST = String.raw`(?:P-\d{3,}(?:\s*(?:,|\/|and|&)\s*)?)+`;
+const NOW_ONLY_PREFIX_RE = new RegExp(
+  String.raw`\bonly\s+(${NOW_ITEM_LIST})\s+(?:remain(?:s|ing)?|left|outstanding|actionable|todo)\b`,
+  'gi',
+);
+// Anchor the terse "P-002 only" shape to the sentence start. Without the
+// anchor, neutral scope prose such as "the tests cover P-002 only" would be
+// misread as a claim that P-002 is the plan's sole remaining item.
+const NOW_ONLY_SUFFIX_RE = new RegExp(String.raw`^\s*(${NOW_ITEM_LIST})\s+only\b`, 'gi');
+const NOW_REMAINING_LIST_RE = new RegExp(
+  String.raw`\b(?:remaining|outstanding|unfinished|incomplete|open)\s+(?:items?|lanes?|work)\s*(?:are|is|:)\s*(${NOW_ITEM_LIST})`,
+  'gi',
+);
+
+function idsFromList(text: string): string[] {
+  return [...text.matchAll(/\bP-\d{3,}\b/g)].map((match) => match[0]);
+}
+
+function hasAffirmativeResolution(text: string): boolean {
+  for (const match of text.matchAll(new RegExp(NOW_AFFIRMATIVE_RESOLUTION_RE.source, 'gi'))) {
+    const prefix = text.slice(0, match.index ?? 0).slice(-120);
+    if (!NOW_NEGATED_OR_FUTURE_RE.test(prefix)) return true;
+  }
+  return false;
+}
 
 /**
  * PURE: find terminal plan items that the cold-resume Now block still presents
@@ -105,6 +171,32 @@ export function detectNowItemContradictions(
     const after = clause.slice(refOffset + id.length);
     const closeAfter = NOW_CLOSED_RE.test(after) && !NOW_NEGATED_OR_FUTURE_RE.test(after);
     const closeBefore = NOW_CLOSED_RE.test(before) && !NOW_NEGATED_OR_FUTURE_RE.test(before.slice(-120));
+    const clauseItemIds = [...clause.matchAll(PLAN_ITEM_REF_RE)].map((itemMatch) => itemMatch[0]);
+    const sentenceEndCandidates = [
+      nowText.indexOf('.', rightBoundary + 1),
+      nowText.indexOf('!', rightBoundary + 1),
+      nowText.indexOf('?', rightBoundary + 1),
+      nowText.indexOf('\n', rightBoundary + 1),
+    ].filter((position) => position !== -1);
+    const sentenceEnd = sentenceEndCandidates.length > 0 ? Math.min(...sentenceEndCandidates) : nowText.length;
+    const followingClause = nowText.slice(rightBoundary + 1, sentenceEnd);
+    const collectiveResolution =
+      /\b(?:both|all|these|those|they)\b/i.test(followingClause) &&
+      hasAffirmativeResolution(followingClause);
+    const retrospectiveResolution =
+      rightBoundary < sentenceEnd &&
+      nowText[rightBoundary] === ';' &&
+      clauseItemIds.length > 0 &&
+      clauseItemIds.every((itemId) => terminalItems.has(itemId)) &&
+      NOW_RETROSPECTIVE_STATE_RE.test(clause) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(clause) &&
+      collectiveResolution;
+    const neutralMetadataReference =
+      clauseItemIds.length >= 2 &&
+      clauseItemIds.every((itemId) => terminalItems.has(itemId)) &&
+      NOW_METADATA_REFERENCE_RE.test(clause) &&
+      NOW_METADATA_STATUS_RE.test(clause) &&
+      !NOW_ACTION_RE.test(clause);
     // A terminal ID may also appear in a compact historical ledger reference,
     // e.g. `Historical promotion record: P-047–P-052/WI-41306–WI-41311`.
     // That is completion context, not a direction to revisit the item. Keep
@@ -138,7 +230,15 @@ export function detectNowItemContradictions(
     const precedingSlugMatch = PLAN_SLUG_PREFIX_RE.exec(before);
     const explicitForeignPlanReference =
       precedingSlugMatch !== null && precedingSlugMatch[1].toLowerCase() !== parsed.slug.toLowerCase();
-    if (closeAfter || closeBefore || historicalReference || crossLedgerReference || explicitForeignPlanReference)
+    if (
+      closeAfter ||
+      closeBefore ||
+      historicalReference ||
+      crossLedgerReference ||
+      explicitForeignPlanReference ||
+      retrospectiveResolution ||
+      neutralMetadataReference
+    )
       continue;
 
     contradictions.push({
@@ -148,4 +248,61 @@ export function detectNowItemContradictions(
     });
   }
   return contradictions.filter((entry, index) => contradictions.findIndex((candidate) => candidate.id === entry.id) === index);
+}
+
+/**
+ * PURE: find Now/Next sentences that make an exhaustive claim about the
+ * remaining plan items while omitting a non-terminal structured item.  The
+ * omission guard is deliberately separate from the terminal-item guard above:
+ * a sentence can be truthful about the item it names and still be dangerously
+ * incomplete about the plan as a whole.
+ */
+export function detectNowItemOmissions(
+  parsed: Pick<ParsedPlan, 'now' | 'items'>,
+): NowItemOmission[] {
+  if (!parsed.now) return [];
+
+  const nowText = `${parsed.now.state}\n${parsed.now.next}`;
+  const nonTerminal = new Set(
+    parsed.items
+      .filter((item) => item.storedStatus !== 'done' && item.storedStatus !== 'dropped')
+      .map((item) => item.id),
+  );
+  if (nonTerminal.size === 0) return [];
+
+  const omissions: NowItemOmission[] = [];
+  // The sentence/clause ending at each boundary is the smallest context in
+  // which an exhaustive list can be interpreted. A missing final boundary is
+  // handled by appending the text length below.
+  let sentenceStart = 0;
+  const sentenceEnds = [...nowText.matchAll(/[.!?\n]/g)].map((match) => match.index! + 1);
+  sentenceEnds.push(nowText.length);
+  for (const sentenceEnd of sentenceEnds) {
+    const sentence = nowText.slice(sentenceStart, sentenceEnd);
+    const matches = [
+      ...sentence.matchAll(NOW_ONLY_PREFIX_RE),
+      ...sentence.matchAll(NOW_ONLY_SUFFIX_RE),
+      ...sentence.matchAll(NOW_REMAINING_LIST_RE),
+    ];
+    for (const match of matches) {
+      const listed = idsFromList(match[1] ?? '');
+      if (listed.length === 0) continue;
+      const omitted = [...nonTerminal].filter((id) => !listed.includes(id));
+      if (omitted.length === 0) continue;
+      omissions.push({
+        omitted,
+        listed: [...new Set(listed)],
+        mention: sentence.trim().slice(0, 240),
+      });
+    }
+    sentenceStart = sentenceEnd;
+  }
+  return omissions.filter(
+    (entry, index) =>
+      omissions.findIndex(
+        (candidate) =>
+          candidate.omitted.join(',') === entry.omitted.join(',') &&
+          candidate.listed.join(',') === entry.listed.join(','),
+      ) === index,
+  );
 }

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { parsePlan } from '../parser';
-import { detectNowItemContradictions } from '../now-item-contradictions';
+import { detectNowItemContradictions, detectNowItemOmissions } from '../now-item-contradictions';
 import { evaluateSetContent } from '../set-content';
 import { evaluateNowUpdate } from '../set-now';
+import { lintParsed } from '../lint';
 
 const SLUG = 'now-item-contradictions-2026-08-23';
 
@@ -37,6 +38,27 @@ const GROUPED_COMPLETION = CURRENT.replace(
   '- **P-002** `todo` Open item.',
   '- **P-002** `done` Finished item.\n- **P-003** `done` Finished item.\n- **P-004** `done` Finished item.\n- **P-005** `done` Finished item.\n- **P-006** `todo` Open item.\n- **P-007** `done` Finished item.',
 );
+
+const RETROSPECTIVE_GROUP_COMPLETION = CURRENT.replace(
+  '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+  '**State:** The precedence rule (P-003) and the top-index reverse binding (P-005) were pure logic inlined in components with ZERO coverage; both are now extracted into session-turn-index.ts and tested (13 new cases).\n\n**Next:** Continue with P-002.',
+).replace(
+  '- **P-002** `todo` Open item.',
+  '- **P-002** `todo` Open item.\n- **P-003** `done` Fixed item.\n- **P-004** `done` Fixed item.\n- **P-005** `done` Fixed item.',
+);
+
+const RETROSPECTIVE_METADATA_REFERENCE = CURRENT.replace(
+  '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+  '**State:** P-003/P-004 blobShas went stale when the structural tests landed; references now point to the current implementation.\n\n**Next:** Continue with P-002.',
+).replace(
+  '- **P-002** `todo` Open item.',
+  '- **P-002** `todo` Open item.\n- **P-003** `done` Fixed item.\n- **P-004** `done` Fixed item.',
+);
+
+const EXHAUSTIVE_OMISSION = CURRENT.replace(
+  '**Next:** Continue with P-002.',
+  '**Next:** P-002 only, and it is not actionable yet.',
+).replace('- **P-002** `todo` Open item.', '- **P-002** `todo` Open item.\n- **P-003** `todo` Urgent open item.');
 
 describe('detectNowItemContradictions', () => {
   it('flags an action-oriented mention of a terminal item', () => {
@@ -120,6 +142,61 @@ describe('detectNowItemContradictions', () => {
 
   it('allows grouped affirmative completion evidence before unrelated blocked work', () => {
     expect(detectNowItemContradictions(parsePlan(GROUPED_COMPLETION))).toEqual([]);
+  });
+
+  it('allows retrospective group prose resolved by a later affirmative clause', () => {
+    expect(detectNowItemContradictions(parsePlan(RETROSPECTIVE_GROUP_COMPLETION))).toEqual([]);
+  });
+
+  it('keeps future group resolution contradictory', () => {
+    const proposed = RETROSPECTIVE_GROUP_COMPLETION.replace(
+      'both are now extracted into session-turn-index.ts and tested',
+      'both will now be extracted into session-turn-index.ts and tested',
+    );
+
+    expect(detectNowItemContradictions(parsePlan(proposed))).toEqual([
+      expect.objectContaining({ id: 'P-003', status: 'done' }),
+      expect.objectContaining({ id: 'P-005', status: 'done' }),
+    ]);
+  });
+
+  it('keeps negated group resolution contradictory', () => {
+    const proposed = RETROSPECTIVE_GROUP_COMPLETION.replace(
+      'both are now extracted into session-turn-index.ts and tested',
+      'both are not now extracted into session-turn-index.ts and tested',
+    );
+
+    expect(detectNowItemContradictions(parsePlan(proposed))).toEqual([
+      expect.objectContaining({ id: 'P-003', status: 'done' }),
+      expect.objectContaining({ id: 'P-005', status: 'done' }),
+    ]);
+  });
+
+  it('does not let a collective resolution excuse a clause containing open work', () => {
+    const proposed = RETROSPECTIVE_GROUP_COMPLETION.replace(
+      '(P-003) and the top-index reverse binding (P-005)',
+      '(P-003) and the top-index reverse binding (P-002)',
+    );
+
+    expect(detectNowItemContradictions(parsePlan(proposed))).toEqual([
+      expect.objectContaining({ id: 'P-003', status: 'done' }),
+    ]);
+  });
+
+  it('allows terminal IDs used as a slash-separated metadata reference in past-tense prose', () => {
+    expect(detectNowItemContradictions(parsePlan(RETROSPECTIVE_METADATA_REFERENCE))).toEqual([]);
+  });
+
+  it('still flags an action against a slash-separated metadata reference', () => {
+    const proposed = RETROSPECTIVE_METADATA_REFERENCE.replace(
+      'P-003/P-004 blobShas went stale when the structural tests landed; references now point to the current implementation.',
+      'Refresh P-003/P-004 blobShas before continuing.',
+    );
+
+    expect(detectNowItemContradictions(parsePlan(proposed))).toEqual([
+      expect.objectContaining({ id: 'P-003', status: 'done' }),
+      expect.objectContaining({ id: 'P-004', status: 'done' }),
+    ]);
   });
 
   it('allows terminal IDs in an explicit historical promotion reference', () => {
@@ -228,6 +305,66 @@ describe('detectNowItemContradictions', () => {
   });
 });
 
+describe('detectNowItemOmissions', () => {
+  it('flags an exhaustive "only" list that omits a non-terminal item', async () => {
+    const parsed = parsePlan(EXHAUSTIVE_OMISSION);
+    expect(detectNowItemOmissions(parsed)).toEqual([
+      expect.objectContaining({ listed: ['P-002'], omitted: ['P-003'] }),
+    ]);
+  });
+
+  it('does not flag an ordinary next-item pointer as exhaustive', async () => {
+    const parsed = parsePlan(EXHAUSTIVE_OMISSION.replace('P-002 only', 'Continue with P-002'));
+    expect(detectNowItemOmissions(parsed)).toEqual([]);
+  });
+
+  it('does not treat a neutral item-scoped sentence as a closed plan list', () => {
+    const parsed = parsePlan(
+      EXHAUSTIVE_OMISSION.replace(
+        '**Next:** P-002 only, and it is not actionable yet.',
+        '**Next:** The focused tests cover P-002 only.',
+      ),
+    );
+    expect(detectNowItemOmissions(parsed)).toEqual([]);
+  });
+
+  it.each([
+    'Only P-002 remains actionable.',
+    'Remaining items: P-002.',
+  ])('recognizes the exhaustive wording %s', (next) => {
+    const parsed = parsePlan(
+      EXHAUSTIVE_OMISSION.replace(
+        '**Next:** P-002 only, and it is not actionable yet.',
+        `**Next:** ${next}`,
+      ),
+    );
+    expect(detectNowItemOmissions(parsed)).toEqual([
+      expect.objectContaining({ listed: ['P-002'], omitted: ['P-003'] }),
+    ]);
+  });
+
+  it('accepts a complete exhaustive list', () => {
+    const parsed = parsePlan(
+      EXHAUSTIVE_OMISSION.replace(
+        '**Next:** P-002 only, and it is not actionable yet.',
+        '**Next:** P-002 and P-003 only.',
+      ),
+    );
+    expect(detectNowItemOmissions(parsed)).toEqual([]);
+  });
+
+  it('surfaces the omission as a plan-lint error', async () => {
+    const report = await lintParsed(
+      parsePlan(EXHAUSTIVE_OMISSION, { filePath: `${SLUG}.md` }),
+      SLUG,
+      false,
+    );
+    expect(report.errors).toEqual([
+      expect.objectContaining({ code: 'now_item_omission', itemId: 'P-003' }),
+    ]);
+  });
+});
+
 describe('evaluateSetContent — Now/item contradiction guard', () => {
   it('rejects a whole-document write that introduces a terminal-item contradiction', async () => {
     const proposed = CURRENT.replace(
@@ -305,5 +442,16 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
+  });
+
+  it('rejects a structured Now write that makes an exhaustive list omitting open work', () => {
+    const result = evaluateNowUpdate(EXHAUSTIVE_OMISSION, 'Work remains.', 'P-002 only, and it is not actionable yet.', SLUG);
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_omission',
+      omissions: [expect.objectContaining({ listed: ['P-002'], omitted: ['P-003'] })],
+    });
   });
 });

@@ -46,8 +46,11 @@ import { detectUnparsedItemLines } from './item-parse-feedback';
 import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
 import { analyzePlanDagParallelism } from './plan-dag-parallelism';
 import type { DependencyPolicyFinding } from '../../scheduler/dependency-invariants';
-import { detectNowItemContradictions, type NowItemContradiction } from './now-item-contradictions';
-export { detectNowItemContradictions } from './now-item-contradictions';
+import {
+  detectNowItemContradictions,
+  detectNowItemOmissions,
+} from './now-item-contradictions';
+export { detectNowItemContradictions, detectNowItemOmissions } from './now-item-contradictions';
 
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan (full report: errors + warnings). Omit for all plans (bounded summary).'),
@@ -216,6 +219,20 @@ export async function lintParsed(
         `\`## Now\` block presents it as current or future work ("${contradiction.mention}"). ` +
         'Rewrite Now from the current item statuses; a terminal item must be described as done/closed, not assigned another pass.',
     });
+  }
+  const nowItemOmissions = detectNowItemOmissions(parsed);
+  for (const omission of nowItemOmissions) {
+    for (const itemId of omission.omitted) {
+      report.errors.push({
+        level: 'error',
+        code: 'now_item_omission',
+        itemId,
+        message:
+          `The \`## Now\` block makes an exhaustive remaining-item claim ("${omission.mention}") ` +
+          `listing ${omission.listed.join(', ')} but omitting non-terminal item ${itemId}. ` +
+          'Rewrite Now so every non-terminal structured item remains represented.',
+      });
+    }
   }
   if (parsed.decisions.length === 0 && parsed.items.length > 0) {
     report.warnings.push({

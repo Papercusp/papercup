@@ -19,7 +19,12 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { maskFences, parsePlan } from './parser';
-import { detectNowItemContradictions, type NowItemContradiction } from './now-item-contradictions';
+import {
+  detectNowItemContradictions,
+  detectNowItemOmissions,
+  type NowItemContradiction,
+  type NowItemOmission,
+} from './now-item-contradictions';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -61,7 +66,8 @@ const argsSchema = z.object({
 type SetNowValue =
   | { ok: true }
   | { ok: false; code: 'not_found' }
-  | { ok: false; code: 'now_item_status_contradiction'; contradictions: NowItemContradiction[] };
+  | { ok: false; code: 'now_item_status_contradiction'; contradictions: NowItemContradiction[] }
+  | { ok: false; code: 'now_item_omission'; omissions: NowItemOmission[] };
 
 export function replaceNowBlock(body: string, state: string, next: string): string {
   const block = `## Now\n\n**State:** ${state.trim()}\n\n**Next:** ${next.trim()}\n`;
@@ -120,6 +126,13 @@ export function evaluateNowUpdate(
     return {
       newBody: null,
       value: { ok: false, code: 'now_item_status_contradiction', contradictions },
+    };
+  }
+  const omissions = detectNowItemOmissions(parsePlan(final, { filePath: `${slug}.md` }));
+  if (omissions.length > 0) {
+    return {
+      newBody: null,
+      value: { ok: false, code: 'now_item_omission', omissions },
     };
   }
   return { newBody: final, value: { ok: true } };
@@ -194,6 +207,8 @@ export default defineTool({
             error: result.value.code,
             ...(result.value.code === 'now_item_status_contradiction'
               ? { contradictions: result.value.contradictions }
+              : result.value.code === 'now_item_omission'
+                ? { omissions: result.value.omissions }
               : {}),
           };
         }
