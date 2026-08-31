@@ -14,6 +14,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
+// WI-1393208: criteriaHash is read via a SEPARATE exported function
+// (getRubricCriteriaHash) whose own internal call to getRubric is NOT routed
+// through this file's `getRubric` mock (a same-module function-to-function call
+// is a direct lexical reference, unaffected by how the module's external exports
+// are wrapped) — so it must be mocked directly here, exactly like
+// getRubricPlanRevision above. Defaults to null (the field's default-omitted
+// behavior) so every PRE-EXISTING `.toEqual` assertion in this file — which does
+// not expect a `criteriaHash` key — keeps passing unchanged; tests below that
+// exercise the new pinning behavior override it explicitly.
+const getRubricCriteriaHash = vi.fn();
 // EI-21828643965337454 moved the sole-vetting-critic guard onto the FAIL-CLOSED
 // revision read: `readRubricPlanRevision` reports a failed read as `ok:false`
 // instead of flattening it into the same `null` an unversioned rubric returns.
@@ -48,6 +58,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
+    getRubricCriteriaHash: (...a: unknown[]) => getRubricCriteriaHash(...a),
     readRubricPlanRevision: (...a: unknown[]) => readRubricPlanRevision(...a),
   };
 });
@@ -155,6 +166,10 @@ beforeEach(() => {
     return null;
   });
   getRubricPlanRevision.mockReset().mockResolvedValue(7);
+  // WI-1393208: default null so every pre-existing assertion in this file (which
+  // predates criteriaHash and does not expect the key) is unaffected; tests below
+  // override this explicitly to exercise the pinning behavior.
+  getRubricCriteriaHash.mockReset().mockResolvedValue(null);
   // Derived, not hardcoded: a test that overrides the revision via the fail-open
   // mock gets the same revision through the fail-closed read, so the two can never
   // silently disagree about what this rubric's current revision is.
@@ -342,6 +357,68 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     };
     expect(payload.payloadExtra.observation.vetting).toEqual({
       consultId: 'conv-vet-1',
+      critiquePosts: 2,
+      critics: ['su-reviewer'],
+    });
+  });
+
+  // ── WI-1393208: pin the rubric's criteriaHash alongside rubricRevision, both on
+  //    the top-level card and on the vetting stamp — mirroring rubricRevision's
+  //    own pin/omit-on-failure contract exactly.
+
+  it('pins observation.criteriaHash on the top-level card when the hash read succeeds', async () => {
+    getRubricCriteriaHash.mockResolvedValue('hash-abc123');
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(true);
+    expect(getRubricCriteriaHash).toHaveBeenCalledWith('meta-acceptance-rubric');
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: Record<string, unknown> };
+    };
+    expect(payload.payloadExtra.observation.criteriaHash).toBe('hash-abc123');
+  });
+
+  it('omits observation.criteriaHash (never fabricates one) when the hash read fails', async () => {
+    getRubricCriteriaHash.mockResolvedValue(null);
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(true);
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: Record<string, unknown> };
+    };
+    expect(payload.payloadExtra.observation).not.toHaveProperty('criteriaHash');
+  });
+
+  it('pins vetting.criteriaHash alongside vetting.rubricRevision on a consult-channel stamp', async () => {
+    getRubricCriteriaHash.mockResolvedValue('hash-vetted-rubric');
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(true);
+    // The vetting stamp hashes the VETTED subject rubric ('ar-some-plan'), not the
+    // meta-rubric being used to grade it — same subjectRef readRubricPlanRevision
+    // pins rubricRevision from.
+    expect(getRubricCriteriaHash).toHaveBeenCalledWith('ar-some-plan');
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: { vetting?: Record<string, unknown> } };
+    };
+    expect(payload.payloadExtra.observation.vetting).toEqual({
+      consultId: 'conv-vet-1',
+      rubricRevision: 7,
+      criteriaHash: 'hash-vetted-rubric',
+      critiquePosts: 2,
+      critics: ['su-reviewer'],
+    });
+  });
+
+  it('pins vetting.criteriaHash alongside vetting.rubricRevision on a work-item-channel stamp', async () => {
+    getRubricCriteriaHash.mockResolvedValue('hash-vetted-rubric');
+    const res = await emitScorecard(workItemVettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(true);
+    expect(getRubricCriteriaHash).toHaveBeenCalledWith('ar-some-plan');
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: { vetting?: Record<string, unknown> } };
+    };
+    expect(payload.payloadExtra.observation.vetting).toEqual({
+      workItemId: 'WI-review-1',
+      rubricRevision: 7,
+      criteriaHash: 'hash-vetted-rubric',
       critiquePosts: 2,
       critics: ['su-reviewer'],
     });
