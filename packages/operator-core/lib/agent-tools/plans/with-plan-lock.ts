@@ -339,13 +339,14 @@ export async function withPlanLock<T>(
         content: string;
         version: string | number;
         content_hash: string;
+        template: string | null;
         template_data: unknown;
         input_schema: unknown;
         output_schema: unknown;
         op_status: string | null;
       }[]
     >`
-      SELECT content, version, content_hash, template_data, input_schema, output_schema, op_status
+      SELECT content, version, content_hash, template, template_data, input_schema, output_schema, op_status
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
@@ -455,8 +456,14 @@ export async function withPlanLock<T>(
     // HERE guards door two and any future door three, and compares against the row this
     // transaction is actually replacing rather than a pre-lock read.
     if (writesTemplateData && cur) {
-      const templateName = deriveIndexFromContent(newBody ?? cur.content).template;
-      if (templateName === RUBRIC_TEMPLATE_NAME) {
+      // The trigger is what is STORED, never what is incoming: you can only lose criteria
+      // a row already holds, so a write that renames the template away from `rubric` must
+      // not slip past by no longer looking like one. Read both the derived index column
+      // and the frontmatter — either saying `rubric` is enough.
+      const isRubricPlan =
+        cur.template === RUBRIC_TEMPLATE_NAME ||
+        deriveIndexFromContent(cur.content).template === RUBRIC_TEMPLATE_NAME;
+      if (isRubricPlan) {
         assertNoSilentRubricTemplateDataLoss({
           slug,
           storedTemplateData: cur.template_data ?? null,
