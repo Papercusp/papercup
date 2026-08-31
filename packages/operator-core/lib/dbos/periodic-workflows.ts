@@ -16,7 +16,9 @@
  * backups) follow this exact shape per the P-008 / D-016 classification.
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
+import type { PgssBaseline } from '../system-health/hot-seq-scan-detector';
 import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc } from '../scratch-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
@@ -1733,6 +1735,83 @@ const dbPgssOrphanStatsReclaimWorkflow = idempotentRegisterWorkflow('dbPgssOrpha
 // 05:20 UTC daily — clear of the :00 backup tick, the 04:xx GC cluster and the 04:50
 // index-bloat sweep.
 DBOS.registerScheduled(dbPgssOrphanStatsReclaimWorkflow, { name: 'dbPgssOrphanStatsReclaim', crontab: '0 20 5 * * *' });
+
+// EI-19312743681026041: the HOT-STATEMENT SEQ-SCAN detector. Two migrations in two days
+// (717/WI-6839, 718/WI-6850) fixed the same read-many-return-few defect — a filter cheap
+// to WRITE with no index behind it, over a table with a fat TOASTed column, called on a
+// tick — and BOTH were found only because an agent ranked live pg_stat_statements deltas
+// by hand. 718 had been burning ~27% of all live database time at ~171 calls/min. The
+// class is invisible to code review (the SQL is correct, just unindexed) and to tests
+// (fixtures are small enough that a seq scan is free), so the live database is the only
+// place it can be caught. This tick is that missing detector.
+//
+// The detector needs TWO samples to compute a rate, so the first run after a restart only
+// samples and reports `no-baseline` — that is correct, not a failure. Ranking on lifetime
+// totals instead would invert the answer outright (D-007): the 718 statements were 26.98%
+// of LIVE database time but 0.2% of lifetime.
+//
+// Read-only. EXPLAIN runs without ANALYZE inside a READ ONLY transaction, so statements
+// are PLANNED and never executed — verified against an UPDATE — and the only writes this
+// tick makes are log lines.
+const __hotSeqScanState = pinModuleState<{ baseline: PgssBaseline | null }>(
+  '@papercusp/operator-core.hotSeqScanDetectorBaseline',
+  () => ({ baseline: null }),
+);
+async function dbHotSeqScanDetectorTick(): Promise<void> {
+  if (!(await retentionEnabled(FLAGS.DB_HOT_SEQ_SCAN_DETECTOR))) return;
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('db-hot-seq-scan-detector')) return;
+      try {
+        const { runHotSeqScanDetectionOnce, describeFinding } = await import(
+          '../system-health/hot-seq-scan-detector'
+        );
+        const { sql } = getOrgPg();
+        const r = await runHotSeqScanDetectionOnce(sql, { baseline: __hotSeqScanState.baseline });
+        // Carry the sample forward even on a skip: 'window-too-short' deliberately returns
+        // the ORIGINAL baseline so the delta keeps accumulating instead of the clock
+        // resetting every tick and never reaching a measurable window.
+        __hotSeqScanState.baseline = r.nextBaseline;
+
+        if (r.skipped) {
+          // 'extension-absent' is the one worth saying out loud: without pg_stat_statements
+          // the detector is permanently inert, and an inert detector that says nothing is
+          // indistinguishable from a working one that found nothing.
+          if (r.skipped === 'extension-absent') {
+            console.warn(
+              '[db-hot-seq-scan-detector] inert: pg_stat_statements is not installed — ' +
+                'this defect class is unmonitored until it is.',
+            );
+          }
+          return;
+        }
+
+        if (r.findings.length === 0) return;
+        console.warn(
+          `[db-hot-seq-scan-detector] ${r.findings.length} hot statement(s) seq-scanning a ` +
+            `large relation over a ${(r.windowMs / 60_000).toFixed(1)}min window ` +
+            `(${r.examined} of ${r.candidates} candidates planned` +
+            `${r.explainFailures > 0 ? `, ${r.explainFailures} unplannable` : ''}` +
+            `${r.resetEntriesSkipped > 0 ? `, ${r.resetEntriesSkipped} reset entries skipped` : ''}):`,
+        );
+        for (const f of r.findings) console.warn(`[db-hot-seq-scan-detector]   ${describeFinding(f)}`);
+      } catch (err) {
+        console.warn(`[db-hot-seq-scan-detector] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'db-hot-seq-scan-detector' },
+  );
+}
+const dbHotSeqScanDetectorWorkflow = idempotentRegisterWorkflow('dbHotSeqScanDetector', () =>
+  DBOS.registerWorkflow(dbHotSeqScanDetectorTick, {
+    name: 'dbHotSeqScanDetector',
+    maxRecoveryAttempts: 5,
+  }),
+);
+// Every 15 minutes: long enough that a window is a meaningful rate rather than whatever
+// happened to run, short enough that a statement which turns hot is caught the same hour
+// rather than the next day.
+DBOS.registerScheduled(dbHotSeqScanDetectorWorkflow, { name: 'dbHotSeqScanDetector', crontab: '0 */15 * * * *' });
 
 // 3x/day (02:40, 10:40, 18:40 UTC — off the :00 backup tick and the 04:xx GC
 // cluster): the desktop-perf release gate's missing PRODUCER (WI-6538).

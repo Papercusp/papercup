@@ -2502,6 +2502,19 @@ export const FLAGS = {
   // counters for databases that do not exist). OFF => the tick no-ops and the residue
   // regrows until the cap evicts live statistics again.
   DB_PGSS_ORPHAN_STATS_RECLAIM: "papercusp-db-pgss-orphan-stats-reclaim",
+  // EI-19312743681026041: the HOT-STATEMENT SEQ-SCAN detector. Two migrations in two
+  // days (717/WI-6839, 718/WI-6850) fixed the same read-many-return-few defect, and both
+  // were found only because an agent ranked live pg_stat_statements deltas BY HAND —
+  // 718 had been burning ~27% of all live database time at ~171 calls/min with no alarm,
+  // scorecard or health panel covering it. The tick differences two pgss samples, screens
+  // for high blocks-per-call against low rows-per-call, and EXPLAINs only the survivors
+  // with GENERIC_PLAN (never ANALYZE, inside a READ ONLY transaction — it plans, it does
+  // not execute), flagging a Seq Scan on a relation above a size floor. Read-only: it
+  // plans statements and reads catalog sizes, writing nothing. DEFAULT ON (alpha
+  // flags-default-on: finished, tested, and observation-only — it changes no query plan
+  // and touches no application data). OFF => the tick no-ops and this defect class goes
+  // back to being caught only by someone who happens to go looking.
+  DB_HOT_SEQ_SCAN_DETECTOR: "papercusp-db-hot-seq-scan-detector",
   // coord-delivery-residual-gaps-2026-07-11 P-004 (WI-4160): the delivery
   // ESCALATION LADDER kill-switch. One server-side rule — a DIRECTED message
   // (explicit to:[ownerId], never broadcast/@audience/system-sender) unread

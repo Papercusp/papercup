@@ -160,6 +160,24 @@ describe('rankDeltas', () => {
     expect(resetEntriesSkipped).toBe(1);
   });
 
+  // Regression: the guard must compare stats_since against the BASELINE'S OWN
+  // stats_since (database vs database), never against the sampler's wall clock. An
+  // earlier revision also dropped any entry whose stats_since was >= baseline.sampledAt,
+  // which discarded every healthy entry the moment the database's clock ran ahead of the
+  // operator host's — a silent false negative that reports an empty, healthy-looking run.
+  it('KEEPS an entry whose stats_since is unchanged, even when it postdates the sample clock', () => {
+    const base = baseline({ a: entry({ calls: 100, statsSinceMs: 5_000 }) }, /* sampledAt */ 0);
+    const current = new Map<string, PgssSampleEntry>([
+      ['a', entry({ calls: 1_100, sharedBlks: 2_000_000, statsSinceMs: 5_000 })],
+    ]);
+    const { candidates, resetEntriesSkipped } = rankDeltas(base, current, new Map(), {
+      minCallsDelta: 10,
+    });
+    expect(resetEntriesSkipped).toBe(0);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].callsDelta).toBe(1_000);
+  });
+
   it('ignores an entry with no baseline (no rate can be computed from one sample)', () => {
     const base = baseline({});
     const current = new Map<string, PgssSampleEntry>([['fresh', entry({ calls: 10_000 })]]);
