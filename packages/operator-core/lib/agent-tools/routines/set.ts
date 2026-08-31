@@ -211,7 +211,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('routines:set requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role)');
+      throw new Error('routines:set requires an operator-config write role (operator, architect, or mug; the isOperatorConfigWriteRole set is operator-equivalent write authority, NOT any su/worker role)');
     }
     if (
       args.cron === undefined &&

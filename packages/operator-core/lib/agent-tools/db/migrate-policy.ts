@@ -44,7 +44,7 @@ export default defineTool({
       return { content: [{ type: 'text', text: JSON.stringify({ policy: await readMigratePolicy() }) }] };
     }
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('db:migrate-policy set requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role)');
+      throw new Error('db:migrate-policy set requires an operator-config write role (operator, architect, or mug; the isOperatorConfigWriteRole set is operator-equivalent write authority, NOT any su/worker role)');
     }
     if (args.lockTimeoutMs === undefined && args.statementTimeoutMs === undefined) {
       throw new Error('set requires lockTimeoutMs and/or statementTimeoutMs');
