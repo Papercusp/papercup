@@ -197,9 +197,11 @@ describe('projectCoordPlansForUi', () => {
       const unwindowed = (input: Array<Record<string, unknown>>) =>
         input.map(({ now_state: _drop, ...rest }) => rest);
 
-      const input = rows(COORD_PLANS_UI_WINDOW + 500, (i) =>
-        // oldest LAST, so ordering is also discriminated
-        `2026-${String(12 - (i % 12)).padStart(2, '0')}-01`,
+      // Index 0 is the OLDEST month, so an unwindowed/unsorted projection
+      // surfaces the oldest row first and ordering is discriminated too.
+      const input = rows(
+        COORD_PLANS_UI_WINDOW + 500,
+        (i) => `2026-${String((i % 12) + 1).padStart(2, '0')}-01`,
       );
 
       // The control violates BOTH properties the window guarantees...
