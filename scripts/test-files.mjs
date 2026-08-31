@@ -1549,6 +1549,36 @@ function stateLabel(entry) {
 }
 
 /**
+ * One copy-pasteable "read the COMMITTED blob" probe per repository that owns an uncommitted path.
+ *
+ * One line per repo, not per path: the shape is what a reader has to learn, and the SUBMODULE shape
+ * is the half that is invisible from where the agent is standing. From the superproject, both
+ * `git status --porcelain <sub>/<file>` and `git show <sha>:<sub>/<file>` answer about the GITLINK,
+ * so they report nothing for a file the nested repository is tracking dirty — the check that would
+ * catch this false-stale is exactly the one that silently returns empty unless you enter the
+ * submodule first. Emitting the `git -C <sub>` form removes that from the reader's memory.
+ *
+ * The candidate sha is deliberately a `<placeholder>`: this process does not know which sha the
+ * gate is judging (that is `state:read { cell:'gate.greenCheckpoint.candidate' }`), and printing a
+ * guessed one would re-create, inside the fix, the same confidently-wrong-object error.
+ */
+export function committedBlobProbes(entries) {
+  const byRepo = new Map();
+  for (const entry of entries) {
+    const repo = entry.repoPath && entry.repoPath !== '.' ? entry.repoPath : null;
+    if (byRepo.has(repo)) continue;
+    byRepo.set(
+      repo,
+      repo === null
+        ? `git show <candidate>:${entry.path}`
+        : `git -C ${repo} show <candidate-pin-for-${repo}>:${entry.repoRelativePath ?? entry.path}` +
+          '   # submodule: from the superproject, git status/show answer about the gitlink, not this file',
+    );
+  }
+  return [...byRepo.values()];
+}
+
+/**
  * The banner, isolated from I/O so the part that can be WRONG IN A COSTLY WAY — what a pasted
  * result claims about itself — is unit testable (the tested-decision / untested-orchestration split
  * every other helper in this file follows).
@@ -1581,6 +1611,19 @@ export function formatProvenanceBanner(snapshot, phase) {
     lines.push(
       `  ⚠ ${unreproducible.length} of ${entries.length} tested path(s) carry uncommitted changes — this result ` +
         'describes LOCAL state and is not reproducible by anyone else. Cite it with this stamp or not at all.',
+    );
+    // EI-19385411226259421 — the caveat above is about CITATION; this one is about the INFERENCE
+    // that actually costs a gate pass. Every containment trap CLAUDE.md documents runs in the
+    // direction "your change is missing from the candidate"; this is the mirror, and it is the
+    // dangerous direction because it makes you STOP looking. Measured 2026-08-02: 7 files named by
+    // a red verdict, all 7 passed at tip, 6 were genuinely stale and the 7th was green only on a
+    // peer's uncommitted fix — reporting "all stale" would have told the fleet there was nothing
+    // to fix while the gate was about to red on that same file again.
+    lines.push(
+      '  ⛔ STALE-VERDICT TRAP: a PASS here does NOT make a gate verdict naming these path(s) stale — ' +
+        'the pass can be riding on uncommitted work while the COMMITTED blob the gate judged still fails.',
+      '     Falsify against the judged candidate BEFORE recording any of them as stale:',
+      ...committedBlobProbes(unreproducible).map((probe) => `       ${probe}`),
     );
   }
   if (unknown.length > 0) {
