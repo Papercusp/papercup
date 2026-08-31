@@ -187,7 +187,7 @@ export default defineTool({
               ok: false,
               error: 'hive_paused',
               message:
-                'The mug loop is PAUSED (hive_started=false) — not arming a wake. End your turn cleanly; pot:start resumes autonomous wakes.',
+                'The pot wake loop is PAUSED (hive_started=false) — not arming a wake. End your turn cleanly; pot:start resumes autonomous wakes.',
             }),
           },
         ],

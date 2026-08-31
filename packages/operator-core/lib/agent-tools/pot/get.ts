@@ -22,7 +22,7 @@ export default defineTool({
   description:
     'The full state of one pot: its home harness + deployment + wake schedule (scheduled?, next/last fire, event subscriptions), its live cups with {doing, queued, load}, and its todo-work frontier depth. Composes resolvePot + fleet:assignments + work_items — the one call for "how is pot X doing".',
   guidance: {
-    when: 'You want one pot in depth: is the Mug scheduled to wake, who are the cups and how loaded, how much work is queued.',
+    when: 'You want one pot in depth: is the pot scheduled to wake, who are the members and how loaded, how much work is queued.',
     notWhen: 'A list of all pots — pot:list. The raw per-agent fleet view across the workspace — fleet:assignments.',
     chaining:
       'pot:list to find the slug; pot:wake to fire the Mug now; pot:declare-wake to change the cadence; pot:dissolve to tear it down.',

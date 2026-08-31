@@ -33,7 +33,7 @@ export default defineTool({
   guidance: {
     when: 'A joiner cleanly leaving a shared pot they joined — stop federating, deregister the joined view + members, kill their git-sync routines. Operator/user only.',
     notWhen:
-      'Tearing down a LOCAL pot you OWN (stop its Mug, cancel its cups) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a cup — not allowed.',
+      'Tearing down a LOCAL pot you OWN (stop its operator, cancel its members) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a cup — not allowed.',
     chaining: 'pot:list / pot:get to find the joined pot (remote_hive) view slug before; re-join via the pot directory join flow if you change your mind.',
     seeAlso: [
       'pot:list (find the joined pot slug first)',

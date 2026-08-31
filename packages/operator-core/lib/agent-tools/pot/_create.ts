@@ -798,7 +798,7 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
           : '';
       const kickoff =
         opts.kickoff ??
-        `Pot '${opts.slug}' created. You are the Mug/operator in charge; survey the fleet and figure out what to do.${seededNote}`;
+        `Pot '${opts.slug}' created. You are the operator in charge; survey the fleet and figure out what to do.${seededNote}`;
       if (opts.wakeInSeconds <= 0) {
         // Lazy: fireLaunchBlueprint's module (blueprint/launch-blueprint) transitively
         // pulls in the fleet spawn machinery -> work-items -> the whole sync/hyperbee

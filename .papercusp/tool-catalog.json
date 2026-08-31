@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 838,
+  "count": 839,
   "tools": [
     {
       "name": "ablation:report",
@@ -8652,7 +8652,7 @@
           "POST"
         ]
       },
-      "description": "Tear down a pot — DESTROY every member execution frame + the Mug control frame (ends all billing). Pass the same potId + members + queen placement used to deploy. Returns {ok, destroyed, failed}.",
+      "description": "⛔ HISTORICAL — the control tier it was built around is retired. Tear down a pot: DESTROY every member execution frame + the control frame (ends all billing). Pass the same potId + members + placement used to deploy. Returns {ok, destroyed, failed}.",
       "capabilities": [
         "harness:write"
       ],
@@ -11231,7 +11231,7 @@
           "POST"
         ]
       },
-      "description": "Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the Mug waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not bees, no reclaimable slot, don't count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.",
+      "description": "Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the fleet leader waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not bees, no reclaimable slot, don't count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -11254,7 +11254,7 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "You (the Mug) want to reclaim cup slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.",
+        "when": "You (the fleet leader) want to reclaim member slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.",
         "notWhen": "The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don't target them (pausing the Hive Mug ≠ drain your fleet-leader peers).",
         "chaining": "fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → capability:launch-agent for a fresh ad-hoc agent (or fleet:launch-on-plan for a plan-bound member)."
       }
@@ -23149,7 +23149,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The Mug/owner needs an answer another Pot is the authority on (it owns that domain). Find the peer via discovery:pots, then pot:ask, then events:await the returned answeredEvent.",
+        "when": "You or the owner need an answer another Pot is the authority on (it owns that domain). Find the peer via discovery:pots, then pot:ask, then events:await the returned answeredEvent.",
         "notWhen": "Handing the peer WORK to do (use pot:request_work). Within-Pot questions (coord:ask / conversations). Granting a peer to send asks INTO this Pot (that is the inbound pot:cross_grant).",
         "chaining": "discovery:pots (find the peer Pot pubkey) → pot:ask { pot, peerPotPubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding asks with pot:asks."
       }
@@ -23291,7 +23291,7 @@
           "POST"
         ]
       },
-      "description": "Stand up a NEW local pot (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Mug. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
+      "description": "Stand up a NEW local pot (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the pot operator. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
       "capabilities": [
         "harness:write"
       ],
@@ -23365,7 +23365,7 @@
           "POST"
         ]
       },
-      "description": "Owner-managed cross-Pot grants: grant/revoke/list which peer-Pot pubkeys may exchange which kinds (ask | work-request) with this Pot. DIRECTED: 'in' admits a peer's traffic INTO this Pot; 'out' lets THIS Pot send to a peer (required before the Mug can ask another Pot). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Pot's Swarms.",
+      "description": "Owner-managed cross-Pot grants: grant/revoke/list which peer-Pot pubkeys may exchange which kinds (ask | work-request) with this Pot. DIRECTED: 'in' admits a peer's traffic INTO this Pot; 'out' lets THIS Pot send to a peer (required before this Pot can ask another). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Pot's Swarms.",
       "capabilities": [
         "work_items:write"
       ],
@@ -23439,7 +23439,7 @@
           "POST"
         ]
       },
-      "description": "Tear down a local pot (root-only, destructive — pass confirm:true): clear the Mug's wake so it won't re-wake, cancel every live cup + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_pot.",
+      "description": "Tear down a local pot (root-only, destructive — pass confirm:true): clear the pot's pending wake so it won't re-wake, cancel every live cup + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_pot.",
       "capabilities": [
         "harness:write"
       ],
@@ -23500,7 +23500,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want one pot in depth: is the Mug scheduled to wake, who are the cups and how loaded, how much work is queued.",
+        "when": "You want one pot in depth: is the pot scheduled to wake, who are the members and how loaded, how much work is queued.",
         "notWhen": "A list of all pots — pot:list. The raw per-agent fleet view across the workspace — fleet:assignments.",
         "chaining": "pot:list to find the slug; pot:wake to fire the Mug now; pot:declare-wake to change the cadence; pot:dissolve to tear it down."
       }
@@ -23513,7 +23513,7 @@
           "POST"
         ]
       },
-      "description": "Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the Mug may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Mug reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). Also returns `inconsistent: true` (EI-8277) when the directive text reads like the pause was lifted but `pauseNewWork` is still true — a drift nothing else catches; reconcile with pot:set-steering if the owner meant to resume. Also returns `modelSpecDrift: string[]` (EI-12807) — model specs this pot pins via `modelTiers`/`modelOverrides` that are NO LONGER in the committed tier menu (a global tier-menu fix removed them, but the per-pot override still wins, so spawns die on \"model unavailable\"); non-empty ⇒ reconcile via pot:set-steering { modelTiers:null, modelOverrides:null }. The READ twin of pot:set-steering.",
+      "description": "Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the pot operator may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Mug reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). Also returns `inconsistent: true` (EI-8277) when the directive text reads like the pause was lifted but `pauseNewWork` is still true — a drift nothing else catches; reconcile with pot:set-steering if the owner meant to resume. Also returns `modelSpecDrift: string[]` (EI-12807) — model specs this pot pins via `modelTiers`/`modelOverrides` that are NO LONGER in the committed tier menu (a global tier-menu fix removed them, but the per-pot override still wins, so spawns die on \"model unavailable\"); non-empty ⇒ reconcile via pot:set-steering { modelTiers:null, modelOverrides:null }. The READ twin of pot:set-steering.",
       "capabilities": [
         "harness:read"
       ],
@@ -23574,7 +23574,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "A joiner cleanly leaving a shared pot they joined — stop federating, deregister the joined view + members, kill their git-sync routines. Operator/user only.",
-        "notWhen": "Tearing down a LOCAL pot you OWN (stop its Mug, cancel its cups) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a cup — not allowed.",
+        "notWhen": "Tearing down a LOCAL pot you OWN (stop its operator, cancel its members) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a cup — not allowed.",
         "chaining": "pot:list / pot:get to find the joined pot (remote_hive) view slug before; re-join via the pot directory join flow if you change your mind."
       }
     },
@@ -23819,7 +23819,7 @@
           "POST"
         ]
       },
-      "description": "PAUSE the pot: persist hive_started=false (disarms the liveness watchdog) and clear the Mug's pending time wake. The coordination wake-mode is preserved by default; pass stageAllWakes:true to explicitly stage every autonomous wake for review. Optionally drain live cups gracefully. Resume with pot:start.",
+      "description": "PAUSE the pot: persist hive_started=false (disarms the liveness watchdog) and clear the pot's pending time wake. The coordination wake-mode is preserved by default; pass stageAllWakes:true to explicitly stage every autonomous wake for review. Optionally drain live cups gracefully. Resume with pot:start.",
       "capabilities": [
         "harness:write"
       ],
@@ -23893,7 +23893,7 @@
           "POST"
         ]
       },
-      "description": "Initiate a cross-Pot WORK-REQUEST to a peer Pot (by pubkey): ask the peer to do something in its domain. The envelope is signed, sent store-and-forward, and recorded in this Pot's ask ledger; it becomes a work_item in the peer's backlog that THEIR Mug prioritizes. The peer's response arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
+      "description": "Initiate a cross-Pot WORK-REQUEST to a peer Pot (by pubkey): ask the peer to do something in its domain. The envelope is signed, sent store-and-forward, and recorded in this Pot's ask ledger; it becomes a work_item in the peer's backlog that THEIR pot operator prioritizes. The peer's response arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
       "capabilities": [
         "work_items:write"
       ],
@@ -23917,7 +23917,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The Mug/owner wants a peer Pot to take on a piece of work in its domain. Find the peer via discovery:pots, then pot:request_work, then events:await the returned answeredEvent.",
+        "when": "You or the owner want a peer Pot to take on a piece of work in its domain. Find the peer via discovery:pots, then pot:request_work, then events:await the returned answeredEvent.",
         "notWhen": "Asking a QUESTION (use pot:ask). Placing work on your OWN Swarm (work_items:* / fleet:*). Granting a peer to send work-requests INTO this Pot (that is the inbound pot:cross_grant).",
         "chaining": "discovery:pots (find the peer Pot pubkey) → pot:request_work { pot, peerPotPubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with pot:asks."
       }
@@ -28482,6 +28482,80 @@
         "when": "Greening a red gate or triaging CI: find the ACTUAL failing test files at a commit/run instead of guessing or re-running blind. rollup:\"commit\" answers \"is this sha green\" in one call.",
         "notWhen": "To decide whether a red is a known FLAKE rather than your change, use testing:flakiness (cross-run flip rate — same table, different question). To RUN tests use testing:run. For \"is my change live/what is blocking it\" use dev:pipeline_position.",
         "chaining": "rollup:\"commit\" to find the red sha (CI rows by default; pass source:\"local\" or source:\"admin-ui\" for another writer) → rows with that commitSha + status:[\"fail\",\"error\"] for the failing files and their output tails → testing:flakiness on a file before assuming the red is yours."
+      }
+    },
+    {
+      "name": "testing:verdict_diff",
+      "http": {
+        "path": "/api/agent-tools/testing/verdict_diff",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Diff two gate run groups over harness_shared.test_runs: which test files CHANGED verdict (newlyFailing / newlyPassing / stillFailing) and which only ran on one side (onlyInCandidate / onlyInBaseline / notMeasured). Defaults to the two most recent CI run groups, source:\"ci\" and worktree_dirty=false. Read-only.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "The gate is red and you need to know which of those reds are YOURS: a candidate red decomposes into newly-failing vs inherited. Also for the blast radius of a repo-wide change, where a grep only finds a failure shape you already know.",
+        "notWhen": "The failing files at ONE commit or run is testing:runs. Whether a red is a known flake is testing:flakiness. Running tests is testing:run. \"Is my change live\" is dev:pipeline_position.",
+        "chaining": "testing:verdict_diff → newlyFailing is the candidate's own blast radius → testing:runs { runGroup, filePath } for the full output tail → testing:flakiness on a file before treating its red as a genuine regression."
       }
     },
     {

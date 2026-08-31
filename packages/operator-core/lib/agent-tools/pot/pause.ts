@@ -26,7 +26,7 @@ export default defineTool({
   name: 'pot:pause',
   profile: 'engineer',
   description:
-    'PAUSE the pot: persist hive_started=false (disarms the liveness watchdog) and clear the Mug\'s pending time wake. The coordination wake-mode is preserved by default; pass stageAllWakes:true to explicitly stage every autonomous wake for review. Optionally drain live cups gracefully. Resume with pot:start.',
+    'PAUSE the pot: persist hive_started=false (disarms the liveness watchdog) and clear the pot\'s pending time wake. The coordination wake-mode is preserved by default; pass stageAllWakes:true to explicitly stage every autonomous wake for review. Optionally drain live cups gracefully. Resume with pot:start.',
   guidance: {
     when: 'The user clicks Pause Pot / asks to freeze autonomous operation, or you need the fleet quiet (incident, review, cost control).',
     notWhen:
@@ -126,7 +126,7 @@ export default defineTool({
             stageAllWakes: args.stageAllWakes,
             wakeModeNote: args.stageAllWakes
               ? 'Global wake-mode set to manual; autonomous wakes are staged for owner review until coord:wake-mode or pot:start restores auto.'
-              : `Global wake-mode preserved at ${paused.wakeMode}; pot:pause stopped the Mug loop without muting agent-to-agent wakes.`,
+              : `Global wake-mode preserved at ${paused.wakeMode}; pot:pause stopped the pot wake loop without muting agent-to-agent wakes.`,
             workspaceLoopIdle: loopIdle,
             timeWakeCleared: loopIdle,
             drainedCups: drained,

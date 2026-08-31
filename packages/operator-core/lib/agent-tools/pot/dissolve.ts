@@ -49,7 +49,7 @@ export default defineTool({
   name: 'pot:dissolve',
   profile: 'engineer',
   description:
-    "Tear down a local pot (root-only, destructive — pass confirm:true): clear the Mug's wake so it won't re-wake, cancel every live cup + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_pot.",
+    "Tear down a local pot (root-only, destructive — pass confirm:true): clear the pot's pending wake so it won't re-wake, cancel every live cup + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_pot.",
   guidance: {
     when: 'Permanently tearing down a local pot — stop the Mug, cancel its cups, deregister it. Operator/user only.',
     notWhen:

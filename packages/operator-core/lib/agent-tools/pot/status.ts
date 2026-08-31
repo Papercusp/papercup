@@ -38,7 +38,7 @@ export default defineTool({
     chaining: 'pot:declare-wake to change the declaration; pot:wake to fire now.',
     seeAlso: [
       'pot:declare-wake (change the wake declaration)',
-      'pot:wake (fire the Mug now)',
+      'pot:wake (fire the pot operator now)',
       'pot:get (full pot detail — cups, load, queued work)',
     ],
   },
