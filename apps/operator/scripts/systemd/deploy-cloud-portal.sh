@@ -257,7 +257,10 @@ managed_unit_runs_current_artifact() {
     next_frontier=()
     for pid in "${frontier[@]}"; do
       [[ -r "$PROC_ROOT/$pid/task/$pid/children" ]] || continue
-      while read -r child; do
+      # Linux procfs exposes `children` as a space-separated record with no
+      # trailing newline. Plain `while read` drops that final record, which
+      # made a healthy immutable service look stale and triggered rollback.
+      while read -r child || [[ -n "$child" ]]; do
         [[ "$child" =~ ^[0-9]+$ ]] || continue
         cwd="$("$READLINK_BIN" -f "$PROC_ROOT/$child/cwd" 2>/dev/null || true)"
         [[ "$cwd" == "$current_real" || "$cwd" == "$current_real/"* ]] && return 0

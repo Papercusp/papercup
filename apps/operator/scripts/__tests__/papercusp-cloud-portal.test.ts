@@ -45,7 +45,10 @@ function fixture(): Fixture {
   writeFileSync(join(releaseDir, "standalone-entry.mjs"), "export {};\n");
   writeFileSync(join(portalRoot, "scripts", "start-web.mjs"), "export {};\n");
   writeFileSync(join(procRoot, "4242", "cmdline"), Buffer.from("node\0old-next-dev\0"));
-  writeFileSync(join(procRoot, "4242", "task", "4242", "children"), "4343\n");
+  // `/proc/<pid>/task/<pid>/children` is newline-free on Linux. The handoff
+  // verifier must still consume its final record rather than treating the
+  // managed generation as stale and rolling a healthy service back.
+  writeFileSync(join(procRoot, "4242", "task", "4242", "children"), "4343");
   symlinkSync(releaseDir, join(procRoot, "4343", "cwd"), "dir");
   return {
     dir,
