@@ -25,6 +25,11 @@ import {
   splitPrimarySecondary,
   parseRecentSecondaryTabs,
   pushRecentSecondaryTab,
+  ADV_MAX_LEVELS,
+  type AdvMaxLevel,
+  nextAdvMaxLevel,
+  prevAdvMaxLevel,
+  advMaxToggleLabel,
 } from '../adv/AdvShell';
 import type { SelectEntry, SelectGroup, SelectOption } from '@/app/harness/Select';
 
@@ -325,5 +330,45 @@ describe('tabOverflowState', () => {
   it('tolerates 1px sub-pixel rounding at both ends', () => {
     expect(tabOverflowState(1, 900, 400)).toEqual({ left: false, right: true }); // ~start
     expect(tabOverflowState(499, 900, 400)).toEqual({ left: true, right: false }); // ~end
+  });
+});
+
+// ─── Tab fullscreen levels (owner ask 2026-08-31) ────────────────────────────
+//
+// The escalation order is the design decision the owner actually made — press to
+// maximize, press again for the OS, Escape back down one step at a time — so it
+// is pinned here rather than left to be re-read out of a click handler.
+
+describe('tab fullscreen levels', () => {
+  it('exposes exactly the three levels, off first (the nuqs default, so ?max= is cleared rather than written as off)', () => {
+    expect([...ADV_MAX_LEVELS]).toEqual(['off', 'window', 'screen']);
+  });
+
+  it('a press escalates off → window → screen, then back out to off', () => {
+    expect(nextAdvMaxLevel('off')).toBe('window');
+    expect(nextAdvMaxLevel('window')).toBe('screen');
+    expect(nextAdvMaxLevel('screen')).toBe('off');
+  });
+
+  it('Escape steps down ONE level at a time — screen lands on window, not straight out', () => {
+    expect(prevAdvMaxLevel('screen')).toBe('window');
+    expect(prevAdvMaxLevel('window')).toBe('off');
+    expect(prevAdvMaxLevel('off')).toBe('off');
+  });
+
+  it('every level names the action a press performs, so the a11y label is never stale', () => {
+    for (const level of ADV_MAX_LEVELS) {
+      expect(advMaxToggleLabel(level as AdvMaxLevel)).toBeTruthy();
+    }
+    // off/window advertise where a press GOES; screen advertises the way out.
+    expect(advMaxToggleLabel('off')).toMatch(/maximize/i);
+    expect(advMaxToggleLabel('window')).toMatch(/fullscreen/i);
+    expect(advMaxToggleLabel('screen')).toMatch(/exit/i);
+  });
+
+  it('cycling forward three times from off returns to off — no dead end for a click-only user', () => {
+    let level: AdvMaxLevel = 'off';
+    for (let i = 0; i < 3; i += 1) level = nextAdvMaxLevel(level);
+    expect(level).toBe('off');
   });
 });

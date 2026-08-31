@@ -964,11 +964,18 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
                 aria-pressed={maxLevel !== 'off'}
                 onClick={() => void applyMaxLevel(nextAdvMaxLevel(maxLevel))}
               >
-                {maxLevel === 'off' ? (
-                  <Maximize2 size={13} aria-hidden />
-                ) : (
-                  <Minimize2 size={13} aria-hidden />
-                )}
+                {/* The centring lives on this span, not the button: WebKitGTK —
+                    the Tauri webview this app actually ships in — IGNORES
+                    flex/grid set on a <button> element itself, so an icon
+                    centred that way is centred everywhere except the product
+                    (WI-5581 / lint:design-primitives). */}
+                <span className="pc-advshell__maxbtn-inner">
+                  {maxLevel === 'off' ? (
+                    <Maximize2 size={13} aria-hidden />
+                  ) : (
+                    <Minimize2 size={13} aria-hidden />
+                  )}
+                </span>
               </button>
             </Tooltip>
           </div>
@@ -1156,12 +1163,15 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
           padding-left: 8px;
         }
         .pc-advshell__tabs[data-of-right] .pc-advshell__tools { margin-right: 26px; }
+        /* display:block, with the centring on the inner span — WebKitGTK (the
+           Tauri webview) ignores flex/grid on a button element itself, so the
+           icon would sit off-centre in the shipped desktop app and nowhere else
+           (WI-5581, enforced by lint:design-primitives). */
         .pc-advshell__maxbtn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
+          display: block;
           width: 26px;
           height: 26px;
+          min-height: 26px;
           padding: 0;
           border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           border-radius: 7px;
@@ -1169,6 +1179,13 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
           color: var(--fg-mute, #8fa9be);
           cursor: pointer;
           transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+        }
+        .pc-advshell__maxbtn-inner {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 100%;
+          height: 100%;
         }
         .pc-advshell__maxbtn:hover,
         .pc-advshell__maxbtn:focus-visible {

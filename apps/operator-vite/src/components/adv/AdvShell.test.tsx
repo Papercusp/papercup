@@ -231,12 +231,37 @@ async function renderShell() {
   return utils;
 }
 
+// ── Fullscreen API (jsdom implements none of it) ────────────────────────────
+// A settable `document.fullscreenElement` plus spies for request/exit, so the
+// tests can assert WHEN the OS API is reached for — the distinction between the
+// two levels is precisely "did this one touch the real fullscreen API".
+let fullscreenElement: Element | null = null;
+const requestFullscreenSpy = vi.fn(async () => {
+  fullscreenElement = document.documentElement;
+});
+const exitFullscreenSpy = vi.fn(async () => {
+  fullscreenElement = null;
+});
+beforeAll(() => {
+  Object.defineProperty(document, 'fullscreenElement', {
+    configurable: true,
+    get: () => fullscreenElement,
+  });
+  document.documentElement.requestFullscreen =
+    requestFullscreenSpy as unknown as HTMLElement['requestFullscreen'];
+  document.exitFullscreen = exitFullscreenSpy as unknown as Document['exitFullscreen'];
+});
+
 beforeEach(() => {
   nuqsState.tab = 'overview';
   nuqsState.slug = 'pot-a';
   nuqsState.scope = 'expanded';
   nuqsState.create = false;
   nuqsState.share = false;
+  nuqsState.max = 'off';
+  fullscreenElement = null;
+  requestFullscreenSpy.mockClear();
+  exitFullscreenSpy.mockClear();
   for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
   shortcutHandlers.clear();
   localStorage.clear();
@@ -579,6 +604,174 @@ describe('buildHarnessSelectOptions — hive-home folding (the repo-less `-hive`
     );
     expect(tree).toEqual([{ value: 'shop-hive', label: 'shop' }]);
     expect(tree.some((o) => o.label.includes('-hive'))).toBe(false);
+  });
+});
+
+/**
+ * Tab fullscreen — owner ask 2026-08-31 ("I should be able to full screen the
+ * main section that shows up inside the tabs"), two-level shape chosen by the
+ * owner: press once to maximize inside the app window, again for real OS
+ * fullscreen, Escape walks back down one level at a time.
+ *
+ * What these pin, beyond the happy path, is every way the two levels can drift
+ * apart — because the failure mode of a fullscreen toggle is a URL that CLAIMS a
+ * level the document is not in, and from there the next press acts on a state
+ * that never existed.
+ */
+describe('AdvShell — tab fullscreen', () => {
+  const toggle = () => screen.getByTestId('adv-fullscreen-toggle');
+
+  it('starts off: a maximize control in the strip, and no maximize on <body>', async () => {
+    await renderShell();
+    expect(toggle().getAttribute('aria-pressed')).toBe('false');
+    expect(toggle().getAttribute('aria-label')).toBe('Maximize this tab');
+    expect(document.body.hasAttribute('data-adv-max')).toBe(false);
+  });
+
+  it('first press maximizes in-app and does NOT reach for the OS fullscreen API', async () => {
+    await renderShell();
+    fireEvent.click(toggle());
+    await waitFor(() => expect(nuqsSetters.max).toHaveBeenCalledWith('window'));
+    expect(requestFullscreenSpy).not.toHaveBeenCalled();
+  });
+
+  it('second press escalates the SAME control to real OS fullscreen', async () => {
+    nuqsState.max = 'window';
+    await renderShell();
+    expect(toggle().getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(toggle());
+    await waitFor(() => expect(requestFullscreenSpy).toHaveBeenCalled());
+    expect(nuqsSetters.max).toHaveBeenCalledWith('screen');
+  });
+
+  it('third press leaves both levels at once', async () => {
+    nuqsState.max = 'screen';
+    fullscreenElement = document.documentElement;
+    await renderShell();
+    fireEvent.click(toggle());
+    await waitFor(() => expect(exitFullscreenSpy).toHaveBeenCalled());
+    expect(nuqsSetters.max).toHaveBeenCalledWith('off');
+  });
+
+  // Radix dialogs/popovers and the BlockNote menus portal to <body>, which is
+  // OUTSIDE any smaller fullscreen element — fullscreening the SHELL would make
+  // every one of them invisible while fullscreen. So the request must go to
+  // documentElement, and this pins which element receives it.
+  it('fullscreens the DOCUMENT, not the shell element', async () => {
+    nuqsState.max = 'window';
+    await renderShell();
+    const shell = document.querySelector('.pc-advshell') as HTMLElement;
+    const shellRequest = vi.fn();
+    shell.requestFullscreen = shellRequest as unknown as HTMLElement['requestFullscreen'];
+    fireEvent.click(toggle());
+    await waitFor(() => expect(requestFullscreenSpy).toHaveBeenCalled());
+    expect(shellRequest).not.toHaveBeenCalled();
+  });
+
+  it('publishes the level on <body> for the overlay CSS, and clears it on unmount', async () => {
+    nuqsState.max = 'window';
+    const { unmount } = await renderShell();
+    expect(document.body.getAttribute('data-adv-max')).toBe('window');
+    unmount();
+    // Navigating off /adv must never leave the app wearing a maximize.
+    expect(document.body.hasAttribute('data-adv-max')).toBe(false);
+  });
+
+  it('Escape steps down one level: screen → window', async () => {
+    nuqsState.max = 'screen';
+    fullscreenElement = document.documentElement;
+    await renderShell();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(nuqsSetters.max).toHaveBeenCalledWith('window'));
+    expect(exitFullscreenSpy).toHaveBeenCalled();
+  });
+
+  it('Escape steps down one level: window → off', async () => {
+    nuqsState.max = 'window';
+    await renderShell();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(nuqsSetters.max).toHaveBeenCalledWith('off'));
+  });
+
+  it('Escape is inert while nothing is maximized', async () => {
+    await renderShell();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(nuqsSetters.max).not.toHaveBeenCalled();
+  });
+
+  it('Escape leaves the maximize alone while an open dialog owns the key', async () => {
+    nuqsState.max = 'window';
+    await renderShell();
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('data-state', 'open');
+    document.body.appendChild(dialog);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(nuqsSetters.max).not.toHaveBeenCalled();
+    dialog.remove();
+  });
+
+  // REGRESSION GUARD. The first version of that guard matched any
+  // [data-radix-popper-content-wrapper] — and a Radix TOOLTIP is one, so simply
+  // HOVERING this button disabled the Escape that leaves the mode it turns on.
+  // Tooltips never carry data-state="open", which is what the guard keys on now.
+  it('Escape still works while only a tooltip popper is open', async () => {
+    nuqsState.max = 'window';
+    await renderShell();
+    const wrapper = document.createElement('div');
+    wrapper.setAttribute('data-radix-popper-content-wrapper', '');
+    const tip = document.createElement('div');
+    tip.setAttribute('role', 'tooltip');
+    tip.setAttribute('data-state', 'delayed-open');
+    wrapper.appendChild(tip);
+    document.body.appendChild(wrapper);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(nuqsSetters.max).toHaveBeenCalledWith('off'));
+    wrapper.remove();
+  });
+
+  it('degrades a cold-loaded ?max=screen to the maximize — a page load has no gesture to enter fullscreen with', async () => {
+    nuqsState.max = 'screen';
+    fullscreenElement = null;
+    await renderShell();
+    await waitFor(() => expect(nuqsSetters.max).toHaveBeenCalledWith('window'));
+    expect(requestFullscreenSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the maximize when the OS refuses fullscreen, rather than claiming a level it never entered', async () => {
+    nuqsState.max = 'window';
+    requestFullscreenSpy.mockRejectedValueOnce(new Error('refused'));
+    await renderShell();
+    fireEvent.click(toggle());
+    await waitFor(() => expect(nuqsSetters.max).toHaveBeenCalledWith('window'));
+    expect(nuqsSetters.max).not.toHaveBeenCalledWith('screen');
+  });
+
+  it('syncs back down when the user leaves OS fullscreen outside the app (Esc / F11 / the window manager)', async () => {
+    nuqsState.max = 'screen';
+    fullscreenElement = document.documentElement;
+    await renderShell();
+    fullscreenElement = null;
+    fireEvent(document, new Event('fullscreenchange'));
+    await waitFor(() => expect(nuqsSetters.max).toHaveBeenCalledWith('window'));
+  });
+
+  it('the view.fullscreen shortcut escalates exactly like the button', async () => {
+    await renderShell();
+    act(() => shortcutHandlers.get('view.fullscreen')!());
+    await waitFor(() => expect(nuqsSetters.max).toHaveBeenCalledWith('window'));
+  });
+
+  // The whole point of keeping the strip visible while maximized (owner's choice
+  // over a chrome-free variant): tabs stay one click apart.
+  it('keeps the tab strip usable while maximized', async () => {
+    nuqsState.max = 'window';
+    await renderShell();
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    // mouseDown, not click: Radix Tabs activates a trigger on pointer-down, so a
+    // bare fireEvent.click never reaches onValueChange.
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'learning' }));
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('learning'));
   });
 });
 
