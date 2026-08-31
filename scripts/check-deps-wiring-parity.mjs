@@ -495,16 +495,24 @@ export function findWiringParityGaps(sources, opts = {}) {
  * should not carry the concern) or already filed. State which, and why, on the row.
  */
 /**
- * ⚠ The reason string on every row seeded at wiring time. These divergences are
- * RECORDED, NOT ADJUDICATED — nobody has yet decided which are deliberate asymmetries
- * and which are latent instances of the Scout defect. Saying so plainly is the point:
- * a baseline row that claims a judgement nobody made is worse than one that admits it.
+ * The seeding reason string: RECORDED, NOT ADJUDICATED — a row nobody has yet judged as
+ * either a deliberate asymmetry or a latent instance of the Scout defect. Saying so
+ * plainly is the point: a baseline row that claims a judgement nobody made is worse than
+ * one that admits it.
  *
- * When you touch one of these lanes, adjudicate ITS row: either fix the divergence
- * (the row then goes STALE and the guard tells you to prune it) or replace this string
- * with the actual reason that asymmetry is correct.
+ * ✅ As of 2026-08-31 NO ROW CARRIES THIS — all 22 baselined rows were adjudicated and now
+ * cite a named reason constant with file:line evidence. It is deliberately retained (and
+ * therefore currently unreferenced) because the correct response to a re-attribution
+ * change is a fresh measured re-seed, not hand-editing rows: the WI-1745363 fix rewrote
+ * every finding key and invalidated the whole previous baseline at once. When that happens
+ * again, seed the new rows with this and adjudicate them down.
+ *
+ * When you touch one of these lanes, adjudicate ITS row: either fix the divergence (the
+ * row then goes STALE and the guard tells you to prune it) or replace the string with the
+ * actual reason that asymmetry is correct.
  */
 const NOT_ADJUDICATED = 'pre-existing at guard wiring (WI-1728261) — recorded, not adjudicated';
+void NOT_ADJUDICATED; // retained for the next re-seed; see above.
 
 /**
  * WI-1745363 — `LockAuthorityDeps.fetchPresenceRows` and `.fetchHivePresenceRows` are a
@@ -562,34 +570,138 @@ const DEFAULTED_PLUS_FORWARDER =
 const VERB_SPECIFIC_BINDING =
   'WI-1745363 adjudicated: verb-specific capability binding; the unbound seams are unreachable on this verb (and an absent mintGraduationWorkItem fails loud)';
 
+/**
+ * `EngineCtx.progress` is a PROGRESS NOTIFIER, not a capability gate. It is consumed at
+ * exactly three sites, all inside the docs-engine SEARCH function (search.ts:179, :192,
+ * :198), always as `ctx.progress?.(pct, msg)`. The four sites below call the engine's
+ * `get` / `outline` functions, which never read it on any path — so the seam is
+ * unreachable there, and its absence carries the observer meaning ("this caller does not
+ * watch"), never the gate meaning ("this path skips the concern").
+ *
+ * ⚠ RESIDUE (not fixed): the observer exclusion this guard already implements is keyed on
+ * `on<Event>` NAMING. `progress` is semantically an observer that the name test does not
+ * catch, so it lands in the reported population. Widening the test by adding names one at
+ * a time trades a false positive for a blind spot — the durable discriminator is how the
+ * seam is CONSUMED (optional-chained notification vs. `if (deps.x)` around real work),
+ * which needs the cross-module consumer index the WI-1745363 fix introduced.
+ */
+const ENGINE_PROGRESS_NOTIFIER =
+  'benign: progress NOTIFIER read only by docs-engine search.ts:179/:192/:198 via `ctx.progress?.()`; ' +
+  'the get/outline engine paths these sites call never read it. Absence = "does not watch", not "skips a gate".';
+
+/**
+ * An `*Override` / injectable-clock seam whose absence selects a REAL production
+ * implementation, not a skipped concern:
+ *   - `BootHarnessOpts.verifyBindingOverride` → boot.ts:1866
+ *     `opts.verifyBindingOverride ?? buildVerifyBindingAdapter()`, and :1864 says outright
+ *     "verifyBindingOverride in tests; real adapter in [production]". Its only wiring sites
+ *     are a test rig (composition-rig.ts:1228/:1250) and a perf child (peer-child.ts:306).
+ *   - `PgRetryOpts.sleep` → pg-transient-retry.ts:89 `opts.sleep ?? defaultSleep`.
+ * Injecting it is what a harness does; omitting it is what production does.
+ */
+const OVERRIDE_WITH_REAL_DEFAULT =
+  'benign: override/clock seam with a real production default (boot.ts:1866 `?? buildVerifyBindingAdapter()`; ' +
+  'pg-transient-retry.ts:89 `?? defaultSleep`). Wiring it is the TEST path, omitting it the production one.';
+
+/**
+ * The two `GetInProcessStatusOpts` callers inject COMPLEMENTARY halves, each supplying only
+ * what its own call shape can actually measure — and every unsupplied half degrades to an
+ * honest UNKNOWN rather than a fabricated healthy value:
+ *   - build-federation-status.ts is async, so it PREFETCHES sidecar liveness and DHT probe
+ *     staleness and hands them to the sync resolvers as closures (:203, :206; its comments
+ *     at :147 and :161 state exactly this). It supplies no claim stats.
+ *   - dogfood_substrate_status.ts supplies claim stats and remote booted handles
+ *     (:180-:223) but performs no such prefetch.
+ * Defaults are tri-state-safe: in-process-status.ts:304-305 default both liveness seams to
+ * `() => null` (UNKNOWN, never a fabricated `true`), and `resolveClaimStats` defaults to
+ * ZERO_STATS (:302) which CANNOT read as a healthy 0% error rate, because health.ts:216
+ * gates the rate on `inputs.claimStats.total > 0`. That guard is the specific reason this
+ * row is benign rather than an instance of this file's documented "emptiness reads as
+ * health" class (EI-20575137548097507, EI-18735338283879820).
+ */
+const STATUS_MEASURABLE_HALF =
+  'benign: complementary halves — each caller injects what its call shape can measure; unsupplied seams degrade to ' +
+  'UNKNOWN (in-process-status.ts:304-305 `?? (() => null)`), and ZERO_STATS cannot read as healthy because ' +
+  'health.ts:216 gates the error rate on `total > 0`.';
+
+/**
+ * `GovernedOperationInput.measureActualDemand` is a governor FEEDBACK sample, read once at
+ * execution.ts:166 as `input.measureActualDemand ? await input.measureActualDemand() : undefined`
+ * and forwarded at :242. Absent, the operation simply contributes no actual-vs-estimated
+ * demand observation to the governor. Correctness of the operation is unaffected; the cost
+ * is that this lane's demand estimates are never corrected by measurement.
+ */
+const GOVERNOR_DEMAND_TELEMETRY =
+  'benign for correctness: governor feedback sample (execution.ts:166). Absent = this operation contributes no ' +
+  'actual-demand observation; the op still runs identically. Observability gap, not a skipped gate.';
+
+/**
+ * ⚠ HIGHEST-SIGNAL ROW IN THIS BASELINE — adjudicated benign only because a REAL bug on this
+ * exact seam was already found and repaired. EI-18771324701216281 (major): the federation
+ * demux-drop counter was unreachable on JOINERS — the very population the demux bug afflicts
+ * — because `withHiveHomeApplyGuard` was installed ONLY when `opts.resolveHomeLogKeyHex` was
+ * threaded, and boot.ts threads it only when a home rebind engaged. Its emptiness then read
+ * as health.
+ *
+ * VERIFIED REPAIRED in current code, not taken on the work-item's word: register-all.ts
+ * installs the guard unconditionally and reads the resolver as `guard.resolveHomeLogKeyHex?.()
+ * ?? null` (:315, :349). The demux-mismatch counter now bumps on `slug !== guard.boundSlug`
+ * alone (:333-:345), independent of the resolver, so it is reachable on a joiner that threads
+ * nothing. With no home log, only the `home-log-excluded` branch is skipped — which is
+ * semantically correct, since there is no home log to exclude against.
+ *
+ * `resolveAuthorDevice` is enrichment: feature-working-set.ts:172
+ * `opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null` — absent yields "unknown
+ * device", never a wrong attribution.
+ *
+ * Do NOT re-derive this from scratch; if the guard installation at register-all.ts:314 ever
+ * becomes conditional on the resolver again, this row is a live major bug, not a baseline entry.
+ */
+const HIVE_HOME_GUARD_REPAIRED =
+  'benign POST-FIX: this seam produced EI-18771324701216281 (major, joiner demux counter unreachable). Verified ' +
+  'repaired — register-all.ts installs the guard unconditionally, `?.() ?? null` at :315/:349, and the ' +
+  'demux-mismatch counter bumps on slug mismatch alone (:333-345). resolveAuthorDevice is `?? null` enrichment.';
+
+/**
+ * Two `wireCrossHiveBoundary` sites in ONE e2e frame file, selected by the frame's ROLE:
+ * hive-A (:131) sends an ask, so it must carry the outbound grant the B-05 egress
+ * default-deny requires, and injects `loadOutboundGrants` (:136). hive-B (:119) only
+ * RECEIVES, so it has no outbound grants to declare. Same entry-point-selected variant
+ * shape as SCOPE_VARIANT_PAIR above: the "missing" seam is unreachable on B's path, since
+ * cross-hive-wiring.ts:455 calls `loadOutboundGrants()` only on the outbound send leg.
+ */
+const XHIVE_ROLE_ASYMMETRY =
+  'benign: role-asymmetric pair in one e2e frame — hive-A (:131) sends and carries the outbound grant (:136); ' +
+  'hive-B (:119) only receives, and cross-hive-wiring.ts:455 reads the seam only on the send leg.';
+
 const FAIL_BASELINE = new Map([
   // Re-seeded from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
   // attribution). The 11 rows that disappeared were NOT fixed divergences — they were
   // misattributed literals that are no longer in the population at all, so re-seeding is
   // the only correct move: hand-pruning would have implied an adjudication nobody made.
-  ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|verifyBindingOverride', NOT_ADJUDICATED],
+  ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|verifyBindingOverride', OVERRIDE_WITH_REAL_DEFAULT],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|reach,revive', VERB_SPECIFIC_BINDING],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem,settleConversation', VERB_SPECIFIC_BINDING],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/reply.ts|mintGraduationWorkItem,settleConversation', VERB_SPECIFIC_BINDING],
-  ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_get.ts|progress', NOT_ADJUDICATED],
-  ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_outline.ts|progress', NOT_ADJUDICATED],
-  ['EngineCtx|packages/operator-core/lib/agent-tools/docs/get.ts|progress', NOT_ADJUDICATED],
-  ['EngineCtx|packages/operator-core/lib/agent-tools/docs/outline.ts|progress', NOT_ADJUDICATED],
+  ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_get.ts|progress', ENGINE_PROGRESS_NOTIFIER],
+  ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_outline.ts|progress', ENGINE_PROGRESS_NOTIFIER],
+  ['EngineCtx|packages/operator-core/lib/agent-tools/docs/get.ts|progress', ENGINE_PROGRESS_NOTIFIER],
+  ['EngineCtx|packages/operator-core/lib/agent-tools/docs/outline.ts|progress', ENGINE_PROGRESS_NOTIFIER],
   ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/load-test.ts|resolveLocalBackends', HARNESS_VS_PRODUCTION],
   ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/sidecar-main.ts|log', HARNESS_VS_PRODUCTION],
-  ['GetInProcessStatusOpts|packages/operator-core/lib/agent-tools/dev/dogfood_substrate_status.ts|resolveDhtBootstrapProbeStaleMs,resolveSidecarLive', NOT_ADJUDICATED],
-  ['GetInProcessStatusOpts|packages/operator-core/lib/endpoint-route/routes/discovery/build-federation-status.ts|resolveClaimStats,resolveRemoteBootedHandles', NOT_ADJUDICATED],
-  ['GovernedOperationInput|packages/operator-core/lib/agent-tools/testing/run.ts|measureActualDemand', NOT_ADJUDICATED],
+  ['GetInProcessStatusOpts|packages/operator-core/lib/agent-tools/dev/dogfood_substrate_status.ts|resolveDhtBootstrapProbeStaleMs,resolveSidecarLive', STATUS_MEASURABLE_HALF],
+  ['GetInProcessStatusOpts|packages/operator-core/lib/endpoint-route/routes/discovery/build-federation-status.ts|resolveClaimStats,resolveRemoteBootedHandles', STATUS_MEASURABLE_HALF],
+  ['GovernedOperationInput|packages/operator-core/lib/agent-tools/testing/run.ts|measureActualDemand', GOVERNOR_DEMAND_TELEMETRY],
   ['GracefulRecycleOpts|apps/operator/bin/hono-host.ts|closeSubstrate,dropReplicationTracking,exit,isSaturated,killSelf', DEFAULTED_PLUS_FORWARDER],
   ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
   ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-agent.ts|fetchHivePresenceRows', SCOPE_VARIANT_PAIR],
   ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
   ['LockAuthorityDeps|packages/operator-core/lib/shared-pot/suite/checks.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
-  ['PgRetryOpts|packages/operator-core/lib/pot/soak-report.ts|sleep', NOT_ADJUDICATED],
-  ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice', NOT_ADJUDICATED],
-  ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice,resolveHomeLogKeyHex', NOT_ADJUDICATED],
-  ['WireCrossHiveBoundaryDeps|packages/operator-core/lib/deployment/cross-hive-frame.ts|loadOutboundGrants', NOT_ADJUDICATED],
+  ['PgRetryOpts|packages/operator-core/lib/pot/soak-report.ts|sleep', OVERRIDE_WITH_REAL_DEFAULT],
+  ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice', HIVE_HOME_GUARD_REPAIRED],
+  ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice,resolveHomeLogKeyHex', HIVE_HOME_GUARD_REPAIRED],
+  ['WireCrossHiveBoundaryDeps|packages/operator-core/lib/deployment/cross-hive-frame.ts|loadOutboundGrants', XHIVE_ROLE_ASYMMETRY],
 ]);
 
 /** The line-independent identity a baseline row matches on. */
