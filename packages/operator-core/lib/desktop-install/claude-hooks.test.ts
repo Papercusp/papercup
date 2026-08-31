@@ -9,6 +9,19 @@ const DEST = '/home/u/.papercusp/hooks/cc';
 const cmd = (entry: any) => entry.hooks[0].command as string;
 const commandsFor = (cfg: any, event: string): string[] =>
   (cfg.hooks?.[event] ?? []).map((e: any) => cmd(e));
+// Resolve a hook BY COMMAND NAME, never by array index — the PostToolUse block below is the
+// worked example of why (a green assertion left pointing at the wrong hook after an insertion).
+// It THROWS on an unregistered hook deliberately: a bare `find(...)?.matcher` answers
+// `undefined` both for "registered with no matcher" and for "not registered at all", which
+// would let every `toBeUndefined()` assertion here pass vacuously against a DELETED hook —
+// weaker than the index form it replaces, which at least threw on a short list.
+const hookEntryFor = (cfg: any, event: string, name: string) => {
+  const entry = (cfg.hooks?.[event] ?? []).find((e: any) => cmd(e) === `${DEST}/${name}`);
+  if (!entry) throw new Error(`hook ${name} is not registered on ${event}`);
+  return entry;
+};
+const hookMatcherOf = (cfg: any, event: string, name: string): string | undefined =>
+  hookEntryFor(cfg, event, name).matcher;
 const FILE_WRITE_MATCHER = 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)';
 const FILE_EDIT_MATCHER = 'Edit|MultiEdit|mcp__.*__capability_(edit|multi_?edit)';
 const FILE_OVERWRITE_MATCHER = 'Write|mcp__.*__capability_write';
@@ -54,8 +67,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // reviewer sees a green suite and an unrelated-looking renumber diff, so a genuinely
     // wrong matcher rides in unnoticed. (The `toEqual` above still pins install ORDER, which
     // is the part that carries meaning: hooks fire in registration order.)
-    const matcherOf = (name: string): string | undefined =>
-      (cfg.hooks.PreToolUse as any[]).find((e) => cmd(e) === `${DEST}/${name}`)?.matcher;
+    const matcherOf = (name: string): string | undefined => hookMatcherOf(cfg, 'PreToolUse', name);
 
     expect(matcherOf('pretooluse-locks-acquire.sh')).toBe(FILE_WRITE_MATCHER);
     expect(matcherOf('pretooluse-activity-report.sh')).toBe('*');
@@ -143,7 +155,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // green assertion pointing at the wrong subject is the exact failure the index form keeps
     // producing, so the fix is the by-name form rather than another renumber.
     const postMatcherOf = (name: string): string | undefined =>
-      (cfg.hooks.PostToolUse as any[]).find((e) => cmd(e) === `${DEST}/${name}`)?.matcher;
+      hookMatcherOf(cfg, 'PostToolUse', name);
 
     expect(postMatcherOf('posttooluse-activity-report.sh')).toBe('*'); // activity (+ coord fold)
     expect(postMatcherOf('posttooluse-locks-release.sh')).toBe(FILE_WRITE_MATCHER); // mirrors acquire
@@ -183,15 +195,15 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
-    expect(cfg.hooks.Stop[3].matcher).toBeUndefined(); // fires at every turn end
+    expect(hookMatcherOf(cfg, 'Stop', 'ask-gate-mirror.sh')).toBeUndefined(); // every turn end
     // EI-21844056581395228: MUST be matcher-less. The failure it guards lands in the
     // assistant's final PROSE, so a tool matcher here would leave it permanently inert
     // while still looking wired — the exact dead-code shape guard-operator-desktop had.
-    expect(cfg.hooks.Stop[2].matcher).toBeUndefined();
+    expect(hookMatcherOf(cfg, 'Stop', 'artifact-url-delivery-guard.mjs')).toBeUndefined();
 
     // Notification: ask-gate-mirror only (permission-wait capture, P-001).
     expect(commandsFor(cfg, 'Notification')).toEqual([`${DEST}/ask-gate-mirror.sh`]);
-    expect(cfg.hooks.Notification[0].matcher).toBeUndefined(); // fires on every notification
+    expect(hookMatcherOf(cfg, 'Notification', 'ask-gate-mirror.sh')).toBeUndefined(); // every one
 
     // UserPromptSubmit: turn-provenance classification (turn-provenance-owner-vs-agent P-003)
     // + turn-start memory delta (memory-delivery-unification-2026-07-12 P-003a).
@@ -199,8 +211,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/userpromptsubmit-provenance.sh`,
       `${DEST}/userpromptsubmit-memory.sh`,
     ]);
-    expect(cfg.hooks.UserPromptSubmit[0].matcher).toBeUndefined(); // fires on every prompt
-    expect(cfg.hooks.UserPromptSubmit[1].matcher).toBeUndefined(); // fires on every prompt
+    expect(hookMatcherOf(cfg, 'UserPromptSubmit', 'userpromptsubmit-provenance.sh')).toBeUndefined();
+    expect(hookMatcherOf(cfg, 'UserPromptSubmit', 'userpromptsubmit-memory.sh')).toBeUndefined();
 
     // statusLine + the Claude-only project-MCP auto-approve flag.
     expect(cfg.statusLine).toEqual({ type: 'command', command: `${DEST}/statusline-fleet.sh` });
@@ -248,6 +260,39 @@ describe('mergeClaudeHookSettings — non-destructive + idempotent', () => {
   });
 });
 
+// EI-19991080208681012. The assertions above are only as good as the resolver they call, so
+// prove its two load-bearing properties directly. These fixtures are hand-built ON PURPOSE:
+// a control that read the LIVE hook list would go red the moment someone registers a hook,
+// i.e. it would fail at the exact moment the thing it guards is working.
+describe('hookMatcherOf — the by-name resolver (synthetic fixtures, never the live hook list)', () => {
+  const entry = (name: string, matcher?: string) => ({
+    ...(matcher === undefined ? {} : { matcher }),
+    hooks: [{ type: 'command', command: `${DEST}/${name}` }],
+  });
+
+  it('stays bound to its subject through an insertion that re-points every index below it', () => {
+    const before = { hooks: { Stop: [entry('a.sh', 'A'), entry('b.sh', 'B')] } };
+    const after = {
+      hooks: { Stop: [entry('a.sh', 'A'), entry('inserted.sh', 'X'), entry('b.sh', 'B')] },
+    };
+    // The index form silently follows the insertion: `[1]` was b.sh and is now a different hook.
+    expect(before.hooks.Stop[1].matcher).toBe('B');
+    expect(after.hooks.Stop[1].matcher).toBe('X');
+    // The by-name form answers about b.sh in both trees — that difference IS the fix.
+    expect(hookMatcherOf(before, 'Stop', 'b.sh')).toBe('B');
+    expect(hookMatcherOf(after, 'Stop', 'b.sh')).toBe('B');
+  });
+
+  it('throws on an unregistered hook rather than answering undefined', () => {
+    const cfg = { hooks: { Stop: [entry('a.sh')] } };
+    // Registered + matcher-less is the shape every toBeUndefined() above asserts.
+    expect(hookMatcherOf(cfg, 'Stop', 'a.sh')).toBeUndefined();
+    // Not registered at all must NOT be answerable as `undefined`, or each of those
+    // assertions would keep passing against a hook that had been deleted outright.
+    expect(() => hookMatcherOf(cfg, 'Stop', 'gone.sh')).toThrow(/not registered/);
+  });
+});
+
 describe('mergeClaudeHookSettings — graceful degradation via `present`', () => {
   it('with only the statusline present, sets statusLine and NOTHING else', () => {
     const cfg = mergeClaudeHookSettings({}, DEST, {
@@ -264,7 +309,7 @@ describe('mergeClaudeHookSettings — graceful degradation via `present`', () =>
     // Those assert control-bytes-content-guard registers on the WRITE matcher; this proves
     // that assertion can FAIL — when the hook is not installed, it registers nowhere. Without
     // this, a registration silently deleted from mergeClaudeHookSettings would leave the
-    // positive assertion green-by-vacuity if `matcherOf` ever degraded to a loose match.
+    // positive assertion green-by-vacuity if `hookMatcherOf` ever degraded to a loose match.
     const withoutIt = mergeClaudeHookSettings({}, DEST, {
       present: new Set(['pretooluse-locks-acquire.sh', 'posttooluse-locks-release.sh']),
       isClaudeSettings: true,
