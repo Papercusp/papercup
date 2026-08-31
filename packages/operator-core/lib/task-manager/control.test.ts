@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { onTaskKillRequested } from './kill-notify';
 import type { TaskRow, TaskState } from './types';
 
 const store = vi.hoisted(() => ({
@@ -108,6 +109,52 @@ describe('killTask — confined path', () => {
     // point of addressing the cgroup.
     expect(kill).not.toHaveBeenCalled();
     expect(store.closed).toEqual([{ taskId: 'b1', state: 'killed', reason: 'scope kill SIGTERM' }]);
+  });
+
+  // EI-21905196224862433: a confined job's Node-side watcher is the
+  // `systemd-run --pipe --wait` client, not the payload — that client exits 0
+  // once the unit is gone regardless of whether it was killed. capability:bash
+  // (bash-jobs.ts) subscribes to this notice to flip its own job status
+  // BEFORE trusting the client's untrustworthy exit code; these tests only
+  // verify killTask actually sends the notice, and sends it before the signal.
+  it('announces kill-intent BEFORE the confined SIGTERM is signalled (EI-21905196224862433)', async () => {
+    row({ taskId: 'b1-notify', pid: 4242 });
+    const notified: Array<[string, NodeJS.Signals]> = [];
+    const unsubscribe = onTaskKillRequested((taskId, signal) => notified.push([taskId, signal]));
+    try {
+      const out = await killTask('b1-notify', {
+        execFileAsync: (async (_f: string, args: string[]) => {
+          // The notice must already be visible by the time systemctl is invoked.
+          expect(notified).toEqual([['b1-notify', 'SIGTERM']]);
+          return { stdout: '', stderr: '' };
+        }) as never,
+        kill: vi.fn(),
+      });
+      expect(out.ok).toBe(true);
+      expect(notified).toEqual([['b1-notify', 'SIGTERM']]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('announces the SIGKILL escalation too, in order', async () => {
+    row({ taskId: 'b1-notify-escalate' });
+    const notified: Array<[string, NodeJS.Signals]> = [];
+    const unsubscribe = onTaskKillRequested((taskId, signal) => notified.push([taskId, signal]));
+    try {
+      await killTask('b1-notify-escalate', {
+        escalateAfterMs: 1,
+        sleep: async () => {},
+        fs: { readFile: () => '999\n', readDir: () => [], isDir: () => true },
+        execFileAsync: (async () => ({ stdout: '', stderr: '' })) as never,
+      });
+      expect(notified).toEqual([
+        ['b1-notify-escalate', 'SIGTERM'],
+        ['b1-notify-escalate', 'SIGKILL'],
+      ]);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('reports SIGKILL-delivered teardown as pending instead of advising a retry', async () => {
@@ -574,6 +621,39 @@ describe('killTask — refusals', () => {
 
   it('is a clean not-found for an unknown id', async () => {
     expect(await killTask('nope')).toMatchObject({ ok: false, error: 'task_not_found' });
+  });
+});
+
+describe('killTask — external kill-intent notice, unconfined pid path (EI-21905196224862433)', () => {
+  it('announces kill-intent BEFORE the pid is signalled', async () => {
+    row({ taskId: 'c5-notify', confined: false, scopeUnit: null, pid: 88, processIdentity: 'linux:b:1' });
+    const notified: Array<[string, NodeJS.Signals]> = [];
+    const unsubscribe = onTaskKillRequested((taskId, signal) => notified.push([taskId, signal]));
+    try {
+      const out = await killTask('c5-notify', {
+        readIdentity: () => 'linux:b:1',
+        kill: (_pid: number, _signal: NodeJS.Signals) => {
+          expect(notified).toEqual([['c5-notify', 'SIGTERM']]);
+        },
+      });
+      expect(out.ok).toBe(true);
+      expect(notified).toEqual([['c5-notify', 'SIGTERM']]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('does NOT announce kill-intent when the pid identity check refuses the kill (recycled pid)', async () => {
+    row({ taskId: 'c6-notify', confined: false, scopeUnit: null, pid: 88, processIdentity: 'linux:b:1' });
+    const notified: Array<[string, NodeJS.Signals]> = [];
+    const unsubscribe = onTaskKillRequested((taskId, signal) => notified.push([taskId, signal]));
+    try {
+      const out = await killTask('c6-notify', { readIdentity: () => 'linux:b:999', kill: vi.fn() });
+      expect(out).toMatchObject({ ok: false, error: 'identity_mismatch' });
+      expect(notified).toEqual([]);
+    } finally {
+      unsubscribe();
+    }
   });
 });
 
