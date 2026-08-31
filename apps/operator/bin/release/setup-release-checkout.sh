@@ -598,13 +598,38 @@ fi
 # resolve is a pre-existing break, not this copy's regression to chase. Pure shell
 # (no Node) — keeps this script standalone by design.
 unresolved_workspace_pkgs() {
-  local scope pkg src rel
+  local scope pkg src rel pinned_lock
+  # WI-212675: the pinned lockfile, read ONCE (it is large; the loop below runs
+  # per package). Empty when TARGET_SHA is unset or the ref has no lockfile —
+  # in that case the workspace-membership discriminator below is skipped
+  # entirely and the original strict behavior stands (fail safe: an
+  # undeterminable package is still REPORTED, never silently swallowed).
+  pinned_lock=""
+  if [ -n "${TARGET_SHA:-}" ]; then
+    pinned_lock="$(git -C "$INTEGRATION_ROOT" show "$TARGET_SHA:package-lock.json" 2>/dev/null)" || pinned_lock=""
+  fi
   for scope in @papercusp @papercup; do
     [ -d "$INTEGRATION_ROOT/node_modules/$scope" ] || continue
     while IFS= read -r pkg; do
       [ -n "$pkg" ] || continue
       [ -e "$INTEGRATION_ROOT/node_modules/$scope/$pkg/package.json" ] || continue
       [ -e "$RELEASE_ROOT/node_modules/$scope/$pkg/package.json" ] && continue
+      # WI-212675: a package whose SOURCE DIRECTORY exists at the pin but which
+      # the pinned lockfile never links is ALSO unresolvable by design at that
+      # ref — the directory landed before the pin while its `workspaces` entry
+      # landed after it, so npm at TARGET_SHA would create no
+      # node_modules/<scope>/<pkg> link and no pinned code can import it. The
+      # ls-tree discriminator below only asks "does the source exist?", so this
+      # case fell between its two branches and was misreported as a genuine
+      # extraction break — crashing green-checkpoint at setup-release before a
+      # single test ran, on a FROZEN candidate that could therefore never go
+      # green (measured 2026-08-31: @papercusp/agent-roster vs candidate
+      # 6da5cd4d). The lockfile is authoritative for what the pinned install
+      # actually contains, and checking it keeps this function pure shell.
+      if [ -n "$pinned_lock" ] \
+         && ! printf '%s\n' "$pinned_lock" | grep -q "\"node_modules/$scope/$pkg\""; then
+        continue
+      fi
       # EI-13127: a package whose SOURCE is absent from the pinned target tree
       # cannot be referenced by pinned code (it post-dates the pin — the
       # integration symlink set reflects staging tip, the release source tree
@@ -1153,7 +1178,14 @@ fi
 #       log. Named function for sed-extraction unit tests
 #       (setup-release-checkout-deps.test.ts pattern).
 prune_post_pin_workspace_pkgs() {
-  local scope pkg src rel
+  local scope pkg src rel pinned_lock
+  # WI-212675: same hoisted pinned lockfile + fail-safe semantics as
+  # unresolved_workspace_pkgs (kept inline, not shared: both functions are
+  # sed-extracted standalone by setup-release-checkout-deps.test.ts).
+  pinned_lock=""
+  if [ -n "${TARGET_SHA:-}" ]; then
+    pinned_lock="$(git -C "$INTEGRATION_ROOT" show "$TARGET_SHA:package-lock.json" 2>/dev/null)" || pinned_lock=""
+  fi
   for scope in @papercusp @papercup; do
     [ -d "$INTEGRATION_ROOT/node_modules/$scope" ] || continue
     while IFS= read -r pkg; do
@@ -1162,6 +1194,16 @@ prune_post_pin_workspace_pkgs() {
       [ -e "$INTEGRATION_ROOT/node_modules/$scope/$pkg/package.json" ] || continue
       # …but not in the release tree.
       [ -e "$RELEASE_ROOT/node_modules/$scope/$pkg/package.json" ] && continue
+      # WI-212675: source present at the pin but never linked by the pinned
+      # lockfile ⇒ not a workspace at TARGET_SHA ⇒ post-pin in every sense that
+      # matters. Drop any dangling release-tree entry and skip the fatal gate,
+      # exactly as for a source that post-dates the pin.
+      if [ -n "$pinned_lock" ] \
+         && ! printf '%s\n' "$pinned_lock" | grep -q "\"node_modules/$scope/$pkg\""; then
+        rm -rf "$RELEASE_ROOT/node_modules/$scope/$pkg"
+        log "pruned post-pin workspace package $scope/$pkg (not linked by the target ref ${TARGET_SHA:0:10} lockfile — its workspaces entry post-dates the pin; pinned code cannot import it)"
+        continue
+      fi
       # Repo-relative source path via the integration symlink target.
       src="$(readlink -f "$INTEGRATION_ROOT/node_modules/$scope/$pkg" 2>/dev/null)" || continue
       [ -n "$src" ] || continue
