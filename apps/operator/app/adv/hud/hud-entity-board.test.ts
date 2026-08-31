@@ -1635,6 +1635,40 @@ describe('planCardMeta — the enriched plan card (plan-visibility-revamp-2026-0
     expect(meta.workedSec).toBe(41);
   });
 
+  /* hud-plan-card-density-2026-08-31 D-003, at the MODEL layer.
+     The rendered pips are covered in HudEntityColumns.test.tsx; this is the
+     other half, and it exists because of a specific critique (WI-1743279 F5c):
+     the acceptance rubric bound THIS file to the counts criterion while the file
+     contained zero references to either count, so nothing in it could have gone
+     red for that criterion's falsifier. A path binding is not a detection
+     binding. These three cases are the detection. */
+  it('derives the exception counts off itemCounts, under the keys the board writes', () => {
+    const meta = planCardMeta(plan({ itemCounts: { 'needs-human': 2, blocked: 3, todo: 4 } }), NOW);
+    expect(meta.needsHumanCount).toBe(2);
+    expect(meta.blockedCount).toBe(3);
+  });
+
+  it('reports 0 — not null — for the counts a plan simply does not have', () => {
+    // Unlike ✎/⚒ above, absence here is a real zero: "no item needs a human" is
+    // a fact the counts DO establish, and the card renders no pip for it.
+    expect(planCardMeta(plan({ itemCounts: { todo: 4 } }), NOW).needsHumanCount).toBe(0);
+    expect(planCardMeta(plan({ itemCounts: {} }), NOW).blockedCount).toBe(0);
+    expect(planCardMeta(plan({ itemCounts: null }), NOW).needsHumanCount).toBe(0);
+  });
+
+  it('reads the COUNTS, never the badge labels that restate them', () => {
+    // The falsifier for D-003. A label-parsing implementation would agree with
+    // the case above, because there the label and the count say the same thing.
+    // It cannot agree here: the badges say one number and itemCounts says
+    // another, and only the counts are allowed to win.
+    const meta = planCardMeta(
+      plan({ itemCounts: { 'needs-human': 7, blocked: 1 }, badges: [{ text: '99 blocked', tone: 'bad' }] } as never),
+      NOW,
+    );
+    expect(meta.needsHumanCount).toBe(7);
+    expect(meta.blockedCount).toBe(1);
+  });
+
   it('reports null — not zero — for a plan never worked or with no edit stamp', () => {
     // The same unmeasured-is-not-zero rule the goals board applies (P-002):
     // "worked 0s ago" would claim activity that never happened.

@@ -739,10 +739,25 @@ describe('the enriched plan card (plan-visibility-revamp-2026-08-23 P-007)', () 
     const title = document.querySelector('.hud__cardtitle');
     expect(title).toBeTruthy();
     expect(title!.textContent).toBe('A rich plan');
-    // The slug is not lost — it is the hover title and the accessible name.
-    expect(title!.getAttribute('title')).toBe('rich-plan');
+    // The slug is not lost — it is the hover title, alongside the HARNESS, which
+    // is the other fact the compact card stopped painting (WI-1743279 F2: the
+    // old justification for dropping `card.context` — "it reads `papercusp` on
+    // every card here" — is false on an unscoped or multi-harness board).
+    expect(title!.getAttribute('title')).toBe('rich-plan · papercusp');
     expect(document.querySelector('.hud__handle')).toBeNull();
+
+    // NOT a claim that this plan MOVED the accessible name: `aria-label` sat on
+    // EntityCardBody before this change and is byte-identical after it. Kept as
+    // a positive control that the compact tree did not disturb it (F6).
     expect(document.querySelector('[aria-label="rich-plan — A rich plan"]')).toBeTruthy();
+  });
+
+  it('falls back to the bare slug as hover title when a card carries no harness', () => {
+    // The paired control for the line above: without it, a `title` that ALWAYS
+    // appended a separator (`rich-plan · `) would pass the test above and look
+    // broken on every context-less card.
+    renderPlanBoard([metaPlan({ harnessSlug: null })]);
+    expect(document.querySelector('.hud__cardtitle')!.getAttribute('title')).toBe('rich-plan');
   });
 
   it('renders exception pips from itemCounts — and none when there are none', () => {
@@ -824,16 +839,70 @@ describe('the enriched plan card (plan-visibility-revamp-2026-08-23 P-007)', () 
  * direction that matters — widening the branch, not narrowing it.
  */
 describe('the compact form is scoped to PLAN cards only (D-004)', () => {
-  it('leaves a work-item card on the legacy tree: handle + reason, no compact title', () => {
-    renderCols({}, { items: [item({ id: 'WI-9', title: 'A real work item' })] });
+  /* EVERY non-plan board that shares EntityCardBody gets its own case, and that
+     breadth is the point — WI-1743279 F1 showed why a single representative is
+     not enough. The control originally rendered only a WORK-ITEM card, and
+     against that version the discriminator could be widened from
+     `card.plan ?` to `card.plan ?? card.goal ?` with the whole suite staying
+     green: a work-item card carries neither field, so it cannot see a widening
+     that swallows goal cards. One case per kind is what closes that.
 
-    // What a non-plan card MUST still have.
-    expect(document.querySelector('.hud__handle')!.textContent).toBe('WI-9');
-    expect(document.querySelector('.hud__reason')!.textContent).toBe('A real work item');
+     EntityCardBody serves goal, work-item and plan cards. SESSION cards are NOT
+     in this population despite D-004's wording — HudBoard renders those with its
+     own component — so there is deliberately no session case here; adding a
+     fake one would assert against a tree this file does not own. */
+  const NON_PLAN_BOARDS: ReadonlyArray<{
+    kind: string;
+    render: () => void;
+    handle: string;
+    reason: string;
+  }> = [
+    {
+      kind: 'work-item',
+      render: () => renderCols({}, { items: [item({ id: 'WI-9', title: 'A real work item' })] }),
+      handle: 'WI-9',
+      reason: 'A real work item',
+    },
+    {
+      kind: 'goal',
+      render: () =>
+        render(
+          <HudEntityColumns
+            board={buildGoalBoard([{ id: 'g1', title: 'Ship the thing', status: 'active' }], {
+              nowMs: NOW,
+            })}
+            focusColumn={null}
+            onFocusColumn={vi.fn()}
+            query=""
+            onQuery={vi.fn()}
+            loading={false}
+            error={null}
+            emptyLabel="No goals yet."
+            noun="goals"
+          />,
+        ),
+      handle: 'g1',
+      reason: 'Ship the thing',
+    },
+  ];
 
-    // What only a plan card may grow.
-    expect(document.querySelector('.hud__cardtitle')).toBeNull();
-    expect(document.querySelector('.hud__cardright')).toBeNull();
-    expect(document.querySelector('.hud__pip')).toBeNull();
-  });
+  for (const board of NON_PLAN_BOARDS) {
+    it(`leaves a ${board.kind} card on the legacy tree: handle + reason, no compact title`, () => {
+      board.render();
+
+      // What a non-plan card MUST still have. Matched by VALUE, not by taking
+      // the first node: the goals board injects its own "Start a goal" affordance
+      // card (ref '+') ahead of the real cards, so a bare querySelector would
+      // assert against the affordance and never see the goal card at all.
+      const handles = [...document.querySelectorAll('.hud__handle')].map((el) => el.textContent);
+      const reasons = [...document.querySelectorAll('.hud__reason')].map((el) => el.textContent);
+      expect(handles).toContain(board.handle);
+      expect(reasons).toContain(board.reason);
+
+      // What only a plan card may grow.
+      expect(document.querySelector('.hud__cardtitle')).toBeNull();
+      expect(document.querySelector('.hud__cardright')).toBeNull();
+      expect(document.querySelector('.hud__pip')).toBeNull();
+    });
+  }
 });

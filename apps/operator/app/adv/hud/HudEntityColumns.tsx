@@ -120,7 +120,17 @@ const SETTLED_PLAN_COLUMNS: ReadonlySet<HudEntityColumnId> = new Set<HudEntityCo
  * WHAT THE PLAN CARD DELIBERATELY NO LONGER SHOWS, and where it went (D-001):
  *   - the slug row      → the `title` attribute; it was the title in kebab-case
  *                         plus a date, so the card was printing its own name twice
- *   - `card.context`    → nothing; it reads `papercusp` on every card here
+ *   - `card.context`    → the `title` attribute, beside the slug. This line used
+ *                         to read "→ nothing; it reads `papercusp` on every card
+ *                         here", which was FALSE and was never checked: `context`
+ *                         is `plan.harnessSlug` (hud-entity-board.ts), and
+ *                         HudView passes `harness_slugs: scopedHarnessSlugs ??
+ *                         undefined` — undefined means UNFILTERED, so on an
+ *                         unscoped HUD, or a pot spanning more than one harness,
+ *                         the harness genuinely differs per card. Caught by the
+ *                         independent rubric review (WI-1743279 F2). Folding it
+ *                         into the hover title costs zero pixels and stops the
+ *                         fact being lost in exactly the case the claim ignored.
  *   - the chips row     → the two exception counts survive as pips; `wip`/`todo`
  *                         restate the track and the column the card sits in
  *   - `n/m items`       → nothing; `.hud__track` below already draws it
@@ -147,8 +157,10 @@ function PlanCardCompact({ card, meta }: { card: HudEntityCard; meta: HudPlanCar
         <span className={`hud__dot hud__dot--${card.column}`} aria-hidden="true" />
         {/* The slug is the accessible name (see EntityCardBody's aria-label) and
             the hover title; the TITLE is what a reader scans for, so it takes
-            the line. */}
-        <span className="hud__cardtitle" title={card.ref}>
+            the line. The harness rides along in the hover title when the card
+            carries one — see the `card.context` note above: a multi-harness
+            board is the case where dropping it outright would lose a fact. */}
+        <span className="hud__cardtitle" title={card.context ? `${card.ref} · ${card.context}` : card.ref}>
           {card.title}
         </span>
         <span className="hud__cardright">

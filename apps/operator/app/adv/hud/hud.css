@@ -846,9 +846,22 @@
    affordable on a line that has to leave room for the title. The dot is a
    pseudo-element in `currentColor`, so tone is set once on the modifier.
 
-   Form as well as colour, per this board's rule: the pip's POSITION (always
-   leading the rail) and its bare-number shape distinguish it from the ⚒ age
-   beside it even in greyscale. */
+   Form as well as colour, per this board's rule, in BOTH directions — the
+   second one was missing until the independent rubric review caught it
+   (WI-1743279 F6):
+
+     pip vs the ⚒ age beside it — the pip's POSITION (always leading the rail)
+     and its bare-number shape carry that distinction in greyscale.
+
+     needs-you pip vs blocked pip — these differ ONLY in `color` if nothing else
+     is done, which is colour-only encoding: pre-change they were text labels
+     ("2 needs you", "2 blocked"), so compacting them to two identically-shaped
+     dots would have been a real regression for a greyscale or colour-blind
+     reader. Position is not a sufficient answer either: it holds only via the
+     inference that `planColumn` routes every needs-human plan to needs-you, and
+     a reader should not have to know a routing rule to read a card. So the
+     MARKER SHAPE carries it — needs-you is a round dot, blocked is a square —
+     and the two are then distinguishable with no colour at all. */
 .hud__pip {
   display: inline-flex;
   align-items: center;
@@ -870,6 +883,10 @@
 
 .hud__pip--warn { color: var(--warn); }
 .hud__pip--bad { color: var(--bad); }
+
+/* The greyscale-legible half of the pair (see the note above): the blocked pip's
+   marker is a SQUARE, so shape — not colour — is what separates the two pips. */
+.hud__pip--bad::before { border-radius: 1px; }
 
 /* ── P-007: plan-card meta row, avatar stack, live pill, progress track ────
    Per the HudH2 mockup (plan-visibility-revamp-2026-08-23). Every selector
