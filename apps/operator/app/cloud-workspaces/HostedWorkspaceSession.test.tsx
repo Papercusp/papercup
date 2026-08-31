@@ -78,6 +78,7 @@ vi.mock("@xterm/addon-web-links", () => ({
 }));
 
 import { HostedWorkspaceSession } from "./HostedWorkspaceSession";
+import { HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES } from "./hosted-workspace-session-protocol";
 
 const TICKET = `ht_${"a".repeat(43)}`;
 
@@ -112,6 +113,47 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
+
+/** Deterministic body bytes, so a wrong slice boundary cannot round-trip. */
+function fakeBytes(length: number): Uint8Array {
+  const body = new Uint8Array(length);
+  for (let index = 0; index < length; index += 1) body[index] = index % 251;
+  return body;
+}
+
+/**
+ * A `File` double. The component reads only `name` and `arrayBuffer()`, and a
+ * real jsdom `File` would make this test depend on Blob's stream support rather
+ * than on the upload logic under test.
+ */
+function fakeFile(name: string, length: number): File {
+  const body = fakeBytes(length);
+  return {
+    name,
+    arrayBuffer: async () => body.buffer.slice(0, length),
+  } as unknown as File;
+}
+
+async function connected() {
+  fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+  await waitFor(() => expect(M.sockets.length).toBeGreaterThan(0));
+  return M.sockets[M.sockets.length - 1];
+}
+
+/** Host handshake. Omitting `limits` is how an older, non-chunking host looks. */
+function ready(
+  socket: { emit: (type: string, event: unknown) => void },
+  limits?: { maxFileBytes: number; maxUploadChunkBytes: number },
+) {
+  socket.emit("message", {
+    data: JSON.stringify({
+      type: "pty.ready",
+      role: "controller",
+      resumed: false,
+      ...(limits ? { limits } : {}),
+    }),
+  });
+}
 
 describe("HostedWorkspaceSession", () => {
   it("surfaces relay send failures instead of claiming downloads or uploads started", async () => {
@@ -610,5 +652,95 @@ describe("HostedWorkspaceSession", () => {
         bytes: 2,
       }),
     );
+  });
+
+  it("refuses an oversized upload to a host that never advertised chunking, instead of sending the frame that kills the session", async () => {
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+      />,
+    );
+    const socket = await connected();
+    /* No `limits` — an older host. The client must fall back to whole-file AND
+     * decline anything too big for one frame. */
+    ready(socket);
+
+    socket.send.mockClear();
+    fireEvent.change(screen.getByLabelText("Upload workspace file"), {
+      target: { files: [fakeFile("big.bin", HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES + 1)] },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/accepts at most/)).toBeTruthy(),
+    );
+    /* THE ASSERTION THIS TEST EXISTS FOR. The relay answers an over-cap frame by
+     * CLOSING the socket, which takes the user's terminal down with the upload,
+     * so "we sent it and showed an error" is not an acceptable outcome — the
+     * frame must never leave the client. */
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it("chunks an upload against a chunk-capable host and paces each chunk on its ack", async () => {
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+      />,
+    );
+    const socket = await connected();
+    ready(socket, { maxFileBytes: 1024, maxUploadChunkBytes: 4 });
+
+    socket.send.mockClear();
+    fireEvent.change(screen.getByLabelText("Upload workspace file"), {
+      target: { files: [fakeFile("payload.bin", 10)] },
+    });
+
+    const uploads = () =>
+      socket.send.mock.calls
+        .map((call) => JSON.parse(call[0] as string) as Record<string, unknown>)
+        .filter((frame) => frame.type === "file.upload");
+
+    /* BACKPRESSURE: exactly one chunk is in flight before its ack. Without this
+     * the client would push all three frames into the socket at once, which is
+     * the head-of-line blocking chunking was introduced to remove. */
+    await waitFor(() => expect(uploads()).toHaveLength(1));
+    expect(uploads()).toHaveLength(1);
+
+    const ack = (chunks: number) =>
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "file.progress",
+          requestId: (uploads()[0].requestId as string),
+          uploadId: (uploads()[0].chunk as { uploadId: string }).uploadId,
+          received: chunks * 4,
+          chunks,
+          count: 3,
+        }),
+      });
+
+    ack(1);
+    await waitFor(() => expect(uploads()).toHaveLength(2));
+    ack(2);
+    await waitFor(() => expect(uploads()).toHaveLength(3));
+
+    const frames = uploads();
+    expect(frames.map((frame) => (frame.chunk as { index: number }).index)).toEqual([0, 1, 2]);
+    expect(
+      frames.every((frame) => (frame.chunk as { count: number }).count === 3),
+    ).toBe(true);
+    /* Every chunk carries the SAME uploadId and requestId: the host keys its
+     * accumulator on the former, and the browser matches the result on the latter. */
+    expect(new Set(frames.map((frame) => (frame.chunk as { uploadId: string }).uploadId)).size).toBe(1);
+    expect(new Set(frames.map((frame) => frame.requestId)).size).toBe(1);
+
+    /* And the bytes survive the split — reassembled here exactly as the host
+     * reassembles them, so a wrong slice boundary fails rather than round-trips. */
+    const reassembled = Buffer.concat(
+      frames.map((frame) => Buffer.from(frame.data as string, "base64")),
+    );
+    expect(reassembled).toEqual(Buffer.from(fakeBytes(10)));
   });
 });

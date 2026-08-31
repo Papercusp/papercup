@@ -286,6 +286,55 @@ export interface HandWrittenRoutingRow {
   relations: string[];
 }
 
+/**
+ * Verbs that answer from a DIFFERENT PLANE than a direct relation read, and so
+ * cannot contradict a pair that routes reads OF that relation.
+ *
+ * WI-1812795. The agreement rule one level up joins a hand-written row to an
+ * audited pair whenever the row's `not` cell NAMES a relation the pair covers,
+ * then demands the row's verb be one of the pair's. That is right for two rows
+ * answering the SAME question, and wrong the moment two DIFFERENT questions read
+ * one table — which is not hypothetical:
+ *
+ *   row  "how many tests fail on the FROZEN CANDIDATE we are promoting"
+ *        -> state:read { cell:'gate.greenCheckpoint.candidateFailures' }
+ *   pair "a test file's run history / which tests are failing"
+ *        -> testing:runs
+ *
+ * Both are correct for their own question, and — the part that matters — both
+ * say the SAME thing about the relation: do not hand-write `test_runs` SQL. Read
+ * as a contradiction, that pairing kept the guard red on every recorded run for
+ * 4.5h+, which is strictly worse than no guard: a check that cries wolf on a
+ * correct row trains its readers to discount the next genuine contradiction.
+ *
+ * `state:read` never reads a relation. It reads a REGISTERED CELL computed by a
+ * resolver, so a row recommending it is not offering a competing way to read the
+ * table; it is saying "do not read the table at all — read the cell." Excluding
+ * it narrows the join to verbs that genuinely compete, and leaves every other
+ * disagreement firing exactly as before.
+ *
+ * ⚠ KEEP THIS LIST TINY, AND EARN EACH ENTRY. It is not an allowlist for rows
+ * that fail the check — it is a statement that a verb reads from somewhere else
+ * entirely. A verb that DOES read the relation must never be added here: that
+ * would silence the guard rather than sharpen it. The narrowness is pinned by a
+ * CONTROL in routing-table.test.ts (a row naming one of these verbs ALONGSIDE a
+ * competing relation verb still contradicts).
+ *
+ * This is the same family as the `work_items_claimable` word-boundary subtlety
+ * documented on the parser below: a relation MENTIONED by a row is not the same
+ * as a relation the row claims to be the general replacement for reading.
+ */
+export const NON_RELATION_READ_VERBS: readonly string[] = ['state:read'];
+
+/**
+ * The subset of a row's verbs that actually COMPETE to read the relation — i.e.
+ * the ones the agreement rule may legitimately score. An empty result means the
+ * row routes nothing that reads this relation, which is not a contradiction.
+ */
+export function relationRoutingVerbs(row: HandWrittenRoutingRow): string[] {
+  return row.verbs.filter((v) => !NON_RELATION_READ_VERBS.includes(v));
+}
+
 /** Split one markdown table row into cells, honouring `\|` inside a cell. */
 function tableCells(line: string): string[] {
   return line

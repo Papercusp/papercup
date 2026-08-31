@@ -37,6 +37,9 @@ import {
   // WI-38337 (D-010): the third routing surface — the hand-written table.
   parseStoragePolicyRoutingTable,
   STORAGE_POLICY_HEADING,
+  // WI-1812795: narrows the join to verbs that compete to READ the relation.
+  NON_RELATION_READ_VERBS,
+  relationRoutingVerbs,
   type HandWrittenRoutingRow,
   END_MARKER,
   renderRoutingBlock,
@@ -499,13 +502,18 @@ describe('the hand-written storage-policy table is not contradicted by an audite
    * can fail is unsafe here, because git-sync sweeps the tree mid-probe.
    */
   const contradiction = (row: HandWrittenRoutingRow): string | null => {
-    if (row.verbs.length === 0) return null; // a prose-only row routes nothing
+    // WI-1812795: score only the verbs that COMPETE to read the relation. A row
+    // recommending `state:read` answers from the registered-cell plane and is not
+    // offering a rival way to read the table — see NON_RELATION_READ_VERBS for
+    // why that is a narrowing of the join and not a hole in it.
+    const verbs = relationRoutingVerbs(row);
+    if (verbs.length === 0) return null; // routes nothing that reads this relation
     for (const rel of row.relations) {
       const pairs = byRelation.get(rel);
       if (!pairs) continue; // coverage may differ — only disagreement is a defect
       const expected = pairs.map((p) => p.toolName);
-      if (!row.verbs.some((v) => expected.includes(v))) {
-        return `"${row.want}" routes ${rel} to ${row.verbs.join(' / ')}, but the audited pair(s) say ${expected.join(' / ')}`;
+      if (!verbs.some((v) => expected.includes(v))) {
+        return `"${row.want}" routes ${rel} to ${verbs.join(' / ')}, but the audited pair(s) say ${expected.join(' / ')}`;
       }
     }
     return null;
@@ -545,6 +553,56 @@ describe('the hand-written storage-policy table is not contradicted by an audite
         relations: [pair.relation],
       }),
     ).toMatch(/but the audited pair\(s\) say/);
+  });
+
+  /**
+   * WI-1812795 — the state-plane exemption must NARROW the join, not open a hole.
+   *
+   * These three run together on purpose. The first is the real-world shape the
+   * exemption exists for (a lone state:read row); the second proves the exemption
+   * does not travel — the moment a row ALSO names a verb that genuinely competes
+   * to read the relation, it contradicts exactly as before; the third pins the
+   * list itself small, so "add your verb here" can never become the way a failing
+   * row gets quietly excused.
+   */
+  it('a row answering from the state plane alone does NOT contradict a relation pair', () => {
+    const pair = sqlPairs.find((p) => p.relation === 'work_items')!;
+    expect(
+      contradiction({
+        want: 'a live value, not a table read',
+        use: "`state:read { cell:'some.registered.cell' }`",
+        not: `ANY hand-written \`${pair.relation}\` query`,
+        verbs: ['state:read'],
+        relations: [pair.relation],
+      }),
+    ).toBeNull();
+  });
+
+  it('CONTROL: the exemption does NOT travel — a state:read row that also names a competing verb still contradicts', () => {
+    const pair = sqlPairs.find((p) => p.relation === 'work_items')!;
+    expect(
+      contradiction({
+        want: 'a live value, and also a rival way to read the table',
+        use: "`state:read { cell:'some.registered.cell' }` or `issues:list`",
+        not: `ANY hand-written \`${pair.relation}\` query`,
+        verbs: ['state:read', 'issues:list'],
+        relations: [pair.relation],
+      }),
+    ).toMatch(/but the audited pair\(s\) say/);
+  });
+
+  it('the state-plane exemption stays tiny, and never swallows a pair tool', () => {
+    expect(NON_RELATION_READ_VERBS.length).toBeLessThanOrEqual(2);
+    // Exempting a verb an audited pair actually routes TO would silence the guard
+    // for that pair entirely — the one way this list could become a hole.
+    const pairTools = new Set(sqlPairs.map((p) => p.toolName));
+    for (const verb of NON_RELATION_READ_VERBS) {
+      expect(pairTools.has(verb), `${verb} is an audited pair's own tool — exempting it would silence the guard`).toBe(false);
+    }
+    // And the helper must actually filter, or every assertion above is vacuous.
+    expect(relationRoutingVerbs({
+      want: '', use: '', not: '', verbs: ['state:read', 'issues:list'], relations: [],
+    })).toEqual(['issues:list']);
   });
 
   it('CONTROL: a relation NO pair covers is not a contradiction (coverage may differ)', () => {
