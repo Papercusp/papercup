@@ -73,6 +73,80 @@ export async function resolveCommitsBehind(
   }
 }
 
+/**
+ * The routine source tree a ROUTINES=1 host executes IN-PROCESS. Everything under
+ * it enters the module graph at boot and is never reloaded, so a diff of this
+ * prefix between boot and HEAD is the drift a stale executor is actually suffering.
+ *
+ * ⚠ DELIBERATELY A LOWER BOUND, NOT A CENSUS. Routine handlers reach helpers all
+ * over `operator-core`, and a frozen copy of one of those is just as wrong. So a
+ * zero here means "nothing detected by this bounded probe", NEVER "this process is
+ * fine" — which is why `resolveRoutineCodeDrift` reports empty arrays and callers
+ * must fall back to the commit count rather than print a reassuring negative. A
+ * bounded measurement rendered as a confident all-clear is the failure mode this
+ * comment exists to prevent.
+ */
+export const ROUTINE_SOURCE_PREFIX = 'packages/operator-core/lib/harness/routines/';
+
+export interface RoutineCodeDrift {
+  /** Routine sources that CHANGED between boot and HEAD: this process still runs
+   *  the older copy of each. */
+  changed: string[];
+  /** Routine sources that DO NOT RESOLVE at the boot commit — absent from this
+   *  process's module graph entirely, so routines they define are not running here
+   *  AT ALL. Strictly worse than executing old code, and the distinction a bare
+   *  commit count cannot express: measured 2026-08-31, a bg-host 143 commits behind
+   *  had four such files, two of them whole routines that had never once fired. */
+  addedSinceBoot: string[];
+}
+
+/**
+ * Best-effort "which routine code is this process actually wrong about?".
+ *
+ * Returns null when the question is unanswerable (bad shas, no checkout, git
+ * failed) so the caller degrades to its commit-count wording instead of
+ * fabricating an all-clear. Returns EMPTY ARRAYS when the probe ran and found
+ * nothing in its bounded scope — a different thing from null, and still not a
+ * clean bill of health (see ROUTINE_SOURCE_PREFIX).
+ */
+export async function resolveRoutineCodeDrift(
+  bootCommit: string | null,
+  currentCommit: string | null,
+): Promise<RoutineCodeDrift | null> {
+  const sha = /^[0-9a-f]{40}$/i;
+  // Same argv-injection guard as resolveCommitsBehind: these become a revision range.
+  if (!bootCommit || !currentCommit || !sha.test(bootCommit) || !sha.test(currentCommit)) return null;
+  if (bootCommit === currentCommit) return { changed: [], addedSinceBoot: [] };
+  try {
+    // --no-renames on purpose: a moved file must report as D+A, because under its
+    // NEW path it is genuinely absent from the booted module graph. A rename status
+    // would hide that behind a similarity score and lose the severe case.
+    const { stdout } = await runExecFile(
+      'git',
+      ['diff', '--name-status', '--no-renames', `${bootCommit}..${currentCommit}`, '--', ROUTINE_SOURCE_PREFIX],
+      { timeout: 5_000 },
+    );
+    const changed: string[] = [];
+    const addedSinceBoot: string[] = [];
+    for (const line of String(stdout).split('\n')) {
+      const tab = line.indexOf('\t');
+      if (tab <= 0) continue;
+      const status = line.slice(0, tab).trim();
+      const path = line.slice(tab + 1).trim();
+      if (!status || !path) continue;
+      // Test files are never loaded by the host, so counting them would inflate the
+      // page with drift the executor does not actually execute. Covers
+      // `*.integration.test.ts` too, which also ends in `.test.ts`.
+      if (path.endsWith('.test.ts')) continue;
+      if (status.startsWith('A')) addedSinceBoot.push(path);
+      else if (status.startsWith('M') || status.startsWith('D')) changed.push(path);
+    }
+    return { changed, addedSinceBoot };
+  } catch {
+    return null;
+  }
+}
+
 export interface ProcessBootIdentity {
   /** Wall-clock instant at which the process started (milliseconds). */
   bootTimeMs: number;
