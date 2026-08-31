@@ -33,6 +33,11 @@ import '../../plan-items/reconcile-rule';
 // RIGHT NOW instead of waiting up to 15 min for the periodic sweep. Importing
 // registers it.
 import '../../plan-items/lane-sync-rule';
+// Plan-drain rule (P-004, deterministic-plan-state-derivation-2026-08-31): a
+// plans:set-status flip that crosses the terminal boundary re-derives the
+// PLAN's lifecycle status, so a plan whose last live item just went terminal
+// stops advertising work that no longer exists. Importing registers it.
+import '../../plan-items/plan-drain-rule';
 import { installSwarmClaimAuthority } from '../../plan-items/claim-authority-swarm';
 import { registerPlanItemClaimAuthorityOps } from '../../plan-items/plan-item-claim-authority-ops';
 
