@@ -5934,10 +5934,17 @@ export interface DiskInfraFaultPolicy {
 }
 
 export interface InfraFaultClassification {
-  /** the host fault class; neither class renders a code verdict. */
-  kind: "vite-node-cache-vanished" | "disk-space-exhausted";
+  /** the host fault class; NO class renders a code verdict. */
+  kind: "vite-node-cache-vanished" | "disk-space-exhausted" | "suite-refused";
   /** how many matching fault lines the output carried. */
   occurrences: number;
+  /** WI-1761602: for a `suite-refused` fault, the runner's own `reason=` token
+   *  (`admission-starved`, `deadline-insufficient`, `TASK_BUDGET_REFUSAL`, …). */
+  refusalReason?: string;
+  /** WI-1761602: tasks the refused run was asked to do, and how many it left
+   *  UNDETERMINED. A refusal has `undeterminedTasks === tasks`: it measured nothing. */
+  tasks?: number;
+  undeterminedTasks?: number;
   /** the distinct vite-node cache ROOTS that vanished. */
   roots?: string[];
   /** the affected filesystems for a disk-space fault. */
@@ -5976,10 +5983,73 @@ export const DISK_ENOSPC_MIN_OCCURRENCES = 2;
 const VITE_NODE_CACHE_ENOENT_RE =
   /ENOENT[^\n]*?['"]([^'"\n]*\/(?:ssr|client)\/(?:[0-9a-f]{40}|\.tmp-[0-9a-z]+(?:-[0-9a-z]+)*))['"]/g;
 
+/** WI-1761602: the runner's TERMINAL marker for a run that REFUSED to measure anything.
+ *  `scripts/affected-tests.mjs` emits exactly one of these on every refusal path — admission
+ *  starvation (:5651), an insufficient deadline (:5634), and a pre-launch cgroup/pids ceiling
+ *  (:665) — and the `reason=` token sits on EITHER side of the counters depending on the path,
+ *  so the fields are read individually rather than by one positional pattern.
+ *
+ *  Anchored at LINE START on the machine marker, never on the accompanying English
+ *  ("NOT MEASURED — … Nothing here is a test verdict."): classify on the CODE, not on prose. */
+const SUITE_REFUSAL_LINE_RE = /^[ \t]*AFFECTED_TESTS_RESULT[ \t][^\n]*/gm;
+const SUITE_REFUSAL_STATUS_RE = /(?:^|\s)status=refused(?:\s|$)/;
+const SUITE_REFUSAL_REASON_RE = /(?:^|\s)reason=(\S+)/;
+const SUITE_REFUSAL_TASKS_RE = /(?:^|\s)tasks=(\d+)(?:\s|$)/;
+const SUITE_REFUSAL_UNDETERMINED_RE = /(?:^|\s)undeterminedTasks=(\d+)(?:\s|$)/;
+/** `failed=n/a` on the pre-launch path (nothing was even launched), `failed=0` on the others. */
+const SUITE_REFUSAL_FAILED_RE = /(?:^|\s)failed=(0|n\/a)(?:\s|$)/;
+
+/** What a refused run reported about the work it did NOT do. */
+export interface SuiteRefusal {
+  /** the runner's own `reason=` token; `"unspecified"` when the line carries none. */
+  reason: string;
+  /** tasks the run was asked to do (0 on the pre-launch ceiling path). */
+  tasks: number;
+  /** tasks left UNDETERMINED — equal to `tasks` by the invariant below. */
+  undeterminedTasks: number;
+}
+
+/**
+ * WI-1761602: did this suite output REFUSE to render a verdict rather than fail one?
+ *
+ * Split out as an exported pure predicate — the same shape as `frozenPinIsFossilized` /
+ * `isJudgingPinnedActiveRepair` — so the risky half is testable without standing up a
+ * checkpoint fixture. Pure + total: no match ⇒ `null`, never throws.
+ *
+ * ⚠ THE INVARIANT IS LOAD-BEARING, NOT DECORATION. A refusal must satisfy
+ * `undeterminedTasks === tasks` AND `failed` ∈ {0, n/a} — it measured NOTHING. Requiring it
+ * means a line that says `status=refused` while also reporting real failures does NOT withdraw
+ * the verdict: measured failures stay a red. That keeps the error, if any, in the SAFE
+ * direction — an infra fault never promotes, so this can only cost a held gate, never a
+ * manufactured green.
+ */
+export function parseSuiteRefusal(output: string): SuiteRefusal | null {
+  for (const [line] of stripAnsi(output).matchAll(SUITE_REFUSAL_LINE_RE)) {
+    if (!SUITE_REFUSAL_STATUS_RE.test(line)) continue;
+    const tasks = SUITE_REFUSAL_TASKS_RE.exec(line);
+    const undetermined = SUITE_REFUSAL_UNDETERMINED_RE.exec(line);
+    // A refusal that cannot show the counters is not corroborated — leave it a red.
+    if (!tasks || !undetermined) continue;
+    if (!SUITE_REFUSAL_FAILED_RE.test(line)) continue;
+    if (tasks[1] !== undetermined[1]) continue;
+    return {
+      reason: SUITE_REFUSAL_REASON_RE.exec(line)?.[1] ?? "unspecified",
+      tasks: Number(tasks[1]),
+      undeterminedTasks: Number(undetermined[1]),
+    };
+  }
+  return null;
+}
+
 /**
  * EI-20767792192323374: classify a suite output as an INFRA FAULT — the gate's own module
  * cache disappeared mid-run — rather than a verdict about the code. Pure + total: no match ⇒
  * `null` (today's behaviour, a plain red), never throws.
+ *
+ * WI-1761602 adds the `suite-refused` class: a run that never measured the code at all. It is
+ * checked FIRST because it is the strongest claim available — the runner did not merely lose
+ * confidence in some results, it declined to produce any — and because a refusal precedes
+ * every other fault a running suite could have hit.
  *
  * Called ONLY on the red path, after both absorbers have declined. A green run is never
  * reclassified: if the suite passed despite a cache hiccup, the pass stands.
@@ -5992,6 +6062,25 @@ export function classifyInfraFault(
     policy?: DiskInfraFaultPolicy;
   },
 ): InfraFaultClassification | null {
+  const refusal = parseSuiteRefusal(output);
+  if (refusal) {
+    return {
+      kind: "suite-refused",
+      occurrences: 1,
+      refusalReason: refusal.reason,
+      tasks: refusal.tasks,
+      undeterminedTasks: refusal.undeterminedTasks,
+      note:
+        `infra fault: the affected-tests run REFUSED to render a verdict (reason=${refusal.reason}) — ` +
+        `${refusal.undeterminedTasks} of ${refusal.tasks} task(s) UNDETERMINED and 0 measured failures, so ` +
+        `zero test files were executed. NOTHING HERE IS A TEST VERDICT: this run says nothing about the code, ` +
+        `and its emptiness must NOT be read as "the code is broken" — a refusal and a red are different events ` +
+        `that used to look identical. No failing files can be triaged (there are none), and no fixer should be ` +
+        `dispatched against a signature this run never produced. This is a HOST fault: the runner could not get ` +
+        `the resources to start — see the AFFECTED_TESTS_REFUSAL line above for which one.`,
+    };
+  }
+
   const roots = new Set<string>();
   let occurrences = 0;
   for (const m of output.matchAll(VITE_NODE_CACHE_ENOENT_RE)) {
