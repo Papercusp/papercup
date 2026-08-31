@@ -208,6 +208,61 @@ export const CODEX_WIRE_FIXTURES: readonly WireFixture[] = [
     },
   },
   {
+    // ToolSearch traffic. Distinct from BOTH tool-call shapes above: `arguments`
+    // is a real OBJECT here, not the JSON STRING function_call uses and not the
+    // raw text custom_tool_call puts in `input`. codexToolCallArgsRaw's
+    // `arguments ?? input ?? query` already returns it, so the value reaching the
+    // pane is the object — pinning it here is what stops a future "just
+    // JSON.parse the arguments" change from silently breaking this record type.
+    name: 'response_item/tool_search_call — `arguments` is an OBJECT, not a JSON string',
+    discriminator: [
+      { path: 'type', value: 'response_item' },
+      { path: 'payload.type', value: 'tool_search_call' },
+    ],
+    readFields: ['payload.type', 'payload.call_id', 'payload.arguments'],
+    record: {
+      timestamp: '2026-08-31T05:00:35.894Z',
+      type: 'response_item',
+      payload: {
+        type: 'tool_search_call',
+        id: 'tsc_0e3db624accab8ba016a950a71d25c87d1b6e20cb95bd83e30',
+        call_id: 'call_GsUILTwJYCkvm43tadH28xAq',
+        status: 'completed',
+        execution: 'client',
+        arguments: { query: 'fleet:status loop:checkpoint goals:get' },
+        internal_chat_message_metadata_passthrough: { turn_id: '01a05630-84a4-7370-8254-ba1cf7c3d734' },
+      },
+    },
+  },
+  {
+    // The matching result. NOTE there is no `output` field — the payload is a
+    // `tools[]` array — which is why this record produced no tool_result at all
+    // until session-timeline-parsers grew a branch for it. `description` is
+    // truncated in this fixture ONLY: on the wire it is the tool's entire prompt
+    // (a namespace entry carries the whole MCP server instruction block), and the
+    // parser deliberately reads names and never descriptions.
+    name: 'response_item/tool_search_output — result is `tools[]`, there is NO `output`',
+    discriminator: [
+      { path: 'type', value: 'response_item' },
+      { path: 'payload.type', value: 'tool_search_output' },
+    ],
+    readFields: ['payload.type', 'payload.call_id', 'payload.tools[].name'],
+    record: {
+      timestamp: '2026-08-31T05:00:36.005Z',
+      type: 'response_item',
+      payload: {
+        type: 'tool_search_output',
+        id: 'tso_01a05630-d524-75f1-8b00-dd5479056750',
+        call_id: 'call_GsUILTwJYCkvm43tadH28xAq',
+        status: 'completed',
+        execution: 'client',
+        tools: [
+          { type: 'namespace', name: 'mcp__papercusp_su', description: 'Get oriented ONCE per session-with-context …' },
+        ],
+      },
+    },
+  },
+  {
     name: 'function_call — the minority shape, args in `arguments` as a JSON string',
     discriminator: [
       { path: 'type', value: 'response_item' },

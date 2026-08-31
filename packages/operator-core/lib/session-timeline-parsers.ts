@@ -73,6 +73,9 @@ function codexMessageText(content: unknown): string {
  *  - response_item/function_call_output,
  *    custom_tool_call_output           → tool_result. `output` is a block ARRAY
  *    on current builds; read via transcript-wire's `blockPayloadText`.
+ *  - response_item/tool_search_output  → tool_result, but read from `tools[]`
+ *    (NAMES only), because this record type carries no `output` field and its
+ *    per-tool `description` is the tool's full prompt.
  *  - response_item/reasoning           → status '[thinking] …' when a readable
  *    summary exists (the content itself ships encrypted — skipped otherwise)
  *  - compacted                         → status
@@ -157,6 +160,29 @@ export function createCodexTimelineParser(): TimelineLineParser {
             // in the pane (30 of 31 results in the measured session) rather
             // than the text the tool actually returned.
             text: blockPayloadText(p.output),
+            toolId: typeof p.call_id === 'string' ? p.call_id : undefined,
+            ts,
+          }];
+        }
+        if (pt === 'tool_search_output') {
+          // A tool_search_output has NO `output` field at all — its result is a
+          // `tools[]` array of `{type, name, description}` entries. Falling into
+          // the branch above would call blockPayloadText(undefined) and render an
+          // empty result; before this branch existed the record matched nothing
+          // and the search's RESULT was dropped from the timeline entirely, while
+          // its `tool_search_call` was shown — a call chip with no answer.
+          //
+          // Render NAMES ONLY. Each entry's `description` is the tool's full
+          // prompt text (kilobytes each, and a namespace entry carries the whole
+          // server instruction block), so joining descriptions here would dump
+          // tens of KB per search into the pane and the corpus.
+          const tools = Array.isArray(p.tools) ? p.tools : [];
+          const names = tools
+            .map((t) => (t && typeof t === 'object' ? (t as { name?: unknown }).name : undefined))
+            .filter((n): n is string => typeof n === 'string' && n.length > 0);
+          return [{
+            kind: 'tool_result',
+            text: names.length ? `${names.length} tool(s): ${names.join(', ')}` : '',
             toolId: typeof p.call_id === 'string' ? p.call_id : undefined,
             ts,
           }];
