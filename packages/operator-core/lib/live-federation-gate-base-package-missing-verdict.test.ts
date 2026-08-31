@@ -133,14 +133,33 @@ describe('live-federation gate: a window with no base package can never be GREEN
       // These three assignments are what make the window prove nothing. They have to travel
       // together: if a later edit moves or drops MATRIX_BASE_DEB_MISSING while leaving the other
       // two, the false green comes straight back and nothing else in the suite notices.
-      const branch = gate.match(
-        /no existing Debian candidate declares Package=papercusp-gui[\s\S]{0,900}?\n {4}fi\n/,
-      );
-      expect(branch?.[0], 'could not locate the base-package selector failure branch').toBeTruthy();
-      expect(branch![0]).toMatch(/BASE_DEB=""/);
-      expect(branch![0]).toMatch(/SKIP_MATRIX=1/);
-      expect(branch![0]).toMatch(/RUN_LOCAL_MATRIX=0/);
-      expect(branch![0]).toMatch(/MATRIX_BASE_DEB_MISSING=1/);
+      // RE-ANCHORED 2026-08-31 (test-suite-recovery-2026-08-27 D-026). The invariant below
+      // is unchanged and still holds; what broke was this test's LOCATOR. 973fe78f
+      // (2026-08-30T19:30Z, papercusp-desktop +53/-8, EI-21713671250062619) inserted the
+      // bounded build-one-fresh-base-.deb block between the selector's log line and the
+      // disabling assignments, taking the span from under 900 chars to 2378 — so the old
+      // `[\s\S]{0,900}?` window could no longer reach the closing `fi` and the match came
+      // back undefined. Widening that number would have "fixed" it while weakening the
+      // claim: a bigger window lets the four assignments drift into DIFFERENT branches and
+      // still match, which is exactly the false green this guard exists to prevent.
+      //
+      // So it is anchored structurally instead, which is both tighter than the old bound
+      // and immune to anything else being inserted above it: the selector failure must
+      // clear BASE_DEB immediately, and the three leg-disabling assignments must all live
+      // inside the SAME `if [ -z "$BASE_DEB" ]` block (indent-matched to its own `fi`).
+      expect(
+        gate,
+        'the base-package selector failure must clear BASE_DEB before anything else',
+      ).toMatch(/no existing Debian candidate declares Package=papercusp-gui"\n\s*BASE_DEB=""\n/);
+
+      const disabling = gate.match(/\n( +)if \[ -z "\$BASE_DEB" \]; then\n[\s\S]*?\n\1fi\n/);
+      expect(
+        disabling?.[0],
+        'could not locate the `if [ -z "$BASE_DEB" ]` block that disables both federation legs',
+      ).toBeTruthy();
+      expect(disabling![0]).toMatch(/SKIP_MATRIX=1/);
+      expect(disabling![0]).toMatch(/RUN_LOCAL_MATRIX=0/);
+      expect(disabling![0]).toMatch(/MATRIX_BASE_DEB_MISSING=1/);
     });
 
     it('the flag is initialized, so `set -u` cannot make a clean run explode on the read', () => {

@@ -71,9 +71,32 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
   });
 
   it("documents that free-text q belongs to coord:feed, not coord:inbox", () => {
-    expect(tool.description).toMatch(/free-text `q`[^.]*not (?:an )?inbox arguments?/i);
-    expect(tool.description).toMatch(/use `coord:feed`/i);
+    // RE-PINNED 2026-08-31 (test-suite-recovery-2026-08-27 D-026). This used to require
+    // the sentence "Free-text `q` and time bounds (`since`) are not inbox arguments — use
+    // `coord:feed` for either" in the DESCRIPTION. That sentence was deliberately deleted
+    // at c4b1629d63 (2026-08-30T20:00Z) because this tool's prompt weight had crossed the
+    // hard cap and turned the gate RED — the same BUDGET this file asserts at line ~48.
+    // The teaching was not dropped, it MOVED: guidance.argRedirects.q now carries the
+    // identical redirect at zero prompt weight, paid only on the failure path. So the pin
+    // moves with it. Asking for the description sentence back would re-break the weight
+    // gate, which is why this guard must never do that again.
     expect(Object.keys(tool.args.shape)).not.toContain("q");
+
+    const redirects = (
+      tool.guidance as
+        | { argRedirects?: Record<string, { tool?: string; args?: Record<string, unknown>; note?: string }> }
+        | undefined
+    )?.argRedirects;
+    const q = redirects?.q;
+    expect(q, "coord:inbox must still redirect a free-text `q` somewhere").toBeTruthy();
+    // The redirect has to name the DESTINATION, not merely refuse the key: a bare
+    // rejection is the failure shape EI-21901625037175266 was filed for.
+    expect(q!.tool).toBe("coord:feed");
+    expect(Object.keys(q!.args ?? {})).toContain("q");
+    expect(q!.note).toMatch(/coord:feed/);
+    // And it has to say WHY, or the next trim reads it as duplicated prose and cuts it:
+    // coord:inbox is a bounded VIEW, not a query surface.
+    expect(q!.note).toMatch(/no free-text search|not a query surface/i);
   });
 });
 

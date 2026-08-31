@@ -209,11 +209,31 @@ describe('WI-37571: loop disarms are recorded in routine_loop_transitions', () =
         args: { safeParse: (value: unknown) => { success: boolean } };
       };
 
+      // RE-PINNED 2026-08-31 (test-suite-recovery-2026-08-27 D-026). This used to require
+      // that loop:end declare "no `harness` argument" and REJECT one. ea108a5722
+      // (2026-08-31T01:28Z) deliberately reversed that: `harness` is now accepted and
+      // IGNORED, because nearly every other tool in the catalog takes one and callers
+      // reached for it out of habit, so the rejection was a papercut rather than a
+      // safeguard. That is a considered contract change stated in three places at once
+      // (description, guidance.when, and the field's own .describe()), not a drift.
+      //
+      // The claim being guarded never was "the key is rejected" — it is "loops are keyed
+      // by OWNER, not by harness". So the pin moves to the property that still carries it:
+      // the arg must be accepted AND documented as inert everywhere it appears. Pinning
+      // only the schema would let the alias quietly become load-bearing with nothing red.
       expect(tool.description).toMatch(/owner-scoped/i);
-      expect(tool.description).toMatch(/no `harness` argument/i);
+      expect(tool.description).toMatch(/keyed by owner, not by harness/i);
+      expect(tool.description).toMatch(/`harness`[^.]*no effect/i);
       expect(tool.guidance?.when).toMatch(/pass `reason`/i);
+      expect(tool.guidance?.when).toMatch(/ignores `harness`/i);
       expect(tool.args.safeParse({ reason: 'goal complete' }).success).toBe(true);
-      expect(tool.args.safeParse({ harness: 'papercusp' }).success).toBe(false);
+      expect(tool.args.safeParse({ harness: 'papercusp' }).success).toBe(true);
+      // The compatibility arg must say it does nothing where a caller reads the schema,
+      // or it reads as a real scoping knob the first time someone inspects the args.
+      const harnessField = (
+        tool as unknown as { args: { shape: Record<string, { description?: string }> } }
+      ).args.shape.harness;
+      expect(harnessField?.description).toMatch(/ignored|no effect/i);
     });
 
     it('CONTROL: emits nothing — and returns false — when no active loop matched', async () => {

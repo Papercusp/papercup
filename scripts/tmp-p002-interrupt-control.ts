@@ -11,6 +11,7 @@
  */
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
+import { collectChildOutput } from '../packages/operator-core/lib/child-output';
 
 process.env.PAPERCUSP_OPERATOR_BASE ||= 'http://127.0.0.1:3170';
 
@@ -77,13 +78,13 @@ async function main() {
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let pane = '';
-  child.stdout?.on('data', (b) => {
-    pane += String(b);
-  });
-  child.stderr?.on('data', (b) => {
-    pane += String(b);
-  });
+  // WI-6728: `pane += String(chunk)` decodes each 'data' event independently, so a
+  // multi-byte UTF-8 character split across two events becomes replacement chars with
+  // no error raised. The pane here carries TUI box-drawing glyphs, which is exactly the
+  // multi-byte traffic that corrupts. collectChildOutput holds a boundary-safe decoder
+  // across chunks; read it with .text() once the child is done.
+  const paneOut = collectChildOutput(child);
+  const pane = (): string => paneOut.stdout.peek() + paneOut.stderr.peek();
   log('pane pid', child.pid);
 
   const tuiLog = `${process.env.HOME}/.papercusp/su-codex-homes/session-${advSessionId}/log/codex-tui.log`;
@@ -140,6 +141,7 @@ async function main() {
     }
   }
   if (!died) log('SURVIVED the whole', Math.round(WATCH_MS / 1000), 's watch; pane pid alive:', pidAlive(child.pid));
+  log('pane tail:', pane().slice(-400).replaceAll('\n', '\\n'));
 
   if (existsSync(tuiLog)) {
     const tail = readFileSync(tuiLog, 'utf8').split('\n').filter((l) => /shutdown|panic|error/i.test(l));
