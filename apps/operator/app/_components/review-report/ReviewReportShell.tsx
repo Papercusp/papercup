@@ -750,7 +750,7 @@ function ReviewRowMenu({
               label={
                 action.disabled === true
                   ? (action.disabledReason ?? "Unavailable")
-                  : (action.description ?? action.label)
+                  : action.label
               }
             >
               <button
