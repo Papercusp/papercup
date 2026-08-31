@@ -29,7 +29,7 @@
  *
  * @param {Array<{ name: string, ms: number }>} legs
  */
-export function summarizeSerialPhase(legs) {
+export function summarizeSerialPhase(legs, opts = {}) {
   if (!Array.isArray(legs) || legs.length === 0) return null;
   const clean = legs
     .filter((leg) => leg && typeof leg.ms === 'number' && Number.isFinite(leg.ms) && leg.ms >= 0)
@@ -44,12 +44,32 @@ export function summarizeSerialPhase(legs) {
   // divide-by-zero and never an Infinity dressed up as an opportunity.
   const ceilingX = longest.ms > 0 ? serialMs / longest.ms : 1;
 
+  // ACHIEVED overlap, when the caller measured the phase's actual wall. `ceilingX` above is a
+  // BOUND — what perfect overlap could buy. It cannot say what the scheduler ACTUALLY got, and
+  // the gap between the two is the whole question when deciding whether a run is short of
+  // concurrency or short of nothing. Reconstructing it after the fact is not possible from the
+  // log: AFFECTED_TASK_PROGRESS lines carry no timestamps, the log is not written in
+  // chronological order (per-leg captured output is flushed when a leg ends), and
+  // harness_shared.test_runs stamps commit_sha on only a fraction of gate rows. So the phase
+  // measures its own wall or the number does not exist.
+  //
+  // Left undefined when the caller did not measure it: a MISSING measurement must not render as
+  // a real one, which is the same reason summarizeSerialPhase returns null for an empty leg set
+  // rather than a row of zeros.
+  const wallMs =
+    typeof opts.wallMs === 'number' && Number.isFinite(opts.wallMs) && opts.wallMs > 0
+      ? opts.wallMs
+      : undefined;
+  const achievedX = wallMs !== undefined ? serialMs / wallMs : undefined;
+
   return {
     legs: clean.length,
     serialMs,
     longestMs: longest.ms,
     longestName: longest.name,
     ceilingX,
+    wallMs,
+    achievedX,
     slowest: [...clean].sort((a, b) => b.ms - a.ms),
   };
 }
@@ -61,9 +81,16 @@ export function summarizeSerialPhase(legs) {
  * same reasoning that keeps the load-suspect marker on its own line.
  */
 export function formatSerialPhaseMarker(summary) {
+  // The wall pair is APPENDED, never interleaved, and omitted entirely when unmeasured — an
+  // existing consumer keeps matching the prefix it already matches, and absence stays visibly
+  // absent rather than becoming a zero.
+  const wall =
+    summary.wallMs !== undefined
+      ? ` wallMs=${summary.wallMs} achievedX=${summary.achievedX.toFixed(2)}`
+      : '';
   return (
     `AFFECTED_TESTS_PHASE legs=${summary.legs} serialMs=${summary.serialMs} ` +
-    `longestMs=${summary.longestMs} ceilingX=${summary.ceilingX.toFixed(2)}`
+    `longestMs=${summary.longestMs} ceilingX=${summary.ceilingX.toFixed(2)}${wall}`
   );
 }
 
@@ -77,7 +104,7 @@ const secs = (ms) => (ms / 1000).toFixed(1);
  * @param {{ topN?: number }} [opts]
  */
 export function formatSerialPhaseSummary(legs, opts = {}) {
-  const summary = summarizeSerialPhase(legs);
+  const summary = summarizeSerialPhase(legs, opts);
   if (!summary) return [];
   const topN = opts.topN ?? 5;
 
@@ -90,6 +117,15 @@ export function formatSerialPhaseSummary(legs, opts = {}) {
     `  ceiling:      ${summary.ceilingX.toFixed(2)}x — ideal overlap versus serial execution ` +
       `(bounded by the longest leg; ignores host contention and achieved overlap, so it is a bound and not a forecast)`,
   ];
+  if (summary.wallMs !== undefined) {
+    lines.push(
+      `  phase wall:   ${secs(summary.wallMs)}s elapsed — first leg start to last leg end`,
+      `  achieved:     ${summary.achievedX.toFixed(2)}x of the ${summary.ceilingX.toFixed(2)}x ceiling ` +
+        `(MEASURED overlap: serial-equivalent work divided by elapsed wall)`,
+      `  headroom:     ${secs(summary.wallMs - summary.longestMs)}s of wall beyond the longest leg — ` +
+        `what perfect overlap could still remove, and 0 means the phase is already bounded by that one leg`,
+    );
+  }
   for (const leg of summary.slowest.slice(0, topN)) {
     lines.push(`    ${secs(leg.ms).padStart(7)}s  ${leg.name}`);
   }

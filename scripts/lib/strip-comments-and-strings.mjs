@@ -509,10 +509,77 @@ function parseSource(text, fileName) {
     : asTs;
 }
 
+/**
+ * Every comment in the file, found LEXICALLY rather than by walking the AST.
+ *
+ * WHY THIS EXISTS: the AST walk visits real nodes only (forEachChild), and a comment lives in
+ * TRIVIA. Trivia that is adjacent only to a punctuation/keyword token belongs to no node the walk
+ * reaches — an empty `catch` block whose only content is a block comment (the comment precedes
+ * the close brace and nothing else), and any comment before the end-of-file token, are the two
+ * common shapes. Those
+ * comments would be left standing as live code, which is the exact defect the leading/trailing
+ * pairing in collectRanges was originally added to fix.
+ *
+ * ⚠ WHY IT TAKES `literalSpans` — a bare scanner is NOT safe here. `scan()` returns SlashToken for
+ * `/` and only lexes a regular expression when the parser explicitly calls reScanSlashToken(), so
+ * a regex literal containing a slash pair — `/https:\/\//` — is scanned as loose tokens, and the
+ * `//` inside it lexes as a line comment that swallows the rest of the line. Masking that would
+ * delete live code. The AST already knows exactly where every literal sits, so a scanner comment
+ * is kept only when it falls OUTSIDE every literal span. The scanner supplies completeness; the
+ * parser supplies the authority to reject its false positives.
+ */
+function collectComments(text, fileName, literalSpans, add) {
+  const variant =
+    fileName && (fileName.endsWith('.tsx') || fileName.endsWith('.jsx'))
+      ? ts.LanguageVariant.JSX
+      : ts.LanguageVariant.Standard;
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    /* skipTrivia */ false,
+    variant,
+    text,
+  );
+
+  const spans = literalSpans.slice().sort((a, b) => a[0] - b[0]);
+  // Literal spans are visited in AST order, not source order, hence the sort; the scan below is
+  // strictly left-to-right, so one advancing cursor answers "inside a literal?" in O(1).
+  let si = 0;
+  const insideLiteral = (pos, end) => {
+    while (si < spans.length && spans[si][1] <= pos) si += 1;
+    for (let j = si; j < spans.length && spans[j][0] < end; j += 1) {
+      if (spans[j][0] < end && pos < spans[j][1]) return true;
+    }
+    return false;
+  };
+
+  const found = [];
+  for (;;) {
+    let kind;
+    try {
+      kind = scanner.scan();
+    } catch {
+      // A file the scanner cannot lex contributes nothing EXTRA; the AST-boundary comments
+      // collected by the walk still stand. Failing closed here would lose them too.
+      break;
+    }
+    if (kind === ts.SyntaxKind.EndOfFileToken) break;
+    if (
+      kind === ts.SyntaxKind.SingleLineCommentTrivia ||
+      kind === ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      const pos = scanner.getTokenStart();
+      const end = scanner.getTokenEnd();
+      if (!insideLiteral(pos, end)) found.push({ pos, end });
+    }
+  }
+  add(found);
+}
+
 function collectRanges(text, fileName, { strings, regex }) {
   const sf = parseSource(text, fileName);
   const ranges = [];
   const seen = new Set();
+  const literalSpans = [];
 
   // BOTH trivia directions are required. ts.getLeadingCommentRanges only begins collecting
   // AFTER a newline, so a comment that starts on the SAME LINE as the previous token —
@@ -536,6 +603,18 @@ function collectRanges(text, fileName, { strings, regex }) {
     const k = node.kind;
     const s = node.getStart(sf);
     const e = node.getEnd();
+    // Record every literal's FULL span, regardless of which masking options are on. This is not
+    // for masking — it is what makes the scanner comment pass safe (see collectComments).
+    if (
+      k === ts.SyntaxKind.StringLiteral ||
+      k === ts.SyntaxKind.NoSubstitutionTemplateLiteral ||
+      k === ts.SyntaxKind.TemplateHead ||
+      k === ts.SyntaxKind.TemplateMiddle ||
+      k === ts.SyntaxKind.TemplateTail ||
+      k === ts.SyntaxKind.RegularExpressionLiteral
+    ) {
+      literalSpans.push([s, e]);
+    }
     if (strings) {
       if (
         k === ts.SyntaxKind.StringLiteral ||
@@ -556,10 +635,26 @@ function collectRanges(text, fileName, { strings, regex }) {
       const lastSlash = text.lastIndexOf('/', e - 1); // before the flags
       if (lastSlash > s) ranges.push([s + 1, lastSlash]);
     }
-    for (const child of node.getChildren(sf)) visit(child);
+    // forEachChild, NOT getChildren(sf). getChildren materialises a synthetic node for every
+    // PUNCTUATION and KEYWORD token as it walks, which is the single most expensive thing this
+    // module does: measured over an 18,184-file / 423.8 MB snapshot, parse alone is 36.52s while
+    // parse + the getChildren walk is 119.00s — the walk costs 82.48s, more than twice the parse
+    // it decorates. forEachChild visits only real AST nodes: 48.66s for the same traversal.
+    //
+    // Every literal this function collects (string, template head/middle/tail, regex) is a REAL
+    // node, so none of them is lost by skipping token nodes. COMMENTS are the part that is not
+    // safe by construction — a comment sits in trivia, and trivia adjacent only to a token (an
+    // empty `catch { /* ignore */ }`, anything before the end-of-file token) is not adjacent to
+    // any node forEachChild visits. That gap is closed by the scanner pass in collectComments,
+    // which sees every comment in the file regardless of what the AST walk reaches.
+    ts.forEachChild(node, visit);
   };
 
   visit(sf);
+  // AFTER the walk: literalSpans is now complete, which is what makes the scanner's output
+  // filterable. The two sources are unioned (addComments dedupes by pos:end), so a comment found
+  // both ways is added once.
+  collectComments(text, fileName, literalSpans, addComments);
   return ranges;
 }
 
