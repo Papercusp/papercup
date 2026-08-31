@@ -51,9 +51,9 @@ export default defineTool({
   description:
     "Tear down a local pot (root-only, destructive — pass confirm:true): clear the pot's pending wake so it won't re-wake, cancel every live cup + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_pot.",
   guidance: {
-    when: 'Permanently tearing down a local pot — stop the Mug, cancel its cups, deregister it. Operator/user only.',
+    when: 'Permanently tearing down a local pot — stop the pot operator, cancel its members, deregister it. Operator/user only.',
     notWhen:
-      'Destroying a deployed cloud frame (the Mug/member execution planes) — deploy:teardown_pot. Pausing a pot without tearing down — pot:declare-wake { mode:none }. From a cup — not allowed.',
+      'Destroying a deployed cloud frame (the control/member execution planes) — deploy:teardown_pot. Pausing a pot without tearing down — pot:declare-wake { mode:none }. From a cup — not allowed.',
     chaining: 'pot:get { slug } to inspect before; deploy:teardown_pot first if the pot is deployed to a Swarm.',
     seeAlso: [
       'pot:pause (freeze instead of permanently tearing down)',
@@ -69,7 +69,7 @@ export default defineTool({
     confirm: z
       .boolean()
       .optional()
-      .describe('Required true — pot:dissolve is destructive (stops the Mug, cancels cups, deregisters the harness).'),
+      .describe('Required true — pot:dissolve is destructive (stops the pot operator, cancels members, deregisters the harness).'),
     dropSchema: z
       .boolean()
       .optional()
@@ -91,7 +91,7 @@ export default defineTool({
         ok: false,
         error: 'confirm_required',
         message:
-          'pot:dissolve is destructive — pass confirm:true to proceed. It clears the Mug wake, cancels all cups, and deregisters the home harness (dropSchema:true also drops its PG schema).',
+          'pot:dissolve is destructive — pass confirm:true to proceed. It clears the pot wake, cancels all members, and deregisters the home harness (dropSchema:true also drops its PG schema).',
       });
     }
 
