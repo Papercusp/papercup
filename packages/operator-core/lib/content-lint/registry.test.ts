@@ -121,7 +121,7 @@ describe('conflictMarkersDetector', () => {
 });
 
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all eleven seeded detectors, keyed for the guard + escalation', () => {
+  it('ships all twelve seeded detectors, keyed for the guard + escalation', () => {
     expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
       // EI-21230011589307899: ordered FIRST. Every other detector here guards a
       // BUILD, where a miss is repaired by the next commit; this one guards git
@@ -129,6 +129,10 @@ describe('DEFAULT_CONTENT_DETECTORS', () => {
       // path exemption clears it. When a file trips several detectors, that is
       // the message that must be recorded and escalated.
       'secrets',
+      // EI-19381677675617429: ordered next to secrets for the same reason — an
+      // identity leak that reaches HEAD is not repaired by the next commit; it is
+      // in git history permanently, and the release source drop ships it.
+      'identity-leak',
       'mdx',
       'smart-quotes',
       'nul-bytes',
