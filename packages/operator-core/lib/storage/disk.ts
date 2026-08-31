@@ -58,12 +58,17 @@ export interface DiskEntry {
 
 /** Whole-dir roots for the plain stores (session-dirs resolve via defaultSessionDirRoots;
  *  glob-files resolve via globRoot, NOT here — they never enumerate a whole dir). */
-export function plainStoreRoots(store: 'scratch' | 'flight-recorder'): string[] {
+export function plainStoreRoots(store: 'scratch' | 'flight-recorder' | 'wake-spills'): string[] {
   switch (store) {
     case 'scratch':
       return [scratchRoot()];
     case 'flight-recorder':
       return [join(homedir(), '.papercusp', 'flight-recorder')];
+    case 'wake-spills':
+      // Entries here are per-OWNER directories, so each enumerated entry's mtime is
+      // that owner's last spill — which is what lets a dead owner's whole directory
+      // age out as one unit (see the `wake-spills` category).
+      return [join(homedir(), '.papercusp', 'wake-spills')];
   }
 }
 

@@ -46,6 +46,7 @@ vi.mock('../session-dir-gc', () => ({
 }));
 
 import { pruneStorageCategory } from './prune';
+import { getStorageCategory, isTrimmable } from './categories';
 
 const REQ = (over: Record<string, unknown> = {}) => ({
   categoryId: 'route-invocations',
@@ -234,5 +235,71 @@ describe('pruneStorageCategory — disk (plain store)', () => {
     expect(r.ok).toBe(true);
     expect(r.removed).toBe(1);
     expect(r.reclaimedBytes).toBe(500);
+  });
+
+  // The in-flight guard used to live ONLY on the `olderThanDays: null` branch, which
+  // inverted the safety: asking for an explicit 0 was less protected than asking to
+  // delete everything, and could unlink an entry written seconds ago.
+  it('applies the in-flight guard to an EXPLICIT age request, not just to "all"', async () => {
+    const now = Date.now();
+    h.diskEntries = [{ path: '/s/just-written', mtimeMs: now - 30_000, sizeBytes: 100 }];
+    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 0, dryRun: true }));
+    expect(r.removed).toBe(0);
+    expect(r.note).toMatch(/in-flight/);
+  });
+
+  it('still removes an entry past the in-flight guard on an explicit 0', async () => {
+    const now = Date.now();
+    h.diskEntries = [{ path: '/s/stale', mtimeMs: now - 10 * 60_000, sizeBytes: 100 }];
+    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 0, dryRun: true }));
+    expect(r.removed).toBe(1);
+  });
+});
+
+describe('pruneStorageCategory — wake-spills retention floor', () => {
+  it('is registered as a trimmable local disk category', () => {
+    const cat = getStorageCategory('wake-spills');
+    expect(cat).toBeDefined();
+    expect(cat!.kind).toBe('disk');
+    expect(isTrimmable(cat!)).toBe(true);
+  });
+
+  // The floor is declared on the shared DiskStorageCategory and the module contract
+  // says disk trims honour it, but only the session-dirs path ever read it — so a
+  // floor on a plain store was decorative. A spill is the only copy of a wake's full
+  // text, so an unfloored trim can delete it before its recipient takes a turn.
+  it('refuses to trim inside the declared floor even when asked for 0 days', async () => {
+    const now = Date.now();
+    h.diskEntries = [{ path: '/w/su-recent', mtimeMs: now - 2 * 86400000, sizeBytes: 4096 }];
+    const r = await pruneStorageCategory(
+      REQ({ categoryId: 'wake-spills', olderThanDays: 0, dryRun: true }),
+    );
+    expect(r.removed).toBe(0);
+    expect(r.reclaimedBytes).toBe(0);
+    expect(r.note).toMatch(/floored to 3d/);
+  });
+
+  it('collects an owner directory that has aged past the floor', async () => {
+    const now = Date.now();
+    h.diskEntries = [
+      { path: '/w/su-dead', mtimeMs: now - 47 * 86400000, sizeBytes: 748_000 },
+      { path: '/w/su-live', mtimeMs: now - 60_000, sizeBytes: 2048 },
+    ];
+    const r = await pruneStorageCategory(
+      REQ({ categoryId: 'wake-spills', olderThanDays: 7, dryRun: true }),
+    );
+    expect(r.removed).toBe(1);
+    expect(r.reclaimedBytes).toBe(748_000);
+    // 7d was already stricter than the 3d floor, so nothing was overridden.
+    expect(r.note).toBeUndefined();
+  });
+
+  it('never deletes everything on an "all" request — the floor still applies', async () => {
+    const now = Date.now();
+    h.diskEntries = [{ path: '/w/su-yesterday', mtimeMs: now - 86400000, sizeBytes: 512 }];
+    const r = await pruneStorageCategory(
+      REQ({ categoryId: 'wake-spills', olderThanDays: null, dryRun: true }),
+    );
+    expect(r.removed).toBe(0);
   });
 });

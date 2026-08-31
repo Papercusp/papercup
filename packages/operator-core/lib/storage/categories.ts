@@ -30,7 +30,12 @@ export type StorageFederation = 'federated' | 'local-diagnostic' | 'bloat-queue'
 /** How the age column encodes time: a real timestamptz, or epoch-milliseconds in a bigint. */
 export type AgeColumnType = 'timestamptz' | 'epoch_ms';
 /** Which on-disk store a disk category maps to (resolved at runtime). */
-export type DiskStore = 'session-dirs' | 'scratch' | 'flight-recorder' | 'glob-files';
+export type DiskStore =
+  | 'session-dirs'
+  | 'scratch'
+  | 'flight-recorder'
+  | 'wake-spills'
+  | 'glob-files';
 
 export interface PgStorageCategory {
   id: string;
@@ -57,8 +62,11 @@ export interface DiskStorageCategory {
   kind: 'disk';
   store: DiskStore;
   federation: 'local-diagnostic';
-  /** session-dir GC floor: never trim more aggressively than this (the audited
-   *  retention window that protects a crashed-but-resumable session). */
+  /** Retention floor: never trim more aggressively than this, whatever age the
+   *  caller asks for. For `session-dirs` it is the audited GC window that protects
+   *  a crashed-but-resumable session; for a plain store it protects entries whose
+   *  only copy lives here and whose reader may not have run yet (wake-spills).
+   *  Enforced for BOTH paths — see `pruneDiskPlain`, which used to ignore it. */
   minOlderThanDays?: number;
   /** glob-files store ONLY: enumerate <root>/<prefix>*<suffix> (files only, a
    *  safe prefix+suffix match — never the whole root). rootKind resolves in disk.ts
@@ -240,6 +248,21 @@ export const STORAGE_CATEGORIES: readonly StorageCategory[] = [
     store: 'flight-recorder',
     federation: 'local-diagnostic',
     description: 'Spawn flight-recorder traces under ~/.papercusp/flight-recorder.',
+  },
+  {
+    id: 'wake-spills',
+    label: 'Wake spills',
+    kind: 'disk',
+    store: 'wake-spills',
+    federation: 'local-diagnostic',
+    // A spill is the ONLY copy of a wake's full text (applyInjectionDoor delivers a
+    // truncated tail plus a pointer here), so unlike scratch/flight-recorder this
+    // store carries a floor: a recipient that has not taken its next turn yet must
+    // still find its spill. Entry mtime is the per-owner dir's last write, so a dead
+    // owner's whole directory ages out together without any liveness lookup.
+    minOlderThanDays: 3,
+    description:
+      'Full wake text spilled past the per-hop injection door, under ~/.papercusp/wake-spills/<owner>/. Each file self-describes as safe to delete after reading; nothing else collects them.',
   },
   {
     id: 'perf-tarballs',

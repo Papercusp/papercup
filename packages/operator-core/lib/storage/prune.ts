@@ -324,8 +324,18 @@ function pruneDiskPlain(cat: DiskStorageCategory, req: PruneRequest): PruneResul
     vacuumed: false,
   };
   const now = Date.now();
-  // 'all' still excludes entries written in the last minute (likely in-flight).
-  const cutoff = req.olderThanDays == null ? now - PLAIN_DISK_FLOOR_MS : now - req.olderThanDays * 86400000;
+  // Two floors, and the STRICTER of them always wins:
+  //   • PLAIN_DISK_FLOOR_MS — never remove an entry touched in the last minute
+  //     (likely in-flight). This used to apply ONLY when olderThanDays was null,
+  //     which inverted the safety: an explicit `olderThanDays: 0` was less
+  //     protected than the delete-everything path and could unlink a spill written
+  //     milliseconds earlier, for a live recipient that had not yet read it.
+  //   • cat.minOlderThanDays — the category's declared retention floor. The module
+  //     contract says disk trims are floored at it, but only pruneDiskGc read it;
+  //     a floor declared on a plain store was silently decorative until now.
+  const requestedMs = req.olderThanDays == null ? 0 : req.olderThanDays * 86400000;
+  const floorMs = Math.max(requestedMs, (cat.minOlderThanDays ?? 0) * 86400000, PLAIN_DISK_FLOOR_MS);
+  const cutoff = now - floorMs;
   for (const e of listDiskEntries(cat)) {
     if (e.mtimeMs >= cutoff) continue;
     if (!req.dryRun) {
@@ -337,6 +347,16 @@ function pruneDiskPlain(cat: DiskStorageCategory, req: PruneRequest): PruneResul
     }
     result.removed += 1;
     result.reclaimedBytes += e.sizeBytes;
+  }
+  // Say so when the floor overrode what the caller asked for: a trim that quietly
+  // kept entries the caller expected gone is indistinguishable from one that found
+  // nothing to remove.
+  if (floorMs > requestedMs) {
+    const floorDays = floorMs / 86400000;
+    result.note =
+      floorDays >= 1
+        ? `floored to ${floorDays}d by the category retention floor`
+        : `floored to the ${PLAIN_DISK_FLOOR_MS / 1000}s in-flight guard`;
   }
   return result;
 }
