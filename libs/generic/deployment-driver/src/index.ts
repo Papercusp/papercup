@@ -257,6 +257,8 @@ export type {
   WorkspaceHostCanonicalArtifactUrls,
   WorkspaceHostRequiredReleaseMaterial,
 } from "./workspace-host-build-manifest";
+export { workspaceHostRequiredReleaseMaterialFixtures } from "./workspace-host-required-material-fixtures";
+export type { WorkspaceHostRequiredMaterialFixtureOverrides } from "./workspace-host-required-material-fixtures";
 export type {
   WorkspaceHostImageAction,
   WorkspaceHostImageLifecycleState,

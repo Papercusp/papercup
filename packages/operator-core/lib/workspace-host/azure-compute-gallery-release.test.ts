@@ -5,10 +5,10 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
-  WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   buildWorkspaceHostBuildManifest,
   deriveWorkspaceHostCanonicalArtifactUrls,
+  workspaceHostRequiredReleaseMaterialFixtures,
   buildWorkspaceHostCleanRoomInstallFixture,
   workspaceHostCleanRoomFixtureAttestation,
   type WorkspaceHostCleanRoomAcceptanceReport,
@@ -93,30 +93,10 @@ function artifact(): WorkspaceHostImageArtifact {
     },
     materials: [
       { path: 'dist/papercusp-server.tgz', sha256: RELEASE_SHA, sizeBytes: 42_000 },
-      // A shippable bundle must carry the remote initializer as an executable, or the image
+      // Derived from the release-gate contract, never restated: a shippable bundle must carry
+      // every required material (the remote initializer executable among them), or the image
       // installs and reports healthy and then fails every initialization at the far end.
-      {
-        path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
-        sha256: 'e'.repeat(64),
-        sizeBytes: 2_048,
-        executable: true,
-      },
-      {
-        path: 'bin/pui',
-        sha256: '6'.repeat(64),
-        sizeBytes: 8_192,
-        executable: true,
-      },
-      {
-        path: 'pui-companion.wasm',
-        sha256: '7'.repeat(64),
-        sizeBytes: 4_096,
-      },
-      {
-        path: 'pui-install.json',
-        sha256: '8'.repeat(64),
-        sizeBytes: 512,
-      },
+      ...workspaceHostRequiredReleaseMaterialFixtures(),
     ],
     parameters: [{ name: 'distribution_profile', value: 'vm-release' }],
     targets: [{ provider: 'azure', locations: [...REGIONS] }],
