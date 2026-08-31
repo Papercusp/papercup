@@ -191,7 +191,47 @@ describe('plan-item-reflect:set-state', () => {
     });
 
     const reopen = evt('work_items:set_state', stamped('open'));
-    expect(renderArgs(rule, reopen)).toMatchObject({ status: 'todo', onlyIfNotBlocked: true });
+    expect(renderArgs(rule, reopen)).toMatchObject({
+      status: 'todo',
+      onlyIfNotBlocked: false,
+      onlyIfNotTerminal: true,
+      onlyIfBlockAttributedTo: 'WI-9',
+    });
+  });
+
+  it('WI-1742073: uses the attributed clear only for a todo/reopen edge', () => {
+    const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
+
+    for (const state of ['open', 'todo']) {
+      const args = renderArgs(rule, evt('work_items:set_state', stamped(state)));
+      expect(args, state).toMatchObject({
+        status: 'todo',
+        onlyIfNotBlocked: false,
+        onlyIfNotTerminal: true,
+        onlyIfBlockAttributedTo: 'WI-9',
+      });
+    }
+
+    // Parking and terminal transitions retain the non-destructive blocked guard;
+    // only reopening is allowed to attempt an attributed lift.
+    const blocked = renderArgs(rule, evt('work_items:set_state', stamped('blocked')));
+    expect(blocked).toMatchObject({ status: 'blocked', onlyIfNotBlocked: true });
+    expect(blocked).not.toHaveProperty('onlyIfBlockAttributedTo');
+
+    const done = renderArgs(rule, evt('work_items:set_state', stamped('resolved')));
+    expect(done).toMatchObject({ status: 'done', onlyIfNotBlocked: true });
+    expect(done).not.toHaveProperty('onlyIfBlockAttributedTo');
+  });
+
+  it('falls back to the protected reflection when a reopen event has no work-item id', () => {
+    const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
+    const e = evt('work_items:set_state', {
+      ok: true,
+      workItem: { state: 'open', payload: { plan_item: STAMP } },
+    });
+    expect(fires(rule, e)).toBe(true);
+    expect(renderArgs(rule, e)).toMatchObject({ status: 'todo', onlyIfNotBlocked: true });
+    expect(renderArgs(rule, e)).not.toHaveProperty('onlyIfBlockAttributedTo');
   });
 
   // WI-38908 widened this from drop-only to EITHER TERMINAL status. The boundary that

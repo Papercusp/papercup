@@ -190,7 +190,22 @@ registerReactionRule({
   args: (e) => {
     const wi = workItemOf(e);
     const status = reflectedStatus(wi.state, wi.payload?.needsHuman === true)!;
-    return setStatusArgs(e, status, wi.state ?? 'state-changed');
+    const args = setStatusArgs(e, status, wi.state ?? 'state-changed');
+    // A work-item reopening from blocked to open is the one automated reflection
+    // whose intent is to LIFT a block. The shared guard deliberately protects every
+    // other reflection, but it would also skip this edge because the plan item is
+    // blocked by construction. Reuse the attributed-clear contract instead of
+    // disabling the guard broadly: only the work-item named in the live block note
+    // may clear it, and a terminal plan item can never be un-finished by the reopen.
+    if (status === 'todo' && typeof wi.id === 'string' && wi.id.length > 0) {
+      return {
+        ...args,
+        onlyIfNotBlocked: false,
+        onlyIfNotTerminal: true,
+        onlyIfBlockAttributedTo: wi.id,
+      };
+    }
+    return args;
   },
   onlyOnSuccess: true,
   source: 'plan-item-reflect',
