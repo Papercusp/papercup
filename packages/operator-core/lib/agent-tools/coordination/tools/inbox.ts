@@ -46,6 +46,7 @@ import { renderInjection, type CoordLineSource } from "../../../coord-schema";
 import { fetchPresenceFleet } from "../presence-fleet";
 import type { RecipientCueScope } from "../cue-authority";
 import { bodyRefWorkItemResolver, hydrateRefs } from "../ref-hydrate-resolve";
+import { annotateBlockedOnStatus } from "../blocked-on-status";
 import { resolveBestEffort, knownOwnerIdSet } from "../recipient-resolve";
 import {
   BODY_REF_SNIPPET_CHARS,
@@ -1458,6 +1459,21 @@ export default defineTool({
         .map((e) => e["msg_id"])
         .filter((id): id is string => typeof id === "string");
       if (ids.length > 0) entriesOut = annotateSuperseded(entriesOut, await getSupersededMap(ids));
+    } catch {
+      // Unmarked, but complete.
+    }
+
+    // coord-derived-fields-2026-08-31 P-005: diff each entry's AUTHORED
+    // blockedOn refs against live state — the mechanism the field's own
+    // doc-comment promised ("can be shown to have gone stale"). Same shape and
+    // rationale as the supersession marker above: one keyed query per ledger
+    // over the bounded page, fail-soft, non-mutating. A "cleared since send"
+    // verdict is exactly the news a waiting reader needs; an undeterminable
+    // ref gets NO verdict, never a guess.
+    try {
+      entriesOut = await annotateBlockedOnStatus(entriesOut, {
+        workspaceId: identity.workspaceId ?? '',
+      });
     } catch {
       // Unmarked, but complete.
     }

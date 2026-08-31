@@ -53,6 +53,39 @@ describe('blockedOn — accepted shapes', () => {
   });
 });
 
+describe('blockedOn — ref is REQUIRED for referenceable kinds (D-003, coord-derived-fields-2026-08-31)', () => {
+  // [owner 2026-08-31]: "anything that is a blocker is an important thing, agents might
+  // want to await on it being unblocked … they can only do that if it is a real thing
+  // not just prose." A ref-less referenceable blocker is neither awaitable nor
+  // diffable, so it is refused with the grammar in the message.
+  it("REFUSES kind event | work-item | agent | owner with no ref", () => {
+    for (const kind of ['event', 'work-item', 'agent', 'owner'] as const) {
+      const parsed = messageSectionSchema.safeParse({
+        text: 'blocked',
+        blockedOn: { kind, note: 'waiting on the thing' },
+      });
+      expect(parsed.success, `kind ${kind} without ref must refuse`).toBe(false);
+      if (!parsed.success) {
+        const msg = parsed.error.issues.map((i) => i.message).join('\n');
+        expect(msg).toMatch(/REQUIRES `ref`/);
+        // The refusal must TEACH the grammar, not just refuse.
+        expect(msg).toMatch(/work-item:done:<id>|events:catalog|ownerId/);
+      }
+    }
+  });
+
+  it('the refusal points a truly un-referenceable blocker at the other+note escape', () => {
+    const parsed = messageSectionSchema.safeParse({
+      text: 'blocked',
+      blockedOn: { kind: 'event' },
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map((i) => i.message).join('\n')).toMatch(/kind:'other'/);
+    }
+  });
+});
+
 describe('blockedOn — refusals that keep it actionable', () => {
   it("REFUSES kind:'process' with neither taskId nor logPath", () => {
     // This is the whole point: a process blocker the reader cannot check leaves them

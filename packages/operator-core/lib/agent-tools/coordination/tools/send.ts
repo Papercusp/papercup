@@ -116,6 +116,7 @@ import {
   type MessageWhy,
 } from '../message-fields';
 import { deriveBasedOn } from '../based-on';
+import { deriveAwaiting, AWAITING_DERIVED_PROVENANCE } from '../derive-awaiting';
 import {
   completionClaimMismatch,
   COMPLETION_CLAIM_MISMATCH_FIELD,
@@ -1258,6 +1259,18 @@ async function sendOne(
   if (fieldStamp.basedOn) extra.basedOn = fieldStamp.basedOn;
   const staleBasisStamps = staleBasis(basedOn);
   if (staleBasisStamps.length) extra[STALE_BASIS_FIELD] = staleBasisStamps;
+  // coord-derived-fields-2026-08-31 P-004 (D-003's derived half): the sender's
+  // REGISTERED waits — active events:await registrations + set_blocker records
+  // on held items — stamped like basedOn: session property, envelope-level,
+  // fail-soft (the .catch is load-bearing for the same reason deriveBasedOn's
+  // is: a decorative stamp must never fail the delivery it decorates). Named
+  // `awaiting`, NOT blockedOn: the authored per-section field is the sender's
+  // claim about a statement; this is a machine observation about the session.
+  const awaiting = await deriveAwaiting({
+    ownerId: identity.ownerId,
+    workspaceId: identity.workspaceId ?? '',
+  }).catch(() => []);
+  if (awaiting.length) extra.awaiting = awaiting;
   // Completion claims are additive evidence, never a refusal. If the message
   // names a plan/work-item/rubric as completed but the sender's recent read
   // trace contains no corresponding artifact, preserve that contradiction on
@@ -1281,6 +1294,7 @@ async function sendOne(
   const provenance: Record<string, string> = {
     ...(msg.fieldProvenance ?? {}),
     ...(fieldStamp.basedOn ? { basedOn: 'session-derived' } : {}),
+    ...(awaiting.length ? { awaiting: AWAITING_DERIVED_PROVENANCE } : {}),
   };
   if (Object.keys(provenance).length) {
     extra.fieldProvenance = provenance;

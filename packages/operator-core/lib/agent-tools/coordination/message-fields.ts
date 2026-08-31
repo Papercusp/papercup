@@ -345,11 +345,28 @@ const forYouBecauseArg = z
  *
  * Structured for the same reason `forYouBecause` is: a prose blocker cannot be diffed
  * against live state, so it can never be shown to have gone stale.
+ *
+ * ⚠ `ref` IS REQUIRED (coord-derived-fields-2026-08-31 D-003 [owner 2026-08-31]:
+ * "anything that is a blocker is an important thing, agents might want to await
+ * on it being unblocked … they can only do that if it is a real thing not just
+ * prose"). A blocker that is a real ref is AWAITABLE — a work-item ref maps to
+ * the machine `work-item:done:<id>` event key, an event ref IS an await key —
+ * and diffable at read ("cleared since send"), which is the whole value of the
+ * field. Prose can do neither, so prose-only entries are refused, not stored:
+ *   · kind event | work-item | agent | owner → `ref` required
+ *   · kind process → `taskId` (or `logPath`) required — the actionable handle
+ *   · kind other → `note` required (the D-043 escape hatch; excluded from diff)
+ * Enforced in the section superRefine below, where the refusal teaches the
+ * grammar. Historical rows written before this rule stay readable — readers
+ * tolerate a missing ref; only NEW writes are gated.
  */
 const blockedOnArg = z
   .object({
     kind: z.enum(['process', 'event', 'work-item', 'agent', 'owner', 'other']),
-    /** The blocker's identity in its own namespace: an event key, a WI-/EI- id, an ownerId. */
+    /** The blocker's identity in its own namespace: an event key (events:catalog),
+     *  a WI-/EI-/F- work-item id, an ownerId, or for kind:'owner' the id of the
+     *  needs-human item / escalation the owner must act on. REQUIRED for every
+     *  kind except 'process' (which takes `taskId`) and 'other' (note-only escape). */
     ref: z.string().min(1).optional(),
     /** kind:'process' — the durable task id. THE actionable handle: processes:list / processes:kill. */
     taskId: z.string().min(1).optional(),
@@ -361,11 +378,15 @@ const blockedOnArg = z
   })
   .optional()
   .describe(
-    'PER-SECTION. What this section is WAITING ON, structured so the reader can act on it ' +
-      'rather than re-derive it from prose. kind: process | event | work-item | agent | owner | ' +
-      "other. For kind:'process' give `taskId` (processes:list / logs:read can then check it) " +
-      "and/or `logPath` — a process blocker with neither is unactionable. `note` is REQUIRED " +
-      "with 'other'. `startedAt` (ISO-8601) lets the reader age the block without asking.",
+    'PER-SECTION. What this section is WAITING ON, structured so the reader can act on it — ' +
+      'check it, diff it against live state, or events:await its clearing — rather than re-derive ' +
+      'it from prose. kind: process | event | work-item | agent | owner | other. `ref` is REQUIRED ' +
+      "for event (the events:catalog key) | work-item (WI-/EI-/F- id — a reader can await " +
+      "`work-item:done:<id>`) | agent (ownerId) | owner (the needs-human/escalation id). For " +
+      "kind:'process' give `taskId` (processes:list / logs:read can then check it) and/or " +
+      "`logPath` — a process blocker with neither is unactionable and refused. `note` is REQUIRED " +
+      "with 'other' (the escape hatch for a genuinely un-referenceable blocker; excluded from the " +
+      "staleness diff). `startedAt` (ISO-8601) lets the reader age the block without asking.",
   );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -821,6 +842,28 @@ export const messageSectionSchema = z
           'cannot check whether the process is alive or advancing, which is the only reason to ' +
           'send a structured process blocker instead of a sentence. capability:bash returns the ' +
           'durable task_id; processes:list resolves it.',
+      });
+    }
+    // coord-derived-fields-2026-08-31 D-003 [owner 2026-08-31]: a blocker must be a
+    // REAL REF, not prose — a real ref is awaitable (a work-item ref maps to the
+    // machine `work-item:done:<id>` event key; an event ref IS an await key) and
+    // diffable at read ("cleared since send"). A kind naming a referenceable thing
+    // with no ref carries neither affordance, so it is refused with the grammar.
+    if (
+      section.blockedOn &&
+      ['event', 'work-item', 'agent', 'owner'].includes(section.blockedOn.kind) &&
+      !section.blockedOn.ref
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['blockedOn', 'ref'],
+        message:
+          `blockedOn.kind:'${section.blockedOn.kind}' REQUIRES \`ref\` — the blocker's identity in ` +
+          'its own namespace, so a reader can check it, diff it against live state, or ' +
+          'events:await its clearing. Grammar: event → the events:catalog key · work-item → the ' +
+          'WI-/EI-/F- id (awaitable as `work-item:done:<id>`) · agent → the ownerId · owner → the ' +
+          "needs-human item / escalation id the owner must act on. A blocker that fits no " +
+          "namespace is kind:'other' with a `note` (excluded from the staleness diff).",
       });
     }
     // D-043 ruling 1 — an escape that carries no explanation is a silent opt-out.

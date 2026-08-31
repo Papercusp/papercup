@@ -29,6 +29,10 @@ import { LIFECYCLE_CATEGORIES, type LifecycleCategory } from './coord-lifecycle/
 import { renderAuthoredFieldsSuffix } from './agent-tools/coordination/message-fields';
 import { renderStaleBasisSuffix, STALE_BASIS_FIELD } from './agent-tools/coordination/stale-basis';
 import {
+  renderBlockedOnStatusSuffix,
+  BLOCKED_ON_STATUS_FIELD,
+} from './agent-tools/coordination/blocked-on-status';
+import {
   isCueInScopeFor,
   readCueAuthority,
   renderCueAuthorityTag,
@@ -463,9 +467,15 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     const staleBasisSuffix = renderStaleBasisSuffix(
       (e as unknown as Record<string, unknown>)[STALE_BASIS_FIELD],
     );
+    // coord-derived-fields-2026-08-31 P-006: an authored blockedOn whose ref has
+    // CLEARED renders its verdict next to staleBasis — "cleared since send" is
+    // exactly the news a waiting reader needs; 'pending' stays silent.
+    const blockedOnSuffix = renderBlockedOnStatusSuffix(
+      (e as unknown as Record<string, unknown>)[BLOCKED_ON_STATUS_FIELD],
+    );
     const text = tag ? `[${tag}] ${body}` : body;
     lines.push(
-      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}${staleBasisSuffix}`,
+      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}`,
     );
   }
   return lines.join('\n');
