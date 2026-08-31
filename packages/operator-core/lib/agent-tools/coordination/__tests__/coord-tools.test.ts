@@ -174,8 +174,21 @@ describe('coord:inbox `since` steer (EI-21349112990078630)', () => {
     }
   });
 
-  it('steers time-bounded reads to coord:feed in the description upfront', () => {
-    expect(String(inboxTool.description)).toMatch(/time bounds \(`since`\)[^.]*coord:feed/i);
+  // EI-21349112990078630 requires that an agent reaching for `since` on coord:inbox is
+  // told where a time-bounded read actually lives. This was originally asserted of the
+  // DESCRIPTION ("upfront"). That sentence was then DELIBERATELY deleted to clear the
+  // 1500-char prompt-weight HARD CAP (a gate RED at 1578; see the comment on inbox.ts's
+  // guidance block) precisely because it was redundant with argRedirects.since, which
+  // teaches the identical redirect at ZERO prompt weight, paid only on the failure path.
+  // The requirement did not go away and is asserted far more strictly above, in "authors
+  // a cross-tool redirect to coord:feed for since" (target tool, the D-002 ratification
+  // pointer, and that every taught arg exists on coord:feed's live schema). So the useful
+  // guard now runs the OTHER way: keep that sentence OUT, so a future edit does not
+  // helpfully restore it and re-break the cap. The cap itself stays enforced by
+  // `npm run lint:tool-prompts`; this does not restate a byte budget it owns.
+  it('keeps the since steer OUT of the description (taught via argRedirects at zero prompt weight)', () => {
+    expect(String(inboxTool.description)).not.toMatch(/time bounds \(`since`\)/i);
+    expect(inboxTool.guidance?.argRedirects?.since).toBeDefined();
   });
 });
 
