@@ -459,6 +459,22 @@ export function collapseFanOut(rows: readonly AutomationRoutine[]): AutomationRo
     const active = group.some((g) => g.active);
     const liveness = worst(group);
     const armedState = worstArmed(group);
+    /*
+     * A group can hold two DIFFERENT kinds of member, and conflating them is what made the
+     * pane refuse a switch that existed (EI-19294826146331487):
+     *
+     *   - several INSTALLS of one routine (git-sync ×19) — each its own `routines:set` target;
+     *   - several VIEWS of ONE subject — an arm-state routines row plus the live inventory
+     *     observation of the same sweep. A view is not an install: it is never controllable,
+     *     and its `installSlug` is a SOURCE name ('in-process', 'managed', 'external-process')
+     *     that `routines:set` cannot address at all.
+     *
+     * So the routines members alone decide both answers when any exist. Demanding that EVERY
+     * member be controllable let a single view veto a real switch; iterating every member's
+     * slug would have pointed the click at a source name and failed the write.
+     */
+    const switches = group.filter((g) => g.source === 'routines');
+    const controllers = switches.length > 0 ? switches : group;
     out.push({
       ...head,
       active,
@@ -472,12 +488,12 @@ export function collapseFanOut(rows: readonly AutomationRoutine[]): AutomationRo
         spend: head.spend,
       }),
       // Sorted so the row is stable across reads regardless of SQL ordering.
-      installs: group.map((g) => g.installSlug).sort(),
+      installs: controllers.map((g) => g.installSlug).sort(),
       lastFiredAt: maxIso(group.map((g) => g.lastFiredAt)),
       nextFireAt: minIso(group.map((g) => g.nextFireAt)),
-      // Controllable only if every install is — a partially-controllable row would
-      // offer a switch that silently misses some pots.
-      controllable: group.every((g) => g.controllable),
+      // Controllable only if every INSTALL is — a partially-controllable row would
+      // offer a switch that silently misses some pots. Views are excluded above.
+      controllable: controllers.every((g) => g.controllable),
     });
   }
   return out;
@@ -503,6 +519,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       payload_template: Record<string, unknown> | null;
       target_owner_id: string | null;
       reschedule_interval_sec: number | null;
+      tier: string | null;
       active: boolean;
       last_fired_at: Date | null;
       next_fire_at: Date | null;
@@ -511,7 +528,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
   >`
     SELECT r.name, r.install_slug, r.group_slug, r.trigger_config, r.target_role,
            r.payload_template,
-           r.target_owner_id, r.reschedule_interval_sec, r.active,
+           r.target_owner_id, r.reschedule_interval_sec, r.tier, r.active,
            r.last_fired_at, r.next_fire_at,
            p.last_active_at AS owner_last_active_at
       FROM harness_shared.routines r
