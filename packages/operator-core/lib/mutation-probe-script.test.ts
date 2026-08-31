@@ -330,7 +330,15 @@ describe('mutation-probe.sh — copy-out relocation is proven sound before scori
       '--mutate',
       's/helperValue;/helperValue; \\/\\/ mutated/',
       '--test',
-      'node -e "import(process.argv[1]).then(()=>process.exit(0)).catch(()=>process.exit(1))" {}',
+      // The guard REPORTS the module error rather than swallowing it. Until
+      // 2026-08-31 this read `.catch(()=>process.exit(1))`, which prints
+      // nothing (measured: 0 bytes, exit 1) — so the ERR_MODULE_NOT_FOUND
+      // assertion below was matching the probe SCRIPT's own refusal prose,
+      // where the literal appeared twice, while its comment claimed the text
+      // came from Node. That made it a wording pin dressed as evidence: it
+      // broke the moment the refusal was reworded, and would have passed on a
+      // probe that captured nothing at all.
+      'node -e "import(process.argv[1]).then(()=>process.exit(0)).catch((e)=>{console.error(e.code||e.message);process.exit(1)})" {}',
     ]);
     expect(code).toBe(2);
     expect(out).toMatch(/COPY-BASELINE FAILED/i);
@@ -338,8 +346,8 @@ describe('mutation-probe.sh — copy-out relocation is proven sound before scori
     expect(out).toMatch(/verdict=harness-error/);
     expect(out).toMatch(/copy_baseline_exit=1/);
     expect(out).not.toMatch(/MUTANT CAUGHT/);
-    // The mutant guard never even ran — the subject is untouched, and the
-    // ERR_MODULE_NOT_FOUND came from Node itself, captured in the guard log.
+    // The mutant guard never even ran — the subject is untouched, and this
+    // ERR_MODULE_NOT_FOUND is Node's, echoed by run_guard's `cat "$output"`.
     expect(out).toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
     expect(readFileSync(relocSubject, 'utf8')).toBe(ORIGINAL_RELOC);
   });
@@ -381,6 +389,135 @@ describe('mutation-probe.sh — copy-out relocation is proven sound before scori
     // `mod.value === 1` check fails => exit 1 => the mutant is CAUGHT => the
     // probe itself exits 0.
     expect(code).toBe(0);
+  });
+});
+
+/**
+ * EI-21986396214443568 — copy-out must relocate into a MIRROR of the subject's
+ * worktree, not into a flat scratch dir.
+ *
+ * The flat relocation broke TWO couplings and the refusal text only ever named
+ * one. Sibling imports (`./lib/foo.mjs`) were named; LOCATIONAL IDENTITY — a
+ * subject that derives the repo root from its own path, the shape
+ * scripts/affected-tests.mjs uses — was not. Measured 2026-08-31: doing exactly
+ * what the refusal prescribed (carry the sibling directory alongside the copy)
+ * left an UNMUTATED copy failing 13 of 23 tests, i.e. a large failure count
+ * that reads as a spectacularly falsifiable guard. That is a false verdict in
+ * the dangerous direction, produced by following the tool's own advice.
+ *
+ * The fixture below couples to its location BOTH ways at once, so neither half
+ * of the repair can pass this on its own:
+ *   - it imports `./lib/sib.mjs` (siblings), and
+ *   - it reads a repo-root marker via `resolve(__dirname, '../..')` (location).
+ */
+function makeLocationalRepo(): { repo: string; subject: string } {
+  const repo = join(dir, 'locational-repo');
+  mkdirSync(join(repo, 'pkg', 'tools', 'lib'), { recursive: true });
+  git(repo, ['init', '-q']);
+  git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+  git(repo, ['config', 'user.name', 'mutation-probe-test']);
+  writeFileSync(join(repo, 'ROOT-MARKER.txt'), 'ROOT-MARKER\n');
+  writeFileSync(join(repo, 'pkg', 'tools', 'lib', 'sib.mjs'), "export const SIB = 'SIB';\n");
+  const subject = join(repo, 'pkg', 'tools', 'subject.mjs');
+  writeFileSync(
+    subject,
+    [
+      "import { readFileSync } from 'node:fs';",
+      "import { fileURLToPath } from 'node:url';",
+      "import { dirname, resolve } from 'node:path';",
+      "import { SIB } from './lib/sib.mjs';",
+      '',
+      'const here = dirname(fileURLToPath(import.meta.url));',
+      "const marker = readFileSync(resolve(here, '../..', 'ROOT-MARKER.txt'), 'utf8').trim();",
+      "const VERDICT = 'OK';",
+      'console.log(`${VERDICT} sib=${SIB} root=${marker}`);',
+      '',
+    ].join('\n'),
+  );
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'locational subject']);
+  return { repo, subject };
+}
+
+describe('mutation-probe.sh — copy-out relocates into a mirror of the subject worktree', () => {
+  it('reaches a genuine CAUGHT verdict for a subject coupled to BOTH its siblings and its repo-root location', () => {
+    const { subject } = makeLocationalRepo();
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      "s/const VERDICT = 'OK'/const VERDICT = 'MUTATED'/",
+      '--test',
+      "node {} | grep -qx 'OK sib=SIB root=ROOT-MARKER'",
+    ]);
+    // Both relocation-sensitive phases had to survive before a verdict was
+    // reachable at all: the in-tree baseline AND the unmutated relocated copy.
+    // A flat relocation dies in copy-baseline (ERR_MODULE_NOT_FOUND) and this
+    // is exit 2 / harness-error instead.
+    expect(out).toMatch(/relocating into a repo mirror/);
+    expect(out).not.toMatch(/COPY-BASELINE FAILED/);
+    expect(out).toMatch(/verdict=caught/);
+    expect(code).toBe(0);
+  });
+
+  it('mirrors the worktree WITHOUT .git, so a git-consulting subject fails loudly instead of reading a wholly dirty tree', () => {
+    // A symlinked .git would make every tracked path look to Git like a
+    // symlink where a blob belongs — the mirror would report the entire repo
+    // as modified. That is a silent wrong answer, which is exactly the class
+    // this whole relocation fix exists to remove, so .git is left out and the
+    // copy-baseline gate turns it into a refusal.
+    const { repo } = makeLocationalRepo();
+    const gitSubject = join(repo, 'pkg', 'tools', 'git-subject.sh');
+    writeFileSync(
+      gitSubject,
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        // Fails outright outside a worktree — the point is that the mirror
+        // makes this LOUD, not that it answers wrongly.
+        'root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"',
+        '[ -n "$root" ] || exit 1',
+        'echo MARK',
+        '',
+      ].join('\n'),
+    );
+    const { code, out } = runProbeIO([
+      '--file',
+      gitSubject,
+      '--mutate',
+      's/echo MARK/echo MUTATED/',
+      '--test',
+      'bash {} >/dev/null 2>&1',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/COPY-BASELINE FAILED/);
+    // The refusal must now say WHY, naming the deliberate .git exclusion —
+    // the old text only ever named sibling imports and prescribed a repair
+    // that cannot fix this case.
+    expect(out).toMatch(/\.git.*not mirrored|not mirrored.*\.git/is);
+    expect(out).not.toMatch(/MUTANT CAUGHT/);
+  });
+
+  it('still relocates FLAT (and still refuses a broken relocation) when the subject is not inside a worktree', () => {
+    // Calibration in the other direction: the mirror is keyed off
+    // `git rev-parse --show-toplevel`, so a subject outside any worktree keeps
+    // the original flat behaviour rather than silently mirroring something
+    // else. `dir` is a bare mkdtemp, deliberately not a repo.
+    const orphan = join(dir, 'orphan-subject.mjs');
+    mkdirSync(join(dir, 'orphan-lib'));
+    writeFileSync(join(dir, 'orphan-lib', 'helper.mjs'), 'export const v = 1;\n');
+    writeFileSync(orphan, "import { v } from './orphan-lib/helper.mjs';\nexport const value = v;\n");
+    const { code, out } = runProbeIO([
+      '--file',
+      orphan,
+      '--mutate',
+      's/export const value = v;/export const value = v + 1;/',
+      '--test',
+      'node -e "import(process.argv[1]).then(()=>process.exit(0)).catch(()=>process.exit(1))" {}',
+    ]);
+    expect(out).not.toMatch(/relocating into a repo mirror/);
+    expect(out).toMatch(/COPY-BASELINE FAILED/);
+    expect(code).toBe(2);
   });
 });
 

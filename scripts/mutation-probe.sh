@@ -874,6 +874,81 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
   exit 0
 fi
 
+# --- copy-out relocation: mirror the REPO, not just the file -----------------
+# (EI-21986396214443568, measured 2026-08-31) Copy-out used to drop the mutant
+# into a FLAT scratch dir. That breaks two different couplings a subject can
+# have to its own location, and only the first was ever named:
+#
+#   1. SIBLINGS — a relative `./lib/foo.mjs` import, the house pattern under
+#      scripts/*.mjs.
+#   2. LOCATIONAL IDENTITY — a subject that derives the repo root from its OWN
+#      path (`resolve(dirname(fileURLToPath(import.meta.url)), '..')`, the
+#      shape scripts/affected-tests.mjs uses). Relocated flat, it believes the
+#      repo root IS the scratch dir, so behaviour tests fail for reasons that
+#      have nothing to do with any mutation — a large, satisfying failure count
+#      that reads as a spectacularly falsifiable guard. That is the same
+#      false-verdict class this script exists to refuse, one layer out.
+#
+# Carrying the sibling DIRECTORY alongside the copy — the repair the
+# copy-baseline refusal used to prescribe — fixes 1 and NOT 2, and 2 fails in
+# the false-verdict direction. Mirroring the repo fixes both at once: every
+# entry of the worktree, at every level of the subject's own path, is symlinked
+# into a scratch tree, and the mutant is written at its TRUE repo-relative path
+# inside it. Siblings resolve, and so does any number of `..` hops up to the
+# root.
+#
+# .git is deliberately NOT mirrored. A symlinked .git would make the mirror
+# read to Git as a catastrophically dirty worktree (every tracked path appears
+# as a symlink where a blob belongs) — a SILENT wrong answer for any
+# git-consulting subject. Its absence fails LOUDLY instead, and the
+# copy-baseline gate below is what catches that.
+mirror_link_siblings() {
+  local real="$1" dir="$2" except="$3"
+  local entry name
+  for entry in "$real"/* "$real"/.[!.]* "$real"/..?*; do
+    # An unmatched glob is left literal by bash; skip those.
+    if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
+      continue
+    fi
+    name="${entry##*/}"
+    if [ "$name" = "$except" ] || [ "$name" = ".git" ]; then
+      continue
+    fi
+    ln -s "$entry" "$dir/$name" || return 1
+  done
+  return 0
+}
+
+# Mirror worktree $1 into $3, materialising as REAL directories only the chain
+# leading to $2 (a repo-relative file path); everything else at every level is
+# a symlink. Leaves $3/$2 ABSENT — the caller writes the mutant copy there.
+build_repo_mirror() {
+  local root="$1" rel="$2" dest="$3"
+  local dir="$dest" real="$root" remainder="$rel" component
+  # An empty root would make mirror_link_siblings glob ""/* == /* and symlink
+  # the whole filesystem into the scratch dir; an empty rel would leave the
+  # mutant with nowhere to land. Neither is reachable from the caller's
+  # guards, which is exactly why it is asserted here rather than assumed —
+  # measured 2026-08-31 while mutating this function, where dropping the
+  # caller-side guard produced precisely that filesystem-wide glob.
+  case "$root" in /*) ;; *) return 1 ;; esac
+  [ -d "$root" ] || return 1
+  [ -n "$rel" ] || return 1
+  case "$rel" in /*|*/) return 1 ;; esac
+  mkdir -p "$dest" || return 1
+  while [ "${remainder%%/*}" != "$remainder" ]; do
+    component="${remainder%%/*}"
+    remainder="${remainder#*/}"
+    mirror_link_siblings "$real" "$dir" "$component" || return 1
+    mkdir -p "$dir/$component" || return 1
+    dir="$dir/$component"
+    real="$real/$component"
+  done
+  # $remainder is now the file's own basename; everything beside it is a sibling.
+  mirror_link_siblings "$real" "$dir" "$remainder" || return 1
+  return 0
+}
+
 if [ "$IN_TREE" = "1" ]; then
   TARGET_MODE="in-tree:$SWEEP_ACK"
   log ""
@@ -892,7 +967,25 @@ if [ "$IN_TREE" = "1" ]; then
   TARGET="$FILE"
 else
   TARGET_MODE="copy-out"
-  TARGET="$SCRATCH/$(basename "$FILE")"
+  COPY_OUT_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true)"
+  COPY_OUT_REL=""
+  if [ -n "$COPY_OUT_ROOT" ]; then
+    case "$FILE" in
+      "$COPY_OUT_ROOT"/*) COPY_OUT_REL="${FILE#"$COPY_OUT_ROOT"/}" ;;
+    esac
+  fi
+  if [ -n "$COPY_OUT_REL" ]; then
+    COPY_OUT_MIRROR="$SCRATCH/mirror"
+    build_repo_mirror "$COPY_OUT_ROOT" "$COPY_OUT_REL" "$COPY_OUT_MIRROR" \
+      || die "could not build the copy-out repo mirror under $COPY_OUT_MIRROR"
+    TARGET="$COPY_OUT_MIRROR/$COPY_OUT_REL"
+    log "copy-out: relocating into a repo mirror — $COPY_OUT_ROOT symlinked into $COPY_OUT_MIRROR (.git excluded), mutant at its own repo-relative path $COPY_OUT_REL"
+  else
+    # Not inside a worktree, so there is no repo shape to mirror. Flat
+    # relocation, exactly as before — the copy-baseline gate below still
+    # refuses a relocation that breaks the subject.
+    TARGET="$SCRATCH/$(basename "$FILE")"
+  fi
   cp "$FILE" "$TARGET" || die "could not stage the probe copy"
 fi
 readonly TARGET_MODE
@@ -943,20 +1036,30 @@ if [ "$TARGET_MODE" = "copy-out" ]; then
     die "the guard failed against an UNMUTATED copy relocated to $TARGET, even though the SAME guard passed in-tree (baseline_exit=$BASELINE_RC, this run's exit=$COPY_BASELINE_RC).
 
       This is almost always the RELOCATION breaking the subject, not a caught
-      mutant — there is no mutation applied yet. The most common cause: the
-      subject has a relative SIBLING import (the \`./lib/...\` house pattern
-      under scripts/*.mjs) that copy-out mode's single-file relocation does
-      not carry along, so the copy dies on ERR_MODULE_NOT_FOUND the instant it
-      is moved — before a single assertion runs. Scoring that as a caught
-      mutant would report falsifiability this probe never demonstrated.
+      mutant — there is no mutation applied yet. Scoring it as a caught mutant
+      would report falsifiability this probe never demonstrated.
+
+      A subject INSIDE a Git worktree is already relocated into a MIRROR of
+      that worktree, at its own repo-relative path (see 'copy-out: relocating
+      into a repo mirror' above), so relative SIBLING imports and a
+      \`__dirname\`-derived repo root both still resolve. If you still landed
+      here, the remaining causes are:
+
+        - the subject is NOT inside a worktree, so there was no repo shape to
+          mirror and the copy is flat (no 'repo mirror' line above). Give it a
+          worktree, or point --test at the subject's real in-tree directory;
+        - the subject consults \`.git\`, which is deliberately NOT mirrored (a
+          symlinked .git makes the mirror read as a wholly dirty worktree —
+          a silent wrong answer, which is why this fails loudly instead);
+        - the subject reads an absolute path, or state outside the worktree.
 
       Inspect the captured guard output above (copy-baseline phase) for the
       exact failure — a module-resolution or file-not-found error confirms
       relocation, not mutation.
 
-      FIX: symlink or copy the subject's sibling directory alongside it before
-      mutating, or point --test at the subject's real in-tree directory
-      instead of relying on the runner's own relocated-copy path."
+      FIX: make the subject's out-of-worktree dependency overridable (an env
+      var or an argument the guard can point at the real in-tree location),
+      or run the probe with --in-tree."
   fi
 fi
 
