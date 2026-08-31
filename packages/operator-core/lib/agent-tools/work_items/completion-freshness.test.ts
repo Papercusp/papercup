@@ -6,7 +6,7 @@
  * current, changed, and not observable.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { completionFreshnessForEvidence } from './completion-freshness';
+import { completionFreshnessForEvidence, completionTreeContentIdentityMatches } from './completion-freshness';
 import type { CompletionTreeContentIdentity } from '../../coord-lifecycle/records';
 
 const identity: CompletionTreeContentIdentity[] = [
@@ -199,5 +199,37 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     expect(result?.verdict).toBe('unavailable');
     expect(result?.reason).toContain(reason);
     expect(result?.reason).toMatch(/not evidence of staleness/);
+  });
+});
+
+describe('completionTreeContentIdentityMatches — WI-1409142 absent-key hole', () => {
+  /**
+   * Stored evidence really can arrive with these keys MISSING rather than null: a
+   * recursive `jsonb_strip_nulls` on the terminal payload write deleted them. Under
+   * the old strict `!== null` such an entry read as a MATCH — `undefined !== null` is
+   * true twice, then `undefined === undefined` — so the floor would mint `committed`
+   * authority from an observation the server never actually made. That is the one
+   * direction this check must never fail in.
+   */
+  it('does NOT report a match when both blob-sha keys are absent', () => {
+    expect(completionTreeContentIdentityMatches([
+      { path: 'src/fix.ts' } as unknown as CompletionTreeContentIdentity,
+    ])).toBe(false);
+  });
+
+  it('does NOT report a match when only the HEAD side is absent', () => {
+    expect(completionTreeContentIdentityMatches([
+      { path: 'src/fix.ts', workingTreeBlobSha: 'c'.repeat(40) } as unknown as CompletionTreeContentIdentity,
+    ])).toBe(false);
+  });
+
+  it('still matches when both sides carry the same observed sha', () => {
+    expect(completionTreeContentIdentityMatches(identity)).toBe(true);
+  });
+
+  it('still rejects an explicit null, unchanged', () => {
+    expect(completionTreeContentIdentityMatches([
+      { path: 'src/fix.ts', workingTreeBlobSha: 'c'.repeat(40), headBlobSha: null },
+    ])).toBe(false);
   });
 });

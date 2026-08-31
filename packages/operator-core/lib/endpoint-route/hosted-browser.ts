@@ -1,0 +1,494 @@
+/**
+ * The explicit browser boundary for the hosted operator SPA.
+ *
+ * The local `/zero-harness/*` and `/workspace-hosts/*` routes are intentionally
+ * not reusable internet endpoints: they rely on loopback/process-global scope.
+ * This module gives the hosted static SPA a small, reviewed surface instead.
+ * Authentication is still supplied by the hosted route stack; this leaf adds
+ * the selected-customer-workspace binding, tenant transaction, exact-origin
+ * write check, and the query allowlist.
+ */
+import { defineTool, type RouteContext, type RouteDefinition } from '@papercusp/agent-mcp';
+import { withTenantContext, type VerifiedTenantServerContext } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
+import { parseLastEventId, sseResponse, type SyncSseEventVocabulary } from '@papercusp/sse';
+import { backfillSince, subscribe, type SyncEvent, type SubscribeHandle } from '../sync-sse';
+import { isHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
+import type { HostedTenantContextRunner } from '../auth/hosted/service-adapters';
+import {
+  readWorkspaceHostConnection,
+  readWorkspaceHostControl,
+  readWorkspaceHostDestroyTarget,
+  upsertWorkspaceHostConnection,
+  type StoredWorkspaceHostConnection,
+  type StoredWorkspaceHostDestroyTarget,
+  type WorkspaceHostConnectionInput,
+} from '../workspace-host/observability-store';
+import {
+  createWorkspaceHostConnectionRoute,
+  inspectWorkspaceHostConnection,
+  type WorkspaceHostConnectionInspection,
+  type WorkspaceHostConnectionRouteDependencies,
+} from './routes/workspace-hosts/connection';
+import {
+  createWorkspaceHostProvisionRoute,
+  type WorkspaceHostProvisionRouteDependencies,
+} from './routes/workspace-hosts/provision';
+import {
+  createWorkspaceHostActionRoute,
+  type WorkspaceHostActionRouteDependencies,
+} from './routes/workspace-hosts/action';
+import {
+  startWorkspaceHostDestroyWorkflow,
+  startWorkspaceHostLifecycleWorkflow,
+  startWorkspaceHostProvisioningWorkflow,
+  type StartWorkspaceHostDestroyInput,
+  type StartWorkspaceHostLifecycleInput,
+  type StartWorkspaceHostProvisioningInput,
+} from '../dbos/workspace-host-provision-workflow';
+import { dbosStarted } from '../dbos/bootstrap';
+
+export const HOSTED_BROWSER_REST_QUERY_PATH = '/hosted/browser/rest-query' as const;
+export const HOSTED_BROWSER_SSE_PATH = '/hosted/browser/sse' as const;
+export const HOSTED_BROWSER_CONNECTION_PATH = '/hosted/browser/workspace-hosts/connection' as const;
+export const HOSTED_BROWSER_PROVISION_PATH = '/hosted/browser/workspace-hosts/provision' as const;
+export const HOSTED_BROWSER_ACTION_PATH = '/hosted/browser/workspace-hosts/action' as const;
+
+export const HOSTED_BROWSER_QUERY_NAME = 'workspaceHosts.control' as const;
+
+/** Stable manifest consumed by the hosted runtime composition root. */
+export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: HOSTED_BROWSER_REST_QUERY_PATH, access: 'authenticated' },
+  { method: 'GET', path: HOSTED_BROWSER_SSE_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_CONNECTION_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_PROVISION_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_ACTION_PATH, access: 'authenticated' },
+] as const;
+
+const HOSTED_VIEW_AUTH = {
+  capabilities: ['workspace:view'],
+  kind: ['user'],
+  trust: ['verified'],
+} as const;
+const HOSTED_OPERATE_AUTH = {
+  capabilities: ['workspace:operate'],
+  kind: ['user'],
+  trust: ['verified'],
+} as const;
+const HOSTED_CONNECTION_AUTH = {
+  capabilities: ['cloud-connection:manage'],
+  kind: ['user'],
+  trust: ['verified'],
+} as const;
+
+type AnyRoute = RouteDefinition<any>;
+
+export interface HostedBrowserRouteDependencies {
+  /** Injectable in route tests; production uses the canonical tenant wrapper. */
+  readonly runTenant?: HostedTenantContextRunner;
+  readonly readControl?: (workspaceId: string, tx?: Sql) => Promise<unknown[]>;
+  readonly readConnection?: (
+    workspaceId: string,
+    connectionId: string,
+    tx?: Sql,
+  ) => Promise<StoredWorkspaceHostConnection | null>;
+  readonly upsertConnection?: (input: WorkspaceHostConnectionInput, tx?: Sql) => Promise<void>;
+  readonly inspectConnection?: WorkspaceHostConnectionRouteDependencies['inspectConnection'];
+  readonly readTarget?: (
+    workspaceId: string,
+    hostId: string,
+    tx?: Sql,
+  ) => Promise<StoredWorkspaceHostDestroyTarget | null>;
+  readonly provisioningAvailable?: () => boolean;
+  readonly startProvisioning?: (
+    input: StartWorkspaceHostProvisioningInput,
+  ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
+  readonly startDestroy?: (
+    input: StartWorkspaceHostDestroyInput,
+  ) => ReturnType<typeof startWorkspaceHostDestroyWorkflow>;
+  readonly startLifecycle?: (
+    input: StartWorkspaceHostLifecycleInput,
+  ) => ReturnType<typeof startWorkspaceHostLifecycleWorkflow>;
+  readonly subscribe?: typeof subscribe;
+  readonly backfillSince?: typeof backfillSince;
+}
+
+export interface HostedBrowserRouteConfiguration {
+  readonly publicOrigin: string;
+  /** The fixed operator workspace, never a customer-selected workspace. */
+  readonly controlPlaneWorkspaceId: string;
+  readonly dependencies?: HostedBrowserRouteDependencies;
+}
+
+export interface HostedBrowserRoutes {
+  readonly routes: ReadonlyArray<AnyRoute>;
+  readonly allowlist: typeof HOSTED_BROWSER_ROUTE_ALLOWLIST;
+}
+
+function exactHttpsOrigin(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new TypeError('hosted_browser_public_origin_must_be_an_exact_https_origin');
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username ||
+    parsed.password ||
+    (parsed.pathname !== '/' && parsed.pathname !== '') ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new TypeError('hosted_browser_public_origin_must_be_an_exact_https_origin');
+  }
+  return parsed.origin;
+}
+
+function jsonError(code: string, status: number, extra: Record<string, unknown> = {}): Response {
+  return Response.json(
+    { ok: false, error: code, message: code, ...extra },
+    { status, headers: { 'cache-control': 'no-store' } },
+  );
+}
+
+function noStore(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set('cache-control', 'no-store');
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+function selectedHostedPrincipal(ctx: RouteContext): HostedPrincipal | Response {
+  if (!ctx.principal || !isHostedPrincipal(ctx.principal)) return jsonError('hosted_principal_required', 401);
+  if (!ctx.principal.selectedWorkspaceId) return jsonError('workspace_not_selected', 403);
+  return ctx.principal;
+}
+
+function tenantContext(principal: HostedPrincipal): VerifiedTenantServerContext {
+  const selectedWorkspaceId = principal.selectedWorkspaceId;
+  if (!selectedWorkspaceId) throw new Error('workspace_not_selected');
+  return {
+    principal: {
+      kind: 'user',
+      profile: 'hosted',
+      authMethod: 'cookie-session',
+      trust: 'verified',
+      slug: principal.userId,
+      workspaceId: principal.workspaceId,
+      userId: principal.userId,
+      activeOrganizationId: principal.activeOrganizationId,
+      selectedWorkspaceId,
+      sessionId: principal.sessionId,
+      sessionVersion: principal.sessionVersion,
+    },
+    selectedWorkspace: { id: selectedWorkspaceId, organizationId: principal.activeOrganizationId },
+  };
+}
+
+function exactOriginOr403(request: Request, origin: string): Response | null {
+  // Unlike the local CSRF helper, hosted cookie writes require an Origin even
+  // for a same-site-looking request. A missing Origin is not proof of browser
+  // intent and must not become a credentialed write escape hatch.
+  return request.headers.get('origin') === origin ? null : jsonError('cross_origin_blocked', 403);
+}
+
+function workspaceHeaderMismatch(
+  request: Request,
+  principal: HostedPrincipal,
+  controlPlaneWorkspaceId: string,
+): Response | null {
+  const supplied = request.headers.get('x-papercusp-workspace')?.trim();
+  if (!supplied || supplied === principal.selectedWorkspaceId || supplied === controlPlaneWorkspaceId) return null;
+  return jsonError('workspace_binding_mismatch', 403);
+}
+
+function parseQueryArgs(request: Request, selectedWorkspaceId: string): Response | null {
+  const raw = new URL(request.url).searchParams.get('args') ?? '{}';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return jsonError('invalid_query_args', 400);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return jsonError('invalid_query_args', 400);
+  const record = parsed as Record<string, unknown>;
+  const keys = Object.keys(record);
+  // The query currently has no caller-controlled arguments. Accepting the
+  // selected workspace as a redundant assertion is useful to older clients,
+  // but never use it as the authority.
+  if (keys.length === 0) return null;
+  if (keys.length === 1 && record.workspaceId === selectedWorkspaceId) return null;
+  return jsonError('query_args_not_supported', 400);
+}
+
+function eventScope(event: SyncEvent): string | undefined {
+  const args = event.args;
+  if (!args) return undefined;
+  for (const key of [
+    'customerWorkspaceId',
+    'customer_workspace_id',
+    'selectedWorkspaceId',
+    'selected_workspace_id',
+    'workspaceId',
+    'workspace_id',
+  ]) {
+    const value = args[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/**
+ * Hosted SSE carries invalidation metadata only, never rows. A scoped source
+ * event is forwarded only to its customer (or the fixed control-plane source);
+ * an unscoped invalidation is safe because the browser must re-read through the
+ * tenant transaction and no cross-tenant payload is sent over the stream.
+ */
+function eventBelongsTo(event: SyncEvent, principal: HostedPrincipal): boolean {
+  if (event.name !== HOSTED_BROWSER_QUERY_NAME) return false;
+  const scope = eventScope(event);
+  return scope === undefined || scope === principal.selectedWorkspaceId || scope === principal.workspaceId;
+}
+
+function hostedInvalidatePayload(event: SyncEvent): SyncSseEventVocabulary['invalidate'] {
+  return { name: event.name, tsMs: event.ts };
+}
+
+function wrapTenantRead<T>(
+  principal: HostedPrincipal,
+  runTenant: HostedTenantContextRunner,
+  fn: (tx: Sql) => Promise<T>,
+): Promise<T> {
+  return runTenant(tenantContext(principal), fn);
+}
+
+function localConnectionRoute(
+  config: HostedBrowserRouteConfiguration,
+  principal: HostedPrincipal,
+  deps: HostedBrowserRouteDependencies,
+  runTenant: HostedTenantContextRunner,
+) {
+  const readConnection = deps.readConnection ?? readWorkspaceHostConnection;
+  const upsertConnection = deps.upsertConnection ?? upsertWorkspaceHostConnection;
+  const inspectConnection = deps.inspectConnection ?? inspectWorkspaceHostConnection;
+  return createWorkspaceHostConnectionRoute({
+    activeWorkspaceId: () => config.controlPlaneWorkspaceId,
+    readConnection: (workspaceId, connectionId) =>
+      wrapTenantRead(principal, runTenant, (tx) => readConnection(workspaceId, connectionId, tx)),
+    upsertConnection: (input) => wrapTenantRead(principal, runTenant, (tx) => upsertConnection(input, tx)),
+    inspectConnection,
+  });
+}
+
+function localProvisionRoute(
+  config: HostedBrowserRouteConfiguration,
+  principal: HostedPrincipal,
+  deps: HostedBrowserRouteDependencies,
+  runTenant: HostedTenantContextRunner,
+) {
+  const readConnection = deps.readConnection ?? readWorkspaceHostConnection;
+  return createWorkspaceHostProvisionRoute({
+    activeWorkspaceId: () => config.controlPlaneWorkspaceId,
+    provisioningAvailable: deps.provisioningAvailable ?? dbosStarted,
+    readConnection: (workspaceId, connectionId) =>
+      wrapTenantRead(principal, runTenant, (tx) => readConnection(workspaceId, connectionId, tx)),
+    startProvisioning: (input) =>
+      (deps.startProvisioning ?? startWorkspaceHostProvisioningWorkflow)({ ...input, actorId: principal.userId }),
+  });
+}
+
+function localActionRoute(
+  config: HostedBrowserRouteConfiguration,
+  principal: HostedPrincipal,
+  deps: HostedBrowserRouteDependencies,
+  runTenant: HostedTenantContextRunner,
+) {
+  const readTarget = deps.readTarget ?? readWorkspaceHostDestroyTarget;
+  const readConnection = deps.readConnection ?? readWorkspaceHostConnection;
+  return createWorkspaceHostActionRoute({
+    activeWorkspaceId: () => config.controlPlaneWorkspaceId,
+    provisioningAvailable: deps.provisioningAvailable ?? dbosStarted,
+    readTarget: (workspaceId, hostId) =>
+      wrapTenantRead(principal, runTenant, (tx) => readTarget(workspaceId, hostId, tx)),
+    readConnection: (workspaceId, connectionId) =>
+      wrapTenantRead(principal, runTenant, (tx) => readConnection(workspaceId, connectionId, tx)),
+    startDestroy: (input) =>
+      (deps.startDestroy ?? startWorkspaceHostDestroyWorkflow)({ ...input, actorId: principal.userId }),
+    startLifecycle: (input) =>
+      (deps.startLifecycle ?? startWorkspaceHostLifecycleWorkflow)({ ...input, actorId: principal.userId }),
+  });
+}
+
+function destroyPermissionDenied(request: Request, principal: HostedPrincipal): Promise<Response | null> {
+  return request
+    .clone()
+    .json()
+    .then((body: unknown) => {
+      if (
+        body &&
+        typeof body === 'object' &&
+        !Array.isArray(body) &&
+        (body as Record<string, unknown>).action === 'destroy'
+      ) {
+        if (!principal.capabilities.has('workspace:destroy')) return jsonError('permission_missing', 403);
+      }
+      return null;
+    })
+    .catch(() => null);
+}
+
+/** Compose the five routes that are reachable by the hosted static SPA. */
+export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfiguration): HostedBrowserRoutes {
+  const origin = exactHttpsOrigin(configuration.publicOrigin);
+  const controlPlaneWorkspaceId = configuration.controlPlaneWorkspaceId.trim();
+  if (!controlPlaneWorkspaceId) throw new TypeError('hosted_browser_requires_a_control_plane_workspace_id');
+  const deps = configuration.dependencies ?? {};
+  const runTenant = deps.runTenant ?? withTenantContext;
+  const readControl = deps.readControl ?? readWorkspaceHostControl;
+  const subscribeEvents = deps.subscribe ?? subscribe;
+  const backfill = deps.backfillSince ?? backfillSince;
+
+  const query = defineTool({
+    method: 'GET',
+    path: HOSTED_BROWSER_REST_QUERY_PATH,
+    auth: HOSTED_VIEW_AUTH,
+    cors: { origins: [origin] },
+    sampleRate: 0,
+    async handler(request, ctx) {
+      const principal = selectedHostedPrincipal(ctx);
+      if (principal instanceof Response) return principal;
+      const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
+      if (headerError) return headerError;
+      const url = new URL(request.url);
+      const name = url.searchParams.get('name');
+      if (name !== HOSTED_BROWSER_QUERY_NAME) {
+        return jsonError(name ? 'query_not_allowlisted' : 'missing_query_name', 400, { name });
+      }
+      const argsError = parseQueryArgs(request, principal.selectedWorkspaceId!);
+      if (argsError) return argsError;
+      const startedAt = Date.now();
+      try {
+        const rows = await wrapTenantRead(principal, runTenant, (tx) => readControl(controlPlaneWorkspaceId, tx));
+        const completedAt = Date.now();
+        return new Response(
+          JSON.stringify({
+            rows,
+            version: String(completedAt),
+            timing: {
+              unit: 'ms',
+              resolverStartedAtMs: startedAt,
+              resolverCompletedAtMs: completedAt,
+              resolverMs: Math.max(0, completedAt - startedAt),
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            },
+          },
+        );
+      } catch {
+        return jsonError('hosted_query_failed', 500, { name });
+      }
+    },
+  });
+
+  const sse = defineTool({
+    method: 'GET',
+    path: HOSTED_BROWSER_SSE_PATH,
+    auth: HOSTED_VIEW_AUTH,
+    cors: { origins: [origin] },
+    timeoutSec: null,
+    sampleRate: 0,
+    async handler(request, ctx) {
+      const principal = selectedHostedPrincipal(ctx);
+      if (principal instanceof Response) return principal;
+      const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
+      if (headerError) return headerError;
+      const lastEventId = parseLastEventId(request);
+      return sseResponse<SyncSseEventVocabulary>({
+        signal: request.signal,
+        lastEventId,
+        heartbeatMs: 15_000,
+        initialHeartbeat: true,
+        replay: () =>
+          backfill(lastEventId ?? 0)
+            .filter((event) => eventBelongsTo(event, principal))
+            .map((event) => ({
+              name: 'invalidate' as const,
+              data: hostedInvalidatePayload(event),
+              id: event.id,
+            })),
+        setup: async (sink) => {
+          const handle: SubscribeHandle = await subscribeEvents((event) => {
+            if (!eventBelongsTo(event, principal) || sink.closed) return;
+            // Never forward `event.data`: a full row payload would bypass the
+            // tenant transaction that protects the REST read.
+            sink.event('invalidate', hostedInvalidatePayload(event), { id: event.id });
+          });
+          sink.onClose(handle.close);
+        },
+        headers: { 'cache-control': 'no-store' },
+      });
+    },
+  });
+
+  const connection = defineTool({
+    method: 'POST',
+    path: HOSTED_BROWSER_CONNECTION_PATH,
+    auth: HOSTED_CONNECTION_AUTH,
+    cors: { origins: [origin] },
+    async handler(request, ctx) {
+      const principal = selectedHostedPrincipal(ctx);
+      if (principal instanceof Response) return principal;
+      const csrf = exactOriginOr403(request, origin);
+      if (csrf) return csrf;
+      const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
+      if (headerError) return headerError;
+      return noStore(await localConnectionRoute(configuration, principal, deps, runTenant).handler(request, ctx));
+    },
+  });
+
+  const provision = defineTool({
+    method: 'POST',
+    path: HOSTED_BROWSER_PROVISION_PATH,
+    auth: HOSTED_OPERATE_AUTH,
+    cors: { origins: [origin] },
+    async handler(request, ctx) {
+      const principal = selectedHostedPrincipal(ctx);
+      if (principal instanceof Response) return principal;
+      const csrf = exactOriginOr403(request, origin);
+      if (csrf) return csrf;
+      const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
+      if (headerError) return headerError;
+      return noStore(await localProvisionRoute(configuration, principal, deps, runTenant).handler(request, ctx));
+    },
+  });
+
+  const action = defineTool({
+    method: 'POST',
+    path: HOSTED_BROWSER_ACTION_PATH,
+    auth: HOSTED_OPERATE_AUTH,
+    cors: { origins: [origin] },
+    async handler(request, ctx) {
+      const principal = selectedHostedPrincipal(ctx);
+      if (principal instanceof Response) return principal;
+      const csrf = exactOriginOr403(request, origin);
+      if (csrf) return csrf;
+      const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
+      if (headerError) return headerError;
+      const permission = await destroyPermissionDenied(request, principal);
+      if (permission) return permission;
+      return noStore(await localActionRoute(configuration, principal, deps, runTenant).handler(request, ctx));
+    },
+  });
+
+  return {
+    routes: [query, sse, connection, provision, action],
+    allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
+  };
+}
+
+export default createHostedBrowserRoutes;

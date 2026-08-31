@@ -10,9 +10,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  RESTART_SAFETY_NOTE,
   evaluateExecutorStaleness,
   executorAlarmContext,
   executorIdentity,
+  refreshedEscalationPayload,
   staleExecutorThresholdSec,
 } from './stale-routine-executor-watchdog';
 import {
@@ -301,6 +303,187 @@ describe('executorAlarmContext — identify the owning service before suggesting
       expect(context.restartLever).toContain('resolve the owning service');
     } finally {
       if (savedUnit !== undefined) process.env.PAPERCUSP_SYSTEMD_UNIT = savedUnit;
+    }
+  });
+});
+
+/**
+ * The page names a lever; these pin that it also answers "is pulling it safe RIGHT NOW".
+ *
+ * Two agents on 2026-08-30 each hand-derived that precondition from process scans and
+ * each reached the same REFUTED conclusion, then declined to remediate an open page for
+ * an hour on it. The presence/absence pair below is the falsifiability structure: deleting
+ * the note fails the first test, and weakening it to fire for an UNIDENTIFIED service —
+ * which would be unfounded reassurance rather than a measurement — fails the second.
+ * Neither can be made to pass by removing the feature.
+ */
+describe('the stale-executor page carries the restart-safety precondition, not just the lever', () => {
+  it('tells a reader of a RESOLVED unit to let the lever decide, via its side-effect-free dry run', () => {
+    const context = executorAlarmContext('port-3271');
+
+    expect(context.restartSafety).toBe(RESTART_SAFETY_NOTE);
+    // The actionable half: which call answers it, and how to read the answer.
+    expect(context.restartSafety).toContain('WITHOUT');
+    expect(context.restartSafety).toContain('gate_collision');
+    expect(context.restartSafety).toContain('would_block:true');
+  });
+
+  it('states the isolated-scope FACT, so an in-flight gate run stops reading as a reason to wait', () => {
+    const note = executorAlarmContext('port-3271').restartSafety ?? '';
+
+    expect(note).toContain('cgroup-isolated');
+    expect(note).toContain('SURVIVES');
+    // Cites the measurements rather than asserting it bare — a reader who distrusts the
+    // claim (correctly, since the false version circulated for weeks) can go check them.
+    expect(note).toContain('EI-20286473216066539');
+  });
+
+  it('never asserts the refuted mechanism it exists to replace', () => {
+    const note = executorAlarmContext('port-3271').restartSafety ?? '';
+
+    // The exact shape that circulated: "restarting kills / aborts the in-flight run".
+    expect(note).not.toMatch(/restart\w*\s+.{0,40}(abort|terminate|kill)\w*\s+.{0,20}run/i);
+    expect(note).not.toMatch(/starv\w*\s+(the\s+)?gate/i);
+  });
+
+  it('ABSENCE control — an unresolvable identity gets NO safety claim, because none was measured', () => {
+    const savedUnit = process.env.PAPERCUSP_SYSTEMD_UNIT;
+    delete process.env.PAPERCUSP_SYSTEMD_UNIT;
+    try {
+      const context = executorAlarmContext('pid-1690541');
+
+      // No lever resolved ⇒ no dry run to point at. Silence beats a confident claim
+      // about a service we could not even name.
+      expect(context.restartSafety).toBeNull();
+    } finally {
+      if (savedUnit !== undefined) process.env.PAPERCUSP_SYSTEMD_UNIT = savedUnit;
+    }
+  });
+});
+
+/**
+ * An OPEN page must not freeze at its first reading.
+ *
+ * The alarm is one-shot per episode, which is right for the notification and was wrong
+ * for the ROW: on 2026-08-30 an open page kept reporting the uptime and drift it had when
+ * it opened, for over an hour, while both grew — a stale value inside the watchdog built
+ * to report staleness. These pin the two halves that make a refresh trustworthy: current
+ * readings REPLACE, and `emitted_at` does NOT.
+ */
+describe('refreshedEscalationPayload — an open page ages visibly instead of freezing', () => {
+  const T0 = 1_700_000_000_000;
+  const prior = {
+    kind: 'stale-routine-executor-watchdog:port-3271',
+    harness_slug: 'papercusp',
+    identity: 'port-3271',
+    ageHours: 2,
+    commitsBehind: 109,
+    detail: 'the reading as it was when the page opened',
+    unit: 'papercusp-bg-host.service',
+    restartLever: 'dev:restart {...}',
+    restartSafety: RESTART_SAFETY_NOTE,
+    emitted_at: T0,
+  };
+  const nowFacts = {
+    kind: prior.kind,
+    harness_slug: prior.harness_slug,
+    identity: prior.identity,
+    ageHours: 5,
+    commitsBehind: 240,
+    detail: 'the reading now',
+    unit: prior.unit,
+    restartLever: prior.restartLever,
+    restartSafety: RESTART_SAFETY_NOTE,
+  };
+
+  it('replaces every CURRENT reading, so the row stops misreporting the condition', () => {
+    const refreshed = refreshedEscalationPayload(prior, nowFacts, T0 + 3 * 3_600_000);
+
+    expect(refreshed.ageHours).toBe(5);
+    expect(refreshed.commitsBehind).toBe(240);
+    expect(refreshed.detail).toBe('the reading now');
+  });
+
+  it('PRESERVES emitted_at and derives openForHours from it — the number that makes an ignored page loud', () => {
+    const refreshed = refreshedEscalationPayload(prior, nowFacts, T0 + 3 * 3_600_000);
+
+    // Restamping emitted_at would reset the page's apparent age on every refresh and
+    // hide precisely what the refresh exists to reveal.
+    expect(refreshed.emitted_at).toBe(T0);
+    expect(refreshed.openForHours).toBe(3);
+    expect(refreshed.refreshed_at).toBe(T0 + 3 * 3_600_000);
+  });
+
+  it('an UNREADABLE prior emitted_at yields openForHours null, never a fabricated 0', () => {
+    // 0 would read as "just opened" — the exact opposite of what an unreadable prior row
+    // licenses us to claim.
+    for (const broken of [{ ...prior, emitted_at: undefined }, { ...prior, emitted_at: 'nope' }]) {
+      const refreshed = refreshedEscalationPayload(broken, nowFacts, T0 + 3 * 3_600_000);
+      expect(refreshed.openForHours).toBeNull();
+    }
+  });
+
+  it('reads a JSON STRING prior row — which is what the TEXT escalation column actually returns', () => {
+    // The regression this exists for: `harness_escalations.escalation` is TEXT, not jsonb,
+    // so the driver hands back a string. An object-only reader would treat EVERY real row
+    // as unreadable, restamp emitted_at, and reset the page's apparent age on each refresh
+    // — the feature would look implemented and do the opposite of its purpose, silently.
+    const refreshed = refreshedEscalationPayload(JSON.stringify(prior), nowFacts, T0 + 3 * 3_600_000);
+
+    expect(refreshed.emitted_at).toBe(T0);
+    expect(refreshed.openForHours).toBe(3);
+    expect(refreshed.ageHours).toBe(5);
+  });
+
+  it('a MALFORMED prior string degrades to null rather than throwing', () => {
+    const refreshed = refreshedEscalationPayload('{not json', nowFacts, T0);
+
+    expect(refreshed.openForHours).toBeNull();
+    expect(refreshed.ageHours).toBe(5);
+  });
+
+  it('FALSIFIABILITY CONTROL — the two assertions above catch the obvious wrong implementations', () => {
+    // The subject is an imported module, so the copy-out mutation-probe tier does not
+    // apply; the repo's prescribed substitute is a deliberately-wrong implementation kept
+    // permanently in the test file. These are the two ways a refresh gets written badly.
+    const restamping = (_prev: unknown, next: typeof nowFacts, now: number) => ({
+      ...next,
+      emitted_at: now, // ← the bug: resets the page's apparent age on every refresh
+      refreshed_at: now,
+      openForHours: 0,
+    });
+    const fabricatingZero = (prev: unknown, next: typeof nowFacts, now: number) => {
+      const at = (prev as { emitted_at?: unknown })?.emitted_at;
+      return {
+        ...next,
+        emitted_at: typeof at === 'number' ? at : now,
+        refreshed_at: now,
+        openForHours: typeof at === 'number' ? Math.round((now - at) / 3_600_000) : 0, // ← the bug
+      };
+    };
+    const at = T0 + 3 * 3_600_000;
+
+    // Control 1 fails the preservation assertion...
+    expect(restamping(prior, nowFacts, at).emitted_at).not.toBe(T0);
+    // ...and control 2 fails the no-fabricated-zero assertion, while PASSING control 1's.
+    expect(fabricatingZero(prior, nowFacts, at).emitted_at).toBe(T0);
+    expect(fabricatingZero({ ...prior, emitted_at: 'nope' }, nowFacts, at).openForHours).toBe(0);
+
+    // CALIBRATION: the real implementation passes both, so the controls are measuring the
+    // implementation and not a broken harness.
+    const real = refreshedEscalationPayload(prior, nowFacts, at);
+    expect(real.emitted_at).toBe(T0);
+    expect(refreshedEscalationPayload({ ...prior, emitted_at: 'nope' }, nowFacts, at).openForHours).toBeNull();
+  });
+
+  it('survives a prior row that is not an object at all, rather than throwing inside a watchdog', () => {
+    // A watchdog that throws while reporting a fault reports nothing. Every input a
+    // jsonb column can actually hold has to land somewhere sane.
+    for (const junk of [null, undefined, 'a string', 42]) {
+      const refreshed = refreshedEscalationPayload(junk, nowFacts, T0);
+      expect(refreshed.emitted_at).toBe(T0);
+      expect(refreshed.openForHours).toBeNull();
+      expect(refreshed.ageHours).toBe(5);
     }
   });
 });

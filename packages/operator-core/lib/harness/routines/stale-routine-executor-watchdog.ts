@@ -111,7 +111,48 @@ export interface ExecutorAlarmContext {
   unit: string;
   restartLever: string;
   identityLabel: string;
+  /** How the reader establishes that restarting is safe RIGHT NOW — null when no
+   *  lever was resolved, because a safety claim about an unidentified service is
+   *  worse than silence. See RESTART_SAFETY_NOTE for why this is written down at
+   *  all rather than left to each reader. */
+  restartSafety: string | null;
 }
+
+/**
+ * The remediation half nobody could derive from the page, so everybody derived it
+ * WRONG — separately, at full cost, more than once in a single night.
+ *
+ * The page already named the lever. What it never said is that the lever ANSWERS
+ * the safety question itself: `dev:restart` without `confirm` is a side-effect-free
+ * dry run whose `gate_collision` verdict comes from `checkGateCollision`, which
+ * computes the real cgroup relation and blocks only on a genuine same-cgroup
+ * collision or an imminent fire.
+ *
+ * Absent that sentence, two agents on 2026-08-30 each hand-derived the precondition
+ * from process scans and each reached the same REFUTED conclusion — "a green-checkpoint
+ * run is in flight, so restarting would kill it" — and both declined to remediate an
+ * open page for an hour on the strength of it. The suite is deliberately spawned into
+ * its own transient systemd scope (release-actions.ts `runScript`: "The routine parent
+ * is not the durable owner of a scheduled run: it can be reaped while the systemd scope
+ * keeps the suite alive"), so it is cgroup-isolated and survives the restart. That was
+ * already established by MEASUREMENT twice — EI-20286473216066539 (2026-08-13) and
+ * EI-21437097591910648 (2026-08-25, live probe with a run 2669s in flight reporting
+ * kind:'run-in-flight-isolated', would_block:false).
+ *
+ * It keeps being re-derived because the false version is strictly SCARIER than the
+ * truth, and a scary caution is the kind of claim agents preserve preferentially. The
+ * durable fix is therefore to put the answer where the question is ASKED — on the page —
+ * rather than to correct one more carry-note. Pinned against drift by
+ * doc-claims/dev-restart-gate-collision-rationale.test.ts, so if the guard ever
+ * legitimately starts blocking an isolated run, this text fails in the same change.
+ */
+export const RESTART_SAFETY_NOTE =
+  'Do NOT hand-derive whether restarting is safe right now — the lever answers it. Run the same call WITHOUT ' +
+  '`confirm` first: that dry run has no side effects and returns `gate_collision` (plus `git_sync_collision`), ' +
+  'which is authoritative. In particular an in-flight green-checkpoint run is NOT by itself a reason to wait — the ' +
+  'suite runs detached in its own transient systemd scope, so it is cgroup-isolated and SURVIVES this restart ' +
+  '(measured: EI-20286473216066539, re-confirmed EI-21437097591910648). Wait only if the dry run itself reports ' +
+  'would_block:true.';
 
 /**
  * Resolve the user-facing identity and sanctioned remediation for an executor.
@@ -133,6 +174,7 @@ export function executorAlarmContext(identity: string): ExecutorAlarmContext {
       unit: known.unit,
       restartLever: `dev:restart { target: '${known.target}', confirm: true, authorize: true, reason: 'reload the owning executor with updated code' }`,
       identityLabel: `${known.unit} (executor identity ${identity})`,
+      restartSafety: RESTART_SAFETY_NOTE,
     };
   }
 
@@ -144,6 +186,10 @@ export function executorAlarmContext(identity: string): ExecutorAlarmContext {
       ? `the sanctioned dev:restart target for ${configuredUnit}`
       : 'resolve the owning service before choosing its sanctioned dev:restart target',
     identityLabel: `${unit} (executor identity ${identity})`,
+    // No resolved lever means no dry run to point at, and a safety claim about an
+    // unidentified service would be exactly the unfounded reassurance this note
+    // exists to replace. Stay silent instead.
+    restartSafety: null,
   };
 }
 
@@ -244,6 +290,73 @@ function driftSuffix(verdict: ExecutorStalenessVerdict): string {
   return ` and ${n} COMMIT${n === 1 ? '' : 'S'} BEHIND`;
 }
 
+/** What the watchdog stores on an open escalation row — the thing a reader actually
+ *  finds an hour later, once the notification has scrolled away. */
+export interface StaleExecutorEscalation {
+  kind: string;
+  harness_slug: string;
+  identity: string;
+  ageHours: number;
+  commitsBehind: number | null;
+  detail: string;
+  unit: string;
+  restartLever: string;
+  restartSafety: string | null;
+  /** When the page FIRST opened. Never overwritten by a refresh — it is the only
+   *  field that answers "how long has this been ignored". */
+  emitted_at: number;
+  refreshed_at?: number;
+  /** Hours the page has been open and unacted. null when `emitted_at` was
+   *  unreadable on the prior row, because a fabricated zero would read as "just
+   *  opened" — the opposite of the truth this field exists to carry. */
+  openForHours?: number | null;
+}
+
+/**
+ * PURE: refresh an OPEN page's numbers without re-paging.
+ *
+ * The alarm is deliberately one-shot per episode, which is right for the NOTIFICATION
+ * and wrong for the ROW: the escalation row froze at first-page and then silently
+ * misreported for as long as the condition lasted. On 2026-08-30 it read "has run 2h"
+ * for over an hour after that had stopped being true, while the drift kept growing —
+ * a stale value inside the very watchdog built to report staleness.
+ *
+ * `openForHours` is the number that makes an ignored page hard to keep ignoring, and it
+ * is why `emitted_at` is carried over rather than restamped: a refresh that moved it
+ * would reset the page's apparent age on every tick and hide exactly what it should show.
+ */
+export function refreshedEscalationPayload(
+  prev: unknown,
+  next: Omit<StaleExecutorEscalation, 'emitted_at' | 'refreshed_at' | 'openForHours'>,
+  now: number,
+): StaleExecutorEscalation {
+  // ⚠ `harness_escalations.escalation` is a TEXT column, not jsonb — verified against the
+  // live schema — so the driver hands this back as a JSON STRING, not a parsed object. An
+  // object-only reader would treat every real row as unreadable, silently restamp
+  // `emitted_at`, and reset the page's apparent age on every refresh: the feature would
+  // look implemented and do the exact opposite of its purpose, with no error anywhere.
+  // Accept both shapes rather than relying on the column's storage type staying put.
+  const parsed =
+    typeof prev === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(prev) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : prev;
+  const prevRow = (parsed && typeof parsed === 'object' ? parsed : {}) as Partial<StaleExecutorEscalation>;
+  const emittedAt =
+    typeof prevRow.emitted_at === 'number' && Number.isFinite(prevRow.emitted_at) ? prevRow.emitted_at : null;
+  return {
+    ...next,
+    emitted_at: emittedAt ?? now,
+    refreshed_at: now,
+    openForHours: emittedAt === null ? null : Math.round((now - emittedAt) / 3_600_000),
+  };
+}
+
 async function raiseExecutorStalenessAlarm(opts: {
   workspaceId: string;
   installSlug: string;
@@ -257,12 +370,47 @@ async function raiseExecutorStalenessAlarm(opts: {
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
-    const existing = await sql<{ escalation: unknown }[]>`
+    // TEXT column (see refreshedEscalationPayload) — typed honestly so a reader is not
+    // misled into assuming the driver parsed it.
+    const existing = await sql<{ escalation: string | null }[]>`
       SELECT escalation FROM harness_shared.harness_escalations
        WHERE harness_slug = ${installSlug} AND phase = ${phase}`;
-    if (existing.length > 0 && existing[0].escalation != null) return false; // already paged this episode
-
     const ageHours = Math.round(verdict.ageMs / 3_600_000);
+    /** Everything about the CURRENT reading — shared by the first page and every later
+     *  refresh, so the two can never describe the condition differently. */
+    const rowFacts = {
+      kind: phase,
+      harness_slug: installSlug,
+      identity,
+      ageHours,
+      commitsBehind: verdict.commitsBehind ?? null,
+      detail: verdict.reason,
+      // The escalation ROW is what a reader finds an hour later, once the notification
+      // has scrolled away — so the remediation has to travel WITH it, not only on the
+      // broadcast that announced it.
+      unit: alarmContext.unit,
+      restartLever: alarmContext.restartLever,
+      restartSafety: alarmContext.restartSafety,
+    };
+
+    if (existing.length > 0 && existing[0].escalation != null) {
+      // Already paged this EPISODE. The notification stays one-shot — re-paging an
+      // unchanged condition is how a watchdog trains people to mute it. But the ROW must
+      // not freeze at its first reading: this branch used to drop the claimed fire on the
+      // floor, so an open page kept reporting the uptime and drift it had when it opened,
+      // for as long as the condition lasted. Reached once per debounce window (the fire is
+      // already claimed by the caller), so refreshing here adds no cadence of its own.
+      try {
+        const refreshed = refreshedEscalationPayload(existing[0].escalation, rowFacts, now);
+        await sql`
+          UPDATE harness_shared.harness_escalations
+             SET escalation = ${JSON.stringify(refreshed)}, mtime_ms = ${now}
+           WHERE harness_slug = ${installSlug} AND phase = ${phase}`;
+      } catch (e) {
+        console.warn(`[stale-routine-executor] escalation refresh failed: ${e instanceof Error ? e.message : e}`);
+      }
+      return false;
+    }
 
     try {
       const { notifyAttention } = await import('../../attention-notify');
@@ -279,6 +427,7 @@ async function raiseExecutorStalenessAlarm(opts: {
           identity,
           unit: alarmContext.unit,
           restartLever: alarmContext.restartLever,
+          restartSafety: alarmContext.restartSafety,
         },
       });
     } catch (e) {
@@ -294,7 +443,8 @@ async function raiseExecutorStalenessAlarm(opts: {
       body:
         `${verdict.reason}\n\nThe worker identity is not necessarily the systemd MainPID. Do NOT kill or duplicate a worker PID ` +
         `to "fix" this; restart ${alarmContext.unit} with ${alarmContext.restartLever}, or stop carrying ` +
-        `PAPERCUSP_DBOS_ROUTINES=1 on that service if it no longer needs to run routines.`,
+        `PAPERCUSP_DBOS_ROUTINES=1 on that service if it no longer needs to run routines.` +
+        (alarmContext.restartSafety ? `\n\n${alarmContext.restartSafety}` : ''),
       category: 'severe-event',
       conditionKey: conditionKeyFor(identity),
       oneShot: true,
@@ -303,14 +453,7 @@ async function raiseExecutorStalenessAlarm(opts: {
     try {
       await sql`
         INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
-        VALUES (${installSlug}, ${phase}, ${JSON.stringify({
-          kind: phase,
-          harness_slug: installSlug,
-          identity,
-          ageHours,
-          detail: verdict.reason,
-          emitted_at: now,
-        })}, ${now}, ${workspaceId})
+        VALUES (${installSlug}, ${phase}, ${JSON.stringify({ ...rowFacts, emitted_at: now })}, ${now}, ${workspaceId})
         ON CONFLICT (harness_slug, phase)
         DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
     } catch (e) {

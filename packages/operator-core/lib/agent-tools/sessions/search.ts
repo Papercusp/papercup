@@ -350,6 +350,51 @@ export default defineTool({
       }
     }
 
+    // EI-21922997688425048: session_turns is TEXT TURNS ONLY — tool_use/
+    // tool_result content is never stored there (except the narrow
+    // AskUserQuestion owner-dialog carve-out above), so a verbatim 0 there
+    // does not mean the exact string never occurs anywhere in the transcript:
+    // it may be sitting inside a tool call's arguments or a tool result (a
+    // long-form report, a file body, another interactive tool's answer). This
+    // is a STRUCTURAL gap, independent of index freshness — re-running the
+    // refresh cannot fix it. Probe the faithful-render companion store
+    // (session_turn_parts, 14-day retention, keeps tool_use/tool_result
+    // payloads the recall corpus deliberately excludes) for the SAME literal
+    // substring. A hit there is a POSITIVE existence proof — stronger than
+    // any of the caveats above, because it means the text genuinely occurs,
+    // just not in a plain text turn.
+    let toolPartCaveat: string | undefined;
+    if (mode === 'verbatim' && pageHits.length === 0) {
+      try {
+        const pf = filters ?? {};
+        const pOwners = pf.owners && pf.owners.length ? pf.owners : null;
+        const [row] = await ctx.tx<Array<{ hits: string }>>`
+          SELECT COUNT(*)::text AS hits
+            FROM harness_shared.session_turn_parts
+           WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+             AND (${pOwners}::text[] IS NULL OR owner = ANY(${pOwners}::text[]))
+             AND (${pf.sessionId ?? null}::text IS NULL OR session_id = ${pf.sessionId ?? null})
+             AND (${pf.sourceKind ?? null}::text IS NULL OR source_kind = ${pf.sourceKind ?? null})
+             AND (${pf.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${pf.since ?? null}::timestamptz)
+             AND (${pf.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${pf.until ?? null}::timestamptz)
+             AND part_kind IN ('tool_use', 'tool_result')
+             AND text ILIKE '%' || ${args.query} || '%'
+        `;
+        const partHits = row ? Number(row.hits) : 0;
+        if (partHits > 0) {
+          toolPartCaveat =
+            `⚠ FOUND, JUST NOT IN A TEXT TURN: 0 hits among plain conversational turns, but the exact string ` +
+            `occurs ${partHits} time(s) inside a tool call or tool result in this scope (session_turn_parts, the ` +
+            `faithful-render store, kept 14 days). session_turns deliberately excludes tool_use/tool_result content ` +
+            `so recall is not flooded with tool noise — this 0 is NOT evidence the text was never written, only that ` +
+            `it is not sitting in a plain user/assistant text turn. Read the raw transcript or the specific turn ` +
+            `(sessions:read) to see the tool call/result directly before concluding anything from this 0.`;
+        }
+      } catch {
+        /* best-effort supplementary probe only — never fail the search over it */
+      }
+    }
+
     // EI-20034001963934568: resolve each session_turn hit's ORIGIN — is this
     // turn owner-typed, or the harness replaying an agent's own loop goal into
     // a `speaker='user'` turn? Without it, the verification the compaction
@@ -438,13 +483,18 @@ export default defineTool({
       ...(mode === 'verbatim' && pageHits.length === 0
         ? {
             hint:
-              "0 hits: verbatim mode matches only an exact, contiguous, case-insensitive substring — a paraphrase or multi-word description of what you remember will NOT match even if the content exists. Retry with mode:'hybrid' (meaning-based, the default) to search by concept, or narrow query to the exact short phrase you expect verbatim in the transcript. Do not read this 0 as \"it didn't happen\".",
+              "0 hits: verbatim mode matches only an exact, contiguous, case-insensitive substring — a paraphrase or multi-word description of what you remember will NOT match even if the content exists. Retry with mode:'hybrid' (meaning-based, the default) to search by concept, or narrow query to the exact short phrase you expect verbatim in the transcript. Do not read this 0 as \"it didn't happen\" — it also cannot see text that lives only inside a tool call or tool result (a file body, a report, most interactive-tool answers), which this index excludes by design regardless of query phrasing (see zeroHitCaveat if a match was found there).",
           }
         : {}),
-      // The staleness caveat LEADS: it is the only one that questions the answer
-      // itself, so it must not be buried behind advice to re-phrase the query.
-      ...(zeroHitCaveat || staleIndexCaveat
-        ? { zeroHitCaveat: [staleIndexCaveat, zeroHitCaveat].filter(Boolean).join(' ') }
+      // Ordering: staleIndexCaveat LEADS (it questions the answer itself, so it
+      // must not be buried behind advice to re-phrase the query). toolPartCaveat
+      // comes next — it is decisive POSITIVE evidence (the text does exist,
+      // just not in session_turns), so it must not be buried behind "retry with
+      // a different fragment" advice that cannot ever succeed against a corpus
+      // that structurally excludes the content. zeroHitCaveat's generic
+      // QUERY-MATCH MISS advice comes last.
+      ...(zeroHitCaveat || staleIndexCaveat || toolPartCaveat
+        ? { zeroHitCaveat: [staleIndexCaveat, toolPartCaveat, zeroHitCaveat].filter(Boolean).join(' ') }
         : {}),
       // Machine-legible receipt for the same fact, so a caller (or a later audit)
       // can distinguish a real empty from a degraded one without parsing prose.

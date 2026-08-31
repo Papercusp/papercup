@@ -162,6 +162,31 @@ export type CompletionTreeContentIdentity = {
 };
 
 /**
+ * WI-1409142: one blob-sha slot, shared by the tree stamp and the settlement
+ * manifest so the two cannot drift — they describe the SAME observation.
+ *
+ * Deliberately a PLAIN `.nullable()` (required key, nullable value) with no
+ * `.transform()`/`.preprocess()`, and that constraint is not stylistic: this schema
+ * reaches `work_items:complete`'s `args`, which is converted to JSON Schema at
+ * registration AND on every `tools/list`. A trailing transform is unrepresentable
+ * there and takes down tool discovery for EVERY client, not just this tool.
+ *
+ * Tolerating the absent-key shape therefore belongs in the reader, not here — see
+ * `normalizeStoredSettlementManifest()` in completion-settlement-reconciler.ts. It
+ * exists because a recursive `jsonb_strip_nulls` on the terminal payload write used
+ * to DELETE a legitimately-null `headBlobSha` (a declared path not yet in HEAD — the
+ * ordinary state when an agent closes before git-sync sweeps), leaving the key
+ * missing, failing `safeParse`, and stranding 110 closes at authority='proposed'.
+ * Both write sites now exempt `_completionEvidence`, so new rows keep their nulls;
+ * the reader-side normalization is what lets the ALREADY-STORED rows settle without
+ * a backfill.
+ */
+const completionBlobShaSlot = z
+  .string()
+  .regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/)
+  .nullable();
+
+/**
  * EI-18682004530991057 (proposal 3) — what tree a completion's verification was
  * observed against. See the `treeStamp` field on
  * {@link CompletionVerificationEvidenceSchema} for why this is server-stamped.
@@ -203,8 +228,8 @@ export const CompletionTreeStampSchema = z
       .array(
         z.object({
           path: z.string().min(1),
-          workingTreeBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
-          headBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
+          workingTreeBlobSha: completionBlobShaSlot,
+          headBlobSha: completionBlobShaSlot,
           /**
            * WI-42441: why the HEAD side could not be READ, when that is the reason
            * `headBlobSha` is null. A null alone conflates "the commit genuinely does
@@ -234,8 +259,8 @@ export const CompletionSettlementManifestSchema = z.object({
   normalizedPaths: z.array(z.string().min(1)).min(1).max(60),
   contentIdentity: z.array(z.object({
     path: z.string().min(1),
-    workingTreeBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
-    headBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
+    workingTreeBlobSha: completionBlobShaSlot,
+    headBlobSha: completionBlobShaSlot,
   })).min(1).max(60),
   residualPaths: z.array(z.object({
     path: z.string().min(1),

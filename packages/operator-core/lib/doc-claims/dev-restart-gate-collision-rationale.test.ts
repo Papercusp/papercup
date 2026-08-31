@@ -50,6 +50,35 @@ const RESTART_TOOL = process.env.DOC_CLAIM_RESTART_PATH
 const COLLISION_GUARD = join(ROOT, 'packages/operator-core/lib/release/gate-collision-guard.ts');
 
 /**
+ * The SECOND agent-facing surface that states this mechanism: the stale-routine-executor
+ * page's `RESTART_SAFETY_NOTE`, which tells whoever finds an open page how to establish
+ * that restarting is safe (run the lever's dry run) instead of hand-deriving it.
+ *
+ * It is pinned HERE rather than only in its own suite because the claim it makes is not
+ * about the watchdog at all — it is about `checkGateCollision`. If the gate ever
+ * legitimately starts blocking an isolated run, this file's code pin fails and BOTH
+ * surfaces are forced to be corrected in the same change, which is the whole point.
+ *
+ * Overridable for the same reason DOC_CLAIM_RESTART_PATH is: falsifiability without
+ * mutating the shared tree (scripts/mutation-probe.sh copy-out tier).
+ */
+const STALE_EXECUTOR_WATCHDOG = process.env.DOC_CLAIM_STALE_EXECUTOR_PATH
+  ? resolve(process.env.DOC_CLAIM_STALE_EXECUTOR_PATH)
+  : join(ROOT, 'packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts');
+
+/** The `RESTART_SAFETY_NOTE` literal, sliced between stable anchors so the assertion
+ *  points at the PAGE TEXT and not at the surrounding comment, which narrates the
+ *  refuted mechanism as history on purpose. */
+function restartSafetyNote(): string {
+  const source = readFileSync(STALE_EXECUTOR_WATCHDOG, 'utf8');
+  const start = source.indexOf('export const RESTART_SAFETY_NOTE');
+  const end = source.indexOf('would_block:true', start + 1);
+  expect(start, 'anchor `export const RESTART_SAFETY_NOTE` not found — instrument is broken').toBeGreaterThan(-1);
+  expect(end, 'anchor `would_block:true` not found — instrument is broken').toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
+/**
  * The `override_gate_collision` describe() text, sliced between two stable anchors.
  * Slicing (rather than scanning the whole file) keeps the assertion pointed at the
  * agent-facing prose and off the internal comments, which may legitimately narrate
@@ -64,11 +93,18 @@ function overrideGateCollisionProse(): string {
   return source.slice(start, end);
 }
 
-describe('dev:restart override_gate_collision prose does not assert the refuted starvation mechanism', () => {
-  // Any spelling of "restarting can wreck the in-flight run".
-  const REFUTED =
-    /starv\w*\s+(the\s+)?gate|starv\w*\s+.{0,30}FALSE\s+red|restart\s+.{0,40}(abort|terminate|kill)\w*\s+.{0,20}run|(abort|kill)\w*\s+an?\s+in-flight\s+(green-checkpoint\s+)?run/i;
+/**
+ * Any spelling of "restarting can wreck the in-flight run".
+ *
+ * Module-scoped deliberately: this file now guards TWO agent-facing surfaces that make
+ * the same claim, and a second copy of the matcher is exactly the drift this file exists
+ * to prevent — one surface would silently stop being checked for a wording the other
+ * still catches.
+ */
+const REFUTED =
+  /starv\w*\s+(the\s+)?gate|starv\w*\s+.{0,30}FALSE\s+red|restart\s+.{0,40}(abort|terminate|kill)\w*\s+.{0,20}run|(abort|kill)\w*\s+an?\s+in-flight\s+(green-checkpoint\s+)?run/i;
 
+describe('dev:restart override_gate_collision prose does not assert the refuted starvation mechanism', () => {
   it('positive control — the describe() prose is present and substantial (instrument reads real bytes)', () => {
     const prose = overrideGateCollisionProse();
     // If this control fails, the absence assertion below is measuring nothing.
@@ -95,6 +131,36 @@ describe('dev:restart override_gate_collision prose does not assert the refuted 
       'Only pass when the target is genuinely wedged and cannot wait — a restart mid-run ' +
       'can starve the gate into a FALSE red that gets misdiagnosed as a regression.';
     expect(REFUTED.test(preFix)).toBe(true);
+  });
+});
+
+describe('the stale-routine-executor page states the same mechanism, and states it correctly', () => {
+  it('positive control — the note is present and substantial (instrument reads real bytes)', () => {
+    const note = restartSafetyNote();
+    // If this control fails, the absence assertion below is measuring nothing.
+    expect(note).toContain('gate_collision');
+    expect(note.length).toBeGreaterThan(200);
+  });
+
+  it('no refuted starvation/abort mechanism survives in the page text', () => {
+    const note = restartSafetyNote();
+    const hits = note
+      .split('\n')
+      .flatMap((text, i) => (REFUTED.test(text) ? [`${i + 1}: ${text.trim()}`] : []));
+    expect(
+      hits,
+      'RESTART_SAFETY_NOTE re-asserts the mechanism EI-20286473216066539 disproved by ' +
+        `measurement (a restart cannot abort a cgroup-isolated run):\n${hits.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('points the reader at the DRY RUN rather than at a process scan', () => {
+    // The specific failure this page text replaces: two agents reached for proc-guard /
+    // ps and derived the precondition themselves, both wrongly. Naming the call is what
+    // makes the page cheaper to obey than to second-guess.
+    const note = restartSafetyNote();
+    expect(note).toMatch(/WITHOUT\b.{0,20}confirm/s);
+    expect(note).not.toMatch(/\bps\b|pgrep|proc-guard/i);
   });
 });
 

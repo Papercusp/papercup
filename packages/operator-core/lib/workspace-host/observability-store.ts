@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import type {
   WorkspaceHostProviderConnection,
@@ -100,6 +101,21 @@ async function pushControl(): Promise<void> {
   await notifySyncInvalidate(WORKSPACE_HOST_CONTROL_QUERY);
 }
 
+/**
+ * Run a workspace-host read/write against an already-authenticated transaction
+ * when the caller owns one (the hosted browser path), otherwise preserve the
+ * ordinary workspace wrapper used by local/desktop callers.
+ *
+ * The hosted RLS policies need `app.organization_id`, `app.workspace_id`, and
+ * `SET LOCAL ROLE hosted_app` from `withTenantContext`. Opening a nested
+ * `withWorkspace` transaction here would erase that scope and silently turn a
+ * correctly authenticated hosted request into an empty result. Keeping this
+ * tiny seam in the store lets both profiles share the exact SQL projection.
+ */
+function inWorkspace<T>(workspaceId: string, tx: Sql | undefined, fn: (query: Sql) => Promise<T>): Promise<T> {
+  return tx ? fn(tx) : withWorkspace(workspaceId, fn);
+}
+
 export interface WorkspaceHostConnectionInput {
   workspaceId: string;
   id: string;
@@ -119,21 +135,21 @@ export interface WorkspaceHostConnectionInput {
   diskPricePerGiBMonth?: number;
 }
 
-export async function upsertWorkspaceHostConnection(input: WorkspaceHostConnectionInput): Promise<void> {
+export async function upsertWorkspaceHostConnection(input: WorkspaceHostConnectionInput, tx?: Sql): Promise<void> {
   assertWorkspaceHostSecretIsolation(input.provider, 'workspaceHost.connection.provider');
   const providerConfig = json(input.provider ?? {});
-  await withWorkspace(input.workspaceId, async (tx) => {
-    await tx`
+  await inWorkspace(input.workspaceId, tx, async (query) => {
+    await query`
       INSERT INTO harness_shared.workspace_host_connections (
         workspace_id, id, target, label, credential_ref, provider_config, status, status_detail,
         last_validated_at, scopes, regions, sizes, images, networks,
         disk_price_per_gib_month, updated_at
       ) VALUES (
         ${input.workspaceId}, ${input.id}, ${input.target}, ${input.label},
-        ${input.credentialRef}, ${tx.json(providerConfig as never)}, ${input.status}, ${input.statusDetail ?? null},
-        ${input.lastValidatedAt ?? null}, ${tx.json(json(input.scopes ?? []) as never)},
-        ${tx.json(json(input.regions ?? []) as never)}, ${tx.json(json(input.sizes ?? []) as never)},
-        ${tx.json(json(input.images ?? []) as never)}, ${tx.json(json(input.networks ?? []) as never)},
+        ${input.credentialRef}, ${query.json(providerConfig as never)}, ${input.status}, ${input.statusDetail ?? null},
+        ${input.lastValidatedAt ?? null}, ${query.json(json(input.scopes ?? []) as never)},
+        ${query.json(json(input.regions ?? []) as never)}, ${query.json(json(input.sizes ?? []) as never)},
+        ${query.json(json(input.images ?? []) as never)}, ${query.json(json(input.networks ?? []) as never)},
         ${input.diskPricePerGiBMonth ?? null}, now()
       )
       ON CONFLICT (workspace_id, id) DO UPDATE SET
@@ -168,9 +184,10 @@ export interface StoredWorkspaceHostConnection {
 export async function readWorkspaceHostConnection(
   workspaceId: string,
   connectionId: string,
+  tx?: Sql,
 ): Promise<StoredWorkspaceHostConnection | null> {
-  return withWorkspace(workspaceId, async (tx) => {
-    const rows = await tx<
+  return inWorkspace(workspaceId, tx, async (query) => {
+    const rows = await query<
       Array<{
         id: string;
         label: string;
@@ -343,9 +360,10 @@ export interface StoredWorkspaceHostDestroyTarget {
 export async function readWorkspaceHostDestroyTarget(
   workspaceId: string,
   hostId: string,
+  tx?: Sql,
 ): Promise<StoredWorkspaceHostDestroyTarget | null> {
-  return withWorkspace(workspaceId, async (tx) => {
-    const hosts = (await tx`
+  return inWorkspace(workspaceId, tx, async (query) => {
+    const hosts = (await query`
       SELECT id, name, connection_id, target, observed_state, desired_spec
       FROM harness_shared.workspace_hosts
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
@@ -364,7 +382,7 @@ export async function readWorkspaceHostDestroyTarget(
       throw new Error(`Workspace host '${hostId}' has no recorded desired spec`);
     }
 
-    const rows = (await tx`
+    const rows = (await query`
       SELECT target, kind, provider_id, parent_provider_id, region, zone, updated_at
       FROM harness_shared.workspace_host_resources
       WHERE workspace_id = ${workspaceId}
@@ -853,15 +871,15 @@ function capabilities(state: string): Record<string, boolean> {
   };
 }
 
-export async function readWorkspaceHostControl(workspaceId: string): Promise<unknown[]> {
-  return withWorkspace(workspaceId, async (tx) => {
-    const connections = await tx<ConnectionDbRow[]>`
+export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): Promise<unknown[]> {
+  return inWorkspace(workspaceId, tx, async (query) => {
+    const connections = await query<ConnectionDbRow[]>`
       SELECT id, target, label, credential_ref, provider_config, status, status_detail, last_validated_at,
              scopes, regions, sizes, images, networks, disk_price_per_gib_month
       FROM harness_shared.workspace_host_connections
       ORDER BY target, label, id
     `;
-    const hosts = await tx<HostDbRow[]>`
+    const hosts = await query<HostDbRow[]>`
       SELECT id, name, connection_id, target, scope_label, region, size, image,
              disk_gib, network, estimated_monthly_usd, desired_state, observed_state,
              -- created_at is the one column that still means "when this host was
@@ -874,21 +892,21 @@ export async function readWorkspaceHostControl(workspaceId: string): Promise<unk
       FROM harness_shared.workspace_hosts
       ORDER BY updated_at DESC, id
     `;
-    const operations = await tx<OperationDbRow[]>`
+    const operations = await query<OperationDbRow[]>`
       SELECT DISTINCT ON (host_id)
              id, host_id, action, status, percent, message, request, error,
              created_at, started_at, finished_at, updated_at
       FROM harness_shared.workspace_host_operations
       ORDER BY host_id, updated_at DESC, id DESC
     `;
-    const resources = await tx<ResourceDbRow[]>`
+    const resources = await query<ResourceDbRow[]>`
       SELECT host_id, logical_key, operation_id, state, attempts, retry_class,
              target, kind, provider_id, parent_provider_id, region, zone,
              provider_request_id, deletion_confirmation, error, updated_at
       FROM harness_shared.workspace_host_resources
       ORDER BY host_id, logical_key
     `;
-    const events = await tx<EventDbRow[]>`
+    const events = await query<EventDbRow[]>`
       SELECT e.id, e.host_id, e.operation_id, e.occurred_at, e.phase,
              e.status, e.level, e.source, e.message, e.details
       FROM harness_shared.workspace_host_events e
@@ -901,7 +919,7 @@ export async function readWorkspaceHostControl(workspaceId: string): Promise<unk
               AND latest.id = e.operation_id
       ORDER BY e.occurred_at, e.id
     `;
-    const logs = await tx<LogDbRow[]>`
+    const logs = await query<LogDbRow[]>`
       SELECT id, host_id, operation_id, observed_at, stream, unit, level, message, metadata
       FROM (
         SELECT l.*, row_number() OVER (PARTITION BY host_id ORDER BY observed_at DESC, id DESC) AS rn

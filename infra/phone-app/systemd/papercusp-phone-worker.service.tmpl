@@ -40,6 +40,17 @@ EnvironmentFile=%h/.config/papercusp-phone/livekit.env
 # regression into a refusal to start.
 Environment=PHONE_REQUIRE_VENDORS=stt:deepgram,tts:deepgram
 
+# EXPLICIT TTS pin, and it is load-bearing, not belt-and-braces. chooseTtsVendor
+# prefers ElevenLabs over Deepgram whenever a usable sk_ key is present, so the
+# moment a real ElevenLabs key exists in the operator's voice store (one was
+# supplied 2026-08-30, lifting D-007's wall) the worker would resolve
+# tts=elevenlabs, collide with the REQUIRE_VENDORS line above, and REFUSE TO
+# START. Deepgram Aura is what actually met the target — ttsTtfb 180ms vs
+# Gemini's 652ms, giving p50 1226ms speech-to-speech (D-015) — and ElevenLabs'
+# latency on this path has never been measured. So the shipping vendor stays
+# pinned until someone measures the alternative and decides on evidence.
+Environment=PHONE_TTS_VENDOR=deepgram
+
 ExecStart=${PHONE_NODE_BIN} --import tsx src/agent.ts start
 Restart=on-failure
 RestartSec=5

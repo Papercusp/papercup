@@ -279,12 +279,19 @@ export function unresolvableContentIdentityPaths(
 export function completionTreeContentIdentityMatches(
   identity: readonly CompletionTreeContentIdentity[] | undefined,
 ): boolean {
+  // WI-1409142: `!= null`, deliberately loose, so it rejects an ABSENT key as well as
+  // an explicit null. Stored evidence really can arrive with these keys missing — a
+  // recursive jsonb_strip_nulls used to delete them on write — and under strict `!==`
+  // an entry missing BOTH keys read as PROVEN: `undefined !== null` is true twice, then
+  // `undefined === undefined` matches. That is the one direction this floor must never
+  // fail in, since it would mint `committed` authority from evidence the server never
+  // actually observed.
   return Boolean(
     identity?.length &&
     identity.every(
       (entry) =>
-        entry.workingTreeBlobSha !== null &&
-        entry.headBlobSha !== null &&
+        entry.workingTreeBlobSha != null &&
+        entry.headBlobSha != null &&
         entry.workingTreeBlobSha === entry.headBlobSha,
     ),
   );

@@ -484,6 +484,61 @@ _pc_heavy_mem_psi_full_avg10() {
   printf '%s\n' "$_raw"
 }
 
+# Read MemAvailable as whole GiB. Shares PC_HEAVY_MEMAVAIL_GIB_OVERRIDE with the
+# admission-time slot clamp so the two readers cannot drift apart.
+_pc_heavy_mem_avail_gib() {
+  local _raw=''
+  if [ -n "${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE:-}" ]; then
+    _raw="${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE%%.*}"
+  else
+    _raw="$(awk '/^MemAvailable:/ { print int($2 / 1048576); exit }' /proc/meminfo 2>/dev/null)"
+  fi
+  case "$_raw" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$_raw"
+}
+
+# Is memory ACTUALLY scarce, or is PSI just reporting churn?
+#
+# Memory PSI measures time stalled on reclaim/refault. On a host with a large
+# page cache and ample swap that tracks IO pressure, NOT shortage: memory
+# `full avg10` and io `full avg10` move together (measured 0.54 vs 0.50 with
+# 65 GiB MemAvailable, 1890 GiB SwapFree and zero OOM kills in 24h). Freezing a
+# task can only relieve pressure that SCARCITY caused. With MemAvailable well
+# above the floor a freeze returns no memory — it just suspends useful work,
+# and because the suspended work was itself generating the page-cache churn,
+# PSI drops, the task thaws, the churn resumes and the controller oscillates.
+# That freeze/thaw thrash is what made ~8 of 9 concurrent verification runs
+# crawl at ~2% CPU while ~50 cores sat idle (EI-21924870233271057): a frozen
+# cgroup is STOPPED, not slow, so it burns no CPU and occupies no core.
+#
+# Admission CONCURRENCY (the MemAvailable slot clamp below) is the correct lever
+# for preventing overcommit; this post-admission freeze is a last-resort OOM
+# guard and should fire only under genuine scarcity.
+#
+# Fails OPEN (reports scarce) when the reading is unavailable, so an unreadable
+# /proc/meminfo restores the previous always-freeze behaviour rather than
+# silently disabling the guard. Set PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB=0 to disable
+# the scarcity gate entirely and freeze on PSI alone, as before.
+_pc_heavy_mem_is_scarce() {
+  local _floor="${PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB:-8}" _avail=''
+  case "$_floor" in ''|*[!0-9]*) _floor=8 ;; esac
+  [ "$_floor" -eq 0 ] && return 0
+  # INJECTED PSI IMPLIES INJECTED SCARCITY. A caller that simulates pressure via
+  # PC_HEAVY_MEM_PSI_OVERRIDE(_FILE) is modelling a constrained host, so the
+  # REAL MemAvailable of whatever box the simulation happens to run on is not
+  # meaningful evidence about that scenario — reading it would let an idle
+  # 250 GiB dev box silently neutralise every freeze the scenario is exercising.
+  # Honour an explicit PC_HEAVY_MEMAVAIL_GIB_OVERRIDE when one is supplied;
+  # otherwise treat injected pressure as scarce, which is what the pre-existing
+  # freeze/thaw scenarios assert and what keeps this gate falsifiable in tests.
+  if [ -z "${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE:-}" ] &&
+     { [ -n "${PC_HEAVY_MEM_PSI_OVERRIDE:-}" ] || [ -n "${PC_HEAVY_MEM_PSI_OVERRIDE_FILE:-}" ]; }; then
+    return 0
+  fi
+  _avail="$(_pc_heavy_mem_avail_gib)" || return 0
+  [ "$_avail" -lt "$_floor" ]
+}
+
 # Internal command runner used by EVERY ordinary slot holder, including a
 # coalescing leader. It is dispatched before the PC_HEAVY_BYPASS fast path so
 # the outer wrapper can keep its slot/cache responsibilities while this child
@@ -899,6 +954,21 @@ _pc_heavy_internal_preempt_run() {
         _psi_emit expired memory-psi-high-timeout "$_sample" "$_psi_total_mib"
         _expire_frozen=1
       elif [ -z "$_psi_selected_id" ]; then
+        # SCARCITY GATE: high PSI is necessary but NOT sufficient to justify
+        # suspending work. If MemAvailable is comfortably above the floor there
+        # is nothing for a freeze to reclaim, so electing a victim here would
+        # stop useful work and buy nothing. Skip the election and leave the
+        # already-frozen/expire paths above untouched.
+        if ! _pc_heavy_mem_is_scarce; then
+          if [ "$_psi_last_undetermined" != memory-not-scarce ]; then
+            _psi_emit skipped memory-not-scarce "$_sample" "$_psi_total_mib"
+            _psi_last_undetermined=memory-not-scarce
+          fi
+          flock -u "$_lock_fd" 2>/dev/null || true
+          eval "exec ${_lock_fd}>&-" 2>/dev/null || true
+          return 0
+        fi
+        case "$_psi_last_undetermined" in memory-not-scarce) _psi_last_undetermined='' ;; esac
         _psi_scan_records active
         if [ "$_psi_unreadable_count" -gt 0 ]; then
           if [ "$_psi_last_undetermined" != cgroup-memory-unreadable ]; then
@@ -940,7 +1010,12 @@ _pc_heavy_internal_preempt_run() {
           fi
         fi
       fi
-    elif [ "$_sample" -le "$_psi_recover" ]; then
+    elif [ "$_sample" -le "$_psi_recover" ] || ! _pc_heavy_mem_is_scarce; then
+      # Ample memory thaws a frozen root even while PSI stays high. Without this
+      # a root frozen during a genuine episode stays suspended for the whole
+      # PC_HEAVY_MEM_PSI_MAX_FREEZE_SEC window once PSI plateaus above the
+      # recover threshold on churn alone — and that expiry path reports
+      # `undetermined` (exit 75), turning a healthy run into a false red.
       if [ -s "$_psi_recovery_file" ]; then
         IFS= read -r _low_since < "$_psi_recovery_file" 2>/dev/null || _low_since=''
       fi

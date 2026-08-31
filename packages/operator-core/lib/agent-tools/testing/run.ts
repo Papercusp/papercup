@@ -345,8 +345,23 @@ export function normalizeTestFilePaths(
   return { ok: true, files: normalized };
 }
 
-/** Router exit codes (scripts/test-files.mjs `main`): 2 = route/launch error,
- *  1 = a refused false-green OR a genuine test failure, 0 = clean pass. */
+/**
+ * Router exit codes. The contract is stated once in
+ * `scripts/lib/test-file-exit-codes.mjs` and pinned by
+ * `packages/operator-core/lib/__tests__/test-file-exit-codes.test.ts`:
+ * 0 = measured pass, 1 = MEASURED and genuinely failed, 2 = NOT MEASURED
+ * (route/launch/admission error, watchdog reap, or a refused false-green),
+ * 75 = EX_TEMPFAIL, also not measured and explicitly retryable.
+ *
+ * This comment used to read "1 = a refused false-green OR a genuine test
+ * failure", which was an accurate description of a broken router: four
+ * refusals that measured NOTHING returned the same code as a real red, so this
+ * consumer could not tell them apart and neither could an agent reading a log.
+ * EI-21884126680256710 moved those refusals onto 2, which is what makes the
+ * single-meaning reading above true. The literal stays local rather than
+ * imported so operator-core's bundle does not take a dependency on `scripts/`;
+ * the pin test is what keeps the two copies honest.
+ */
 const ROUTER_EXIT_ROUTE_ERROR = 2;
 
 /** Resource reservation made for one resident router/Vitest process. */

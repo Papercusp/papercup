@@ -153,6 +153,47 @@ export type SpaRouteProfile =
       readonly controlPlaneWorkspaceId: string;
     };
 
+/**
+ * The only browser transport contract the hosted shell exposes. Keep this
+ * object data-only: it is injected into a static document before the client
+ * bundle runs, and the client uses it to opt into the hosted route namespace.
+ */
+export interface HostedBrowserApiMarker {
+  readonly version: 1;
+  readonly controlPlaneWorkspaceId: string;
+  readonly restEndpoint: '/api/hosted/browser';
+  readonly sseEndpoint: '/api/hosted/browser/sse';
+  readonly workspaceHostEndpoints: {
+    readonly connection: '/api/hosted/browser/workspace-hosts/connection';
+    readonly provision: '/api/hosted/browser/workspace-hosts/provision';
+    readonly action: '/api/hosted/browser/workspace-hosts/action';
+  };
+}
+
+export function hostedBrowserApiMarker(controlPlaneWorkspaceId: string): HostedBrowserApiMarker {
+  const id = controlPlaneWorkspaceId.trim();
+  if (!id) throw new TypeError('hosted_browser_marker_requires_a_control_plane_workspace_id');
+  return {
+    version: 1,
+    controlPlaneWorkspaceId: id,
+    restEndpoint: '/api/hosted/browser',
+    sseEndpoint: '/api/hosted/browser/sse',
+    workspaceHostEndpoints: {
+      connection: '/api/hosted/browser/workspace-hosts/connection',
+      provision: '/api/hosted/browser/workspace-hosts/provision',
+      action: '/api/hosted/browser/workspace-hosts/action',
+    },
+  };
+}
+
+/** Escape the three characters that can terminate or mutate a script element. */
+function scriptSafeJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
+
 async function localPreHydrationGlobals(req: Request): Promise<string[]> {
   // Keep every process-global/local data dependency behind this branch. The
   // hosted profile below never imports these modules, much less calls them.
@@ -224,7 +265,13 @@ async function serveIndexHtml(
   let html = readFileSync(indexPath, 'utf-8');
   const globals = hostedControlPlaneWorkspaceId === null
     ? await localPreHydrationGlobals(req)
-    : [`window.__PAPERCUSP_WS__=${JSON.stringify(hostedControlPlaneWorkspaceId)};`];
+    : [
+        `window.__PAPERCUSP_WS__=${scriptSafeJson(hostedControlPlaneWorkspaceId)};`,
+        `window.__PAPERCUSP_HOSTED_BROWSER__=${scriptSafeJson(hostedBrowserApiMarker(hostedControlPlaneWorkspaceId))};`,
+        // Alias retained for clients that used the more explicit name during
+        // the hosted-browser rollout; both values are the same immutable data.
+        `window.__PAPERCUSP_HOSTED_BROWSER_API__=window.__PAPERCUSP_HOSTED_BROWSER__;`,
+      ];
   const inject = `<script>${globals.join('')}</script>`;
   // Insert right after <head> so it runs before the deferred module bundle.
   html = html.includes('<head>') ? html.replace('<head>', `<head>${inject}`) : inject + html;
