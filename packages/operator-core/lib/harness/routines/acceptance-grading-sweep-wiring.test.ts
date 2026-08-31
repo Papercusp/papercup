@@ -173,4 +173,22 @@ describe('R4 at the wiring layer — the routine cannot reach a grading surface'
     // evaluatePlanAcceptanceGate is the one definition of stuck-ness (R7).
     expect(src).toContain('evaluatePlanAcceptanceGate');
   });
+
+  // WI-1699998. This sweep is the caller whose re-dispatch re-routed an ALREADY
+  // DECIDED grading, so it is also the caller that must recognise the new skip.
+  // If 'settled' is missing from the success allowlist, a correct skip returns
+  // ok:false and feeds the stall path that mints an "UNGRADED for Nh — it needs
+  // an independent grader" escalation against a fully-graded plan. That would
+  // trade one silent bug for a louder one.
+  it("counts the 'settled' skip as a dispatch SUCCESS, not a failure", () => {
+    const okExpr = /const ok =([\s\S]*?);/.exec(read(ACTION_FILE))?.[1] ?? '';
+    // CALIBRATION FIRST: the three states that were always successes must be
+    // found, so a failure on 'settled' below means "it is absent from the
+    // allowlist" rather than "the matcher read nothing" — an empty match would
+    // otherwise fail every assertion identically and say nothing about the cause.
+    expect(okExpr).toContain("life.state === 'assigned'");
+    expect(okExpr).toContain("life.state === 'launched'");
+    expect(okExpr).toContain("life.state === 'deduped'");
+    expect(okExpr).toContain("life.state === 'settled'");
+  });
 });

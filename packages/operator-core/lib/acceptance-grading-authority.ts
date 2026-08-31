@@ -211,7 +211,11 @@ export type AcceptanceGradingSettlementReason =
   | 'revision_unreadable'
   | 'scorecards_unreadable'
   | 'no_independent_card'
-  | 'no_author_acceptance';
+  | 'no_author_acceptance'
+  /** The settlement read itself threw past its own handlers — recorded rather than
+   * swallowed, so a dispatch that happened because the guard could not run is
+   * distinguishable from one that happened because nothing was graded yet. */
+  | 'read_threw';
 
 export interface AcceptanceGradingSettlement {
   settled: boolean;

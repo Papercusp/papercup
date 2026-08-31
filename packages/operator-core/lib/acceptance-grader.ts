@@ -912,14 +912,17 @@ export async function resolveAcceptanceGrader(
       // scorecards. Two different questions; both guards are needed.
       settlement = await (deps.readSettlement ?? readAcceptanceGradingSettlement)(rubricId).catch(
         // Fail OPEN: a settlement read that throws must not suppress a grading.
-        () => undefined,
+        // But RECORD the fault rather than returning undefined — a dispatch that
+        // happened because the guard could not run must not be indistinguishable
+        // from one that happened because nothing was graded yet. That silence is
+        // the same shape as the bug this guard exists to fix.
+        () => ({ settled: false, reason: 'read_threw' }) as const,
       );
       if (settlement?.settled) {
         return { state: 'settled', idempotencyKey: '', label: '', settlement };
       }
       const selection = await (deps.discover ?? prodDiscoverGrader)(plan, rubric, ctx);
       if (selection.verdict === 'assigned' && selection.graders.length > 0) {
-        const rubricId = String((rubric as unknown as { rubricId: string }).rubricId);
         // Opening the cascade is BEST-EFFORT in exactly the way the single wake
         // it replaces was: a failure here must not turn a resolvable grading
         // into a failed ship. The difference is that a failure now costs the

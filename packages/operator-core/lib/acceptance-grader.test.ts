@@ -586,7 +586,10 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
 
     expect(result.state).toBe('assigned');
     expect(openCascade).toHaveBeenCalledTimes(1);
-    expect(result.settlement).toBeUndefined();
+    // Failing open is not the same as failing SILENTLY: a dispatch that happened
+    // because the guard could not run must be distinguishable from one that
+    // happened because nothing was graded yet.
+    expect(result.settlement).toEqual({ settled: false, reason: 'read_threw' });
   });
 
   it('discovery says fresh → falls through to the frozen judge launch, carrying the reason', async () => {

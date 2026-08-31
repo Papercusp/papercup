@@ -185,7 +185,17 @@ registerSystemAction('acceptance-grading-sweep', async () => {
       } as never;
       try {
         const life = await resolveAcceptanceGrader(row.planSlug, ctx);
-        const ok = life.state === 'assigned' || life.state === 'launched' || life.state === 'deduped';
+        // 'settled' (WI-1699998) is a SUCCESS, and belongs here for a sharper reason
+        // than tidiness: this sweep is the very caller whose re-dispatch caused that
+        // bug, and omitting the state would turn a correct skip into `ok:false`,
+        // feeding the stall path that mints an "UNGRADED for Nh — needs an
+        // independent grader" escalation against a plan that is fully graded. The
+        // fix for re-routing a decided grading must not become a false escalation.
+        const ok =
+          life.state === 'assigned' ||
+          life.state === 'launched' ||
+          life.state === 'deduped' ||
+          life.state === 'settled';
         return ok
           ? { ok: true, state: life.state }
           : { ok: false, state: life.state, error: life.error ?? `grader resolve returned ${life.state}` };
