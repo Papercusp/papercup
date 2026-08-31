@@ -42,6 +42,9 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
 
 import {
+  GOAL_HOLDER_RESPAWN_RATE_LIMIT,
+  GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS,
+  reserveGoalHolderRespawnRateSlot,
   runGoalHolderRespawnOnce,
   type GoalHolderRespawnDeps,
 } from './goal-liveness-watchdog';
@@ -296,6 +299,80 @@ beforeEach(async () => {
 });
 
 describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () => {
+  it('persists a pruned trailing-hour launch ledger and closes the seventh reservation', async () => {
+    const goalId = 'goal-durable-respawn-cap';
+    const nowMs = Date.now();
+    const priorAttempt = nowMs - 5_000;
+    await seedGoal({
+      id: goalId,
+      launchSettings: RESPAWN_SETTINGS,
+      metadata: {
+        preserved: 'goal-metadata',
+        holderRespawn: {
+          preserved: 'respawn-metadata',
+          attempts: [nowMs - GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS - 1, priorAttempt],
+        },
+      },
+    });
+
+    for (let expected = 2; expected <= GOAL_HOLDER_RESPAWN_RATE_LIMIT; expected += 1) {
+      await expect(reserveGoalHolderRespawnRateSlot(rootSql, { goalId, workspaceId: WS }, nowMs)).resolves.toEqual({
+        kind: 'reserved',
+        attemptsInWindow: expected,
+      });
+    }
+    await expect(reserveGoalHolderRespawnRateSlot(rootSql, { goalId, workspaceId: WS }, nowMs)).resolves.toEqual({
+      kind: 'capped',
+      attemptsInWindow: GOAL_HOLDER_RESPAWN_RATE_LIMIT,
+    });
+
+    const [row] = await rootSql<{ metadata: Record<string, any> }[]>`
+      SELECT metadata FROM harness_shared.goals
+       WHERE workspace_id = ${WS} AND id = ${goalId}`;
+    expect(row?.metadata).toMatchObject({
+      preserved: 'goal-metadata',
+      holderRespawn: {
+        preserved: 'respawn-metadata',
+        attempts: [priorAttempt, ...Array(GOAL_HOLDER_RESPAWN_RATE_LIMIT - 1).fill(nowMs)],
+        limit: GOAL_HOLDER_RESPAWN_RATE_LIMIT,
+        windowMs: GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS,
+        needsHuman: true,
+        needsHumanAtMs: nowMs,
+        reason: 'hourly-respawn-cap',
+      },
+    });
+  }, 60_000);
+
+  it('row-locks concurrent reservations so only one caller receives the sixth slot', async () => {
+    const goalId = 'goal-concurrent-respawn-cap';
+    const nowMs = Date.now();
+    await seedGoal({
+      id: goalId,
+      launchSettings: RESPAWN_SETTINGS,
+      metadata: {
+        holderRespawn: {
+          attempts: Array(GOAL_HOLDER_RESPAWN_RATE_LIMIT - 1).fill(nowMs - 1_000),
+        },
+      },
+    });
+
+    const decisions = await Promise.all([
+      reserveGoalHolderRespawnRateSlot(rootSql, { goalId, workspaceId: WS }, nowMs),
+      reserveGoalHolderRespawnRateSlot(rootSql, { goalId, workspaceId: WS }, nowMs),
+    ]);
+    expect(decisions.map((decision) => decision.kind).sort()).toEqual(['capped', 'reserved']);
+    expect(decisions.map((decision) => decision.attemptsInWindow)).toEqual([
+      GOAL_HOLDER_RESPAWN_RATE_LIMIT,
+      GOAL_HOLDER_RESPAWN_RATE_LIMIT,
+    ]);
+
+    const [row] = await rootSql<{ attempts: unknown[] }[]>`
+      SELECT metadata #> '{holderRespawn,attempts}' AS attempts
+        FROM harness_shared.goals
+       WHERE workspace_id = ${WS} AND id = ${goalId}`;
+    expect(row?.attempts).toHaveLength(GOAL_HOLDER_RESPAWN_RATE_LIMIT);
+  }, 60_000);
+
   it('concurrent GOAL entries atomically elect one successor and persist a bounded handoff', async () => {
     const goalId = 'goal-concurrent-election';
     await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });

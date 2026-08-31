@@ -64,6 +64,7 @@
 import type { Sql } from 'postgres';
 
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { getGoalTransitionExecutor } from '@papercusp/agent-mcp';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import {
   goalReadiness,
@@ -127,6 +128,9 @@ export { holderCountsAsAlive } from '../goals/holder';
 export const GOAL_LIVENESS_SWEEP_INTERVAL_MS = 10 * 60_000;
 /** P-009: holder recovery is its own faster actor and never rides the report cadence. */
 export const GOAL_HOLDER_RESPAWN_INTERVAL_MS = 60_000;
+/** P-003: durable, per-goal ceiling on unattended holder launches. */
+export const GOAL_HOLDER_RESPAWN_RATE_LIMIT = 6;
+export const GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS = 60 * 60_000;
 
 /**
  * How long a goal may show no live holder before it is called abandoned.
@@ -1085,6 +1089,11 @@ export interface GoalHolderRespawnSummary {
   skipped: boolean;
 }
 
+export type GoalHolderRespawnRateDecision =
+  | { kind: 'reserved'; attemptsInWindow: number }
+  | { kind: 'capped'; attemptsInWindow: number }
+  | { kind: 'ineligible'; attemptsInWindow: 0 };
+
 export interface GoalHolderRespawnDeps {
   readGoals: GoalLivenessSweepDeps['readGoals'];
   resolveLiveness: GoalLivenessSweepDeps['resolveLiveness'];
@@ -1101,6 +1110,10 @@ export interface GoalHolderRespawnDeps {
   notifyHandoff: (workspaceId: string, election: GoalModeElectionReceipt) => Promise<unknown>;
   /** Refreshes control context after the direct respawn GOAL-mode write. */
   refreshControlAnchor?: typeof refreshControlAnchorAfterMutation;
+  /** Atomically reserve one durable per-goal launch slot before a process is minted. */
+  reserveRateSlot?: (goal: GoalRowLike, nowMs: number) => Promise<GoalHolderRespawnRateDecision>;
+  /** Move a capped goal onto the canonical non-terminal human-attention hold. */
+  pauseNeedsHuman?: (goal: GoalRowLike, attemptsInWindow: number, nowMs: number) => Promise<void>;
   escalateGiveUp: (goal: GoalRowLike, restartsInWindow: number) => Promise<void>;
   now: () => number;
   states: Map<string, FlapDampingState>;
@@ -1111,6 +1124,162 @@ export function goalHolderRespawnKey(
   goal: Pick<GoalRowLike, 'workspaceId' | 'goalId'>,
 ): string {
   return `${goal.workspaceId}:${goal.goalId}`;
+}
+
+/**
+ * Atomically reserve one launch in the goal row's durable trailing-hour ledger.
+ * The reservation happens before launch so a crash or failed attach cannot
+ * erase a session-minting attempt from the safety budget.
+ */
+export async function reserveGoalHolderRespawnRateSlot(
+  sql: Sql,
+  goal: Pick<GoalRowLike, 'goalId' | 'workspaceId'>,
+  nowMs: number,
+): Promise<GoalHolderRespawnRateDecision> {
+  const cutoffMs = nowMs - GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS;
+  const [row] = await sql<Array<{ allowed: boolean; attempts_in_window: string }>>`
+    WITH candidate AS (
+      SELECT id,
+             workspace_id,
+             CASE WHEN jsonb_typeof(metadata) = 'object'
+                  THEN metadata ELSE '{}'::jsonb END AS base_metadata
+        FROM harness_shared.goals
+       WHERE id = ${goal.goalId}
+         AND workspace_id = ${goal.workspaceId}
+         AND status = 'active'
+       FOR UPDATE
+    ), state AS (
+      SELECT c.*,
+             CASE WHEN jsonb_typeof(c.base_metadata -> 'holderRespawn') = 'object'
+                  THEN c.base_metadata -> 'holderRespawn' ELSE '{}'::jsonb END AS base_state,
+             CASE WHEN jsonb_typeof(c.base_metadata #> '{holderRespawn,attempts}') = 'array'
+                  THEN c.base_metadata #> '{holderRespawn,attempts}' ELSE '[]'::jsonb END AS raw_attempts
+        FROM candidate c
+    ), pruned AS (
+      SELECT s.*,
+             COALESCE(
+               (SELECT jsonb_agg(value ORDER BY (value #>> '{}')::numeric)
+                  FROM jsonb_array_elements(s.raw_attempts) AS value
+                 WHERE jsonb_typeof(value) = 'number'
+                   AND (value #>> '{}')::numeric >= ${cutoffMs}),
+               '[]'::jsonb
+             ) AS attempts
+        FROM state s
+    ), decision AS (
+      SELECT p.*, jsonb_array_length(p.attempts) AS attempt_count
+        FROM pruned p
+    )
+    UPDATE harness_shared.goals AS g
+       SET metadata = jsonb_set(
+             d.base_metadata,
+             '{holderRespawn}',
+             CASE WHEN d.attempt_count >= ${GOAL_HOLDER_RESPAWN_RATE_LIMIT}
+               THEN d.base_state || jsonb_build_object(
+                 'attempts', d.attempts,
+                 'limit', ${GOAL_HOLDER_RESPAWN_RATE_LIMIT}::bigint,
+                 'windowMs', ${GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS}::bigint,
+                 'needsHuman', true,
+                 'needsHumanAtMs', COALESCE(
+                   d.base_state -> 'needsHumanAtMs',
+                   to_jsonb(${nowMs}::bigint)
+                 ),
+                 'reason', 'hourly-respawn-cap'
+               )
+               ELSE (d.base_state - 'needsHumanAtMs' - 'escalatedAtMs' - 'reason') ||
+                 jsonb_build_object(
+                   'attempts', d.attempts || jsonb_build_array(${nowMs}::bigint),
+                   'limit', ${GOAL_HOLDER_RESPAWN_RATE_LIMIT}::bigint,
+                   'windowMs', ${GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS}::bigint,
+                   'needsHuman', false
+                 )
+             END,
+             true
+           ),
+           -- A reservation is bookkeeping, not goal progress. Only the cap
+           -- transition may refresh recency.
+           updated_at = CASE
+             WHEN d.attempt_count >= ${GOAL_HOLDER_RESPAWN_RATE_LIMIT}
+               THEN to_timestamp(${nowMs}::double precision / 1000.0)
+             ELSE g.updated_at
+           END
+      FROM decision d
+     WHERE g.id = d.id AND g.workspace_id = d.workspace_id
+    RETURNING (d.attempt_count < ${GOAL_HOLDER_RESPAWN_RATE_LIMIT}) AS allowed,
+              (d.attempt_count + CASE
+                WHEN d.attempt_count < ${GOAL_HOLDER_RESPAWN_RATE_LIMIT} THEN 1 ELSE 0
+              END)::text AS attempts_in_window
+  `;
+  if (!row) return { kind: 'ineligible', attemptsInWindow: 0 };
+  const attemptsInWindow = Number(row.attempts_in_window);
+  return row.allowed ? { kind: 'reserved', attemptsInWindow } : { kind: 'capped', attemptsInWindow };
+}
+
+/**
+ * Goals have no `needs-human` status. Their canonical non-terminal hold is
+ * `paused`; this marker preserves the stronger reason while the shared stop
+ * executor gates placement and disarms attributed loops.
+ */
+export async function pauseGoalForHolderRespawnRateCap(
+  sql: Sql,
+  goal: Pick<GoalRowLike, 'goalId' | 'workspaceId'>,
+  attemptsInWindow: number,
+  nowMs: number,
+): Promise<void> {
+  const reason =
+    `Automatic holder recovery reached its safety cap (${attemptsInWindow}/` +
+    `${GOAL_HOLDER_RESPAWN_RATE_LIMIT} attempts in ${GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS / 60_000} minutes); ` +
+    'human review is required before this goal is resumed.';
+  const pause = {
+    reason,
+    pausedBy: HOLDER_RESPAWNER_IDENTITY.ownerId,
+    pausedAtMs: nowMs,
+  };
+  const [changed] = await sql<Array<{ id: string }>>`
+    UPDATE harness_shared.goals
+       SET status = 'paused',
+           updated_at = to_timestamp(${nowMs}::double precision / 1000.0),
+           metadata = jsonb_set(
+             jsonb_set(
+               CASE WHEN jsonb_typeof(metadata) = 'object'
+                    THEN metadata ELSE '{}'::jsonb END,
+               '{holderRespawn}',
+               (CASE WHEN jsonb_typeof(metadata -> 'holderRespawn') = 'object'
+                     THEN metadata -> 'holderRespawn' ELSE '{}'::jsonb END) ||
+                 ${JSON.stringify({ needsHuman: true })}::jsonb ||
+                 jsonb_build_object(
+                   'escalatedAtMs', ${nowMs}::bigint,
+                   'attemptsInWindow', ${attemptsInWindow}
+                 ),
+               true
+             ),
+             '{pause}',
+             ${JSON.stringify(pause)}::jsonb,
+             true
+           )
+     WHERE id = ${goal.goalId}
+       AND workspace_id = ${goal.workspaceId}
+       AND status = 'active'
+       AND metadata #>> '{holderRespawn,needsHuman}' = 'true'
+    RETURNING id
+  `;
+  if (!changed) return;
+
+  const executor = getGoalTransitionExecutor();
+  if (!executor) {
+    throw new Error('goal moved to needs-human pause, but no goal-stop executor is installed');
+  }
+  const stopped = await executor({
+    goalId: goal.goalId,
+    workspaceId: goal.workspaceId,
+    status: 'paused',
+    actor: HOLDER_RESPAWNER_IDENTITY.ownerId,
+  });
+  if ('unattributedActiveLoops' in stopped && stopped.degraded) {
+    throw new Error(
+      `goal moved to needs-human pause, but stop fan-out was degraded ` +
+        `(${stopped.unattributedActiveLoops} unattributed loop(s) remain)`,
+    );
+  }
 }
 
 /**
@@ -1146,15 +1315,15 @@ async function defaultEscalateHolderRespawnGiveUp(
   await openEscalation(HOLDER_RESPAWNER_IDENTITY, {
     severity: 'advisory',
     summary:
-      `Goal '${goal.goalId}' holder recovery gave up after ${restartsInWindow} attempts ` +
-      'inside the damping window',
+      `Goal '${goal.goalId}' holder recovery reached its hourly safety cap after ` +
+      `${restartsInWindow} attempts`,
     body:
       `The goal "${goal.title}" (${goal.goalId}, workspace ${goal.workspaceId}) opted into ` +
-      `holder.onLoss='respawn', but ${restartsInWindow} replacement attempts inside the ` +
-      `shared flap-damping window did not produce a continuously healthy holder. Automatic ` +
-      `restarts are latched off until a holder is positively healthy for the reset window. ` +
-      `Inspect launch/attach warnings, then either restore a holder or change the goal's ` +
-      `holder policy deliberately.`,
+      `holder.onLoss='respawn', but ${restartsInWindow} replacement launches fell inside the ` +
+      `${GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS / 60_000}-minute durable rate window. Automatic ` +
+      `recovery is stopped and the goal is moving to a needs-human pause. Inspect launch/attach ` +
+      `warnings, then deliberately resume the goal after restoring a holder or changing its ` +
+      `holder policy.`,
     meta: {
       dedupKind: 'goal-holder-respawn-give-up',
       subjectSignature: `${goal.workspaceId}:${goal.goalId}`,
@@ -1214,6 +1383,9 @@ function holderRespawnDeps(
       });
     },
     notifyHandoff: notifyGoalHolderHandoff,
+    reserveRateSlot: async (goal, nowMs) => await reserveGoalHolderRespawnRateSlot(sql, goal, nowMs),
+    pauseNeedsHuman: async (goal, attemptsInWindow, nowMs) =>
+      await pauseGoalForHolderRespawnRateCap(sql, goal, attemptsInWindow, nowMs),
     escalateGiveUp: defaultEscalateHolderRespawnGiveUp,
     now: Date.now,
     states: goalHolderRespawnStates,
@@ -1310,7 +1482,6 @@ export async function runGoalHolderRespawnOnce(
     if (decision.action.kind === 'escalate-give-up') {
       try {
         await deps.escalateGiveUp(goal, decision.action.restartsInWindow);
-        summary.gaveUp += 1;
       } catch (error) {
         // The escalation is the durable signal. If its write fails, clear only
         // the latch so the next tick retries the deduped open instead of losing it.
@@ -1318,10 +1489,59 @@ export async function runGoalHolderRespawnOnce(
         console.warn(
           `[goal-holder-respawner] give-up escalation failed for ${goal.goalId} (will retry): ${error instanceof Error ? error.message : String(error)}`,
         );
+        continue;
+      }
+      try {
+        await (deps.pauseNeedsHuman ?? (async () => {}))(goal, decision.action.restartsInWindow, deps.now());
+        summary.gaveUp += 1;
+      } catch (error) {
+        deps.states.set(key, { ...decision.nextState, gaveUp: false });
+        console.warn(
+          `[goal-holder-respawner] needs-human pause failed for ${goal.goalId} (will retry): ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
       continue;
     }
     if (decision.action.kind !== 'restart') continue;
+
+    let rate: GoalHolderRespawnRateDecision;
+    try {
+      rate = await (deps.reserveRateSlot ?? (async () => ({ kind: 'reserved', attemptsInWindow: 0 }) as const))(
+        goal,
+        deps.now(),
+      );
+    } catch (error) {
+      // Fail closed: when the durable budget cannot be read/updated, launching
+      // would recreate the unbounded behavior this guard exists to remove.
+      console.warn(
+        `[goal-holder-respawner] durable rate reservation failed for ${goal.goalId} (launch skipped): ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
+    if (rate.kind === 'ineligible') continue;
+    if (rate.kind === 'capped') {
+      const cappedState = { ...decision.nextState, gaveUp: true };
+      deps.states.set(key, cappedState);
+      try {
+        await deps.escalateGiveUp(goal, rate.attemptsInWindow);
+      } catch (error) {
+        deps.states.set(key, { ...cappedState, gaveUp: false });
+        console.warn(
+          `[goal-holder-respawner] give-up escalation failed for ${goal.goalId} (will retry): ${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+      try {
+        await (deps.pauseNeedsHuman ?? (async () => {}))(goal, rate.attemptsInWindow, deps.now());
+        summary.gaveUp += 1;
+      } catch (error) {
+        deps.states.set(key, { ...cappedState, gaveUp: false });
+        console.warn(
+          `[goal-holder-respawner] needs-human pause failed for ${goal.goalId} (will retry): ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      continue;
+    }
 
     summary.attempted += 1;
     let launched: { ownerId: string; warnings: string[] };
