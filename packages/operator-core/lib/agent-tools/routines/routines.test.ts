@@ -492,6 +492,56 @@ describe('routines:list', () => {
       reason: 'Paused via the Agents pane',
       by: 'loopback',
       at: '2026-07-28T03:40:00.297Z',
+      // P-004: an UNGROUPED routine's pause is not TTL-governed, and `finite:false`
+      // states that positively — the loud case, because nothing will re-arm it.
+      autoResumesAt: null,
+      finite: false,
+    });
+  });
+
+  it('P-004: reports the auto-resume deadline on a release-group pause', async () => {
+    const pausedAtMs = Date.parse('2026-08-31T10:00:00.000Z');
+    rows.push([
+      {
+        install_slug: 'papercusp',
+        name: 'green-checkpoint',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 15 * * * *' },
+        target_role: 'system:green-checkpoint',
+        active: false,
+        next_fire_at: null,
+        last_fired_at: null,
+        group_slug: 'release',
+        metadata: { pause: { reason: 'deploy surgery', pausedBy: 'su-x', pausedAtMs, expiresAtMs: pausedAtMs + 3_600_000 } },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].paused).toMatchObject({
+      finite: true,
+      autoResumesAt: new Date(pausedAtMs + 3_600_000).toISOString(),
+    });
+  });
+
+  it('P-004: applies the default release TTL to a LEGACY pause that carries no expiry', async () => {
+    const pausedAtMs = Date.parse('2026-08-31T10:00:00.000Z');
+    rows.push([
+      {
+        install_slug: 'papercusp',
+        name: 'green-checkpoint',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 15 * * * *' },
+        target_role: 'system:green-checkpoint',
+        active: false,
+        next_fire_at: null,
+        last_fired_at: null,
+        group_slug: 'release',
+        metadata: { pause: { reason: 'legacy hold', pausedBy: 'su-x', pausedAtMs } },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].paused).toMatchObject({
+      finite: true,
+      autoResumesAt: new Date(pausedAtMs + 4 * 3_600_000).toISOString(),
     });
   });
 
@@ -970,7 +1020,9 @@ describe('routines:list', () => {
       },
     ]);
     const b = body(await listTool.handler({} as never, { role: 'su' } as never));
-    expect(b.routines[0].paused).toEqual({ reason: null, by: null, at: null });
+    // P-004: an unparseable `pausedAtMs` leaves the hold UNDATABLE, so no auto-resume
+    // can be derived — reported as finite:false rather than an invented deadline.
+    expect(b.routines[0].paused).toEqual({ reason: null, by: null, at: null, autoResumesAt: null, finite: false });
   });
 
   it('KEEPS `paused` in the trimmed projection — dropping it would reinstate the bug by default', async () => {
