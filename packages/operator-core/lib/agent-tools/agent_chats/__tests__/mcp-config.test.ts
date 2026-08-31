@@ -29,6 +29,7 @@ describe('AGENT_CHATS_MCP_TOOLS / AGENT_CHATS_ALLOWED_TOOLS', () => {
       'plans:get',
       'docs:search',
       'memory:search',
+      'voice:say',
     ]);
   });
 
@@ -39,6 +40,7 @@ describe('AGENT_CHATS_MCP_TOOLS / AGENT_CHATS_ALLOWED_TOOLS', () => {
       'mcp__agentmcp__plans:get',
       'mcp__agentmcp__docs:search',
       'mcp__agentmcp__memory:search',
+      'mcp__agentmcp__voice:say',
     ]);
   });
 });
@@ -74,7 +76,7 @@ describe('buildAgentChatsMcpConfig', () => {
     expect(server.url).toContain('/api/mcp?superuser=1');
     expect(server.url).toContain('&workspace=ws-1');
     expect(server.url).toContain(
-      `&tools=${encodeURIComponent('work_items:get,work_items:list,plans:get,docs:search,memory:search')}`,
+      `&tools=${encodeURIComponent('work_items:get,work_items:list,plans:get,docs:search,memory:search,voice:say')}`,
     );
     expect(server.url).toContain('&harness=papercusp');
   });

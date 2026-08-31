@@ -34,11 +34,14 @@ import { selfUrl } from '../../self-url';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 /**
- * The read-mostly MCP surface: enough for a chat agent to answer item
- * questions BY TOOL — the item itself, related items, the plan it's derived
- * from, project docs, and prior relevant memory. Bare `:`-form names (the
- * MCP catalog's canonical form); `AGENT_CHATS_ALLOWED_TOOLS` below derives
- * the `mcp__agentmcp__`-prefixed `--allowed-tools` form the spawn needs.
+ * The focused MCP surface: enough for a chat agent to answer item questions
+ * BY TOOL — the item itself, related items, the plan it's derived from,
+ * project docs, and prior relevant memory — plus `voice:say`, which the
+ * reused Papercup persona requires on every user-facing turn. Bare `:`-form
+ * names (the MCP catalog's canonical form); `AGENT_CHATS_ALLOWED_TOOLS`
+ * below derives the `mcp__agentmcp__`-prefixed `--allowed-tools` form the
+ * spawn needs. `voice:say` remains role-gated by its own definition
+ * (`papercup` / `operator`); this list only makes it projectable.
  */
 export const AGENT_CHATS_MCP_TOOLS = [
   'work_items:get',
@@ -46,6 +49,7 @@ export const AGENT_CHATS_MCP_TOOLS = [
   'plans:get',
   'docs:search',
   'memory:search',
+  'voice:say',
 ] as const;
 
 /** The complete `--allowed-tools` surface for the chat's attached MCP config. */
