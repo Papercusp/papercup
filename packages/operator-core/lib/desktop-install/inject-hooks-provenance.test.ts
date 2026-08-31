@@ -97,7 +97,16 @@ async function makeGitCcHookSource(
   const ccDir = path.join(repo, 'scripts', 'hooks', 'cc');
   await fs.mkdir(ccDir, { recursive: true });
   for (const name of CC_HOOK_FILES) {
-    await fs.writeFile(path.join(ccDir, name), `#!/bin/bash\n# ${marker}: ${name}\n`);
+    // EI-21974793277035753: the body must be VALID for the extension, because
+    // installClaudeHooks now parse-checks each hook and refuses one that does not compile.
+    // A single bash-shaped body for every file made `.mjs` hooks unparseable (`#` is not a
+    // JS comment), so the installer correctly refused all 24 of them and these tests failed
+    // on the resulting console.error. Matches how makeGitInjectSource above already writes
+    // its `.mjs` fixtures.
+    const body = /\.m[jt]s$/.test(name)
+      ? `// ${marker}: ${name}\n`
+      : `#!/bin/bash\n# ${marker}: ${name}\n`;
+    await fs.writeFile(path.join(ccDir, name), body);
   }
 
   await run('git', ['init', '-q'], { cwd: repo });
