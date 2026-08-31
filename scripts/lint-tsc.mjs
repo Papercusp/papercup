@@ -43,6 +43,13 @@
  *                                 # concurrently-edited checkout where `--mine` can attribute a
  *                                 # PEER's in-flight edit to you. Implies --mine-style scoping.
  *   npm run lint:tsc -- --update  # lower each improved file's baseline to current (never raises)
+ *   npm run lint:tsc -- --all-errors
+ *                                 # EI-19343733961745670: quote EVERY diagnostic for a failing
+ *                                 # file instead of the first 10 (3 for a new/hard-failing file).
+ *                                 # Reporting is capped by default so one pathological file cannot
+ *                                 # bury the guidance under it; lift the cap when the footer says
+ *                                 # `+N more not shown` and you need those N — the alternative is
+ *                                 # the second full ~150s compile this reporting exists to avoid.
  *
  * Exit codes:
  *   0 — OK (every file at/under its baseline; or --mine and your files are clean; or ratcheted down)
@@ -86,6 +93,8 @@ import {
   diagnosticLinesForFiles,
   formatRegressedFileDiagnostics,
   REGRESSION_DIAGNOSTIC_MAX_PER_FILE,
+  ALL_ERRORS_FLAG,
+  diagnosticCapFromArgv,
   partitionStandingByCommitRecency,
   formatLandingRaceCaveat,
   LANDING_RACE_WINDOW_SEC,
@@ -133,6 +142,8 @@ export {
   diagnosticLinesForFiles,
   formatRegressedFileDiagnostics,
   REGRESSION_DIAGNOSTIC_MAX_PER_FILE,
+  ALL_ERRORS_FLAG,
+  diagnosticCapFromArgv,
   partitionStandingByCommitRecency,
   formatLandingRaceCaveat,
   LANDING_RACE_WINDOW_SEC,
@@ -187,6 +198,8 @@ const USAGE = `Usage:
   npm run lint:tsc -- --files=path/a.ts,path/b.ts
                                # scope to exactly these files
   npm run lint:tsc -- --update  # lower each improved file's baseline (never raises)
+  npm run lint:tsc -- --all-errors
+                               # quote every diagnostic for a failing file, not just the first 10
 `;
 
 async function main() {

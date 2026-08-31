@@ -1202,7 +1202,18 @@ export function partitionBrokenFilesByLiveEdit(unattributedBrokenFiles, dirtyFil
  *   the true total).
  * @returns {Map<string, string[]>} file → its diagnostic lines, in compiler order, capped.
  */
-export function diagnosticLinesForFiles(tscOutput, files, { maxPerFile = 3, root, canonicalRoot } = {}) {
+/**
+ * Quote cap for a file whose errors are all new (a hard-fail or a file the baseline never saw).
+ * Three lines are a fair sample of one homogeneous set — see REGRESSION_DIAGNOSTIC_MAX_PER_FILE
+ * for why a MIXED (regressed) file needs a larger one.
+ */
+const DEFAULT_DIAGNOSTIC_MAX_PER_FILE = 3;
+
+export function diagnosticLinesForFiles(
+  tscOutput,
+  files,
+  { maxPerFile = DEFAULT_DIAGNOSTIC_MAX_PER_FILE, root, canonicalRoot } = {},
+) {
   const wanted = new Set(files);
   /** @type {Map<string, string[]>} */
   const byFile = new Map();
@@ -1231,6 +1242,35 @@ export function diagnosticLinesForFiles(tscOutput, files, { maxPerFile = 3, root
  * surface. Ten bounds a pathological file without routinely truncating the ordinary 1–3 error case.
  */
 export const REGRESSION_DIAGNOSTIC_MAX_PER_FILE = 10;
+
+/** Opt out of the per-file quote caps for THIS run. */
+export const ALL_ERRORS_FLAG = '--all-errors';
+
+/**
+ * The effective per-file quote cap: `defaultCap`, or uncapped under `--all-errors`.
+ *
+ * ## Why a flag rather than a bigger default (EI-19343733961745670)
+ *
+ * The caps exist so one pathological file cannot bury the guidance printed beneath it, and for the
+ * ordinary 1–3 error case they never bind. But when they DO bind the reader is back in the hole
+ * this whole feature was built to fill: the footer says `+30 more not shown`, and the only way to
+ * read those 30 is the second full ~150s compile that queues behind pc-heavy. Capping by default
+ * and letting the reader lift it keeps the common report readable without ever making the
+ * expensive recompute the only route to a diagnostic the gate already has in hand.
+ *
+ * Applied at EVERY quoting site rather than only the regressed one. A flag honoured on some report
+ * branches and silently ignored on others is worse than no flag: `--all-errors` that returns a
+ * capped block reads as "that is all of them", and nothing in the output contradicts it.
+ *
+ * @param {string[] | undefined} argv - The gate's raw argv.
+ * @param {number} defaultCap - The cap that applies without the flag.
+ * @returns {number} `defaultCap`, or `Infinity` when `--all-errors` is present.
+ */
+export function diagnosticCapFromArgv(argv, defaultCap) {
+  return Array.isArray(argv) && argv.includes(ALL_ERRORS_FLAG)
+    ? Number.POSITIVE_INFINITY
+    : defaultCap;
+}
 
 /**
  * The quoted-diagnostic block under ONE regressed file already present in the baseline.
@@ -3076,7 +3116,10 @@ export async function runTscBaselineGate({
       // The compiler output already contains the location and message for each hard-failing
       // TS1xxx diagnostic. Quote those diagnostics here so a reader does not need a second full
       // compile to learn the actual problem (which is not necessarily a syntax error).
-      const diagnostics = diagnosticLinesForFiles(tscOutput, result.brokenFiles, diagnosticPathOptions);
+      const diagnostics = diagnosticLinesForFiles(tscOutput, result.brokenFiles, {
+        ...diagnosticPathOptions,
+        maxPerFile: diagnosticCapFromArgv(argv, DEFAULT_DIAGNOSTIC_MAX_PER_FILE),
+      });
       for (const f of result.brokenFiles) {
         console.error(`   - ${f}`);
         for (const line of diagnostics.get(f) ?? []) console.error(`      ${line}`);
@@ -3094,7 +3137,10 @@ export async function runTscBaselineGate({
       const diagnostics = diagnosticLinesForFiles(
         tscOutput,
         result.regressions.map((r) => r.file),
-        { ...diagnosticPathOptions, maxPerFile: REGRESSION_DIAGNOSTIC_MAX_PER_FILE },
+        {
+          ...diagnosticPathOptions,
+          maxPerFile: diagnosticCapFromArgv(argv, REGRESSION_DIAGNOSTIC_MAX_PER_FILE),
+        },
       );
       for (const r of result.regressions) {
         console.error(formatRow(r));
@@ -3117,7 +3163,10 @@ export async function runTscBaselineGate({
       const attributedDiagnostics = diagnosticLinesForFiles(
         tscOutput,
         result.attributed.map((r) => r.file),
-        { ...diagnosticPathOptions, maxPerFile: REGRESSION_DIAGNOSTIC_MAX_PER_FILE },
+        {
+          ...diagnosticPathOptions,
+          maxPerFile: diagnosticCapFromArgv(argv, REGRESSION_DIAGNOSTIC_MAX_PER_FILE),
+        },
       );
       for (const r of result.attributed) {
         console.error(formatRow(r));
@@ -3166,7 +3215,10 @@ export async function runTscBaselineGate({
       const diagnostics = diagnosticLinesForFiles(
         tscOutput,
         result.newFiles.map((r) => r.file),
-        diagnosticPathOptions,
+        {
+          ...diagnosticPathOptions,
+          maxPerFile: diagnosticCapFromArgv(argv, DEFAULT_DIAGNOSTIC_MAX_PER_FILE),
+        },
       );
       const emitRow = (r, suffix = '') => {
         console.error(`${formatRow(r)}${suffix}`);

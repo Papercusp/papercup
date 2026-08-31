@@ -108,6 +108,7 @@
     "scripts/proc-guard.mjs",
     "scripts/lib/tsc-baseline-gate.mjs",
     "scripts/lib/identity-leak-patterns.mjs",
+    "scripts/lib/agent-intent-comment-patterns.mjs",
     "scripts/lib/sql-comment-backtick-scan.mjs",
     "scripts/check-vacuous-negative-assertions.mjs",
     "scripts/check-no-ungated-infinite-animation.mjs",
