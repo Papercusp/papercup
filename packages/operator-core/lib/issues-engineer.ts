@@ -3139,7 +3139,31 @@ export async function setIssueState(
                                   -- after the merge deletes explicit null-valued fields from
                                   -- unrelated existing metadata (for example
                                   -- payload.triage.{judge,judgedAt,mergeInto}).
-                                  ELSE COALESCE(payload, '{}'::jsonb) || jsonb_strip_nulls(${evidencePayloadJson}::text::jsonb)
+                                  -- WI-1409142: that same recursion also reached INSIDE the
+                                  -- patch's own completion evidence. Stripping the incoming
+                                  -- patch protected EXISTING metadata but not the evidence
+                                  -- being written, and the evidence IS the patch -- so
+                                  -- _completionEvidence.*.contentIdentity[].headBlobSha and
+                                  -- .workingTreeBlobSha lost their keys whenever they were
+                                  -- legitimately null (a declared path not yet in HEAD, the
+                                  -- ordinary state when closing before git-sync sweeps).
+                                  -- Those keys are REQUIRED by
+                                  -- CompletionSettlementManifestSchema, so the manifest
+                                  -- failed safeParse and the settlement reconciler skipped
+                                  -- the row silently, stranding the close at 'proposed'.
+                                  -- Exempt the evidence subtree; merge it verbatim.
+                                  ELSE COALESCE(payload, '{}'::jsonb) || (
+                                         jsonb_strip_nulls(
+                                           ${evidencePayloadJson}::text::jsonb - '_completionEvidence'
+                                         )
+                                         || CASE WHEN ${evidencePayloadJson}::text::jsonb ? '_completionEvidence'
+                                                 THEN jsonb_build_object(
+                                                        '_completionEvidence',
+                                                        ${evidencePayloadJson}::text::jsonb -> '_completionEvidence'
+                                                      )
+                                                 ELSE '{}'::jsonb
+                                            END
+                                       )
                              END
                            ) - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
                              - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'

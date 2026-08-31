@@ -3711,9 +3711,37 @@ export async function setWorkItemState(
                               }
                                 THEN authority
                               ELSE ${opts.completionAuthority ?? null} END,
+             -- WI-1409142: sanitize only the INCOMING patch, and never its completion
+             -- evidence. Two separate defects lived in the old
+             -- jsonb_strip_nulls(payload || delta):
+             --   1. It reached the WHOLE merged payload, deleting explicit nulls from
+             --      unrelated EXISTING metadata -- the hazard already documented on
+             --      attachCompletionEvidenceToSettledItem and fixed for the issue family
+             --      by WI-42437, leaving this path the last one still doing it.
+             --   2. jsonb_strip_nulls is RECURSIVE, so it also reached INSIDE the evidence
+             --      and deleted _completionEvidence.*.contentIdentity[].headBlobSha and
+             --      .workingTreeBlobSha whenever they were legitimately null (a declared
+             --      path not yet in HEAD -- the ordinary state when an agent closes before
+             --      git-sync sweeps). Those keys are REQUIRED by
+             --      CompletionSettlementManifestSchema, so the stored manifest failed
+             --      safeParse and completion-settlement-reconciler.ts skipped the row in
+             --      silence: 110 closes could never settle out of authority='proposed'.
+             -- Stripping the patch minus the evidence keeps WI-42437's intent while the
+             -- evidence subtree is merged verbatim, nulls and all.
              payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                             THEN payload
-                            ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
+                            ELSE COALESCE(payload, '{}'::jsonb) || (
+                                   jsonb_strip_nulls(
+                                     ${evidencePayloadJson}::text::jsonb - '_completionEvidence'
+                                   )
+                                   || CASE WHEN ${evidencePayloadJson}::text::jsonb ? '_completionEvidence'
+                                           THEN jsonb_build_object(
+                                                  '_completionEvidence',
+                                                  ${evidencePayloadJson}::text::jsonb -> '_completionEvidence'
+                                                )
+                                           ELSE '{}'::jsonb
+                                      END
+                                 )
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
       RETURNING ${tx.unsafe(FEATURE_COLS)}`
