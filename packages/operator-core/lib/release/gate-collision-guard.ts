@@ -818,7 +818,16 @@ type BarrierHolder = { owner: string; owner_label?: string | null; mode: string;
 
 type BarrierAcquireRaw =
   | { ok: true; lock_id: string; expires_ts: Date }
-  | { ok: false; reason: string; holders: BarrierHolder[] };
+  /**
+   * `lock_id` is present exactly when the failure left a QUEUED EXCLUSIVE behind
+   * (`drain_timeout`, or `status:'draining'` on a no-wait acquire). That queue row
+   * is not inert: a draining exclusive REFUSES NEW SHARED ACQUIRES, so an abandoned
+   * one back-pressures every harness's git-sync until its TTL lapses. Measured by
+   * hand on 2026-08-31 (EI-21930094737784126) — a failed `locks:acquire_resource`
+   * still returned a lock_id and left the barrier draining. Whoever consumes this
+   * MUST release it; see `acquireGitSyncRestartBarrier`.
+   */
+  | { ok: false; reason: string; holders: BarrierHolder[]; lock_id?: string };
 
 export interface GitSyncRestartBarrierDeps {
   resolveDomain: (resource: string) => string;
@@ -829,9 +838,27 @@ export interface GitSyncRestartBarrierDeps {
     owner: string;
     ownerLabel: string | null;
     ttlSec: number;
+    /** 0 = today's bare try-acquire. >0 = drain shared holders for up to N sec. */
+    maxWaitSec: number;
   }) => Promise<BarrierAcquireRaw>;
   release: (params: { coordinationDomain: string; owner: string; lockId: string }) => Promise<void>;
 }
+
+/**
+ * How long the restart barrier drains shared git-sync holders before giving up.
+ *
+ * MEASURED 2026-08-31 (EI-21930094737784126) rather than guessed: sampling the live
+ * `git-sync` barrier every 5s showed fires holding it for **~5-10 seconds**, arriving
+ * in bursts of ~6, with **20 of 40 sampled seconds at zero holders**. `LOCK_TTL_SEC =
+ * 600` in git-sync-action.ts is a generous LEASE BOUND, not the work duration — reading
+ * it as the wait we would have to outlast is the mistake that made this look unfixable.
+ *
+ * 45s therefore clears a live burst with wide margin, and it is not merely a timeout:
+ * a draining exclusive REFUSES NEW SHARED ACQUIRES, so the sweep stops feeding itself
+ * while we wait. That is why draining converges and why polling the cgroup predicate
+ * never could — polling races the sweep it is trying to observe.
+ */
+export const GIT_SYNC_RESTART_BARRIER_DRAIN_SEC = 45;
 
 export type GitSyncRestartBarrierOutcome =
   | {
@@ -859,18 +886,34 @@ async function defaultGitSyncRestartBarrierDeps(): Promise<GitSyncRestartBarrier
   return {
     resolveDomain: resourceLockDomain,
     newOwner: () => `system:dev-restart:git-sync-barrier:${process.pid}:${randomUUID()}`,
-    acquire: async ({ coordinationDomain, resource, owner, ownerLabel, ttlSec }) =>
-      inWorkspaceTxn(coordinationDomain, owner, (tx) =>
-        lockStore.tryAcquireResource(tx, {
-          coordinationDomain,
-          resource,
-          mode: 'exclusive',
-          owner,
-          ownerLabel,
-          reason: 'dev:restart git-sync kill barrier (WI-222053)',
-          ttlSec,
-        }),
-      ) as Promise<BarrierAcquireRaw>,
+    acquire: async ({ coordinationDomain, resource, owner, ownerLabel, ttlSec, maxWaitSec }) => {
+      // Route through the drain-capable acquire rather than a bare try-acquire, so a
+      // live git-sync burst is WAITED OUT instead of bounced. Normalises the wait
+      // module's four-shape result into BarrierAcquireRaw, carrying `lock_id` on
+      // every outcome that left a queue row behind so the caller can release it.
+      const { acquireResourceExclusiveWithWait } = await import('../agent-tools/locks/resource-acquire-wait');
+      const r = await acquireResourceExclusiveWithWait({
+        coordinationDomain,
+        owner,
+        ownerLabel,
+        resource,
+        reason: 'dev:restart git-sync kill barrier (WI-222053)',
+        ttlSec,
+        maxWaitSec,
+      });
+      if (r.ok && r.status === 'held') {
+        return { ok: true, lock_id: r.lock_id, expires_ts: new Date(Date.now() + ttlSec * 1000) };
+      }
+      // `status:'draining'` (ok:true, maxWaitSec 0) is NOT an acquisition — it is a
+      // parked queue row. Normalise it to a failure so it can never read as success.
+      if (r.ok) return { ok: false, reason: 'draining', holders: r.holders, lock_id: r.lock_id };
+      return {
+        ok: false,
+        reason: r.reason,
+        holders: r.holders,
+        ...('lock_id' in r && r.lock_id ? { lock_id: r.lock_id } : {}),
+      };
+    },
     release: async ({ coordinationDomain, owner, lockId }) => {
       await inWorkspaceTxn(coordinationDomain, owner, (tx) =>
         lockStore.tryReleaseResource(tx, { coordinationDomain, owner, lockId }),
@@ -882,6 +925,7 @@ async function defaultGitSyncRestartBarrierDeps(): Promise<GitSyncRestartBarrier
 export async function acquireGitSyncRestartBarrier(
   ownerLabel: string | null,
   deps?: GitSyncRestartBarrierDeps,
+  opts?: { maxDrainSec?: number },
 ): Promise<GitSyncRestartBarrierOutcome> {
   const d = deps ?? (await defaultGitSyncRestartBarrierDeps());
   const resource = GIT_SYNC_RESTART_BARRIER_RESOURCE;
@@ -893,8 +937,21 @@ export async function acquireGitSyncRestartBarrier(
     owner,
     ownerLabel,
     ttlSec: GIT_SYNC_RESTART_BARRIER_TTL_SEC,
+    maxWaitSec: Math.max(0, opts?.maxDrainSec ?? 0),
   });
-  if (!result.ok) return { acquired: false, resource, reason: result.reason, holders: result.holders };
+  if (!result.ok) {
+    // RELEASE THE QUEUED EXCLUSIVE. A failed acquire that left a queue row behind is
+    // not inert: while it sits in 'draining' it REFUSES NEW SHARED ACQUIRES, so an
+    // abandoned one back-pressures every harness's git-sync until its TTL lapses.
+    // Best-effort — a failed release must not mask the acquire failure the caller
+    // actually needs to see, and the TTL is the backstop.
+    if (result.lock_id) {
+      await d
+        .release({ coordinationDomain, owner, lockId: result.lock_id })
+        .catch(() => {});
+    }
+    return { acquired: false, resource, reason: result.reason, holders: result.holders };
+  }
   return {
     acquired: true,
     resource,
