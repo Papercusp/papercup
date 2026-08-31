@@ -87,6 +87,15 @@ export const ALLOWLIST = new Set([
   // control-anchor imports this without pulling the liveness/agent-MCP graph.
   'packages/operator-core/lib/goals/holder-authority.ts',
 
+  // Tool-invocation telemetry attributes the CURRENTLY EXECUTING caller. Its
+  // INSERT owns the agent_modes/session_briefs join that derives goal_id and
+  // goal_actor_class at settle time; the caller is live by construction because
+  // it is completing this very dispatch. This is not a board/supervisor answer
+  // to "who holds goal X now", so routing the hot-path batch INSERT through the
+  // asynchronous presence oracle would turn best-effort telemetry into a
+  // dispatch dependency. Keep this one owner-keyed self-read explicit.
+  'packages/operator-core/lib/projected-tool-deps.ts',
+
   // The generic mode store: CRUD over agent_modes across every mode axis, of
   // which 'goal' is one. It is the layer the holder module is built ON, so
   // routing it through the holder module would be circular.
