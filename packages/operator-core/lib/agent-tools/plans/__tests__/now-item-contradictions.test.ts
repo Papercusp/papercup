@@ -55,6 +55,47 @@ describe('detectNowItemContradictions', () => {
     expect(detectNowItemContradictions(parsed)).toEqual([]);
   });
 
+  // EI-21920559821120577 (partial) — the exemption vocabulary was missing the
+  // past-tense completion verbs this codebase actually uses. Found while
+  // implementing deterministic-plan-state-derivation-2026-08-31 P-002, whose
+  // read-time caution reuses this classifier: "P-001 landed; pick up P-002" —
+  // the most common shape a Now block takes — was reported as a contradiction,
+  // which on the WRITE path is a hard refusal of a correct sentence.
+  describe('past-tense completion verbs (EI-21920559821120577, partial)', () => {
+    for (const verb of ['landed', 'merged', 'resolved']) {
+      it(`treats "P-001 ${verb}" as completion prose, not a contradiction`, () => {
+        const proposed = parsePlan(
+          CURRENT.replace('**State:** P-001 is done.', `**State:** P-001 ${verb}; pick up P-002.`),
+        );
+        expect(detectNowItemContradictions(proposed)).toEqual([]);
+      });
+
+      // PAIRED CONTROL — the whole point of restricting the addition to
+      // past-tense forms. If the bare stem were added too, the guard would stop
+      // catching a direction to redo finished work, and this half would fail.
+      it(`still flags the IMPERATIVE stem of "${verb}"`, () => {
+        const stem = verb === 'landed' ? 'land' : verb === 'merged' ? 'merge' : 'resolve';
+        const proposed = parsePlan(
+          CURRENT.replace('**Next:** Continue with P-002.', `**Next:** ${stem} P-001 first.`),
+        );
+        expect(detectNowItemContradictions(proposed)).toEqual([
+          expect.objectContaining({ id: 'P-001', status: 'done' }),
+        ]);
+      });
+    }
+
+    it('does not exempt a NEGATED past-tense completion', () => {
+      // "P-001 has not landed" asserts the item is unfinished while it is
+      // stored done — still a contradiction, exactly like "not done yet".
+      const proposed = parsePlan(
+        CURRENT.replace('**State:** P-001 is done.', '**State:** P-001 has not landed yet.'),
+      );
+      expect(detectNowItemContradictions(proposed)).toEqual([
+        expect.objectContaining({ id: 'P-001', status: 'done' }),
+      ]);
+    });
+  });
+
   it('flags negated completion instead of treating it as closure', () => {
     const proposed = parsePlan(
       CURRENT.replace('**State:** P-001 is done.', '**State:** P-001 is not done yet.'),

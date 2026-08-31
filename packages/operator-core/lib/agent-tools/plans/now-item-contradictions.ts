@@ -20,8 +20,26 @@ const PLAN_ITEM_REF_RE = /\bP-\d{3,}\b/g;
 // multi-segment kebab-case token ending in a full date immediately before
 // a plan-item id.
 const PLAN_SLUG_PREFIX_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d{4}-\d{2}-\d{2})\s+$/i;
+// EI-21920559821120577 (partial): the exemption vocabulary was missing three
+// past-tense completion verbs this codebase uses constantly — `landed` above
+// all (CLAUDE.md itself says "the fixes land ON TOP of it", "a fix already
+// landed"). "P-001 landed; pick up P-002" is the single most common shape a
+// Now block takes, and it was being reported as a contradiction, which on the
+// WRITE path is a hard refusal of a correct sentence.
+//
+// Deliberately PAST-TENSE ONLY. `land`/`merge`/`resolve` are excluded: an
+// imperative "land P-001" is exactly the direction-at-finished-work this guard
+// exists to catch, so adding the bare stems would defeat it. That asymmetry is
+// pinned by paired tests in __tests__/now-item-contradictions.test.ts.
+//
+// This is the narrow half of EI-21920559821120577. The filer's wider proposal
+// — flag only PENDING-marked mentions, or downgrade the write refusal to an
+// advisory — remains open, and is a design call with a live counter-argument
+// (EI-21363981314860302 records the same guard catching a genuinely stale
+// claim). Widening the exemption set can only reduce false refusals, so it is
+// safe to take separately; the redesign is not.
 const NOW_CLOSED_RE =
-  /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
+  /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted|landed|merged|resolved)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
 const NOW_NEGATED_OR_FUTURE_RE =
   /\b(?:not|never|still|yet|will|would|should|must|need(?:s)?(?:\s+to)?|to)\b/i;
 const NOW_HISTORICAL_RE =
