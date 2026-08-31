@@ -42,11 +42,19 @@ export const PLAN_ITEM_RECONCILE_ACTION = "plan-item.reconcileLinkedWorkItems";
  *  linked work-items RIGHT NOW, instead of waiting for the 15-min periodic sweep. */
 export const PLAN_ITEM_LANE_RESYNC_ACTION = "plan-item.resyncLane";
 
+/** P-004 (deterministic-plan-state-derivation-2026-08-31): the action name
+ *  plan-items/plan-drain-rule.ts fires when a `plans:set-status` flip crosses
+ *  the terminal boundary, to move the PLAN's lifecycle status when its item
+ *  graph now warrants a different one (ready/active → awaiting-acceptance once
+ *  drained, and back when an item reopens). Never ships a plan. */
+export const PLAN_DRAIN_TRANSITION_ACTION = "plan.applyDrainTransition";
+
 /** The closed set of recognised built-in (non-tool) reaction action names. */
 export const BUILTIN_ACTIONS: ReadonlySet<string> = new Set<string>([
   CACHE_BUMP_TAGS_ACTION,
   PLAN_ITEM_RECONCILE_ACTION,
   PLAN_ITEM_LANE_RESYNC_ACTION,
+  PLAN_DRAIN_TRANSITION_ACTION,
 ]);
 
 /** Whether `fire` names a built-in in-process action (vs a projected tool). */
@@ -114,6 +122,35 @@ function toLaneResyncItems(value: unknown): LaneResyncItem[] {
         ? (v as { harnessSlug: string }).harnessSlug
         : null;
       out.push({ planSlug: (v as { planSlug: string }).planSlug, itemId: (v as { itemId: string }).itemId, harnessSlug });
+    }
+  }
+  return out;
+}
+
+/** Coerce the `plans` arg of {@link PLAN_DRAIN_TRANSITION_ACTION}. Unlike the
+ *  lane-resync items this needs no `itemId`: the transition is a statement
+ *  about the PLAN, and which item's flip triggered it is irrelevant to the
+ *  decision (the action re-derives from the whole graph). De-duplicated because
+ *  a bulk flip of N items fans into N events naming the SAME plan — the action
+ *  is idempotent, so this only saves N-1 locked reads. The key is a JSON tuple
+ *  rather than a joined string so no separator can collide with a slug. */
+function toDrainTransitionPlans(
+  value: unknown,
+): Array<{ planSlug: string; harnessSlug: string | null }> {
+  if (!Array.isArray(value)) return [];
+  const out: Array<{ planSlug: string; harnessSlug: string | null }> = [];
+  const seen = new Set<string>();
+  for (const v of value) {
+    if (v && typeof v === "object" && typeof (v as { planSlug?: unknown }).planSlug === "string") {
+      const planSlug = (v as { planSlug: string }).planSlug;
+      const harnessSlug =
+        typeof (v as { harnessSlug?: unknown }).harnessSlug === "string"
+          ? (v as { harnessSlug: string }).harnessSlug
+          : null;
+      const key = JSON.stringify([harnessSlug, planSlug]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ planSlug, harnessSlug });
     }
   }
   return out;
@@ -200,6 +237,23 @@ export async function fireBuiltinReactionAction(
           dependency.itemId,
           dependency.harnessSlug,
         ).catch(() => []);
+      }
+      return { ok: true };
+    }
+    case PLAN_DRAIN_TRANSITION_ACTION: {
+      const plans = toDrainTransitionPlans(args.plans);
+      if (plans.length === 0) return { ok: true };
+      // Imported lazily: this module is loaded by the event engine on every
+      // reaction dispatch, and agent-tools/plans pulls in the whole plan write
+      // stack (locks, revisions, Postgres). Per-plan best-effort — the
+      // transition reacts to somebody else's already-successful write, so a
+      // failure here must never be reported as a failure of theirs. P-005's
+      // periodic sweep is the backstop for anything dropped.
+      const { applyPlanDrainTransition } = await import(
+        "../agent-tools/plans/plan-drain-transition"
+      );
+      for (const p of plans) {
+        await applyPlanDrainTransition(p.planSlug, p.harnessSlug).catch(() => null);
       }
       return { ok: true };
     }

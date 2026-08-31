@@ -78,13 +78,11 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
       query,
       searchHitSlugs,
     );
-    const acc: Record<PlanBucket, number> = {
-      draft: 0,
-      ready: 0,
-      running: 0,
-      shipped: 0,
-      rejected: 0,
-    };
+    // Seeded from BUCKET_IDS, not hand-listed: a bucket missing from this
+    // accumulator is `undefined`, and `undefined += 1` is NaN — so the chip
+    // renders "NaN" rather than "0", and only for the bucket nobody remembered.
+    // P-004's `awaiting` hit exactly that.
+    const acc = Object.fromEntries(BUCKET_IDS.map((id) => [id, 0])) as Record<PlanBucket, number>;
     for (const p of filtered) acc[bucketOf(p)] += 1;
     return acc;
   }, [plans, date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout, scheduled, trigger, query, searchHitSlugs]);

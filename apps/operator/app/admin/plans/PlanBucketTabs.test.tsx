@@ -133,7 +133,17 @@ describe('PlanBucketTabs — count badges', () => {
     });
     const expected = expectedCounts(PLANS, DEFAULT_FILTERS, '');
     // Sanity: every bucket has at least one plan in this fixture.
-    expect(expected).toEqual({ draft: 2, ready: 2, running: 1, shipped: 1, rejected: 1 });
+    expect(expected).toEqual({
+      draft: 2,
+      ready: 2,
+      running: 1,
+      awaiting: 1,
+      shipped: 1,
+      rejected: 1,
+    });
+    // `running` staying at 1 is the assertion that matters: the awaiting plan
+    // also carries startStatus 'started', so a bucketOf that tested startStatus
+    // first would read 2 here and 0 for awaiting.
     for (const { id } of PLAN_BUCKETS) {
       expect(countText(id)).toBe(expected[id]);
     }
@@ -167,7 +177,14 @@ describe('PlanBucketTabs — count badges', () => {
       '',
     );
     // Archived view: only the single archived ready plan survives the filter.
-    expect(expected).toEqual({ draft: 0, ready: 1, running: 0, shipped: 0, rejected: 0 });
+    expect(expected).toEqual({
+      draft: 0,
+      ready: 1,
+      running: 0,
+      awaiting: 0,
+      shipped: 0,
+      rejected: 0,
+    });
     for (const { id } of PLAN_BUCKETS) {
       expect(countText(id)).toBe(expected[id]);
     }
