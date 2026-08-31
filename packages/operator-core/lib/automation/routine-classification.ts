@@ -646,8 +646,17 @@ export function isClockDriven(input: {
   cron?: string | null;
   rescheduleIntervalSec?: number | null;
   nextFireAt?: string | null;
+  /** The routines row's execution tier, when the caller has it. */
+  tier?: string | null;
 }): boolean {
   if (input.kind === 'triggered') return false;
+  // An ARM-STATE row (`tier='in-process'`, EI-19294826146331487) is not a schedule: no executor
+  // reads it, so it has no next_fire_at and never will. Its `reschedule_interval_sec` is the
+  // SWEEP's cadence carried for display, not a promise that this ROW fires — and reading it as a
+  // clock would make all 17 sweeps report `stalled` / needs-attention forever, which is the exact
+  // false alarm P-008 was fixed to stop. The sweep's real liveness comes from the inventory row it
+  // collapses with.
+  if (input.tier === 'in-process') return false;
   if (input.source === 'routines') {
     return Boolean(input.cron) || input.rescheduleIntervalSec != null;
   }
