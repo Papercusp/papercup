@@ -183,8 +183,10 @@ describe('population and ordering', () => {
  * The DORMANT split. Presence alone is not "learning": measured on the live
  * workspace 2026-08-30, 54 pots have a setup and 7 have anything armed, with
  * learning_pot_scope empty — so a presence rail renders 54 chips that all read
- * 'on'. These assert the narrowing WITHOUT letting it hide a pot someone has
- * actually decided about, which is the way this rule fails dangerously.
+ * 'on'. These assert the narrowing WITHOUT letting it hide a pot whose state we
+ * could not READ, which is the way this rule fails dangerously: 'unknown' is the
+ * absence of a fact and must stay loud, while 'off' is a fact we read and is
+ * summarised behind the counted affordance (D-008).
  */
 describe('the dormant split — a setup is not the same as learning', () => {
   const potsOf = (chips: ReturnType<typeof buildLearningPotRail>) => chips.map((c) => c.potSlug);
@@ -204,13 +206,31 @@ describe('the dormant split — a setup is not the same as learning', () => {
     expect(isPotChipDormant(chip)).toBe(false);
   });
 
-  it('NEVER hides a switched-off pot — the rail chip is what switches it back on', () => {
+  // D-008 REVERSED this. It used to assert `false` ("NEVER hides a switched-off
+  // pot — the rail chip is what switches it back on"). P-008's every-pot picker
+  // lists off pots and re-arms them from its footer, so the chip no longer has
+  // to exist for the pot to be reachable — and with every pot switched off, the
+  // old rule turned the entire rail into chips, which is the opposite of what
+  // switching them off is for.
+  it('treats a switched-off pot as dormant — the picker, not the chip, switches it back on', () => {
     const [chip] = buildLearningPotRail(
-      // Nothing armed AND switched off: dormant by arming, but a recorded decision.
       arming({ gymPots: [gym('paused', false)], potScope: scope(['paused']) }),
     );
     expect(chip.learning).toBe('off');
-    expect(isPotChipDormant(chip)).toBe(false);
+    expect(isPotChipDormant(chip)).toBe(true);
+  });
+
+  // The gate is the OUTER switch, so 'off' beats an armed lane underneath it.
+  // Without this case the rule could be satisfied by an implementation that only
+  // checks arming, which would still render a chip for every paused pot that has
+  // a lane configured — the exact population that made the rail gigantic.
+  it('treats a switched-off pot as dormant EVEN WITH an armed lane under it', () => {
+    const [chip] = buildLearningPotRail(
+      arming({ lanes: [lane('l1', 'paused', true)], potScope: scope(['paused']) }),
+    );
+    expect(chip.learning).toBe('off');
+    expect(chip.lanes.state).toBe('on');
+    expect(isPotChipDormant(chip)).toBe(true);
   });
 
   it('NEVER hides a pot whose scope could not be read', () => {
@@ -230,6 +250,28 @@ describe('the dormant split — a setup is not the same as learning', () => {
     expect(potsOf(active)).toEqual(['armed']);
     expect(potsOf(dormant)).toEqual(['idle-a', 'idle-b']);
     expect(active.length + dormant.length).toBe(rail.length);
+  });
+
+  // The regression this whole rule exists for, stated as the owner produced it:
+  // switch EVERY pot off to stop spend. Under the pre-D-008 predicate each of
+  // those pots became 'off', 'off' was never dormant, and the rail rendered a
+  // chip for every one — so the display got bigger the moment you tried to quiet
+  // it. Live measurement after the real 28-pot pause: 26 chips, 522px, clipped.
+  it('collapses to nothing on the rail when EVERY pot is switched off', () => {
+    const slugs = ['alpha', 'beta', 'gamma', 'delta'];
+    const rail = buildLearningPotRail(
+      arming({
+        // Two of them are armed underneath, so this also pins that the gate wins.
+        gymPots: [gym('alpha', true, 3), gym('beta', false), gym('gamma', true, 1), gym('delta', false)],
+        potScope: scope(slugs),
+      }),
+    );
+    const { active, dormant } = partitionLearningPotRail(rail);
+    expect(rail).toHaveLength(4);
+    expect(potsOf(active)).toEqual([]);
+    // Sorted: the rail orders by armed-then-spend-then-slug, not alphabetically,
+    // and this case is about WHICH pots land in each half, not their order.
+    expect([...potsOf(dormant)].sort()).toEqual(slugs);
   });
 });
 
