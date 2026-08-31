@@ -57,6 +57,10 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import {
   admittedWhereSql,
   admittedWhereSqlWi,
+  admissionFailOpenSec,
+  admissionPendingCreateRemedy,
+  admissionPendingExplanation,
+  admissionPromoterTickSec,
   autoPickableWhereSql,
   type BornAdmission,
   isWorkItemDuplicateAdmitted,
@@ -7068,6 +7072,42 @@ export interface ClaimFloorAttribution {
    * the repo conventions call out for shared-interface widening.
    */
   heldBy?: string | null;
+  /**
+   * EI-21973318733042066 — present ONLY on a floor that clears with NOBODY ACTING, carrying the
+   * bound it clears within.
+   *
+   * The floor names in this list mix two populations that read identically to a caller:
+   * TEMPORAL ones (admission-pending) and PERMANENT properties of the row (observation-lane,
+   * federation-detector, already-completed, origin). A refusal that cannot say WHICH is
+   * indistinguishable from a permanent one, so the caller either abandons work that was minutes
+   * from claimable or blocks forever on work that never will be — the measured cost of exactly
+   * that: a launched reviewer's review item stayed unclaimable for 22.5 minutes, outliving the
+   * entire 9-minute life of the agent it was created for.
+   *
+   * ⚠ ABSENT means "this floor advertises no bound", NEVER "this floor is permanent". Only
+   * floors whose bound the code actually KNOWS populate it; inferring permanence from absence
+   * would re-create the ambiguity this field exists to remove.
+   *
+   * ⚠ OPTIONAL ON PURPOSE, for the same reason `heldBy` above is: `ClaimFloorAttribution` is a
+   * shared interface with fixtures constructed across the tree (set_claim_spec builds
+   * `unknownRows` by hand), and a REQUIRED field here would strand files this change never
+   * touches.
+   */
+  retry?: {
+    readonly clearsOnItsOwn: true;
+    /** Seconds until the mechanism that normally clears it next runs. */
+    readonly expectedWithinSec: number;
+    /** Seconds until the independent backstop clears it even if that mechanism is dead. */
+    readonly guaranteedWithinSec: number;
+    /** What produces those two numbers, so a caller can check the claim rather than trust it. */
+    readonly basis: string;
+  };
+  /**
+   * EI-21973318733042066 — what the caller (or whoever created the item) can DO about this
+   * floor, when a documented way to avoid it already exists. Optional for the same shared-
+   * interface reason as `retry`, and absent wherever there is no remedy to name.
+   */
+  remedy?: string;
 }
 
 /** The floors, in claim-path order, as (name, predicate-is-SATISFIED) pairs + why a miss means. */
@@ -7075,8 +7115,10 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'not-found': 'no such work-item in this harness/workspace',
   'not-claimable-status': 'status is terminal or otherwise not in the claimable set',
   'already-taken': 'already claimed by another agent',
-  'admission-pending':
-    'duplicate screening is pending — the durable promoter owns admission; wait for admitted/unreviewed',
+  // EI-21973318733042066: DERIVED from the promoter cadence, never restated here. The old text
+  // was 'wait for admitted/unreviewed' — an unbounded instruction to wait, which is what left a
+  // refused caller unable to tell "not yet" from "never".
+  'admission-pending': admissionPendingExplanation(),
   'observation-lane': 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
   'needs-owner-action':
     'payload.needsOwnerAction = true — a typed credential, physical-device, or external-service-action capability requires the owner',
@@ -7243,6 +7285,24 @@ export async function explainIssueClaimFloors(
       // refusal is a property of the ROW, so `heldBy` stays absent rather than
       // carrying a stale `taken_by` that had nothing to do with the refusal.
       ...(refusedBy === 'already-taken' && r?.taken_by ? { heldBy: r.taken_by } : {}),
+      // EI-21973318733042066: admission-pending is the one floor here whose clearing is on a
+      // SCHEDULE the code owns, so it is the one that can honestly publish a bound. Both numbers
+      // and the remedy are derived (from the promoter cadence and from ADMISSION_CREATE_BYPASSES
+      // respectively) — a hand-written "30 minutes" or a second copy of the bypass list would be
+      // the drift this whole attribution exists to prevent.
+      ...(refusedBy === 'admission-pending'
+        ? {
+            retry: {
+              clearsOnItsOwn: true as const,
+              expectedWithinSec: admissionPromoterTickSec(),
+              guaranteedWithinSec: admissionFailOpenSec(),
+              basis:
+                'the work-item-admission-promoter cron tick, with the independent ' +
+                'work-item-admission-fail-open runner as the backstop if that promoter is dead',
+            },
+            remedy: admissionPendingCreateRemedy(),
+          }
+        : {}),
     };
   });
 }
