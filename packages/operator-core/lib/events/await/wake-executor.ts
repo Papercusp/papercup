@@ -1301,10 +1301,16 @@ export async function rehydrateLoopWakeText(
       deps.refreshLoopCarryNoteWithMetaFn ?? deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
     const getStatus = deps.getLoopStatusFn ?? getLoopStatus;
     let statusRead = false;
+    let liveLoopHarness: string | null = null;
     let deliverySupersession: LoopDeliverySupersession | null = null;
     try {
       const status = await getStatus(d.subscriberId);
       statusRead = true;
+      // Keep the live routine's install slug OUT here: the absence banner below has to
+      // state whether this reader's scope was ever confirmed against loop:status', and
+      // that comparison is otherwise trapped inside classifyLoopDeliverySupersession.
+      const liveSlug = typeof status?.harnessSlug === 'string' ? status.harnessSlug.trim() : '';
+      liveLoopHarness = liveSlug === '' ? null : liveSlug;
       deliverySupersession = classifyLoopDeliverySupersession(d, status, markerCandidate ?? undefined);
     } catch {
       // Status is a safety signal, not a new delivery dependency. If it is
@@ -1374,6 +1380,24 @@ export async function rehydrateLoopWakeText(
     const hasCommittedTimestamp =
       typeof meta.updatedAtMs === 'number' && Number.isFinite(meta.updatedAtMs) && meta.updatedAtMs > 0;
     const checkpointProvenCurrent = Boolean(liveNote && checkpointHash && hasCommittedTimestamp);
+    // EI-21971731335245747: the two carry-note readers select the row by DIFFERENT keys.
+    // THIS reader uses the wake marker's harness (above); loop:status uses the LIVE
+    // routine's install slug, and agent-tools/loop/status.ts calls that slug "the
+    // authoritative carry-note harness, just as it is for the cold wake reader" — an
+    // agreement this reader does not actually honour. classifyLoopDeliverySupersession
+    // catches a PROVEN divergence as a lineage-mismatch, but only when the status read
+    // succeeded AND named a harness to compare against. When it did not, scope agreement
+    // is UNKNOWN rather than fine.
+    //
+    // An unknown scope is survivable for every branch that FOUND a note — the row's
+    // existence is its own evidence. It is not survivable for an ABSENCE, because the
+    // absence banner's own remedy is "write loop:checkpoint before ending this turn":
+    // reported as clean, a wrong-scope read invites the agent to overwrite the very
+    // checkpoint it failed to see. So an absence states its scope, or qualifies itself.
+    const scopeAgreementVerified = statusRead && liveLoopHarness === marker.harness;
+    const scopeUnverifiedReason = statusRead
+      ? 'the live loop status named no harness to compare against'
+      : 'the live loop status could not be read at delivery time';
     const checkpointState = lineageMismatch
       ? `⚠ LOOP DELIVERY LINEAGE MISMATCH for owner ${d.subscriberId}: the wake marker names harness ` +
         `${lineageMismatch.markerHarness}, but the current active loop is scoped to harness ` +
@@ -1393,13 +1417,27 @@ export async function rehydrateLoopWakeText(
             `The latest committed checkpoint could not be established (contentHash or write timestamp is unavailable); ` +
             `treat this note as a stale snapshot and do not trust or re-execute it. Reconcile the carry-note store ` +
             `identity and write loop:checkpoint before ending this turn:\n${liveNote}`
-          : `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness} ` +
-            `as of readAt=${deliveryReadAtIso} — this is a statement about that instant, NOT about the whole turn. ` +
-            `If you write a checkpoint after it (including the one this line is about to ask you for), a later ` +
-            `loop:status WILL return a note; that is the two reads being ordered, not a contradiction, so do not ` +
-            `file it as a false negative (EI-21969383091076581). ` +
-            `If the wake text below contains a checkpoint, it is a stale fire-time snapshot; do not trust or re-execute it. ` +
-            `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`;
+          : scopeAgreementVerified
+            ? `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness} ` +
+              `as of readAt=${deliveryReadAtIso} — this is a statement about that instant, NOT about the whole turn. ` +
+              `If you write a checkpoint after it (including the one this line is about to ask you for), a later ` +
+              `loop:status WILL return a note; that is the two reads being ordered, not a contradiction, so do not ` +
+              `file it as a false negative (EI-21969383091076581). ` +
+              `If the wake text below contains a checkpoint, it is a stale fire-time snapshot; do not trust or re-execute it. ` +
+              `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`
+            : `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness} ` +
+              `as of readAt=${deliveryReadAtIso} — but THE SCOPE OF THAT READ IS UNVERIFIED: ${scopeUnverifiedReason}. ` +
+              `This reader selects the carry-note by the wake MARKER's harness, while loop:status selects it by the ` +
+              `LIVE routine's install slug. Those two keys are normally the same and were not confirmed to be here, so ` +
+              `this absence may be a WRONG-SCOPE read rather than evidence that no checkpoint exists. ` +
+              `Do NOT treat it as confirmation of absence and do NOT let it justify an overwrite: call loop:status ` +
+              `first and compare its harness against ${marker.harness}. If they differ, the note lives under the ` +
+              `harness loop:status reports — write there and reconcile the carry-note store identity rather than ` +
+              `starting a fresh checkpoint here. ` +
+              `Independently of scope, an absence is only a statement about that instant, NOT about the whole turn: ` +
+              `if you write a checkpoint after it, a later loop:status WILL return a note; that is the two reads ` +
+              `being ordered, not a contradiction, so do not file it as a false negative (EI-21969383091076581). ` +
+              `If the wake text below contains a checkpoint, it is a stale fire-time snapshot; do not trust or re-execute it.`;
 
     // EI-18825117783927950: best-effort, SEPARATELY caught so a status-read hiccup
     // degrades only this banner, never the walls/checks rehydration above it.
