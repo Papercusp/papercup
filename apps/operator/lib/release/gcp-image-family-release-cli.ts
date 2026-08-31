@@ -5,6 +5,10 @@
  * artifact/gate evidence) and the persisted provider connection.  The CLI performs read-only
  * credential/executable probes before invoking Packer, then calls the connection-bound concrete
  * adapter.  It never accepts a raw key path or silently falls back to ambient ADC.
+ *
+ * A post-build failure has already paid for a verified-good candidate image, so
+ * `--candidate-image-id` + `--resume-phase scan|publish` resume from it instead of rebuilding.
+ * The executor owns the resume rules; this CLI only parses the flags and forwards them.
  */
 import { readFile } from "node:fs/promises";
 
@@ -17,8 +21,10 @@ import {
   type GcpImageFamilyReleaseCompositionOptions,
 } from "@papercusp/operator-core/lib/workspace-host/gcp-image-family-production";
 import type {
+  GcpImageFamilyReleaseExecutionOptions,
   GcpImageFamilyReleaseRequest,
   GcpImageFamilyReleaseResult,
+  GcpImageFamilyReleaseResumePhase,
 } from "@papercusp/operator-core/lib/workspace-host/gcp-image-family";
 
 export interface GcpImageFamilyReleaseCliInput {
@@ -35,7 +41,32 @@ export interface GcpImageFamilyReleaseCliArgs {
   requestFile: string;
   repositoryRoot?: string;
   guestToolVersionsFile?: string;
+  /** Resume from an already-built candidate instead of rebuilding it. */
+  candidateImageId?: string;
+  resumePhase?: GcpImageFamilyReleaseResumePhase;
   json: boolean;
+}
+
+const RESUME_PHASES: readonly GcpImageFamilyReleaseResumePhase[] = [
+  "scan",
+  "publish",
+];
+
+/**
+ * Narrow `--resume-phase` to the library's union so the value is type-correct at the seam.
+ *
+ * This is PARSING, not validation: the release executor remains the single authority on the
+ * resume RULES — that candidateImageId and resumePhase are a required pair in both directions,
+ * and that the supplied candidate is the deterministic candidate for this artifact in this
+ * project.  Re-implementing those here would create a second copy that can diverge.
+ */
+function resumePhaseArg(value: string): GcpImageFamilyReleaseResumePhase {
+  const phase = RESUME_PHASES.find((candidate) => candidate === value);
+  if (!phase)
+    throw new Error(
+      `--resume-phase must be one of ${RESUME_PHASES.join(", ")}`,
+    );
+  return phase;
 }
 
 type ArgValue = string | boolean;
@@ -59,6 +90,8 @@ export function parseGcpImageFamilyReleaseCliArgs(
     "request-file",
     "repo-root",
     "guest-tool-versions-file",
+    "candidate-image-id",
+    "resume-phase",
   ]);
   const booleanFlags = new Set(["json"]);
   for (let index = 0; index < argv.length; index += 1) {
@@ -88,7 +121,26 @@ export function parseGcpImageFamilyReleaseCliArgs(
     ...(typeof values["guest-tool-versions-file"] === "string"
       ? { guestToolVersionsFile: values["guest-tool-versions-file"] }
       : {}),
+    ...(typeof values["candidate-image-id"] === "string"
+      ? { candidateImageId: values["candidate-image-id"] }
+      : {}),
+    ...(typeof values["resume-phase"] === "string"
+      ? { resumePhase: resumePhaseArg(values["resume-phase"]) }
+      : {}),
     json: values.json === true,
+  };
+}
+
+/**
+ * The per-run execution options, kept separate from the composition options so the resume
+ * intent reaches the executor rather than being absorbed by adapter configuration.
+ */
+export function executionOptions(
+  args: GcpImageFamilyReleaseCliArgs,
+): GcpImageFamilyReleaseExecutionOptions {
+  return {
+    ...(args.candidateImageId ? { candidateImageId: args.candidateImageId } : {}),
+    ...(args.resumePhase ? { resumePhase: args.resumePhase } : {}),
   };
 }
 
@@ -141,16 +193,23 @@ async function readJson(
   }
 }
 
-/** Execute one already-parsed request through the production composition seam. */
+/**
+ * Execute one already-parsed request through the production composition seam.
+ *
+ * Real arguments come before the test seam: `execution` carries the resume intent and must reach
+ * the executor, so it is a parameter here rather than a field folded into `options`.
+ */
 export async function runGcpImageFamilyReleaseCli(
   input: GcpImageFamilyReleaseCliInput,
   options: GcpImageFamilyReleaseCompositionOptions = {},
+  execution: GcpImageFamilyReleaseExecutionOptions = {},
   deps: Pick<GcpImageFamilyReleaseCliDeps, "execute"> = {},
 ): Promise<GcpImageFamilyReleaseResult> {
   return (deps.execute ?? executeConfiguredGcpImageFamilyRelease)(
     input.request,
     input.connection,
     options,
+    execution,
   );
 }
 
@@ -215,7 +274,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  const result = await runGcpImageFamilyReleaseCli(input, options);
+  const result = await runGcpImageFamilyReleaseCli(
+    input,
+    options,
+    executionOptions(args),
+  );
   const output = {
     ok: true,
     projectId: credential.projectId,

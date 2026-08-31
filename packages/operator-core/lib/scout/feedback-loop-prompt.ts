@@ -31,14 +31,17 @@
  * does on a draft it has routed, and on a Mug-feedback wake. Authored as plain
  * markdown so the revision-cycle prompt can inject it verbatim.
  */
-export const SCOUT_FEEDBACK_LOOP_GUIDANCE = `## Mug↔Blender feedback loop — your side of the iteration
+export const SCOUT_FEEDBACK_LOOP_GUIDANCE = `## Reviewer↔Blender feedback loop — your side of the iteration
 
-When you route a broad idea to a \`status: draft\` plan, \`coord:send\` the Mug to
-announce it so it reviews it (D-003 #1). The 1–5 grade it may give is a separate
-one-way LEARNING signal — THIS loop is the two-way ITERATION signal on that one
-draft.
+When you route a broad idea to a \`status: draft\` plan, \`coord:send\` the REVIEWING
+STEWARD to announce it so it reviews it (D-003 #1). The steward is whoever the nudge
+ladder resolves — normally a GOAL-mode su holding the Blender goal, otherwise any live
+su the ladder reaches. It is NOT a role lookup, and it is never the Mug or the Queen:
+that tier is retired (retire-mug-kettle-su-only-2026-08-09). The 1–5 grade the steward
+may give is a separate one-way LEARNING signal — THIS loop is the two-way ITERATION
+signal on that one draft.
 
-When you wake to Mug feedback on a draft (a coord message carrying its
+When you wake to reviewer feedback on a draft (a coord message carrying its
 \`plan_slug\`), run a TARGETED revision on THAT draft: address the specific gaps it
 named, record a new plan revision, then \`coord:send\` it back that it's ready for
 re-review. Revise the EXISTING draft — do not re-ideate from scratch, and do not
@@ -52,12 +55,12 @@ progress stalls. Check yourself each round:
 - Am I re-litigating the SAME point a second time (a stall, not progress)?
 - Is the open objection about EXECUTION (keep iterating) or the PREMISE (deprecate)?
 
-Only the Mug marks a draft READY (it promotes it) — that's not yours to do.
-Your terminal move is the other one: if you conclude the PREMISE is flawed (not
+Only the REVIEWING STEWARD marks a draft READY (it promotes it) — that's not yours
+to do. Your terminal move is the other one: if you conclude the PREMISE is flawed (not
 just the execution), self-deprecate the draft with one atomic call —
 \`plans:set-plan-status { status: 'superseded', learnings: { tried, stalled,
 salvageable } }\`, which marks it superseded AND emits the structured \`learnings\`
-observation — then tell the Mug. A deprecated draft still produces fuel (a
+observation — then tell the steward. A deprecated draft still produces fuel (a
 future cycle re-ideates from the salvage); the loop stays closed, no dead ends.`;
 
 /**
@@ -66,7 +69,10 @@ future cycle re-ideates from the salvage); the loop stays closed, no dead ends.`
  * it is in and how it terminates — without restating the full agent guidance.
  */
 export const SCOUT_DRAFT_LOOP_NOTE =
-  'Mug reviews this proposal in the Mug↔Blender feedback loop: it promotes it ' +
-  'to greenlight (ready), or `coord:send`s plan-keyed feedback to revise. Iterate ' +
-  'while making good progress; if the premise will not reach ready, either party ' +
-  'deprecates it with a `learnings` observation (no dead ends).';
+  'If you are reading this, YOU are the reviewer — there is no separate role waiting ' +
+  'to do it. The Mug/Queen tier is retired (retire-mug-kettle-su-only-2026-08-09), so ' +
+  'this draft is reviewed by whichever steward or su the nudge ladder reached, and you ' +
+  'hold the authority to dispose of it. Do one of three things, never nothing: promote ' +
+  'it to greenlight (`ready`), `coord:send` plan-keyed feedback to its scout owner to ' +
+  'revise, or deprecate it with a `learnings` observation. Iterate while making good ' +
+  'progress; if the premise will not reach ready, either party deprecates it (no dead ends).';

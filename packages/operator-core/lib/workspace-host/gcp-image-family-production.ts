@@ -22,6 +22,7 @@ import {
 import {
   executeGcpImageFamilyRelease,
   type GcpImageFamilyReleaseAdapter,
+  type GcpImageFamilyReleaseExecutionOptions,
   type GcpImageFamilyReleaseRequest,
   type GcpImageFamilyReleaseResult,
 } from './gcp-image-family';
@@ -272,18 +273,26 @@ export async function probeGcpImageFamilyCredential(
 /**
  * The real production call path.  It binds the connection first, checks that the request targets
  * the same project, and then runs the fail-closed executor with the concrete Google adapter.
+ *
+ * `execution` is kept SEPARATE from `options` on purpose: `options` says how to COMPOSE the
+ * adapter (seams, executables, repo root) and is reused by the read-only probes, while `execution`
+ * says what THIS run should do — resume from an already-built candidate instead of rebuilding.
+ * Forwarding it is the whole reachability of the resume path (WI-1613086): this seam previously
+ * called the executor with two arguments, which silently defaulted every production release to a
+ * full rebuild while the library's resume validation sat there looking implemented.
  */
 export async function executeConfiguredGcpImageFamilyRelease(
   request: GcpImageFamilyReleaseRequest,
   connection: WorkspaceHostProviderConnection,
   options: GcpImageFamilyReleaseCompositionOptions = {},
+  execution: GcpImageFamilyReleaseExecutionOptions = {},
 ): Promise<GcpImageFamilyReleaseResult> {
   const composition = composeGcpImageFamilyReleaseAdapter(connection, options);
   const requestProject = requiredProject(request?.projectId, 'request.projectId');
   if (requestProject !== composition.projectId) {
     throw new Error('GCP image-family release request project does not match the selected connection');
   }
-  return executeGcpImageFamilyRelease(request, composition.adapter);
+  return executeGcpImageFamilyRelease(request, composition.adapter, execution);
 }
 
 /**

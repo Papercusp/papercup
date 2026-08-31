@@ -98,7 +98,7 @@ const REVISION_SYSTEM = `${SCOUT_FEEDBACK_LOOP_GUIDANCE}
 
 ## This step — the mechanical revision (output contract)
 
-You are running ONE targeted revision pass as a deterministic pipeline step. You have NO tools here: the wiring records your revision and pings the Queen back for you. So:
+You are running ONE targeted revision pass as a deterministic pipeline step. You have NO tools here: the wiring records your revision and pings the reviewing steward back for you. So:
 - Output ONLY the full revised plan as Markdown. No preamble, no commentary, no code fences, no tool calls.
 - PRESERVE the YAML frontmatter block (the leading --- ... --- ), including slug, status: draft, and origin. You MAY refine the title and bump the updated date.
 - INTEGRATE the feedback — sharpen the Now/Background and add/fix Phase items + Decisions as it directs. Do not blindly append; weave it in. Keep the plan HONEST (don't overclaim or invent results).

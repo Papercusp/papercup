@@ -201,6 +201,21 @@ const argsSchema = z
       .describe(
         "Compatibility alias for `includeRaw`; `includeRaw` wins when both are supplied.",
       ),
+    // EI-21967410937471873: the ship-blocker verdict was already computed
+    // read-only, but only the UI could reach it (the plans.acceptanceGate sync
+    // resolver). An agent's sole route to the same answer was to ATTEMPT
+    // plans:set-plan-status and read the refusal — so agents guessed the blocker
+    // instead and wrote the guess into `## Now`, where successors inherited it
+    // unverified. Measured cost on dead-target-routine-reaper-2026-08-30: ~11h
+    // waiting on a green-checkpoint gate that was never the blocker (the real
+    // one was audit_coverage_stale). This exposes the EXISTING evaluator; it
+    // does not add a second definition of the verdict.
+    shipReadiness: z
+      .boolean()
+      .optional()
+      .describe(
+        "Ask what is blocking this plan's ship RIGHT NOW, without attempting the write. Returns `shipReadiness: { satisfied, code, message, skipped, forcedPast, vettedUnderWaiver, unavailableReason }` from the SAME evaluator plans:set-plan-status enforces, so it cannot disagree with the real refusal. ⚠ Reports ONE blocker at a time — the gate short-circuits on the first refusal, so clearing the named code can reveal another. ⚠ `satisfied:true` is not automatically a clean pass: read `skipped` (the gate did not APPLY — nothing was checked), `forcedPast` (a code-truth waiver) and `unavailableReason` (could not evaluate ≠ passed) before calling a plan shippable. OFF by default — the gate runs five check families across several tables, so it is opt-in and rides on the meta/sections/full payload (not the narrow `heading`/`decisionId` reads).",
+      ),
   })
   .refine((v) => !!v.slug || !!v.slugs?.length, {
     message: "Provide slug or slugs; decisionId/decisions select within a plan because D-NNN ids are plan-local.",
@@ -1065,6 +1080,59 @@ export default defineTool({
       },
       { keyOf: (slug) => ({ slug }) },
     );
+    // EI-21967410937471873: the opt-in ship-blocker verdict — what would refuse
+    // this plan's ship RIGHT NOW, without attempting the write.
+    //
+    // POST-READ, and OUTSIDE cachedRead, for two independent reasons:
+    //  1. Staleness. A gate verdict is TIME-VARYING in a way the plan body is
+    //     not — on a shared tree that many agents commit to, audit citations go
+    //     stale with nobody touching the plan, so `audit_coverage_stale` can
+    //     appear (or clear) with no plan revision at all. A cached verdict could
+    //     therefore serve a stale `satisfied:true`, which is the exact failure
+    //     this field exists to prevent: an agent reading a green that is not.
+    //  2. Key contamination. cachedRead's key folds every output-determining
+    //     dimension, and adding one there is easy to forget (see the includeRaw
+    //     comment on that key). Computing here means the verdict can never be
+    //     served from an entry that was populated without it.
+    // The plan read itself stays cached, so a hit still pays nothing for this.
+    //
+    // Delegates to the SAME resolver the UI reads (which calls
+    // evaluatePlanAcceptanceGate) rather than re-deriving the verdict: a second
+    // definition of "may this ship" could drift from the one set-plan-status
+    // enforces, and a read that disagrees with the real refusal is worse than
+    // no read at all.
+    if (args.shipReadiness) {
+      for (const result of env.results as Array<Record<string, unknown>>) {
+        if (result.ok !== true) continue;
+        const slug = typeof result.slug === "string" ? result.slug : null;
+        if (!slug) continue;
+        try {
+          const { resolvePlanAcceptanceGateVerdict } = await import(
+            "../../sync-resolver/plan-acceptance-gate-verdict"
+          );
+          const rows = await resolvePlanAcceptanceGateVerdict({
+            workspaceId: ctxAny.workspaceId ?? "default",
+            planSlug: slug,
+          });
+          result.shipReadiness = rows[0];
+        } catch (error) {
+          // Fail-soft: this is an ADVISORY field hanging off an unrelated
+          // payload, so a gate that cannot run must never fail the plans:get.
+          // But it must not silently vanish either — an ABSENT field would be
+          // read as "nothing is blocking", so the failure is reported AS a
+          // verdict whose unavailableReason keeps "could not evaluate" and
+          // "passed" distinguishable.
+          result.shipReadiness = {
+            planSlug: slug,
+            satisfied: false,
+            unavailableReason: "resolver-unavailable",
+            message: `Ship readiness could not be evaluated (${
+              error instanceof Error ? error.message : String(error)
+            }).`,
+          };
+        }
+      }
+    }
     // EI-21449048020722730: explain an explicit-harness miss the same way the
     // ambient one is explained. A bare `not_found` for a slug that exists in
     // another harness reads as "no such plan" and gets filed as a broken tool;

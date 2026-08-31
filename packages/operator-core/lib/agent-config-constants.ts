@@ -51,6 +51,13 @@ export const SURFACE_KEYS = [
   'brainstorm',
   'agent_chats',
   'plans',
+  // The hosted web portal's own brain surface — which agent/model answers
+  // "Ask Papercup" from the portal's universal bar. It is a real registry
+  // member rather than a passthrough BECAUSE the /agent-config POST leg is
+  // strict: an unknown surface key is rejected 422, so a portal settings page
+  // could not persist this preference at all until the key exists here
+  // (portal-universal-bar-and-agent-roster-2026-08-31 P-015 → P-016).
+  'portal',
 ] as const;
 export type SurfaceKey = (typeof SURFACE_KEYS)[number];
 

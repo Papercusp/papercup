@@ -79,9 +79,11 @@ describe('buildScoutRubricDraftBody', () => {
     expect(body).toContain('slug: scout-rubric-queen-placement-2026-06-21');
   });
 
-  it('embeds the mug↔blender loop note (enters the existing loop)', () => {
+  it('embeds the reviewer↔blender loop note (enters the existing loop)', () => {
     // Distinctive phrases from SCOUT_DRAFT_LOOP_NOTE — the draft self-documents its loop.
-    expect(body).toContain('Mug↔Blender feedback loop');
+    // WI-1713506: the note now names the READER as the reviewer instead of the retired
+    // Mug, so pin the clause that carries the authority, not the dead role's name.
+    expect(body).toContain('YOU are the reviewer');
     expect(body).toContain('learnings');
   });
 

@@ -23,6 +23,7 @@
     "lint:federation-assert-nounset": "vitest run lib/federation-asserts-merge-probe-nounset.test.ts",
     "lint:mutation-probe-example": "vitest run lib/doc-claims/mutation-probe-example-is-runnable.test.ts",
     "lint:git-log-utc-claim": "vitest run lib/doc-claims/git-log-utc-timestamp.test.ts",
+    "lint:headless-verify-entrypoint": "vitest run lib/doc-claims/headless-verify-entrypoint.test.ts",
     "lint:attributor-runner-coverage": "vitest run lib/__tests__/attributor-runner-coverage.test.ts",
     "lint:guard-reachability": "node ../../scripts/check-lint-guard-reachability.mjs",
     "lint:resource-governor-enforcement": "node ../../scripts/check-resource-governor-enforcement.mjs",

@@ -392,7 +392,7 @@ export async function resolveNudgeRecipient(
       ownerId: chosen.ownerId,
       ownerLabel: chosen.ownerLabel,
       why:
-        `no deliverable Mug; routed to ${tierWhy} ${chosen.ownerLabel} ` +
+        `the Mug tier is RETIRED, so you are the reviewer — routed to ${tierWhy} ${chosen.ownerLabel} ` +
         `(${verdicts.get(chosen.ownerId)?.sessionState ?? 'unknown'}, ${liveSu.length} su candidate(s))`,
     };
   }
@@ -477,8 +477,11 @@ export async function deliverScoutNudge(
   // MUG_COORD_SLOT: this is diagnostic prose, and the Scout tests mock that module with
   // only { resolveMugOwner, wakeMug }, so reading any other member throws.
   const routingNote =
-    `\n\n— Routed by the Scout nudge ladder because the Mug was not deliverable: ${recipient.why}. ` +
-    `Before this ladder existed the nudge would have parked in '@role:mug' (MUG_COORD_SLOT), which only a Mug drains.`;
+    `\n\n— Routed by the Scout nudge ladder: ${recipient.why}. ` +
+    `YOU are the reviewer and you hold the authority to dispose of this draft — promote it to ready, ` +
+    `send its scout owner feedback, or deprecate it with learnings. Do not wait for a Mug or a Queen: ` +
+    `that tier is RETIRED (retire-mug-kettle-su-only-2026-08-09), so nothing else will drain this. ` +
+    `Before this ladder existed the nudge would have parked in the legacy '@role:mug' slot, where nobody drains it.`;
 
   try {
     await runWithWorkspace(opts.workspaceId, () =>

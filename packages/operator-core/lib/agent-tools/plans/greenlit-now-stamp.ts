@@ -72,7 +72,7 @@ const DRAFT_NOT_ACTIVE_RE = /not active until greenlit/i;
  * The Blender review-loop **Next** (`SCOUT_DRAFT_LOOP_NOTE`). Detected by its
  * distinctive clause so a plan whose Next was rewritten by hand keeps it.
  */
-const REVIEW_LOOP_NEXT_RE = /promotes it\s+to greenlight/i;
+const REVIEW_LOOP_NEXT_RE = /promotes?\s+it\s+to\s+greenlight/i;
 
 /** Where the first `**State:**` / `**Next:**` marker begins, or -1. */
 const FIRST_MARKER_RE = /\*\*(?:State|Next):\*\*/i;

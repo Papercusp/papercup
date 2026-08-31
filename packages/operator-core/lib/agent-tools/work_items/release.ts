@@ -544,6 +544,37 @@ export default defineTool({
           parkedBy: ident.ownerId,
           parkedReason: reason,
         });
+        // EI-21966077123218777: `setWorkItemClaimHold` returns null from TWO different
+        // places — it located no row (the `feature_id` + `harness` filter matched nothing)
+        // or its UPDATE matched nothing — and in BOTH the durable park/unpark was NEVER
+        // persisted. Omitting `claimHold` on null is right as far as it goes (never report a
+        // hold that was not written), but it left the caller choosing between a false
+        // positive and SILENCE, and silence here is indistinguishable from success: the
+        // reply still says ok:true, so the natural reading of a missing field is "applied".
+        //
+        // That is not hypothetical. EI-15345/WI-5261 is the same silent no-op already on the
+        // record — a `claimHold:true` release "reported success but `_claimHold` was NEVER
+        // persisted, so scheduler:get_next kept re-serving the item" (work-items.ts:6373).
+        // The CAUSE was fixed there; this failure SHAPE was not. And the direction it fails
+        // in is the expensive one: an unwritten park reads as parked, so the item stays
+        // self-selectable and a peer picks up work someone deliberately set down — while an
+        // unwritten UNpark reads as cleared, leaving the row invisible to
+        // claim_next/scheduler:get_next with nothing in the reply saying so.
+        //
+        // So report the FAILURE explicitly rather than choosing between a lie and silence.
+        // `claimHold` stays absent (that guarantee, and its test, are unchanged) — this is
+        // purely additive.
+        const claimHoldFailure =
+          held === null
+            ? {
+                claimHoldFailed:
+                  `'${it.id}' was released, but the claimHold:${claimHold} write did NOT persist — no work_items ` +
+                  `row matched feature_id='${it.id}'${harness ? ` AND harness_slug='${harness}'` : ''}, so the durable ` +
+                  `park is UNCHANGED. The ok:true above describes the RELEASE only, never this hold. Re-read the item ` +
+                  `(work_items:get) and retry with the harness the row actually carries; do NOT treat this call as ` +
+                  `having parked or unparked it.`,
+              }
+            : {};
         return {
           ok: true as const,
           id: it.id,
@@ -553,6 +584,7 @@ export default defineTool({
           ...stranding,
           ...completion,
           claimHold: held?.applicable ? held.hold : undefined,
+          ...claimHoldFailure,
           ...reasonDisclosure,
         };
       },

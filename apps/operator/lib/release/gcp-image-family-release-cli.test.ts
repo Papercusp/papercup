@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  executionOptions,
   parseGcpImageFamilyReleaseCliArgs,
   parseGcpImageFamilyReleaseCliInput,
   runGcpImageFamilyReleaseCli,
 } from "./gcp-image-family-release-cli";
 
 const request = { projectId: "active-alcove-504205-q3" } as never;
+const candidateImageId =
+  "projects/active-alcove-504205-q3/global/images/papercusp-workspace-host-0-0-19-candidate";
 const connection = {
   target: "gcp",
   cloudCredentialRef: { kind: "cloud", ref: "gcloud://active-user" },
@@ -60,14 +63,85 @@ describe("gcp image-family release CLI", () => {
     const result = await runGcpImageFamilyReleaseCli(
       { request, connection },
       { repositoryRoot: "/repo" },
+      {},
       { execute },
     );
-    expect(execute).toHaveBeenCalledWith(request, connection, {
-      repositoryRoot: "/repo",
-    });
+    expect(execute).toHaveBeenCalledWith(
+      request,
+      connection,
+      { repositoryRoot: "/repo" },
+      {},
+    );
     expect(result).toMatchObject({
       receivedRequest: request,
       receivedConnection: connection,
     });
+  });
+
+  // WI-1613086: the resume flags exist so the executor's resume path is reachable from a real
+  // release. Composition options and execution options travel as separate arguments, so a
+  // regression that folds one into the other fails here rather than silently rebuilding.
+  it("parses the resume flags and forwards them as execution options", async () => {
+    const args = parseGcpImageFamilyReleaseCliArgs([
+      "--request-file",
+      "/tmp/release.json",
+      "--candidate-image-id",
+      candidateImageId,
+      "--resume-phase",
+      "scan",
+    ]);
+    expect(args).toMatchObject({
+      candidateImageId,
+      resumePhase: "scan",
+    });
+    expect(executionOptions(args)).toEqual({
+      candidateImageId,
+      resumePhase: "scan",
+    });
+
+    const execute = vi.fn(async () => ({
+      contractVersion: "papercusp-gcp-image-family-release-v1",
+    })) as never;
+    await runGcpImageFamilyReleaseCli(
+      { request, connection },
+      { repositoryRoot: "/repo" },
+      executionOptions(args),
+      { execute },
+    );
+    expect(execute).toHaveBeenCalledWith(
+      request,
+      connection,
+      { repositoryRoot: "/repo" },
+      { candidateImageId, resumePhase: "scan" },
+    );
+  });
+
+  it("rejects an unsupported resume phase and omits absent resume flags", () => {
+    expect(() =>
+      parseGcpImageFamilyReleaseCliArgs([
+        "--request-file",
+        "/tmp/release.json",
+        "--resume-phase",
+        "teardown",
+      ]),
+    ).toThrow(/--resume-phase must be one of scan, publish/);
+
+    // The pairing rule stays with the executor: the parser accepts a lone flag and lets the
+    // library refuse it, so there is exactly one authority on what a valid resume looks like.
+    const lonePhase = parseGcpImageFamilyReleaseCliArgs([
+      "--request-file",
+      "/tmp/release.json",
+      "--resume-phase",
+      "publish",
+    ]);
+    expect(executionOptions(lonePhase)).toEqual({ resumePhase: "publish" });
+    expect(
+      executionOptions(
+        parseGcpImageFamilyReleaseCliArgs([
+          "--request-file",
+          "/tmp/release.json",
+        ]),
+      ),
+    ).toEqual({});
   });
 });

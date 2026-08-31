@@ -30,6 +30,7 @@ import {
   type WorkspaceHostProviderConnection,
   type WorkspaceHostProviderContext,
   type WorkspaceHostResourceCheckpoint,
+  type WorkspaceHostRetryClass,
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
 import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
@@ -496,6 +497,25 @@ function progress(checkpoints: readonly WorkspaceHostResourceCheckpoint[], total
   return Math.max(0, Math.min(99, Math.floor((settled / total) * 100)));
 }
 
+/**
+ * Classify a thrown provider call so the controller knows whether retrying can ever help.
+ *
+ * Default to `ambiguous` — an error with no HTTP status may be a lost response, and the mutation
+ * may already have been accepted, so the next pass must reconcile rather than assume anything.
+ * A 4xx is the exception: the provider parsed the request and REFUSED it, so the identical body
+ * will be refused identically forever and `terminal` (which the controller turns into `halt`) is
+ * the only classification that does not loop. 408 and 429 are the two 4xx codes that explicitly
+ * invite a retry, and 409 stays ambiguous because an idempotent replay can legitimately conflict
+ * with the caller's own earlier accepted write.
+ */
+function providerRetryClass(error: unknown): WorkspaceHostRetryClass {
+  const status = (error as { status?: unknown } | null | undefined)?.status;
+  if (typeof status !== 'number') return 'ambiguous';
+  if (status === 408 || status === 429) return 'throttled';
+  if (status === 409) return 'ambiguous';
+  return status >= 400 && status < 500 ? 'terminal' : 'ambiguous';
+}
+
 function resultCheckpoint(
   prior: WorkspaceHostResourceCheckpoint,
   attempts: number,
@@ -740,20 +760,47 @@ export async function runWorkspaceHostProvisioning(
               )
             : await input.provider.apply(applyRequest, context);
       } catch (error) {
-        // A thrown provider call is ambiguous: the provider may have accepted the mutation before
-        // the response was lost. Persist that uncertainty and make the next request reconcile.
+        // A thrown provider call is usually ambiguous: the provider may have accepted the mutation
+        // before the response was lost. Persist that uncertainty and make the next request
+        // reconcile. But a DETERMINISTIC refusal (a 4xx that is not a timeout/throttle) is not
+        // uncertain at all — the provider definitively rejected the request and the identical body
+        // will be rejected identically forever, so it must HALT instead of reconciling. Treating
+        // those as ambiguous made a hard failure present as a hang: a boot disk smaller than its
+        // source image retried every 2s past 40 attempts, never terminal and never surfaced.
+        const retryClass = providerRetryClass(error);
         const failed: WorkspaceHostResourceCheckpoint = {
           logicalKey: prior.logicalKey,
           state: 'failed',
           attempts,
-          retryClass: 'ambiguous',
-          retryAfterMs: DEFAULT_RETRY_AFTER_MS,
+          retryClass,
+          ...(retryClass === 'terminal' ? {} : { retryAfterMs: DEFAULT_RETRY_AFTER_MS }),
           ...(prior.providerResource ? { providerResource: prior.providerResource } : {}),
           ...(prior.providerRequestId ? { providerRequestId: prior.providerRequestId } : {}),
           error: message(error),
         };
         await persistCheckpoint(store, input, operationId, failed);
         checkpoints = replaceCheckpoint(checkpoints, failed);
+        if (retryClass === 'terminal') {
+          await store.updateOperation({
+            workspaceId,
+            operationId,
+            status: 'failed',
+            percent: progress(checkpoints, plan.steps.length),
+            message: `Provider rejected step '${prior.logicalKey}'`,
+            error: { reason: message(error) },
+          });
+          await store.appendEvent({
+            workspaceId,
+            hostId,
+            operationId,
+            phase: prior.logicalKey,
+            status: 'failed',
+            level: 'error',
+            message: 'Provider rejected the request; retrying it unchanged cannot succeed',
+            details: { error: message(error) },
+          });
+          return { status: 'failed', operationId, hostId, plan, checkpoints };
+        }
         await store.updateOperation({
           workspaceId,
           operationId,

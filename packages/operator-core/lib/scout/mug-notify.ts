@@ -135,7 +135,7 @@ export async function notifyMugDraftRouted(
       summary: `Scout routed a new draft plan for review: ${notice.slug}`,
       body:
         `${notice.title}\n\n` +
-        `Scout routed this DRAFT plan (queen-scout feedback loop). When you have idle capacity: review it and either\n` +
+        `Scout routed this DRAFT plan (the scout↔reviewer feedback loop). YOU are the reviewer — the Mug/Queen tier is retired, so nothing else will drain it. Review it and either\n` +
         `• promote it (= ready, its items become placeable), or\n` +
         `• coord:send feedback to \`${notice.scoutOwner}\` (set plan_slug=${notice.slug}) to iterate, or\n` +
         `• deprecate it if the premise is wrong (the deprecate emits a learnings observation, so it still feeds Scout).`,

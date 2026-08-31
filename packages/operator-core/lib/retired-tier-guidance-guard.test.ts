@@ -79,6 +79,11 @@ describe('retired-tier current-guidance live verdict', () => {
       new Set([
         'templates/papercusp-app',
         'templates/papercusp-ops-pots',
+        // WI-1713506: agent-facing guidance is not only .md. The Scout/Blender rails
+        // BUILD prompt text in TypeScript, and leaving them outside this corpus is why
+        // "Mug reviews this proposal" survived the Mug's retirement and stranded a
+        // routed draft for 1d 13h with no reviewer that could exist.
+        'packages/operator-core/lib/scout',
         'libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
       ]),
     );

@@ -238,6 +238,8 @@ export interface GcpPreflightDeps {
 
 interface ApiError extends Error {
   status?: number;
+  /** Redacted, field-level provider reason. Safe to persist and surface; see gcpFailureReason. */
+  reason?: string;
 }
 
 function normalizeProjectId(value: string | undefined): string | undefined {
@@ -475,10 +477,42 @@ async function gcloudProject(deps: GcpPreflightDeps): Promise<string | undefined
   }
 }
 
+const REASON_MAX = 300;
+/** Anything token-shaped: `Bearer x`, a JWT, or a long opaque secret-like run of base64url. */
+const TOKEN_LIKE = /\b(?:Bearer\s+\S+|ya29\.\S+|[A-Za-z0-9_-]{40,}(?:\.[A-Za-z0-9_-]{20,})*)/g;
+
 /**
- * Shared authenticated Google API JSON transport. Error bodies are deliberately
- * not copied into the thrown error so bearer tokens and provider diagnostics
- * cannot leak through logs or persisted workflow failures.
+ * Extract a REDACTED, field-level reason from a Google API error body.
+ *
+ * The transport below refuses to copy the raw body, which is right — but dropping it entirely
+ * left every provisioning failure reading as a bare `gcp_preflight_http_400` with no way to learn
+ * WHAT the provider rejected. Diagnosing one cost a hand-replay of the request against the live
+ * API. So copy the STRUCTURED diagnostic fields only (never the whole body, never headers), cap
+ * the length, and scrub anything token-shaped: `error.message` and `error.errors[].message` are
+ * field-level validation text ("Requested disk size cannot be smaller than the image size"), not
+ * credentials.
+ */
+function gcpFailureReason(body: unknown): string | undefined {
+  const error = (body as { error?: unknown } | null)?.error;
+  if (!error || typeof error !== 'object') return undefined;
+  const { message, errors } = error as { message?: unknown; errors?: unknown };
+  const parts: string[] = [];
+  if (typeof message === 'string' && message.trim()) parts.push(message.trim());
+  if (Array.isArray(errors)) {
+    for (const entry of errors) {
+      const text = (entry as { message?: unknown } | null)?.message;
+      if (typeof text === 'string' && text.trim() && !parts.includes(text.trim())) parts.push(text.trim());
+    }
+  }
+  if (parts.length === 0) return undefined;
+  const joined = parts.join(' | ').replace(TOKEN_LIKE, '[redacted]').replace(/\s+/g, ' ');
+  return joined.length > REASON_MAX ? `${joined.slice(0, REASON_MAX - 1)}…` : joined;
+}
+
+/**
+ * Shared authenticated Google API JSON transport. The raw error body is never copied into the
+ * thrown error, so bearer tokens and provider internals cannot leak through logs or persisted
+ * workflow failures; only the redacted field-level reason above travels with it.
  */
 export async function fetchGcpApiJson<T>(
   fetchImpl: typeof fetch,
@@ -496,8 +530,12 @@ export async function fetchGcpApiJson<T>(
     },
   });
   if (!response.ok) {
-    const error = new Error(`gcp_preflight_http_${response.status}`) as ApiError;
+    const reason = gcpFailureReason(await response.json().catch(() => undefined));
+    const error = new Error(
+      reason ? `gcp_preflight_http_${response.status}: ${reason}` : `gcp_preflight_http_${response.status}`,
+    ) as ApiError;
     error.status = response.status;
+    if (reason) error.reason = reason;
     throw error;
   }
   return (await response.json()) as T;

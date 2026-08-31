@@ -13,7 +13,7 @@ import {
   agentCmdBootWarning,
   type AgentConfig,
 } from './agent-config';
-import { BULK_RESOLVER_PROFILE_KINDS } from './agent-config-constants';
+import { BULK_RESOLVER_PROFILE_KINDS, SURFACE_KEYS } from './agent-config-constants';
 import { BULK_RUN_KINDS } from './attention/bulk-run-store';
 
 // Mock the PG-backed operator-state read so readAgentConfig exercises the
@@ -187,6 +187,18 @@ describe('parseBackends (drift guard for the SurfaceKey set)', () => {
 
   it("drops 'auto' / unknown backends + unknown surfaces", () => {
     expect(parseBackends({ operator: 'auto', nope: 'omp', scanner: 'gemini' })).toEqual({});
+  });
+
+  // portal-universal-bar-and-agent-roster-2026-08-31 P-015. Both parsers gate
+  // on SURFACE_KEYS membership, so `portal` surviving BOTH of them is what
+  // makes it a real registry key rather than a value the strict POST leg would
+  // reject as unknown. Asserted here against the literal (not against
+  // SURFACE_KEYS) so deleting the key fails this test instead of silently
+  // re-deriving a smaller set.
+  it("accepts the portal surface in both parsers (it is a registry key, not a passthrough)", () => {
+    expect(parseBackends({ portal: 'claude-code' })).toEqual({ portal: 'claude-code' });
+    expect(parseSurfaceModels({ portal: ' opus:high ' })).toEqual({ portal: 'opus:high' });
+    expect((SURFACE_KEYS as readonly string[]).includes('portal')).toBe(true);
   });
 });
 

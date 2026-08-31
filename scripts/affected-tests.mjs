@@ -2148,6 +2148,38 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md",
   },
   {
+    // EI-19341315235545734 — the guard that keeps CLAUDE.md's run/test section routing
+    // AGENTS at `scripts/verify-tauri-headless.sh` rather than at the launch that opens a
+    // window on the owner's live desktop. Same disjointness hole as the two entries above:
+    // the guard lives in operator-core, its SUBJECT is the projected doc, and the change
+    // that reintroduces the defect is a doc-part edit + projection — an edit to `CLAUDE.md`
+    // / `AGENTS.md` / the corpus, none of which is a `.tsx?` file, so the workspace-selection
+    // rule cannot attach operator-core for it.
+    //
+    // The defect is worth a machine because every individual sentence stays TRUE while it
+    // regresses: `npm run dev` really is how you launch the desktop. What decays is which
+    // command an agent copies FIRST, and on this box the wrong one inherits DISPLAY=:1 —
+    // the owner's real desktop (WI-2648: synthetic input leaked into a real email draft;
+    // WI-7101: a second `tauri dev` killed the owner's live desktop).
+    workspace: "@papercusp/operator-core",
+    script: "lint:headless-verify-entrypoint",
+    // Cheap by construction: three file reads plus one `verify-tauri-headless.sh --help`,
+    // which prints usage and exits 0 without booting Xvfb, cargo, or a sidecar. Measured
+    // warm 2026-08-31: 44ms of test time, 381ms vitest duration — the same order as the
+    // git-log entry above (66ms / 395ms), whose 6.4s wall clock is npm + vitest startup
+    // that every entry in this list pays identically.
+    //
+    // NO hostSuiteRatchet, deliberately — same reasoning as the two entries above.
+    // operator-core's own `test` task does re-run this file, but the subject that most needs
+    // the guard (the projected doc) is selected by a DISJOINT change.
+    appliesTo: (f) =>
+      f === "CLAUDE.md" ||
+      f === "AGENTS.md" ||
+      f === "scripts/verify-tauri-headless.sh" ||
+      f ===
+        "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md",
+  },
+  {
     // WI-38089. See declarationMjsInputs() above for the measurement and the derive-vs-mirror
     // rationale.
     workspace: "@papercusp/operator-core",

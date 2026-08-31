@@ -119,6 +119,7 @@ import "@/app/adv/harnesses/adv-panel-chrome.css";
 import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
 import type { PotSoakReportSnapshot } from "@papercusp/operator-core/lib/pot/soak-report";
 import type { ReleaseReadinessSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-release-readiness-read";
+import { readinessRubricChipText } from "./learning-readiness-chip";
 import { tabOverflowState, useAdvScope } from "./AdvShell";
 import { BenchmarkTrend, type BenchmarkTrendInstance } from "./BenchmarkTrend";
 import type { BakeoffTrendRow } from "@papercusp/operator-core/lib/pot-eval/bakeoff-trend";
@@ -1232,13 +1233,7 @@ function ReleaseReadinessStrip() {
           className={`pc-learning__readiness-rubric pc-learning__readiness-rubric--${rubric?.status ?? "missing"}`}
         >
           <Gauge size={11} aria-hidden />
-          {rubric
-            ? `rubric: ${rubric.status}${
-                rubric.scorecardCount > 0
-                  ? ` · ${rubric.scorecardCount} scorecard${rubric.scorecardCount === 1 ? "" : "s"}${rubric.latestScore10 != null ? ` · latest ${rubric.latestScore10}/10` : ""}`
-                  : " · no scorecards yet"
-              }`
-            : "rubric: none proposed"}
+          {readinessRubricChipText(rubric)}
         </span>
       </Tooltip>
     </div>

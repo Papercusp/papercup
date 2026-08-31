@@ -98,9 +98,13 @@ describe('Mug↔Blender feedback-loop prompt guidance (P-005)', () => {
   });
 
   describe('Blender-side specifics (SCOUT_FEEDBACK_LOOP_GUIDANCE)', () => {
-    it('tells Blender to announce a routed draft to the Mug (D-003 #1)', () => {
+    it('tells Blender to announce a routed draft to the reviewing steward (D-003 #1)', () => {
       expect(blender).toMatch(/announce it/i);
-      expect(blender).toMatch(/coord:send\S* the Mug to announce/i);
+      // WI-1713506: the Mug tier is retired, so the announce target is the steward the
+      // nudge ladder resolves. Pin that, and pin that the guidance says so explicitly —
+      // naming a retired role as the reviewer is what stranded a draft for 1d 13h.
+      expect(blender).toMatch(/coord:send\S* the REVIEWING\s+STEWARD to announce/i);
+      expect(blender).toMatch(/never the Mug or the Queen/i);
     });
 
     it('tells Blender to revise the EXISTING draft, addressing the feedback (P-001 revision cycle)', () => {
@@ -109,8 +113,8 @@ describe('Mug↔Blender feedback-loop prompt guidance (P-005)', () => {
       expect(blender).toMatch(/plan_slug/);
     });
 
-    it('reserves READY to the Mug and gives Blender self-deprecate as its terminal move', () => {
-      expect(blender).toMatch(/only the mug marks a draft ready/i);
+    it('reserves READY to the reviewing steward and gives Blender self-deprecate as its terminal move', () => {
+      expect(blender).toMatch(/only the reviewing steward marks a draft ready/i);
       expect(blender).toMatch(/self-deprecate/i);
     });
 
@@ -135,10 +139,16 @@ describe('Mug↔Blender feedback-loop prompt guidance (P-005)', () => {
       expect(body).toContain('origin: scout');
     });
 
-    it('the loop note names the loop and both terminal outcomes', () => {
-      expect(SCOUT_DRAFT_LOOP_NOTE).toMatch(/Mug↔Blender feedback loop/);
+    it('the loop note tells its READER they are the reviewer, and names both terminal outcomes', () => {
+      // WI-1713506 — the regression this pins. The note used to open "Mug reviews this
+      // proposal", so an su woken by the draft-review backstop read it, believed a Mug
+      // would drain the draft, and handed the decision back instead of disposing of it.
+      // The note must address the reader directly and must not name the retired tier.
+      expect(SCOUT_DRAFT_LOOP_NOTE).toMatch(/YOU are the reviewer/);
+      expect(SCOUT_DRAFT_LOOP_NOTE).toMatch(/Mug\/Queen tier is retired/i);
+      expect(SCOUT_DRAFT_LOOP_NOTE).not.toMatch(/^Mug reviews this proposal/);
       expect(SCOUT_DRAFT_LOOP_NOTE).toMatch(/ready/);
-      expect(SCOUT_DRAFT_LOOP_NOTE).toMatch(/deprecates it with a `learnings` observation/);
+      expect(SCOUT_DRAFT_LOOP_NOTE).toMatch(/deprecate it with a `learnings` observation/);
     });
   });
 });

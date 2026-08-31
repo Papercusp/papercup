@@ -165,6 +165,8 @@ interface RawImage extends RawResource {
   architecture?: string;
   creationTimestamp?: string;
   deprecated?: { state?: string };
+  /** GCP reports this as a decimal string, e.g. "32". */
+  diskSizeGb?: string;
 }
 
 export interface GcpWorkspaceHostApiClientOptions {
@@ -958,7 +960,27 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     );
   }
 
-  insertInstance(
+  /**
+   * The source image's own size, which is the hard floor for any boot disk created from it.
+   *
+   * Derived rather than configured on purpose: GCP rejects a boot disk smaller than its image, so
+   * a hardcoded default silently becomes un-provisionable the moment the image outgrows it — which
+   * is exactly what happened when the 30 GiB default met a 32 GiB workspace-host image. Reading it
+   * from the image keeps the floor correct as the image grows. Returns undefined when the image
+   * cannot be read, so an unrelated lookup failure never blocks a provision that would succeed.
+   */
+  private async sourceImageDiskSizeGb(sourceImage: string): Promise<number | undefined> {
+    const ref = sourceImage.trim();
+    if (!ref) return undefined;
+    const url = /^https?:\/\//.test(ref) ? ref : `${COMPUTE_API}/${ref.replace(/^\/+/, '')}`;
+    try {
+      return numberValue((await this.getOrUndefined<RawImage>(url))?.diskSizeGb);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async insertInstance(
     projectId: string,
     zone: string,
     input: GcpInstanceInsertInput,
@@ -966,6 +988,11 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
   ): Promise<GcpOperationRef> {
     const { zone: _zone, ...rest } = input;
     const region = zoneRegion(zone);
+    const bootParams = rest.disks[0].initializeParams;
+    // Never shrink a caller's larger request — only raise it to the image's floor.
+    const imageFloorGb = await this.sourceImageDiskSizeGb(bootParams.sourceImage);
+    const bootDiskSizeGb =
+      imageFloorGb === undefined ? bootParams.diskSizeGb : Math.max(bootParams.diskSizeGb, imageFloorGb);
     const body = {
       ...rest,
       machineType: resourcePath(rest.machineType, `zones/${zone}/machineTypes`),
@@ -978,8 +1005,9 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
         {
           ...rest.disks[0],
           initializeParams: {
-            ...rest.disks[0].initializeParams,
-            diskType: resourcePath(rest.disks[0].initializeParams.diskType, `zones/${zone}/diskTypes`),
+            ...bootParams,
+            diskSizeGb: bootDiskSizeGb,
+            diskType: resourcePath(bootParams.diskType, `zones/${zone}/diskTypes`),
           },
         },
         { ...rest.disks[1], source: resourcePath(rest.disks[1].source, `zones/${zone}/disks`) },

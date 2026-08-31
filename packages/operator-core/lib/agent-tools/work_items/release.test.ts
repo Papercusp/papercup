@@ -466,6 +466,39 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     expect(b.results[0].claimHold).toBeUndefined();
   });
 
+  // EI-21966077123218777: omitting `claimHold` on a null avoids a FALSE POSITIVE but leaves
+  // the caller unable to tell a no-op apart from success — the reply still says ok:true.
+  // The park/unpark must be reported as FAILED, not merely left unmentioned.
+  it('a hold-engine miss NAMES the failure (claimHoldFailed) instead of only staying silent', async () => {
+    holdM.mockResolvedValue(null as never);
+    const b = await body({ id: 'F-1', claimHold: true });
+    // The pre-existing guarantee is unchanged — still no false hold reported.
+    expect(b.results[0].claimHold).toBeUndefined();
+    // ...but the no-op is now explicit, and says the release itself still happened.
+    expect(b.results[0].claimHoldFailed).toEqual(expect.stringContaining('did NOT persist'));
+    expect(b.results[0].claimHoldFailed).toEqual(expect.stringContaining('F-1'));
+  });
+
+  it('the UNPARK direction reports the miss too — a silently-unwritten claimHold:false leaves the row hidden from self-select', async () => {
+    holdM.mockResolvedValue(null as never);
+    const b = await body({ id: 'WI-9', claimHold: false });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-9' });
+    expect(b.results[0].claimHold).toBeUndefined();
+    expect(b.results[0].claimHoldFailed).toEqual(expect.stringContaining('claimHold:false'));
+  });
+
+  it('the miss names the harness it filtered on, so the caller can retry with the scope the row actually carries', async () => {
+    holdM.mockResolvedValue(null as never);
+    const b = await body({ items: [{ id: 'WI-1', harness: 'h1', claimHold: true }] });
+    expect(b.results[0].claimHoldFailed).toEqual(expect.stringContaining("harness_slug='h1'"));
+  });
+
+  it('a SUCCESSFUL hold never carries claimHoldFailed (the field marks a real miss, not every claimHold call)', async () => {
+    const b = await body({ id: 'WI-1', claimHold: true });
+    expect(b.results[0]).toMatchObject({ ok: true, claimHold: true });
+    expect(b.results[0].claimHoldFailed).toBeUndefined();
+  });
+
   it('a batch default claimHold applies to every item unless a per-item override is given', async () => {
     const b = await body({ items: [{ id: 'WI-1' }, { id: 'WI-2', claimHold: false }], claimHold: true });
     expect(holdM).toHaveBeenNthCalledWith(1, 'WI-1', true, { harness: undefined, parkedBy: 'me', parkedReason: undefined });

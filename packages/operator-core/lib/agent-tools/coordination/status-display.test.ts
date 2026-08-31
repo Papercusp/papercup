@@ -6,7 +6,7 @@
  * render now lives HERE, once, and the client hooks print it verbatim.
  */
 import { describe, expect, it } from 'vitest';
-import { fmtInterval, renderStatusDisplay, selfShort } from './status-display';
+import { fmtInterval, renderStatusDisplay, selfShort, sessionDisplayName } from './status-display';
 
 const SID = 'su-9859ea5e-926d-4c65-b8fb-4d7c25a21353';
 
@@ -31,6 +31,49 @@ describe('selfShort', () => {
     expect(selfShort('fixture')).toBe('');
     expect(selfShort('')).toBe('');
     expect(selfShort('weirdid')).toBe('weirdid');
+  });
+});
+
+describe('sessionDisplayName — the ONE display-name resolver (D-001, D-003)', () => {
+  it('resolves manualName ?? objective ?? shortHandle, reporting which one won', () => {
+    expect(sessionDisplayName({ manualName: 'release wrangler', objective: 'obj', ownerId: SID })).toEqual({
+      name: 'release wrangler',
+      source: 'manual',
+    });
+    expect(sessionDisplayName({ objective: 'Resume Linux release readiness', ownerId: SID })).toEqual({
+      name: 'Resume Linux release readiness',
+      source: 'objective',
+    });
+    expect(sessionDisplayName({ ownerId: SID })).toEqual({ name: 'su-9859e', source: 'handle' });
+  });
+
+  it('treats a blank or whitespace-only manual name as cleared, so clearing falls back (R6)', () => {
+    expect(sessionDisplayName({ manualName: '', objective: 'obj', ownerId: SID }).source).toBe('objective');
+    expect(sessionDisplayName({ manualName: '   ', objective: 'obj', ownerId: SID }).source).toBe('objective');
+    // and with no objective either, it lands on the handle — never a blank headline
+    expect(sessionDisplayName({ manualName: '  ', objective: '  ', ownerId: SID })).toEqual({
+      name: 'su-9859e',
+      source: 'handle',
+    });
+  });
+
+  it('is fail-open: a non-string or absent field is treated as absent, never thrown (R9)', () => {
+    expect(sessionDisplayName()).toEqual({ name: '', source: 'none' });
+    expect(sessionDisplayName({})).toEqual({ name: '', source: 'none' });
+    expect(sessionDisplayName({ manualName: null, objective: null, ownerId: null })).toEqual({
+      name: '',
+      source: 'none',
+    });
+    expect(
+      sessionDisplayName({ manualName: 42 as unknown as string, objective: 'obj', ownerId: SID }).source,
+    ).toBe('objective');
+    // an unusable ownerId (the fixture sentinel selfShort rejects) yields 'none', not an empty handle
+    expect(sessionDisplayName({ ownerId: 'fixture' })).toEqual({ name: '', source: 'none' });
+  });
+
+  it('trims but does NOT clip — width fitting stays with the surface', () => {
+    const long = 'x'.repeat(120);
+    expect(sessionDisplayName({ manualName: `  ${long}  ` })).toEqual({ name: long, source: 'manual' });
   });
 });
 
@@ -151,6 +194,35 @@ describe('renderStatusDisplay — statusline', () => {
   });
 });
 
+describe('renderStatusDisplay — manual name on the statusline', () => {
+  it('a manual name leads the chip row without displacing the objective or id chips', () => {
+    const d = renderStatusDisplay(
+      {
+        ...base,
+        self: { ...base.self, displayName: 'release wrangler', objective: 'Green the checkpoint gate' },
+      },
+      { ownerId: SID },
+    );
+    const chips = d.statusline[0].split(' · ');
+    expect(chips[0]).toBe('✎ release wrangler');
+    expect(chips).toContain('🔭 Green the checkpoint gate');
+    expect(chips).toContain('◇ su-9859e');
+  });
+
+  it('no manual name leaves the chip row byte-identical to before', () => {
+    const withBlank = renderStatusDisplay(
+      { ...base, self: { ...base.self, displayName: '', objective: 'Green the gate' } },
+      { ownerId: SID },
+    );
+    const plain = renderStatusDisplay(
+      { ...base, self: { ...base.self, objective: 'Green the gate' } },
+      { ownerId: SID },
+    );
+    expect(withBlank.statusline).toEqual(plain.statusline);
+    expect(plain.statusline[0].startsWith('🔭 Green the gate · ◇ su-9859e')).toBe(true);
+  });
+});
+
 describe('renderStatusDisplay — title', () => {
   it('carries the full compact identity: fleets · loop · wake · bees · peers · id · objective', () => {
     const d = renderStatusDisplay(
@@ -215,6 +287,61 @@ describe('renderStatusDisplay — title', () => {
     expect(seg).toBeDefined();
     expect(seg!.endsWith('…')).toBe(true);
     expect(seg!.length).toBeLessThanOrEqual(2 + 40 + 1);
+  });
+
+  // ── the title LEADS with the display name (P-002 / D-001) ──
+
+  it('leads with a manual name, and still carries the id and objective behind it', () => {
+    const d = renderStatusDisplay(
+      {
+        ...base,
+        self: { ...base.self, displayName: 'release wrangler', objective: 'Green the checkpoint gate' },
+      },
+      { ownerId: SID },
+    );
+    expect(d.title.split(' · ')[0]).toBe('✎ release wrangler');
+    // D-001: the short id is demoted, never dropped — and the objective survives too
+    expect(d.title).toContain('su-9859e');
+    expect(d.title).toContain('🔭 Green the checkpoint gate');
+  });
+
+  it('leads with the objective when unnamed, and does not print it twice', () => {
+    const d = renderStatusDisplay(
+      { ...base, self: { ...base.self, objective: 'Green the checkpoint gate' } },
+      { ownerId: SID },
+    );
+    expect(d.title.split(' · ')[0]).toBe('🔭 Green the checkpoint gate');
+    expect(d.title.split(' · ').filter((s) => s.startsWith('🔭'))).toHaveLength(1);
+    expect(d.title).toContain('su-9859e');
+  });
+
+  it('leads with the short handle when there is neither name nor objective, and does not repeat it', () => {
+    const d = renderStatusDisplay({ ...base }, { ownerId: SID });
+    expect(d.title.split(' · ')[0]).toBe('su-9859e');
+    expect(d.title.split(' · ').filter((s) => s === 'su-9859e')).toHaveLength(1);
+  });
+
+  it('clips a long manual name to the title budget', () => {
+    const d = renderStatusDisplay(
+      { ...base, self: { ...base.self, displayName: 'z'.repeat(80) } },
+      { ownerId: SID },
+    );
+    const lead = d.title.split(' · ')[0];
+    expect(lead.startsWith('✎ ')).toBe(true);
+    expect(lead.endsWith('…')).toBe(true);
+    expect(lead.length).toBeLessThanOrEqual(2 + 40 + 1);
+  });
+
+  it('a blank manual name renders exactly the un-named title (R6)', () => {
+    const named = renderStatusDisplay(
+      { ...base, self: { ...base.self, displayName: '   ', objective: 'Green the gate' } },
+      { ownerId: SID },
+    );
+    const plain = renderStatusDisplay(
+      { ...base, self: { ...base.self, objective: 'Green the gate' } },
+      { ownerId: SID },
+    );
+    expect(named.title).toBe(plain.title);
   });
 });
 

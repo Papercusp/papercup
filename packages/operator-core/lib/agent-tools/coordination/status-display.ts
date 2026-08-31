@@ -55,6 +55,12 @@ export interface StatusDisplayGlance {
   tips?: Array<{ id?: string | null; text?: string | null; command?: string | null }> | null;
   self?: {
     objective?: string | null;
+    /**
+     * The owner-keyed MANUAL session name (harness_shared.agent_display_names),
+     * when the human has set one. Absent/blank ⇒ the display name falls back
+     * through the objective to the short handle (D-001).
+     */
+    displayName?: string | null;
     loop?: { active?: boolean; intervalSec?: number | null; reachable?: boolean | null } | null;
     fleets?: Array<{ slug?: string | null; label?: string | null; role?: string | null; square?: string | null }> | null;
     /** `pct` is what the renderer consumes; `tokens`/`limit` are carried for
@@ -81,6 +87,57 @@ export function selfShort(ownerId: string | null | undefined): string {
   const bits = owner.split('-');
   if (bits.length >= 2 && bits[1]) return `${bits[0]}-${bits[1].slice(0, 5)}`;
   return owner.slice(0, 8);
+}
+
+/**
+ * Where a session's display name came from. Carried alongside the name so a
+ * surface can tell whether the headline it just rendered IS the objective or
+ * IS the short handle, and therefore skip printing that same string a second
+ * time (the HUD card's reason-line suppression, R3; the title's identity and
+ * objective chips below).
+ *
+ * `none` is the genuinely-empty case — no manual name, no objective, and no
+ * usable ownerId (a fixture / unidentified payload). Callers render nothing
+ * rather than an empty headline.
+ */
+export type SessionDisplayNameSource = 'manual' | 'objective' | 'handle' | 'none';
+
+export interface SessionDisplayNameInput {
+  /** Owner-keyed manual name a human typed (harness_shared.agent_display_names). */
+  manualName?: string | null;
+  /** In-flight work-item title, falling back to the declared coord intent. */
+  objective?: string | null;
+  /** The coord ownerId — the last-resort identity, shortened via `selfShort`. */
+  ownerId?: string | null;
+}
+
+export interface SessionDisplayName {
+  /** Trimmed but UNCLIPPED — width fitting is presentation, so each surface clips its own. */
+  name: string;
+  source: SessionDisplayNameSource;
+}
+
+/**
+ * THE display-name resolver — `manualName ?? objective ?? shortHandle` (D-001).
+ *
+ * D-003 makes this the ONE implementation of that chain in the tree: the
+ * terminal title (via `renderStatusDisplay` below) and the HUD board model
+ * both call it, so a session cannot be named one thing in a tab bar and
+ * another on its card. A surface that grows its own private fallback chain is
+ * the regression that decision exists to prevent.
+ *
+ * Pure and fail-open like the rest of this module: every field is optional and
+ * a non-string is treated as absent, so a partial payload resolves a shorter
+ * name rather than throwing (R9).
+ */
+export function sessionDisplayName(input: SessionDisplayNameInput = {}): SessionDisplayName {
+  const manual = typeof input.manualName === 'string' ? input.manualName.trim() : '';
+  if (manual) return { name: manual, source: 'manual' };
+  const objective = typeof input.objective === 'string' ? input.objective.trim() : '';
+  if (objective) return { name: objective, source: 'objective' };
+  const handle = selfShort(input.ownerId);
+  if (handle) return { name: handle, source: 'handle' };
+  return { name: '', source: 'none' };
 }
 
 /** Compact interval label: 120→'2m', 30→'30s', 3600→'1h', 5400→'1h30m'. */
@@ -223,9 +280,17 @@ export function renderStatusDisplay(
   const ownerId = String(opts.ownerId ?? '').trim();
   const meShort = selfShort(ownerId);
   const { count: peerCount, latest: latestPeer } = peerGlance(g, ownerId);
+  const display = sessionDisplayName({
+    manualName: g.self?.displayName,
+    objective: g.self?.objective,
+    ownerId,
+  });
 
   // ── statusline line 1 — the chip row (order mirrors the historical Claude render) ──
   const parts: string[] = [];
+  // A human-given name leads the row. The 🔭 objective and ◇ id chips below are
+  // untouched, so naming a session ADDS identity rather than hiding either (D-001).
+  if (display.source === 'manual') parts.push(`✎ ${clip(display.name, OBJECTIVE_MAX)}`);
   const obj = objectivePart(g, OBJECTIVE_MAX);
   if (obj) parts.push(`🔭 ${obj}`);
   if (meShort) parts.push(`◇ ${meShort}`);
@@ -269,7 +334,16 @@ export function renderStatusDisplay(
   }
 
   // ── OS title — compact full-fleet identity (codex/omp's ONLY pixel surface) ──
+  // LEADS with the session's display name (D-001): a tab bar truncates hard, so
+  // the first thing a human reads should be what this session IS, not the
+  // fleet-wide chrome that is byte-identical on every session's title.
   const titleBits: string[] = [];
+  if (display.name) {
+    const named = clip(display.name, TITLE_OBJECTIVE_MAX);
+    titleBits.push(
+      display.source === 'manual' ? `✎ ${named}` : display.source === 'objective' ? `🔭 ${named}` : named,
+    );
+  }
   const fleets = fleetsPart(g);
   if (fleets) titleBits.push(fleets);
   const loopTag = loopTitleTag(g);
@@ -279,9 +353,12 @@ export function renderStatusDisplay(
   if (bees) titleBits.push(`☕${bees}`);
   if (paused.length > 0) titleBits.push(`⏳${paused.length}`);
   if (peerCount) titleBits.push(`${peerCount}p`);
-  if (meShort) titleBits.push(meShort);
+  // The short id STAYS on the title (D-001 — it is how a human correlates a
+  // session with logs and --resume lines), but never twice: it is dropped here
+  // only when it is already the headline. Same for the objective chip.
+  if (meShort && display.source !== 'handle') titleBits.push(meShort);
   const titleObj = objectivePart(g, TITLE_OBJECTIVE_MAX);
-  if (titleObj) titleBits.push(`🔭 ${titleObj}`);
+  if (titleObj && display.source !== 'objective') titleBits.push(`🔭 ${titleObj}`);
   const title = stripControl(titleBits.join(' · '));
 
   return { title, statusline, notice };
