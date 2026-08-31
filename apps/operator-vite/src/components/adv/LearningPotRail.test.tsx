@@ -423,4 +423,42 @@ describe('the per-pot popover', () => {
       document.body.querySelector('.pc-potrail__poperr')?.textContent,
     ).toContain('invalid_input: unknown pot slug');
   });
+
+  /**
+   * The shared <Popover> paints NO surface: RP.Content gets only zIndex plus
+   * the caller's `contentClassName` (harness/Popover.tsx). So a caller that
+   * passes a class it never styles renders a TRANSPARENT panel — the page's
+   * own text reads straight through the rows.
+   *
+   * This shipped once, and nothing caught it: the four live DOM assertions
+   * (rows present, master first, Scout switchless, head named) were all TRUE
+   * of an invisible panel, because structure is exactly what an unpainted
+   * surface preserves. A screenshot caught it. This is that screenshot's
+   * falsifiable form — it fails if the surface class loses its background,
+   * or is renamed in the TSX without the stylesheet following.
+   */
+  it('paints the popover surface opaque — the primitive supplies none', () => {
+    const { container } = renderRail(
+      arming({ gymPots: [gym('alpha')], potScope: scope([]) }),
+    );
+    const panel = openChip(container);
+    const surface = panel.closest<HTMLElement>('[role="dialog"]');
+    if (!surface) throw new Error('popover content element not found');
+
+    const classes = [...surface.classList];
+    expect(classes.length).toBeGreaterThan(0);
+
+    const css = [...container.querySelectorAll('style')]
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+    const paints = classes.some((cls) => {
+      const rule = new RegExp(`\\.${cls}\\s*\\{([^}]*)\\}`).exec(css);
+      return !!rule && /background\s*:/.test(rule[1]);
+    });
+    expect(
+      paints,
+      `none of [${classes.join(', ')}] declares a background, so the panel is ` +
+        `transparent and the page shows through it`,
+    ).toBe(true);
+  });
 });

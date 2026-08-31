@@ -521,6 +521,25 @@ export default function LearningPotRail() {
         .pc-potrail__chip:hover { border-color: var(--border-strong); }
 
         /* ── the per-pot popover ─────────────────────────────────────────── */
+        /* The shared <Popover> primitive paints NO surface — it sets only
+           zIndex on RP.Content and hands the caller contentClassName (the
+           Tooltip beside it in harness/Popover.tsx sets its own background for
+           exactly this reason). So the panel is TRANSPARENT until this rule
+           exists, and every DOM assertion still passes while the page's text
+           reads straight through it — which is how a screenshot caught this
+           and four green structural checks did not. Surface values follow the
+           house anchored-panel pattern (.pc-user-menu, globals.css). */
+        .pc-potrail__popwrap {
+          border: 1px solid var(--border-strong);
+          border-radius: 12px;
+          background: var(--bg-1);
+          color: var(--fg);
+          box-shadow:
+            0 18px 46px rgba(0, 0, 0, 0.58),
+            0 0 0 1px rgba(255, 255, 255, 0.045),
+            inset 0 1px 0 rgba(255, 255, 255, 0.035);
+          backdrop-filter: none;
+        }
         .pc-potrail__pop { min-width: 244px; max-width: 320px; padding: 4px 2px; }
         .pc-potrail__pophead {
           padding: 2px 8px 6px; font-weight: 600; color: var(--fg); font-size: 12px;
