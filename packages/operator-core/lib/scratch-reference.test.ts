@@ -6,6 +6,7 @@ import {
   authorizeScratchReference,
   parseScratchReference,
   ScratchReferenceError,
+  scratchReferenceBodyByteOffset,
   writeScratchReference,
 } from './scratch-reference';
 
@@ -75,6 +76,54 @@ describe('stable scratch references', () => {
     bytes[bytes.length - 1] ^= 1;
     writeFileSync(filePath, bytes);
     expect(() => parseScratchReference(readFileSync(filePath))).toThrowError(/SHA-256 mismatch/);
+  });
+
+  it('publishes the body boundary against the PAYLOAD, and drops one that does not point into it', () => {
+    // EI-21949915395361184. A file-relative offset cannot be stored in the header it
+    // would have to measure, so the manifest carries the payload-relative number and
+    // the file offset stays derived. Proving the round-trip here is what stops a
+    // future writer from "simplifying" it into a file offset that is self-referential.
+    const filePath = join(dir, 'ws', 'tool', 'run', 'body.md');
+    const prefix = '# preamble a reader must skip\n\n';
+    const body = '{"ok":true,"rows":[1,2,3]}';
+    const manifest = writeScratchReference({
+      filePath,
+      payload: prefix + body,
+      workspaceId: 'ws',
+      ownerId: 'su-1',
+      audience: 'owner',
+      mediaType: 'text/plain',
+      bodyOffsetInPayload: Buffer.byteLength(prefix, 'utf8'),
+      nowMs: 1_000,
+    });
+
+    expect(manifest.bodyOffsetInPayload).toBe(Buffer.byteLength(prefix, 'utf8'));
+    const raw = readFileSync(filePath);
+    const offset = scratchReferenceBodyByteOffset(manifest);
+    expect(offset).not.toBeNull();
+    expect(JSON.parse(raw.subarray(offset!).toString('utf8'))).toEqual({ ok: true, rows: [1, 2, 3] });
+
+    // The header is exactly two lines, which is what makes the shell recipe in the
+    // spill (`head -2 | wc -c`) a derivation rather than a guess.
+    const firstNewline = raw.indexOf(0x0a);
+    const secondNewline = raw.indexOf(0x0a, firstNewline + 1);
+    expect(secondNewline + 1 + manifest.bodyOffsetInPayload!).toBe(offset);
+
+    // An offset that does not point into this payload is DROPPED, not written down
+    // wrong: past the end it would send a reader to EOF, which reads as an empty body
+    // rather than as a broken manifest.
+    const bogus = writeScratchReference({
+      filePath: join(dir, 'ws', 'tool', 'run', 'bogus.md'),
+      payload: prefix + body,
+      workspaceId: 'ws',
+      ownerId: 'su-1',
+      audience: 'owner',
+      mediaType: 'text/plain',
+      bodyOffsetInPayload: Buffer.byteLength(prefix + body, 'utf8') + 1,
+      nowMs: 1_000,
+    });
+    expect(bogus.bodyOffsetInPayload).toBeUndefined();
+    expect(scratchReferenceBodyByteOffset(bogus)).toBeNull();
   });
 
   it('returns null for legacy scratch files', () => {

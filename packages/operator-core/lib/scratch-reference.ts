@@ -34,6 +34,30 @@ export interface ScratchReferenceManifest {
   sha256: string;
   content: readonly ScratchReferenceContentMetadata[];
   evidence?: readonly ScratchReferenceEvidenceSelector[];
+  /**
+   * EI-21949915395361184 (umbrella over ten reports): byte offset, WITHIN THE PAYLOAD
+   * (i.e. after this header), at which the machine-readable body begins — everything
+   * before it is human-facing preamble the writer prepended.
+   *
+   * The file is a self-describing CONTAINER, not a JSON document, and until now the
+   * boundary existed only in the tool RESULT's cursor. A consumer holding just the path
+   * had to guess, and every natural guess fails: `jq .` chokes on the magic line, and
+   * "first `{` through EOF" lands on THIS MANIFEST — a well-formed but WRONG object,
+   * which is the failure mode that got reported ten times because it looks like success.
+   *
+   * Measured against the PAYLOAD, never the file, and that is not a detail: a
+   * file-relative offset would have to count the header that contains it, so writing it
+   * down would change it. The file offset stays derivable — the header is exactly the
+   * first two lines — via `scratchReferenceBodyByteOffset()`, or in a shell:
+   *
+   *   P=$(sed -n 2p FILE | jq -r '.bodyOffsetInPayload')
+   *   H=$(head -2 FILE | wc -c)
+   *   tail -c +$((H + P + 1)) FILE | jq .
+   *
+   * Omitted when the writer has no machine-readable body to point at (a payload that is
+   * entirely prose). Absent MEANS "no declared body", never "offset 0".
+   */
+  bodyOffsetInPayload?: number;
 }
 
 export interface ScratchReferenceEvidenceSelector {
@@ -57,6 +81,20 @@ export function scratchReferenceHeader(manifest: ScratchReferenceManifest): Buff
 /** Byte offset of the payload in a self-describing scratch reference file. */
 export function scratchReferencePayloadByteOffset(manifest: ScratchReferenceManifest): number {
   return scratchReferenceHeader(manifest).byteLength;
+}
+
+/**
+ * Byte offset of the machine-readable BODY in the raw FILE — the one number a `jq` /
+ * `tail -c` consumer actually needs. Null when the manifest declares no body, which is
+ * a real answer ("this payload is prose") and must not be read as offset 0.
+ *
+ * Derived from the manifest rather than stored in it, because a file-relative offset
+ * cannot be written into the header it would have to measure.
+ */
+export function scratchReferenceBodyByteOffset(manifest: ScratchReferenceManifest): number | null {
+  return manifest.bodyOffsetInPayload == null
+    ? null
+    : scratchReferencePayloadByteOffset(manifest) + manifest.bodyOffsetInPayload;
 }
 
 export class ScratchReferenceError extends Error {
@@ -137,6 +175,8 @@ export function writeScratchReference(input: {
   content?: readonly ScratchReferenceContentMetadata[];
   evidence?: readonly ScratchReferenceEvidenceSelector[];
   nowMs?: number;
+  /** Payload-relative start of the machine-readable body; see the manifest field. */
+  bodyOffsetInPayload?: number;
 }): ScratchReferenceManifest {
   const payload = Buffer.isBuffer(input.payload) ? input.payload : Buffer.from(input.payload, 'utf8');
   const nowMs = input.nowMs ?? Date.now();
@@ -156,6 +196,15 @@ export function writeScratchReference(input: {
     sha256: sha256(payload),
     content: [...(input.content ?? [])],
     ...(input.evidence?.length ? { evidence: input.evidence.map((entry) => ({ ...entry, jsonPointers: [...entry.jsonPointers] })) } : {}),
+    // Declared only when it actually points INTO this payload. An offset past the end
+    // would send a consumer to EOF and read as "empty body" rather than as a broken
+    // manifest, so it is dropped rather than written down wrong.
+    ...(input.bodyOffsetInPayload != null &&
+    Number.isSafeInteger(input.bodyOffsetInPayload) &&
+    input.bodyOffsetInPayload >= 0 &&
+    input.bodyOffsetInPayload < payload.length
+      ? { bodyOffsetInPayload: input.bodyOffsetInPayload }
+      : {}),
   };
   const header = scratchReferenceHeader(manifest);
   reserveScratchSpace({ workspaceId: input.workspaceId, bytes: header.length + payload.length });

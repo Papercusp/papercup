@@ -875,7 +875,20 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // door's fail-soft contract: a missing index is an annoyance, a failed WRITE
     // loses the payload.
     const spillIndex = buildSpillIndex(spillBodyText);
-    const spillPrefix = header + spillAdvisoryPrefix + (spillIndex ? `${spillIndex}\n` : '');
+    // EI-21949915395361184: the recipe belongs in the FILE, for the reader who has only
+    // the file. The manifest carries the boundary as a number; this says how to use it
+    // without the cursor this call returns — and names the wrong guess explicitly,
+    // because "parse from the first `{`" does not error, it returns the MANIFEST.
+    // Deliberately prints no offset of its own: a number written here would sit inside
+    // the very payload it measures.
+    const spillBodyRecipe =
+      bodyShape.json != null
+        ? '# recover the JSON body from this file alone — the boundary is in the manifest on line 2:\n' +
+          "#   P=$(sed -n 2p FILE | jq -r '.bodyOffsetInPayload'); H=$(head -2 FILE | wc -c)\n" +
+          '#   tail -c +$((H + P + 1)) FILE | jq .\n' +
+          '# Do NOT parse from the first `{` — that is the manifest: well-formed, wrong object.\n\n'
+        : '';
+    const spillPrefix = header + spillBodyRecipe + spillAdvisoryPrefix + (spillIndex ? `${spillIndex}\n` : '');
     if (fsPath != null) {
       try {
         const parts = scratchParts(opts);
@@ -887,6 +900,16 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           audience: opts.ownerId ? 'owner' : 'workspace',
           mediaType: 'text/plain',
           content: contentMetadata(items),
+          // EI-21949915395361184: put the boundary IN THE FILE, not only in the cursor
+          // this call returns. Ten reports across five months all describe the same
+          // consumer — one holding the path and nothing else — and every guess that
+          // consumer can make fails: `jq .` chokes on the magic line, and "first `{`
+          // through EOF" silently parses the MANIFEST instead of the body. Declared for
+          // a JSON body only, so its ABSENCE is the honest answer "there is no JSON here"
+          // rather than a boundary that points at prose.
+          ...(bodyShape.json != null
+            ? { bodyOffsetInPayload: Buffer.byteLength(spillPrefix, 'utf8') }
+            : {}),
         });
       } catch (err) {
         // WI-36047: the write failed — fall through to the CAP anyway, and null

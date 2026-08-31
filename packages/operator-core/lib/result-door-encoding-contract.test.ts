@@ -392,6 +392,44 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(firstBrace).not.toHaveProperty('rows');
   });
 
+  it('the FILE alone carries its body boundary — a consumer with no cursor can still parse it', () => {
+    // EI-21949915395361184, an umbrella over TEN reports spanning 2026-08-14..08-25.
+    // Every one describes the same consumer: someone holding the path and nothing
+    // else — a later session, a shell, a human in the scratch tree. The boundary
+    // existed only in the cursor THIS call returns, so that consumer had to guess, and
+    // both natural guesses fail badly: `jq .` chokes on the magic line, and "first `{`
+    // through EOF" parses the MANIFEST — well-formed, wrong object, no error raised.
+    const { cursor } = doorOversizedResult();
+    const raw = spillRawBytes();
+
+    // Exactly the shell recipe, executed: line 2 is the manifest, and the header is
+    // exactly the first two lines, so the file offset is a derivation, not a guess.
+    const firstNewline = raw.indexOf(0x0a);
+    const secondNewline = raw.indexOf(0x0a, firstNewline + 1);
+    const manifest = JSON.parse(raw.subarray(firstNewline + 1, secondNewline).toString('utf8')) as {
+      bodyOffsetInPayload?: number;
+    };
+    expect(manifest.bodyOffsetInPayload).toEqual(expect.any(Number));
+
+    const bodyOffsetInFile = secondNewline + 1 + manifest.bodyOffsetInPayload!;
+    const parsed = JSON.parse(raw.subarray(bodyOffsetInFile).toString('utf8')) as { rows: unknown[] };
+    expect(parsed.rows).toHaveLength(400);
+
+    // The two publications of ONE boundary must agree. Without this, the manifest could
+    // drift away from the cursor and each would look right in its own test.
+    expect(bodyOffsetInFile).toBe(cursor.bodyOffsetInFile);
+
+    // The file also TELLS the reader how to do this, and names the wrong guess — a
+    // machine-readable field nobody can find is not a fix.
+    const text = raw.toString('utf8');
+    expect(text).toContain(".bodyOffsetInPayload'");
+    expect(text).toContain('Do NOT parse from the first `{`');
+
+    // CONTROL — the guess this exists to replace still fails, so the assertions above
+    // are discriminating rather than passing on a file that would parse anyway.
+    expect(() => JSON.parse(text)).toThrow();
+  });
+
   it('follows the emitted cursor end-to-end through the real capability:read', async () => {
     const { cursor } = doorOversizedResult();
     expect(cursor.tool).toBe('capability:read');
