@@ -42,19 +42,16 @@ const argsSchema = z
       .regex(/^P-\d{3,}$/)
       .optional()
       .describe('single-read shorthand: the plan item id, e.g. "P-003".'),
-    // EI-21901062936431252: `itemId` is an ACCEPTED ALIAS for `item` in the single-read
-    // shorthand. plans:audit's own per-item entries are keyed `itemId` (see itemSpec in
-    // audit.ts), so a caller reasonably reused that spelling here and was rejected —
-    // reproduced live 2026-08-30. Same class as EI-10897 (work_items:comment's
-    // `comment`/`body`): accept the obvious spelling, reject a genuine conflict loudly.
-    // Resolved in the HANDLER, never via `.transform()` (EI-10996 — a trailing
-    // transform's output is unrepresentable in JSON Schema and crashes schema-gen for
-    // the whole tool catalog).
-    itemId: z
-      .string()
-      .regex(/^P-\d{3,}$/)
-      .optional()
-      .describe('alias for `item` (plans:audit uses this field name for its per-item entries) — pass either; both-with-different-values is rejected.'),
+    // EI-21901062936431252 added `itemId` here as an accepted alias. REMOVED: it
+    // contradicted the ratified alpha vocabulary policy (P-005 / EI-11400), which
+    // `semantic-argument-vocabulary.test.ts` enforces for this exact tool — "a breaking
+    // rename, not a compatibility-alias layer: one public spelling, strict rejection,
+    // and define-tool's did-you-mean hint teaches callers the correction." The two
+    // tests could not both pass and the tree stayed red. The friction that motivated
+    // the alias is real but its cause is elsewhere: plans:audit keys its per-item
+    // entries `itemId` while the whole plans:* item family uses `item` — tracked
+    // separately rather than papered over per-tool. EI-10897 (work_items:comment's
+    // `body`/`comment`) is NOT precedent here: that tool is outside the guard's list.
     itemIds: z
       .array(z.string().regex(/^P-\d{3,}$/))
       .min(1)
@@ -69,15 +66,7 @@ const argsSchema = z
       .describe('read many items across plans — each { slug, item, harness? }'),
   })
   .superRefine((a, ctx) => {
-    if (a.item && a.itemId && a.item !== a.itemId) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['itemId'],
-        message: '`item` and `itemId` are the SAME field and were both passed with DIFFERENT ids — pass one (which did you mean?).',
-      });
-      return;
-    }
-    const hasSingle = Boolean(a.item) || Boolean(a.itemId);
+    const hasSingle = Boolean(a.item);
     const ok = (a.items?.length ?? 0) > 0 || (Boolean(a.slug) && ((a.itemIds?.length ?? 0) > 0 || hasSingle));
     if (!ok) {
       ctx.addIssue({
@@ -115,10 +104,7 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    // EI-21901062936431252: resolve the `item`/`itemId` alias handler-side (the
-    // superRefine above already guarantees at least one is present, and that they
-    // don't conflict, for the single-read shape).
-    const singleItem = args.item ?? args.itemId;
+    const singleItem = args.item;
     const list: ReadItem[] = args.items?.length
       ? args.items.map((it) => ({ slug: it.slug, itemId: it.item, harness: it.harness ?? args.harness }))
       : args.itemIds?.length
