@@ -70,7 +70,13 @@ export type PlanDrainTransitionSkip =
    *  lock is held, kept because the flip helper can still report it. */
   | 'unexpected_status'
   /** Already at the target. */
-  | 'noop';
+  | 'noop'
+  /** Another writer holds the plan lock. Correct to drop rather than retry:
+   *  the holder is itself a `plans:*` write, so it will emit its own
+   *  `plans:set-status` event and this rule fires again on the far side of it
+   *  with fresher bytes. Retrying here would queue behind a write whose result
+   *  invalidates the decision we queued to make. */
+  | 'busy';
 
 export interface PlanDrainTransitionResult {
   applied: boolean;
@@ -138,5 +144,5 @@ export async function applyPlanDrainTransition(
     },
   );
 
-  return locked.value;
+  return locked.kind === 'applied' ? locked.value : { applied: false, skipped: 'busy' };
 }
