@@ -447,7 +447,7 @@ async function subscribeGroups(
       await deps.ensureGroupTopic(opts.actor, {
         slug: g.topic,
         title: `Plan ${g.planSlug}`,
-        description: `Auto-created group channel (EI-1611): bees the Mug placed together this batch on plan "${g.planSlug}" — sibling completions, decisions, blast-radius warnings.`,
+        description: `Auto-created group channel (EI-1611): members placed together this batch on plan "${g.planSlug}" — sibling completions, decisions, blast-radius warnings.`,
       });
       for (const ownerId of g.ownerIds) {
         const beeIdentity: AgentIdentity = {
@@ -640,7 +640,7 @@ export async function executeBatch(opts: {
       // (queen-wave-dispatch P-031). Falls back to the placement pointer when neither.
       const body =
         mergeBrief(d.task.brief, brief) ??
-        `Mug placement — ${d.task.id} ("${d.task.title}") is on your work-list at head-of-line (${d.affinity?.reasons.join(', ') || 'context affinity'}). Claim_next / work it next.`;
+        `Fleet placement — ${d.task.id} ("${d.task.title}") is on your work-list at head-of-line (${d.affinity?.reasons.join(', ') || 'context affinity'}). Claim_next / work it next.`;
       await sendMessage(actor, { to: [bee], summary, body, extra: { wake: true } });
       const fan = await wakeRecipients([bee], {
         summary,
