@@ -34,6 +34,18 @@ describe('set-plan-status public lifecycle guidance', () => {
       expect(projected).toContain('After implementation is verified:');
     }
   });
+
+  it('warns that a rubric revision invalidates independent grading as well as attestation', () => {
+    const revisionWarning =
+      'Any later rubric edit invalidates BOTH the attestation AND any independent grading';
+    const staleWarning = 'Any later rubric edit invalidates the attestation.';
+
+    for (const clientDoc of ['AGENTS.md', 'CLAUDE.md']) {
+      const projected = readFileSync(resolve(ROOT, clientDoc), 'utf8');
+      expect(projected).toContain(revisionWarning);
+      expect(projected).not.toContain(staleWarning);
+    }
+  });
 });
 
 describe('set-plan-status idempotent-completion opt-in (EI-21122694679454626)', () => {
