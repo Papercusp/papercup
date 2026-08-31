@@ -1922,6 +1922,36 @@ test('[529 overload] EI-21921571654476580: the OTHER exhaustion exit — the lad
   }
 }, 15_000);
 
+test('EI-21922950476359370: the THIRD exhaustion exit — an unclassified crash in the request handler (no upstream response to forward at all) is surfaced with x-should-retry:false, not silently retried forever', async () => {
+  // The two sites above cover the WELL-CLASSIFIED 429/529 exhaustion exits. This is the
+  // OUTERMOST backstop (gateway.ts dispatchRequest's own catch): a genuinely unclassified
+  // exception thrown by the request handler itself (a bug, not an upstream response) — it had
+  // zero retry-signaling headers, so a downstream SDK's own default (500 is retryable) silently
+  // retried it — indistinguishable, from the caller's side, from "throttled, retrying" (the
+  // reported "Working..." forever symptom). Force it by making the FIRST admission acquire
+  // throw a plain (non-GatewayRequestKernelError) error, before any upstream request is even
+  // attempted — no upstream response exists to forward, so this can only resolve through the
+  // crash-fallback, not the 429/529 exits.
+  const crashingGov = new RateLimitGovernor({ maxConcurrent: 20 });
+  crashingGov.acquire = async () => {
+    throw new Error('synthetic unclassified gateway crash (EI-21922950476359370 regression test)');
+  };
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    { governorFor: () => crashingGov },
+  );
+  const res = await post({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 500, 'the crash surfaces to the client as a real, terminal 500 (not swallowed, not hung)');
+  assert.equal(
+    res.headers.get('x-should-retry'),
+    'false',
+    'an unclassified gateway-internal crash with no upstream response to forward must not invite a downstream SDK to retry it silently forever',
+  );
+}, 15_000);
+
 test('a genuinely unsupported (non-http(s)/non-socks) egress proxyUrl fails SAFE → default shared egress, never a silent break (B-GW-3)', async () => {
   // undici's ProxyAgent is HTTP-CONNECT only and does not understand an ftp:// URL — it would CONSTRUCT
   // without error but 502 EVERY request for this account at request time. The gateway must IGNORE it
@@ -3062,6 +3092,66 @@ test('[429-absorb SU-3650] all-accounts transient-429 under HIGH CONCURRENCY: ab
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'all admission slots drained — no slot-squat even under the all-429 storm');
 }, 60_000);
+
+test('EI-21922952513461817: absorb-rung re-route pool.active() THROWING (pool fully exhausted) is caught — forwards the typed retryable 429, not an opaque uncaught-throw 500', async () => {
+  // Regression for the transient-429 absorb rung's re-route pick (gateway.ts, the FIRST
+  // `pool.active()` call inside the `taken.action === 'absorb'` branch): its sibling
+  // stall-absorb rung a few dozen lines further down already wraps `pool.active()` in a
+  // try/catch ("pool empty / all-exhausted → keep the current account; the re-acquire still
+  // waits") — this call site had no such guard. A pool that cannot resolve an account once
+  // every account is exhausted (the exact "all accounts transiently throttled" scenario the
+  // absorb rung exists to handle) threw UNCAUGHT past the outer try/finally, all the way to
+  // the generic top-level catch → the opaque, non-retryable 500 the bug reports, for a
+  // condition the gateway had ALREADY classified as transient and self-clearing.
+  //
+  // Reaches the absorb rung for REAL via the actual wait-budget accounting (no mocked
+  // classification): a persistent bare 429 with bare429FailoverBackoffMs=16000ms exhausts the
+  // 30s TRANSIENT_TOTAL_WAIT_BUDGET_MS after exactly ONE real wait-rung sleep (0+16000<=30000
+  // → wait; then 16000+16000=32000>30000 → falls to absorb). requestAbsorbMs=18000 keeps the
+  // absorb window open just long enough to ENTER the rung (18000>16000) while giving its
+  // re-acquire only a ~2s budget — far short of the account's own 16s governor pause — so it
+  // deterministically gives up and falls to the existing "nothing rescued it" tail instead of
+  // looping the request forever. Total real wall time ≈18s, not ~30-35s.
+  const t0 = Date.now();
+  const acct: ActiveAccount = { accountId: 'A', token: async () => 't', invalidateToken: () => {} };
+  const pool: AccountPool = {
+    active: () => {
+      // Let any EARLY pick (the initial request's account selection, and anything a
+      // proactive health-aware picker does before the first upstream call) succeed; only
+      // once genuinely deep into the retry ladder (well past any startup picking, well
+      // before the absorb rung's own call at ~16s in) does the pool simulate full,
+      // unresolvable exhaustion — the scenario the guard above exists for.
+      if (Date.now() - t0 < 5_000) return acct;
+      throw new Error('pool exhausted: every account out of budget');
+    },
+    onExhausted: () => null,
+  };
+  await boot(
+    (_req, res) => {
+      // ALWAYS a bare 429 (rate_limit_error, no window headers) — persistent, never-clearing
+      // all-accounts transient throttle.
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'burst' } }));
+    },
+    { pool, concurrency: 1, bare429FailoverBackoffMs: 16_000, requestAbsorbMs: 18_000 },
+  );
+  const r = await post({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'x' }] });
+  const body = await r.text();
+  assert.equal(
+    r.status,
+    429,
+    `absorb-rung re-route must not crash to an opaque 500 on pool exhaustion — expected the existing "nothing rescued it" tail to forward the terminal 429 (got ${r.status}: ${body})`,
+  );
+  assert.ok(
+    !body.includes('inference-gateway internal error'),
+    `must not surface the generic uncaught-exception message for a condition already classified as transient (got: ${body})`,
+  );
+  assert.equal(
+    r.headers.get('x-should-retry'),
+    'false',
+    'the terminal-forward tail marks this exhausted retry ladder non-retryable, exactly as it already does on the non-exception path',
+  );
+}, 35_000);
 
 test('egress-ip-pool: a bare-burst 429 on one egress IP rotates to a SIBLING IP on the SAME account — no account pause, no cross-account failover (gateway-per-account-egress-ip-pool-2026-06-30)', async () => {
   // THE FIX for the owner-reported "pinned aviynw8 (ample budget) still throws API errors": a bare-burst

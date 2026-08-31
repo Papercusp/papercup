@@ -5006,10 +5006,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 'warn',
                 `inference-gateway: all accounts transiently throttled on ${model} → wait ${taken.waitMs}ms + retry (wait-budget ${transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`,
               );
+              // EI-21922955765584730: `res.setTimeout` measures DOWNSTREAM socket
+              // inactivity, but this wait withholds every downstream byte ON PURPOSE
+              // (no headers sent yet — this is an internal retry, not a hung client).
+              // Extend it to cover the KNOWN wait so the gateway's own 120s guard
+              // cannot kill a live, patiently-waiting caller mid-retry (the same
+              // extend/restore pattern already used for codex OAuth non-stream
+              // aggregation below, @6064-6067/@6116/@6157).
+              res.setTimeout(downstreamIdleMs > 0 ? taken.waitMs + downstreamIdleMs : 0);
               await new Promise<void>((r) => {
                 const t = setTimeout(r, taken.waitMs);
                 t.unref?.();
               });
+              res.setTimeout(downstreamIdleMs);
               log(
                 'warn',
                 `inference-gateway: upstream ${taken.status} → internal retry attempt=${attemptsUsed} wait=${transientWaitedMs}ms on '${throttled429AccountId}'${shape429Suffix}`,
@@ -5020,6 +5029,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // forward below still emits the routing/outcome records that path owes.
             let absorbGaveUp = false;
             if (taken.action === 'absorb') {
+              // EI-21922955765584730: same "downstream-idle measures socket
+              // inactivity, not gateway-internal work" gap as the 'wait' rung above
+              // — extend the guard to cover the absorb's full remaining budget
+              // (re-acquire's own maxWaitMs, below) before any of it elapses, so a
+              // live caller mid-absorb is never killed out from under an in-progress
+              // internal retry. Reset once the wait settles, win or lose.
+              res.setTimeout(
+                downstreamIdleMs > 0 ? Math.max(0, absorbDeadlineAt - Date.now()) + downstreamIdleMs : 0,
+              );
               // Free the slot NOW — the wait below admits nothing until an account
               // has serviceable budget, so it cannot wedge.
               release();
@@ -5036,7 +5054,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // without this the held caller stays pinned to one throttled account
               // for the whole absorb and never lands.
               if (!hardPin) {
-                const reCand = pool.active();
+                // EI-21922952513461817: `pool.active()` THROWS when every account in
+                // the pool is exhausted (the exact "all accounts transiently
+                // throttled" scenario this absorb rung exists to handle) — mirror the
+                // try/catch the sibling stall-absorb rung already uses below
+                // (@5231-5236): on exhaustion, keep holding `active` unchanged rather
+                // than letting the throw escape uncaught to the generic 500 handler.
+                let reCand = active;
+                try {
+                  reCand = pool.active();
+                } catch {
+                  /* pool empty / all-exhausted → keep the current account; the re-acquire still waits */
+                }
                 if (reCand.accountId !== active.accountId) {
                   stageSpan?.recordFailover();
                   everRotated = true;
@@ -5053,6 +5082,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 allowSoftPaused: serveSoft,
                 signal: reqAbort.signal, // a reclaim/ceiling truly cancels this parked re-acquire
               });
+              // Restore the plain idle guard now that the known internal wait is
+              // over — win or lose, downstream inactivity from here means the same
+              // thing it always did (a hung client / a new attempt not yet writing).
+              res.setTimeout(downstreamIdleMs);
               if (reacq) {
                 release = reacq;
                 retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget
@@ -5224,6 +5257,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
               Date.now() < absorbDeadlineAt &&
               !res.headersSent
             ) {
+              // EI-21922955765584730: same fix as the throttle-absorb rung above —
+              // extend the downstream-idle guard to cover this known internal wait
+              // (it withholds every downstream byte on purpose, not because the
+              // client went away) so the 120s guard can't kill a live caller
+              // mid-absorb; restore it once the wait settles.
+              res.setTimeout(
+                downstreamIdleMs > 0 ? Math.max(0, absorbDeadlineAt - Date.now()) + downstreamIdleMs : 0,
+              );
               release();
               release = () => {};
               let cand = active;
@@ -5239,6 +5280,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 allowSoftPaused: serveSoft,
                 signal: reqAbort.signal,
               });
+              res.setTimeout(downstreamIdleMs);
               if (reacq) {
                 release = reacq;
                 active = cand;
@@ -7909,11 +7951,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
       markRequestGatewayError(req);
       log('error', `proxy handler crashed: ${msg}`);
       if (!res.headersSent)
-        sendJson(res, 500, {
-          type: 'error',
-          error: { type: 'api_error', message: 'inference-gateway internal error' },
-          gateway: true,
-        });
+        // EI-21922950476359370: this is the THIRD exhaustion exit that the EI-21921571654476580
+        // fix (see the two `x-should-retry:'false'` overrides above, at the 429/529 forwarding
+        // sites) didn't reach — a genuinely unclassified crash in the request handler, with no
+        // upstream response to forward at all. It carried NO retry-signaling header, so a
+        // downstream SDK's own default (500 is one of the Anthropic SDK's retryable statuses)
+        // silently retried it — indistinguishable, from the caller's side, from "throttled,
+        // retrying" (the exact "Working..." forever symptom this whole class of bug produces).
+        // Unlike the 429/529 exits this has no `attemptsUsed` to report (it is the OUTERMOST
+        // backstop, reached before or outside any per-attempt retry ladder), but the same
+        // principle applies: a bare gateway-internal crash will almost certainly reproduce
+        // identically on a blind retry of the SAME request, so telling the SDK not to retry it
+        // automatically — and surfacing the failure to the caller instead of silently absorbing
+        // it — is strictly more informative than silence.
+        sendJson(
+          res,
+          500,
+          {
+            type: 'error',
+            error: { type: 'api_error', message: 'inference-gateway internal error' },
+            gateway: true,
+          },
+          { 'x-should-retry': 'false' },
+        );
       else res.destroy();
     });
   };
