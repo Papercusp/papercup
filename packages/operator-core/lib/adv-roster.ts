@@ -28,6 +28,7 @@ import { advSessionsByCoordOwner, isFailedTerminalLaunch, type AdvSessionRow } f
 import { readPsuHeadlessLaunchBlockHint, readPsuLaunchLogTail } from './psu-launch-log.mjs';
 import { heartbeatAgeTone, LIVE_MS, type Liveness } from './liveness';
 import { resolveSessionStates } from './agent-tools/coordination/liveness-oracle';
+import { modeRegistrationLive } from './modes/liveness';
 // The SHARED display-name / objective resolvers (D-003, R8). The HUD must not
 // grow its own copy of either fallback chain — the terminal title reads the same
 // two functions, and that is what keeps the two surfaces from disagreeing.
@@ -858,7 +859,13 @@ export function mergeRosterEntries(
       heartbeatFresh: extra.verdictByOwner?.get(p.ownerId)?.heartbeatFresh ?? null,
       stale: p.stale,
       loopArmed: loopArmedOwners.has(p.ownerId),
-      modes: modesByOwner.get(p.ownerId) ?? [],
+      // Durable mode rows outlive their writer. Show them as current HUD chips
+      // unless the shared oracle positively says the session ended; ambiguous
+      // or degraded liveness must remain visible, never guessed dead.
+      modes:
+        modeRegistrationLive(extra.verdictByOwner?.get(p.ownerId)?.sessionState) === false
+          ? []
+          : (modesByOwner.get(p.ownerId) ?? []),
       displayName: extra.displayNameByOwner?.get(p.ownerId) ?? null,
       objective: objective.objective,
       // Only meaningful when the objective actually came from a work item — an

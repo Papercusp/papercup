@@ -20,6 +20,7 @@ import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { shapeCoordPresence } from './presence-shape';
 import { COORD_ROLES } from '../roles';
 import { getModesForOwners } from '../../../modes/store';
+import { modeRegistrationLive } from '../../../modes/liveness';
 import { classifyCoordDeafness, coordDeafBudgetMs, lastInboxReadAtBatch } from '../inbox-read-freshness';
 import { listParkedAwaitsForSubscribers } from '../../../events/await/store';
 import { buildParkedOnMap } from '../../fleet/assignments';
@@ -388,7 +389,14 @@ export default defineTool({
         if (modeMap.size) {
           active = active.map((r) => {
             const m = modeMap.get(String((r as { ownerId?: unknown }).ownerId ?? ''));
-            return m?.length ? { ...r, modes: m.map((x) => x.mode) } : r;
+            // A targeted read can include an ended row. Its durable mode rows
+            // are recovery/history, not current staffing, so do not project
+            // them as active chips. Ambiguous/degraded liveness stays visible:
+            // only positive `ended` evidence suppresses the modes.
+            const sessionState = (r as { sessionState?: Parameters<typeof modeRegistrationLive>[0] }).sessionState;
+            return m?.length && modeRegistrationLive(sessionState) !== false
+              ? { ...r, modes: m.map((x) => x.mode) }
+              : r;
           });
         }
       }
