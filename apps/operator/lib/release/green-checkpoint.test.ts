@@ -1615,6 +1615,72 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(await revParse(repo, "ready")).toBe(ready);
   });
 
+  // EI-21036544613774607 / plan frozen-candidate-compliance-enforcement-2026-08-30 P-001.
+  //
+  // The CheckpointDeps contract for `convergeRepairHeadWithStaging` states it "Must be
+  // called BEFORE `prepareFrozenRepairWorktree` so a first-time worktree build lands on
+  // the converged head." That ordering was asserted only by a prose comment at the call
+  // site, so swapping the two statements left every suite green while reintroducing the
+  // exact bug the item fixed: the worktree branches off the stale frozen sha and the
+  // repair re-fails on bugs staging already fixed.
+  //
+  // This pins the CONSEQUENCE rather than the sequence — it asserts the worktree is built
+  // from the CONVERGED head — so it cannot be satisfied by reordering bookkeeping while
+  // still handing a stale queue to the worktree builder.
+  it("converges the repairHead BEFORE preparing the worktree, so a first build never branches off the stale frozen sha", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const repaired = await commit("b", "3", "staging already fixed this");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 1,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      // Stale: still sitting on the frozen candidate while staging has moved to `repaired`.
+      repairHead: frozen,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["lib/first.test.ts"],
+    };
+    const order: string[] = [];
+    const { deps } = stubDeps(false, ["lib/still-broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => true;
+    deps.convergeRepairHeadWithStaging = async (next) => {
+      order.push("converge");
+      return { ...next, repairHead: repaired };
+    };
+    deps.prepareFrozenRepairWorktree = async (next) => {
+      order.push(`worktree:${next.repairHead}`);
+    };
+    deps.dispatchFrozenRepairFixer = async (next) => {
+      order.push(`dispatch:${next.repairHead}`);
+      return { spawnId: "fixer-2", runId: "run-2" };
+    };
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    // Order, and — load-bearing — the head each later step actually received.
+    expect(order).toEqual([
+      "converge",
+      `worktree:${repaired}`,
+      `dispatch:${repaired}`,
+    ]);
+    // Explicit negative: the worktree must never be built from the frozen candidate.
+    expect(order).not.toContain(`worktree:${frozen}`);
+    // The immutable candidate is untouched; only repairHead moved.
+    expect(queue).toMatchObject({ candidate: frozen, repairHead: repaired });
+  });
+
   it("persists automation exhaustion as blocked and never selects a newer staging tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
