@@ -19,9 +19,18 @@
  * Overwatch is a DIFFERENT autonomy model: a fixed allowlist (nudge / observe /
  * escalate / its own wake-scheduling lifecycle bookkeeping are auto; any
  * structural change is escalate-only — EI-3588), not risk × ceiling. When the
- * caller's role is `overwatch` (the `role` arg, or `ctx.role`), this tool
- * DISPATCHES to the overwatch gate (`lib/overwatch/autonomy.ts`) instead of the
- * Queen 13-category gate — one decision tool, two envelopes, no fork.
+ * caller is Overwatch (the `role` arg, or `ctx.role`), this tool DISPATCHES to
+ * the overwatch gate (`lib/overwatch/autonomy.ts`) instead of the 13-category
+ * autonomy gate — one decision tool, two envelopes, no fork.
+ *
+ * ⚠ The role string that selects that branch is the literal `"kettle"`, because
+ * that IS Overwatch's wire identifier: `OVERWATCH_ROLE = "kettle"`
+ * (`lib/overwatch/liveness.ts:42`), the same value its `autoloop_state` rows are
+ * keyed by. It is NOT a leftover from the retired mug/kettle/cup tier, and
+ * "correcting" it to `"overwatch"` would silently route Overwatch into the
+ * 13-category gate — whose ceilings are all ARMED at `critical`, so structural
+ * changes that must be escalate-only could come back `auto`. Verify against
+ * OVERWATCH_ROLE before touching this comparison (WI-1756049).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -35,7 +44,7 @@ export default defineTool({
   // resolved workspace id — so an unscoped operator/SU/Queen session can call it.
   crossWorkspace: true,
   description:
-    'The autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. The policy is ARMED (all 13 categories at ceiling `critical`): `auto` when within ceiling + reversible + system-authority; `gated` only for protected surfaces, authority=owner, or above-ceiling / graduation asks. With the owner full-autonomy grant ON, even that residue is `auto`. Kettle callers get the overwatch envelope (B-06) instead: nudge/observe/escalate/wake bookkeeping auto, structural escalate-only.',
+    'The autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. The policy is ARMED (all 13 categories at ceiling `critical`): `auto` when within ceiling + reversible + system-authority; `gated` only for protected surfaces, authority=owner, or above-ceiling / graduation asks. With the owner full-autonomy grant ON, even that residue is `auto`. Overwatch callers get the overwatch envelope (B-06) instead: nudge/observe/escalate/wake bookkeeping auto, structural escalate-only — selected by `role:"kettle"` (OVERWATCH_ROLE, a LIVE id).',
   capability: 'intel:read',
   guidance: {
     when: "You are the Mug (or a cup) deciding whether to auto-handle a queue item / answer a card without the owner — or the Kettle deciding whether to nudge/observe/escalate (auto) vs escalate a structural change (gated). Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",

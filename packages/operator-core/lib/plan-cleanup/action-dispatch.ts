@@ -48,12 +48,18 @@ export async function dispatchCleanupFindingAction(input: {
   const harness = finding.harnessSlug || run.harnessSlug || undefined;
 
   switch (finding.kind) {
+    // COMPARE-AND-SET on both status flips
+    // (bulk-review-report-legibility-and-lifecycle-2026-08-31 P-011): the
+    // finding's `from` is what the SCAN saw. Passing it as `expectedStatus`
+    // makes the write refuse (`expected_status_mismatch`) instead of silently
+    // overwriting an item some other agent moved between scan and dispatch.
     case 'flip-to-done': {
       if (!finding.itemId) throw new Error(`${finding.findingId}: item id is required`);
       return callRequired(call, 'plans:set-status', {
         slug: finding.planSlug,
         item: finding.itemId,
         status: 'done',
+        expectedStatus: finding.from,
         ...(harness ? { harness } : {}),
       });
     }
@@ -63,6 +69,7 @@ export async function dispatchCleanupFindingAction(input: {
         slug: finding.planSlug,
         item: finding.itemId,
         status: 'todo',
+        expectedStatus: finding.from,
         ...(harness ? { harness } : {}),
       });
     }

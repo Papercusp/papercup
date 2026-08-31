@@ -291,7 +291,10 @@ export function projectFleetAuditCompletion(row: CompletionDbRow): FleetAuditCom
   };
 }
 
-const defaultReaders: FleetAuditEvidenceReaders = {
+// Exported for fleet-audit-reader-columns.test.ts (WI-135860), which runs these against a
+// recording `sql` to assert every column they name exists in the checked-in schema snapshot.
+// Nothing else should reach for them — callers take readers through FleetAuditDeps.
+export const defaultFleetAuditReaders: FleetAuditEvidenceReaders = {
   async membership(input, sql) {
     const rows = await sql<Array<Record<string, unknown>>>`
       WITH ranked AS (
@@ -489,7 +492,7 @@ export async function readFleetAudit(
     ownerIds,
     nowMs: now.getTime(),
   };
-  const readers = deps.readers ?? defaultReaders;
+  const readers = deps.readers ?? defaultFleetAuditReaders;
   const readNames = ['membership', 'sessions', 'currentClaims', 'claimTransitions', 'completions'] as const;
   const evidence: [
     PromiseSettledResult<FleetAuditMembershipRow[]>,

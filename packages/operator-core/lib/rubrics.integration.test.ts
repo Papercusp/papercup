@@ -1016,9 +1016,17 @@ describe('template_data persistence boundary — the set-template-data door', ()
     );
   });
 
-  it('REFUSES a template_data CLEAR, which erases every criterion at once', async () => {
+  it('cannot CLEAR a rubric\'s template_data through this door either', async () => {
     await seedRubric('clearable-rubric');
-    await expect(setTemplateDataDoor('clearable-rubric', null)).rejects.toThrow(/SILENTLY LOSE/);
+    // A clear erases every criterion at once, so it must never reach the column. This
+    // door stops it one step EARLIER than the loss-guard — the registry schema refuses
+    // `null` where an object is required — which is why the assertion is on the door's
+    // structured rejection, not on a throw. The boundary's own clear-refusal (for any
+    // future door that does hand `data: null` down) is unit-pinned in
+    // agent-tools/plans/rubric-loss-guard.test.ts.
+    const result = await setTemplateDataDoor('clearable-rubric', null);
+    expect(result.kind).toBe('applied');
+    expect((result as { value: { ok: boolean } }).value.ok).toBe(false);
     expect((await storedTemplateData('clearable-rubric')).criteria.length).toBeGreaterThan(1);
   });
 
@@ -1039,26 +1047,33 @@ describe('template_data persistence boundary — the set-template-data door', ()
       ],
     };
     const result = await setTemplateDataDoor('growable-rubric', added);
-    expect(result.kind).toBe('ok');
+    expect(result.kind).toBe('applied');
+    expect((result as { value: { ok: boolean } }).value.ok).toBe(true);
     expect((await storedTemplateData('growable-rubric')).criteria.map((c) => c.key)).toContain(
       'portfolio-activity-floor',
     );
   });
 
   it('leaves a NON-rubric plan\'s structured data alone (the guard is scoped, not global)', async () => {
-    // A plan-input plan writes template_data too and has no criteria to lose; the guard
-    // must not fire on it, or every parameterized plan write becomes collateral damage.
+    // A parameterized plan writes template_data too, and its input VALUES may perfectly
+    // well contain a shrinking `criteria` array. The guard keys off the plan being a
+    // rubric, not off the data merely looking like one — otherwise every plan-input
+    // write becomes collateral damage. This plan declares its own JSON Schema (mig 714)
+    // so the write genuinely APPLIES rather than bouncing off a missing-schema refusal,
+    // which would prove nothing about the guard.
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
-         created, updated, owner, archived, template, template_data, origin)
+         created, updated, owner, archived, template, template_data, input_schema, origin)
       VALUES (${activeWorkspaceId()}, 'papercusp', 'plain-plan',
-              ${'---\ntitle: Plain\nstatus: active\ncreated: 2026-06-20\nupdated: 2026-06-20\n---\n\n## Now\n\nwork\n'},
+              ${'---\nslug: plain-plan\ntitle: Plain\nstatus: active\ncreated: 2026-06-20\nupdated: 2026-06-20\n---\n\n## Now\n\nwork\n'},
               md5('plain-plan'), 1, 'Plain', 'active', '2026-06-20', '2026-06-20', 'queen-1', false,
-              NULL, ${JSON.stringify({ criteria: [{ key: 'a' }] })}::text::jsonb, 'local')`;
-    // No declared schema ⇒ the door's own `no_template` rejection, NOT a loss-guard throw.
+              NULL, ${JSON.stringify({ criteria: [{ key: 'a' }, { key: 'b' }] })}::text::jsonb,
+              ${JSON.stringify({ type: 'object' })}::text::jsonb, 'local')`;
     const result = await setTemplateDataDoor('plain-plan', { criteria: [] });
-    expect(result.kind).toBe('ok');
-    expect((result as { value: { ok: boolean; code?: string } }).value.code).toBe('no_template');
+    expect(result.kind).toBe('applied');
+    expect((result as { value: { ok: boolean } }).value.ok).toBe(true);
+    const after = await storedTemplateData('plain-plan');
+    expect(after.criteria).toEqual([]);
   });
 });

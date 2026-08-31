@@ -597,8 +597,14 @@ describe('SessionChatModal', () => {
       );
     });
 
-    expect(screen.getByText('owner asks something')).toBeTruthy();
-    expect(screen.getByText('Here is my answer.')).toBeTruthy();
+    /* Scoped to the TRANSCRIPT, not the whole modal. Since the turn rail
+       (chat-popup-turn-rail-2026-08-31) the question also appears as a rail
+       preview, so an unscoped `getByText` matches twice and throws — and the
+       claim this case is making has always been about what the MAPPER put in
+       the conversation, not about how many places the popup shows a question. */
+    const conversation = within(screen.getByTestId('session-chat-conversation'));
+    expect(conversation.getByText('owner asks something')).toBeTruthy();
+    expect(conversation.getByText('Here is my answer.')).toBeTruthy();
     // The 20KB tool_result never reaches the DOM — the tool-noise filter.
     expect(screen.queryByText(/A{100,}/)).toBeNull();
   });

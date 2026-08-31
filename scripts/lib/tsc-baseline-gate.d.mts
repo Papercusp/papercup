@@ -303,9 +303,38 @@ export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, upda
  * the site invalid, so asserting "standing red" while any other path is dirty can send a caller
  * straight into a live peer's lane. Preserve the strong warning only when the working tree gives
  * us no uncommitted alternative cause.
+ *
+ * THREE readings, strongest evidence first (EI-19340874432965755):
+ *   1. `commitAgeSec` says THIS FILE has not moved in longer than the landing-race window — then
+ *      the cause is provably not this file's own content. Most actionable, and about the file
+ *      itself rather than the tree, so it wins.
+ *   2. `dirtyPathCount > 0` — some other path could be the cause, but we cannot say which.
+ *   3. Neither — nothing else is in flight, so the strong standing-red warning is earned.
+ *
+ * WHY IT MATTERS, measured: the flat "COMMITTED: a standing red that WILL red the fleet" wording
+ * produced THREE work-items from three agents on 2026-08-02 and TWO were not reproducible against
+ * the file named (WI-6928, EI-19332542096444388). In WI-6928 the file was unchanged since 01:21
+ * with no commits since the report, so its content never varied — a peer's edit elsewhere induced
+ * the error and fixing that file cleared it. Reading 1 is exactly that case, named.
  */
-export function formatStandingRedRow(r: any, { dirtyPathCount }?: {
+/**
+ * Is this file's own commit age old enough that its NEW diagnostic cannot be its own doing?
+ *
+ * Exported and shared so the ROW wording and the caller's `unchangedCount` (which drives the
+ * footer) can never disagree about which rows are unchanged — a divergence that would print the
+ * per-file explanation with the wrong count, or omit it while rows are marked UNCHANGED.
+ *
+ * `null` (unknown) is deliberately NOT unchanged: `lastCommitTimes` fails soft to `null`, and a
+ * path inside a submodule also reads `null` from the superproject, so treating unknown as
+ * "unchanged" would manufacture an exoneration out of an absence of evidence.
+ *
+ * @param {number | null} commitAgeSec
+ * @returns {boolean}
+ */
+export function isUnchangedForAttribution(commitAgeSec: number | null): boolean;
+export function formatStandingRedRow(r: any, { dirtyPathCount, commitAgeSec }?: {
     dirtyPathCount?: number | undefined;
+    commitAgeSec?: null | undefined;
 }): string;
 /**
  * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.
@@ -370,8 +399,9 @@ export function formatNewFileGuidance({ explicit, liveEditCount, standingCount }
  * The dwell is read from DWELL_SEC rather than written out, so this text cannot drift from the
  * policy it describes.
  */
-export function formatStandingRedFooter({ dwellSec }?: {
+export function formatStandingRedFooter({ dwellSec, unchangedCount }?: {
     dwellSec?: number | undefined;
+    unchangedCount?: number | undefined;
 }): string[];
 /**
  * Split `newFiles` into a peer's LIVE EDITS and STANDING reds — the two populations the

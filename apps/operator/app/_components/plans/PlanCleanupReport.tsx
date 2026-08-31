@@ -13,8 +13,10 @@ import {
   setPlanArchived,
   setPlanLifecycleStatus,
   writeError,
+  type SetStatusArgs,
 } from "@/app/admin/plans/plans-api";
 import ReviewReportShell, {
+  partitionReviewRows,
   type ReviewReportGroup,
   type ReviewReportRow,
   type ReviewRowAction,
@@ -22,6 +24,10 @@ import ReviewReportShell, {
   type ReviewRowAccounting,
   type ReviewRowStatus,
 } from "../review-report/ReviewReportShell";
+import RunLifecycleBar, {
+  type RunLifecycleIntent,
+} from "../review-report/RunLifecycleBar";
+import type { ReviewReportPresentation } from "../review-report/ReviewReportHost";
 import {
   canonicalPlanCleanupDisposition,
   derivePlanCleanupCounts,
@@ -239,10 +245,21 @@ function reportRow(
 ): ReviewReportRow {
   const status = reviewStatus(finding, locallyApplied, locallyDismissed);
   const localError = localErrors.get(finding.findingId);
+  // A row whose apply FAILED leaves the pending pool (P-010): it keeps its
+  // reason and gains a Retry verb, but pressing Apply again must not blind-
+  // re-dispatch it. Recovery is deliberate — the run bar's "Re-check and retry"
+  // or the row's own recovery drill-in.
+  const applyFailed = localError != null && status === "pending";
   return {
     id: finding.findingId,
     title: finding.target,
-    action: planCleanupAction(finding, status),
+    action: applyFailed
+      ? {
+          label: "Retry",
+          tone: "warn",
+          description: `The write failed: ${localError}. Re-check it, then apply it again.`,
+        }
+      : planCleanupAction(finding, status),
     sourceLabel: finding.planSlug,
     ...(openSource
       ? {
@@ -263,11 +280,16 @@ function reportRow(
     accounting: reviewAccounting(finding, status),
     status,
     selectable:
+      !applyFailed &&
       status === "pending" &&
       finding.outcome === "recommended" &&
       ACTIONABLE_KINDS.has(finding.kind),
   };
 }
+
+/** The group a failed apply lands in — named here so the run bar's `reveal`
+ *  intent can address it without either side guessing the string. */
+export const PLAN_CLEANUP_FAILED_GROUP_ID = "apply-failed";
 
 /** Pure report projection, exported so grouping/selection policy is pinned
  * independently from React and network behavior. */
@@ -290,12 +312,23 @@ export function buildPlanCleanupReviewGroups(
       openSource,
     );
 
-  // Findings the resolver never reached lead the report and are pulled out of
-  // their kind group FIRST: they are not a fix kind, they are unstarted work,
-  // and the only thing that clears them is resuming the run.
+  // Rows whose apply FAILED lead everything (P-010): they are the only rows
+  // carrying an unhandled consequence of the owner's last click.
+  const failed = findings.filter(
+    (finding) =>
+      localErrors.has(finding.findingId) &&
+      !locallyApplied.has(finding.findingId) &&
+      !locallyDismissed.has(finding.findingId),
+  );
+  for (const finding of failed) assigned.add(finding.findingId);
+
+  // Findings the resolver never reached come next, pulled out of their kind
+  // group: they are not a fix kind, they are unstarted work, and the only thing
+  // that clears them is resuming the run.
   const unassessed = findings.filter(
     (finding) =>
       finding.outcome === "pending" &&
+      !assigned.has(finding.findingId) &&
       !locallyApplied.has(finding.findingId) &&
       !locallyDismissed.has(finding.findingId),
   );
@@ -325,6 +358,17 @@ export function buildPlanCleanupReviewGroups(
     });
   }
 
+  if (failed.length > 0) {
+    groups.unshift({
+      id: PLAN_CLEANUP_FAILED_GROUP_ID,
+      title: "Failed to apply",
+      description:
+        "Nothing was left half-written. Each row says why it failed; re-check them before applying again.",
+      kinds: new Set(),
+      rows: failed.map(row),
+    });
+  }
+
   const other = findings
     .filter((finding) => !assigned.has(finding.findingId))
     .map(row);
@@ -340,22 +384,42 @@ export function buildPlanCleanupReviewGroups(
   return groups;
 }
 
+/** A refusal the owner must RE-CHECK rather than retry blindly (P-011). */
+export const STALE_FINDING_ERROR_CODE = "expected_status_mismatch";
+
+export interface ApplyFindingResult {
+  ok: boolean;
+  error?: string;
+  /** True when the write was refused because the item moved since the scan. */
+  stale?: boolean;
+}
+
 export async function applyPlanCleanupFinding(
   finding: PlanCleanupFinding,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<ApplyFindingResult> {
   const harness = finding.harnessSlug ?? undefined;
   try {
     if (finding.kind === "flip-to-done" || finding.kind === "cleared-blocker") {
       if (!finding.itemId)
         return { ok: false, error: "finding has no plan item id" };
+      // COMPARE-AND-SET (P-011). `finding.from` is the status the SCAN
+      // recorded; a report can sit open for hours, so without this the Apply
+      // would write over whatever the item became in the meantime. The tool
+      // refuses with `expected_status_mismatch` and reports both statuses.
       const result = await setItemStatus({
         slug: finding.planSlug,
         itemId: finding.itemId,
         status: finding.kind === "flip-to-done" ? "done" : "todo",
+        expectedStatus: finding.from as SetStatusArgs["expectedStatus"],
         ...(harness ? { harness } : {}),
       });
       const error = writeError(result);
-      return error ? { ok: false, error } : { ok: true };
+      if (!error) return { ok: true };
+      return {
+        ok: false,
+        error,
+        ...(error.includes(STALE_FINDING_ERROR_CODE) ? { stale: true } : {}),
+      };
     }
     if (finding.kind === "finish-plan") {
       return await setPlanLifecycleStatus(finding.planSlug, "shipped", harness);
@@ -445,9 +509,28 @@ function PlanCleanupRecoveryDetail({
   );
 }
 
+/** P-009: `resume` carries one finding id per element. A stopped scan over a
+ *  large workspace can leave thousands unassessed, so the ids are posted in
+ *  chunks rather than one request the route would reject on body size. */
+export const RESUME_CHUNK_SIZE = 500;
+
+export function chunkFindingIds(
+  ids: readonly string[],
+  size: number = RESUME_CHUNK_SIZE,
+): string[][] {
+  if (size < 1) throw new Error("chunk size must be >= 1");
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += size) chunks.push([...ids.slice(i, i + size)]);
+  return chunks;
+}
+
 export interface PlanCleanupReportProps {
   run: PlanCleanupRun;
   findings: PlanCleanupFinding[];
+  /** Which phase family the shared host admitted this report under (D-005). */
+  presentation?: ReviewReportPresentation;
+  /** A live run's rows are still being written; batch Apply is withheld. */
+  readOnly?: boolean;
   onOpenFinding?: (finding: PlanCleanupFinding) => void;
   onClose: () => void;
 }
@@ -455,13 +538,32 @@ export interface PlanCleanupReportProps {
 export default function PlanCleanupReport({
   run,
   findings,
+  presentation = "review",
+  readOnly = false,
   onOpenFinding,
   onClose,
 }: PlanCleanupReportProps) {
-  const { accept, dismissFinding, recheckFinding, resume } =
+  const { accept, dismissFinding, recheckFinding, resume, restart, stop, start } =
     usePlanCleanupOps();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // P-010: what the in-flight apply is doing, and what the last one did.
+  const [applying, setApplying] = useState<{
+    done: number;
+    total: number;
+    current?: string;
+  } | null>(null);
+  const [applyResult, setApplyResult] = useState<{
+    applied: number;
+    failed: number;
+  } | null>(null);
+  // P-011: rows the WRITE refused as stale. Known only after an attempt — the
+  // client cannot see the live plan, and guessing would be the lie this fixes.
+  const [staleIds, setStaleIds] = useState<Set<string>>(() => new Set());
+  const [revealRequest, setRevealRequest] = useState<{
+    groupId: string;
+    seq: number;
+  } | null>(null);
   const [locallyApplied, setLocallyApplied] = useState<Set<string>>(
     () => new Set(),
   );
@@ -483,11 +585,23 @@ export default function PlanCleanupReport({
       if (busy) return;
       setBusy(true);
       setNotice(null);
+      // P-010: a batch reports AS a batch. Reset the previous summary before
+      // the first write so a stale "3 failed" cannot linger over a clean run.
+      setApplyResult(null);
+      setApplying({ done: 0, total: selectedIds.length });
+      let appliedCount = 0;
+      let failedCount = 0;
       let finalPhase: PlanCleanupRun["phase"] | null | undefined;
       try {
-        for (const findingId of selectedIds) {
+        for (const [index, findingId] of selectedIds.entries()) {
           const finding = byId.get(findingId);
+          setApplying({
+            done: index,
+            total: selectedIds.length,
+            ...(finding ? { current: finding.target } : {}),
+          });
           if (!finding) {
+            failedCount += 1;
             setLocalErrors((previous) =>
               new Map(previous).set(
                 findingId,
@@ -498,6 +612,10 @@ export default function PlanCleanupReport({
           }
           const applied = await applyPlanCleanupFinding(finding);
           if (!applied.ok) {
+            failedCount += 1;
+            if (applied.stale) {
+              setStaleIds((previous) => new Set(previous).add(findingId));
+            }
             setLocalErrors((previous) =>
               new Map(previous).set(
                 findingId,
@@ -506,6 +624,7 @@ export default function PlanCleanupReport({
             );
             continue;
           }
+          appliedCount += 1;
 
           // Resolve first, record second. Mark local success immediately so a
           // bookkeeping failure cannot invite a second mutation in this view.
@@ -532,8 +651,13 @@ export default function PlanCleanupReport({
           }
           finalPhase = recorded.phase;
         }
-        if (finalPhase === "complete") onClose();
+        setApplying({ done: selectedIds.length, total: selectedIds.length });
+        setApplyResult({ applied: appliedCount, failed: failedCount });
+        // A partial failure keeps the report OPEN even when the run settled:
+        // closing it would hide the only surface naming what did not land.
+        if (finalPhase === "complete" && failedCount === 0) onClose();
       } finally {
+        setApplying(null);
         setBusy(false);
       }
     },
@@ -643,6 +767,166 @@ export default function PlanCleanupReport({
     [busy, clearFindingError, dismissFinding, onClose, run.runId],
   );
 
+  // ── Run lifecycle (P-007) ────────────────────────────────────────────────
+  // Every intent below is serviced for real; `supports` below lists exactly
+  // these, so the bar never renders a control this consumer cannot perform
+  // (D-001 — the whole point of the plan).
+
+  const notAssessedIds = useMemo(
+    () =>
+      findings
+        .filter(
+          (finding) =>
+            finding.outcome === "pending" &&
+            !locallyApplied.has(finding.findingId) &&
+            !locallyDismissed.has(finding.findingId),
+        )
+        .map((finding) => finding.findingId),
+    [findings, locallyApplied, locallyDismissed],
+  );
+
+  const failedIds = useMemo(
+    () =>
+      findings
+        .filter(
+          (finding) =>
+            localErrors.has(finding.findingId) &&
+            !locallyApplied.has(finding.findingId) &&
+            !locallyDismissed.has(finding.findingId),
+        )
+        .map((finding) => finding.findingId),
+    [findings, localErrors, locallyApplied, locallyDismissed],
+  );
+
+  const onRunIntent = useCallback(
+    (intent: RunLifecycleIntent) => {
+      if (busy) return;
+      if (intent === "reveal") {
+        // Not a mutation — jump to the rows the bar just talked about.
+        const groupId =
+          failedIds.length > 0
+            ? PLAN_CLEANUP_FAILED_GROUP_ID
+            : notAssessedIds.length > 0
+              ? "not-assessed"
+              : null;
+        if (groupId) {
+          setRevealRequest((previous) => ({
+            groupId,
+            seq: (previous?.seq ?? 0) + 1,
+          }));
+        }
+        return;
+      }
+      void (async () => {
+        setBusy(true);
+        setNotice(null);
+        try {
+          if (intent === "stop") {
+            await stop(run.runId);
+            return;
+          }
+          if (intent === "restart") {
+            const result = await restart(run.runId);
+            if (!result.ok) {
+              setNotice(result.error ?? "The resolver could not be restarted.");
+            }
+            return;
+          }
+          if (intent === "resume") {
+            // P-009: chunked — a stopped workspace-wide scan can leave
+            // thousands unassessed, which is one request the route rejects.
+            for (const chunk of chunkFindingIds(notAssessedIds)) {
+              const result = await resume(run.runId, chunk);
+              if (!result.ok) {
+                setNotice(
+                  result.error ??
+                    "The resolver could not resume the unassessed findings.",
+                );
+                return;
+              }
+            }
+            return;
+          }
+          if (intent === "recheck") {
+            // Re-derive each failed row against the live plan. A row the plan
+            // already satisfies becomes applied; one that is still real has its
+            // error cleared so it re-enters the pending pool and can be applied
+            // again deliberately.
+            let stillFailing = 0;
+            for (const findingId of failedIds) {
+              const result = await recheckFinding(run.runId, findingId);
+              if (!result.ok) {
+                stillFailing += 1;
+                continue;
+              }
+              if (result.resolved) {
+                setLocallyApplied((previous) =>
+                  new Set(previous).add(findingId),
+                );
+              } else {
+                stillFailing += 1;
+              }
+              setStaleIds((previous) => {
+                if (!previous.has(findingId)) return previous;
+                const next = new Set(previous);
+                next.delete(findingId);
+                return next;
+              });
+              setLocalErrors((previous) => {
+                if (!previous.has(findingId)) return previous;
+                const next = new Map(previous);
+                next.delete(findingId);
+                return next;
+              });
+            }
+            setApplyResult(null);
+            if (stillFailing > 0) {
+              setNotice(
+                `${stillFailing} of ${failedIds.length} are still present in the live plan — apply them again, or dismiss them.`,
+              );
+            }
+            return;
+          }
+          if (intent === "rerun") {
+            // A re-run repeats the run's OWN recorded scope, not the pane's
+            // current selection: the report is the audit trail of that scope,
+            // and silently widening it would make the two disagree.
+            // The launch profile is deliberately NOT the run's snapshot: a
+            // re-run should use the owner's CURRENT resolver settings, which is
+            // what `start` loads when none is passed.
+            const result = await start(
+              run.seedRefs,
+              (run.filterSnapshot ?? {}) as Record<string, unknown>,
+              findings[0]?.harnessSlug ?? null,
+            );
+            if (!result.ok) {
+              setNotice(result.error ?? "A new run could not be started.");
+              return;
+            }
+            onClose();
+          }
+        } finally {
+          setBusy(false);
+        }
+      })();
+    },
+    [
+      busy,
+      failedIds,
+      findings,
+      notAssessedIds,
+      onClose,
+      recheckFinding,
+      restart,
+      resume,
+      run.filterSnapshot,
+      run.runId,
+      run.seedRefs,
+      start,
+      stop,
+    ],
+  );
+
   const groups = useMemo(
     () =>
       buildPlanCleanupReviewGroups(
@@ -676,6 +960,35 @@ export default function PlanCleanupReport({
     ],
   );
 
+  const partition = useMemo(() => partitionReviewRows(groups), [groups]);
+  const runAgeMs = useMemo(() => {
+    const settledAt = run.finishedAt ?? run.startedAt ?? run.createdAt;
+    if (!settledAt) return null;
+    const parsed = Date.parse(settledAt);
+    return Number.isFinite(parsed) ? Date.now() - parsed : null;
+  }, [run.finishedAt, run.startedAt, run.createdAt]);
+
+  const runBar = (
+    <RunLifecycleBar
+      phase={run.phase}
+      liveness={run.liveness ?? null}
+      total={partition.results}
+      decided={partition.results - partition.notAssessed}
+      notAssessed={partition.notAssessed}
+      autoApplied={counts.applied}
+      open={partition.ready + partition.manual}
+      error={run.error}
+      ageMs={runAgeMs}
+      staleRows={staleIds.size}
+      applying={applying}
+      applyResult={applyResult}
+      unit="finding"
+      busy={busy}
+      onIntent={onRunIntent}
+      supports={["rerun", "resume", "restart", "stop", "recheck", "reveal"]}
+    />
+  );
+
   return (
     <ReviewReportShell
       key={run.runId}
@@ -701,20 +1014,55 @@ export default function PlanCleanupReport({
         </span>
       }
       groups={groups}
+      runBar={runBar}
+      revealRequest={revealRequest}
       busy={busy}
-      applyLabel="Apply selected"
+      // A live run is still writing rows; committing a batch mid-scan would act
+      // on a moving target (D-005). Every settled phase stays actionable.
+      defaultSelected={readOnly ? "none" : "pending"}
+      applyLabel={readOnly ? "Still scanning…" : "Apply selected"}
       dismissLabel="Close"
-      onApply={(ids) => void onApply(ids)}
+      onApply={(ids) => {
+        if (!readOnly) void onApply(ids);
+      }}
       onDismiss={onClose}
       footer={
-        <span>
-          <strong>Hand-edit guarantee.</strong> Selected rows dispatch through
-          the existing <code>plans:set-status</code>,{" "}
-          <code>plans:set-plan-status</code>, or <code>plans:set-archived</code>{" "}
-          client paths before acceptance is recorded. Clear a checkbox to skip
-          it in this apply. Click a row—or use its details button—to inspect its
-          evidence and expose Open, Recheck, Retry, and explicit per-finding
-          Dismiss; closing this report never marks unresolved work complete.
+        <span data-testid="plan-cleanup-report-footer">
+          {presentation === "settled" ? (
+            <>
+              <strong>Audit trail.</strong> This run finished on its own — every
+              row below is a change Papercup already made, with the evidence it
+              made it on. Nothing here is waiting on you; open a row to see why
+              it was applied, or re-run the same scope from the bar above.
+            </>
+          ) : presentation === "failed" ? (
+            <>
+              <strong>This run did not finish.</strong> The rows below are what
+              it had assessed before it stopped, and they are still applicable.
+              The run&apos;s own error is in the bar above; re-run the same scope
+              from there once you have addressed it.
+            </>
+          ) : presentation === "live" ? (
+            <>
+              <strong>Still scanning.</strong> Rows appear as the resolver
+              assesses them, so nothing can be applied as a batch yet — the set
+              would change under the click. Stop the run from the bar above to
+              settle it and keep what it has found.
+            </>
+          ) : (
+            <>
+              <strong>Hand-edit guarantee.</strong> Selected rows dispatch
+              through the existing <code>plans:set-status</code>,{" "}
+              <code>plans:set-plan-status</code>, or{" "}
+              <code>plans:set-archived</code> client paths before acceptance is
+              recorded, each carrying the status this report recorded so a row
+              that moved since the scan is refused rather than overwritten.
+              Clear a checkbox to skip it in this apply. Click a row—or use its
+              details button—to inspect its evidence and expose Open, Recheck,
+              Retry, and explicit per-finding Dismiss; closing this report never
+              marks unresolved work complete.
+            </>
+          )}
         </span>
       }
     />

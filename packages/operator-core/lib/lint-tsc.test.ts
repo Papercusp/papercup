@@ -49,6 +49,7 @@ import {
   partitionStandingByCommitRecency,
   formatLandingRaceCaveat,
   LANDING_RACE_WINDOW_SEC,
+  isUnchangedForAttribution,
   TSC_COMMAND,
   TSC_PREFLIGHT_COMMAND,
   projectPrefixFromTscCommand,
@@ -2012,6 +2013,84 @@ describe('new files: a peer mid-edit is not the caller’s regression (EI-192782
     expect(text).toMatch(/COMMITTED/i);
     expect(text).toMatch(/WILL red the fleet/i);
     expect(text).not.toMatch(/causal origin unresolved/i);
+  });
+
+  // EI-19340874432965755 — WI-6928's exact shape: the named file had been unchanged since 01:21
+  // with no commits since the report, so its content never varied and the cause was elsewhere.
+  // Two of three agents were sent into a file like this by the flat "COMMITTED" wording.
+  describe('a file that has not changed must not be named as the cause', () => {
+    const ROW = { file: 'innocent.ts', baseline: 0, current: 3, delta: 3 };
+
+    it('marks a long-unchanged file UNCHANGED and points away from it, not at it', () => {
+      const text = formatStandingRedRow(ROW, {
+        dirtyPathCount: 0,
+        commitAgeSec: LANDING_RACE_WINDOW_SEC + 1,
+      });
+      expect(text).toMatch(/UNCHANGED/);
+      expect(text).toMatch(/cause is a change ELSEWHERE/i);
+      expect(text).not.toContain('← COMMITTED:');
+      expect(text).not.toMatch(/WILL red the fleet/i);
+    });
+
+    it("prefers the file's OWN commit age over the tree-wide dirty count", () => {
+      // Both signals apply. The commit age is about THIS file and is the more actionable of the
+      // two, so it must win — on this shared checkout dirtyPathCount is ~always non-zero, which
+      // would otherwise mask the stronger reading behind a permanently-true one.
+      const text = formatStandingRedRow(ROW, {
+        dirtyPathCount: 1291,
+        commitAgeSec: LANDING_RACE_WINDOW_SEC + 1,
+      });
+      expect(text).toMatch(/UNCHANGED/);
+      expect(text).not.toMatch(/causal origin unresolved/i);
+    });
+
+    it('NEVER exonerates on unknown: a null commit age keeps the loud reading', () => {
+      // lastCommitTimes fails soft to null, and a submodule path reads null from the superproject.
+      // Treating either as "unchanged" would manufacture an exoneration from absent evidence.
+      const text = formatStandingRedRow(ROW, { dirtyPathCount: 0, commitAgeSec: null });
+      expect(text).toMatch(/COMMITTED/i);
+      expect(text).not.toMatch(/UNCHANGED/);
+    });
+
+    it('does not mark a JUST-committed file unchanged (that is the landing-race case)', () => {
+      const text = formatStandingRedRow(ROW, {
+        dirtyPathCount: 0,
+        commitAgeSec: LANDING_RACE_WINDOW_SEC - 1,
+      });
+      expect(text).not.toMatch(/UNCHANGED/);
+      expect(text).toMatch(/COMMITTED/i);
+    });
+
+    it('shares ONE predicate with the caller so rows and the footer count cannot disagree', () => {
+      expect(isUnchangedForAttribution(null)).toBe(false);
+      expect(isUnchangedForAttribution(LANDING_RACE_WINDOW_SEC - 1)).toBe(false);
+      expect(isUnchangedForAttribution(LANDING_RACE_WINDOW_SEC + 1)).toBe(true);
+    });
+  });
+
+  describe('the footer names the tool that finds the real cause (EI-19340874432965755 proposal 3)', () => {
+    it('points at lint:required-field-strands when a row is unchanged', () => {
+      const text = formatStandingRedFooter({ unchangedCount: 2 }).join('\n');
+      expect(text).toMatch(/lint:required-field-strands/);
+      expect(text).toMatch(/IMPORT GRAPH/i);
+      expect(text).toMatch(/SURFACES, not where it ORIGINATES/i);
+    });
+
+    it('stays silent about it when nothing is unchanged', () => {
+      // The pointer is advice for one specific situation; printing it unconditionally would train
+      // readers to skip the footer, which is where the do-not-hand-file contract also lives.
+      const text = formatStandingRedFooter({ unchangedCount: 0 }).join('\n');
+      expect(text).not.toMatch(/lint:required-field-strands/);
+      expect(text).toMatch(/do NOT hand-file/i);
+    });
+  });
+
+  it('formatNewFileGuidance says "new" means absent-from-baseline, not recently written', () => {
+    // The prose companion to the row wording above. Before this it flatly asserted "COMMITTED — a
+    // standing red", contradicting the row formatter's own causal caveat in the same report.
+    const text = formatNewFileGuidance({ explicit: true, liveEditCount: 0, standingCount: 1 }).join('\n');
+    expect(text).toMatch(/ABSENT FROM THE BASELINE, not recently written/i);
+    expect(text).toMatch(/lint:required-field-strands/);
   });
 
   it('NEVER greenwashes: a dirty peer new-file still fails the run', () => {

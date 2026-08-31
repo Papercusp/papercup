@@ -933,25 +933,15 @@ function formatRow(r) {
  * the file named (WI-6928, EI-19332542096444388). In WI-6928 the file was unchanged since 01:21
  * with no commits since the report, so its content never varied — a peer's edit elsewhere induced
  * the error and fixing that file cleared it. Reading 1 is exactly that case, named.
+ *
+ * @param {PerFileGateEntry} r
+ * @param {{dirtyPathCount?: number, commitAgeSec?: number | null}} [opts] `commitAgeSec` is the
+ *   file's age in seconds since its last commit, or `null` when unknown. It MUST be annotated
+ *   `number | null` rather than left to inference: a bare `= null` default makes TS infer the
+ *   parameter as `null | undefined`, so every real (numeric) caller fails to typecheck — this
+ *   file is `.mjs`, so its types come from these JSDoc tags and nothing else.
+ * @returns {string}
  */
-/**
- * Is this file's own commit age old enough that its NEW diagnostic cannot be its own doing?
- *
- * Exported and shared so the ROW wording and the caller's `unchangedCount` (which drives the
- * footer) can never disagree about which rows are unchanged — a divergence that would print the
- * per-file explanation with the wrong count, or omit it while rows are marked UNCHANGED.
- *
- * `null` (unknown) is deliberately NOT unchanged: `lastCommitTimes` fails soft to `null`, and a
- * path inside a submodule also reads `null` from the superproject, so treating unknown as
- * "unchanged" would manufacture an exoneration out of an absence of evidence.
- *
- * @param {number | null} commitAgeSec
- * @returns {boolean}
- */
-export function isUnchangedForAttribution(commitAgeSec) {
-  return typeof commitAgeSec === 'number' && commitAgeSec > LANDING_RACE_WINDOW_SEC;
-}
-
 export function formatStandingRedRow(r, { dirtyPathCount = 0, commitAgeSec = null } = {}) {
   // EI-19340874432965755 — the file's OWN commit age is the strongest signal available here, and
   // it is about THIS file rather than about the tree, so it outranks the dirtyPathCount caveat
@@ -3261,14 +3251,10 @@ export async function runTscBaselineGate({
         // fleet" with no caveat is exactly what invited a duplicate fix that collided with the
         // peer who wrote it (the filing that prompted this fix). Never move the verdict — this only
         // adds the same "wait a moment, then verify" caveat `fail-new-file` already prints.
-        const { recent } = partitionStandingByCommitRecency(
-          standing,
-          lastCommitTimes(
-            root,
-            standing.map((r) => r.file),
-          ),
-          Math.floor(Date.now() / 1000),
-        );
+        // Reuses the map hoisted above (EI-19340874432965755) rather than re-shelling one
+        // `git log -1` per file a second time; `nowSec` is shared too, so the recency split and
+        // the per-row UNCHANGED marks are computed against ONE instant and cannot disagree.
+        const { recent } = partitionStandingByCommitRecency(standing, standingCommitTimes, nowSec);
         for (const line of formatLandingRaceCaveat({ recentCount: recent.length })) {
           console.log(line);
         }

@@ -1858,6 +1858,15 @@ export interface SetStatusArgs {
   status: ItemStatus;
   note?: string;
   harness?: string;
+  /**
+   * Compare-and-set precondition
+   * (bulk-review-report-legibility-and-lifecycle-2026-08-31 P-011): the status
+   * the caller believes the item is on. The tool FAILS with
+   * `code:'expected_status_mismatch'` (plus `currentStatus`) rather than
+   * overwriting newer work. Supplied by any caller applying a RECORDED
+   * observation — a bulk clean-up report can sit for hours before Apply.
+   */
+  expectedStatus?: ItemStatus;
 }
 
 export interface SetNowArgs {

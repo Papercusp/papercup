@@ -88,6 +88,7 @@ const itemSpec = z.object({
   onlyIfNoOtherInFlightCoverage: z.boolean().optional(),
   onlyIfNotCompleted: z.boolean().optional(),
   onlyIfBlockAttributedTo: z.string().min(1).optional(),
+  expectedStatus: STATUS.optional(),
 });
 
 const argsSchema = z
@@ -152,6 +153,9 @@ const argsSchema = z
       .describe(
         'ATTRIBUTED CLEAR: the work-item id permitted to LIFT this item\'s block. Use on the →todo flip that mirrors a blocker CLEARING, INSTEAD of `onlyIfNotBlocked` (which would skip every such flip, the item being blocked by construction). Narrower than `onlyIfNotBlocked:false`: the flip proceeds only if the item\'s live injected note attributes the block to THIS work-item (reported `skipped:"block_attribution_guard"`, ok:true otherwise) AND no OTHER linked work-item is still blocked/needs-human (reported `skipped:"blocked_coverage_guard"`). `needs-human` is never cleared by this path at all. So a gate set for any other reason is left standing, and a 1:N lane is not un-blocked by one of its blockers clearing.',
       ),
+    expectedStatus: STATUS.optional().describe(
+      'Compare-and-set: FAIL (`ok:false, code:"expected_status_mismatch"`) if the item is not on this status when the lock is taken. For applying a RECORDED observation whose `from` may have gone stale; unlike the `onlyIf*` guards this is an error, not a skip.',
+    ),
   })
   .refine(
     (a) =>
@@ -203,6 +207,17 @@ interface StatusItem {
    *  `needs-human` is never auto-cleared by this path regardless: that is the human
    *  band, and only a human takes an item out of it. */
   onlyIfBlockAttributedTo?: string;
+  /** COMPARE-AND-SET (bulk-review-report-legibility-and-lifecycle-2026-08-31
+   *  P-011). The status the caller believes the item is on RIGHT NOW. Checked
+   *  inside the plan lock; a mismatch FAILS the write.
+   *
+   *  Unlike every `onlyIf*` guard above — which are non-destructive SKIPS for
+   *  automated cascades — this one is an ERROR, because its caller is applying
+   *  a RECORDED observation. A bulk clean-up run scans, sits in a report for
+   *  hours, and is then applied; `from` is what the scanner saw, not what is
+   *  there now. Without the precondition the write silently overwrites whatever
+   *  the item became in between. */
+  expectedStatus?: string;
 }
 
 /** Result payload — explicit so `withPlanLock`'s `T` is fixed by the
@@ -239,7 +254,16 @@ type SetStatusValue =
    *  attribute that block to the work-item whose blocker just cleared — so the block was
    *  set for some other reason and is left standing. Not an error — see the
    *  `block_attribution_guard` branch below. */
-  | { ok: false; code: 'block_attribution_guard'; currentStatus: string | null };
+  | { ok: false; code: 'block_attribution_guard'; currentStatus: string | null }
+  /** `expectedStatus` mismatched: the item is NOT on the status the caller
+   *  recorded, so newer work would be overwritten. Unlike the guards above this
+   *  IS an error — the caller must re-read and decide (P-011). */
+  | {
+      ok: false;
+      code: 'expected_status_mismatch';
+      currentStatus: string | null;
+      expectedStatus: string;
+    };
 
 /**
  * Extract one item's `importance` from the plan body, glyph-agnostically,
@@ -379,6 +403,21 @@ export function isTerminalStatus(status: string): boolean {
  * is a legitimate reclassification and is NOT skipped; a caller that omits the flag (a human
  * deliberately reopening an item) is unaffected.
  */
+/**
+ * COMPARE-AND-SET precondition (P-011), pure so the policy is pinned without a
+ * plan lock or a database.
+ *
+ * `null` current status means the flip helper could not read one; that is
+ * indistinguishable from "it changed", so it fails closed.
+ */
+export function expectedStatusMismatch(opts: {
+  expectedStatus: string | undefined;
+  currentStatus: string | null;
+}): boolean {
+  if (opts.expectedStatus === undefined) return false;
+  return opts.currentStatus !== opts.expectedStatus;
+}
+
 export function terminalGuardTrips(opts: {
   onlyIfNotTerminal: boolean | undefined;
   currentStatus: string | null;
@@ -1143,6 +1182,22 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       if (!found) {
         return { newBody: null, value: { ok: false, code: 'item_not_found' } };
       }
+      // COMPARE-AND-SET first (P-011): when the caller recorded what it saw,
+      // a divergence means the report is stale and the write would overwrite
+      // newer work. Evaluated ahead of the onlyIf* guards because it is the
+      // stronger statement — those ask "is this flip safe in general", this
+      // asks "is the world still what I measured".
+      if (expectedStatusMismatch({ expectedStatus: it.expectedStatus, currentStatus: oldStatus })) {
+        return {
+          newBody: null,
+          value: {
+            ok: false,
+            code: 'expected_status_mismatch',
+            currentStatus: oldStatus,
+            expectedStatus: it.expectedStatus as string,
+          },
+        };
+      }
       // Non-destructive flip: refuse to move an item OFF a terminal status.
       // Read INSIDE the lock (like drainedPlan/wipItemText above) so the decision is
       // race-safe against a concurrent flip rather than a stale pre-lock read.
@@ -1323,6 +1378,24 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         reason:
           'left at `done` — finished work is never downgraded to `dropped` by an automated ' +
           'cascade; the work-item being dropped is not the one that completed this item',
+      };
+    }
+    // COMPARE-AND-SET refusal (P-011). ok:FALSE, unlike every guard above: the
+    // caller asked to write a recorded observation and the world moved, so this
+    // is a real failure it must surface and re-check — not a no-op to swallow.
+    // Carries both statuses so the caller can say what changed without a re-read.
+    if (result.value.code === 'expected_status_mismatch') {
+      return {
+        ok: false,
+        slug: it.slug,
+        itemId: it.itemId,
+        error: 'expected_status_mismatch',
+        currentStatus: result.value.currentStatus,
+        expectedStatus: result.value.expectedStatus,
+        reason:
+          `not applied — this item was \`${result.value.expectedStatus}\` when the report was ` +
+          `written and is \`${result.value.currentStatus ?? 'unknown'}\` now; applying it would ` +
+          'have overwritten newer work',
       };
     }
     return { ok: false, slug: it.slug, itemId: it.itemId, error: result.value.code };
@@ -1671,6 +1744,7 @@ export default defineTool({
           onlyIfNoOtherOpenCoverage: it.onlyIfNoOtherOpenCoverage ?? args.onlyIfNoOtherOpenCoverage,
           onlyIfNoOtherInFlightCoverage: it.onlyIfNoOtherInFlightCoverage ?? args.onlyIfNoOtherInFlightCoverage,
           onlyIfNotCompleted: it.onlyIfNotCompleted ?? args.onlyIfNotCompleted,
+          expectedStatus: it.expectedStatus ?? args.expectedStatus,
         }))
       : args.itemIds?.length
         ? args.itemIds.map((itemId) => ({
@@ -1685,6 +1759,7 @@ export default defineTool({
             onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
             onlyIfNoOtherInFlightCoverage: args.onlyIfNoOtherInFlightCoverage,
             onlyIfNotCompleted: args.onlyIfNotCompleted,
+            expectedStatus: args.expectedStatus,
           }))
         : [
             {
@@ -1699,6 +1774,7 @@ export default defineTool({
               onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
               onlyIfNoOtherInFlightCoverage: args.onlyIfNoOtherInFlightCoverage,
               onlyIfNotCompleted: args.onlyIfNotCompleted,
+              expectedStatus: args.expectedStatus,
             },
           ];
     const env = await runBulk(list, (it) => setStatusOne(it, ctx), {
