@@ -97,16 +97,30 @@ export const identityRosterLabels: RosterLabels = {
  * The bulk actions the selection bar drives. Every one is the HOST's — they hit
  * its endpoints with its auth. Omit the whole object and the roster renders with
  * no checkboxes and no bulk bar, which is the correct read-only surface for a
- * host that cannot (or should not) act on agents.
+ * host that cannot (or should not) act on agents; omit a single action and just
+ * that button is absent, never present-but-dead.
  *
- * Each returns a short note to show the user — the same string the operator's bar
- * prints today ("Sent to 3", "Focused 2/3"). Returning null shows nothing.
+ * Each returns a short note to show the user ("Sent to 3", "Focused 2/3").
+ * Returning null shows nothing.
+ *
+ * Two contracts worth stating, because the roster cannot infer either:
+ *
+ * · **Failure is a THROW, not a note.** The roster shows a thrown `Error`'s
+ *   message as the note, so a host reports precision — "Message failed (HTTP
+ *   503)" — by throwing with that text. It matters beyond wording for `message`:
+ *   a throw KEEPS the composer open with the user's text, while a returned note
+ *   is a success and clears it. Do not return a failure string from `message`.
+ *
+ * · **`focus` and `kill` receive the WHOLE selection, unfiltered.** The roster
+ *   deliberately does not pre-filter to window-bearing agents, because the honest
+ *   note needs the ones that were skipped ("Killed 2/3 (1 had no window)"). Use
+ *   `canFocusWindow` to split them yourself.
  */
 export interface RosterBulkActions {
   message?(ownerIds: readonly string[], text: string): Promise<string | null>;
   wake?(ownerIds: readonly string[]): Promise<string | null>;
-  focus?(agents: readonly RosterAgent[]): Promise<string | null>;
+  focus?(selected: readonly RosterAgent[]): Promise<string | null>;
   /** Confirm-armed in the UI: the first click arms, the second calls this. */
-  kill?(agents: readonly RosterAgent[]): Promise<string | null>;
+  kill?(selected: readonly RosterAgent[]): Promise<string | null>;
   copyIds?(ownerIds: readonly string[]): Promise<string | null>;
 }

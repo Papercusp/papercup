@@ -136,6 +136,25 @@ const OPERATOR_CHROME: RosterChrome = { Tooltip, LivenessDot, ThinkingDot };
 const postText = (url: string, payload: unknown) =>
   fetch(url, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(payload) });
 
+/** POST one window-action per agent, best-effort, and count the successes. Each
+ *  agent is independent: one failure must not abort the rest of the batch. */
+async function postEach(url: string, agents: readonly RosterAgent[]): Promise<number> {
+  let ok = 0;
+  await Promise.all(
+    agents.map(async (a) => {
+      try {
+        const res = await postText(url, {
+          id: a.advSessionId ?? undefined,
+          windowId: a.windowId ?? undefined,
+          pid: a.pid ?? undefined,
+        });
+        if (res.ok) ok++;
+      } catch { /* best-effort per agent */ }
+    }),
+  );
+  return ok;
+}
+
 /** The operator's bulk endpoints. The shared roster owns WHEN these run (and the
  *  confirm-arming on kill); the routes and their auth are ours. */
 const OPERATOR_BULK: RosterBulkActions = {
@@ -145,7 +164,9 @@ const OPERATOR_BULK: RosterBulkActions = {
       summary: text.slice(0, 120),
       body: text,
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // A THROW (not a returned string) is what keeps the composer open with the
+    // user's text — see RosterBulkActions. The message is shown verbatim.
+    if (!res.ok) throw new Error(`Message failed (HTTP ${res.status})`);
     return `Sent to ${ownerIds.length}`;
   },
   async wake(ownerIds) {
@@ -156,37 +177,17 @@ const OPERATOR_BULK: RosterBulkActions = {
     });
     return res.ok ? `Nudged ${ownerIds.length}` : `Wake failed (HTTP ${res.status})`;
   },
-  async focus(agents) {
-    let ok = 0;
-    await Promise.all(
-      agents.map(async (a) => {
-        try {
-          const res = await postText('/api/adv/sessions/focus', {
-            id: a.advSessionId ?? undefined,
-            windowId: a.windowId ?? undefined,
-            pid: a.pid ?? undefined,
-          });
-          if (res.ok) ok++;
-        } catch { /* best-effort per agent */ }
-      }),
-    );
-    return `Focused ${ok}/${agents.length}`;
+  async focus(selected) {
+    const targets = selected.filter((a) => canFocusWindow(a));
+    return `Focused ${await postEach('/api/adv/sessions/focus', targets)}/${targets.length}`;
   },
-  async kill(agents) {
-    let ok = 0;
-    await Promise.all(
-      agents.map(async (a) => {
-        try {
-          const res = await postText('/api/adv/sessions/close-window', {
-            id: a.advSessionId ?? undefined,
-            windowId: a.windowId ?? undefined,
-            pid: a.pid ?? undefined,
-          });
-          if (res.ok) ok++;
-        } catch { /* best-effort per agent */ }
-      }),
-    );
-    return `Killed ${ok}/${agents.length}`;
+  async kill(selected) {
+    const targets = selected.filter((a) => canFocusWindow(a));
+    const ok = await postEach('/api/adv/sessions/close-window', targets);
+    // The skipped count is why `kill` is handed the WHOLE selection: "Killed 2/3"
+    // alone would leave the user wondering what happened to the third.
+    const noWindow = selected.length - targets.length;
+    return `Killed ${ok}/${targets.length}${noWindow > 0 ? ` (${noWindow} had no window)` : ''}`;
   },
   async copyIds(ownerIds) {
     await navigator.clipboard.writeText(ownerIds.join('\n'));

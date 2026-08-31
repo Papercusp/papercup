@@ -195,19 +195,25 @@ export function AgentRoster({
     setBulkNote(null);
   };
 
-  /** Run one host action with the busy/note bookkeeping every button shares. A
-   *  throwing action is reported, never swallowed into a silent no-op. */
+  /** Run one host action with the busy/note bookkeeping every button shares.
+   *  A thrown Error's message becomes the note, so a host reports its own
+   *  precision ("Wake failed (HTTP 503)") rather than a generic word; anything
+   *  else thrown falls back to `fallbackFailure`. A failure is never swallowed
+   *  into a silent no-op. Resolves true only if the action did not throw. */
   const runBulk = async (
     phase: 'message' | 'wake' | 'focus' | 'kill',
     fallbackFailure: string,
     action: () => Promise<string | null>,
-  ) => {
+  ): Promise<boolean> => {
     setBulkBusy(phase);
     setBulkNote(null);
     try {
       setBulkNote(await action());
-    } catch {
-      setBulkNote(fallbackFailure);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error && err.message ? err.message : fallbackFailure;
+      setBulkNote(msg);
+      return false;
     } finally {
       setBulkBusy(null);
     }
@@ -217,18 +223,12 @@ export function AgentRoster({
     const text = msgText.trim();
     const send = bulk?.message;
     if (!text || selectedIds.length === 0 || !send) return;
-    setBulkBusy('message');
-    setBulkNote(null);
-    try {
-      setBulkNote(await send(selectedIds, text));
-      // Clear the composer only on a send that did not throw — a failure keeps
-      // the text so the user does not lose what they typed.
+    const sent = await runBulk('message', 'Message failed', () => send(selectedIds, text));
+    // Clear the composer only on a send that did not throw — a failure keeps the
+    // text so the user does not lose what they typed.
+    if (sent) {
       setComposing(false);
       setMsgText('');
-    } catch {
-      setBulkNote('Message failed');
-    } finally {
-      setBulkBusy(null);
     }
   };
   const wakeSelected = async () => {
@@ -237,12 +237,14 @@ export function AgentRoster({
   };
   const focusSelected = async () => {
     if (!bulk?.focus) return;
-    const targets = selectedAgents.filter((a) => canFocusWindow(a));
-    if (targets.length === 0) {
+    // Short-circuit before calling the host at all when nothing in the selection
+    // could possibly be focused. The host still receives the WHOLE selection (see
+    // RosterBulkActions) so its note can account for the ones it skipped.
+    if (!selectedAgents.some((a) => canFocusWindow(a))) {
       setBulkNote('None of the selected have a focusable window');
       return;
     }
-    await runBulk('focus', 'Focus failed', () => bulk.focus!(targets));
+    await runBulk('focus', 'Focus failed', () => bulk.focus!(selectedAgents));
   };
   const killSelected = async () => {
     if (!bulk?.kill) return;
@@ -252,8 +254,7 @@ export function AgentRoster({
       setBulkNote(null);
       return;
     }
-    const targets = selectedAgents.filter((a) => canFocusWindow(a));
-    await runBulk('kill', 'Kill failed', () => bulk.kill!(targets));
+    await runBulk('kill', 'Kill failed', () => bulk.kill!(selectedAgents));
     setKillArmed(false);
     setSelected(new Set());
   };
