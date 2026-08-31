@@ -544,9 +544,21 @@ export function reclaimInactiveCargoArtifacts(options = {}) {
 /**
  * Pure disk admission decision. `usedPct` and `freeGiB` intentionally use the
  * same scale and rounding as system-health's readDiskPressure writer.
+ *
+ * `reservedBytes` (EI-21951384112327922) is space OTHER live builds have already
+ * declared they are about to consume, read from the shared ledger by
+ * scripts/lib/disk-reservations.mjs. Admitting against raw free space is a TOCTOU
+ * race that this box loses routinely — ~100 agents share one filesystem, so two
+ * builds reading the same "20GB free" both pass and then collectively need more
+ * than exists. The floors are therefore applied to free-MINUS-reserved.
+ *
+ * Deliberately kept PURE and additive: the caller reads the ledger and passes the
+ * number in. `freeBytes`/`freeGiB` stay the RAW measurement (a caller reporting
+ * disk pressure still wants the true figure), the decision uses the effective
+ * one, and an omitted `reservedBytes` reproduces the previous behaviour exactly.
  */
 export function assessCargoDiskAdmission(
-  { totalBytes, freeBytes },
+  { totalBytes, freeBytes, reservedBytes = 0 },
   policy = DEFAULT_CARGO_DISK_POLICY,
 ) {
   if (
@@ -575,12 +587,17 @@ export function assessCargoDiskAdmission(
     ? policy.percentFloorBypassBytes
     : CARGO_PERCENT_FLOOR_BYPASS_BYTES;
 
+  const reserved = Number.isFinite(reservedBytes) && reservedBytes > 0 ? reservedBytes : 0;
+  const effectiveFreeBytes = Math.max(0, freeBytes - reserved);
+
   const freePct = Math.min(1, freeBytes / totalBytes);
+  const effectiveFreePct = Math.min(1, effectiveFreeBytes / totalBytes);
   const reasons = [];
-  if (freePct < policy.freePctMin && freeBytes < percentFloorBypassBytes) {
+  if (effectiveFreePct < policy.freePctMin && effectiveFreeBytes < percentFloorBypassBytes) {
     reasons.push('free-percent');
   }
-  if (freeBytes < policy.freeBytesMin) reasons.push('free-bytes');
+  if (effectiveFreeBytes < policy.freeBytesMin) reasons.push('free-bytes');
+  if (reasons.length > 0 && reserved > 0) reasons.push('reserved-by-other-builds');
   return {
     allowed: reasons.length === 0,
     status: reasons.length === 0 ? 'ok' : 'blocked',
@@ -590,6 +607,10 @@ export function assessCargoDiskAdmission(
     freePct,
     usedPct: Math.round((1 - freePct) * 100),
     freeGiB: Math.floor(freeBytes / GIB),
+    reservedBytes: reserved,
+    reservedGiB: Math.floor(reserved / GIB),
+    effectiveFreeBytes,
+    effectiveFreeGiB: Math.floor(effectiveFreeBytes / GIB),
     percentFloorBypassGiB: Math.floor(percentFloorBypassBytes / GIB),
     policy,
   };
@@ -598,9 +619,16 @@ export function assessCargoDiskAdmission(
 export function formatCargoDiskRefusal(admission) {
   const minFreePct = Math.round(admission.policy.freePctMin * 1000) / 10;
   const minFreeGiB = Math.round((admission.policy.freeBytesMin / GIB) * 10) / 10;
+  // Name the reservations when they are what tipped it: otherwise the reader goes
+  // hunting a full disk that is not full, and finds a filesystem with room on it.
+  const reserved =
+    admission.reservedGiB > 0
+      ? `${admission.reservedGiB} GiB of that is already RESERVED by other in-flight builds on this ` +
+        `filesystem, leaving ${admission.effectiveFreeGiB} GiB effectively free; `
+      : '';
   return (
     `[report-cargo-tests] REFUSED before spawning Cargo: filesystem is ${admission.usedPct}% used ` +
-    `with ${admission.freeGiB} GiB available; admission requires at least ${minFreePct}% free ` +
+    `with ${admission.freeGiB} GiB available; ${reserved}admission requires at least ${minFreePct}% free ` +
     `unless absolute working headroom is at least ${admission.percentFloorBypassGiB} GiB, ` +
     `and always requires at least ${minFreeGiB} GiB free. ` +
     `Reclaim inactive build caches, then retry. Warm targets are preserved by default (WI-5080).`

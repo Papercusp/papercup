@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { statfsSync } from 'node:fs';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
+import { readReservedBytes } from './lib/disk-reservations.mjs';
 import {
   assessCargoDiskAdmission,
   cargoRunExitCode,
@@ -108,8 +109,22 @@ function runCargoTest(manifestAbs, extraArgs) {
   const readDiskAdmission = () => {
     try {
       const fsst = statfsSync(manifestAbs);
+      // Space other live builds have already declared (EI-21951384112327922).
+      // Read fresh on every probe, not once: the point is that this number moves
+      // while we are deciding, and the post-reclaim re-measure below must see the
+      // ledger as it is THEN. Fails open to 0.
+      let reservedBytes = 0;
+      try {
+        reservedBytes = readReservedBytes(manifestAbs);
+      } catch {
+        reservedBytes = 0;
+      }
       return assessCargoDiskAdmission(
-        { totalBytes: Number(fsst.blocks) * Number(fsst.bsize), freeBytes: Number(fsst.bavail) * Number(fsst.bsize) },
+        {
+          totalBytes: Number(fsst.blocks) * Number(fsst.bsize),
+          freeBytes: Number(fsst.bavail) * Number(fsst.bsize),
+          reservedBytes,
+        },
         diskPolicy,
       );
     } catch (err) {
