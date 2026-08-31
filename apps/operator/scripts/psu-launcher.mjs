@@ -1099,6 +1099,50 @@ export function ompModelCompatibilityNotice(model) {
   return null;
 }
 
+const CLAUDE_OPUS_5_XHIGH_RESUME_RE =
+  /^(?:opus|claude-opus-5)(\[1m\])?:xhigh$/i;
+
+/**
+ * Reconcile the one legacy Claude effort name that Opus 5's subscription route
+ * no longer accepts when a saved launch profile is replayed on resume.
+ *
+ * `capability:launch-agent` deliberately restores a fleet member's canonical
+ * launch profile. A profile recorded while Opus exposed `xhigh` can therefore
+ * reach `psu --resume` as `claude-opus-5:xhigh`; once the account is switched
+ * to the inference gateway, Claude rejects the resumed agent's first request
+ * before it can checkpoint or repair itself. Opus 5 now calls its strongest
+ * supported level `max`, so this is a name reconciliation, not a silent effort
+ * reduction. Keep it native-resume + gateway + exact-family scoped: a default
+ * system route, another Claude family, OMP/Codex, and every supported effort
+ * remain byte-identical.
+ *
+ * Pure + exported so the scope and the diagnostic are regression-testable.
+ */
+export function reconcileResumeModelForAccountRoute({
+  agent,
+  model,
+  accountRoute,
+} = {}) {
+  const unchanged = { model, notice: null, reconciled: false };
+  if (
+    agent !== "claude" ||
+    (accountRoute?.mode !== "auto" && accountRoute?.mode !== "pin") ||
+    accountRoute?.provider !== "claude" ||
+    typeof model !== "string" ||
+    !CLAUDE_OPUS_5_XHIGH_RESUME_RE.test(model.trim())
+  ) {
+    return unchanged;
+  }
+  const compatibleModel = model.trim().replace(/:xhigh$/i, ":max");
+  return {
+    model: compatibleModel,
+    reconciled: true,
+    notice:
+      `resume model '${model}' names Opus 5's retired xhigh effort; ` +
+      `using its supported strongest level '${compatibleModel}' for this inference-gateway route.`,
+  };
+}
+
 const OMP_OX_ALPHA_MODEL_RE =
   /^(?:openrouter\/)?stealth\/ox-alpha(?::(?:low|medium|high|xhigh|max))?$/i;
 
@@ -11228,6 +11272,13 @@ async function launchResolvedResume(source, args, { tracked }) {
     await launchSessionPort(source, target, account, args);
     return;
   }
+  const resumeModel = reconcileResumeModelForAccountRoute({
+    agent: target.targetAgent,
+    model: target.modelSpec,
+    accountRoute: account,
+  });
+  if (resumeModel.notice)
+    console.error(`psu: model compatibility — ${resumeModel.notice}`);
   // LAST-MOMENT transcript re-verify. Everything below resumes IN PLACE against
   // the session's own on-disk transcript, and that transcript was last checked
   // BEFORE the two human-paced prompts above — long enough for the 15s
@@ -11253,7 +11304,7 @@ async function launchResolvedResume(source, args, { tracked }) {
     return;
   }
   if (args.fork && tracked) {
-    await launchTrackedFork(source, args, account, target.modelSpec);
+    await launchTrackedFork(source, args, account, resumeModel.model);
     return;
   }
   await launchResume(source, {
@@ -11262,7 +11313,7 @@ async function launchResolvedResume(source, args, { tracked }) {
     addDir: args.addDir,
     accountEnv: account,
     allowSubagents: args.allowSubagents,
-    model: target.modelSpec,
+    model: resumeModel.model,
     kickoff: resumeKickoffText(args),
     launchMode: launchModeFromArgs(args),
   });
