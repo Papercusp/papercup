@@ -22,17 +22,37 @@ interface RunOptions {
   state: string;
   linger?: string;
   startFails?: boolean;
+  /** Make `loginctl show-user` exit non-zero, exactly as it does once logind has
+   *  dropped the user object — i.e. whenever the user manager is actually down. */
+  lingerFails?: boolean;
+  /** Point the script at a linger directory that does not exist, so the durable
+   *  marker cannot answer either. */
+  lingerDir?: string;
 }
 
-async function makeFixture() {
+interface FixtureOptions {
+  /** uid under test. Defaults to 1000 to match the shipped unit. Tests that
+   *  exercise the DURABLE linger marker pass the runner's own uid instead,
+   *  because that marker is named after the resolved username and the runner is
+   *  the only account guaranteed to resolve on every host. */
+  uid?: number;
+}
+
+const SELF_UID = process.getuid?.() ?? 1000;
+const SELF_USER = userInfo().username;
+
+async function makeFixture(options: FixtureOptions = {}) {
+  const uid = options.uid ?? 1000;
   const dir = await mkdtemp(join(tmpdir(), "papercusp-user-manager-watchdog-"));
   const binDir = join(dir, "bin");
   const stateDir = join(dir, "run");
+  const lingerDir = join(dir, "linger");
   const managerState = join(dir, "manager-state");
   const logPath = join(dir, "systemctl.log");
-  const marker = join(stateDir, "user-1000.down-since");
+  const marker = join(stateDir, `user-${uid}.down-since`);
   await mkdir(binDir);
   await mkdir(stateDir);
+  await mkdir(lingerDir);
   await writeFile(logPath, "");
 
   await writeFile(
@@ -40,6 +60,12 @@ async function makeFixture() {
     [
       "#!/usr/bin/env bash",
       "set -u",
+      // The real failure: logind has no user object to report on, so the call
+      // exits 1. This stub reproduces that verbatim.
+      'if [[ "${STUB_LINGER_FAIL:-0}" == "1" ]]; then',
+      '  echo "Failed to get user: User ID $2 is not logged in or lingering" >&2',
+      "  exit 1",
+      "fi",
       '[[ "$1" == "show-user" ]] || exit 2',
       'printf "%s\\n" "${STUB_LINGER:-yes}"',
     ].join("\n"),
