@@ -1259,7 +1259,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("threads a frozen repair proof group into the candidate suite without replacing the verifier run id", async () => {
+  it("threads candidate and frozen-repair attribution into the suite without replacing the verifier run id", async () => {
     // suite green → marker grep has no match → SPA build green.
     const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
     const r = await realCheckpointDeps(cfg, exec, "repair-verifier-run").runGreen(
@@ -1274,6 +1274,9 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     expect(r.green).toBe(true);
     expect(calls[0].opts?.env?.PAPERCUSP_TEST_RUN_GROUP).toBe(
       "repair-verifier-run",
+    );
+    expect(calls[0].opts?.env?.PAPERCUSP_TEST_RUN_COMMIT).toBe(
+      "c".repeat(40),
     );
     expect(calls[0].opts?.env?.AFFECTED_TASK_VERDICT_PROOF_GROUP).toBe(
       "initial-proof-run",
