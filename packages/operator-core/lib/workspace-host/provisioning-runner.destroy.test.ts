@@ -422,4 +422,40 @@ describe('runWorkspaceHostDestroy', () => {
     expect(provider.plan).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
   });
+
+  // WI-1762411: a destroy that deleted everything reported `failed` at percent=99 because the
+  // terminal census was single-shot. Provider list reads are eventually consistent and the network
+  // is deleted LAST, so the census could still see a resource whose delete had been confirmed.
+  it('re-reads a terminal census that still shows a resource mid-deletion instead of failing a completed teardown', async () => {
+    const { provider, inventoryManagedResources } = providerHarness();
+    const { store, updateOperation, updateHostState } = storeHarness();
+    // First terminal read still sees the resources; the second is the harness default — clean.
+    inventoryManagedResources.mockImplementationOnce(async () => legacyInventorySnapshot());
+
+    const result = await runWorkspaceHostDestroy({ ...runInput(provider, store), censusSettleMs: 400 });
+
+    expect(result.status).toBe('succeeded');
+    expect(inventoryManagedResources).toHaveBeenCalledTimes(2);
+    expect(updateOperation.mock.calls.some(([entry]) => entry.status === 'failed')).toBe(false);
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent', discard: true }));
+  });
+
+  it('still fails a terminal census that is unclean at the settle deadline, naming the census and the resource', async () => {
+    const { provider, inventoryManagedResources } = providerHarness();
+    const { store, updateOperation } = storeHarness();
+    inventoryManagedResources.mockResolvedValue(legacyInventorySnapshot());
+
+    const result = await runWorkspaceHostDestroy({ ...runInput(provider, store), censusSettleMs: 0 });
+
+    expect(result.status).toBe('failed');
+    expect(inventoryManagedResources).toHaveBeenCalledOnce();
+    const failure = updateOperation.mock.calls
+      .map(([entry]) => entry)
+      .find((entry) => entry.status === 'failed');
+    const reason = String(failure?.error?.reason ?? '');
+    // The old message named neither which census failed nor what it saw.
+    expect(reason).toMatch(/census is not clean after 1 read\(s\)/);
+    expect(reason).toMatch(/(provider|orphan)\.\w+=\[/);
+    expect(reason).toContain('pc-host-');
+  });
 });

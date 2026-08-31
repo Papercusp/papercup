@@ -237,6 +237,13 @@ export interface RunWorkspaceHostDestroyInput {
   actorId?: string;
   signal?: AbortSignal;
   store?: WorkspaceHostDestroyStore;
+  /**
+   * How long the terminal census may keep re-reading the provider while it still shows a resource
+   * we already deleted. Provider list APIs are eventually consistent, so a census taken the instant
+   * the last delete returns can still see it — see DESTROY_CENSUS_SETTLE_MS. Tests set this to 0 to
+   * assert the unclean path without waiting out the real window.
+   */
+  censusSettleMs?: number;
 }
 
 function message(error: unknown): string {
@@ -991,6 +998,59 @@ function destroyProgress(checkpoints: readonly WorkspaceHostResourceCheckpoint[]
   return Math.max(0, Math.min(99, Math.floor((confirmed / total) * 100)));
 }
 
+/**
+ * The terminal destroy census asks the provider to confirm that every resource we deleted is gone.
+ * That read is eventually consistent: GCP's list APIs can still return a resource for a short window
+ * after its delete has been confirmed, and networks — which we delete LAST — are the slowest to
+ * disappear. A single-shot census therefore fails a teardown that actually succeeded, which is the
+ * expensive direction: the operator sees `failed` on the one operation whose job is proving nothing
+ * was left running, and re-runs the teardown or hand-deletes in the console.
+ *
+ * So the census SETTLES: it re-reads until clean, or until this window expires. This can only turn a
+ * premature read into a settled one — a resource that is genuinely still there at the deadline still
+ * fails, and now fails while NAMING what it saw.
+ */
+const DESTROY_CENSUS_SETTLE_MS = 90_000;
+const DESTROY_CENSUS_POLL_MS = 5_000;
+
+function resourceLabel(resource: WorkspaceHostResourceRef): string {
+  return `${resource.kind}:${resource.providerId}`;
+}
+
+/**
+ * Turn an unclean census into an error that says WHICH census failed and WHAT it saw. The previous
+ * message ("Workspace-host destroy orphan census is not clean") named neither, so a failure could not
+ * be told apart from a genuine leak without re-deriving the whole run by hand.
+ */
+function describeUncleanDestroyCensus(
+  providerCensus: GcpWorkspaceHostResourceCensus,
+  orphanCensus: WorkspaceHostCanaryOrphanCensus,
+  attempts: number,
+  waitedMs: number,
+): string {
+  const parts: string[] = [];
+  const note = (label: string, entries: readonly { resource: WorkspaceHostResourceRef }[]): void => {
+    if (entries.length > 0) parts.push(`${label}=[${entries.map((e) => resourceLabel(e.resource)).join(', ')}]`);
+  };
+  if (!providerCensus.clean) {
+    note('provider.untracked', providerCensus.untracked);
+    note('provider.labelMismatches', providerCensus.labelMismatches);
+    if (providerCensus.missing.length > 0)
+      parts.push(`provider.missing=[${providerCensus.missing.map(resourceLabel).join(', ')}]`);
+  }
+  if (!orphanCensus.clean) {
+    note('orphan.stillLive', orphanCensus.stillLive);
+    note('orphan.untracked', orphanCensus.untracked);
+    note('orphan.observedTagged', orphanCensus.observedTagged);
+    note('orphan.missingWithoutReceipt', orphanCensus.missingWithoutReceipt);
+  }
+  const which = [!providerCensus.clean ? 'provider' : null, !orphanCensus.clean ? 'orphan' : null]
+    .filter(Boolean)
+    .join('+');
+  const detail = parts.length > 0 ? ` ${parts.join(' ')}` : ' (no resource named by either census)';
+  return `Workspace-host destroy ${which} census is not clean after ${attempts} read(s) over ${waitedMs}ms:${detail}`;
+}
+
 function deterministicInventoryRequest(
   input: RunWorkspaceHostDestroyInput,
   target: StoredWorkspaceHostDestroyTarget,
@@ -1122,23 +1182,40 @@ async function finalizeDestroyEvidence(
     }
   }
 
-  const inventory = await inventoryProvider(input.provider).inventoryManagedResources(
-    deterministicInventoryRequest(input, target, destroyTargets),
-  );
-  if (!inventory.complete) throw new Error('Provider managed-resource inventory is incomplete');
-  const observed = inventory.observed.map((entry) => ({ resource: entry.resource, tags: entry.labels }));
-  const providerCensus = censusGcpWorkspaceHostResources({
-    hostId: input.hostId,
-    workspaceId: input.canary.workspaceId,
-    expected: [],
-    observed: inventory.observed,
-    inventoryEvidence: inventory.inventoryEvidence,
-    evaluatedAt: new Date().toISOString(),
-    orphanGraceMs: 60_000,
-  });
-  const orphanCensus = ledger.orphanCensus(observed);
-  if (!providerCensus.clean || !orphanCensus.clean) {
-    throw new Error('Workspace-host destroy orphan census is not clean');
+  // Settle rather than single-shot: see DESTROY_CENSUS_SETTLE_MS. Re-read while the provider still
+  // reports something we deleted, and fail only if it is STILL there at the deadline.
+  const settleMs = input.censusSettleMs ?? DESTROY_CENSUS_SETTLE_MS;
+  // Scale the poll to the window so a short (test) window does not inherit the production interval.
+  const pollMs = Math.max(1, Math.min(DESTROY_CENSUS_POLL_MS, Math.floor(settleMs / 4)));
+  const censusStartedAtMs = Date.now();
+  let observed: readonly { resource: WorkspaceHostResourceRef; tags: Readonly<Record<string, string>> }[] = [];
+  let providerCensus: GcpWorkspaceHostResourceCensus;
+  let orphanCensus: WorkspaceHostCanaryOrphanCensus;
+  let attempts = 0;
+  for (;;) {
+    input.signal?.throwIfAborted();
+    attempts += 1;
+    const inventory = await inventoryProvider(input.provider).inventoryManagedResources(
+      deterministicInventoryRequest(input, target, destroyTargets),
+    );
+    if (!inventory.complete) throw new Error('Provider managed-resource inventory is incomplete');
+    observed = inventory.observed.map((entry) => ({ resource: entry.resource, tags: entry.labels }));
+    providerCensus = censusGcpWorkspaceHostResources({
+      hostId: input.hostId,
+      workspaceId: input.canary.workspaceId,
+      expected: [],
+      observed: inventory.observed,
+      inventoryEvidence: inventory.inventoryEvidence,
+      evaluatedAt: new Date().toISOString(),
+      orphanGraceMs: 60_000,
+    });
+    orphanCensus = ledger.orphanCensus(observed);
+    if (providerCensus.clean && orphanCensus.clean) break;
+    const waitedMs = Date.now() - censusStartedAtMs;
+    if (waitedMs + pollMs > settleMs) {
+      throw new Error(describeUncleanDestroyCensus(providerCensus, orphanCensus, attempts, waitedMs));
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
   const completionReceipt = ledger.finalize(observed);
   if (completionReceipt.resourceCount === 0) {
