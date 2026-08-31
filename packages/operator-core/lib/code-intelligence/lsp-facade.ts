@@ -226,7 +226,18 @@ export async function lspFacade(
       );
     }
     return applyBudget(
-      await lspWorkspaceSymbols({ name: args.name, rootPath, language, limit }),
+      await lspWorkspaceSymbols({
+        name: args.name,
+        rootPath,
+        language,
+        limit,
+        // `file` is an ANCHOR here, not a cursor: it names the project whose
+        // symbol index answers. Optional for rust (a Cargo.toml root suffices),
+        // required for TypeScript (tsserver has no project until a document is
+        // opened). Absent and unresolvable, the adapter refuses rather than
+        // returning an empty that reads as absence.
+        anchor: args.file,
+      }),
       limit,
     );
   }

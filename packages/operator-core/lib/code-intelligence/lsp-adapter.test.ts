@@ -8,7 +8,8 @@
  * output as trustworthy turns a temporary gap into an authoritative lie.
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,8 +21,10 @@ import {
   ensureOpen,
   healthForAnswer,
   readinessStrategyFor,
+  resolveSymbolSearchScope,
   specForLanguage,
   resolveServerBin,
+  symbolSearchEmptyCaveat,
   type LspReadinessIntent,
 } from './lsp-adapter.ts';
 import { isTrustworthyEmpty, type BackendHealth } from './contracts.ts';
@@ -397,5 +400,142 @@ describe('WI-40251 — ensureOpen re-opens when disk changed under an open docum
 
     expect(again).toBe(uri);
     expect(sent).toEqual([]);
+  });
+});
+
+/**
+ * EI-21929741479590036 — `workspace_symbols` answered nothing on either
+ * language, and the obvious repair (give it a working root) would have made it
+ * answer something WORSE.
+ *
+ * A symbol search covers ONE project. `isTrustworthyEmpty()` believes an empty
+ * from a server that claims health, so a scoped search that emits
+ * `sites: [] / error: null / health: 'healthy'` certifies an absence it cannot
+ * support. Measured before the fix: `account_options` — a `pub fn` that exists
+ * in apps/tui — returned exactly that shape when asked at the
+ * papercusp-desktop/src-tauri root. These guard both halves: the scope must be
+ * established or refused, and an empty must never be silent.
+ */
+describe('workspace_symbols search scope', () => {
+  /** The exact answer shape `isTrustworthyEmpty` reads as "absence proven". */
+  const certifiesAbsence = (a: {
+    sites: readonly unknown[];
+    error: string | null;
+    health: BackendHealth;
+  }) => a.sites.length === 0 && a.error === null && a.health === 'healthy';
+
+  let dir = '';
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'lsp-scope-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('CONTROL: the predicate really does catch the pre-fix shape', () => {
+    // Calibration. Without this, every assertion below could pass because
+    // `certifiesAbsence` had stopped measuring anything rather than because
+    // the adapter stopped emitting the shape.
+    expect(certifiesAbsence({ sites: [], error: null, health: 'healthy' })).toBe(true);
+    // ...and it must not fire on a genuine hit, or it would forbid all answers.
+    expect(certifiesAbsence({ sites: ['a site'], error: null, health: 'healthy' })).toBe(false);
+  });
+
+  it('an empty search states its scope, so a healthy server cannot certify absence', () => {
+    const caveat = symbolSearchEmptyCaveat('account_options', 'rust', {
+      root: '/repo/papercusp-desktop/src-tauri',
+      anchor: null,
+    });
+    expect(caveat).toMatch(/NOT evidence/);
+    expect(caveat).toContain('/repo/papercusp-desktop/src-tauri');
+    // The fix, stated as the shape it forbids.
+    expect(certifiesAbsence({ sites: [], error: caveat, health: 'healthy' })).toBe(false);
+    // And it lands on isTrustworthyEmpty's honest-loud-failure branch, not its
+    // believe-the-healthy-empty branch.
+    expect(
+      isTrustworthyEmpty({
+        backend: 'lsp-adapter',
+        intent: 'symbol-search',
+        query: 'account_options',
+        sites: [],
+        truncation: { truncated: false, totalAvailable: 0, continuation: null },
+        freshness: { health: 'healthy', indexedAt: null, staleVsDisk: null, indexedCommit: null },
+        latencyMs: 1,
+        error: caveat,
+      }),
+    ).toBe(true);
+  });
+
+  it('refuses a rust search whose root has no crate graph, instead of answering empty', () => {
+    const scope = resolveSymbolSearchScope('rust', undefined, dir);
+    expect(scope.error).toMatch(/Cargo\.toml/);
+    // The refusal has to be ACTIONABLE — naming the arg that fixes it.
+    expect(scope.error).toMatch(/'file'|rootPath/);
+  });
+
+  it('accepts a rust root that is itself a crate', async () => {
+    await writeFile(join(dir, 'Cargo.toml'), '[package]\nname = "x"\n');
+    const scope = resolveSymbolSearchScope('rust', undefined, dir);
+    expect(scope.error).toBeNull();
+    expect(scope.root).toBe(dir);
+  });
+
+  it('lets a rust anchor select its own crate root', async () => {
+    const crate = join(dir, 'apps', 'tui');
+    await mkdir(join(crate, 'src'), { recursive: true });
+    await writeFile(join(crate, 'Cargo.toml'), '[package]\nname = "tui"\n');
+    const anchor = join(crate, 'src', 'main.rs');
+    await writeFile(anchor, 'pub fn account_options() {}\n');
+
+    const scope = resolveSymbolSearchScope('rust', anchor, dir);
+    expect(scope.error).toBeNull();
+    // The crate, NOT the workspace root it was invoked from.
+    expect(scope.root).toBe(crate);
+    expect(scope.anchor).toBe(anchor);
+  });
+
+  it('refuses an unanchored TypeScript search — rootPath cannot create a project', () => {
+    // tsserver builds projects from OPENED DOCUMENTS, never from the root URI,
+    // so this refusal is not a missing-config problem a root could fix.
+    const scope = resolveSymbolSearchScope('typescript', undefined, dir);
+    expect(scope.error).toMatch(/No Project/);
+    expect(scope.error).toMatch(/'file'/);
+  });
+
+  it('accepts an anchored TypeScript search', () => {
+    const anchor = join(dir, 'packages', 'operator-core', 'lib', 'x.ts');
+    const scope = resolveSymbolSearchScope('typescript', anchor, dir);
+    expect(scope.error).toBeNull();
+    expect(scope.anchor).toBe(anchor);
+  });
+
+  /**
+   * The tests above drive the two helpers directly, which cannot see whether
+   * `lspWorkspaceSymbols` still CALLS them — delete either call site and every
+   * assertion above stays green. That is the same blind spot that let an
+   * identical dropped-argument bug survive a fully covered file once already:
+   * a missing call is an absent value, not a wrong one, so only a check that
+   * looks at the wiring itself can catch it. Driving the real function instead
+   * would need a live language server, which a unit test must not require.
+   */
+  it('lspWorkspaceSymbols still WIRES both halves (deletion guard)', () => {
+    const source = readFileSync(new URL('./lsp-adapter.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export async function lspWorkspaceSymbols');
+    expect(start, 'lspWorkspaceSymbols not found — rename the guard with it').toBeGreaterThan(-1);
+    // Bound the slice to this function so a call in a NEIGHBOUR cannot satisfy it.
+    const end = source.indexOf('\nexport ', start + 1);
+    const body = source.slice(start, end === -1 ? undefined : end);
+
+    // Half 1: the scope must be resolved (or refused) before the server is asked.
+    expect(body).toContain('resolveSymbolSearchScope(');
+    expect(body).toMatch(/scope\.error\s*\)\s*return fail\(/);
+    // Half 2: an empty must never be returned without its scope caveat.
+    expect(body).toContain('symbolSearchEmptyCaveat(');
+    expect(body).toMatch(/sites\.length === 0/);
+
+    // CONTROL: the slice really is the function body and not an empty string,
+    // or all four assertions above would be asserting against nothing.
+    expect(body).toContain("const intent: CodeIntelIntent = 'symbol-search'");
+    expect(body.length).toBeGreaterThan(500);
   });
 });

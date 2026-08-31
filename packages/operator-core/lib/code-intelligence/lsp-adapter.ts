@@ -487,8 +487,17 @@ export function resolveProjectRoot(
   file: string,
   fallbackRoot: string,
 ): { root: string; error: string | null } {
-  // TypeScript: the monorepo root carries the tsconfig and the workspace
-  // symlinks, so it is genuinely the right project root.
+  // TypeScript: tsserver finds a file's own tsconfig by walking UP from the
+  // document it is asked to open, so the client root only has to CONTAIN the
+  // file — it does not have to hold a tsconfig itself.
+  //
+  // It does not hold one: this repository has NO root tsconfig.json (only
+  // tsconfig.base.json) and ~100 per-project ones. An earlier comment here
+  // asserted "the monorepo root carries the tsconfig"; that was never true.
+  // It stayed harmless for position-addressed ops precisely because they open
+  // a document and let tsserver do the walking — and it is exactly why
+  // workspace_symbols, which opens no document at all, could never work.
+  // See resolveSymbolSearchScope below.
   if (language !== 'rust') return { root: fallbackRoot, error: null };
 
   let dir = dirname(file);
@@ -507,6 +516,105 @@ export function resolveProjectRoot(
       `reporting itself healthy. Refusing to answer rather than returning a ` +
       `false-empty that reads as "nothing implements this".`,
   };
+}
+
+/**
+ * The project a `workspace_symbols` search will ACTUALLY cover — or a refusal.
+ *
+ * Every other server-querying op in this adapter is position-addressed: it is
+ * handed a `file`, which resolves a crate root (rust) and opens a document
+ * (both languages). `workspace_symbols` takes only a NAME, so before this
+ * existed it queried whatever root the caller's workspace happened to be, with
+ * no document open. On this repository that cannot work for either language:
+ *
+ *   - rust-analyzer rooted where there is no Cargo.toml has no crate graph, so
+ *     its index is permanently empty (the repo root has none).
+ *   - tsserver's `getFullNavigateToItems` iterates the session's PROJECTS and
+ *     throws `No Project.` when there are none — and a project comes into
+ *     existence only when a document is opened, never from the root URI.
+ *
+ * ⚠ THE REPAIR IS NOT "PICK A ROOT AUTOMATICALLY", AND THAT IS THE WHOLE POINT.
+ * A symbol search answers for ONE project. This repository has five
+ * first-party cargo workspaces and ~100 tsconfig projects, so any auto-picked
+ * root is right for one of them and wrong for the rest. Silently choosing one
+ * would turn today's honest, loud failure into a server that certifies itself
+ * healthy and returns `sites: []` for a symbol that plainly exists elsewhere —
+ * which `isTrustworthyEmpty()` reads as PROVEN ABSENCE. Measured before this
+ * function existed: `account_options` (a `pub fn` in apps/tui) asked at the
+ * papercusp-desktop/src-tauri root returned `sites: []`, `health: 'healthy'`,
+ * `error: null`. That is a worse bug than the one being fixed, so the scope is
+ * required from the caller and refused when it is absent.
+ */
+export function resolveSymbolSearchScope(
+  language: LspLanguage,
+  anchor: string | undefined,
+  rootPath: string,
+): { root: string; anchor: string | null; error: string | null } {
+  if (language === 'rust') {
+    // An anchor names its own crate; otherwise the root must itself be one.
+    if (anchor) {
+      const resolved = resolveProjectRoot('rust', anchor, rootPath);
+      if (resolved.error) return { root: rootPath, anchor: null, error: resolved.error };
+      return { root: resolved.root, anchor, error: null };
+    }
+    if (existsSync(join(rootPath, 'Cargo.toml'))) {
+      return { root: rootPath, anchor: null, error: null };
+    }
+    return {
+      root: rootPath,
+      anchor: null,
+      error:
+        `no Cargo.toml at ${rootPath}, so rust-analyzer rooted there has no crate graph and ` +
+        `would answer EMPTY for every symbol while reporting itself healthy. Pass 'file' (any ` +
+        `.rs file in the crate you mean) or 'rootPath' (a directory containing Cargo.toml). ` +
+        `This repository has no root Cargo.toml and several independent cargo workspaces, so ` +
+        `there is no single correct default to pick — choosing one silently would certify ` +
+        `absence for every other workspace.`,
+    };
+  }
+
+  // TypeScript. rootPath cannot rescue this: a project is created by opening a
+  // document, so without an anchor there is nothing for navto to search.
+  if (!anchor) {
+    return {
+      root: rootPath,
+      anchor: null,
+      error:
+        `tsserver has no project until a document is opened, so workspace_symbols cannot run ` +
+        `unanchored — it fails with "No Project." Pass 'file' (any .ts file in the project you ` +
+        `mean) to establish which project this search covers. This repository has no root ` +
+        `tsconfig.json (only tsconfig.base.json) and ~100 project tsconfigs, so there is no ` +
+        `single default project — and loading just one silently would certify absence for the ` +
+        `other ninety-nine.`,
+    };
+  }
+  return { root: rootPath, anchor, error: null };
+}
+
+/**
+ * Why an empty symbol search is never absence.
+ *
+ * `isTrustworthyEmpty()` believes an empty answer when the backend claims
+ * health. That is right for position-addressed ops, whose scope is the whole
+ * program the cursor sits in. It is wrong here: a symbol search covers ONE
+ * project, so "not in this project" and "not in the repository" are different
+ * claims and only the first is supported. Attaching this caveat puts the
+ * answer on `isTrustworthyEmpty`'s honest-loud-failure branch instead of its
+ * believe-the-healthy-empty branch.
+ */
+export function symbolSearchEmptyCaveat(
+  name: string,
+  language: LspLanguage,
+  scope: { root: string; anchor: string | null },
+): string {
+  return (
+    `no ${language} symbol named '${name}' in the project rooted at ${scope.root}` +
+    (scope.anchor ? ` (anchored at ${scope.anchor})` : '') +
+    `. This is NOT evidence that the symbol does not exist: a symbol search covers ONE ` +
+    `project, and this repository has several cargo workspaces and ~100 tsconfig projects. ` +
+    `To ask about a different project, re-run with a 'file' anchor inside it; to ask a ` +
+    `repository-wide question, use gitnexus (graph) or ast-grep instead.`
+  );
 }
 
 /** Language for a file, or null when we have no pinned server for it. */
@@ -1275,6 +1383,12 @@ export async function lspWorkspaceSymbols(query: {
   rootPath: string;
   language: LspLanguage;
   limit?: number;
+  /**
+   * A file naming WHICH project this search covers. Required for TypeScript
+   * (tsserver has no project until a document is opened); optional for rust,
+   * where a root holding a Cargo.toml is enough. See resolveSymbolSearchScope.
+   */
+  anchor?: string;
 }): Promise<CodeIntelAnswer> {
   const started = Date.now();
   const intent: CodeIntelIntent = 'symbol-search';
@@ -1290,8 +1404,17 @@ export async function lspWorkspaceSymbols(query: {
     error,
   });
 
+  // Establish the project context BEFORE querying. This is the only
+  // server-querying path in the adapter that is not position-addressed, so
+  // nothing else here resolves a crate root or opens a document for it.
+  const scope = resolveSymbolSearchScope(query.language, query.anchor, query.rootPath);
+  if (scope.error) return fail(scope.error, 'unknown');
+
   try {
-    const client = await getClient(query.language, query.rootPath);
+    const client = await getClient(query.language, scope.root);
+    // Opening the anchor is what CREATES the tsserver project this search runs
+    // against; for rust it merely warms a crate graph the root already implies.
+    if (scope.anchor) await ensureOpen(client, scope.anchor);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
       return fail(
@@ -1315,6 +1438,12 @@ export async function lspWorkspaceSymbols(query: {
 
     const sites = all.slice(0, limit);
     certifyCanaryAnswer(client, intent, readiness, sites.length, JSON.stringify(sites));
+    // A certified server would otherwise return an empty as health:'healthy'
+    // with error:null — the one shape isTrustworthyEmpty() reads as proven
+    // absence, and the scope this search covers cannot support that claim.
+    if (sites.length === 0) {
+      return fail(symbolSearchEmptyCaveat(query.name, query.language, scope), 'degraded');
+    }
     return {
       backend: 'lsp-adapter',
       intent,
