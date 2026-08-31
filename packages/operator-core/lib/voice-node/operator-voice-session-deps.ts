@@ -31,6 +31,8 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { getOrCreateActiveConversation, appendTurn, type TurnRole } from '../operator-conversations';
 import { parseOperatorTurn } from '../operator-converse-tags';
 import { writeToSentinelPane } from '../papercup/papercup-pane-input';
+import { appendVoiceDebugEvent } from '../voice-debug-ring';
+import type { VoiceTurnEvent } from '@papercusp/chat-protocol';
 import type { OperatorVoiceSessionDeps, ElConnectHandlers, ElSocket, BrainRelayResult } from './operator-voice-session';
 
 /**
@@ -219,6 +221,16 @@ export function createOperatorVoiceSessionDeps(broadcast: (frame: Uint8Array) =>
     claimLease,
     releaseLease,
     broadcast,
+    // Reuse the existing bounded voice-debug surface as the canonical event
+    // sink. The adapter is observational and the ring is explicitly best-
+    // effort, so telemetry can never break the voice transport.
+    emitCanonicalEvent: (event: VoiceTurnEvent) => {
+      appendVoiceDebugEvent({
+        event: `voice.turn.${event.type}`,
+        detail: event,
+        ts: Date.parse(event.emittedAt),
+      });
+    },
     log: (msg, extra) => console.log(`[voice-host] ${msg}`, extra ?? ''),
   };
 }
