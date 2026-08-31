@@ -17,6 +17,8 @@ import {
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
+  GATE_CANDIDATE_FAILURES_CELL,
+  GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
@@ -32,6 +34,8 @@ const OPERATOR_PIPELINE_CELLS = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
+  GATE_CANDIDATE_FAILURES_CELL,
+  GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
@@ -116,7 +120,17 @@ describe('P-006: git.pipelinePosition registers under the D-038 contract', () =>
 describe('P-007: the four verdict cells', () => {
   beforeEach(() => __resetCellRegistryForTests());
 
-  const NEW_CELLS = [GATE_VERDICT_CELL, GATE_CANDIDATE_CELL, DEPLOYED_SHA_CELL, MAIN_BEHIND_STAGING_CELL];
+  // gate-audit-hardening-2026-08-31 P-001: `ownerBrief` joins the family — it is a pure
+  // lens over the same gitPipelinePosition() derivation. `candidateFailures` does NOT:
+  // like `ownership` (see the census comment below), it owns real I/O and names its own
+  // resolver, so the one-resolver family assertion would be false of it by design.
+  const NEW_CELLS = [
+    GATE_VERDICT_CELL,
+    GATE_CANDIDATE_CELL,
+    DEPLOYED_SHA_CELL,
+    MAIN_BEHIND_STAGING_CELL,
+    GATE_OWNER_BRIEF_CELL,
+  ];
 
   it.each(OPERATOR_PIPELINE_CELLS.map((c) => [c.cell, c] as const))(
     '%s is visible only inside the operator home harness',
@@ -140,6 +154,12 @@ describe('P-007: the four verdict cells', () => {
       'agent.goal',
       'deploy.3070.sha',
       'gate.greenCheckpoint.candidate',
+      // WI-1702869. Own resolver (readGateCandidateFailures) — excluded from
+      // NEW_CELLS for the same reason as ownership below.
+      'gate.greenCheckpoint.candidateFailures',
+      // gate-audit-hardening-2026-08-31 P-001: the composed owner brief — a pure
+      // lens over gitPipelinePosition(), so it IS in NEW_CELLS.
+      'gate.greenCheckpoint.ownerBrief',
       // D-014. Its own cell, and deliberately NOT part of the pipeline family
       // below: it resolves via readGateOwnership(), not gitPipelinePosition(),
       // because it derives WHO owns the red from lease + presence state rather
@@ -441,12 +461,15 @@ describe('P-007: the four verdict cells', () => {
     expect(assessment!.codes['gate-stalled'].meaning).toContain('gate is not firing');
   });
 
-  /** Axis 4 admits no fixture-only registration, and every one of these four carries a
-   *  verbatim live read rather than a promise that one happened. */
+  /** Axis 4 admits no fixture-only registration, and every one of these carries a
+   *  verbatim live read rather than a promise that one happened. The date is the
+   *  CELL'S OWN exercise date (the original four: 2026-07-27; ownerBrief: 2026-08-31)
+   *  — asserted as "a dated read exists", not pinned to one day, so a new family
+   *  member does not have to lie about when it was exercised. */
   it.each(NEW_CELLS.map((c) => [c.cell, c] as const))('%s cites a real live exercise', (_id, spec) => {
     expect(spec.provenance.liveExercised).toBe(true);
     expect(spec.provenance.evidence).toContain('dev:pipeline_position');
-    expect(spec.provenance.evidence).toMatch(/2026-07-27/);
+    expect(spec.provenance.evidence).toMatch(/\b2026-\d{2}-\d{2}\b/);
   });
 });
 
@@ -658,7 +681,7 @@ describe('P-005 — declared audiences are actually reachable (real registry)', 
     ).toEqual([]);
   });
 
-  it('covers the six pipeline cells specifically, by name', () => {
+  it('covers the pipeline cells specifically, by name', () => {
     // The regression itself. Named individually so a failure says WHICH cell went dark.
     for (const spec of OPERATOR_PIPELINE_CELLS) {
       expect(getCell(spec.cell, operatorScope), `${spec.cell} unreadable`).toBeTruthy();

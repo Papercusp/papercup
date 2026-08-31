@@ -725,6 +725,101 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
 };
 
 /**
+ * Cell 2d — THE OWNER'S FOUR-PART QUESTION, composed: is main green — if not, why not —
+ * who owns it — and is remediation actually alive? gate-audit-hardening-2026-08-31 P-001.
+ *
+ * ── THE MEASURED GAP THIS CLOSES ────────────────────────────────────────────────
+ * Audited 2026-08-31 (WI-1820224 + its correction comment) over the 11-day red that
+ * began 2026-08-20T20:57Z: the owner's recurring experience was agents telling him
+ * CONFLICTING things, and none of the conflicts were factual disagreement — every one
+ * was a vintage or denominator mismatch between separately-read surfaces (a streak
+ * counter quoted as a failure count; a holder claim quoted as live remediation hours
+ * after the dispatched fixer died). Each leg already existed on `dev:pipeline_position`;
+ * the COMPOSITION did not, so every agent composed by hand and each composed differently.
+ *
+ * ── ONE DERIVATION, VINTAGE ON EVERY LEG ────────────────────────────────────────
+ * `composeGateOwnerBrief()` is a PURE function over values `gitPipelinePosition()`
+ * already resolved for its gate block — no second I/O path that can disagree with the
+ * first (the axis-5 doctrine; contrast `candidateFailures`, which owns real I/O and so
+ * names its own resolver). Every leg carries `{ observedAtMs, ageMs, source }`, and
+ * `vintageSpreadMs` names the worst-case spread between legs, so an answer that mixes
+ * observations minutes apart says so instead of reading as one instant.
+ */
+export const GATE_OWNER_BRIEF_CELL: CellSpec = {
+  cell: 'gate.greenCheckpoint.ownerBrief',
+  registeredOn: '2026-08-31',
+  owner: 'su-bea36045-b4c2-4717-b267-0fb6757c2d96',
+  headline: 'gate.ownerBrief.answer',
+  assessment: {
+    path: 'gate.ownerBrief.assessment',
+    // Mirrors the closed `GateOwnerBriefAnswer` union — the composer embeds the same
+    // meaning/safeAction in the payload so a reader without registry access still gets
+    // the branchable reading (see ASSESSMENTS in gate-owner-brief.ts).
+    codes: {
+      green: {
+        meaning:
+          'The gate is green about what it last judged. Check git.mainBehindStaging separately for the ordinary promotion buffer.',
+        safeAction: 'Proceed; nothing on the gate needs an owner decision.',
+      },
+      'red-owned-remediating': {
+        meaning: 'The gate is red, a LIVE session owns the incident, and remediation shows signs of life.',
+        safeAction:
+          'Do not open a second lane and do not re-derive status by hand — quote THIS read (it is vintage-stamped) and coordinate with the holder for anything that must move.',
+      },
+      'red-owned-stalled': {
+        meaning:
+          'The gate is red and owned, but the dispatched fixer is dead or the queue shows zero-attempt stall — remediation is NOT visibly progressing. This is the shape that once idled ~5h before a human noticed.',
+        safeAction:
+          'Tell the holder their fixer is dead (coord:send with this read attached). If the holder does not respond, escalate — a dead fixer never resumes by itself.',
+      },
+      'red-unowned': {
+        meaning: 'The gate is red and NO live session owns the incident — the every-agent-waits / 37-agent-pileup shape.',
+        safeAction:
+          "Read gate.greenCheckpoint.ownership and claim the incident (or wake whoever should) — an unowned red is everyone's blocker and no one's work.",
+      },
+      'not-judging': {
+        meaning:
+          'The gate has not fired within its interval — nothing is being judged, so red/green counters describe the past.',
+        safeAction: 'Recover the green-checkpoint producer first; do not act on the counters beside this answer.',
+      },
+      unknown: {
+        meaning: 'The verdict counters were not measured on this read — this answer says NOTHING about gate health.',
+        safeAction:
+          'Treat gate state as unknown; read unknownLegs for what was missing and retry or escalate the instrument.',
+      },
+    },
+    evidence: [
+      'gate.ownerBrief.mainGreen.value',
+      'gate.ownerBrief.whyNot.failingLegs',
+      'gate.ownerBrief.ownership.assessmentCode',
+      'gate.ownerBrief.remediation.fixerAlive',
+      'gate.ownerBrief.vintageSpreadMs',
+      'gate.ownerBrief.unknownLegs',
+    ],
+  },
+  nullable: true,
+  unknownHoist: 'gate.ownerBrief.unknownLegs',
+  callerRelativity: { kind: 'global' },
+  provenance: {
+    obtainedBy:
+      'pure composition (composeGateOwnerBrief) over the gate_health snapshot, readGateOwnership(), and the frozen-repair-queue diagnostic — values gitPipelinePosition() already resolved for its gate block; deliberately NO second derivation',
+    liveExercised: true,
+    evidence:
+      "Exercised 2026-08-31 by running the dev:pipeline_position resolver (gitPipelinePosition()) from the working tree: composed answer='red-owned-stalled' — verdict red (gate_health observedAtMs 1788189928130), ownership held-live by su-40d60b0c (WI-212675, resolved live at the read), remediation phase=awaiting-fixer with fixerSpawnId s-1788193507693-cf3a11a3 measured fixerAlive=false, vintageSpreadMs=6005534 (legs ~100min apart, visibly stamped). The exact dead-fixer shape the cell exists to surface, caught on its first live read.",
+  },
+  resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
+  federation: { kind: 'local' },
+  changeSignal: {
+    kind: 'poll',
+    tool: 'dev:pipeline_position',
+    path: 'gate.ownerBrief.answer',
+  },
+  shape:
+    '{ gate: { ownerBrief: { answer, assessment: { code, meaning, safeAction }, mainGreen: { value, vintage }, whyNot: { failingLegs, measured, inconclusiveStatus, vintage } | null, ownership: { claimState, holder, workItem, assessmentCode, vintage }, remediation: { phase, attempts, fixerSpawnId, fixerAlive, zeroAttemptStalled, queueAgeMs, vintage } | null, lastGreen: { atMs, ageMs }, vintageSpreadMs, unknownLegs } } }',
+};
+
+/**
  * Cell 2b — WHO owns the gate incident, and whether that ownership is real.
  *
  * A SEPARATE cell rather than a second independent check bolted onto cells 1/2. A
@@ -1750,6 +1845,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
   GATE_CANDIDATE_FAILURES_CELL,
+  GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
