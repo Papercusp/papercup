@@ -361,6 +361,18 @@ export type WatchdogSource =
   // (`port-<n>` / `pid-<n>`, stale-routine-executor-watchdog.ts's
   // `executorIdentity()`), keyed `stale-routine-executor:<identity>`.
   | 'stale-routine-executor'
+  // WI-1565914: the STALE SERVING HOST sweep — the same question as
+  // `stale-routine-executor` above, but asked from OUTSIDE every host, off
+  // `harness_shared.tool_invocations.serving_build_sha` (migration 1043). It exists as a
+  // separate source because it covers a strictly different population: the one above is
+  // an in-process SELF-CHECK gated on PAPERCUSP_DBOS_ROUTINES=1, so it can never reach a
+  // host that runs no routines (measured: all six :3070 listeners) nor one whose code
+  // predates the check itself. Debounced per serving host (`port-<n>` / `pid-<n>`, the
+  // shared `hostIdentity()`), keyed `stale-serving-host:<identity>`. Fires only on a
+  // CONCLUSIVE verdict — an empty reporting population is reported as inconclusive and
+  // never paged, because a page for a measurement that measured nothing is what teaches
+  // readers to ignore the page.
+  | 'stale-serving-host'
   // EI-19457924854150358: the sync-read payload BUDGET watchdog — reads the
   // `syncReads.audit` snapshot the daily audit routine writes and pages on either
   // of its two failure modes, which need different remedies and so are debounced
