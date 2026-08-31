@@ -117,6 +117,8 @@ import {
 } from '../message-fields';
 import { deriveBasedOn } from '../based-on';
 import { deriveAwaiting, AWAITING_DERIVED_PROVENANCE } from '../derive-awaiting';
+import { deriveDraftSuspension } from '../derive-draft-suspension';
+import { DRAFT_SUSPENSION_FIELD, DRAFT_SUSPENSION_DERIVED_PROVENANCE } from '../draft-suspension';
 import {
   completionClaimMismatch,
   COMPLETION_CLAIM_MISMATCH_FIELD,
@@ -1271,6 +1273,19 @@ async function sendOne(
     workspaceId: identity.workspaceId ?? '',
   }).catch(() => []);
   if (awaiting.length) extra.awaiting = awaiting;
+  // EI-19395608899173941: a wake-pump can interleave a turn between the moment a claim
+  // was measured and the moment it is sent — the filed case measured `git status`
+  // truthfully at 00:55Z and sent it at 01:40Z, telling five agents a peer's landed work
+  // was unlanded. `cellHint` could not catch it (working-tree status is not cell-backed)
+  // and neither could an age check over `basedOn` (30m window; the measurement was 45m
+  // old). Stamped like `awaiting`: a machine OBSERVATION about the session, envelope
+  // level, fail-soft. It reports a measured gap and never guesses which sentence is
+  // stale — an inference about the prose is the EI-10949 hazard `cellHint` avoids.
+  const draftSuspension = await deriveDraftSuspension({
+    ownerId: identity.ownerId,
+    workspaceId: identity.workspaceId ?? '',
+  }).catch(() => null);
+  if (draftSuspension) extra[DRAFT_SUSPENSION_FIELD] = draftSuspension;
   // Completion claims are additive evidence, never a refusal. If the message
   // names a plan/work-item/rubric as completed but the sender's recent read
   // trace contains no corresponding artifact, preserve that contradiction on
@@ -1295,6 +1310,7 @@ async function sendOne(
     ...(msg.fieldProvenance ?? {}),
     ...(fieldStamp.basedOn ? { basedOn: 'session-derived' } : {}),
     ...(awaiting.length ? { awaiting: AWAITING_DERIVED_PROVENANCE } : {}),
+    ...(draftSuspension ? { [DRAFT_SUSPENSION_FIELD]: DRAFT_SUSPENSION_DERIVED_PROVENANCE } : {}),
   };
   if (Object.keys(provenance).length) {
     extra.fieldProvenance = provenance;
@@ -2206,12 +2222,12 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. `why` is a structured envelope field: { goalRef, note? }, not prose. `body[].blockedOn` names a section\'s wait (structured, diffable). Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
+    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. `body[].blockedOn` names a section\'s wait (structured, diffable). `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
   guidance: {
-    when: 'Share context or ask. Include `to`, `summary`, `expects`; `body` for detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, none exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. Waiting on something? `blockedOn: { kind, ref }` on the section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
+    when: 'Share context or ask. The `summary` is the required inbox headline; include `to` and `expects`; `body` is for detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, none exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. Waiting on something? `blockedOn: { kind, ref }` on the section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
     argRedirects: sectionOnlyArgRedirects,
     returns:
-      'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. A body above the 600-character default inbox cap is refused before a load-bearing expects:ack/answer/action send; an expects:none FYI may persist with top-level `bodyDeliveryWarning` because truncation is then explicit. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy.',
+      'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. A body above the 600-character default inbox cap is refused before a load-bearing expects:ack/answer/action send; an expects:none FYI may persist with top-level `bodyDeliveryWarning` because truncation is then explicit. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff.',
     seeAlso: [
       'EI-21927749510698309: relaying an owner or fleet-leader directive? Pass relayOf/relayQuote on THIS send, not after — a text claim ("owner said/directive/approved") with neither ships anyway but renders [UNVERIFIED authority claim] to every recipient; re-sending backed does not un-flag the first copy, so a fleet-wide broadcast lands twice.',
