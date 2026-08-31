@@ -41,7 +41,9 @@ import {
 import {
   applyEditInMemory,
   evictionDelta,
+  identityProblemDelta,
   renderImpact,
+  type IdentityProblem,
   type ProjectionRow,
 } from "../packages/operator-core/lib/doc-projection/eviction-delta";
 import { connectScriptPg } from "./lib/pg-url.mjs";
@@ -82,6 +84,15 @@ type ProjectorModule = {
     client: { query: Function },
     docId: string,
   ) => Promise<ProjectionRow[]>;
+  // Every LIVE part, projected or not. The identity rule is defined over the corpus,
+  // not the projection: an `#evidence` row is unprojected but is still judged against
+  // its projecting sibling, so checking `readProjectedParts` alone would silently skip
+  // half the rule.
+  readAllParts: (
+    client: { query: Function },
+    docId: string,
+  ) => Promise<ProjectionRow[]>;
+  docPartIdentityProblems: (rows: ProjectionRow[]) => IdentityProblem[];
 };
 
 const loadProjector = async (): Promise<ProjectorModule> => {
@@ -567,6 +578,67 @@ async function main(): Promise<void> {
       projectClient: proj.projectClient,
     });
     console.log(renderImpact(impacts, partKey));
+
+    // ── canonical identity ───────────────────────────────────────────────────
+    // The projector REFUSES to write any client file while a canonical row disagrees
+    // with its own generated key, and that refusal is GLOBAL — one bad row blocks
+    // CLAUDE.md, AGENTS.md and the corpus for every part in the batch. Checking it only
+    // there meant this script printed `✓ written` for a body the very next command
+    // rejects, leaving canonical Postgres ahead of every file that projects it, with a
+    // clean-looking `projection impact` report in between (EI-21968678099053129).
+    //
+    // The rule is IMPORTED, never re-spelled — the same reasoning that makes
+    // `validateDocPart` a shared import above. It stays in the projector rather than
+    // moving into `validateDocPart` because it is a statement about how the PROJECTOR
+    // generates keys, and because its `#evidence` half is defined over sibling rows;
+    // `validateDocPart` judges ONE row in isolation and mirrors migration 781's column
+    // CHECKs, neither of which can express it.
+    //
+    // Unlike the projection rows above, the edited part is passed even when its
+    // client_scope is empty: an unprojected part is still a live canonical row, and
+    // dropping it would hide the sibling relationships the rule is defined over.
+    const identityBefore = await proj.readAllParts(client, docId);
+    const { introduced, preexisting } = identityProblemDelta({
+      before: identityBefore,
+      after: applyEditInMemory(identityBefore, partKey, {
+        part_key: partKey,
+        kind: merged.kind,
+        body,
+        ordinal: merged.ordinal,
+        client_scope: merged.clientScope,
+        target_section: merged.targetSection,
+        project_rank: merged.projectRank,
+      }),
+      detect: proj.docPartIdentityProblems,
+    });
+
+    // Not this author's doing — but it IS silently blocking their projection, which is
+    // the whole complaint: three legal edits sat unprojected behind somebody's fourth.
+    if (preexisting.length > 0) {
+      console.log(
+        `\n  ⚠ projection is ALREADY blocked by ${preexisting.length} pre-existing identity ` +
+          `problem(s)\n    not introduced by this edit. Until they are fixed, ` +
+          `project-doc-parts writes NO client\n    file — including this part's:`,
+      );
+      for (const p of preexisting) {
+        console.log(`      ${p.part_key} [${p.code}] ${p.detail}`);
+      }
+    }
+
+    if (introduced.length > 0) {
+      await client.query("ROLLBACK");
+      die(
+        REFUSED,
+        `✗ refused: this edit would leave ${introduced.length} canonical row(s) disagreeing\n` +
+          `  with their generated key, and project-doc-parts REFUSES TO WRITE ANY CLIENT FILE\n` +
+          `  while that is true — CLAUDE.md, AGENTS.md and the corpus would all stay stale,\n` +
+          `  including every OTHER part edited alongside this one.\n\n` +
+          introduced
+            .map((p) => `    ${p.part_key} [${p.code}] ${p.detail}`)
+            .join("\n") +
+          `\n\n  Keep one of the named tokens in the body, or rename the part (--part-key).`,
+      );
+    }
 
     if (!write) {
       await client.query("ROLLBACK");

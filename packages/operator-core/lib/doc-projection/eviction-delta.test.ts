@@ -2,11 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   applyEditInMemory,
   evictionDelta,
+  identityProblemDelta,
   renderImpact,
   type ClientImpact,
+  type IdentityProblem,
   type ProjectClientFn,
   type ProjectionRow,
 } from "./eviction-delta";
+// The REAL rule, not a restatement of it — these tests are worthless if they pin a
+// second copy of the heuristic instead of the one the projector actually refuses on.
+// ⚠ ONE LINE, deliberately. `@ts-expect-error` suppresses the NEXT LINE only, and on a
+// multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
+// directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
+// @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
+import { docPartIdentityProblems, FULL_PRECOMPRESSION_MARKER } from "../../../../scripts/project-doc-parts.mjs";
 
 const row = (
   part_key: string,
@@ -288,5 +297,151 @@ describe("renderImpact", () => {
 
     expect(text).toContain("projector refused");
     expect(text).not.toContain("NaN");
+  });
+});
+
+describe("identityProblemDelta", () => {
+  const problem = (
+    part_key: string,
+    code = "key-body-mismatch",
+  ): IdentityProblem => ({ part_key, code, detail: `${part_key} ${code}` });
+
+  /** Detector stand-in keyed on the row set it is handed (before = [], after = [_]). */
+  const detecting = (before: IdentityProblem[], after: IdentityProblem[]) => (
+    rows: ProjectionRow[],
+  ) => (rows.length === 0 ? before : after);
+
+  it("carries a problem present BEFORE the edit as pre-existing, never as the author's", () => {
+    const { introduced, preexisting } = identityProblemDelta({
+      before: [],
+      after: [row("mine", "x")],
+      detect: detecting([problem("theirs")], [problem("theirs")]),
+    });
+    expect(introduced).toEqual([]);
+    expect(preexisting).toEqual([problem("theirs")]);
+  });
+
+  it("CONTROL — a problem absent before and present after IS attributed to the edit", () => {
+    const { introduced, preexisting } = identityProblemDelta({
+      before: [],
+      after: [row("mine", "x")],
+      detect: detecting([], [problem("mine")]),
+    });
+    expect(introduced).toEqual([problem("mine")]);
+    expect(preexisting).toEqual([]);
+  });
+
+  it("treats a DIFFERENT code on the same row as newly introduced", () => {
+    const { introduced, preexisting } = identityProblemDelta({
+      before: [],
+      after: [row("mine", "x")],
+      detect: detecting(
+        [problem("mine", "key-body-mismatch")],
+        [
+          problem("mine", "key-body-mismatch"),
+          problem("mine", "orphaned-full-precompression-evidence"),
+        ],
+      ),
+    });
+    expect(introduced).toEqual([
+      problem("mine", "orphaned-full-precompression-evidence"),
+    ]);
+    expect(preexisting).toEqual([problem("mine", "key-body-mismatch")]);
+  });
+});
+
+/**
+ * EI-21968678099053129 — the same delta, driven by the projector's REAL detector.
+ *
+ * These are the cases `set-doc-part` now refuses on. They matter more than the
+ * stand-in tests above because they pin the INJECTION CONTRACT: if
+ * `docPartIdentityProblems` ever changes shape, this fails here rather than in a
+ * `✓ written` that the next command rejects.
+ */
+describe("identityProblemDelta against the real doc-part identity rule", () => {
+  const identityRow = (
+    part_key: string,
+    body: string,
+    client_scope: string[] = ["claude"],
+  ): ProjectionRow => ({
+    part_key,
+    kind: "prose",
+    body,
+    ordinal: 1,
+    client_scope,
+    target_section: "Section A",
+    project_rank: 100,
+  });
+
+  const KEY = "section-a-pgrep-q-does-not-ex";
+  const edit = (rows: ProjectionRow[], next: ProjectionRow) =>
+    identityProblemDelta({
+      before: rows,
+      after: applyEditInMemory(rows, next.part_key, next),
+      detect: docPartIdentityProblems,
+    });
+
+  it("refuses the reported case: a rewrite that drops every discriminating key token", () => {
+    const before = [identityRow(KEY, "The pgrep command is not supported here.")];
+    const { introduced, preexisting } = edit(
+      before,
+      identityRow(KEY, "Use find-newermt only with bfs 4.1.1."),
+    );
+    expect(introduced).toMatchObject([
+      { part_key: KEY, code: "key-body-mismatch" },
+    ]);
+    expect(preexisting).toEqual([]);
+    // The refusal must name the token the body has to keep — that string is what
+    // `set-doc-part` prints, and without it the author is told "no" with no repair.
+    expect(introduced[0].detail).toContain("pgrep");
+  });
+
+  it("NEGATIVE CONTROL — a rewrite that keeps the token is accepted", () => {
+    const before = [identityRow(KEY, "The pgrep command is not supported here.")];
+    const { introduced, preexisting } = edit(
+      before,
+      identityRow(KEY, "The pgrep command is still refused, for a new reason."),
+    );
+    expect(introduced).toEqual([]);
+    expect(preexisting).toEqual([]);
+  });
+
+  it("catches an edit that breaks a SIBLING row — the case key-matching would miss", () => {
+    // The problem this introduces is reported under `<KEY>#evidence`, NOT under the
+    // key being edited, so filtering findings by the edited part_key would report a
+    // clean write for an edit that blocks the whole projection.
+    const evidence = identityRow(
+      `${KEY}#evidence`,
+      `${FULL_PRECOMPRESSION_MARKER}\n\nA uniquely worded clause about throttling.`,
+      [],
+    );
+    const before = [
+      identityRow(KEY, "The pgrep command is not supported here, with throttling."),
+      evidence,
+    ];
+    const { introduced, preexisting } = edit(
+      before,
+      // Keeps its OWN key token, so the edited row itself stays legal.
+      identityRow(KEY, "The pgrep command is not supported here."),
+    );
+    expect(preexisting).toEqual([]);
+    expect(introduced).toMatchObject([
+      { part_key: `${KEY}#evidence`, code: "evidence-not-backed-by-projected-sibling" },
+    ]);
+  });
+
+  it("does not blame the author for a row that was ALREADY inconsistent", () => {
+    const before = [
+      identityRow(KEY, "The pgrep command is not supported here."),
+      identityRow("section-a-throttling-clause", "Nothing about the subject at all."),
+    ];
+    const { introduced, preexisting } = edit(
+      before,
+      identityRow(KEY, "The pgrep command is still refused, for a new reason."),
+    );
+    expect(introduced).toEqual([]);
+    expect(preexisting).toMatchObject([
+      { part_key: "section-a-throttling-clause", code: "key-body-mismatch" },
+    ]);
   });
 });
