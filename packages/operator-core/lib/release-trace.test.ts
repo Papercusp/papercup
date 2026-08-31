@@ -73,7 +73,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       // RENDERED a verdict (no preflight abort recorded), which is what this fixture describes.
       inconclusive: null,
       candidateFailures: null,
-      qualification: NO_QUALIFICATION,
+      ownerBrief: null, qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: green,

@@ -165,7 +165,8 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
     unknownLegs.push({ leg: 'remediation.fixerAlive', why: 'fixer-spawn liveness was unmeasurable on this read' });
   }
 
-  const ownershipCode = inp.ownership?.assessment?.code ?? null;
+  // `assessment` is the ownership oracle's closed string union (GateOwnershipAssessment).
+  const ownershipCode = inp.ownership?.assessment ?? null;
   const ownedLive = ownershipCode !== null && OWNED_LIVE_CODES.has(ownershipCode);
 
   const red = (reds ?? 0) > 0 || inp.inconclusive != null;

@@ -16,14 +16,14 @@ const heldLiveOwnership = {
   claimState: 'held',
   takenBy: 'su-40d60b0c-5441-431f-959c-7d3c196b534a',
   workItem: 'WI-212675',
-  assessment: { code: 'held-live' },
+  assessment: 'held-live',
 } as unknown as GateOwnerBriefInput['ownership'];
 
 const claimableOwnership = {
   claimState: 'claimable',
   takenBy: null,
   workItem: 'WI-212675',
-  assessment: { code: 'claimable' },
+  assessment: 'claimable',
 } as unknown as GateOwnerBriefInput['ownership'];
 
 const base: GateOwnerBriefInput = {

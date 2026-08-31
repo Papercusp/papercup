@@ -54,6 +54,7 @@ import { reconcileGateVerdictFreshnessWithCheckpointRun } from './release/gate-v
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
 import { readGateCandidateFailures, type GateCandidateFailures } from './gate-candidate-failures';
+import { composeGateOwnerBrief, type GateOwnerBrief } from './gate-owner-brief';
 import { listRuntimeVintage, type RuntimeVintageRow } from './runtime-vintage';
 import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
 
@@ -1279,6 +1280,14 @@ export interface PipelinePosition {
      * green". `null` when there is no frozen repair queue to answer about.
      */
     candidateFailures: GateCandidateFailures | null;
+    /**
+     * gate-audit-hardening-2026-08-31 P-001 — the composed, vintage-stamped owner brief:
+     * is main green / why not / who owns it / is remediation alive, answered in ONE leg
+     * (cell `gate.greenCheckpoint.ownerBrief`). Composed purely from values THIS resolver
+     * already computed — one derivation, no new I/O — with every leg carrying the vintage
+     * of its underlying observation, so two readers quoting it cannot silently diverge.
+     */
+    ownerBrief: GateOwnerBrief | null;
     /** Routine-owned logical qualification state, projected from the same snapshot row. */
     qualification: NonNullable<GitPipelineSnapshot['gate']['qualification']>;
   };
@@ -4960,7 +4969,24 @@ export async function gitPipelinePosition(
     // ⚠ `no-object` means "nobody owns it", NOT "the gate is fine" — gate health is
     // consecutiveReds/verdictStale; ownership is orthogonal. See CellOwnership.
     ownership: gateOwnership,
+    // gate-audit-hardening-2026-08-31 P-001: assigned right below, once the pieces it
+    // composes exist on this literal — see composeGateOwnerBrief for the doctrine.
+    ownerBrief: null as GateOwnerBrief | null,
   };
+  // ONE derivation, no new I/O: every input is a value this resolver already computed.
+  gate.ownerBrief = composeGateOwnerBrief({
+    nowMs: Date.now(),
+    consecutiveReds: gate.consecutiveReds,
+    failingTests: gate.failingTests,
+    failingTestsMeasured: gate.failingTestsMeasured,
+    lastGreenAtMs: gate.lastGreenAtMs,
+    verdictObservedAtMs: gate.verdictObservedAtMs,
+    fireStale: gate.fireStale,
+    verdictStale: gate.verdictStale,
+    inconclusive: gate.inconclusive,
+    repairQueue: gate.repairQueue ?? null,
+    ownership: gateOwnership,
+  });
   // EI-18793581783459047: surfaced as a NOTE (not folded into the tight one-line
   // `summary`, which is already densely tuned) so a caller about to launch a heavy
   // local suite sees it without this module's terse summary format growing a new

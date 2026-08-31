@@ -1939,7 +1939,7 @@ describe('gitPipelinePosition (P-002)', () => {
         observedCandidate: null,
         inconclusive: null,
         candidateFailures: null,
-        qualification: NO_QUALIFICATION,
+        ownerBrief: null, qualification: NO_QUALIFICATION,
       },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
@@ -2295,7 +2295,7 @@ describe('computeStages: position x health', () => {
       observedCandidate: null,
       inconclusive: null,
       candidateFailures: null,
-      qualification: NO_QUALIFICATION,
+      ownerBrief: null, qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: 'g',
@@ -2569,7 +2569,7 @@ describe('computeStages: position x health', () => {
           observedCandidate: null,
           inconclusive: null,
           candidateFailures: null,
-          qualification: NO_QUALIFICATION,
+          ownerBrief: null, qualification: NO_QUALIFICATION,
         },
       }),
     );
@@ -2627,7 +2627,7 @@ describe('computeStages: position x health', () => {
           observedCandidate: null,
           inconclusive: null,
           candidateFailures: null,
-          qualification: NO_QUALIFICATION,
+          ownerBrief: null, qualification: NO_QUALIFICATION,
         },
       }),
     );
@@ -2653,7 +2653,7 @@ describe('computeStages: position x health', () => {
           observedCandidate: null,
           inconclusive: null,
           candidateFailures: null,
-          qualification: NO_QUALIFICATION,
+          ownerBrief: null, qualification: NO_QUALIFICATION,
         },
       }),
     );
@@ -2728,7 +2728,7 @@ describe('computeStages: position x health', () => {
           observedCandidate: null,
           inconclusive: null,
           candidateFailures,
-          qualification: NO_QUALIFICATION,
+          ownerBrief: null, qualification: NO_QUALIFICATION,
         },
       });
 
@@ -2869,7 +2869,7 @@ describe('computeStages: position x health', () => {
       observedAtMs: 1,
     },
     candidateFailures: null,
-    qualification: NO_QUALIFICATION,
+    ownerBrief: null, qualification: NO_QUALIFICATION,
   });
 
   it('⭐ EI-19405864032365760: an ABORTED gate reports the abort, not the stale red streak', () => {
@@ -3095,7 +3095,7 @@ describe('computeStages: position x health', () => {
             observedCandidate: null,
             inconclusive: null,
             candidateFailures: null,
-            qualification: NO_QUALIFICATION,
+            ownerBrief: null, qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -3129,7 +3129,7 @@ describe('computeStages: position x health', () => {
             observedCandidate: null,
             inconclusive: null,
             candidateFailures: null,
-            qualification: NO_QUALIFICATION,
+            ownerBrief: null, qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -3163,7 +3163,7 @@ describe('computeStages: position x health', () => {
             observedCandidate: null,
             inconclusive: null,
             candidateFailures: null,
-            qualification: NO_QUALIFICATION,
+            ownerBrief: null, qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -3197,7 +3197,7 @@ describe('computeStages: position x health', () => {
             observedCandidate: null,
             inconclusive: null,
             candidateFailures: null,
-            qualification: NO_QUALIFICATION,
+            ownerBrief: null, qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -3239,7 +3239,7 @@ describe('computeStages: position x health', () => {
             observedCandidate: null,
             inconclusive: null,
             candidateFailures: null,
-            qualification: NO_QUALIFICATION,
+            ownerBrief: null, qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -3690,7 +3690,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       observedCandidate: null,
       inconclusive: null,
       candidateFailures: null,
-      qualification: NO_QUALIFICATION,
+      ownerBrief: null, qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: 'g',
@@ -3811,7 +3811,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
         observedCandidate: null,
         inconclusive: null,
         candidateFailures: null,
-        qualification: NO_QUALIFICATION,
+        ownerBrief: null, qualification: NO_QUALIFICATION,
       },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
@@ -4049,7 +4049,7 @@ describe('changeInCandidate (P-004)', () => {
           observedCandidate: null,
           inconclusive: null,
           candidateFailures: null,
-          qualification: NO_QUALIFICATION,
+          ownerBrief: null, qualification: NO_QUALIFICATION,
         },
         verdictProvenance: {
           lastGreenSha: 'g',
@@ -4093,7 +4093,7 @@ describe('changeInCandidate (P-004)', () => {
           observedCandidate: null,
           inconclusive: null,
           candidateFailures: null,
-          qualification: NO_QUALIFICATION,
+          ownerBrief: null, qualification: NO_QUALIFICATION,
         },
         changeInCandidate: contained({
           judgingSha: 'cand1234567890',
@@ -4124,7 +4124,7 @@ describe('changeInCandidate (P-004)', () => {
           observedCandidate: null,
           inconclusive: null,
           candidateFailures: null,
-          qualification: NO_QUALIFICATION,
+          ownerBrief: null, qualification: NO_QUALIFICATION,
         },
       });
       expect(s.detail).toMatch(/Gate is RED \(3 consecutive\)/);
@@ -4147,7 +4147,7 @@ describe('changeInCandidate (P-004)', () => {
           observedCandidate: null,
           inconclusive: null,
           candidateFailures: null,
-          qualification: NO_QUALIFICATION,
+          ownerBrief: null, qualification: NO_QUALIFICATION,
         },
         changeInCandidate: contained({
           nextCandidateSha: 'cand1234567890',
@@ -4203,7 +4203,7 @@ describe('changeInCandidate (P-004)', () => {
         observedCandidate: null,
         inconclusive: null,
         candidateFailures: null,
-        qualification: NO_QUALIFICATION,
+        ownerBrief: null, qualification: NO_QUALIFICATION,
       },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
@@ -4840,7 +4840,7 @@ describe('stage levers (P-005)', () => {
       observedCandidate: null,
       inconclusive: null,
       candidateFailures: null,
-      qualification: NO_QUALIFICATION,
+      ownerBrief: null, qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: 'g',
@@ -4882,7 +4882,7 @@ describe('stage levers (P-005)', () => {
     observedCandidate: null,
     inconclusive: null,
     candidateFailures: null,
-    qualification: NO_QUALIFICATION,
+    ownerBrief: null, qualification: NO_QUALIFICATION,
   };
   /** A suite really is running — the EI-18797292094433710 state, where waiting IS the lever. */
   const IN_FLIGHT = {
@@ -4944,7 +4944,7 @@ describe('stage levers (P-005)', () => {
         observedCandidate: null,
         inconclusive: null,
         candidateFailures: null,
-        qualification: NO_QUALIFICATION,
+        ownerBrief: null, qualification: NO_QUALIFICATION,
       },
       changeInCandidate: { ...NO_CANDIDATE, judgingContainsPath: false, missingReason: 'uncommitted' },
     });
@@ -4970,7 +4970,7 @@ describe('stage levers (P-005)', () => {
         observedCandidate: null,
         inconclusive: null,
         candidateFailures: null,
-        qualification: NO_QUALIFICATION,
+        ownerBrief: null, qualification: NO_QUALIFICATION,
       },
     });
     expect(l).toMatch(/fix the reds/);
@@ -5201,7 +5201,7 @@ describe('stage levers (P-005)', () => {
         observedCandidate: null,
         inconclusive: null,
         candidateFailures: null,
-        qualification: NO_QUALIFICATION,
+        ownerBrief: null, qualification: NO_QUALIFICATION,
       },
       changeInCandidate: {
         ...NO_CANDIDATE,
@@ -5234,7 +5234,7 @@ describe('stage levers (P-005)', () => {
         observedCandidate: null,
         inconclusive: null,
         candidateFailures: null,
-        qualification: NO_QUALIFICATION,
+        ownerBrief: null, qualification: NO_QUALIFICATION,
       },
       changeInCandidate: {
         ...NO_CANDIDATE,
@@ -5603,7 +5603,7 @@ describe('sweep exposure (P-006)', () => {
       observedCandidate: null,
       inconclusive: null,
       candidateFailures: null,
-      qualification: NO_QUALIFICATION,
+      ownerBrief: null, qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: 'g',
