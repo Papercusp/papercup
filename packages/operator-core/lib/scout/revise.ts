@@ -103,7 +103,7 @@ You are running ONE targeted revision pass as a deterministic pipeline step. You
 - PRESERVE the YAML frontmatter block (the leading --- ... --- ), including slug, status: draft, and origin. You MAY refine the title and bump the updated date.
 - INTEGRATE the feedback — sharpen the Now/Background and add/fix Phase items + Decisions as it directs. Do not blindly append; weave it in. Keep the plan HONEST (don't overclaim or invent results).
 - Keep it a valid plan: the same section structure (## Now / ## Background / ## Phase … / ## Decisions).
-- If you conclude the PREMISE itself is flawed (not just execution), you cannot deprecate from this step — instead state plainly IN THE ## Now BLOCK that the premise looks unsound and why, so the Queen can deprecate. Never emit a deprecation note in place of the plan.`;
+- If you conclude the PREMISE itself is flawed (not just execution), you cannot deprecate from this step — instead state plainly IN THE ## Now BLOCK that the premise looks unsound and why, so the reviewing steward can deprecate. Never emit a deprecation note in place of the plan.`;
 
 /** Build the revision user prompt from the current plan body + the Queen's feedback. */
 export function revisionUserPrompt(currentPlan: string, feedback: string): string {
