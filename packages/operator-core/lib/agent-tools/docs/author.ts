@@ -173,6 +173,29 @@ export function stripLeadingFrontmatter(body: string): { body: string; stripped:
   return { body, stripped: false };
 }
 
+/**
+ * Strip the `# <title>` + `URL: <url>` + description header that `docs:get`
+ * PREPENDS to every body it serves (`withPreamble`).
+ *
+ * The truncation guards below only fire on a doc big enough to be clipped. A doc
+ * UNDER the read cap comes back complete, no guard fires — and the natural
+ * read→edit→write still injects this header into the body, once per edit.
+ * Measured 2026-08-31 on `agent-insights/index`: docs:get returned
+ * `# Agent insights — overview\nURL: /internal/docs/agent-insights/index\n\n…`
+ * for a row whose content starts `---\ntitle: …`.
+ *
+ * The pattern is anchored and demands `URL:` on the SECOND line, which is what
+ * keeps it off an ordinary doc that merely opens with an H1. Strip-and-warn
+ * mirrors {@link stripLeadingFrontmatter}: the caller is told what was removed.
+ */
+const READ_PREAMBLE_RE = /^﻿?#[^\n]*\r?\nURL:[ \t][^\n]*\r?\n\r?\n[^\n]*\r?\n\r?\n/;
+
+export function stripReadPreamble(body: string): { body: string; stripped: boolean } {
+  const m = READ_PREAMBLE_RE.exec(body);
+  if (!m) return { body, stripped: false };
+  return { body: body.slice(m[0].length), stripped: true };
+}
+
 /** string | string[] (possibly comma-joined) → trimmed, de-duped, non-empty array. */
 export function normalizeList(input: unknown): string[] {
   if (input == null) return [];
@@ -348,6 +371,32 @@ export interface OverwriteGuardVerdict {
 }
 
 /**
+ * Where to read the CANONICAL source before a full-body overwrite — and why it is
+ * not `docs:get`.
+ *
+ * Measured 2026-08-31 on `agent-insights/index`: docs:get returned 1,712 chars for
+ * a 1,812-char row, having stripped the frontmatter and PREPENDED a
+ * `# <title>` + `URL: …` + description preamble (`withPreamble`). So even an
+ * UNTRUNCATED docs:get body injects that header into the doc on write. Worse, the
+ * engineering adapter serves `renderMdxToMarkdown(body)` for a `.mdx` doc — and
+ * 195 of 990 authored docs carry `import … from` statements, 218 carry JSX — so
+ * round-tripping those through docs:get would silently flatten them.
+ *
+ * The `.mdx` projection is the faithful copy: it is written from
+ * harness_shared.harness_docs.content verbatim, has no size cap, and its
+ * frontmatter (projection banner included) is regenerated on write anyway.
+ */
+export function canonicalSourceHint(absPath: string | null): string {
+  const read = absPath ? `capability:read { file_path: "${absPath}" }` : 'capability:read on the doc\'s .mdx projection';
+  return (
+    `Read the CANONICAL source first: ${read} — the .mdx projection is byte-faithful to ` +
+    'harness_shared.harness_docs.content, has no size cap, and its frontmatter is regenerated on write. ' +
+    `Do NOT source an overwrite body from docs:get: it caps a page at ${MAX_PAYLOAD_BYTES} bytes AND serves a ` +
+    'RENDERED, preamble-prefixed projection rather than the source, so even a complete read corrupts the doc.'
+  );
+}
+
+/**
  * Is `body` provably a CLIPPED READ rather than a whole document?
  *
  * Two conditions, both required: it carries `docs:get`'s truncation marker in its
@@ -363,9 +412,8 @@ export function truncatedBodyVerdict(body: string): OverwriteGuardVerdict | null
     overridable: false,
     detail:
       `\`body\` ends with docs:get's truncation marker, so it is a CLIPPED READ (cut at ${MAX_PAYLOAD_BYTES} bytes), not the document. ` +
-      'Writing it would delete everything past the cut. There is no override — the marker means the body is provably incomplete; ' +
-      'deleting the marker would not make it whole. Read the WHOLE page first — docs:get returns `nextOffset` on a clipped entry, ' +
-      'so re-fetch the same slug with offset=<nextOffset> until none comes back, concatenate, and send that as `body`.',
+      'Writing it would delete everything past the cut. There is no override — the marker means the body is provably incomplete, ' +
+      'and deleting the marker would not make it whole.',
   };
 }
 
@@ -409,9 +457,7 @@ export function overwriteShrinkVerdict(args: {
     detail:
       `this overwrite would cut the doc from ${existing} to ${args.contentLength} chars ${why}. ` +
       'docs:get TRUNCATES a large page while still returning found:true, so a body sourced from it silently deletes the rest. ' +
-      'Read the WHOLE page first — docs:get returns `nextOffset` on a clipped entry, so re-fetch the same slug with ' +
-      'offset=<nextOffset> until none comes back, concatenate, and send that as `body` — or pass confirmShrink:true if you ' +
-      'really do mean to delete that much.',
+      'Pass confirmShrink:true if you really do mean to delete that much.',
   };
 }
 
@@ -554,6 +600,18 @@ export default defineTool({
     if (stripCheck.stripped) {
       warnings.push('a leading --- frontmatter block in `body` was stripped — frontmatter is generated from the args; pass body content only.');
     }
+    // Remove docs:get's read preamble before it becomes part of the document. The
+    // truncation guards below use the RAW body (the preamble sits inside the
+    // clipped window, so removing it first would move the body off the read-cap
+    // fingerprint); only the authored content is composed.
+    const preambleCheck = stripReadPreamble(stripCheck.body);
+    const authoredBody = preambleCheck.stripped ? preambleCheck.body : args.body;
+    if (preambleCheck.stripped) {
+      warnings.push(
+        "a docs:get read preamble (`# <title>` + `URL: …`) was stripped from `body` — that header is added by the READ surface, not part of the doc. " +
+          'Note that docs:get is a rendered projection: prefer reading the .mdx projection when rewriting a doc.',
+      );
+    }
 
     const existingContent = args.overwrite
       ? await getAuthoredDocContent(harnessSlug, docId).catch(() => null)
@@ -617,7 +675,7 @@ export default defineTool({
           : {}),
       preservedFrontmatter: existingFrontmatter,
     };
-    const content = composeDoc(fm, args.body);
+    const content = composeDoc(fm, authoredBody);
 
     // ── Truncated-body guards (EI-21940075757786953) ────────────────────────────
     // `body` is a FULL replacement, so a body sourced from a clipped read deletes
@@ -625,14 +683,14 @@ export default defineTool({
     // baseline is `existingContent`, which the frontmatter-inheritance step above
     // has already loaded, so this costs no extra read.
     const truncated = truncatedBodyVerdict(args.body);
-    if (truncated) return err(`${truncated.code} — ${truncated.detail}`);
+    if (truncated) return err(`${truncated.code} — ${docId}: ${truncated.detail} ${canonicalSourceHint(abs)}`);
     if (args.overwrite && !args.confirmShrink) {
       const shrink = overwriteShrinkVerdict({
         existingLength: existingContent?.length,
         bodyLength: args.body.length,
         contentLength: content.length,
       });
-      if (shrink) return err(`${shrink.code} — ${docId}: ${shrink.detail}`);
+      if (shrink) return err(`${shrink.code} — ${docId}: ${shrink.detail} ${canonicalSourceHint(abs)}`);
     }
 
     // Validate the complete projected document before the canonical write. The downstream

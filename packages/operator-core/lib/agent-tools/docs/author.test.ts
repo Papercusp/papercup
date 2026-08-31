@@ -23,6 +23,8 @@ import {
   DESCRIPTION_HARD_MAX,
   truncatedBodyVerdict,
   overwriteShrinkVerdict,
+  canonicalSourceHint,
+  stripReadPreamble,
   SHRINK_REFUSAL_RATIO,
   SHRINK_REFUSAL_MIN_LOSS,
   type FrontmatterInput,
@@ -496,5 +498,79 @@ describe('overwriteShrinkVerdict', () => {
   it('returns null with no baseline — absence of evidence, not a verdict of fine', () => {
     expect(overwriteShrinkVerdict({ existingLength: null, bodyLength: 10, contentLength: 20 })).toBeNull();
     expect(overwriteShrinkVerdict({ existingLength: 0, bodyLength: 10, contentLength: 20 })).toBeNull();
+  });
+});
+
+describe('stripReadPreamble', () => {
+  // The UNGUARDED half of the class: a doc under the 50KB cap comes back complete,
+  // no truncation guard fires, and the natural read→edit→write injects docs:get's
+  // header into the body once per edit. Measured shape below is verbatim from
+  // docs:get { slugs:['agent-insights/index'] } on 2026-08-31.
+  const served = (desc: string, body: string) =>
+    `# Agent insights — overview\nURL: /internal/docs/agent-insights/index\n\n${desc}\n\n${body}`;
+
+  it('strips the preamble docs:get actually served', () => {
+    const r = stripReadPreamble(served('What an insight is, when to write one.', 'This section is the **agent knowledge base**.'));
+    expect(r.stripped).toBe(true);
+    expect(r.body).toBe('This section is the **agent knowledge base**.');
+  });
+
+  it('handles a doc whose description is empty', () => {
+    const r = stripReadPreamble(served('', '# Real heading\n\nbody'));
+    expect(r.stripped).toBe(true);
+    expect(r.body).toBe('# Real heading\n\nbody');
+  });
+
+  it('leaves an ordinary doc that merely OPENS with an H1 alone', () => {
+    // The `URL:` second line is what keeps this off authored content.
+    const authored = '# My insight\n\nSome prose about a URL: it is a link.\n\nMore.\n';
+    expect(stripReadPreamble(authored)).toEqual({ body: authored, stripped: false });
+  });
+
+  it('leaves a body with no leading heading alone', () => {
+    const authored = 'Just prose.\n\nURL: /somewhere\n\nmore\n';
+    expect(stripReadPreamble(authored)).toEqual({ body: authored, stripped: false });
+  });
+
+  it('composeDoc on a stripped body does not carry the header into the doc', () => {
+    const fm: FrontmatterInput = {
+      title: 'Agent insights — overview',
+      description: 'D',
+      discovered: '2026-08-31',
+      status: 'active',
+      type: 'Insight',
+      tags: [],
+      documents: [],
+      plans: [],
+    };
+    const round = composeDoc(fm, stripReadPreamble(served('D', 'The real body.')).body);
+    expect(round).not.toContain('URL: /internal/docs/agent-insights/index');
+    expect(round).toContain('The real body.');
+  });
+});
+
+describe('canonicalSourceHint', () => {
+  // A refusal with no usable exit is a dead end, and the OBVIOUS exit is wrong:
+  // docs:get serves a rendered, preamble-prefixed projection (measured 2026-08-31 —
+  // agent-insights/index came back 1,712 chars for an 1,812-char row, with a
+  // `# title` + `URL:` header prepended), and 195/990 authored docs carry `import`
+  // statements that the MDX→markdown render would flatten. So the hint must name
+  // the .mdx projection and must steer AWAY from docs:get.
+  it('names the concrete projection path to read', () => {
+    const hint = canonicalSourceHint('/repo/apps/operator-docs/src/content/docs/testing/agent-e2e.mdx');
+    expect(hint).toContain('capability:read');
+    expect(hint).toContain('/repo/apps/operator-docs/src/content/docs/testing/agent-e2e.mdx');
+  });
+
+  it('warns off docs:get as an overwrite source', () => {
+    const hint = canonicalSourceHint('/x.mdx');
+    expect(hint).toContain('Do NOT source an overwrite body from docs:get');
+    expect(hint).toContain(String(MAX_PAYLOAD_BYTES));
+  });
+
+  it('still gives an exit when the path could not be resolved', () => {
+    const hint = canonicalSourceHint(null);
+    expect(hint).toContain('capability:read');
+    expect(hint).not.toContain('null');
   });
 });

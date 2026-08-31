@@ -114,7 +114,7 @@ const argsSchema = z.preprocess(
         .min(0)
         .optional()
         .describe(
-          'Resume a clipped read here. A page over the 50KB cap comes back TRUNCATED with found:true and a `nextOffset` — pass it back to read the next window, and repeat until no nextOffset is returned. Only honored when slugs.length === 1. This is the supported way to read a large page WHOLE (e.g. before a docs:author overwrite, which takes a full replacement body).',
+          'Resume a clipped read here. A page over the 50KB cap comes back TRUNCATED with found:true and a `nextOffset` — pass it back to read the next window, and repeat until no nextOffset is returned. Only honored when slugs.length === 1. For READING a long page; never as the source for a docs:author overwrite (this surface serves a rendered, preamble-prefixed projection, not the doc source — read the .mdx projection for that).',
         ),
       harness: z
         .string()
