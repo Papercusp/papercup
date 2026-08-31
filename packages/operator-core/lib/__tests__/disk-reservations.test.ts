@@ -67,7 +67,7 @@ describe('disk reservation ledger — Node reader', () => {
     const fromShell = execFileSync(
       'bash',
       ['-c', `source ${JSON.stringify(SHELL_LIB)} && papercusp_mount_key ${JSON.stringify(path)}`],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' },
     ).trim();
     const fromNode = mountKeyForPath(path);
 
@@ -191,7 +191,11 @@ describe('assessCargoDiskAdmission — reservation awareness', () => {
 /** Read this process's own /proc start time, the way the reader does. */
 function currentStart(pid: number): string {
   try {
-    const stat = execFileSync('cat', [`/proc/${pid}/stat`], { encoding: 'utf8' });
+    const stat = execFileSync('cat', [`/proc/${pid}/stat`], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      killSignal: 'SIGKILL',
+    });
     const rest = stat.slice(stat.lastIndexOf(') ') + 2);
     return rest.split(/\s+/)[19] || '';
   } catch {
