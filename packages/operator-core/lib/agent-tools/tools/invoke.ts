@@ -21,7 +21,45 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 
-type NestedOutcome = { effectiveStatus: 'ok' | 'partial' | 'error'; childFailureCount: number };
+type NestedOutcome = {
+  effectiveStatus: 'ok' | 'partial' | 'error' | 'vacuous';
+  childFailureCount: number;
+};
+
+/**
+ * Envelope keys that NAME a measured population (EI-20460134627396216).
+ *
+ * A zero is only reportable against one of these. A body carrying no population
+ * key measured nothing IN PARTICULAR — an action result, a scalar read — and is
+ * never called vacuous, because "empty" would then mean "I found no field I
+ * recognized", which is a statement about this list and not about the call
+ * (workspace fact `guard-rail:absence-needs-its-population`).
+ */
+const POPULATION_KEYS = ['items', 'results', 'rows', 'matches', 'hits', 'entries'] as const;
+
+/** How many populations a body declared, and how many of those came back empty. */
+function readPopulations(record: Record<string, unknown>): { declared: number; empty: number } {
+  let declared = 0;
+  let empty = 0;
+  for (const key of POPULATION_KEYS) {
+    const value = record[key];
+    if (!Array.isArray(value)) continue;
+    declared += 1;
+    if (value.length === 0) empty += 1;
+  }
+  // A batch envelope declares its population as counts{ok,failed} rather than an
+  // array. Both must be present and finite, or this is not a batch envelope.
+  const counts = record.counts;
+  if (counts && typeof counts === 'object') {
+    const ok = Number((counts as Record<string, unknown>).ok ?? Number.NaN);
+    const failed = Number((counts as Record<string, unknown>).failed ?? Number.NaN);
+    if (Number.isFinite(ok) && Number.isFinite(failed)) {
+      declared += 1;
+      if (ok === 0 && failed === 0) empty += 1;
+    }
+  }
+  return { declared, empty };
+}
 
 function decodedResultBodies(result: {
   content?: ReadonlyArray<unknown>;
@@ -50,6 +88,8 @@ export function summarizeNestedToolOutcome(result: {
   if (result.isError) return { effectiveStatus: 'error', childFailureCount: 1 };
   let failures = 0;
   let successes = 0;
+  let declaredPopulations = 0;
+  let emptyPopulations = 0;
   for (const body of decodedResultBodies(result)) {
     if (!body || typeof body !== 'object') continue;
     const record = body as Record<string, unknown>;
@@ -63,8 +103,18 @@ export function summarizeNestedToolOutcome(result: {
       if (Number.isFinite(failed) && failed > 0) failures += failed;
       if (Number.isFinite(ok) && ok > 0) successes += ok;
     }
+    const population = readPopulations(record);
+    declaredPopulations += population.declared;
+    emptyPopulations += population.empty;
   }
-  if (failures === 0) return { effectiveStatus: 'ok', childFailureCount: 0 };
+  if (failures === 0) {
+    // A call that failed at nothing but MEASURED nothing is not the same result as
+    // one that measured something, and until now both recorded a clean `ok`. Only
+    // a body that declared a population can be called empty, and every declared
+    // population must be empty — one non-empty population means work was done.
+    const vacuous = declaredPopulations > 0 && emptyPopulations === declaredPopulations;
+    return { effectiveStatus: vacuous ? 'vacuous' : 'ok', childFailureCount: 0 };
+  }
   return {
     effectiveStatus: successes > 0 ? 'partial' : 'error',
     childFailureCount: failures,

@@ -289,6 +289,32 @@ const TAB_CHROME_READS: Record<string, string> = {
   "automation.catalog":
     "pot-chip rail — the lens SELECTOR itself; it must enumerate every learning " +
     "pot to be navigable, so a pot arg would collapse it to the current pot",
+  // P-008's every-pot scope PICKER (LearningPotPicker), a SEPARATE surface from
+  // the P-006 rail above and issuing a DIFFERENT query. The rail was registered
+  // here when it landed; the picker arrived later (LearningTab.tsx gained
+  // `<LearningPotPicker />` in the same change that added the rail) and its read
+  // was never registered, which is the entire reason this guard went red — not a
+  // scoping defect in the picker.
+  //
+  // Same two tests the rail passes, re-checked for THIS surface rather than
+  // inherited from it:
+  //   1. CHROME, structurally — it renders at LearningTab.tsx:901, between the
+  //      stage stepper and the view controls and OUTSIDE LearningViewContent
+  //      (used :1004, defined :1024), so it appears in every view's recording
+  //      without belonging to any view. It is mounted OUTSIDE the rail on
+  //      purpose: the rail renders nothing when no pot has a learning row, and
+  //      the picker must stay reachable exactly then.
+  //   2. UNSCOPABLE, not merely unscoped — it is the surface that enumerates
+  //      every pot so one can be chosen, so filtering it to the selected pot is
+  //      the circular "you can only navigate to where you already are" shape the
+  //      rail's note describes. Its `includeHiveHomes: true` arg is that
+  //      enumeration, not a lens opt-out. Contrast WI-6385, where the pot column
+  //      existed in the very table the leg read and scoping was both possible
+  //      and correct.
+  "harnessProjects.lite":
+    "every-pot scope picker (P-008) — the lens SELECTOR's registry listing; it " +
+    "enumerates every pot so one can be picked, so a pot arg would collapse the " +
+    "choice to the pot already selected",
 };
 
 const scenarios = {

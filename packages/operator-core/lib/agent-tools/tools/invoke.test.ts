@@ -164,10 +164,63 @@ describe('tools:invoke handler', () => {
 });
 
 describe('summarizeNestedToolOutcome', () => {
+  const body = (value: unknown) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(value) }],
+  });
+
   it('marks mixed batch results partial', () => {
     expect(summarizeNestedToolOutcome({
       content: [{ type: 'text', text: JSON.stringify({ ok: true, counts: { ok: 2, failed: 1 } }) }],
     })).toEqual({ effectiveStatus: 'partial', childFailureCount: 1 });
+  });
+
+  /**
+   * EI-20460134627396216. Measured live 2026-08-31 through the real dispatcher:
+   * `work_items:search` for a token matching NOTHING and the same tool matching
+   * plenty both recorded status=ok, effectiveStatus=ok, childFailureCount=0
+   * (telemetry rows 23843990 / 23843994) — indistinguishable in every field but
+   * raw byte size. These cases pin the discrimination that was missing.
+   *
+   * The `ok` cases below are the falsifiability controls: an implementation that
+   * calls everything vacuous, or that reads a bare `ok:true` as empty, fails them.
+   */
+  describe('vacuous success — ok that measured nothing', () => {
+    it('a search whose declared population came back empty is vacuous', () => {
+      expect(summarizeNestedToolOutcome(body({ ok: true, count: 0, items: [] })))
+        .toEqual({ effectiveStatus: 'vacuous', childFailureCount: 0 });
+    });
+
+    it('CONTROL: the same envelope with matches is ok, not vacuous', () => {
+      expect(summarizeNestedToolOutcome(body({ ok: true, count: 1, items: [{ id: 'WI-1' }] })))
+        .toEqual({ effectiveStatus: 'ok', childFailureCount: 0 });
+    });
+
+    it('a batch that neither succeeded nor failed at anything is vacuous', () => {
+      expect(summarizeNestedToolOutcome(body({ ok: true, results: [], counts: { ok: 0, failed: 0 } })))
+        .toEqual({ effectiveStatus: 'vacuous', childFailureCount: 0 });
+    });
+
+    it('CONTROL: a body declaring NO population is ok — absence needs its population', () => {
+      // An action result. Calling this vacuous would mean "I recognized no field",
+      // which is a claim about POPULATION_KEYS, not about the call.
+      expect(summarizeNestedToolOutcome(body({ ok: true, flags: { a: true } })))
+        .toEqual({ effectiveStatus: 'ok', childFailureCount: 0 });
+    });
+
+    it('CONTROL: one non-empty population among several is ok', () => {
+      expect(summarizeNestedToolOutcome(body({ ok: true, results: [], rows: [{ n: 1 }] })))
+        .toEqual({ effectiveStatus: 'ok', childFailureCount: 0 });
+    });
+
+    it('CONTROL: a real failure still outranks emptiness', () => {
+      expect(summarizeNestedToolOutcome(body({ ok: false, items: [] })))
+        .toEqual({ effectiveStatus: 'error', childFailureCount: 1 });
+    });
+
+    it('CONTROL: isError short-circuits before any population read', () => {
+      expect(summarizeNestedToolOutcome({ ...body({ ok: true, items: [] }), isError: true }))
+        .toEqual({ effectiveStatus: 'error', childFailureCount: 1 });
+    });
   });
 });
 
