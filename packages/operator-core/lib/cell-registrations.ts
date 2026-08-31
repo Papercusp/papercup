@@ -630,6 +630,101 @@ export const GATE_QUALIFICATION_CELL: CellSpec = {
 };
 
 /**
+ * Cell 2c — WHAT IS FAILING on the frozen candidate, and whether each failure is already
+ * repaired at `repairHead`. WI-1702869.
+ *
+ * ── THE MEASURED GAP THIS CLOSES ────────────────────────────────────────────────
+ * 2026-08-31, owner-escalated. Asked "how many tests are failing on the thing we're
+ * promoting", an agent found that NO cell, tool or field returned it — so it hand-wrote
+ * SQL against `test_runs` and reported "45 → 29 failing files", then "no full suite has
+ * run". The true answer was ONE failing file whose fix was ALREADY in `repairHead`:
+ * freeze-and-converge had worked and the instrument to see it did not exist.
+ *
+ * ── WHY IT IS ITS OWN CELL AND NOT A FIELD ON `verdict` ─────────────────────────
+ * `gate.greenCheckpoint.verdict` headlines `gate.consecutiveReds` — a STREAK COUNTER
+ * under the name "verdict", whose own assessment says those counters can describe an
+ * OLDER run. An agent asking "what's the verdict" gets a number that looks like a
+ * failure count and is not (it read 77 the morning this was filed). Hanging the real
+ * failure count off that cell would make the collision worse, and a CellSpec describes
+ * exactly ONE subject (D-014). This is a different subject: not "how bad is the streak"
+ * but "what is on the repair queue right now, and how much of it is already done".
+ *
+ * ── THE HEADLINE IS THE STILL-BROKEN COUNT, DELIBERATELY ────────────────────────
+ * Not `failingFileCount`. The whole finding is that a failing row on a FROZEN sha does
+ * not mean the file is still broken — fixes land ON TOP of the candidate, so the
+ * population splits into "already fixed, awaiting re-verification" and "actually still
+ * broken". Only the second is work. Headlining the raw count would reproduce the exact
+ * over-read this cell exists to end.
+ */
+export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
+  cell: 'gate.greenCheckpoint.candidateFailures',
+  registeredOn: '2026-08-31',
+  owner: 'su-062dd71e-fd88-4a36-a90d-3ba5963c9bb4',
+  headline: 'gate.candidateFailures.stillBrokenCount',
+  assessment: {
+    path: 'gate.candidateFailures.assessment',
+    codes: {
+      'no-frozen-candidate': {
+        meaning:
+          'There is no frozen repair queue, so there is no candidate to report failures ON. This is a MEASURED ABSENCE of a subject, not a count of zero failures.',
+        safeAction:
+          'Do not read this as "nothing is failing". Read gate.greenCheckpoint.verdict for the gate\'s own state; if you need the judged sha, that is gate.greenCheckpoint.candidate.',
+      },
+      unmeasured: {
+        meaning:
+          'The candidate is frozen but its failing-file set could not be read (test_runs unreachable, or the refs did not resolve).',
+        safeAction:
+          'Read `unavailable` for the reason. Do NOT substitute a raw test_runs query — that population mixes the full suite (commit_sha=NULL) and dirty-tree runs, which is the original defect. Retry, or state the answer is unknown.',
+      },
+      'all-fixes-contained': {
+        meaning:
+          'Every file failing on the frozen candidate already differs at repairHead — the fixes landed after the cut and are awaiting re-verification.',
+        safeAction:
+          'Do NOT go fix these files again; they are already repaired. Let the queue re-test repairHead. This is what a WORKING freeze-and-converge looks like from the inside.',
+      },
+      'repairs-outstanding': {
+        meaning:
+          'One or more files are byte-identical at repairHead, so no fix has landed for them. This is the real repair queue.',
+        safeAction:
+          'Fix the files whose `fixInRepairHead` is false, so the fixes land ON TOP of the frozen candidate. Do not cut a fresh candidate to "try again".',
+      },
+      'none-failing': {
+        meaning:
+          'No file failed in the radius the gate judged for this candidate. ⚠ THE RADIUS IS NOT THE SUITE — see `scope`.',
+        safeAction:
+          'Do NOT report "the gate is green". Check `postSuiteMeasured` and the main fast-forward; a passing affected-tests leg is not a green gate.',
+      },
+    },
+    evidence: [
+      'gate.candidateFailures.distinctFailingFiles',
+      'gate.candidateFailures.filesJudged',
+      'gate.candidateFailures.scope',
+      'gate.candidateFailures.postSuiteMeasured',
+    ],
+  },
+  nullable: true,
+  unknownHoist: 'gate.candidateFailures.unavailable',
+  callerRelativity: { kind: 'global' },
+  provenance: {
+    obtainedBy:
+      "harness_shared.test_runs scoped to source='ci' AND worktree_dirty=false AND commit_sha=<frozen candidate>, joined per-file to a git blob (or gitlink) comparison against repairHead",
+    liveExercised: true,
+    evidence:
+      'The method was run by hand against candidate adbf2753 on 2026-08-31: 223 files judged, 1 distinct failing file (LearningTab.lens-guard.test.tsx), blob ab5e43a6 at the candidate vs 36734ba9 at repairHead — i.e. already fixed. Re-running that blob on a clean tree passed 28/28.',
+  },
+  resolver: 'readGateCandidateFailures() @ packages/operator-core/lib/gate-candidate-failures.ts',
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
+  federation: { kind: 'local' },
+  changeSignal: {
+    kind: 'poll',
+    tool: 'dev:pipeline_position',
+    path: 'gate.candidateFailures.stillBrokenCount',
+  },
+  shape:
+    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, postSuiteMeasured, scope, unavailable, truncated } } }',
+};
+
+/**
  * Cell 2b — WHO owns the gate incident, and whether that ownership is real.
  *
  * A SEPARATE cell rather than a second independent check bolted onto cells 1/2. A
@@ -1488,6 +1583,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
+  GATE_CANDIDATE_FAILURES_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
