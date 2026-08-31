@@ -2394,12 +2394,29 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
   const { envelope } = opts;
   const label = opts.label ?? 'headless-member';
   const coordOwnerId = opts.coordOwnerId?.trim() || null;
+  let kickoffProofRequest: KickoffProofRequest | null = null;
+  try {
+    if (opts.kickoffProof) kickoffProofRequest = createKickoffProofRequest();
+  } catch (e: any) {
+    return {
+      status: 'error',
+      error: `headless kickoff-proof setup failed: ${e?.message ?? e}`,
+      code: 500,
+    };
+  }
+  const launchEnv = kickoffProofRequest
+    ? {
+        ...envelope.env,
+        [KICKOFF_PROOF_PATH_ENV]: kickoffProofRequest.path,
+        [KICKOFF_PROOF_TOKEN_ENV]: kickoffProofRequest.token,
+      }
+    : envelope.env;
   // Same one-liner shape spawnConsole builds — appearance prelude is harmless
   // with no TTY (the OSC escapes just land in the log). Headless sessions have
   // no desktop window or native .mcp.json watcher, so omit the visible-console
   // liveness marker and keep runtime state out of the launch cwd.
   const oneliner = wrapHeadlessSigtermDiagnostic(
-    buildConsoleOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
+    buildConsoleOneliner(envelope.cwd, launchEnv, envelope.greetingCmd, {
       mode: 'console',
       planSlug: null,
       label,
@@ -2453,7 +2470,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       // would tell the psu it is running inside the OPERATOR's multiplexer pane,
       // which it is not. pui and `psu --brain` both drive zellij, so that is a
       // live wrong-answer, not a hypothetical one.
-      env: scrubTerminalContextEnv({ ...process.env, ...envelope.env }),
+      env: scrubTerminalContextEnv({ ...process.env, ...launchEnv }),
     });
     // Keep a second, persistent observer before the bounded boot probes remove
     // their own listeners. The consult reviver consumes this promise to turn a
@@ -2498,6 +2515,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
     // the sidecar's ssh-launched PATH). Without this, the fail-open branch below
     // reports a member that does not exist — the same phantom the visible path had.
     if (earlyExit?.error) {
+      cleanupKickoffProofRequest(kickoffProofRequest);
       return {
         status: 'error',
         error:
@@ -2513,6 +2531,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       } catch {
         logTail = '';
       }
+      cleanupKickoffProofRequest(kickoffProofRequest);
       return {
         status: 'error',
         error:
@@ -2551,6 +2570,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       const failed = HEADLESS_GREETING_FAILURE_RE.exec(readLog(logPath));
       if (failed) {
         const tail = readLog(logPath).trim().slice(-800);
+        cleanupKickoffProofRequest(kickoffProofRequest);
         return {
           status: 'error',
           error:
@@ -2564,6 +2584,11 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       await bootSleep(250);
     }
 
+    const kickoffProof = kickoffProofRequest
+      ? await waitForKickoffProof(kickoffProofRequest, opts.kickoffProofProbes)
+      : undefined;
+    cleanupKickoffProofRequest(kickoffProofRequest);
+
     return {
       status: 'ok',
       pid: child.pid ?? null,
@@ -2574,8 +2599,10 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       childExit,
       display: null,
       desktopEnvResolvedVia: null,
+      ...(kickoffProof ? { kickoffProof } : {}),
     };
   } catch (e: any) {
+    cleanupKickoffProofRequest(kickoffProofRequest);
     if (logFd != null) {
       try {
         closeSync(logFd);
