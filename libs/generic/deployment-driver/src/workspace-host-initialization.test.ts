@@ -55,6 +55,11 @@ function delivery(generation = 1): WorkspaceHostCredentialDeliverySet {
   };
 }
 
+/** A provider that can transfer files, i.e. one that may carry the git and agent channels. */
+const CAPABLE = { fileTransfer: true } as const;
+/** A provider that cannot; every delivery-bearing channel must be refused at plan time (D-215). */
+const NO_FILE_TRANSFER = { fileTransfer: false } as const;
+
 function request(
   overrides: Partial<WorkspaceHostInitializationRequest> = {},
 ): WorkspaceHostInitializationRequest {
@@ -67,6 +72,7 @@ function request(
     source: { kind: "empty" },
     credentialRefs: refs(),
     credentialDelivery: delivery(),
+    deliveryCapabilities: CAPABLE,
     ...overrides,
   };
 }
