@@ -3373,6 +3373,22 @@ export default defineTool({
   // in the published JSON schema so the bulk form could omit the top-level field,
   // even though the single-item runtime refine required it. The union exposes the
   // requirement structurally while retaining per-item assumptions for bulk calls.
+  //
+  // ⚠ "Structurally" means PER-BRANCH DOCUMENTATION, not a JSON-Schema `required`
+  // entry. `assumptions` is deliberately `.optional()` in BOTH branches and must
+  // stay that way: it is required only for a TERMINAL CLOSE, while a D-004
+  // record-only completion must be able to omit it. That conditionality is not
+  // expressible here, so it is carried by each branch's `assumptions` description
+  // and ENFORCED at handler time by the close-intent gate (`closeIntentRequested`
+  // → ASSUMPTIONS_REQUIRED_MESSAGE), which refuses before any state is written.
+  //
+  // Do NOT "fix" this by making `assumptions` unconditionally required — that
+  // breaks every record-only completion fleet-wide. Reading the bare `.optional()`
+  // as a missing requirement is a documented misread (EI-21326741744953358,
+  // EI-21352286372840963 filed exactly that, twelve days after this branch landed).
+  // The intended contract is pinned by 'conditional assumptions gate (D-004
+  // record-only vs terminal close)' and 'published JSON schema (tools/list
+  // projection) preserves conditional assumptions' in complete.test.ts.
   args: z.preprocess(
     (raw, ctx) => {
       const hoisted = hoistMisplacedAssumptions(raw);
