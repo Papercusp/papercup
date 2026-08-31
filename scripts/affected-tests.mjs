@@ -1621,6 +1621,64 @@ const PROMPT_PROJECTION_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // WI-1472680 — this guard was declared in package.json and run by NOTHING:
+    // check-lint-guard-reachability reported it verbatim as "nothing runs it at all".
+    // WIRED rather than retired, and the wiring is safe to do NOW because the
+    // precondition that guard demands was measured first: a full run over the real
+    // tree is green (exit 0, "every harness-naming tool argument is guarded by the
+    // hive clamp or explicitly exempt (837 tools)"), so registering it cannot
+    // red-pin the fleet on defects accrued while it slept.
+    //
+    // TRIGGER SCOPE — keyed to the SUBJECT, which is not a file walk. The guard
+    // imports agent-tools/index.ts to populate the registry and then reads it via
+    // listAllProjectedTools(), so what can regrow a hole is a tool definition or the
+    // projection layer, never an arbitrary source file.
+    workspace: "@papercusp/operator-core",
+    script: "lint:harness-arg-coverage",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/check-harness-arg-coverage.ts" ||
+      f.startsWith("packages/operator-core/lib/agent-tools/") ||
+      f.startsWith("packages/agent-mcp/src/"),
+  },
+  {
+    // WI-1472680 — same finding, same remedy: declared, run by nothing. Measured
+    // green over the whole real tree before wiring ("OK — 0 unguarded teardown
+    // sites").
+    //
+    // TRIGGER SCOPE — the guard enumerates `git ls-files -- ROOTS/**/*.integration.test.ts`,
+    // so its subject is exactly the integration suites; an edit to one is the only
+    // source change that can add an unguarded teardown site.
+    workspace: "@papercusp/operator-core",
+    script: "lint:integration-teardown-nullsafe",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/check-integration-teardown-nullsafe.mjs" ||
+      /\.integration\.test\.[cm]?tsx?$/.test(f),
+  },
+  {
+    // WI-1472680 — NOT unreachable but PARTIALLY covered: it enumerates the whole
+    // tree (`git ls-files --recurse-submodules`) yet only ran when
+    // packages/operator-core was affected, so every assertion it polices outside
+    // that workspace went unenforced. Registering here is the remedy the reachability
+    // guard names; appending to ACKNOWLEDGED_PARTIAL_COVERAGE is not available — that
+    // set is shrink-only and already sits at its watermark of 2, and its own comment
+    // says to register the guard instead.
+    //
+    // TRIGGER SCOPE — deliberately the whole TS family, because that IS the guard's
+    // own enumeration. A narrower predicate would recreate the same partial coverage
+    // under a different name.
+    workspace: "@papercusp/operator-core",
+    script: "lint:narrowing-gated-assertions",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/check-narrowing-gated-assertions.mjs" ||
+      /\.[cm]?tsx?$/.test(f),
+  },
+  {
     // EI-18697393226276295 — `vi.useFakeTimers()` in an integration test whose path reaches
     // unmocked real infra (PG/testcontainers/DBOS) stops that infra's own timers from ever
     // firing, and the suite HANGS: no assertion failure, no error, no output. The original
