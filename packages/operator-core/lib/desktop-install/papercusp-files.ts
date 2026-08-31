@@ -21,6 +21,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
 import { fileURLToPath } from 'node:url';
+import { createTextCollector } from '../child-output';
 import { filterInstallSources, describeRefusals } from './install-source-guard';
 // Single definition, shared with the pot-git ext:: transport (EI-20078551747038927).
 // Re-exported below so existing importers of this module keep resolving it here.
@@ -2968,7 +2969,7 @@ export async function checkHookSyntax(
     const { spawn } = await import('node:child_process');
     return await new Promise((resolve) => {
       const child = spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'ignore', 'pipe'] });
-      let stderr = '';
+      const stderrCollector = createTextCollector(child.stderr);
       let settled = false;
       const done = (v: { ok: true } | { ok: false; detail: string }) => {
         if (settled) return;
@@ -2980,9 +2981,6 @@ export async function checkHookSyntax(
         child.kill('SIGKILL');
         done({ ok: true });
       }, 10_000);
-      child.stderr?.on('data', (d) => {
-        if (stderr.length < 4096) stderr += String(d);
-      });
       // The interpreter could not be spawned at all (missing, not executable). That is
       // "could not tell", never "does not parse" — condemning here would refuse working
       // hooks on any box without python3 and turn a diagnostic into an outage.
@@ -2990,7 +2988,7 @@ export async function checkHookSyntax(
       // A child killed by a signal reports code === null: also could-not-tell.
       child.on('close', (code) => {
         if (code === 0 || code === null) return done({ ok: true });
-        const detail = stderr.trim().split('\n').slice(0, 3).join('; ');
+        const detail = stderrCollector.text().slice(0, 4096).trim().split('\n').slice(0, 3).join('; ');
         done({ ok: false, detail: detail || `exit ${code}` });
       });
       // An interpreter that bails before draining stdin gives us EPIPE; that is its
