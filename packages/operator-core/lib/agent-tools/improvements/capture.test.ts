@@ -608,6 +608,88 @@ describe('improvements:capture tool envelope', () => {
   });
 });
 
+describe('improvements:capture — absence-shaped empty dedup gets a shipped-code recheck (EI-19390763763662489)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockCapture.mockResolvedValue({
+      ok: true,
+      id: 'EI-new',
+      created: true,
+      possibleDuplicates: [],
+      dedupCoverage: { lexical: 'ok', semantic: 'ok', degraded: false },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+  });
+
+  async function bodyOf(args: Record<string, unknown>) {
+    const response = await callTool(args);
+    return JSON.parse(response.content[0].text) as Record<string, unknown>;
+  }
+
+  it('reports what the empty result did NOT search and names the existing code-search surfaces', async () => {
+    const body = await bodyOf({
+      title: 'Add the missing offers reader',
+      kind: 'change',
+      body: 'There is no exported read helper for harness_shared.p2p_work_offers, so one must be built.',
+    });
+
+    expect(body.ok).toBe(true); // report-only: the capture still lands
+    expect(body.shippedCodeSearch).toMatchObject({
+      absencePremises: [
+        {
+          claim: expect.stringContaining('no exported read helper'),
+          recheck: expect.stringMatching(/whole repo/i),
+        },
+      ],
+      note: expect.stringContaining('work-item-text'),
+    });
+    const note = (body.shippedCodeSearch as { note: string }).note;
+    expect(note).toContain('NOT evidence');
+    expect(note).toContain('rg');
+    expect(note).toContain('graph:query');
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+  });
+
+  it('also reports on checkDuplicatesOnly, before the caller turns the premise into implementation work', async () => {
+    const body = await bodyOf({
+      title: 'There is no watchdog for silent queue stalls',
+      kind: 'change',
+      checkDuplicatesOnly: true,
+    });
+    expect(body.shippedCodeSearch).toMatchObject({ absencePremises: [expect.any(Object)] });
+  });
+
+  it('stays absent for ordinary proposals, quoted errors, and a result that already names a duplicate', async () => {
+    expect(
+      'shippedCodeSearch' in
+        (await bodyOf({ title: 'Extend the existing reader with one field', kind: 'change' })),
+    ).toBe(false);
+    expect(
+      'shippedCodeSearch' in
+        (await bodyOf({
+          title: 'Improve the schema diagnostic',
+          kind: 'bug',
+          body: 'The tool returned `column "payload" does not exist`; keep that evidence visible.',
+        })),
+    ).toBe(false);
+
+    mockCapture.mockResolvedValueOnce({
+      ok: false,
+      created: false,
+      reason: 'likely-duplicate',
+      possibleDuplicates: [{ id: 'EI-existing', title: 'The existing reader', state: 'open' }],
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+    expect(
+      'shippedCodeSearch' in
+        (await bodyOf({
+          title: 'Add the missing offers reader',
+          kind: 'change',
+          body: 'There is no exported read helper for the offers table.',
+        })),
+    ).toBe(false);
+  });
+});
+
 describe('improvements:capture — conditionKey threads to watchdogKey (EI-15448)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

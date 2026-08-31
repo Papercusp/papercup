@@ -51,6 +51,7 @@ import {
 import { getModes } from '../../modes/store';
 import { withDrainBugAdmission } from '../work_items/drain-flow';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { detectAbsencePremises } from '../../premises-claim-port';
 
 const observationRatingsSchema = z.record(
   z.string().min(1),
@@ -113,6 +114,52 @@ export function defaultScorecardConditionKey(
   const sourceHive = observation?.sourceHive;
   if (!rubricRef || !sourceHive) return undefined;
   return `scorecard:${rubricRef}:${sourceHive}`;
+}
+
+export interface ShippedCodeSearchAdvisory {
+  /** The exact absence premises already derived by the shared claim-time detector. */
+  absencePremises: Array<{ claim: string; recheck: string }>;
+  /** Report-only explanation of what the dedup result did and did not establish. */
+  note: string;
+}
+
+/**
+ * EI-19390763763662489: an empty improvement-dedup result searches prior work-item
+ * text, not the shipped tree. Absence-shaped proposals are the dangerous case: the
+ * caller naturally reads `possibleDuplicates: []` as corroboration that the named
+ * capability does not exist, then builds a second implementation of code already in
+ * production.
+ *
+ * Reuse the existing, corpus-calibrated absence-premise detector rather than adding a
+ * second regex vocabulary. This remains a REPORT, never a gate: the capture/check-only
+ * result is unchanged and the caller receives the concrete recheck that would falsify
+ * each premise. A real work-item duplicate suppresses the advisory because the existing
+ * dedup result already names what the caller should inspect.
+ */
+export function describeShippedCodeSearchGap(
+  args: { title: string; body?: string; lane?: string },
+  possibleDuplicates: readonly unknown[] | undefined,
+): ShippedCodeSearchAdvisory | undefined {
+  if (args.lane === 'observation' || !Array.isArray(possibleDuplicates) || possibleDuplicates.length > 0) {
+    return undefined;
+  }
+
+  const absencePremises = detectAbsencePremises(
+    [args.title, args.body].filter((part): part is string => Boolean(part?.trim())).join('\n\n'),
+    'work-item',
+  ).flatMap(({ claim, recheck }) =>
+    typeof recheck === 'string' ? [{ claim, recheck }] : [],
+  );
+  if (absencePremises.length === 0) return undefined;
+
+  return {
+    absencePremises,
+    note:
+      'Report only — the capture still succeeded. `possibleDuplicates: []` means the work-item-text ' +
+      'dedup found no prior item; it is NOT evidence that this capability is absent from shipped code. ' +
+      'Before building, run the premise recheck(s) above across the whole repository: use scoped `rg` ' +
+      'for text/symbol spellings and `graph:query` for call topology. Reuse the existing surface if found.',
+  };
 }
 
 /**
@@ -354,7 +401,8 @@ export default defineTool({
       '  • semantic:hard  — embedding match. May DECLINE your capture.\n' +
       '  • semantic:soft  — weaker embedding match. ADVISORY ONLY, never declines.\n' +
       '  • lexical:"containment" — your (shorter) title is almost fully covered by a much longer stored one. ADVISORY ONLY, never declines. This is the net that makes a SHORT symptom query work: Jaccard divides by the union, so a short query that is a perfect subset of a long stored title scores |query|/|title| and cannot clear the threshold on its own.\n\n' +
-      'dedupCoverage { lexical, semantic, degraded } — WHAT COULD ACTUALLY BE CHECKED. Read it before treating an empty possibleDuplicates as "nothing similar exists". The embedding leg fails OPEN (semantic:"unavailable" when the embedder is down/over budget), so degraded:true means a differently-worded duplicate would NOT have been found and your empty result is "could not check", not "checked and clean".',
+      'dedupCoverage { lexical, semantic, degraded } — WHAT COULD ACTUALLY BE CHECKED. Read it before treating an empty possibleDuplicates as "nothing similar exists". The embedding leg fails OPEN (semantic:"unavailable" when the embedder is down/over budget), so degraded:true means a differently-worded duplicate would NOT have been found and your empty result is "could not check", not "checked and clean".' +
+      '\n\nAn absence-shaped filing/check with `possibleDuplicates: []` also returns `shippedCodeSearch { absencePremises, note }`: work-item dedup cannot prove shipped code is absent, so run the named whole-repo `rg` / `graph:query` recheck before building. Report-only; it never blocks the capture.',
     seeAlso: [
       'SYMPTOM-FIRST — improvements:capture { title, checkDuplicatesOnly:true } BEFORE you diagnose: "has anyone already hit this?" costs one call and a title, and creates nothing',
       'improvements:digest (triage the backlog this lands in — but NEVER shows lane:"observation" rows; see below)',
@@ -1205,6 +1253,17 @@ export default defineTool({
       const lensAttribution = describeLensAttribution(args, source);
       // P-006/EI-10607: report-only grounding advisory (see describeGroundingGap above).
       const groundingGap = describeGroundingGap(args, source);
+      // EI-19390763763662489: work-item dedup cannot establish absence from shipped code.
+      // Reuse the claim-time detector and report the missing code-search leg exactly when an
+      // absence-shaped filing received an explicit empty duplicate set. Tool-failure reports
+      // have their own structured classifier/probation path and may quote error prose, so they
+      // are deliberately excluded from this proposal-specific advisory.
+      const shippedCodeSearch = normalizedToolFailure
+        ? undefined
+        : describeShippedCodeSearchGap(
+            { title: captureText.title, body: bodyWithStaleness, lane: effectiveLane },
+            result.possibleDuplicates,
+          );
       const warnings = [
         ...(foundDuringTruncated
           ? [
@@ -1225,6 +1284,7 @@ export default defineTool({
               ...(!silenceUnkeyedObservationDisposition && experimentGap ? { experimentGap } : {}),
               ...(!silenceUnkeyedObservationDisposition && lensAttribution ? { lensAttribution } : {}),
               ...(!silenceUnkeyedObservationDisposition && groundingGap ? { groundingGap } : {}),
+              ...(!silenceUnkeyedObservationDisposition && shippedCodeSearch ? { shippedCodeSearch } : {}),
               ...(!silenceUnkeyedObservationDisposition && agentReview ? { agentReview } : {}),
               ...(!silenceUnkeyedObservationDisposition && agentReviewFailure ? { agentReviewFailure } : {}),
               ...(!silenceUnkeyedObservationDisposition && notified ? { notified: notified.notified } : {}),
