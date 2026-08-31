@@ -270,7 +270,7 @@ export default defineTool({
   name: 'release:deploy',
   profile: 'engineer',
   description:
-    'Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited operator/queen/architect-only escape for an un-green commit (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.',
+    'Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited escape for an un-green commit, gated on isOperatorConfigWriteRole (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.',
   guidance: {
     when:
       'A committed, gate-clean change isn\'t live on :3070 — {op:status} to see why. GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). Gate RED on UNRELATED tests → FIX the reds first (even out of lane).',

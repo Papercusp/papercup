@@ -86,11 +86,21 @@ export const ACTIVE_RETIRED_GUIDANCE_ROOTS = [
   // not tier residue. It reads clean here because the prose says so explicitly.
   // Do not "fix" that comparison to "overwatch" — see the header note in decide.ts.
   //
-  // ⚠ Admitted ONLY after measuring both at zero AND calibrating the detector against
-  // a known-bad positive control in these same files (0 clean / >0 with a mutant
+  // ⚠ Admitted ONLY after measuring at zero AND calibrating the detector against a
+  // known-bad positive control in these same files (0 clean / >0 with a mutant
   // injected). A zero from an uncalibrated instrument is not evidence.
-  "packages/operator-core/lib/agent-tools/autonomy",
-  "packages/operator-core/lib/agent-tools/decision_ledger",
+  //
+  // The WHOLE tool catalog is admitted, minus the directories still listed in
+  // ACTIVE_RETIRED_GUIDANCE_PENDING. Measured 2026-08-31: 107 of the 134
+  // subdirectories were ALREADY at zero, so naming the 27 dirty ones is both far
+  // smaller than naming the clean ones and — the reason it is done this way —
+  // makes a NEW tool directory part of the corpus BY DEFAULT.
+  //
+  // That inversion is the actual fix for this work-item's subject. Under an
+  // allow-list, every new agent-facing surface sits outside the corpus until
+  // somebody remembers to add it, which is precisely how the routing gate kept
+  // offering a retired recipient to every su for the whole retirement.
+  "packages/operator-core/lib/agent-tools",
 ];
 
 export const ACTIVE_RETIRED_GUIDANCE_FILES = [
@@ -340,12 +350,80 @@ export function findRetiredGuidanceOffenders(file, source) {
   return offenders;
 }
 
-function walkGuidanceRoot(root, acc) {
+/**
+ * WI-1726926 — directories INSIDE an admitted root that are not clean yet.
+ *
+ * This exists so a root can be admitted at its CURRENT cleanliness instead of
+ * waiting for the whole subtree, and the ordering rule survives: a path still
+ * enters the corpus only when its own population is zero.
+ *
+ * It is a BACKLOG, not a blessing, and three things keep it from rotting into
+ * the blindfold that allowlists usually become:
+ *   1. every entry carries the offender count MEASURED when it was added, so a
+ *      reader can see the debt rather than just the exemption;
+ *   2. `pendingRootStatus()` re-measures them, and the guard test FAILS when an
+ *      entry has reached zero — so cleaning a directory forces its promotion
+ *      instead of quietly leaving it excluded forever; and
+ *   3. it is a DENY list under an admitted root, so anything NEW is covered by
+ *      DEFAULT. That inversion is the whole point: under the old allow-list
+ *      shape a newly added directory sat outside the corpus until somebody
+ *      remembered it, which is exactly how `plans/launch-prompt.ts` kept
+ *      offering "(B) hand it to the Mug" through the tier's entire retirement
+ *      (EI-21972876172423322).
+ */
+export const ACTIVE_RETIRED_GUIDANCE_PENDING = [
+  { path: "packages/operator-core/lib/agent-tools/pot", offenders: 20 },
+  { path: "packages/operator-core/lib/agent-tools/coordination", offenders: 13 },
+  { path: "packages/operator-core/lib/agent-tools/dev", offenders: 6 },
+  { path: "packages/operator-core/lib/agent-tools/fleet", offenders: 5 },
+  { path: "packages/operator-core/lib/agent-tools/fleet_registry", offenders: 5 },
+  { path: "packages/operator-core/lib/agent-tools/improvements", offenders: 4 },
+  { path: "packages/operator-core/lib/agent-tools/plans", offenders: 4 },
+  { path: "packages/operator-core/lib/agent-tools/release", offenders: 4 },
+  { path: "packages/operator-core/lib/agent-tools/work_items", offenders: 4 },
+  { path: "packages/operator-core/lib/agent-tools/config", offenders: 2 },
+  { path: "packages/operator-core/lib/agent-tools/deploy", offenders: 2 },
+  { path: "packages/operator-core/lib/agent-tools/gym", offenders: 2 },
+  { path: "packages/operator-core/lib/agent-tools/scout", offenders: 2 },
+  { path: "packages/operator-core/lib/agent-tools/capability", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/change_ledger", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/db", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/knowledge_packs", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/learning", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/loop", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/merge", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/recipes", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/review", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/routines", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/rubrics", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/scheduler", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/scorecards", offenders: 1 },
+  { path: "packages/operator-core/lib/agent-tools/slash", offenders: 1 },
+];
+
+const PENDING_PATHS = new Set(
+  ACTIVE_RETIRED_GUIDANCE_PENDING.map((entry) => entry.path),
+);
+
+function isPendingPath(repoRelative) {
+  if (PENDING_PATHS.has(repoRelative)) return true;
+  for (const pending of PENDING_PATHS) {
+    if (repoRelative.startsWith(`${pending}/`)) return true;
+  }
+  return false;
+}
+
+function walkGuidanceRoot(root, acc, repoRoot) {
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (SKIP_DIRS.has(entry.name) || /^dist(?:-|$)/.test(entry.name)) continue;
     const abs = path.join(root, entry.name);
+    if (
+      repoRoot !== undefined &&
+      isPendingPath(path.relative(repoRoot, abs).split(path.sep).join("/"))
+    )
+      continue;
     if (entry.isDirectory()) {
-      walkGuidanceRoot(abs, acc);
+      walkGuidanceRoot(abs, acc, repoRoot);
       continue;
     }
     const normalized = abs.split(path.sep).join("/");
@@ -356,6 +434,46 @@ function walkGuidanceRoot(root, acc) {
       continue;
     acc.push(abs);
   }
+}
+
+/**
+ * WI-1726926 — RE-MEASURE every pending directory so the backlog cannot rot.
+ *
+ * Returns one row per `ACTIVE_RETIRED_GUIDANCE_PENDING` entry with the offender
+ * count it holds RIGHT NOW. `graduated: true` means the directory is clean and
+ * its entry must be deleted (which admits it to the corpus) — the guard test
+ * fails on any graduated row, so cleaning a directory and leaving it excluded
+ * is not a reachable end state.
+ *
+ * `missing: true` means the path no longer exists (moved/retired) — also a
+ * failure, because a stale entry silently excludes nothing while looking like
+ * it still guards something.
+ */
+export function pendingRootStatus(repoRoot) {
+  return ACTIVE_RETIRED_GUIDANCE_PENDING.map((entry) => {
+    const absolute = path.join(repoRoot, entry.path);
+    if (!fs.existsSync(absolute))
+      return { ...entry, current: 0, graduated: false, missing: true };
+    const files = [];
+    walkGuidanceRoot(absolute, files, undefined);
+    let current = 0;
+    for (const absoluteFile of files) {
+      const relativeFile = path
+        .relative(repoRoot, absoluteFile)
+        .split(path.sep)
+        .join("/");
+      try {
+        current += findRetiredGuidanceOffenders(
+          relativeFile,
+          guidanceTextFor(relativeFile, fs.readFileSync(absoluteFile, "utf8")),
+        ).length;
+      } catch {
+        // A read error here is not a cleanliness signal; collectActiveRetiredGuidance
+        // is the surface that reports readErrors.
+      }
+    }
+    return { ...entry, current, graduated: current === 0, missing: false };
+  });
 }
 
 /** Scan only maintained CURRENT guidance; historical docs/plans are outside this corpus by design. */
@@ -370,7 +488,7 @@ export function collectActiveRetiredGuidance(repoRoot) {
       missingPaths.push(relativeRoot);
       continue;
     }
-    walkGuidanceRoot(absoluteRoot, absoluteFiles);
+    walkGuidanceRoot(absoluteRoot, absoluteFiles, repoRoot);
   }
   for (const relativeFile of ACTIVE_RETIRED_GUIDANCE_FILES) {
     const absoluteFile = path.join(repoRoot, relativeFile);

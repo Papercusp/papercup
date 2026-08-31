@@ -14,6 +14,7 @@ const {
   ACTIVE_RETIRED_GUIDANCE_ROOTS,
   collectActiveRetiredGuidance,
   findRetiredGuidanceOffenders,
+  pendingRootStatus,
 } = retiredGuidance;
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -142,9 +143,49 @@ describe('retired-tier current-guidance live verdict', () => {
         //
         // ⚠ decide.ts legitimately still names `kettle`: OVERWATCH_ROLE === "kettle"
         // is LIVE Overwatch's wire id, not tier residue. Do not "correct" it.
-        'packages/operator-core/lib/agent-tools/autonomy',
-        'packages/operator-core/lib/agent-tools/decision_ledger',
+        //
+        // The WHOLE catalog is admitted, minus ACTIVE_RETIRED_GUIDANCE_PENDING, so a
+        // NEW tool directory is in the corpus by DEFAULT rather than outside it until
+        // remembered — the allow-list shape is what let the routing gate keep offering
+        // a retired recipient for the tier's entire retirement.
+        'packages/operator-core/lib/agent-tools',
       ]),
     );
+  });
+});
+
+describe('retired-tier guidance pending backlog cannot rot', () => {
+  // WI-1726926. ACTIVE_RETIRED_GUIDANCE_PENDING excludes directories that are not
+  // clean YET, so the corpus could be widened without red-pinning the gate. The
+  // failure mode of every such list is that it stops being read: a directory gets
+  // cleaned and its entry stays, silently excluding a now-clean path forever.
+  //
+  // These assertions make that unreachable. Cleaning a directory FAILS this test
+  // until its entry is deleted, and deleting the entry is what admits it.
+  it('every pending directory still has offenders — a clean one must be promoted, not left excluded', () => {
+    const graduated = pendingRootStatus(REPO_ROOT).filter((row) => row.graduated);
+    expect(
+      graduated.map((row) => row.path),
+      'These directories are now CLEAN. Delete their ACTIVE_RETIRED_GUIDANCE_PENDING ' +
+        'entries to admit them to the corpus — that is the promotion step, and leaving ' +
+        'them listed would exclude a clean path indefinitely.',
+    ).toEqual([]);
+  });
+
+  it('no pending entry points at a path that no longer exists', () => {
+    const missing = pendingRootStatus(REPO_ROOT).filter((row) => row.missing);
+    expect(
+      missing.map((row) => row.path),
+      'A stale pending entry guards nothing while looking like it does. Remove it.',
+    ).toEqual([]);
+  });
+
+  it('each pending entry records the offender count it actually holds', () => {
+    // The counts are the visible DEBT. If they drift, the list reads as authoritative
+    // while being wrong about the size of the remaining work.
+    const drifted = pendingRootStatus(REPO_ROOT)
+      .filter((row) => !row.missing && row.current !== row.offenders)
+      .map((row) => `${row.path}: recorded ${row.offenders}, actual ${row.current}`);
+    expect(drifted).toEqual([]);
   });
 });
