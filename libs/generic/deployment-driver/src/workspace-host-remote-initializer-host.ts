@@ -91,9 +91,8 @@ export interface WorkspaceHostCommandInput {
  * The irreducible host I/O. Small on purpose: everything above it is decision logic that a test
  * can drive, and everything in it is a direct call to node with no branching worth testing.
  */
-export interface WorkspaceHostSystem {
+export interface WorkspaceHostSystem extends WorkspaceHostCredentialDeliveryFilesystem {
   run(input: WorkspaceHostCommandInput): Promise<WorkspaceHostCommandResult>;
-  ensureDirectory(path: string): Promise<void>;
   pathExists(path: string): Promise<boolean>;
   removePath(path: string): Promise<void>;
 }
@@ -169,6 +168,19 @@ export class NodeWorkspaceHostSystem implements WorkspaceHostSystem {
   async removePath(path: string): Promise<void> {
     await rm(path, { recursive: true, force: true });
   }
+
+  // The two credential-delivery operations. Delegated to the delivery module's implementation
+  // rather than re-derived here, so the 0600/atomic-rename behaviour has one definition and the
+  // packaged delivery entrypoint and this host adapter cannot drift on how material is written.
+  async writePrivateFile(path: string, bytes: Buffer): Promise<void> {
+    await this.deliveryFilesystem.writePrivateFile(path, bytes);
+  }
+
+  async readFileIfPresent(path: string): Promise<Buffer | null> {
+    return await this.deliveryFilesystem.readFileIfPresent(path);
+  }
+
+  private readonly deliveryFilesystem = new NodeWorkspaceHostCredentialDeliveryFilesystem();
 }
 
 export interface ProductionWorkspaceHostOptions {
@@ -584,7 +596,6 @@ export function createProductionWorkspaceHostCredentialMaterializers(
   system: WorkspaceHostSystem,
   materialRoot: string = WORKSPACE_HOST_CREDENTIAL_MATERIAL_ROOT,
   gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry,
-  deliveryFilesystem: WorkspaceHostCredentialDeliveryFilesystem = new NodeWorkspaceHostCredentialDeliveryFilesystem(),
 ): readonly WorkspaceHostCredentialMaterializer[] {
   // Enumerated explicitly rather than mapped over WORKSPACE_HOST_CREDENTIAL_FAMILIES: adding a
   // family should be a decision that lands here deliberately, not one that silently acquires a
@@ -607,8 +618,11 @@ export function createProductionWorkspaceHostCredentialMaterializers(
         // that never existed.
         WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial
           ? async (generation: number) =>
+              // Through the SAME `system` seam every other host operation uses. A second
+              // filesystem here — even one defaulting to the real node implementation — means a
+              // caller that faked the host still writes to the machine running it.
               await recordWorkspaceHostCredentialRevocation(
-                deliveryFilesystem,
+                system,
                 materialRoot,
                 family,
                 generation,

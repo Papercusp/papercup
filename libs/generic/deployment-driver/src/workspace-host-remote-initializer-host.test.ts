@@ -19,6 +19,7 @@ const NOW = new Date('2026-08-26T22:00:00.000Z');
 class RecordingSystem implements WorkspaceHostSystem {
   readonly commands: WorkspaceHostCommandInput[] = [];
   readonly present = new Set<string>();
+  readonly files = new Map<string, Buffer>();
 
   async run(input: WorkspaceHostCommandInput) {
     this.commands.push(input);
@@ -32,6 +33,17 @@ class RecordingSystem implements WorkspaceHostSystem {
   }
   async removePath(path: string) {
     this.present.delete(path);
+    this.files.delete(path);
+  }
+  // The credential-delivery half of the seam. Faked here for the same reason the rest is: revoke()
+  // writes the revocation ledger through it, and a double that omitted these would fall through to
+  // the real filesystem and try to write under the production credential root.
+  async writePrivateFile(path: string, bytes: Buffer) {
+    this.files.set(path, Buffer.from(bytes));
+    this.present.add(path);
+  }
+  async readFileIfPresent(path: string) {
+    return this.files.get(path) ?? null;
   }
 }
 

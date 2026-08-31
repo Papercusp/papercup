@@ -376,18 +376,26 @@ export function parseWorkspaceHostCredentialDeliveryRequest(
  */
 export interface WorkspaceHostCredentialDeliveryFilesystem {
   /** Create a directory and every missing parent with mode `0700`. */
-  ensurePrivateDirectory(path: string): Promise<void>;
+  ensureDirectory(path: string): Promise<void>;
   /** Write `bytes` at `path` with mode `0600`, replacing any existing file atomically. */
   writePrivateFile(path: string, bytes: Buffer): Promise<void>;
   /** Read a file, or `null` when it does not exist. */
   readFileIfPresent(path: string): Promise<Buffer | null>;
 }
 
-/** The real implementation, used by the packaged host entrypoint. */
+/**
+ * The real implementation, used by the packaged host entrypoint.
+ *
+ * `WorkspaceHostSystem` in the remote-initializer host EXTENDS the interface above rather than
+ * declaring a parallel one, so a caller that stubs the host seam stubs this too. That is not
+ * tidiness: `revoke()` writes the revocation ledger through this seam, and when it was a SECOND
+ * seam defaulting to the real filesystem, a test that had carefully faked every host operation
+ * still tried to `mkdir /credentials` on the machine running it.
+ */
 export class NodeWorkspaceHostCredentialDeliveryFilesystem
   implements WorkspaceHostCredentialDeliveryFilesystem
 {
-  async ensurePrivateDirectory(path: string): Promise<void> {
+  async ensureDirectory(path: string): Promise<void> {
     await mkdir(path, { recursive: true, mode: 0o700 });
     // `mkdir`'s mode is masked by the process umask, and a host whose umask is 022 would leave the
     // directory 0755 — world-readable, which for a directory holding credential material is the
@@ -466,7 +474,7 @@ export async function recordWorkspaceHostCredentialRevocation(
 ): Promise<void> {
   const current = await readWorkspaceHostCredentialRevokedThrough(filesystem, root, family);
   if (generation <= current) return;
-  await filesystem.ensurePrivateDirectory(join(root, family));
+  await filesystem.ensureDirectory(join(root, family));
   await filesystem.writePrivateFile(
     workspaceHostCredentialRevocationLedgerPath(root, family),
     Buffer.from(`${generation}\n`, 'utf8'),
@@ -529,7 +537,7 @@ export async function executeWorkspaceHostCredentialDelivery(
       throw new WorkspaceHostCredentialGenerationConflictError(family, generation);
     }
   } else {
-    await deps.filesystem.ensurePrivateDirectory(
+    await deps.filesystem.ensureDirectory(
       workspaceHostCredentialGenerationDirectory(deps.materialRoot, family, generation),
     );
     await deps.filesystem.writePrivateFile(path, bytes);

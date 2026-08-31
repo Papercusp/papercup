@@ -10,6 +10,7 @@ import {
   verifyWorkspaceHostBuildManifest,
   verifyWorkspaceHostReleaseProvenance,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
   WORKSPACE_HOST_PUI_COMPANION_PATH,
   WORKSPACE_HOST_PUI_ENTRYPOINT,
   WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
@@ -78,10 +79,46 @@ describe("workspace-host build manifest", () => {
       WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS;
     expect(required.map(({ path }) => path)).toEqual([
       WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+      WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
       WORKSPACE_HOST_PUI_ENTRYPOINT,
       WORKSPACE_HOST_PUI_COMPANION_PATH,
       WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
     ]);
+  });
+
+  /**
+   * Every REQUIRED material must be nameable in a published manifest.
+   *
+   * A required path that trips the secret-material guard is unshippable — the bundle cannot be
+   * built at all — and the failure surfaces far from the rename that caused it. The
+   * credential-delivery entrypoint is deliberately named `deliver-material` for exactly this
+   * reason, and renaming it to the obvious `bin/papercusp-credential-delivery` is what this test
+   * exists to catch.
+   */
+  it("names no required release material that the secret-material guard would refuse", () => {
+    for (const required of WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS) {
+      expect(() =>
+        buildWorkspaceHostBuildManifest({
+          ...input(),
+          materials: [
+            ...input().materials,
+            { path: required.path, sha256: SHA_B, sizeBytes: 64, executable: true },
+          ],
+        }),
+      ).not.toThrow();
+    }
+
+    // Calibration: the guard really does refuse this class, so the passes above are a property of
+    // the chosen names rather than of a guard that never fires.
+    expect(() =>
+      buildWorkspaceHostBuildManifest({
+        ...input(),
+        materials: [
+          ...input().materials,
+          { path: "bin/papercusp-credential-delivery", sha256: SHA_B, sizeBytes: 64 },
+        ],
+      }),
+    ).toThrow(/secret key material/);
   });
 
   it("normalizes unordered inputs into one deterministic manifest identity", () => {
@@ -273,6 +310,12 @@ describe("workspace-host release provenance", () => {
           path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
           sha256: SHA_C,
           sizeBytes: 512,
+          executable: true,
+        },
+        {
+          path: WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
+          sha256: SHA_B,
+          sizeBytes: 448,
           executable: true,
         },
         {

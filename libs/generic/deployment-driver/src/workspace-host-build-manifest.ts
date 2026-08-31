@@ -441,9 +441,16 @@ export const WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT =
  * Separate from the remote initializer because the two programs have opposite relationships with
  * secret material (D-215); a bundle carrying one but not the other can initialize a host and then
  * fail every `git`/`agent` bind on it.
+ *
+ * ⚠ NAMED `deliver-material`, NOT `credential-delivery`, AND IT MUST STAY THAT WAY. `SECRET_MATERIAL`
+ * below refuses any manifest path containing `credential`, because a published manifest enumerating
+ * a credential path leaks its existence and location. This entry is a PROGRAM, not key material, so
+ * the refusal is a false positive — but the guard is a NAME heuristic and cannot tell the two apart.
+ * Renaming the file is the honest fix; exempting `bin/` or `executable: true` would punch a hole
+ * through which a real credential path could later pass. Do not "restore" the obvious name.
  */
 export const WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT =
-  "bin/papercusp-credential-delivery";
+  "bin/papercusp-deliver-material";
 
 /** Bundle-relative PUI generation installed and attested as one immutable release unit. */
 export const WORKSPACE_HOST_PUI_ENTRYPOINT = "bin/pui";

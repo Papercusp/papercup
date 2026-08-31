@@ -6,6 +6,7 @@ import {
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
   buildWorkspaceHostBuildManifest,
   deriveWorkspaceHostCanonicalArtifactUrls,
 } from "./workspace-host-build-manifest";
@@ -76,6 +77,12 @@ function artifact(
         path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
         sha256: "e".repeat(64),
         sizeBytes: 2_048,
+        executable: true,
+      },
+      {
+        path: WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
+        sha256: "9".repeat(64),
+        sizeBytes: 1_536,
         executable: true,
       },
       {

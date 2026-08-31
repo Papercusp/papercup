@@ -58,12 +58,24 @@ const CLOUD_REF = buildWorkspaceHostCredentialReference('cloud-workload-identity
 const MATERIAL = Buffer.from('https://git-user:private-token-value@github.com', 'utf8');
 const OTHER_MATERIAL = Buffer.from('https://git-user:rotated-token-value@github.com', 'utf8');
 
-class MemoryFilesystem implements WorkspaceHostCredentialDeliveryFilesystem {
+/**
+ * One in-memory double for the WHOLE host seam.
+ *
+ * It implements `WorkspaceHostSystem`, not merely `WorkspaceHostCredentialDeliveryFilesystem`,
+ * because those are now one seam — and that is load-bearing for these tests rather than
+ * convenient. When the ledger had its own filesystem defaulting to the real node implementation,
+ * a test that faked every host operation still reached the real disk and tried to
+ * `mkdir /credentials` on the machine running the suite.
+ */
+class MemoryFilesystem implements WorkspaceHostSystem {
   readonly files = new Map<string, Buffer>();
   readonly directories = new Set<string>();
   writes = 0;
 
-  async ensurePrivateDirectory(path: string): Promise<void> {
+  async run(_input: WorkspaceHostCommandInput) {
+    return { exitCode: 0, stdout: '', stderr: '' };
+  }
+  async ensureDirectory(path: string): Promise<void> {
     this.directories.add(path);
   }
   async writePrivateFile(path: string, bytes: Buffer): Promise<void> {
@@ -72,6 +84,13 @@ class MemoryFilesystem implements WorkspaceHostCredentialDeliveryFilesystem {
   }
   async readFileIfPresent(path: string): Promise<Buffer | null> {
     return this.files.get(path) ?? null;
+  }
+  async pathExists(path: string): Promise<boolean> {
+    return this.files.has(path) || this.directories.has(path);
+  }
+  async removePath(path: string): Promise<void> {
+    this.files.delete(path);
+    this.directories.delete(path);
   }
 }
 
@@ -259,29 +278,8 @@ describe('credential delivery — revocation is not reversible (D-215 point 5)',
 
   it('is raised by the production materializer revoke(), not only by the helper', async () => {
     // The property that matters end-to-end: a real revoke leaves a trace delivery can see.
-    const present = new Set<string>();
     const files = new MemoryFilesystem();
-    const system: WorkspaceHostSystem = {
-      async run(_input: WorkspaceHostCommandInput) {
-        return { exitCode: 0, stdout: '', stderr: '' };
-      },
-      async ensureDirectory(path: string) {
-        present.add(path);
-      },
-      async pathExists(path: string) {
-        return present.has(path);
-      },
-      async removePath(path: string) {
-        present.delete(path);
-      },
-    };
-
-    const materializers = createProductionWorkspaceHostCredentialMaterializers(
-      system,
-      ROOT,
-      undefined,
-      files,
-    );
+    const materializers = createProductionWorkspaceHostCredentialMaterializers(files, ROOT);
     const git = materializers.find((m) => m.family === 'git-short-lived-delegation');
     expect(git).toBeDefined();
 
@@ -302,29 +300,8 @@ describe('credential delivery — revocation is not reversible (D-215 point 5)',
   });
 
   it('records no ledger for an ambient family, which has nothing to revoke', async () => {
-    const present = new Set<string>();
     const files = new MemoryFilesystem();
-    const system: WorkspaceHostSystem = {
-      async run() {
-        return { exitCode: 0, stdout: '', stderr: '' };
-      },
-      async ensureDirectory(path: string) {
-        present.add(path);
-      },
-      async pathExists(path: string) {
-        return present.has(path);
-      },
-      async removePath(path: string) {
-        present.delete(path);
-      },
-    };
-
-    const materializers = createProductionWorkspaceHostCredentialMaterializers(
-      system,
-      ROOT,
-      undefined,
-      files,
-    );
+    const materializers = createProductionWorkspaceHostCredentialMaterializers(files, ROOT);
     const cloud = materializers.find((m) => m.family === 'cloud-workload-identity');
     await cloud?.revoke({
       namespaceVersion: 'papercusp-workspace-host-credential-namespace-v1',
@@ -496,36 +473,16 @@ describe('credential delivery — the on-host layout has ONE definition', () => 
    * today are exactly how they stop matching later.
    */
   it('is the same path the production materializer checks at bind()', async () => {
-    const present = new Set<string>();
-    const system: WorkspaceHostSystem = {
-      async run() {
-        return { exitCode: 0, stdout: '', stderr: '' };
-      },
-      async ensureDirectory(path: string) {
-        present.add(path);
-      },
-      async pathExists(path: string) {
-        return present.has(path);
-      },
-      async removePath(path: string) {
-        present.delete(path);
-      },
-    };
-
+    // ONE filesystem for both halves — delivery writes into it, then the materializer looks. No
+    // hand-copying of paths between two doubles, which would let the test agree with itself while
+    // writer and reader disagreed.
     const fs = new MemoryFilesystem();
     await executeWorkspaceHostCredentialDelivery(
       parseWorkspaceHostCredentialDeliveryRequest(deliveryRequest()),
       deps(fs),
     );
-    // Hand the delivered paths to the materializer's world, then let bind() look for them.
-    for (const path of fs.files.keys()) present.add(path);
 
-    const materializers = createProductionWorkspaceHostCredentialMaterializers(
-      system,
-      ROOT,
-      undefined,
-      fs,
-    );
+    const materializers = createProductionWorkspaceHostCredentialMaterializers(fs, ROOT);
     const git = materializers.find((m) => m.family === 'git-short-lived-delegation');
 
     const binding = {
