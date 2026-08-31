@@ -1111,3 +1111,69 @@ describe('mergeRosterEntries — activity + loop-armed (WI-1488)', () => {
     expect(remote.machineLabel).toBe('box-B');
   });
 });
+
+describe('mergeRosterEntries — display name + objective (hud-session-display-names P-004)', () => {
+  /** The signature is at 13 positionals before the options bag; this fills the defaults. */
+  function merge(
+    extra: NonNullable<Parameters<typeof mergeRosterEntries>[13]>,
+    p: PresenceRecord = presence(),
+  ): RosterEntry {
+    return mergeRosterEntries(
+      [p],
+      new Map(),
+      NOW,
+      new Map(),
+      new Map(),
+      new Map(),
+      'auto',
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Set(),
+      new Map(),
+      extra,
+    )[0];
+  }
+
+  it('carries the manual name RAW, without flattening it into the objective', () => {
+    const e = merge({ displayNameByOwner: new Map([['su-1', 'release wrangler']]) });
+    expect(e.displayName).toBe('release wrangler');
+    // the objective is still its own layer — the board resolves the headline
+    expect(e.objective).toBe('doing X');
+  });
+
+  it('objective prefers the in-flight work-item title and reports its ref', () => {
+    const e = merge({
+      wipByOwner: new Map([['su-1', { title: 'Green the checkpoint gate', workItemRef: 'WI-42' }]]),
+    });
+    expect(e.objective).toBe('Green the checkpoint gate');
+    expect(e.objectiveWorkItemRef).toBe('WI-42');
+  });
+
+  it('falls back to the declared intent, and then carries NO work-item ref', () => {
+    const e = merge({});
+    expect(e.objective).toBe('doing X');
+    // an intent-derived objective must not print a work-item id the headline is not about
+    expect(e.objectiveWorkItemRef).toBeNull();
+  });
+
+  it('a claimed work item with a blank title still falls back to the intent, ref dropped', () => {
+    const e = merge({ wipByOwner: new Map([['su-1', { title: '   ', workItemRef: 'WI-42' }]]) });
+    expect(e.objective).toBe('doing X');
+    expect(e.objectiveWorkItemRef).toBeNull();
+  });
+
+  it('an undeclared intent reads as absent, not as an empty objective', () => {
+    // coord_presence.intent is NOT NULL DEFAULT '' — the blank must not leak through
+    const e = merge({}, presence({ intent: '' }));
+    expect(e.objective).toBeNull();
+    expect(e.objectiveWorkItemRef).toBeNull();
+  });
+
+  it('degraded joins read exactly like an unnamed, unclaimed agent (R9)', () => {
+    const e = merge({});
+    expect(e.displayName).toBeNull();
+    expect(e.objective).toBe('doing X'); // still renders — never a blank card
+  });
+});
