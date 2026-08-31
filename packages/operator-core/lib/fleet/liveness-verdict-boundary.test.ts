@@ -28,6 +28,15 @@ const SESSIONS_ROSTER = 'apps/operator/app/adv/sessions/SessionsRosterView.tsx';
 const HUD_MODEL = 'apps/operator/app/adv/hud/hud-board-model.ts';
 const RUNNING_PILL = 'apps/operator-vite/src/components/adv/AgentsRunningPill.tsx';
 const ADV_ROSTER = 'packages/operator-core/lib/adv-roster.ts';
+// WI-1502507 / D-026 re-pin. The pill's roster presentation was EXTRACTED into
+// @papercusp/agent-roster by P-001 of portal-universal-bar-and-agent-roster-2026-08-31
+// (569ca2a335, ecdfa12d66) so the web portal can reuse it; AgentsRunningPill.tsx now
+// imports these symbols and re-exports them. The invariant is unchanged — transcriptFresh
+// is still the canonical published field and `thinking` is still only a fallback alias —
+// so this pins the two claims at their new home rather than at the re-export site, where
+// they are no longer literally written.
+const ROSTER_TYPES = 'libs/generic/agent-roster/src/types.ts';
+const ROSTER_LOGIC = 'libs/generic/agent-roster/src/logic.ts';
 const HEARTBEAT_TONE = 'packages/operator-core/lib/liveness.ts';
 const PRESENCE_UI = 'apps/operator/app/coord/presence-ui.tsx';
 
@@ -60,15 +69,22 @@ describe('agent-liveness verdict boundary (presence unification D-004 / P-014)',
 
   it('publishes transcriptFresh canonically and confines the thinking alias to skew shims', () => {
     const server = source(ADV_ROSTER);
-    const pill = source(RUNNING_PILL);
+    const rosterTypes = source(ROSTER_TYPES);
+    const rosterLogic = source(ROSTER_LOGIC);
 
     expect(server).toMatch(/transcriptFresh:\s*boolean/);
     expect(server).toMatch(/@deprecated Compatibility alias for `transcriptFresh`[\s\S]{0,180}thinking:\s*boolean/);
     expect(server).toContain('resolveTranscriptFreshnessForEntries');
 
-    expect(pill).toMatch(/transcriptFresh\?:\s*boolean \| null/);
-    expect(pill).toContain('return a.transcriptFresh ?? a.thinking ?? false');
-    expect(countMatches(pill, /\ba\.thinking\b/g)).toBe(1);
+    expect(rosterTypes).toMatch(/transcriptFresh\?:\s*boolean \| null/);
+    expect(rosterLogic).toContain('return a.transcriptFresh ?? a.thinking ?? false');
+    expect(countMatches(rosterLogic, /\ba\.thinking\b/g)).toBe(1);
+
+    // The extraction must not have left a SECOND, drifting copy behind at the old site:
+    // the pill has to consume the package, not re-implement the fallback locally.
+    const pill = source(RUNNING_PILL);
+    expect(pill).toContain('@papercusp/agent-roster');
+    expect(countMatches(pill, /\ba\.thinking\b/g)).toBe(0);
   });
 
   it('marks heartbeat-only derivations as deprecated display fallbacks', () => {
