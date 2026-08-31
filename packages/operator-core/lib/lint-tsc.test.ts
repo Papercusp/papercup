@@ -3027,6 +3027,25 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
       expect(text).toContain('npm run --workspace apps/operator-vite typecheck');
     });
 
+    // EI-21985804122617157 — the header must not contradict the line under it. Both non-routing
+    // headers assert the files were NOT typechecked; printing either one directly above
+    // "AUTO-ROUTING to check them" tells the reader the opposite of what the gate is doing, and a
+    // reader who believes the header stops there.
+    it('does not claim the files went unchecked when it is about to route them', () => {
+      for (const fatal of [true, false]) {
+        const text = formatUncoveredFilesBanner({
+          label: 'operator-core',
+          uncovered: ['apps/operator-vite/src/b.tsx'],
+          suggestions,
+          fatal,
+          autoRoute: true,
+        }).join('\n');
+        expect(text).toContain('ROUTING them to the gate that owns them');
+        expect(text).not.toMatch(/NOTHING YOU NAMED WAS TYPECHECKED/);
+        expect(text).not.toMatch(/were NOT typechecked/);
+      }
+    });
+
     it('does not append --files to a workspace typecheck script that invokes raw tsc', () => {
       const file = 'libs/papercusp/libs/db/src/connection.ts';
       const command = 'npm run --workspace libs/papercusp/libs/db typecheck';
@@ -3762,7 +3781,10 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
      * just cats the canned diagnostics. Without a resolvable project prefix the coverage branch is
      * skipped entirely, and this test would pass against code that never routes anything.
      */
-    function runMixedGate(delegateScript: string): { out: string; code: number } {
+    function runMixedGate(
+      delegateScript: string,
+      env: Record<string, string> = {},
+    ): { out: string; code: number } {
       const root = mkdtempSync(join(tmpdir(), 'tsc-gate-mixed-route-'));
       try {
         mkdirSync(join(root, 'pkg-a', 'lib'), { recursive: true });
@@ -3804,6 +3826,7 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
             encoding: 'utf-8',
             stdio: 'pipe',
             cwd: root,
+            env: { ...process.env, ...env },
           });
           return { out, code: 0 };
         } catch (e: any) {
@@ -3826,10 +3849,48 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
       expect(code).toBe(0);
     });
 
+    // Exit 1 is what a real sibling gate returns on a regression (every `lint:tsc*` leg does),
+    // so this is the delegate-failure shape that actually occurs.
     it('a FAILING delegate fails the run and reads routed-failed, carrying the child exit code', () => {
+      const { out, code } = runMixedGate('node -e "process.exit(1)"');
+      expect(code).toBe(1);
+      expect(out).toContain('status=routed-failed');
+      // It must NOT read `regressed`: this gate's own compile never ran, so blaming
+      // operator-core would point the caller at a file that was never judged.
+      expect(out).not.toContain('status=regressed');
+    });
+
+    // THE FALSIFIABILITY CONTROL, and a real guard in its own right.
+    //
+    // A guard test that has never failed is a guard you have not tested — but this repo forbids
+    // proving that by mutating the shared tree (git-sync commits the whole working tree on a
+    // schedule, so a probe that holds a mutant for the length of a run can have it committed even
+    // when nothing goes wrong). `PAPERCUSP_TSC_AUTO_ROUTE=1` is the gate's OWN recursion kill
+    // switch, and disabling routing is EXACTLY the pre-fix behaviour of the partial branch — so
+    // the same fixture, one env var apart, reproduces the bug this section fixes with no mutation
+    // at all. If the two tests above ever start passing for the wrong reason, this one still
+    // pins what the old code did, and it fails if the kill switch stops working.
+    it('CONTROL: with routing disabled the same fixture reproduces the pre-fix partial + unchecked file', () => {
+      const { out, code } = runMixedGate('node -e "console.log(\'DELEGATE-RAN\')"', {
+        PAPERCUSP_TSC_AUTO_ROUTE: '1',
+      });
+      expect(out).not.toContain('DELEGATE-RAN'); // the delegate never ran
+      expect(out).toContain('status=partial');
+      expect(out).toContain('filesUnchecked=1');
+      expect(out).not.toContain('filesRouted=');
+      // The defect in one line: a file the caller named was never compiled, and the run passed.
+      expect(code).toBe(0);
+    });
+
+    // An ABNORMAL delegate code (a crash, an OOM, a SIGTERM'd child) is deliberately NOT
+    // laundered into the lint vocabulary. `routed-failed` is a verdict — "the owning gate judged
+    // your file and it is red" — and a code the gate does not recognise has not earned it. The
+    // code is preserved verbatim so the caller can tell a crash from a type error.
+    it('preserves an abnormal delegate exit code as error(N) rather than calling it a verdict', () => {
       const { out, code } = runMixedGate('node -e "process.exit(3)"');
       expect(code).toBe(3);
-      expect(out).toContain('status=routed-failed');
+      expect(out).toContain('status=error(3)');
+      expect(out).not.toContain('routed-failed');
     });
   });
 });
