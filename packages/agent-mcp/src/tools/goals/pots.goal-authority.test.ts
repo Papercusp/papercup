@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
   goalSpend: vi.fn(),
 }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   goalSpend: mocks.goalSpend,
   goalsForPot: mocks.goalsForPot,
   linkPot: mocks.linkPot,
