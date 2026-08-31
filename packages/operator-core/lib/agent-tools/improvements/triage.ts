@@ -65,7 +65,7 @@ export default defineTool({
       .enum(['summary', 'triage-all', 'triage-one', 'retriage-all'])
       .optional()
       .describe(
-        'Summary: show triage breakdown without applying decisions. Triage-all: classify all open ideas. Triage-one: triage a single idea by id. Retriage-all: re-run the deterministic route over EVERY open idea (already-triaged included — triaged→triaged is valid) and PERSIST it; the backlog migration pass for a taxonomy change (consume-edges P-021).',
+        'Summary: show triage breakdown without applying decisions. Triage-all: classify all open ideas. Triage-one: triage a single idea by id. Retriage-all: re-run the deterministic route over the ranked open-idea WINDOW — or over exactly `ids` — already-triaged included (triaged→triaged is valid), and PERSIST it; the backlog migration pass for a taxonomy change (consume-edges P-021).',
       ),
     ideaId: z.string().optional().describe('For triage-one mode, the idea to triage'),
     decision: z
@@ -74,9 +74,35 @@ export default defineTool({
       .describe('For triage-one, the triaging agent\'s decision'),
     reason: z.string().optional().describe('Reason for the decision (required if decision is set)'),
     harnessSlug: z.string().min(1).max(80).optional().describe('(P-010) restrict to a specific Pot\'s ideas (default: all)'),
+    ids: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(TRIAGE_WINDOW)
+      .optional()
+      .describe(
+        'Scope the pass to an EXPLICIT id set instead of the ranked first-window read (EI-19374906980984233). This is how a backlog COHORT gets re-routed after a taxonomy fix: the window read can never reach rows ranked past it, and widening the write to the whole corpus was deliberately declined. Applied as a SQL predicate; `coverage.scope` becomes "requested-ids" and `complete` then means every requested id was examined.',
+      ),
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
+
+    // EI-19374906980984233: `ids` scopes the digest-backed read below. triage-one
+    // returns before that read and takes its single subject from `ideaId`, so an `ids`
+    // here would be silently dropped — refuse instead of pretending it was honoured.
+    if (args.ids && args.mode === 'triage-one') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'triage-one does not accept `ids` — it triages the single `ideaId`. Use mode=retriage-all with `ids` for a cohort.',
+            }),
+          },
+        ],
+      };
+    }
+    const scopedIds = args.ids && args.ids.length > 0 ? args.ids : undefined;
 
     // Triage-one only needs the requested item's lifecycle write. The full
     // digest/ranking prelude below is for queue views, not this targeted
@@ -166,7 +192,16 @@ export default defineTool({
     // lane ranked by the ONE queue ranker (frontier P-040/P-045, D-005) — the
     // Queen's triage walk follows the same order the digest, the tab, and the
     // owner inbox show, with each item carrying its rank.features breakdown.
-    const readOpts = { state: 'open' as const, limit: TRIAGE_WINDOW, harnessSlug: args.harnessSlug };
+    // `issueIds` is a SQL predicate, never a post-filter (see ReadImprovementOpts.issueIds:
+    // filtering after the read returns the first N of the whole corpus and then shrinks it,
+    // which looks like it worked). Both legs keep the SAME filter — WI-1206660's guard —
+    // so `corpusTotal` always describes the set this call actually read.
+    const readOpts = {
+      state: 'open' as const,
+      limit: TRIAGE_WINDOW,
+      harnessSlug: args.harnessSlug,
+      ...(scopedIds ? { issueIds: scopedIds } : {}),
+    };
     // D2 (EI-18790490225750395), propagated here from `improvements:digest`: the TRUE
     // corpus total — a real COUNT(*), never bounded by `limit`. Without it `buildDigest`
     // falls back to `total = candidates.length`, so this tool reported its own 100-row
@@ -189,9 +224,21 @@ export default defineTool({
     );
     // The window/corpus framing every mode below stamps onto its result, so a count
     // computed over a capped fetch can never be read as a corpus-wide verdict.
+    // A requested id that does not come back is NOT a no-op: it is already terminal, not
+    // topic-tagged, or outside the harness lens. Counting only what came back is the
+    // silent partial this block exists to make impossible — the same failure `coverage`
+    // was added for, one scope down.
+    const examinedIds = new Set(items.map((item) => item.id));
+    const missingIds = scopedIds ? scopedIds.filter((id) => !examinedIds.has(id)) : [];
     const coverage = {
+      // WHAT this pass was scoped to. Without it a caller cannot tell a corpus-wide
+      // `corpusTotal` from a cohort-sized one, and the two mean opposite things.
+      scope: scopedIds ? ('requested-ids' as const) : ('corpus' as const),
       window: TRIAGE_WINDOW,
       examined: items.length,
+      requested: scopedIds ? scopedIds.length : null,
+      missing: scopedIds ? missingIds.length : null,
+      missingIds: scopedIds ? missingIds.slice(0, 20) : null,
       corpusTotal: corpusTotal ?? null,
       windowed: digest.windowed,
     };
@@ -332,8 +379,20 @@ export default defineTool({
               // one field that answers "did this re-route the standing backlog?" — false
               // means ideas outside the window kept their previous routing.
               coverage,
-              complete: !coverage.windowed,
-              remaining: coverage.corpusTotal === null ? null : Math.max(0, coverage.corpusTotal - all.length),
+              // `complete` answers "did this re-route what it set out to?", and what that
+              // IS depends on the scope. Corpus scope: false whenever rows sat past the
+              // window. Requested-ids scope: false whenever a requested id never came back
+              // — otherwise a cohort sweep that skipped half its ids reports success.
+              complete: scopedIds ? missingIds.length === 0 : !coverage.windowed,
+              completeOver: coverage.scope,
+              // Corpus rows this call did not touch. Meaningless under an id scope (the
+              // read was never trying to cover the corpus), so report it as NOT MEASURED
+              // rather than as a 0 that reads like "nothing left".
+              remaining: scopedIds
+                ? null
+                : coverage.corpusTotal === null
+                  ? null
+                  : Math.max(0, coverage.corpusTotal - all.length),
               byDecision,
               byType,
               failures: failures.slice(0, 10),
