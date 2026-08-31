@@ -171,6 +171,41 @@ describe('role-ALLOWLIST arrays are access-control data, not guidance', () => {
   });
 });
 
+describe('quoted role config keys are data, not guidance', () => {
+  const offenders = (file: string, source: string) =>
+    findRetiredGuidanceOffenders(file, guidanceTextFor(file, source));
+
+  it('does not flag a live Overwatch model override key', () => {
+    expect(
+      offenders(
+        'pot/set_steering.ts',
+        `defineTool({ description: 'The pot operator wakes and reviews work; keys {"kettle":"sonnet"} select the invoke loop.' });`,
+      ),
+    ).toEqual([]);
+    expect(
+      offenders(
+        'pot/set_steering.ts',
+        `defineTool({ description: 'The operator wakes; keys "papercup" (dock) and "kettle" (invoke loop) select the front door.' });`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('still flags a role used as a value or ordinary prose', () => {
+    expect(
+      offenders('t.ts', `const x = { "model": "kettle" }; const d = 'The Kettle dispatches work.';`).length,
+    ).toBeGreaterThan(0);
+    expect(
+      offenders('t.ts', `const d = 'Valid keys are "mode". The Mug dispatches work.';`).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('does not turn a markdown example into a code exemption', () => {
+    expect(
+      offenders('t.md', `Config example {"kettle":"sonnet"}: the Mug dispatches work.`).length,
+    ).toBeGreaterThan(0);
+  });
+});
+
 /**
  * WI-1726926 — `red-queen` is a DOMAIN TERM (the arms-race hypothesis the gym's
  * adversarial drills and the learning governor are named after), and `\bqueen\b`

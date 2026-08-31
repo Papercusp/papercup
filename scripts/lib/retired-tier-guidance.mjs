@@ -54,7 +54,7 @@ export function guidanceTextFor(relativeFile, source) {
     text = source;
   }
   return blankDomainTermCollisions(
-    blankImportSpecifiers(blankRoleAllowlistArrays(text)),
+    blankImportSpecifiers(blankRoleConfigKeys(blankRoleAllowlistArrays(text))),
   );
 }
 
@@ -145,6 +145,52 @@ function blankRoleAllowlistArrays(text) {
     }
     OPENER_RE.lastIndex = close;
   }
+  return chars.join("");
+}
+
+/**
+ * A quoted role name used as a CONFIG KEY is data, not a prescription to route
+ * work through that role.
+ *
+ * `pot:set-steering` documents the live invoke-loop model override as
+ * `{"kettle":"sonnet"}`. `kettle` is Overwatch's wire identifier, so deleting
+ * or renaming that key would break the documented config contract. The detector
+ * previously combined that key with unrelated `wake`/`review` words elsewhere
+ * in the same `defineTool` segment and reported a false positive. Keep this
+ * exemption narrower than a blanket role-token pass: it covers an object key
+ * (`{"kettle":…}`) or a quoted role token in the short clause governed by
+ * `key`/`keys` (`keys "papercup" and "kettle"`). Ordinary role values and a
+ * role prescription in the next sentence remain visible. Blanking preserves
+ * length/line positions.
+ */
+function blankRoleConfigKeys(text) {
+  const OBJECT_KEY_RE = /(["'])(?:queen|mug|kettle)\1\s*:/gi;
+  const KEY_CLAUSE_RE = /\bkeys?\b[^.;\n]{0,240}/gi;
+  const chars = text.split("");
+  const blankQuotedRoles = (slice, offset) => {
+    const QUOTED_ROLE_RE = /(["'])(?:queen|mug|kettle)\1/gi;
+    QUOTED_ROLE_RE.lastIndex = 0;
+    for (const role of slice.matchAll(QUOTED_ROLE_RE)) {
+      const tokenStart = offset + (role.index ?? 0) + 1;
+      const tokenLength = role[0].length - 2;
+      for (let i = tokenStart; i < tokenStart + tokenLength; i += 1)
+        chars[i] = " ";
+    }
+  };
+
+  let match;
+  OBJECT_KEY_RE.lastIndex = 0;
+  while ((match = OBJECT_KEY_RE.exec(text)) !== null) {
+    const tokenStart = match.index + 1;
+    const tokenLength = match[0].indexOf(match[1], 1) - 1;
+    for (let i = tokenStart; i < tokenStart + tokenLength; i += 1)
+      chars[i] = " ";
+  }
+
+  KEY_CLAUSE_RE.lastIndex = 0;
+  while ((match = KEY_CLAUSE_RE.exec(text)) !== null)
+    blankQuotedRoles(match[0], match.index);
+
   return chars.join("");
 }
 
@@ -550,9 +596,7 @@ export function findRetiredGuidanceOffenders(file, source) {
  *      offering "(B) hand it to the Mug" through the tier's entire retirement
  *      (EI-21972876172423322).
  */
-export const ACTIVE_RETIRED_GUIDANCE_PENDING = [
-  { path: "packages/operator-core/lib/agent-tools/pot", offenders: 2 },
-];
+export const ACTIVE_RETIRED_GUIDANCE_PENDING = [];
 
 const PENDING_PATHS = new Set(
   ACTIVE_RETIRED_GUIDANCE_PENDING.map((entry) => entry.path),
