@@ -1174,6 +1174,13 @@ export function partitionBrokenFilesByLiveEdit(unattributedBrokenFiles, dirtyFil
 }
 
 /**
+ * Quote cap for a file whose errors are all new (a hard-fail or a file the baseline never saw).
+ * Three lines are a fair sample of one homogeneous set — see REGRESSION_DIAGNOSTIC_MAX_PER_FILE
+ * for why a MIXED (regressed) file needs a larger one.
+ */
+const DEFAULT_DIAGNOSTIC_MAX_PER_FILE = 3;
+
+/**
  * The COMPILER LINES behind a new file's `+N` — the WHAT the count alone withholds (WI-6767).
  *
  * The gate holds the full tsc output and, until now, reported only `file: 0 → 1 (+1)`. Recovering
@@ -1202,13 +1209,6 @@ export function partitionBrokenFilesByLiveEdit(unattributedBrokenFiles, dirtyFil
  *   the true total).
  * @returns {Map<string, string[]>} file → its diagnostic lines, in compiler order, capped.
  */
-/**
- * Quote cap for a file whose errors are all new (a hard-fail or a file the baseline never saw).
- * Three lines are a fair sample of one homogeneous set — see REGRESSION_DIAGNOSTIC_MAX_PER_FILE
- * for why a MIXED (regressed) file needs a larger one.
- */
-const DEFAULT_DIAGNOSTIC_MAX_PER_FILE = 3;
-
 export function diagnosticLinesForFiles(
   tscOutput,
   files,

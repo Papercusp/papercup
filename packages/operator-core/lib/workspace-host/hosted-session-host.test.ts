@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  HOSTED_HOST_MAX_FILE_BYTES,
+  HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
   HOSTED_HOST_SESSION_IDLE_MS,
   HostedWorkspaceHostSessionAdapter,
   SafeRootFileService,
@@ -132,7 +134,15 @@ describe('HostedWorkspaceHostSessionAdapter', () => {
     expect(sent).toContainEqual({
       type: 'relay',
       channelId: 'channel-2',
-      payload: { type: 'pty.ready', resumed: true, role: 'controller' },
+      payload: {
+        type: 'pty.ready',
+        resumed: true,
+        role: 'controller',
+        limits: {
+          maxFileBytes: HOSTED_HOST_MAX_FILE_BYTES,
+          maxUploadChunkBytes: HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
+        },
+      },
     });
     expect(sent).toContainEqual({
       type: 'relay',
