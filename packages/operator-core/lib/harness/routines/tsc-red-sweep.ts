@@ -396,6 +396,13 @@ export interface TscRedSweepDeps {
   pruneObservationsFn?: typeof pruneObservations;
   recentFiresFn?: typeof recentWatchdogFires;
   claimFireFn?: typeof claimWatchdogFire;
+  /** Exact lookup of the issue created by the first filing. */
+  findIssuesByWatchdogKeysFn?: (keys: string[]) => Promise<EngineerIssue[]>;
+  /** Execute the repeat-red escalation (injectable for a no-PG unit test). */
+  escalateRepeatedUnownedTscRedFn?: (
+    issue: RepeatedUnownedTscRedIssue,
+    file: string,
+  ) => Promise<RepeatedUnownedTscRedResult>;
   captureFn?: (input: CaptureImprovementInput) => Promise<unknown>;
   workspaceIdFn?: () => string;
   readRunHeartbeatsFn?: typeof readRunHeartbeats;
@@ -564,6 +571,8 @@ export async function tscRedSweep(deps: TscRedSweepDeps = {}): Promise<TscRedSwe
     pruneObservationsFn = pruneObservations,
     recentFiresFn = recentWatchdogFires,
     claimFireFn = claimWatchdogFire,
+    findIssuesByWatchdogKeysFn = findIssuesByWatchdogKeys,
+    escalateRepeatedUnownedTscRedFn = (issue, file) => escalateRepeatedUnownedTscRed(issue, file),
     captureFn,
     workspaceIdFn = activeWorkspaceId,
     repoRoot = process.cwd(),
@@ -627,12 +636,112 @@ export async function tscRedSweep(deps: TscRedSweepDeps = {}): Promise<TscRedSwe
       try {
         const installSlug = debounceKeyFor(red.file);
         if ((await recentFiresFn(workspaceId, installSlug, DEBOUNCE_HOURS, source)) > 0) {
+          // A repeat is no longer a no-op: the original issue already exists, so use the
+          // exact indexed key to find it and make that SAME row actionable. A lookup failure
+          // remains fail-soft — never mint a second capture merely because the index was down.
+          let matches: EngineerIssue[];
+          try {
+            matches = await findIssuesByWatchdogKeysFn([debounceKeyFor(red.file)]);
+          } catch (e) {
+            results.push({
+              file: red.file,
+              outcome: 'error',
+              spanSec: red.spanSec,
+              sightings: red.sightings,
+              reason: `repeat issue lookup failed: ${e instanceof Error ? e.message : String(e)}`,
+            });
+            continue;
+          }
+          const selected = selectRepeatedUnownedIssue(matches);
+          if (!selected.issue) {
+            results.push({
+              file: red.file,
+              outcome: 'debounced',
+              spanSec: red.spanSec,
+              sightings: red.sightings,
+              reason: selected.reason,
+            });
+            continue;
+          }
+          if (selected.issue.severity === 'critical' && selected.issue.featureOrder != null) {
+            results.push({
+              file: red.file,
+              outcome: 'debounced',
+              spanSec: red.spanSec,
+              sightings: red.sightings,
+              reason: `${selected.issue.id} is already critical and prioritized`,
+            });
+            continue;
+          }
+          const repeatScopeKey = repeatEscalationKeyFor(red.file);
+          const repeatReason =
+            `repeat standing tsc red remains unowned for ${red.file} (${selected.issue.id}); ` +
+            `scope=${repeatScopeKey}`;
+          const repeatClaimed = await claimFireFn({
+            workspaceId,
+            // Keep the original source/install dimensions, but add a distinct scope key so
+            // the repeat side effect has its own hourly single-flight slot.
+            installSlug,
+            source,
+            windowHours: REPEAT_ESCALATION_HOURS,
+            scopeKey: repeatScopeKey,
+            reason: repeatReason,
+            wakeAt: null,
+          });
+          if (!repeatClaimed) {
+            results.push({
+              file: red.file,
+              outcome: 'debounced',
+              spanSec: red.spanSec,
+              sightings: red.sightings,
+              reason: `repeat escalation already claimed within ${REPEAT_ESCALATION_HOURS}h (raced or recent)`,
+            });
+            continue;
+          }
+          // The exact issue can be claimed or resolved between the cheap read and the
+          // single-flight write. Re-read AFTER winning, then let the helper check ownership
+          // once more; a lost race must fail toward doing nothing, never escalating owned work.
+          let freshMatches: EngineerIssue[];
+          try {
+            freshMatches = await findIssuesByWatchdogKeysFn([debounceKeyFor(red.file)]);
+          } catch (e) {
+            results.push({
+              file: red.file,
+              outcome: 'error',
+              spanSec: red.spanSec,
+              sightings: red.sightings,
+              reason: `post-claim repeat issue lookup failed: ${e instanceof Error ? e.message : String(e)}`,
+            });
+            continue;
+          }
+          const fresh = selectRepeatedUnownedIssue(freshMatches);
+          if (!fresh.issue) {
+            results.push({
+              file: red.file,
+              outcome: 'debounced',
+              spanSec: red.spanSec,
+              sightings: red.sightings,
+              reason: `post-claim ownership recheck: ${fresh.reason}`,
+            });
+            continue;
+          }
+          const escalation = await escalateRepeatedUnownedTscRedFn(fresh.issue, red.file);
+          if (!escalation.escalated) {
+            results.push({
+              file: red.file,
+              outcome: 'debounced',
+              spanSec: red.spanSec,
+              sightings: red.sightings,
+              reason: escalation.reason,
+            });
+            continue;
+          }
           results.push({
             file: red.file,
-            outcome: 'debounced',
+            outcome: 'escalated',
             spanSec: red.spanSec,
             sightings: red.sightings,
-            reason: `filed within ${DEBOUNCE_HOURS}h`,
+            reason: escalation.reason,
           });
           continue;
         }
