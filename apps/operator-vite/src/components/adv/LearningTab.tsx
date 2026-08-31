@@ -130,6 +130,7 @@ import { AnalyzePanel } from "./AnalyzePanel";
 import LearningLoopControl from "./LearningLoopControl";
 import LearningPotRail from "./LearningPotRail";
 import LearningPotPicker, { useOpenPotPicker } from "./LearningPotPicker";
+import LearningPotDrawer from "./LearningPotDrawer";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
 import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Tooltip } from "@/app/harness/Tooltip";
@@ -904,6 +905,14 @@ export default function LearningTab() {
           enumerates every pot, including the ones the rail has nothing to say
           about. It is a modal driven by URL state, so it costs nothing closed. */}
       <LearningPotPicker />
+      {/* P-012's per-pot drawer, mounted beside the picker for the same reason
+          and one more: it must be openable for a pot with NO rail chip. D-008
+          measured that the chip popover is the only surface operating per-lane
+          switches, which is why the rail cannot collapse its switched-off pots
+          (the owner's "gigantic display" complaint, P-052). Mounting the drawer
+          on the tab — reachable from the picker by slug — is what breaks that
+          dependency; hanging it off the rail would rebuild it. */}
+      <LearningPotDrawer />
 
       <div className="pc-learning__controls">
         {/* The per-tab pot picker that lived here is GONE (owner directive

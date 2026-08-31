@@ -26,6 +26,7 @@ import { Modal } from "@/app/harness/Modal";
 import { potHomeLabel } from "@/lib/pot-label";
 import { useLexicon } from "@/lib/useLexicon";
 import { runAgentTool } from "./run-tool";
+import { useOpenPotDrawer } from "./LearningPotDrawer";
 import {
   buildPotPickerRows,
   filterPotPickerRows,
@@ -73,11 +74,13 @@ function PotRow({
   row,
   checked,
   onToggle,
+  onOpenFields,
   disabled,
 }: {
   row: PotPickerRow;
   checked: boolean;
   onToggle: (slug: string) => void;
+  onOpenFields: (slug: string) => void;
   disabled: boolean;
 }) {
   const label = potHomeLabel(row.potSlug);
@@ -95,6 +98,23 @@ function PotRow({
       <span className="pc-potpick__state" data-state={row.learning}>
         {row.learning === "on" ? "on" : row.learning === "off" ? "off" : "unreadable"}
       </span>
+      {/* P-012 / D-008. THIS BUTTON IS THE LOAD-BEARING PART OF THE DRAWER, not
+          the drawer's own layout. The footer below writes the pot GATE and
+          nothing else — D-007 keeps per-lane control off this surface on
+          purpose — so before this existed, the ONLY way to reach a pot's
+          per-lane switches was its rail chip. That is precisely why the rail
+          cannot bury a switched-off pot (D-008, falsified twice) and why the
+          Learning tab is "gigantic" with every pot paused. Opening the drawer
+          BY SLUG, from a row that exists for every pot in the workspace, is
+          what lets P-052 collapse the rail. */}
+      <button
+        type="button"
+        className="pc-potpick__fields"
+        onClick={() => onOpenFields(row.potSlug)}
+        aria-label={`Open learning fields for ${label}`}
+      >
+        Fields
+      </button>
       <span className="pc-potpick__conseq">{consequenceText(row.consequence)}</span>
     </li>
   );
@@ -116,6 +136,8 @@ export default function LearningPotPicker() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** Hands a pot — dormant, off, or never-learned alike — to P-012's drawer. */
+  const openFields = useOpenPotDrawer();
 
   const catalogQuery = useSyncQuery<AutomationCatalog>({
     queryName: "automation.catalog",
@@ -233,6 +255,7 @@ export default function LearningPotPicker() {
                 row={row}
                 checked={selected.has(row.potSlug)}
                 onToggle={toggle}
+                onOpenFields={openFields}
                 disabled={busy}
               />
             ))}
@@ -288,8 +311,8 @@ export default function LearningPotPicker() {
           border: 1px solid var(--border); border-radius: 10px;
         }
         .pc-potpick__row {
-          display: grid; grid-template-columns: minmax(0, 1fr) auto;
-          grid-template-areas: "pick state" "conseq conseq";
+          display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+          grid-template-areas: "pick state fields" "conseq conseq conseq";
           gap: 2px 10px; padding: 7px 10px; font-size: 12px;
           border-bottom: 1px solid var(--border);
         }
@@ -302,6 +325,11 @@ export default function LearningPotPicker() {
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg);
         }
         .pc-potpick__state { grid-area: state; font-size: 10.5px; color: var(--fg-mute); }
+        .pc-potpick__fields {
+          grid-area: fields; padding: 2px 8px; font-size: 10.5px;
+          border-radius: 7px; border: 1px solid var(--border-strong);
+          background: var(--bg); color: var(--fg); cursor: pointer;
+        }
         .pc-potpick__state[data-state="on"] { color: var(--good); }
         .pc-potpick__state[data-state="unknown"] { color: var(--warn); }
         /* The consequence line is the point of this surface, so it is never

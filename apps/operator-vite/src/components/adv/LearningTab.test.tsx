@@ -781,6 +781,12 @@ beforeEach(() => {
   // and simply behind the dialog. That reads as six unrelated regressions.
   nuqsState.lpick = null;
   nuqsState.lpickq = null;
+  // P-012: the per-pot drawer is a second Radix MODAL on this tab, keyed by pot
+  // SLUG rather than a boolean — so a leaked `lpot` is worse than a leaked
+  // `lpick`: any non-empty string opens it. Same failure mode as above (later
+  // tests report "unable to find an accessible element" for controls that are
+  // present, just behind an aria-modal), so it gets the same reset.
+  nuqsState.lpot = null;
   window.localStorage.removeItem("pc-learning-orientation-dismissed");
   for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
   for (const k of Object.keys(seenArgs)) delete seenArgs[k];

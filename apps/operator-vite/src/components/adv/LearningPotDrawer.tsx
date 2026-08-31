@@ -35,6 +35,7 @@ import { useSyncQuery } from "@papercusp/sync";
 import type { AutomationCatalog } from "@papercusp/operator-core/lib/automation/catalog";
 import { Modal } from "@/app/harness/Modal";
 import { potHomeLabel } from "@/lib/pot-label";
+import { useLexicon } from "@/lib/useLexicon";
 import { runAgentTool } from "./run-tool";
 import {
   buildPotDrawer,
@@ -244,6 +245,7 @@ function SectionBlock({
 }
 
 export default function LearningPotDrawer() {
+  const t = useLexicon();
   const [potSlug, setPotSlug] = useQueryState(DRAWER_KEY, parseAsString.withDefault(""));
   const [, setPicker] = useQueryState(PICKER_KEY, parseAsBoolean.withDefault(false));
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -335,7 +337,9 @@ export default function LearningPotDrawer() {
         {/* MASTER SWITCH FIRST — everything below is ANDed with it, so reading
             the panel top-to-bottom reads the actual logic (plan Design). */}
         <div className="pc-potdraw__master" data-state={master}>
-          <span className="pc-potdraw__mname">Learning for this {"pot"}</span>
+          <span className="pc-potdraw__mname">
+            Learning for this {t("pot", { lower: true })}
+          </span>
           <span className="pc-potdraw__mstate">
             {master === "on" ? "on" : master === "off" ? "off" : "unreadable"}
           </span>
@@ -393,7 +397,7 @@ export default function LearningPotDrawer() {
 
         <div className="pc-potdraw__footer">
           <button type="button" className="pc-potdraw__back" onClick={backToPicker}>
-            ← All pots
+            ← All {t("pot", { plural: true, lower: true })}
           </button>
           <button type="button" className="pc-potdraw__done" onClick={close}>
             Done

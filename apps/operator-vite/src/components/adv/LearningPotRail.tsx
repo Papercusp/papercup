@@ -35,6 +35,7 @@ import type {
   AutomationCatalog,
 } from "@papercusp/operator-core/lib/automation/catalog";
 import { Popover } from "@/app/harness/Popover";
+import { useOpenPotDrawer } from "./LearningPotDrawer";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { potHomeLabel } from "@/lib/pot-label";
 import { useLexicon } from "@/lib/useLexicon";
@@ -199,6 +200,7 @@ function PotPopoverBody({
   const master = chip.learning;
   const anyBusy = busy !== null;
   const potLabel = potHomeLabel(chip.potSlug);
+  const openFields = useOpenPotDrawer();
 
   return (
     <div className="pc-potrail__pop">
@@ -328,6 +330,20 @@ function PotPopoverBody({
           {err}
         </p>
       ) : null}
+
+      {/* P-012. This popover is the QUICK panel — arm/disarm and nothing else.
+          Budgets, units and enforcement are fields, and fields need room, so
+          they live in the drawer. The link matters beyond convenience: the
+          drawer is reachable by SLUG from the picker too, so a pot does not
+          need a chip to reach these controls — which is the dependency D-008
+          needs broken before the rail can bury its switched-off pots. */}
+      <button
+        type="button"
+        className="pc-potrail__popmore"
+        onClick={() => openFields(chip.potSlug)}
+      >
+        All fields — budgets and enforcement →
+      </button>
     </div>
   );
 }
@@ -584,6 +600,12 @@ export default function LearningPotRail() {
         }
         .pc-potrail__poperr {
           margin: 6px 0 2px; padding: 0 8px; font-size: 10.5px; color: var(--bad);
+        }
+        .pc-potrail__popmore {
+          display: block; width: calc(100% - 16px); margin: 8px 8px 2px;
+          padding: 5px 8px; font-size: 10.5px; text-align: left;
+          border-radius: 8px; border: 1px solid var(--border);
+          background: var(--bg-1); color: var(--accent); cursor: pointer;
         }
         .pc-potrail__popfix { display: inline-flex; gap: 6px; }
         .pc-potrail__poptext {
