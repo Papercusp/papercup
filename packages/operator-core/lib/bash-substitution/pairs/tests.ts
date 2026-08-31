@@ -332,6 +332,34 @@ function coverTestCommand(parsed: ParsedTestCommand): CoverageResult {
  * P-021a — `npm run test:file -- <paths>`: the dominant shape, 69.5% of the
  * family. Already correctly routed; what the tool changes is the RESULT the
  * agent gets back, which is where the measured cost actually sits.
+ *
+ * ── EI-19333354769591247: the routing cell also has to name the QUEUE ────────
+ * The rows above sell this pair on output quality, and that is the right
+ * everyday reason. But it buries the one that decides the call under fleet
+ * load, and an agent reading only the quality argument reasonably concludes the
+ * bash form is merely more verbose — not that it may never start at all.
+ *
+ * MECHANISM (read in source, re-verified 2026-08-31, not inherited from the
+ * filing). `package.json` `test:file` is `… bash scripts/pc-heavy.sh node
+ * scripts/test-files.mjs`, so every invocation takes a pc-heavy admission
+ * ticket. `agent-tools/testing/run.ts` reaches the SAME router by
+ * `spawn(process.execPath, [join(root,'scripts','test-files.mjs'), …])` with no
+ * wrapper, so it never enters that queue. (It scrubs PC_HEAVY_PREEMPT_READY_FILE
+ * / PC_HEAVY_PSI_FINALIZATION_FILE from the child env for the nested case — it
+ * declines to own an outer barrier rather than taking a ticket of its own.)
+ * Same router, same configs, same verdict; only the admission differs.
+ * Pinned against drift by doc-claims/testing-run-pc-heavy-bypass.test.ts.
+ *
+ * ⚠ SCOPE — deliberately NOT extended to `build:typecheck`, though the filing's
+ * title pairs them. The claim does not survive the same check: `build:typecheck`
+ * spawns `npx tsc` directly (build/typecheck.ts), but so does the `npx tsc
+ * --noEmit -p <project>` its routing row displaces, and `npm run lint:tsc` is
+ * `node scripts/lint-tsc.mjs` — none of the three is pc-heavy-wrapped, so there
+ * is no queue to bypass. (`lint:tsc:workspaces` / `lint:tsc:papercusp-libs` ARE
+ * wrapped, but they answer the whole-tree ratchet question, not this one.)
+ * build:typecheck's real win stays what its own docs claim: a refusal of the
+ * zero-file run plus structured diagnostics. Stating a queue win there would be
+ * a false routing incentive, which is the exact failure this row exists to fix.
  */
 export const routerTestFiles: BashSubstitutionPair = {
   id: 'tests.router-files',
@@ -344,11 +372,11 @@ export const routerTestFiles: BashSubstitutionPair = {
   ),
   toolName: 'testing:run',
   advisoryText:
-    'testing:run { files } runs the same router and returns { passed, failed, files, failures:[{file,test,message}] } — no `2>&1 | tail -60` and no log to grep afterwards.',
+    'testing:run { files } runs the same router and returns { passed, failed, files, failures:[{file,test,message}] } — no `2>&1 | tail -60` and no log to grep afterwards. It also spawns that router DIRECTLY, taking no pc-heavy admission ticket: under fleet load `npm run test:file` queues behind every other heavy job while this returns immediately.',
   routing: {
     want: 'to run specific test files and see which tests failed',
-    use: '`testing:run { files: [...] }`',
-    insteadOf: '`npm run test:file -- <paths> 2>&1 | tail -60` (a run redirected to a log file is not this — the tool writes no artifact)',
+    use: '`testing:run { files: [...] }` — spawns the router directly, so it never waits for a pc-heavy admission ticket',
+    insteadOf: '`npm run test:file -- <paths> 2>&1 | tail -60` — pc-heavy-wrapped, so under fleet load it queues behind every other heavy job (measured: 14+ min without starting, and a sibling attempt killed SIGTERM/143 with ZERO output, against 1471ms through the tool). A run redirected to a log file is not this either — the tool writes no artifact',
   },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
