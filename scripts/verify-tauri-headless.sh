@@ -522,6 +522,91 @@ case ":${PATH:-}:" in
 esac
 export PATH VERIFY_TAURI_CARGO_BIN VERIFY_TAURI_CARGO_BIN_DIR
 
+# EI-21974634479405756: assertion commands are authored before this script
+# spends minutes building and booting a verifier. Preflight shell syntax and
+# tauri-agent-tools option ordering while the command is still cheap to reject.
+# The CLI's --pid/--port options belong to a subcommand, not the root command.
+validate_assertion_command_preflight() {
+  [ "${ASSERTION_MODE}" -eq 1 ] || return 0
+
+  local command_path="${ASSERTION_ARGS[0]:-}"
+  local command_name="$(basename -- "$command_path")"
+  local source_path="" source_text="" source_label="" syntax_output=""
+  local shebang="" is_shell_script=0 normalized invalid
+
+  case "$command_name" in
+    bash|sh|dash)
+      if [ "${ASSERTION_ARGS[1]:-}" = "-c" ]; then
+        source_text="${ASSERTION_ARGS[2]:-}"
+        source_label="$command_name -c"
+        if ! syntax_output="$(bash -n -c "$source_text" 2>&1)"; then
+          echo "VERIFY_TAURI_ASSERTION_INVALID $source_label: invalid shell syntax" >&2
+          [ -n "$syntax_output" ] && printf '%s\n' "$syntax_output" >&2
+          return 2
+        fi
+      else
+        source_path="${ASSERTION_ARGS[1]:-}"
+      fi
+      ;;
+    *)
+      source_path="$command_path"
+      ;;
+  esac
+
+  if [ -n "$source_path" ]; then
+    source_path="$(readlink -f -- "$source_path" 2>/dev/null || true)"
+    [ -f "$source_path" ] || return 0
+    shebang="$(head -n 1 -- "$source_path" 2>/dev/null || true)"
+    case "$command_name" in
+      bash|sh|dash) is_shell_script=1 ;;
+    esac
+    case "$shebang" in
+      '#!'*sh*) is_shell_script=1 ;;
+    esac
+    case "$source_path" in
+      *.sh) is_shell_script=1 ;;
+    esac
+    [ "$is_shell_script" -eq 1 ] || return 0
+    source_label="$source_path"
+    source_text="$(cat -- "$source_path")" || {
+      echo "VERIFY_TAURI_ASSERTION_INVALID $source_label: could not read assertion source" >&2
+      return 2
+    }
+    if ! syntax_output="$(bash -n -- "$source_path" 2>&1)"; then
+      echo "VERIFY_TAURI_ASSERTION_INVALID $source_label: invalid shell syntax" >&2
+      [ -n "$syntax_output" ] && printf '%s\n' "$syntax_output" >&2
+      return 2
+    fi
+  fi
+
+  [ -n "$source_text" ] || return 0
+  # Join shell continuations so an option split across lines is still checked.
+  normalized="$(printf '%s\n' "$source_text" | awk '
+    /\\$/ { sub(/\\$/, " "); pending = pending $0; next }
+    { print pending $0; pending = "" }
+    END { if (pending != "") print pending }
+  ')" || return 2
+  invalid="$(printf '%s\n' "$normalized" | awk '
+    {
+      line = $0
+      sub(/^[[:space:]]*#.*$/, "", line)
+      has_bad_option = line ~ /tauri-agent-tools[[:space:]]+--(pid|port)([=[:space:]]|$)/
+      has_subcommand = line ~ /[[:space:]](screenshot|info|dom|eval|wait|ipc-monitor|list-windows|page-state|storage|console-monitor|mutations|snapshot|diff|click|type|scroll|select|navigate|invoke|store-inspect|check|probe|app-paths|config|help)([[:space:]]|$)/
+      if (has_bad_option && has_subcommand) {
+        print line
+        exit
+      }
+    }
+  ')" || return 2
+  if [ -n "$invalid" ]; then
+    echo "VERIFY_TAURI_ASSERTION_INVALID $source_label: tauri-agent-tools --pid/--port must follow its subcommand (for example, eval --pid ...)" >&2
+    echo "       offending command: $invalid" >&2
+    return 2
+  fi
+}
+
+validate_assertion_command_preflight || exit $?
+
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # EI-20229366113827667: cargo compilation and bridge readiness are separate
 # phases. A cold Rust build can consume most of the bridge budget before the
