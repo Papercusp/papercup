@@ -12,7 +12,11 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/launch-prompt.test.ts
  */
 import { describe, expect, it } from 'vitest';
+// @ts-expect-error — untyped .mjs guard helper, imported for its pure detector.
+import * as retiredGuidance from '../../../../../scripts/lib/retired-tier-guidance.mjs';
 import { deriveLaunchPromptText, type RemoteSeatSummary } from './launch-prompt';
+
+const { findRetiredGuidanceOffenders } = retiredGuidance;
 
 const PLAN = { slug: 'p-1', harness: 'papercusp' };
 
@@ -99,5 +103,69 @@ describe('deriveLaunchPromptText — routing gate option (C), AUTO-off + plan bo
     const text = deriveLaunchPromptText('custom kickoff', false, PLAN, 'full', SHARED_WITH_OFFERS);
     expect(text).toContain('custom kickoff');
     expect(text).not.toContain('placement');
+  });
+});
+
+/**
+ * EI-21972876172423322 — NO routing-gate option may name a RETIRED-TIER role.
+ *
+ * Until 2026-08-31, option (B) read "hand it to the Mug". The Mug/Kettle/Cup tier
+ * is permanently retired (MUG_KETTLE_SYSTEM deleted, `mugKettleSystemEnabled()` a
+ * constant false, every spawn door and the D-017 actuators refusing), so the gate
+ * was handing owners a menu whose middle option no agent could execute. It reached
+ * essentially every su: plans/launch.ts, bootstrap-su.ts AND carry-respawn.ts all
+ * consume this text.
+ *
+ * It survived the tier's retirement for one reason — NOTHING PINNED THE OPTION
+ * RECIPIENTS. The suite above guards option (C)'s named VERB with byte-exact
+ * assertions (sessions 9870/9865) and never looks at WHO an option points at, so
+ * the whole retirement swept past this file in silence.
+ *
+ * This guards the CLASS rather than the one string, and deliberately reuses the
+ * shared `retired-tier-guidance` detector (the same one `lint:no-ungated-mug-kettle`
+ * runs) instead of a local regex — a second hand-rolled copy of "which roles are
+ * retired" is exactly the drift that produced the bug. New retired role ⇒ the
+ * detector learns it once and this guard tightens for free.
+ *
+ * ⚠ If this fails, do NOT relax it by renaming the role out of the assertion. It is
+ * telling you the gate offers a route that cannot be executed — fix the ROUTE.
+ */
+describe('deriveLaunchPromptText — no option may name a retired-tier executor', () => {
+  const PROFILES = ['full', 'lean'] as const;
+  const SEATS = [undefined, UNSHARED, SHARED_EMPTY, SHARED_WITH_OFFERS, SHARED_SINGULAR];
+
+  for (const guards of PROFILES) {
+    for (const autoMode of [false, true]) {
+      for (const [i, seats] of SEATS.entries()) {
+        it(`${guards} profile, autoMode=${autoMode}, seats[${i}] ⇒ zero retired-tier offenders`, () => {
+          const text = deriveLaunchPromptText(null, autoMode, PLAN, guards, seats);
+          const offenders = findRetiredGuidanceOffenders(
+            'packages/operator-core/lib/agent-tools/plans/launch-prompt.ts',
+            text,
+          );
+          expect(
+            offenders,
+            `launch prompt names a retired-tier role as an executor:\n${JSON.stringify(offenders, null, 2)}\n\nGenerated text:\n${text}`,
+          ).toEqual([]);
+        });
+      }
+    }
+  }
+
+  it('is DISCRIMINATING — the pre-fix "(B) hand it to the Mug" wording still trips the detector', () => {
+    // Calibration. Without this, a detector that silently stopped matching (a bad
+    // regex edit, a renamed export) would make every assertion above vacuously
+    // pass, and this guard would report green on the exact text it exists to catch.
+    const preFix =
+      'Then, BEFORE doing any work, go through your routing gate: outline the approach ' +
+      'and present the execution options — (A) do it yourself, (B) hand it to the Mug, or ' +
+      '(C) launch a fleet of agents to parallelize it — recommend one based on the plan ' +
+      'size, and confirm with the owner which to use.';
+    expect(
+      findRetiredGuidanceOffenders(
+        'packages/operator-core/lib/agent-tools/plans/launch-prompt.ts',
+        preFix,
+      ).length,
+    ).toBeGreaterThan(0);
   });
 });

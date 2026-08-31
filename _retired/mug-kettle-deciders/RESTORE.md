@@ -559,6 +559,44 @@ moved files does NOT find, and number 6 is the trap that would break the build.*
      evidence-bearing (importer count at retirement), not just a restatement
      of the file name. -->
 
+### llm-testing `cup` + `mug` targets and scenarios (D-112, 2026-08-31)
+
+Retired under **D-112**, which extends D-060 rather than adding a new rule. D-060 had
+already named the blind spot — the tier census sees only files importing
+`_mug-kettle-gate`, so "an eval harness … is structurally invisible to it and lands in
+`liveImporters` BY DEFAULT, not because anything measured it live." These files are that
+population; the group-B enumeration simply never reached them, so they outlived the tier
+by the exact mechanism D-060 diagnosed. Raised from WI-1726926.
+
+| module | original path | why it retired |
+|---|---|---|
+| `targets/cup.ts` | `packages/operator-core/lib/llm-testing/` | SUT was "the **pot cup's spawn prompt**", loaded from `blueprints/base/prompts/cup.base.md`. **One importer at retirement, `targets/index.ts`** (the `cup:` registry entry), removed in this slice. |
+| `targets/mug.ts` | `packages/operator-core/lib/llm-testing/` | SUT was "the **pot Mug's spawn prompt**" — did she call `blender:grade-idea` on a triage turn. **One importer at retirement, `targets/index.ts`** (`mug:`), removed in this slice. Its own catalog called `cup:spawn` and `pot:declare-wake`, both refusing under D-017. |
+| `scenarios/cup/B01-pull-via-get-next.ts`, `B02-idle-on-empty-frontier.ts` | `packages/operator-core/lib/llm-testing/` | hybrid-bee-scheduler P-003 adoption coverage. **One importer each, `scenarios/index.ts`**, removed in this slice. |
+| `scenarios/mug/Q01…Q04` | `packages/operator-core/lib/llm-testing/` | Mug grading (Q01/Q02), ranked-queue deciding (Q03), claim-spec authoring (Q04). **One importer each, `scenarios/index.ts`**, removed in this slice. |
+
+Why this is a retirement and not a coverage loss, measured 2026-08-31:
+
+- The subject cannot run. `libs/flags/src/types.ts:1220-1231` — MUG_KETTLE_SYSTEM deleted
+  (P-068 / D-098, owner-directed), `mugKettleSystemEnabled()` a permanent `false`,
+  "the retirement is now permanent."
+- Nothing observed them. `llm-test` is a manual CLI (`apps/operator/package.json:45`,
+  `tsx bin/llm-test.ts`); no gate, CI job or routine invokes it. This is the same
+  corroboration D-060 used for `pot-eval/live-ops.ts` (`rt_papercusp_pot_eval_battery.active
+  = false`), in its llm-testing form.
+
+⚠ **Do not restore these against the retired personas.** The behaviours they covered
+largely MOVED rather than died — draft review and idea grading are su/Scout work now
+(WI-1713506; `blender:grade-idea` admits an su as `owner`). A scenario aimed at a
+decision-maker that cannot be spawned, whose actuators refuse, cannot fail informatively:
+it would go green on a system that does nothing. If one of these behaviours is worth
+covering, re-author it against the **`su` target**, which already exists.
+
+⚠ **`kettle` in `targets/index.ts` was NOT retired with this slice, and must not be.**
+`kettle: () => makeOverwatchTarget()` resolves to Overwatch, which is live — only the
+registry KEY is a retired-tier name. Read the factory, not the key. (D-048's rule: judge
+what a thing IS and whether it is reachable, never the symbol name.)
+
 ## Do not
 
 - Do not extend or test anything here — it is outside the workspace globs, so npm,

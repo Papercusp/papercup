@@ -160,20 +160,17 @@ import { SU_S31C_ASYMMETRY_FIELD } from './su/S31c-asymmetry-field';
 // different MECHANISM from B/C, which both require the sender to curate. Not part of the
 // pre-registered A/B/C rule; see ./su/S31d-asymmetry-provenance.ts.
 import { SU_S31D_ASYMMETRY_PROVENANCE } from './su/S31d-asymmetry-provenance';
-// QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Mug grades
-// routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
-import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './mug/Q01-grade-routed-on-triage';
-import { QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY } from './mug/Q02-owner-grade-sovereign-no-retry';
-// QUEEN-Q03: self-learning-frontier-2026-06-12 P-045 (FB-19, D-008) — the Mug
-// DECIDES the ranked improvement queue (triage-one place/gate/gym/reject),
-// weighs claimed confidence by calibration trust, gates graduation reports.
-import { QUEEN_Q03_RANKED_QUEUE_DECIDER } from './mug/Q03-ranked-queue-decider';
-// QUEEN-Q04 + BEE-B01: hybrid-bee-scheduler-work-stealing-2026-06-22 P-003 — the Mug
-// AUTHORS a per-bee claim spec (scheduler:set_claim_spec, steer-not-dispatch) and the bee
-// PULLS its next item via scheduler:get_next (no self-freelance). The two adoption halves.
-import { QUEEN_Q04_AUTHORS_CLAIM_SPEC } from './mug/Q04-authors-claim-spec';
-import { BEE_B01_PULL_VIA_GET_NEXT } from './cup/B01-pull-via-get-next';
-import { BEE_B02_IDLE_ON_EMPTY_FRONTIER } from './cup/B02-idle-on-empty-frontier';
+// QUEEN-Q01..Q04 (./mug) and BEE-B01/B02 (./cup) were HERE and are retired to
+// `_retired/mug-kettle-deciders/…/llm-testing/scenarios/` — retire-mug-kettle-su-only-2026-08-09
+// D-112, extending D-060. Each asserted a behavior of the Mug's or the cup's own spawn
+// prompt (grade routed drafts on triage, decide the ranked queue, author a claim spec,
+// pull via scheduler:get_next). That tier is permanently retired — MUG_KETTLE_SYSTEM is
+// deleted and `mugKettleSystemEnabled()` is a constant false — so the personas under test
+// cannot be spawned and their actuators refuse.
+//
+// The BEHAVIORS mostly did not die with the persona; they moved to su/Scout. If one of
+// these is worth keeping, re-author it against the `su` target rather than restoring it
+// here — a scenario aimed at an unreachable decision-maker cannot fail informatively.
 // OVERWATCH-OW01/OW02: overwatch-role-2026-06-15 B-11 — the system-health
 // supervisor's persona boundaries: NUDGE-not-replace (D-001) + OBSERVE-not-idea (D-003).
 import { OVERWATCH_OW01_NUDGE_NOT_REPLACE } from './overwatch/OW01-nudge-not-replace';
@@ -315,15 +312,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S31B_ASYMMETRY_PROSE,
   SU_S31C_ASYMMETRY_FIELD,
   SU_S31D_ASYMMETRY_PROVENANCE,
-  // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
-  QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
-  QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,
-  // queen ranked-queue decider coverage (self-learning-frontier P-045 / FB-19)
-  QUEEN_Q03_RANKED_QUEUE_DECIDER,
-  // hybrid bee-scheduler adoption coverage (hybrid-bee-scheduler-work-stealing P-003)
-  QUEEN_Q04_AUTHORS_CLAIM_SPEC,
-  BEE_B01_PULL_VIA_GET_NEXT,
-  BEE_B02_IDLE_ON_EMPTY_FRONTIER,
+  // (QUEEN_Q01..Q04 + BEE_B01/B02 retired here — see the import block above, D-112.)
   // overwatch persona-boundary coverage (overwatch-role-2026-06-15 B-11)
   OVERWATCH_OW01_NUDGE_NOT_REPLACE,
   OVERWATCH_OW02_OBSERVE_NOT_IDEA,

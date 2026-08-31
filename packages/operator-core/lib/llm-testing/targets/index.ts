@@ -8,8 +8,6 @@ import { ArchitectTarget } from './architect';
 import { OperatorTarget } from './operator';
 import { OracleTarget } from './oracle';
 import { SuTarget } from './su';
-import { makeMugTarget } from './mug';
-import { makeCupTarget } from './cup';
 import { makeOverwatchTarget } from './overwatch';
 import { onboardingTutorTarget } from './onboarding-tutor';
 import { PuiLoopTarget } from './pui-loop';
@@ -36,15 +34,19 @@ const TARGETS: Record<string, TargetFactory> = {
   // runs a hand-rolled Anthropic tool loop in-process (playbook-as-system-
   // prompt + the papercusp-su catalog); see ./su.
   su: () => new SuTarget(),
-  // mug — the pot Mug's blueprint prompt on the same in-process loop
-  // (scout-idea-grading B-06/B-08: does she GRADE routed drafts while triaging?).
-  mug: () => makeMugTarget(),
-  // cup — the pot cup's base prompt on the same in-process loop
-  // (hybrid-bee-scheduler P-003: does the cup PULL its next item via scheduler:get_next
-  // rather than self-scanning work_items:list and picking itself?).
-  cup: () => makeCupTarget(),
+  // `mug` and `cup` were HERE and are retired to
+  // `_retired/mug-kettle-deciders/…/llm-testing/` (retire-mug-kettle-su-only-2026-08-09
+  // D-112, extending D-060). Their SUT was the retired tier's own spawn prompt, their
+  // catalogs called actuators that now refuse (D-017), and no gate ever ran them —
+  // `llm-test` is a manual CLI. D-060 predicted exactly this survival: an eval harness
+  // carries no `_mug-kettle-gate` import, so the tier census cannot see it and defaults
+  // it live. If the Mug's grading scenario (Q01) still has value, its home is the `su`
+  // target below — grading moved to su/Scout (WI-1713506), it was not lost.
+  //
+  // ⚠ `kettle` below is NOT part of that retirement — READ THE FACTORY, NOT THE KEY.
   // overwatch — the system-health supervisor's blueprint persona on the same loop
   // (overwatch-role-2026-06-15 B-11: does it NUDGE-not-replace + OBSERVE-not-idea?).
+  // Overwatch is LIVE; only the key is a retired-tier name.
   kettle: () => makeOverwatchTarget(),
   // onboarding-tutor — the first-run/tutorial launch context on the same
   // in-process loop (agent-first-onboarding-2026-07-03 P-008: section
