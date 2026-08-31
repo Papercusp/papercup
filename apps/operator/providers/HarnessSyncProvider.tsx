@@ -280,7 +280,7 @@ export function HarnessSyncProvider({
         syncType="SSE"
         userId={userID}
         restEndpoint={browserTransport.restEndpoint}
-        endpointOverride={browserTransport.sseEndpoint}
+        endpointOverride={browserTransport.endpointOverride}
         ssePollIntervalMs={ssePollIntervalMs}
         maxInFlightFetches={resolveMaxInFlightFetches(ipcCarriesFetch)}
         persistExcludeQueryNames={PERSIST_EXCLUDE_QUERY_NAMES}
