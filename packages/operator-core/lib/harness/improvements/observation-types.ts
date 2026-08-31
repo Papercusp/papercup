@@ -154,6 +154,14 @@ export interface StructuredObservation {
   rubricRef?: string;
   /** The graded rubric's plan-row revision at emit time; absent on historical cards. */
   rubricRevision?: number;
+  /**
+   * The graded rubric's `criteriaHash` (WI-1393208) at emit time — a stable hash
+   * over {characteristic, criteria, ratingScale, methodRef, description}. Unlike
+   * `rubricRevision` (which bumps on ANY propose, typo included), this is stale
+   * exactly when the rubric's graded SUBSTANCE changed since this card was filed.
+   * Absent on historical cards and whenever the hash read failed at emit time.
+   */
+  criteriaHash?: string;
   /** Per-criterion ratings against `rubricRef` — each carries MANDATORY evidence. */
   ratings?: ObservationRatings;
   /** Post-grading implementer verdict; valid only for acceptance-kind rubrics. */
@@ -391,6 +399,10 @@ export interface ScorecardVetting {
    *  the version read failed at emit; the gate then treats the card as NOT current
    *  whenever a current revision IS known (strict toward re-vetting). */
   rubricRevision?: number;
+  /** The vetted rubric's `criteriaHash` (WI-1393208) at emit time — the graded-
+   *  substance fingerprint alongside `rubricRevision`. Absent when the hash read
+   *  failed at emit time. */
+  criteriaHash?: string;
   /**
    * EI-20821478338037350: how much critique the cited consult had actually
    * received when the stamp was made. The gate used to key off a consult row
@@ -640,6 +652,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (typeof o.rubricRevision === 'number' && Number.isFinite(o.rubricRevision)) {
     out.rubricRevision = o.rubricRevision;
   }
+  if (typeof o.criteriaHash === 'string' && o.criteriaHash.trim()) {
+    out.criteriaHash = o.criteriaHash;
+  }
   if (o.ratings && typeof o.ratings === 'object' && !Array.isArray(o.ratings)) {
     const rawRatings = o.ratings as Record<string, unknown>;
     const ratings: ObservationRatings = {};
@@ -870,6 +885,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         ...(typeof vet.rubricRevision === 'number' && Number.isFinite(vet.rubricRevision)
           ? { rubricRevision: vet.rubricRevision }
           : {}),
+        ...(typeof vet.criteriaHash === 'string' && vet.criteriaHash.trim() ? { criteriaHash: vet.criteriaHash } : {}),
         ...(typeof vet.critiquePosts === 'number' && Number.isInteger(vet.critiquePosts) && vet.critiquePosts >= 0
           ? { critiquePosts: vet.critiquePosts }
           : {}),
