@@ -258,6 +258,23 @@ describe('docs:author truncated-body guards', () => {
     expect(h.anchorManualDoc).toHaveBeenCalledTimes(1);
   });
 
+  it('strips a docs:get read preamble instead of writing it into the doc', async () => {
+    // The unguarded half: a SMALL doc round-trips complete, so no truncation guard
+    // fires — but the header docs:get prepends would still land in the body.
+    const result = await callAuthor({
+      ...overwriteArgs,
+      confirmShrink: true, // the shrink here is real; the preamble is the subject
+      body: '# Agent insights — overview\nURL: /internal/docs/agent-insights/index\n\nWhat an insight is.\n\nThe real body.\n',
+    });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean; warnings?: string[] };
+    const written = (h.anchorManualDoc.mock.calls[0]?.[0] as { content: string } | undefined)?.content ?? '';
+
+    expect(payload.ok).toBe(true);
+    expect(written).not.toContain('URL: /internal/docs/agent-insights/index');
+    expect(written).toContain('The real body.');
+    expect(payload.warnings?.some((w) => w.includes('read preamble'))).toBe(true);
+  });
+
   it('does NOT fire on a create — there is no stored doc to shrink', async () => {
     h.existsSync.mockReturnValue(false);
     h.getAuthoredDocContent.mockResolvedValue(null);
