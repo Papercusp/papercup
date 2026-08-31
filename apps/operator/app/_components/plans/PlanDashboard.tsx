@@ -41,7 +41,19 @@
  * run) — deep-linkable + agent-driveable.
  */
 import { useCallback, useMemo, useState } from 'react';
-import { ArrowLeft, ExternalLink, Hammer, Pencil, Plus, Search } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  Circle,
+  CircleAlert,
+  CircleDot,
+  ExternalLink,
+  Hammer,
+  Minus,
+  Pencil,
+  Plus,
+  Search,
+} from 'lucide-react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { FLAGS } from '@papercusp/flags';
@@ -59,6 +71,13 @@ import {
   encodeScopedRef,
 } from '../chat/chat-ref-popup-params';
 import { agoLabel, agoLabelMs, WORK_HOT_MS } from './PlansPane';
+import {
+  collapsePlanActivity,
+  groupPlanItems,
+  newestDecisions,
+  statusCountsOf,
+  type PlanActivityFeedRow,
+} from './plan-dashboard-derive';
 import PlanCleanupEntryButton from './PlanCleanupEntryButton';
 import {
   PLAN_CLEANUP_RUN_PARAM,
@@ -90,15 +109,6 @@ interface RosterPayloadRow {
     lastActiveAt?: string | null;
     agent?: string | null;
   }>;
-}
-
-/** One planActivity.list wire row (P-004 — PlanActivityRow). */
-interface PlanActivityFeedRow {
-  kind?: 'edit' | 'work';
-  tsMs?: number;
-  text?: string;
-  who?: string;
-  ref?: string;
 }
 
 /** One planWorkActivity.list wire row (P-001). */
@@ -299,6 +309,43 @@ export default function PlanDashboard({
     : null;
   const title = plan?.title ?? planSlug;
 
+  // Direction-A derivations (plan-dashboard-mission-control-2026-08-31) — all
+  // over data this surface ALREADY fetches; the pure rules live in
+  // plan-dashboard-derive.ts so they unit-test without this import graph.
+  const counts = useMemo(() => statusCountsOf(plan?.items), [plan?.items]);
+  const itemGroups = useMemo(() => groupPlanItems(plan?.items), [plan?.items]);
+  const railDecisions = useMemo(() => newestDecisions(plan?.decisions, 2), [plan?.decisions]);
+  const feedEntries = useMemo(
+    () => collapsePlanActivity(activity.data as PlanActivityFeedRow[] | undefined),
+    [activity.data],
+  );
+  const collapsedEdits = useMemo(
+    () =>
+      feedEntries.reduce((n, e) => (e.type === 'run' ? n + e.count : n), 0),
+    [feedEntries],
+  );
+  const nowState = plan?.now?.state?.trim() || null;
+  const nowNext = plan?.now?.next?.trim() || null;
+
+  /** "8h" / "8–12h" — a run's time range, degenerate when the labels match. */
+  const runAgo = (newestMs: number | null, oldestMs: number | null): string => {
+    if (newestMs == null) return '—';
+    const a = agoLabelMs(newestMs);
+    const b = oldestMs == null ? a : agoLabelMs(oldestMs);
+    return a === b ? a : `${a}–${b}`;
+  };
+
+  const itemIcon = (status: string) => {
+    switch (status) {
+      case 'done': return <Check size={13} aria-hidden="true" />;
+      case 'wip': return <CircleDot size={13} aria-hidden="true" />;
+      case 'blocked':
+      case 'needs-human': return <CircleAlert size={13} aria-hidden="true" />;
+      case 'dropped': return <Minus size={13} aria-hidden="true" />;
+      default: return <Circle size={12} aria-hidden="true" />;
+    }
+  };
+
   return (
     <div className="plan-dash" data-testid="plan-dashboard">
       <div className="plan-dash__head">
@@ -396,11 +443,6 @@ export default function PlanDashboard({
             <Hammer size={11} aria-hidden="true" />
             worked {agoLabelMs(lastWorkAtMs)}
           </span>
-          {progress ? (
-            <span data-testid="plan-dash-progress">
-              {progress.done} of {progress.total} items done
-            </span>
-          ) : null}
           {needsYou > 0 ? (
             <span className="plan-dash__needs" data-testid="plan-dash-needs">
               {needsYou} decision{needsYou === 1 ? '' : 's'} need{needsYou === 1 ? 's' : ''} you
@@ -408,12 +450,53 @@ export default function PlanDashboard({
           ) : null}
         </div>
 
-        {progress ? (
-          <div className="plan-dash__track" aria-hidden="true">
-            <span
-              className="plan-dash__fill"
-              style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
-            />
+        {progress && counts ? (
+          <div className="plan-dash__band" data-testid="plan-dash-band">
+            <span className="plan-dash__band-count" data-testid="plan-dash-progress">
+              {progress.done} of {progress.total} items done
+            </span>
+            <span className="plan-dash__band-track" aria-hidden="true">
+              {counts.done > 0 ? (
+                <span
+                  className="plan-dash__band-seg plan-dash__band-seg--done"
+                  style={{ flexGrow: counts.done }}
+                />
+              ) : null}
+              {counts.wip > 0 ? (
+                <span
+                  className="plan-dash__band-seg plan-dash__band-seg--wip"
+                  style={{ flexGrow: counts.wip }}
+                />
+              ) : null}
+              {counts.attention > 0 ? (
+                <span
+                  className="plan-dash__band-seg plan-dash__band-seg--attention"
+                  style={{ flexGrow: counts.attention }}
+                />
+              ) : null}
+              {counts.todo + counts.dropped > 0 ? (
+                <span
+                  className="plan-dash__band-seg plan-dash__band-seg--todo"
+                  style={{ flexGrow: counts.todo + counts.dropped }}
+                />
+              ) : null}
+            </span>
+            <span className="plan-dash__band-legend">
+              {counts.wip > 0 ? <span>{counts.wip} in progress</span> : null}
+              {counts.attention > 0 ? (
+                <span className="plan-dash__band-warn">{counts.attention} blocked</span>
+              ) : null}
+              {liveRows.length > 0 ? (
+                <span className="plan-dash__band-live">
+                  {liveRows.length} agent{liveRows.length === 1 ? '' : 's'} on it
+                </span>
+              ) : null}
+              <span>
+                {needsYou > 0
+                  ? `${needsYou} decision${needsYou === 1 ? '' : 's'} need${needsYou === 1 ? 's' : ''} you`
+                  : 'nothing needs you'}
+              </span>
+            </span>
           </div>
         ) : null}
       </div>
