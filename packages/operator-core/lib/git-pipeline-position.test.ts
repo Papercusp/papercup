@@ -1525,6 +1525,7 @@ describe('gitPipelinePosition (P-002)', () => {
             fireStale: true,
             fireStaleReason: 'the routine has not FIRED in ~3h (active, cron hourly)',
             verdictStale: false,
+            verdictObservedAtMs: null,
             verdictStaleReason: null,
             verdictStaleReasonCode: null,
             candidateAgeMs: null,
@@ -2618,6 +2619,7 @@ describe('computeStages: position x health', () => {
           fireStale: false,
           fireStaleReason: null,
           verdictStale: true,
+          verdictObservedAtMs: null,
           verdictStaleReason: 'no GREEN verdict in ~13h',
           verdictStaleReasonCode: null,
           candidateAgeMs: null,
@@ -2910,6 +2912,66 @@ describe('computeStages: position x health', () => {
     expect(detail).not.toMatch(/PREVIOUS verdict/i);
   });
 
+  /**
+   * ⭐ WI-1752145 — the abort's OWN vintage reaches the SUMMARY sentence, not just a sub-object.
+   *
+   * The defect: `gate_health.inconclusive` is LATCHED. release-actions.ts writes it through a
+   * scoped `jsonb_set` on the `{gate_health,inconclusive}` path, which deliberately does NOT
+   * advance the top-level `observedAt` — so every other age on the payload (including
+   * `readAttestation.snapshotAgeMs`) describes the VERDICT, and the abort silently ages beside
+   * it. Measured on live rows 2026-08-31: +4s skew on one install, +5.7 DAYS on two others.
+   *
+   * The incident: an abort observed 11:23:52Z naming `migrations-pending` on migration 1044 was
+   * still served ~1h after 1044 APPLIED (11:27:20Z), and was repeated downstream as fact. The
+   * vintage was in the payload the whole time — nothing rendered it where the claim was read.
+   *
+   * Both directions are asserted here. Without the fresh case this guard passes vacuously: a
+   * projection that warns on EVERY read would satisfy the stale assertion alone.
+   */
+  const abortObservedAt = (observedAtMs: number) => ({
+    ...abortedGate(0),
+    inconclusive: { ...abortedGate(0).inconclusive, observedAtMs },
+  });
+
+  it('⭐ WI-1752145: a STALE abort surfaces its age and a latched-record warning on the gate detail', () => {
+    const now = Date.parse('2026-08-31T15:00:00.000Z');
+    const detail =
+      stage(
+        computeStages(input({ gate: abortObservedAt(now - 3 * 60 * 60_000) }), null, now),
+        'gate',
+      ).detail ?? '';
+    expect(detail).toMatch(/ABORTED before judging/i);
+    // The vintage itself, on the sentence a reader acts on.
+    expect(detail).toContain('abort observed 3h ago');
+    // And the escalation that says the claim may no longer describe now.
+    expect(detail).toContain('LATCHED');
+  });
+
+  it('⭐ WI-1752145: a FRESH abort states its age but is NOT decorated with a staleness marker', () => {
+    const now = Date.parse('2026-08-31T15:00:00.000Z');
+    const detail =
+      stage(computeStages(input({ gate: abortObservedAt(now - 4_000) }), null, now), 'gate').detail ?? '';
+    expect(detail).toMatch(/ABORTED before judging/i);
+    expect(detail).toContain('abort observed 4s ago');
+    // The control. A caveat printed on every read is one a reader stops seeing, so the
+    // marker must stay silent here — otherwise the assertion above proves nothing.
+    expect(detail).not.toContain('LATCHED');
+  });
+
+  it('⭐ WI-1752145: an UNSTAMPED abort is disclosed as unknown vintage, never as fresh', () => {
+    const now = Date.parse('2026-08-31T15:00:00.000Z');
+    const gate = abortedGate(0);
+    const unstamped = {
+      ...gate,
+      inconclusive: { ...gate.inconclusive, observedAtMs: null as number | null },
+    };
+    const detail = stage(computeStages(input({ gate: unstamped }), null, now), 'gate').detail ?? '';
+    expect(detail).toMatch(/ABORTED before judging/i);
+    // A blob predating the stamp must not read as current — silence here is the failure.
+    expect(detail).toContain('NO observation timestamp');
+    expect(detail).not.toMatch(/abort observed/);
+  });
+
   it('EI-214333: a safely retireable queue owns the gate detail and exact next action', () => {
     const nextAction =
       "release:repair-queue { op: 'retire', expectedCandidate: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }";
@@ -3025,6 +3087,7 @@ describe('computeStages: position x health', () => {
             fireStale: false,
             fireStaleReason: null,
             verdictStale: false,
+            verdictObservedAtMs: null,
             verdictStaleReason: null,
             verdictStaleReasonCode: null,
             candidateAgeMs: null,
@@ -3058,6 +3121,7 @@ describe('computeStages: position x health', () => {
             fireStale: false,
             fireStaleReason: null,
             verdictStale: false,
+            verdictObservedAtMs: null,
             verdictStaleReason: null,
             verdictStaleReasonCode: null,
             candidateAgeMs: null,
@@ -3091,6 +3155,7 @@ describe('computeStages: position x health', () => {
             fireStale: false,
             fireStaleReason: null,
             verdictStale: false,
+            verdictObservedAtMs: null,
             verdictStaleReason: null,
             verdictStaleReasonCode: null,
             candidateAgeMs: null,
@@ -3124,6 +3189,7 @@ describe('computeStages: position x health', () => {
             fireStale: false,
             fireStaleReason: null,
             verdictStale: false,
+            verdictObservedAtMs: null,
             verdictStaleReason: null,
             verdictStaleReasonCode: null,
             candidateAgeMs: null,
@@ -3165,6 +3231,7 @@ describe('computeStages: position x health', () => {
             fireStale: false,
             fireStaleReason: null,
             verdictStale: false,
+            verdictObservedAtMs: null,
             verdictStaleReason: null,
             verdictStaleReasonCode: null,
             candidateAgeMs: null,

@@ -703,6 +703,65 @@ describe('routines:list', () => {
       candidateAgeAtObservationMs: null,
       commitsBehindTip: null,
     });
+    // WI-1752145: no abort block ⇒ no attestation invented for one.
+    expect(result.inconclusiveAttestation).toBeNull();
+  });
+
+  /**
+   * ⭐ WI-1752145 — `routines:list` is the surface the originating incident was measured on.
+   *
+   * `readAttestation.snapshotAgeMs` is derived from the TOP-LEVEL `observedAt`, which an
+   * aborting tick does not advance (release-actions.ts writes `inconclusive` through a scoped
+   * jsonb_set on purpose, so an abort cannot disturb the verdict counters). The consequence
+   * nothing reported: the two vintages under one payload drift without bound, and the honest
+   * age beside `inconclusive.status` described a DIFFERENT observation entirely.
+   *
+   * Measured live 2026-08-31 — top-level `observedAt` vs `inconclusive.observedAtMs`:
+   * portal +2h55m, oddsmith +5.7 DAYS, readinglist +5.6 DAYS, hello-world-3 +4s.
+   */
+  it('⭐ WI-1752145: attests a STALE abort block against its OWN vintage, not the verdict’s', () => {
+    const now = Date.parse('2026-08-31T15:00:00.000Z');
+    const result = attestGateHealth(
+      {
+        // The verdict is FRESH — this is the trap. Reading the snapshot age would say
+        // "1 minute old" about a payload whose abort record is three hours stale.
+        observedAt: now - 60_000,
+        consecutiveReds: 77,
+        inconclusive: { status: 'migrations-pending', candidate: 'deadbeefcafe', observedAtMs: now - 3 * 60 * 60_000 },
+      },
+      now,
+    ) as Record<string, unknown>;
+
+    expect(result.readAttestation).toMatchObject({ snapshotAgeMs: 60_000 });
+    expect(result.inconclusiveAttestation).toMatchObject({
+      status: 'migrations-pending',
+      ageMs: 3 * 60 * 60_000,
+      age: '3h ago',
+      stale: true,
+    });
+    expect((result.inconclusiveAttestation as { warning: string }).warning).toContain('LATCHED');
+  });
+
+  it('⭐ WI-1752145: does NOT mark a fresh abort stale, and reports an unstamped one as unknown', () => {
+    const now = Date.parse('2026-08-31T15:00:00.000Z');
+
+    // NEGATIVE DIRECTION #1 — without this, a projection that always warns would pass.
+    const fresh = attestGateHealth(
+      { observedAt: now, inconclusive: { status: 'error', observedAtMs: now - 4_000 } },
+      now,
+    ) as Record<string, unknown>;
+    expect(fresh.inconclusiveAttestation).toMatchObject({ status: 'error', age: '4s ago', stale: false, warning: null });
+
+    // NEGATIVE DIRECTION #2 — an unstamped record is UNKNOWN vintage. Rendering that as
+    // `stale: false` would manufacture exactly the confident non-measurement this fixes.
+    const unstamped = attestGateHealth(
+      { observedAt: now, inconclusive: { status: 'cancelled' } },
+      now,
+    ) as Record<string, unknown>;
+    const att = unstamped.inconclusiveAttestation as { stale: boolean | null; ageMs: number | null; warning: string };
+    expect(att.stale).toBeNull();
+    expect(att.ageMs).toBeNull();
+    expect(att.warning).toContain('NO observation timestamp');
   });
 
   it('stamps only the operator-home gate-health row with its registry-derived re-read handle', async () => {

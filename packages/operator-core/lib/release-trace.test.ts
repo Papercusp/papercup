@@ -60,6 +60,10 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       // the semantically correct default here, not a compiler-silencer — this fixture
       // describes a fully-measured, non-stale verdict.
       verdictStale: false,
+      // WI-1752145: the verdict's own vintage. `null` is correct here rather than a
+      // timestamp — this fixture asserts nothing about age, and null means UNKNOWN
+      // vintage, which is precisely what a fixture that does not model a clock knows.
+      verdictObservedAtMs: null,
       verdictStaleReason: null,
       verdictStaleReasonCode: null,
       candidateAgeMs: null,
