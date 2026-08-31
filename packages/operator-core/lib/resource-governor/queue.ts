@@ -395,8 +395,16 @@ const DEFAULT_RECONCILE_COALESCE_MS = 2_000;
  * the row-lock contention that caused governed admission statement timeouts.
  */
 const RECONCILE_LOCK_PREFIX = 'resource-governor-reconcile:';
-/** Limit each maintenance statement's row-lock and JSONB rewrite footprint. */
-const RECONCILE_BATCH_SIZE = 100;
+/**
+ * Limit each maintenance statement's row-lock, trigger, and JSONB rewrite
+ * footprint.  This table has substantial AFTER UPDATE fan-out (federation
+ * outbox, change notification, dependency propagation).  Live PostgreSQL on
+ * 2026-08-31 measured a 100-row reconciliation UPDATE at 11–15s even though
+ * its candidate SELECT took only ~20ms; the work was trigger fan-out, not the
+ * scan.  Twenty-five keeps one maintenance statement comfortably inside the
+ * 15s bounded transaction while repeated idempotent passes drain the backlog.
+ */
+const RECONCILE_BATCH_SIZE = 25;
 
 export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
   private readonly namespace: string;
