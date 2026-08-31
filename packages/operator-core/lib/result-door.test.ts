@@ -182,6 +182,48 @@ describe('applyResultDoor', () => {
     expect(sawPartial).toBe(true);
   });
 
+  it('EI-21986877021459153: plans:get keeps nested item text through the generic result-door fallback', () => {
+    const noise = (prefix: string) => Object.fromEntries(
+      Array.from({ length: 64 }, (_, i) => [`${prefix}-${i}`, `noise-${i}`]),
+    );
+    const itemText = 'Read this plan item before acting on the associated work.';
+    const source = {
+      ok: true,
+      results: [{
+        ...noise('result-noise'),
+        ok: true,
+        slug: 'detail-plan',
+        items: [{
+          ...noise('item-noise'),
+          id: 'P-001',
+          text: itemText,
+          storedStatus: 'todo',
+          effectiveStatus: 'todo',
+        }],
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const original = JSON.stringify(source);
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
+      results: Array<{ items?: Array<{ id?: string; text?: string }> }>;
+    } & { _projection: { truncated: true } };
+    const item = projected.results[0]?.items?.[0];
+
+    // The result-door must retain the requested item rather than reducing the
+    // row to identity/status fields. A short text remains byte-complete; if a
+    // future budget change clips it, the projector's explicit marker is the
+    // only acceptable alternative to a silent disappearance.
+    expect(item).toMatchObject({ id: 'P-001' });
+    expect(item?.text).toBe(itemText);
+    expect(projected._projection.truncated).toBe(true);
+  });
+
   it('EI-20435986111760474: oversized code:tools TypeScript stays valid JSON for direct and nested calls', () => {
     const signatures = Array.from(
       { length: 80 },
