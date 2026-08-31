@@ -1991,6 +1991,41 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       !f.startsWith("papercup-checkpoint/"),
   },
   {
+    // WI-1728261 (2026-08-31) — lint:deps-wiring-parity wire-up. Identical contract to
+    // lint:di-seam-arity-strands above, and registered for the identical reason: the
+    // guard enumerates EVERY tracked .ts/.tsx source (defaultCandidateFiles in
+    // scripts/check-deps-wiring-parity.mjs) while its enforcing test lives in
+    // @papercusp/operator-core, so a deps-seam divergence introduced in any OTHER
+    // workspace would only be judged when operator-core happened to be independently
+    // affected. check-lint-guard-reachability named exactly that hole on this guard's
+    // first run ("enumerates the WHOLE tree but only runs when packages/operator-core
+    // is affected"); this entry closes it.
+    //
+    // The guard's whole point is catching a concern wired at one production entry point
+    // and silently missing at another — a defect that has recurred FOUR times in the
+    // Scout lane alone — so scanning tree-wide while only ever RUNNING on one
+    // workspace's changes would reproduce the very asymmetry it exists to detect.
+    workspace: "@papercusp/operator-core",
+    // The BASE guard name: the reachability census credits coverage by exact-name
+    // lookup and collapses `:fail`-style companions into it. operator-core's
+    // declaration of this name runs the script in --fail mode; root's stays advisory
+    // for hand-runs. --fail blocks on NEW findings only — the 33 rows measured at
+    // wiring time live in the script's shrink-only FAIL_BASELINE.
+    script: "lint:deps-wiring-parity",
+    // Exit 2 = EXIT_NOT_CHECKED (zero candidate files); a gate checkout's working diff
+    // is empty by construction, so "examined nothing" must not red the gate.
+    notCheckedIsNonGating: true,
+    // Mirror of the script's own candidate filter, including the __tests__/__mocks__
+    // exclusion this guard adds (it is deliberately production-vs-production only —
+    // a FIXTURE omitting a seam is lint:optional-seam-strands' subject, not this one).
+    appliesTo: (f) =>
+      /\.tsx?$/.test(f) &&
+      !/\.(test|spec|integration\.test)\.tsx?$/.test(f) &&
+      !/(^|\/)(dist|build|node_modules|\.papercusp|__tests__|__mocks__)\//.test(f) &&
+      !f.startsWith("papercup-release/") &&
+      !f.startsWith("papercup-checkpoint/"),
+  },
+  {
     // EI-20551144708194616 — three guards that police papercusp-desktop/bin/*.sh live in
     // apps/operator (@papercusp/web), and the router's path->workspace map sends those two
     // to DISJOINT workspaces. Measured:
