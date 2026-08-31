@@ -999,6 +999,16 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
   // WI-1507930 pilot: these cases are pure, read-only, independent verdict probes — each one
   // spawns the hook, reads a decision, shares nothing. `.concurrent` alone would buy NOTHING here
   // (runGate is spawnSync and blocks the event loop), so it is paired with runGateAsyncFull.
+  //
+  // ⛔ DO NOT ROLL THIS OUT TO THE OTHER ~377 `runGate(` SITES — measured, and it does not pay.
+  // Controlled A/B on 2026-08-31, same code, back-to-back: `--maxConcurrency=1` 107,876ms vs
+  // default 104,708ms — 3.0% for these 47 cases, against ~5s of run-to-run variance on this box.
+  // The cause is structural, not a tuning miss: each spawn is a CPU-BOUND Python interpreter
+  // (see mapWithConcurrency below — "the total CPU work is identical either way"), so on a loaded
+  // box overlapping them reclaims little. The gate suite runs at exactly that load. The real lever
+  // for this file is per-invocation cost, not parallelism: EI-20226903620041425 measured 28ms of
+  // the ~129ms as Python re-compile the hook could cache = ~24.6s here, load-independent, and worth
+  // far more in production. Spend there first.
   it.concurrent.each([
     ['bare reset --hard', 'git reset --hard'],
     ['reset --hard HEAD', 'git reset --hard HEAD'],
