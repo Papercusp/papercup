@@ -30,11 +30,25 @@ export type { AuthorIdentity };
 
 /* ── Wire types — mirror lib/agent-tools/plans/* return shapes ─────── */
 
+/**
+ * Plan lifecycle statuses, as this decoupled wire type sees them.
+ *
+ * ⚠ This is a HAND-MAINTAINED mirror of `PLAN_STATUSES` in
+ * `libs/generic/plan-parser/src/parser.ts` (kept local per this module's
+ * decoupled wire-type pattern), so the two drift silently. Two known
+ * divergences, both live as of P-004:
+ *   · `awaiting-acceptance` had to be added here by hand when it was added
+ *     there — nothing failed until a comparison against it was written.
+ *   · `blocked` is NOT a plan lifecycle status at all and never was; it is an
+ *     ITEM status. Left in place rather than removed as drive-by scope, but it
+ *     is dead weight that makes this union look authoritative when it is not.
+ */
 export type PlanStatus =
   | "draft"
   | "ready"
   | "active"
   | "blocked"
+  | "awaiting-acceptance"
   | "shipped"
   | "superseded";
 
