@@ -28,3 +28,16 @@ export const CHROMELESS_PREFIXES = ['/pi', '/project-docs', '/el-min', '/quick-p
 export function isChromelessPath(pathname: string): boolean {
   return CHROMELESS_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
+
+/**
+ * Portal-hosted /adv documents use a query contract rather than a new route:
+ * the portal rail owns navigation while the operator contributes the page and
+ * its Papercup chat dock. Keep this predicate next to the ordinary chromeless
+ * list so every shell layer agrees on the same boundary.
+ */
+export function isPortalEmbedLocation(pathname: string, search = ''): boolean {
+  if (pathname !== '/adv' && !pathname.startsWith('/adv/')) return false;
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  const value = params.get('portalEmbed');
+  return value === '' || value === '1' || value === 'true' || value === 'yes';
+}

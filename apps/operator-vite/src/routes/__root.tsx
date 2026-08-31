@@ -55,8 +55,9 @@ import ChatRefPopupHost from '@/app/_components/chat/ChatRefPopupHost';
 import PlanDashboardHost from '@/app/_components/plans/PlanDashboardHost';
 import PlanCleanupReportHost from '@/app/_components/plans/PlanCleanupReportHost';
 import InboxBulkReportHost from '@/app/_components/inbox/InboxBulkReportHost';
-import { usePathname } from '@/lib/router-compat/navigation';
-import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
+import { usePathname, useSearchParams } from '@/lib/router-compat/navigation';
+import { isChromelessPath, isPortalEmbedLocation } from '@papercusp/operator-core/lib/chromeless-routes';
+import { PortalEmbedThemeBridge } from '@/app/_components/PortalEmbedThemeBridge';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
 // (desktop UI part A). Mounted here — inside RootSyncProvider, at the router
 // root — so it can read the `hiveFromRepo.progress` sync rows and overlay EVERY
@@ -188,7 +189,9 @@ function RootComponent() {
   // or presence rail. Providers still wrap <Outlet/> (the panel uses sync +
   // nuqs); only the VISIBLE chrome is gated. See lib/chromeless-routes.
   const pathname = usePathname() ?? '';
+  const searchParams = useSearchParams();
   const chromeless = isChromelessPath(pathname);
+  const portalEmbed = isPortalEmbedLocation(pathname, searchParams.toString());
 
   // WI-2749 item #2: LeftSidebar (z-index 1290) and PresenceRail (z-index
   // 900) are position:fixed siblings mounted BEFORE <WslOnboardingGate> in
@@ -241,7 +244,7 @@ function RootComponent() {
                   side and never self-hides, so a misrouted /api or a bad target build can't
                   make it vanish; a native global-shortcut + menu backstop (papercusp-desktop
                   src-tauri) is the unkillable escape hatch if a target build white-screens. */}
-              {!chromeless && <EnvSwitcherBar />}
+              {!chromeless && !portalEmbed && <EnvSwitcherBar />}
               {/* App-wide keyboard surfaces — mounted at the router root,
                   above ChromeShell, so Ctrl+P (palette) and Alt+Left/Right
                   (history nav) work on EVERY route, including /settings and
@@ -257,7 +260,7 @@ function RootComponent() {
               <GlobalAppShortcuts />
               <GlobalVoiceShortcuts />
               <GlobalSearchDialog />
-              {!chromeless && !wslGateBlocking && <PresenceRail />}
+              {!chromeless && !portalEmbed && !wslGateBlocking && <PresenceRail />}
               {/* Far-left steering/settings sidebar (D-009). Inside NuqsAdapter
                   (its open/tab/selection state is URL-backed) + RootSyncProvider
                   (its panels use useSyncQuery); docked via
@@ -265,7 +268,7 @@ function RootComponent() {
                   middle pane. Skipped
                   while the WSL onboarding gate is blocking (WI-2749 item
                   #2) — see useWslGateBlocking. */}
-              {!wslGateBlocking && (
+              {!portalEmbed && !wslGateBlocking && (
                 <Suspense fallback={null}>
                   <LeftSidebar />
                 </Suspense>
@@ -274,6 +277,7 @@ function RootComponent() {
                 <WslOnboardingGate>
                   <OperatorConversationProvider>
                     <PostHogProvider>
+                      <PortalEmbedThemeBridge />
                       <PotThemeBridge />
                       {/* Global chrome — header/navbar, left operator-chat
                           sidebar, Oracle dock. Renders before <main>,
@@ -372,7 +376,7 @@ function RootComponent() {
                   (its open/section state is nuqs-backed) + RootSyncProvider (its
                   glance panels use useSyncQuery). Runtime-gated (dev mode OR the
                   desktop dev wrapper's signal) — see the DevAdminRail const above. */}
-              {DevAdminRail && (
+              {DevAdminRail && !portalEmbed && (
                 <Suspense fallback={null}>
                   <DevAdminRail />
                 </Suspense>

@@ -33,6 +33,7 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 import { isChromeShellNavActive } from './chrome-shell-nav';
+import { isPortalEmbedLocation } from '@papercusp/operator-core/lib/chromeless-routes';
 // OracleDock + TutorialButton remain RETIRED (design-simplification-2026-07-09
 // P-003; see _retired/legacy-web-chats/RESTORE.md). OperatorChatSidebar was
 // retired with them but is REVIVED as the app's PRIMARY chat surface
@@ -152,6 +153,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
   const chromeless = CHROMELESS_PATH_PREFIXES.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
+  const portalEmbed = isPortalEmbedLocation(pathname, searchParams.toString());
   // When the user is already on the ordinary /adv surface, the Ops CTA is a
   // no-op. A plan dashboard is a query-param takeover that deliberately keeps
   // /adv mounted underneath, so Ops must remain a link there: navigating to
@@ -248,12 +250,21 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
   // lost/stale — now that these prefs are PG-backed, not localStorage-only.
   // Placed before the chromeless early-return so hook order stays stable.
   useEffect(() => {
+    if (portalEmbed) return;
     void reconcileActiveTheme();
     void reconcileVisualEffectsMode();
     void reconcileShortcutOverrides();
-  }, []);
+  }, [portalEmbed]);
 
   if (chromeless) return null;
+  if (portalEmbed) {
+    return (
+      <>
+        <AriaLiveRegions />
+        <OperatorChatSidebar faces={chatFaces} />
+      </>
+    );
+  }
 
   return (
     <>
