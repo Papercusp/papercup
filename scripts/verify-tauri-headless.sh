@@ -127,6 +127,26 @@
 #     Prefer VERIFY_TAURI_POLL (or `tauri-agent-tools check --json`) for DOM
 #     assertions; a literal `grep '"ok":true'` never matches pretty-printed
 #     output because the property/value separator includes a space.
+#     WAIT BEFORE YOU MEASURE (EI-19385008818210514). VERIFY_TAURI_POLL retries
+#     an ASSERTION until it succeeds; it does nothing for a MEASUREMENT whose
+#     value you then read as data:
+#       zoneCaps: 2, zoneCapLabels: ["Controls", "Fleet"]
+#     Three were expected. That reads as unfinished work — and it was a race.
+#     Most components here are guarded on async data (`entry && <Thing/>`,
+#     `if (!x) return null`), so before the data lands they are legitimately
+#     absent, and the wrong conclusion ("the feature was never implemented")
+#     is confident, plausible and only ever fires against finished work.
+#     Settle first, then measure:
+#       bash \"\$VERIFY_TAURI_SETTLE\"
+#       tauri-agent-tools eval --pid \"\$VERIFY_TAURI_PID\" '<your measurement>'
+#     VERIFY_TAURI_SETTLE blocks until the sync transport is idle AND the DOM has
+#     stopped mutating. It is THREE-state: exit 0 settled, 1 still busy at
+#     timeout, 3 UNKNOWN (window.__sync_metrics__ absent, or the gate reported
+#     null — which means "no gate registered", never "zero in flight"). An
+#     UNKNOWN is not permission to conclude anything from an absence.
+#     You do not have to remember any of this: the same probe runs in
+#     --note-only form on every VERIFY_TAURI_POLL timeout, and prints the
+#     loading context (and nothing at all when the page really was settled).
 #
 #   scripts/verify-tauri-headless.sh --boot-only
 #     Boots the instance, prints one source command for a private mode-600
@@ -189,6 +209,13 @@
 #                                assertion after navigation (default 30)
 #   VERIFY_TAURI_DOM_POLL_INTERVAL
 #                               seconds between DOM assertion attempts (default 1)
+#   VERIFY_TAURI_SETTLE_TIMEOUT seconds VERIFY_TAURI_SETTLE waits for the page to
+#                               go idle before giving up (default 20)
+#   VERIFY_TAURI_SETTLE_QUIET_MS
+#                               ms the DOM must stay unchanged, with the sync gate
+#                               idle, before the page counts as settled (default 400)
+#   VERIFY_TAURI_SETTLE_INTERVAL_MS
+#                               ms between settle samples (default 250)
 #   VERIFY_TAURI_AGENT_TOOLS_BIN
 #                               absolute tauri-agent-tools executable override.
 #                               Default: resolve it from PATH, then fall back to
@@ -1387,6 +1414,7 @@ write_boot_only_env_script() {
       printf 'VERIFY_TAURI_LAUNCH_PROVENANCE=%q\n' "$VERIFY_TAURI_LAUNCH_PROVENANCE"
       printf 'VERIFY_TAURI_LOG=%q\n' "$VERIFY_TAURI_LOG"
       printf 'VERIFY_TAURI_POLL=%q\n' "$VERIFY_TAURI_POLL"
+      printf 'VERIFY_TAURI_SETTLE=%q\n' "$VERIFY_TAURI_SETTLE"
       printf 'VERIFY_TAURI_STOP=%q\n' "$WORK/stop.sh"
       printf 'VERIFY_TAURI_FRESHNESS_CHECK=%q\n' "$WORK/check-freshness.sh"
       printf 'VERIFY_TAURI_SPA_DIST=%q\n' "$SPA_DIST"
@@ -1461,7 +1489,7 @@ export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR
 export VERIFY_TAURI_CARGO_BIN VERIFY_TAURI_CARGO_BIN_DIR
 export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_DEV_URL VERIFY_TAURI_DISPLAY
 export VERIFY_TAURI_OWNER_SID VERIFY_TAURI_LAUNCH_PROVENANCE VERIFY_TAURI_LOG
-export VERIFY_TAURI_POLL VERIFY_TAURI_STOP VERIFY_TAURI_FRESHNESS_CHECK
+export VERIFY_TAURI_POLL VERIFY_TAURI_SETTLE VERIFY_TAURI_STOP VERIFY_TAURI_FRESHNESS_CHECK
 export VERIFY_TAURI_SPA_DIST VERIFY_TAURI_LIVENESS_CHECK
 export VERIFY_TAURI_SCOPE_ENABLED VERIFY_TAURI_SCOPE_UNIT VERIFY_TAURI_HEARTBEAT
 export VERIFY_TAURI_ENV_FILE
@@ -2415,6 +2443,48 @@ export VERIFY_TAURI_FRESHNESS_CHECK="$WORK/check-freshness.sh"
 # test. Empty when operator-vite was not built at boot, so no snapshot exists.
 export VERIFY_TAURI_SPA_DIST="$SPA_DIST"
 
+# EI-19385008818210514 — the CONFIDENT FALSE DEFECT. Most non-trivial components
+# here are GUARDED on async data (`entry && <Thing entry={entry}/>`, or an early
+# `if (!x) return null`), so an assertion that runs before that data lands sees
+# them legitimately absent. The result is not a flaky red — it is a plausible,
+# confident, WRONG conclusion: "the feature was never implemented". The asymmetry
+# is what makes it expensive: a race that hides an element reads as a real
+# finding, while a race that shows one just reads as success, so the error only
+# ever fires against someone's finished work.
+#
+# VERIFY_TAURI_SETTLE is the missing "wait until the page has finished loading"
+# primitive. It reads window.__sync_metrics__ (installed by the PRODUCTION SSE
+# transport) plus DOM quiescence and answers settled | busy | UNKNOWN — three
+# states, because transport.inFlight is `number | null` and null means "no gate
+# registered / the probe threw", i.e. UNKNOWN, never zero. Exit 0 settled, 1 still
+# busy at timeout, 3 unknown.
+#
+# The second half matters more than the first: the same probe is attached to every
+# VERIFY_TAURI_POLL failure below in --note-only form, so a 0-match result can
+# never render without its loading context. That is what reaches the agent who did
+# not know to ask for a settle wait.
+SETTLE_PROBE_MJS="$REPO_DIR/scripts/settle-probe.mjs"
+SETTLE="$WORK/settle.sh"
+cat > "$SETTLE" <<SETTLE_SCRIPT
+#!/usr/bin/env bash
+# Usage: bash "\$VERIFY_TAURI_SETTLE" [--timeout SEC] [--quiet-ms MS] [--note-only] [--json]
+# Blocks until the webview under test is idle. Run it BEFORE an assertion whose
+# subject is rendered from sync-backed data; \`--help\` prints the full contract.
+set -uo pipefail
+SETTLE_PROBE_MJS=${SETTLE_PROBE_MJS@Q}
+if [ ! -f "\$SETTLE_PROBE_MJS" ]; then
+  # Absence must SELF-REPORT as unknown. Silently skipping would hand the caller
+  # the exact false confidence this probe exists to remove.
+  echo "⚠ SETTLE: UNKNOWN — settle probe not found at \$SETTLE_PROBE_MJS, so page readiness could not be observed." >&2
+  echo "   That is NOT evidence that loading finished. Do NOT conclude a missing element means a missing feature." >&2
+  case " \$* " in *" --note-only "*) exit 0 ;; esac
+  exit 3
+fi
+exec node "\$SETTLE_PROBE_MJS" --pid "\${VERIFY_TAURI_PID:?VERIFY_TAURI_PID is unset}" "\$@"
+SETTLE_SCRIPT
+chmod +x "$SETTLE"
+export VERIFY_TAURI_SETTLE="$SETTLE"
+
 # A route change can finish before its sync-backed data has reached the DOM.
 # Fixed sleeps make those checks depend on machine/DB timing, so expose a
 # bounded assertion helper for every run. Callers pass normal
@@ -2617,6 +2687,15 @@ while :; do
       else
         echo "FATAL: DOM assertion did not pass within ${timeout}s (pid=$VERIFY_TAURI_PID)" >&2
         [ -n "$last_output" ] && printf '%s\n' "$last_output" >&2
+      fi
+      # EI-19385008818210514: make the absence SELF-REPORTING. The reader is about
+      # to CONCLUDE something from a missing element, so state whether the page had
+      # actually finished loading at the moment it was measured. Prints nothing at
+      # all when the page was settled — a caveat on every failure is one readers
+      # learn to skip. Never allowed to change this script's own outcome.
+      if [ -n "${VERIFY_TAURI_SETTLE:-}" ] && [ -x "${VERIFY_TAURI_SETTLE:-}" ]; then
+        settle_note="$(bash "$VERIFY_TAURI_SETTLE" --note-only 2>/dev/null || true)"
+        [ -n "$settle_note" ] && printf '%s\n' "$settle_note" >&2
       fi
     fi
     exit 1
