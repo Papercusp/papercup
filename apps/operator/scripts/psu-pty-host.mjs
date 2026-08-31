@@ -4623,20 +4623,52 @@ export function hostThroughPty(o) {
         terminateOnSubmitVerifyExhaustion: !managedKickoff,
       });
       if (!managedKickoff) {
-        if (!r.delivered) return;
-        const proof = await verifyNativeTurnStartWithRetry({
-          agent: env.PAPERCUSP_AGENT,
-          env,
-          text: launchKickoff,
-          sinceMs: nativeCaptureAfterMs,
-          timeoutMs: nativePersistenceTimeoutMs,
-          writeCr: () => child.write('\r'),
-          onRetry: () => {
-            appendHostEvent(ownerId, 'launch-kickoff-turn-start-retry', {
-              reason: 'native-turn-marker-timeout',
-            });
-          },
-        });
+        if (!r.delivered) {
+          // An opted-in detached caller must receive a terminal negative receipt
+          // even when the PTY submission never started. Otherwise the parent
+          // waits out its proof window and cannot distinguish "not submitted"
+          // from a host that died before it could report.
+          publishKickoffProofReceipt({
+            persisted: false,
+            nativeRef: null,
+            reason: `kickoff-not-submitted:${r.reason ?? 'unknown'}`,
+          }, env);
+          return;
+        }
+        let proof;
+        try {
+          proof = await verifyNativeTurnStartWithRetry({
+            agent: env.PAPERCUSP_AGENT,
+            env,
+            text: launchKickoff,
+            sinceMs: nativeCaptureAfterMs,
+            timeoutMs: nativePersistenceTimeoutMs,
+            writeCr: () => child.write('\r'),
+            onRetry: () => {
+              appendHostEvent(ownerId, 'launch-kickoff-turn-start-retry', {
+                reason: 'native-turn-marker-timeout',
+              });
+            },
+          });
+        } catch (error) {
+          proof = {
+            persisted: false,
+            nativeRef: null,
+            retried: false,
+            reason: 'native-turn-proof-error',
+          };
+          appendHostEvent(ownerId, 'launch-kickoff-turn-start-proof-error', {
+            error: String(error?.message ?? error).slice(0, 200),
+          });
+        }
+        // Publish the native transcript verdict before any caller-facing
+        // handling. The detached parent owns the placeholder and uses this
+        // receipt as the only authority for whether its kickoff ran.
+        publishKickoffProofReceipt({
+          persisted: proof.persisted === true,
+          nativeRef: proof.nativeRef ?? null,
+          reason: proof.persisted ? null : proof.reason,
+        }, env);
         if (!proof.persisted) {
           const proofUnavailable =
             proof.reason === 'missing-leading-turn-origin' ||
@@ -4720,6 +4752,13 @@ export function hostThroughPty(o) {
         try { child.kill(); } catch { /* already exited */ }
       }
     })().catch((error) => {
+      if (!managedKickoff) {
+        publishKickoffProofReceipt({
+          persisted: false,
+          nativeRef: null,
+          reason: 'launch-kickoff-error',
+        }, env);
+      }
       try { process.stderr.write(`psu: managed kickoff failed: ${error?.message ?? error}\n`); }
       catch { /* diagnostics are best-effort */ }
       try { child.kill(); } catch { /* already exited */ }
