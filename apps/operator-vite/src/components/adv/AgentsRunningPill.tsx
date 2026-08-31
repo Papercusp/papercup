@@ -226,6 +226,12 @@ export default function AgentsRunningPill() {
   // popover closes so the next manual open starts neutral.
   const [focusOwnerRaw, setFocusOwner] = useQueryState('agentsFocus');
   const focusOwner = typeof focusOwnerRaw === 'string' && focusOwnerRaw ? focusOwnerRaw : null;
+  // Portal parity deep-link: the hosted portal frames this same operator
+  // surface with agentsRoster=1&agentsInspect=<ownerId>. The roster resolves
+  // the owner against its full-fidelity rows and opens the exact
+  // AgentInspectorModal used by a native row click.
+  const [inspectOwnerRaw, setInspectOwner] = useQueryState('agentsInspect');
+  const inspectOwner = typeof inspectOwnerRaw === 'string' && inspectOwnerRaw ? inspectOwnerRaw : null;
   // The pill says "running", so membership comes from the authoritative shared
   // session-lifecycle oracle — NOT heartbeat freshness and NOT an armed loop.
   // Parked/ended processes may keep heartbeating for hours; counting those is
@@ -288,7 +294,10 @@ export default function AgentsRunningPill() {
         open={open}
         onOpenChange={(next: boolean) => {
           void setOpen(next);
-          if (!next) void setFocusOwner(null);
+          if (!next) {
+            void setFocusOwner(null);
+            void setInspectOwner(null);
+          }
         }}
         trigger={(
           <button
@@ -336,7 +345,13 @@ export default function AgentsRunningPill() {
             <SessionSearchResults query={q} nowMs={nowMs} instantIdMatches={instantIdMatches} />
           ) : (
             <>
-              <AgentsRoster agents={running} nowMs={nowMs} focusOwner={focusOwner} />
+              <AgentsRoster
+                agents={running}
+                nowMs={nowMs}
+                focusOwner={focusOwner}
+                inspectOwner={inspectOwner}
+                onInspectOwnerConsumed={() => void setInspectOwner(null)}
+              />
               <InactiveSessionsSection activeOwnerIds={activeOwnerIds} nowMs={nowMs} focusOwnerId={focusOwner} />
             </>
           )}
@@ -361,12 +376,18 @@ export function AgentsRoster({
   agents,
   nowMs,
   focusOwner = null,
+  inspectOwner = null,
+  onInspectOwnerConsumed,
 }: {
   agents: RosterAgent[];
   nowMs: number;
   /** Deep-link target (?agentsFocus=): pin + scroll this agent's row into view
    *  once per focus value (WI-5517 — the Overview Agents-tile click-through). */
   focusOwner?: string | null;
+  /** Deep-link target (?agentsInspect=): open the same inspector a native row
+   *  click opens, once the full-fidelity operator roster has resolved it. */
+  inspectOwner?: string | null;
+  onInspectOwnerConsumed?: () => void;
 }) {
   const lex = useLexicon();
   const labels = useMemo<RosterLabels>(() => ({
@@ -376,6 +397,11 @@ export function AgentsRoster({
   }), [lex]);
 
   const [inspecting, setInspecting] = useState<RosterAgent | null>(null);
+  useEffect(() => {
+    if (!inspectOwner) return;
+    const target = agents.find((a) => a.ownerId === inspectOwner);
+    if (target) setInspecting(target);
+  }, [agents, inspectOwner]);
   // resume-in-gui-button-2026-08-09: where the inspector's "Resume in GUI" button
   // sends you — the HUD tab with this agent's conversation popup open (and this
   // popover closed). The navigation lives vite-side because AgentInspectorModal is in
@@ -426,7 +452,10 @@ export function AgentsRoster({
             : undefined}
           onOpenInGui={openHudConversation}
           open
-          onClose={() => setInspecting(null)}
+          onClose={() => {
+            setInspecting(null);
+            onInspectOwnerConsumed?.();
+          }}
         />
       ) : null}
     </AgentRoster>
