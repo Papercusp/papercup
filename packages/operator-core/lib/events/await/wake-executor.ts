@@ -2221,6 +2221,7 @@ async function injectPsuHostWake(
   warmText: string,
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
+  capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null,
 ): Promise<WakeOutcome | null> {
   const sock = host.sock;
   // WI-5510: read the loop-fire marker ONCE up front — both the warm and cold
@@ -2272,6 +2273,7 @@ async function injectPsuHostWake(
   // the fire→busy-gate-flush gap (see that function's `updatedAtMs` doc). null when
   // unknown (the getLoopCarryNoteFn test seam is note-only) ⇒ no stamp, byte-identical.
   let noteUpdatedAtMs: number | null = null;
+  let cachedCarryNoteMeta: DeliveryCarryNoteMeta | null = null;
   try {
     const marker = loopMarker;
     // Cheap short-circuit: only a harness-scoped LOOP wake can go cold — either
@@ -2308,11 +2310,20 @@ async function injectPsuHostWake(
               workspaceId: d.workspaceId,
             });
           } else {
-            const meta = await (deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta)({
+            // EI-21972787374193956: re-read at the cold-injection boundary instead
+            // of silently reusing the snapshot that rendered the delivery-time
+            // block. The delivery-scoped refresh keeps the newest valid version,
+            // while the identity comparison below makes any mixed render loud.
+            const meta = await (
+              deps.refreshLoopCarryNoteWithMetaFn ??
+              deps.getLoopCarryNoteWithMetaFn ??
+              defaultGetLoopCarryNoteWithMeta
+            )({
               harness: marker.harness,
               ownerId: d.subscriberId,
               workspaceId: d.workspaceId,
             });
+            cachedCarryNoteMeta = meta;
             carryNote = meta.note;
             noteUpdatedAtMs = meta.updatedAtMs;
           }
@@ -2386,10 +2397,22 @@ async function injectPsuHostWake(
     // P-003: append the wider carry brief (held items + checkpoints, walls/facts, awaits,
     // fleet pointer) after the note — best-effort, note-only on any failure.
     let extras = '';
+    let carryNoteForInjection = decision.carryNote;
     try {
       const buildBrief = deps.buildCarryBriefFn ?? (await import('../../carry-brief')).buildCarryBrief;
-      const { renderCarryBriefColdExtras } = await import('../../carry-brief');
-      extras = renderCarryBriefColdExtras(await buildBrief(d.subscriberId, { workspaceId: d.workspaceId }));
+      const { annotateCarryNoteLiveContradictions, renderCarryBriefColdExtras } = await import('../../carry-brief');
+      const brief = await buildBrief(d.subscriberId, { workspaceId: d.workspaceId });
+      // EI-19362981097884026: put the live contradiction on the exact carried
+      // imperative the successor reads, not only in the roster below it. The
+      // brief already paid to hydrate citedRefs; consuming that same result here
+      // keeps the note and the shared extras renderer in agreement.
+      if (carryNoteForInjection) {
+        carryNoteForInjection = annotateCarryNoteLiveContradictions(
+          carryNoteForInjection,
+          brief.citedRefs ?? [],
+        );
+      }
+      extras = renderCarryBriefColdExtras(brief);
     } catch (e) {
       // Note-only injection — but NEVER silently (EI-8593, then EI-11484: twice a
       // CarryBrief contract drift crashed the renderer here and this swallow hid a
@@ -2460,16 +2483,39 @@ async function injectPsuHostWake(
         console.warn('[wake-executor] cold work-evidence read failed (banner unchanged):', e as Error);
       }
     }
+    const snapshotMismatch =
+      capturedCarryNoteMeta && cachedCarryNoteMeta
+        ? carryNoteSnapshotMismatch(capturedCarryNoteMeta, cachedCarryNoteMeta)
+        : null;
+    let mixedSnapshotWarning: string | null = null;
+    if (snapshotMismatch && capturedCarryNoteMeta && cachedCarryNoteMeta) {
+      const deliveryMeta = capturedCarryNoteMeta;
+      const coldMeta = cachedCarryNoteMeta;
+      mixedSnapshotWarning = [
+          `⚠⚠ UNTRUSTED MIXED CARRY-NOTE SNAPSHOT: the delivery-time re-check block and the cold reset ` +
+            `were composed from different carry-note identities (${snapshotMismatch.fields.join(', ')} changed). ` +
+            `Do NOT treat either note as authoritative until you reconcile loop:status / loop:checkpoint.`,
+          `Delivery-time re-check snapshot (${formatCarryNoteSnapshotIdentity(snapshotMismatch.refreshed)}):`,
+          deliveryMeta.readFailed
+            ? '(read failed — body unavailable)'
+            : (deliveryMeta.note ?? '(no carry-note)'),
+          `Cold-injection snapshot (${formatCarryNoteSnapshotIdentity(snapshotMismatch.cached)}):`,
+          coldMeta.readFailed
+            ? '(read failed — body unavailable)'
+            : (coldMeta.note ?? '(no carry-note)'),
+        ].join('\n');
+    }
+    const renderedColdWake = renderColdWakeInjection(
+      carryNoteForInjection,
+      extras,
+      coldFireCount,
+      noteUpdatedAtMs ?? undefined,
+      lastTurnAtMs ?? undefined,
+      agentToolCallsSinceNote,
+    );
     const coldText = tagWakeText(
       d,
-      renderColdWakeInjection(
-        decision.carryNote,
-        extras,
-        coldFireCount,
-        noteUpdatedAtMs ?? undefined,
-        lastTurnAtMs ?? undefined,
-        agentToolCallsSinceNote,
-      ),
+      mixedSnapshotWarning ? `${mixedSnapshotWarning}\n\n${renderedColdWake}` : renderedColdWake,
       deps.tagTurn ?? tagTurnForInjection,
     );
     // WI-6862: book what we actually KNOW. injectIntoHost's bare boolean cannot tell a host ACK
@@ -2551,10 +2597,18 @@ async function injectPsuHostWakeWithReverify(
   findPsuHost: (ownerId: string) => PsuInjectHostView | null,
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
+  capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null,
 ): Promise<WakeOutcome | null> {
   let host = findPsuHost(d.subscriberId);
   for (let attempt = 0; host && attempt < 2; attempt += 1) {
-    const outcome = await injectPsuHostWake(d, host, warmText, injectPsuHost, deps);
+    const outcome = await injectPsuHostWake(
+      d,
+      host,
+      warmText,
+      injectPsuHost,
+      deps,
+      capturedCarryNoteMeta,
+    );
     if (outcome) return outcome;
     // Re-read the owner-scoped discovery record after a miss. Do not reuse the
     // first host object: a live psu host may have rebound its control socket.
@@ -2686,6 +2740,14 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     getLoopCarryNoteWithMetaFn: getDeliveryCarryNoteWithMeta,
     refreshLoopCarryNoteWithMetaFn: refreshDeliveryCarryNoteWithMeta,
   };
+  let capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null;
+  const rehydrateForDelivery = (delivery: DeliveryWork, baseText: string): Promise<string> =>
+    rehydrateLoopWakeText(delivery, baseText, {
+      ...deliveryDeps,
+      captureLoopCarryNoteMeta: (meta) => {
+        capturedCarryNoteMeta = meta;
+      },
+    });
   const collectSessionFiles = deps.collectSessionFiles ?? defaultCollectSessionFiles;
   const rematerializeSession = deps.rematerializeSession ?? defaultRematerializeSession;
   const findArchivedSessionIdForAdv = deps.findArchivedSessionIdForAdv ?? defaultFindArchivedSessionIdForAdv;
@@ -2863,12 +2925,14 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // live session by ownerId and needs no resumable handle (EI-152: handle-less
       // always-armed inbox-wakes were parking even with a live socket available,
       // because the socket inject below sat under this early-return).
+      const rehydratedText = await rehydrateForDelivery(d, wakeTurnText(d));
       const outcome = await injectPsuHostWakeWithReverify(
         d,
-        tagWakeText(d, applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deliveryDeps)), tagTurn),
+        tagWakeText(d, applyInjectionDoor(d, rehydratedText), tagTurn),
         findPsuHost,
         injectPsuHost,
         deliveryDeps,
+        capturedCarryNoteMeta,
       );
       if (outcome) return outcome;
       // No injectable socket: presence fresh → park (a one-time inbox nudge
@@ -2886,7 +2950,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       const resumePlanRun = deps.resumePlanRun ?? (await import('./plan-run-wake')).resumePlanRunForWake;
       const planRunText = tagWakeText(
         d,
-        applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deliveryDeps)),
+        applyInjectionDoor(d, await rehydrateForDelivery(d, wakeTurnText(d))),
         tagTurn,
       );
       const r = await resumePlanRun({ runId: handle.runId, wakeText: planRunText });
@@ -2925,7 +2989,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       sessionDelivery,
       applyInjectionDoor(
         sessionDelivery,
-        await rehydrateLoopWakeText(sessionDelivery, wakeTurnText(sessionDelivery), deliveryDeps),
+        await rehydrateForDelivery(sessionDelivery, wakeTurnText(sessionDelivery)),
       ),
       tagTurn,
     );
@@ -2943,6 +3007,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       findPsuHost,
       injectPsuHost,
       deliveryDeps,
+      capturedCarryNoteMeta,
     );
     if (outcome) return outcome;
 

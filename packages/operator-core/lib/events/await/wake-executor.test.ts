@@ -3245,6 +3245,12 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
       .mockResolvedValueOnce({
         note: staleSecondRead,
         updatedAtMs: Date.parse('2026-08-23T04:19:00.000Z'),
+      })
+      // The cold injector performs its own boundary read. A stale observation
+      // must not displace the newer delivery snapshot already retained above.
+      .mockResolvedValue({
+        note: staleSecondRead,
+        updatedAtMs: Date.parse('2026-08-23T04:19:00.000Z'),
       });
     const out = await executeWake(
       work({
@@ -3264,7 +3270,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
     // The delivery resolver refreshes once at the boundary, then keeps the
     // timestamp-newer B snapshot even when that second read is stale.
-    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledTimes(2);
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledTimes(3);
     const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
     expect(data).toContain(deliveryCheckpoint);
     expect(data).not.toContain(staleSecondRead);
@@ -3279,7 +3285,8 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     const getLoopCarryNoteWithMetaFn = vi
       .fn()
       .mockResolvedValueOnce({ note: olderCheckpoint, updatedAtMs: olderAt })
-      .mockResolvedValueOnce({ note: newerCheckpoint, updatedAtMs: newerAt });
+      .mockResolvedValueOnce({ note: newerCheckpoint, updatedAtMs: newerAt })
+      .mockResolvedValue({ note: newerCheckpoint, updatedAtMs: newerAt });
 
     const out = await executeWake(
       work({
@@ -3294,7 +3301,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     );
 
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
-    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledTimes(2);
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledTimes(3);
     const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
     expect(data).toContain(newerCheckpoint);
     expect(data).not.toContain(olderCheckpoint);
@@ -3555,6 +3562,42 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(data).toContain('Fleet: you are in "bug-drain" as leader');
     expect(data.indexOf('resume the wiring')).toBeLessThan(data.indexOf('WI-3319'));
     expect(data.indexOf('WI-3319')).toBeLessThan(data.indexOf('Before you END this turn'));
+  });
+
+  it('EI-19362981097884026: annotates a terminal cited item on the carried Next action itself', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const note = '## Next action\ncomplete WI-6054, then continue the drain';
+    const buildCarryBriefFn = vi.fn(
+      async (ownerId: string): Promise<CarryBrief> => ({
+        ownerId,
+        loop: null,
+        heldItems: [],
+        directives: [],
+        directivesTotalOpen: 0,
+        walls: [],
+        facts: [],
+        awaits: [],
+        fleet: null,
+        citedRefs: ['WI-6054 [bug/done @su-397]: "already fixed + closed…"'],
+      }),
+    );
+
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+      coldDeps({
+        injectPsuHost: injectPsuHost as never,
+        getLoopCarryNoteFn: vi.fn(async () => note),
+        buildCarryBriefFn: buildCarryBriefFn as never,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
+    const annotated = 'complete WI-6054, then continue the drain   ⚠ LIVE: WI-6054 status=done';
+    expect(data).toContain(annotated);
+    expect(data).toContain('STALE-NOTE CONTRADICTION');
+    expect(data).toContain('⚠ TERMINAL ↪ WI-6054 [bug/done');
+    expect(data.indexOf(annotated)).toBeLessThan(data.indexOf('STALE-NOTE CONTRADICTION'));
   });
 
   it('P-003 fail-soft: a THROWING carry-brief reader injects the note alone (byte-identical to the extras-less injection) AND warns — the swallow must never be silent', async () => {
