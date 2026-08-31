@@ -235,9 +235,39 @@ export function admissibleWorkersForMemory(input: {
   reserveFraction?: number;
 }): number;
 
+/**
+ * WI-1490656 — observability + bounding for the shared `papercusp-test-process-admission`
+ * mutex every scheduler invocation acquires.
+ */
+export interface AdmissionNoticeInfo {
+  kind: 'queued' | 'granted';
+  /** Present on `queued`: how long this acquisition has been waiting so far. */
+  elapsedMs?: number;
+  /** Present on `granted`: how long this acquisition ended up queued. */
+  waitedMs?: number;
+  /** The bound this acquisition was actually given. */
+  budgetMs: number;
+}
+
+export interface SharedAdmissionOptions {
+  /**
+   * Sink for queue notices. DEFAULTS to `console.error`, which cannot reach the
+   * affected-tests run log — the runner injects a sink that writes both, so a queued run
+   * explains itself in the file its own BEGIN line tells a triager to grep.
+   */
+  onAdmissionNotice?: (line: string, info: AdmissionNoticeInfo) => void;
+  /** Fires once per acquisition, with how long it queued and the bound it was given. */
+  onAdmissionAcquired?: (info: { waitedMs: number; budgetMs: number }) => void;
+}
+
+/** The whole-invocation queue budget shared across every shard of one run. */
+export const SHARED_TEST_PROCESS_ADMISSION_RUN_BUDGET_MS: number;
+
 export function runBudgetedTasks<Task, Value>(
   tasks: Task[],
-  options: TaskBudgetInput & {
+  options: TaskBudgetInput & SharedAdmissionOptions & {
+    /** Bound for THIS acquisition. Defaults to the per-acquisition admission timeout. */
+    admissionTimeoutMs?: number;
     estimateMs?: (task: Task, index: number) => number | null | undefined;
     /**
      * OPT-IN live memory reading, consulted before every admission after the run's first.
@@ -260,7 +290,13 @@ export function runBudgetedTasks<Task, Value>(
 
 export function runBudgetedTaskShards<Task, Value>(
   plan: AffectedTaskShardPlan<Task>,
-  options: TaskBudgetInput & {
+  options: TaskBudgetInput & SharedAdmissionOptions & {
+    /**
+     * Total queue time this run may spend across ALL shards. Each shard is its own
+     * acquisition whose own timeout restarts at zero, so without one shared budget an
+     * N-shard run's real admission bound is N × the per-acquisition timeout.
+     */
+    admissionRunBudgetMs?: number;
     estimateMs?: (task: Task, index: number) => number | null | undefined;
     readMemAvailableMb?: () => number | null | undefined;
     runTask: (

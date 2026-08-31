@@ -108,6 +108,14 @@ const argsSchema = z.preprocess(
         .describe(
           'Heading anchor id or visible heading text (from docs:outline.pages[].headings[].id/text). Only honored when slugs.length === 1.',
         ),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          'Resume a clipped read here. A page over the 50KB cap comes back TRUNCATED with found:true and a `nextOffset` — pass it back to read the next window, and repeat until no nextOffset is returned. Only honored when slugs.length === 1. This is the supported way to read a large page WHOLE (e.g. before a docs:author overwrite, which takes a full replacement body).',
+        ),
       harness: z
         .string()
         .optional()
@@ -122,6 +130,12 @@ const argsSchema = z.preprocess(
     .refine((v) => !v.heading || v.slugs.length === 1, {
       message: 'heading is only valid when slugs has exactly one entry',
       path: ['heading'],
+    })
+    // Refuse rather than silently ignore: an offset that quietly does nothing
+    // returns window 1 again, which reads as "the document ends here".
+    .refine((v) => !v.offset || v.slugs.length === 1, {
+      message: 'offset addresses ONE document — it is only valid when slugs has exactly one entry',
+      path: ['offset'],
     }),
 );
 
@@ -185,6 +199,7 @@ export default defineTool({
     const getArgs = {
       slugs: args.slugs.map(normalizeDocsGetRef),
       ...(args.heading ? { heading: args.heading } : {}),
+      ...(args.offset ? { offset: args.offset } : {}),
     };
     const effectiveSlug = scope.kind === 'all' ? '*' : scope.slug;
     const resolved = await resolveAdapter(effectiveSlug, {

@@ -23,6 +23,18 @@ const SHARED_TEST_PROCESS_ADMISSION_MUTEX = "papercusp-test-process-admission";
 const SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
 const SHARED_TEST_PROCESS_ADMISSION_STALE_MS = 2 * 60 * 60 * 1_000;
 const SHARED_TEST_PROCESS_ADMISSION_RETRY_MS = 250;
+// WI-1490656: how often a still-queued caller re-announces itself. One notice at t≈0 is
+// invisible to any observer who attaches later, which is how a queued run gets
+// misdiagnosed as a wedge.
+const SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS = 60 * 1_000;
+// The whole-invocation queue budget. `SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS` bounds ONE
+// `withFsMutex` acquisition, and a sharded run acquires once PER SHARD — so the bound
+// everyone believes is 4h is really shards × 4h (measured: a 126-task near-tree-wide gate
+// run plans 16 shards ⇒ a 64h worst case). The green-checkpoint holds its singleton run
+// lock for that entire time, so every later fire records `skipped-locked` and the gate
+// stops producing verdicts at all. Bound the SUM instead, well inside the gate's own
+// hourly cadence, so a starved run fails loudly and frees the lock for the next fire.
+export const SHARED_TEST_PROCESS_ADMISSION_RUN_BUDGET_MS = 45 * 60 * 1_000;
 // EI-21437241652128498 / EI-21437837415175286: one stateful test task first
 // reached 1,517 cgroup tasks, then exhausted a 2,048-task capability scope while
 // it was still progressing. A later operator-core pure lane reached 4,096 tasks
@@ -815,19 +827,45 @@ async function runBudgetedTasksWithoutSharedAdmission(tasks, options) {
  * moment it starts waiting.
  */
 export async function runBudgetedTasks(tasks, options) {
+  // WI-1490656: `console.error` cannot reach the affected-tests RUN LOG — that file is
+  // written by the runner's own `logLine`/`errSync`, so the queued notice landed only on
+  // stderr and was absent from all 993 run logs on this box. The run log is the artifact
+  // the runner itself tells a triager to grep, so a queued caller looked silent in exactly
+  // the place it was supposed to explain itself. Callers inject a sink that writes BOTH.
+  const notify = options?.onAdmissionNotice ?? ((line) => console.error(line));
+  const timeoutMs =
+    Number(options?.admissionTimeoutMs) > 0
+      ? Number(options.admissionTimeoutMs)
+      : SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS;
   return withFsMutex(
     SHARED_TEST_PROCESS_ADMISSION_MUTEX,
     () => runBudgetedTasksWithoutSharedAdmission(tasks, options),
     {
-      timeoutMs: SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS,
+      timeoutMs,
       staleMs: SHARED_TEST_PROCESS_ADMISSION_STALE_MS,
       retryMs: SHARED_TEST_PROCESS_ADMISSION_RETRY_MS,
+      waitingNoticeIntervalMs: SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS,
       onWaiting: ({ owner, elapsedMs }) => {
-        console.error(
+        notify(
           `AFFECTED_TESTS_ADMISSION_QUEUED waiting on the shared test-process ` +
-            `admission mutex (${Math.round(elapsedMs / 1000)}s so far) — this is ` +
-            `normal serialization under fleet load, not a hang; holder: ${String(owner).trim()}`,
+            `admission mutex (${Math.round(elapsedMs / 1000)}s so far, budget ` +
+            `${Math.round(timeoutMs / 1000)}s) — this is normal serialization under ` +
+            `fleet load, not a hang; holder: ${String(owner).trim()}`,
+          { kind: "queued", elapsedMs, budgetMs: timeoutMs },
         );
+      },
+      onAcquired: ({ waitedMs }) => {
+        // `budgetMs` is the bound THIS acquisition was actually given. Reporting it is what
+        // lets a caller (and a test) see the whole-run budget spending down across shards
+        // instead of silently restarting at full value on every one.
+        if (options?.onAdmissionAcquired)
+          options.onAdmissionAcquired({ waitedMs, budgetMs: timeoutMs });
+        if (waitedMs >= SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS) {
+          notify(
+            `AFFECTED_TESTS_ADMISSION_GRANTED after ${Math.round(waitedMs / 1000)}s queued`,
+            { kind: "granted", waitedMs, budgetMs: timeoutMs },
+          );
+        }
       },
     },
   );
@@ -843,8 +881,25 @@ export async function runBudgetedTaskShards(plan, options) {
   const results = [];
   let aggregate = null;
   const shardStats = [];
+  // WI-1490656: carry ONE queue budget across every shard. Each shard is its own
+  // `withFsMutex` acquisition whose `timeoutMs` restarts at zero, so without this the run's
+  // real admission bound is shards × per-acquisition timeout. Spend the budget down as
+  // shards actually queue; time spent RUNNING tests is not queue time and never counts
+  // against it, because `withFsMutex` stops measuring the moment it grants.
+  const runBudgetMs =
+    Number(options?.admissionRunBudgetMs) > 0
+      ? Number(options.admissionRunBudgetMs)
+      : SHARED_TEST_PROCESS_ADMISSION_RUN_BUDGET_MS;
+  let queuedSoFarMs = 0;
   for (const shard of plan.shards) {
-    const run = await runBudgetedTasks(shard.tasks, options);
+    const run = await runBudgetedTasks(shard.tasks, {
+      ...options,
+      admissionTimeoutMs: Math.max(1, runBudgetMs - queuedSoFarMs),
+      onAdmissionAcquired: ({ waitedMs, budgetMs }) => {
+        queuedSoFarMs += waitedMs;
+        if (options?.onAdmissionAcquired) options.onAdmissionAcquired({ waitedMs, budgetMs });
+      },
+    });
     shardStats.push({
       index: shard.index,
       taskCount: shard.tasks.length,
