@@ -1,0 +1,389 @@
+#!/usr/bin/env bash
+# Live Tauri-shell verification for the COMPACT PLAN CARD
+# (hud-plan-card-density-2026-08-31).
+#
+# Run it as:
+#   scripts/verify-tauri-headless.sh -- scripts/verify-hud-plan-card-density.sh
+#
+# ── WHY THIS SCRIPT EXISTS, AND WHY ROUND 1 DID NOT COUNT ────────────────────
+# Round 1 measured the grid floor and reported every mode clean. Independent
+# acceptance grading (EI-21987526785418505) rated `evidence-could-have-failed`
+# FAILS, and it was right: round 1's negative controls REFUSED TO BREAK. A
+# probe that cannot report red has not verified anything when it reports green —
+# a clean reading from it is indistinguishable from a probe reading the wrong
+# property. Two specific instrument defects were established on WI-1816517:
+#
+#   1. documentElement is the WRONG INSTRUMENT for the page-h-scroll mode here.
+#      Appending a 5000px-wide node to <body> left documentElement.scrollWidth
+#      pinned at 1280 == clientWidth. The root CLIPS, so that instrument can
+#      never go red.
+#   2. "no height growth" is very nearly VACUOUS as written. `.hud__card` is
+#      `overflow:hidden` (hud.css:1121), so content that would grow the card is
+#      CLIPPED instead. Height therefore does not move, and a probe watching
+#      height reports clean while the card silently eats its own content. The
+#      falsifiable observable is scrollHeight > clientHeight, not offsetHeight.
+#
+# ── THE DISCIPLINE THIS SCRIPT ENFORCES ─────────────────────────────────────
+# Every mode is measured by a probe in `window.__hudprobe`, and for each mode
+# the CONTROL AND THE MEASUREMENT CALL THE SAME FUNCTION. That identity is the
+# whole point: proving a control fires proves nothing about the measurement if
+# the two run different code. Each mode therefore runs
+#
+#     control (mutate; the SAME probe must report RED)
+#       -> restore
+#         -> measure (the SAME probe must report GREEN)
+#
+# and a control that fails to fire is a FATAL, not a warning: the script exits
+# nonzero and emits NO green for that mode. A green exit from this script means
+# "every mode was measured by an instrument demonstrated to go red on this very
+# run", which is the claim round 1 could not make.
+#
+# Negative assertions are `--require`-guarded (EI-18781011720418569): "no card
+# overflows" is trivially true of an empty document, and the board rendering
+# zero cards is a REAL failure mode here (WI-1816517 round 3 polled 24x5s and
+# never got a card). A zero-card board must be loud, never a silent green.
+set -euo pipefail
+
+TAT="${VERIFY_TAURI_AGENT_TOOLS_BIN:-tauri-agent-tools}"
+PID="${VERIFY_TAURI_PID:?verify-tauri-headless.sh must export VERIFY_TAURI_PID}"
+POLL="${VERIFY_TAURI_POLL:?verify-tauri-headless.sh must export VERIFY_TAURI_POLL}"
+SETTLE="${VERIFY_TAURI_SETTLE:-}"
+
+# The floor the acceptance criterion names: the weighted spec's minmax minima.
+# Pinning gridTemplateColumns to these literals puts all three card columns at
+# their narrowest simultaneously, which is what "at the grid floor" means.
+FLOOR_COLS="220px 260px 180px 46px 46px"
+
+say() { printf '\n=== %s ===\n' "$1"; }
+fatal() { printf '\nFATAL: %s\n' "$1" >&2; exit 1; }
+
+settle() { [ -n "$SETTLE" ] && bash "$SETTLE" >/dev/null 2>&1 || true; }
+
+# ── 1. GET THE PLANS BOARD ON SCREEN, OR FAIL LOUDLY ────────────────────────
+say "1. navigating to the HUD plans board"
+URL="/adv?tab=hud&hudtab=plans&slug=papercusp&ws=papercusp-workspace"
+"$TAT" eval --pid "$PID" "window.location.href = '$URL'" >/dev/null 2>&1 || true
+
+# Poll for the CARD, not for a container. The container renders while the
+# sync-backed cards are still in flight, so waiting on it and then measuring is
+# exactly the race that produced round 3's 0-card reading.
+if ! "$TAT" wait --pid "$PID" --selector '.hud__cardtitle' --timeout 90000 >/dev/null 2>&1; then
+  "$TAT" eval --pid "$PID" '
+    JSON.stringify({
+      cols: !!document.querySelector(".hud__cols"),
+      weighted: !!document.querySelector(".hud__cols--weighted"),
+      anyCard: document.querySelectorAll(".hud__card").length,
+      planTitles: document.querySelectorAll(".hud__cardtitle").length,
+      href: location.href,
+    })' 2>/dev/null || true
+  fatal "the plans board never rendered a plan card. This is NOT a green: a
+zero-card board satisfies every negative assertion below vacuously. Re-run;
+if it persists it is the intermittent zero-card render tracked on WI-1816517."
+fi
+settle
+
+# ── 2. INSTALL THE PROBES ───────────────────────────────────────────────────
+# One namespace, used by BOTH the controls and the measurements. Read the
+# comments per probe: each says what observable it reads and why that is the
+# falsifiable one.
+say "2. installing probes"
+"$TAT" eval --pid "$PID" '
+(() => {
+  const P = {};
+  // The plan-compact card population: a .hud__card that owns a .hud__cardtitle.
+  // .hud__cardtitle is used ONLY by PlanCardCompact (hud.css:795), so this is
+  // exactly the population the density work touched and nothing else.
+  P.cards = () => [...document.querySelectorAll(".hud__card")]
+    .filter(c => c.querySelector(".hud__cardtitle"));
+
+  // HEIGHT. Measured against a baseline captured at natural width.
+  //
+  // ⚠ scrollHeight > clientHeight IS A DEAD INSTRUMENT ON THIS ELEMENT — do not
+  // reintroduce it. It was tried here first (it is the obvious reading of
+  // "overflow:hidden means growth becomes clipping") and MEASURED UNFALSIFIABLE
+  // on this rig: injecting a 400px child took the card 51 -> 451px while
+  // scrollHeight tracked clientHeight exactly (49/49 -> 449/449). `.hud__card`
+  // is a content-sized <button> with flex-shrink:0 and no height constraint, so
+  // it GROWS and never accumulates overflow; scrollHeight can never exceed
+  // clientHeight, and a clean reading from it means nothing. That is the same
+  // defect class as documentElement for the page-scroll mode.
+  //
+  // Growth is therefore the real and only observable, and offsetHeight reports
+  // it faithfully (51 -> 451 -> 51 across the injection above).
+  P.maxHeight = () => Math.max(...P.heights());
+  P.setBaseline = () => { P._baseline = P.maxHeight(); return P._baseline; };
+  P.grown = () => P._baseline == null
+    ? -1  // never silently pass: no baseline means the mode is unmeasured
+    : P.cards().filter(c => c.getBoundingClientRect().height > P._baseline + 1).length;
+
+  // HORIZONTAL CARD OVERFLOW — the mode that already had a working control.
+  P.hclip = () => P.cards().filter(c => c.scrollWidth > c.clientWidth + 1).length;
+
+  // RAIL CLIPPING. .hud__cardright is flex:0 0 auto beside a flex:1 1 auto
+  // title, so when the rail cannot fit it is pushed past the card edge and
+  // overflow:hidden hides it. Compare the rail rect against the card CONTENT
+  // box (border+padding excluded), which is the edge that actually clips.
+  P.railOut = () => P.cards().filter(c => {
+    const r = c.querySelector(".hud__cardright");
+    if (!r) return false;
+    const cs = getComputedStyle(c);
+    const cardRight = c.getBoundingClientRect().right
+      - parseFloat(cs.borderRightWidth || "0") - parseFloat(cs.paddingRight || "0");
+    return r.getBoundingClientRect().right > cardRight + 1;
+  }).length;
+
+  // TITLE ELLIPSIS. Not a defect — the design ellipsizes on purpose — so this
+  // is reported as a NUMBER, never asserted to be zero.
+  P.titlesClamped = () => P.cards()
+    .filter(c => { const t = c.querySelector(".hud__cardtitle");
+                   return t && t.scrollWidth > t.clientWidth + 1; }).length;
+
+  P.heights = () => P.cards().map(c => Math.round(c.getBoundingClientRect().height));
+
+  // THE SCROLL CHAIN. documentElement cannot answer the page-h-scroll question
+  // here, so instead of trusting one node this walks every ancestor from
+  // .hud__cols to the root and reports which ones overflow and which CLIP.
+  // An ancestor above .hud__cols that overflows is a real page-level defect;
+  // .hud__cols overflowing is BY DESIGN (hud.css:591 overflow-x:auto).
+  P.chain = () => {
+    const out = [];
+    let el = document.querySelector(".hud__cols");
+    while (el) {
+      const cs = getComputedStyle(el);
+      out.push({
+        tag: el.tagName.toLowerCase(),
+        cls: (el.className || "").toString().slice(0, 40),
+        ox: cs.overflowX,
+        sw: el.scrollWidth,
+        cw: el.clientWidth,
+        over: el.scrollWidth > el.clientWidth + 1,
+      });
+      el = el.parentElement;
+    }
+    return out;
+  };
+  // Anything ABOVE .hud__cols that overflows horizontally. index 0 is
+  // .hud__cols itself, whose overflow is the designed behaviour.
+  P.pageOverflow = () => P.chain().slice(1).filter(e => e.over).length;
+  // Can ANY node in the chain report horizontal overflow at all? If not, the
+  // whole chain clips silently and no green from pageOverflow means anything.
+  P.chainCanReport = () => P.chain().some(e => e.over);
+
+  // ── mutation helpers (controls) ──
+  P.floor = on => {
+    const c = document.querySelector(".hud__cols");
+    if (!c) return false;
+    // Kept as a JS literal rather than interpolated from the shell: splicing a
+    // value into a single-quoted eval argument splits it on whitespace, and the
+    // floor spec has spaces in it. FLOOR_COLS above must match this string.
+    c.style.gridTemplateColumns = on ? "220px 260px 180px 46px 46px" : "";
+    return true;
+  };
+  P.tall = on => {
+    const c = P.cards()[0]; if (!c) return false;
+    const old = c.querySelector("[data-probe-tall]");
+    if (on) { if (old) return true;
+      const d = document.createElement("div");
+      d.setAttribute("data-probe-tall", "1");
+      d.style.cssText = "height:400px;width:1px";
+      c.appendChild(d); return true; }
+    if (old) old.remove(); return true;
+  };
+  P.style = (id, css) => {
+    let s = document.getElementById(id);
+    if (css === null) { if (s) s.remove(); return true; }
+    if (!s) { s = document.createElement("style"); s.id = id; document.head.appendChild(s); }
+    s.textContent = css; return true;
+  };
+  P.wide = on => {
+    const old = document.querySelector("[data-probe-wide]");
+    if (on) { if (old) return true;
+      const d = document.createElement("div");
+      d.setAttribute("data-probe-wide", "1");
+      d.style.cssText = "width:5000px;height:1px";
+      document.body.appendChild(d); return true; }
+    if (old) old.remove(); return true;
+  };
+  window.__hudprobe = P;
+  return "probes installed";
+})()' || fatal "could not install probes"
+
+# ── 3. DENSITY AT THE CURRENT SHA (whole population) ────────────────────────
+# The prior 51px figure is WITHDRAWN as stale: three commits landed on
+# HudEntityColumns.tsx / hud.css after it was taken, and the diff touches
+# .hud__cardtitle, the node that sets the card's line-1 height. This
+# re-measures the WHOLE population at the current tree rather than re-citing it.
+say "3. DENSITY at the current sha — whole population, natural width"
+"$POLL" --require '.hud__cardtitle' --require-min 1 \
+  --eval 'window.__hudprobe.cards().length >= 1' \
+  || fatal "no plan cards to measure"
+settle
+"$TAT" eval --pid "$PID" '
+(() => {
+  const P = window.__hudprobe, h = P.heights();
+  const sorted = [...h].sort((a, b) => a - b);
+  return JSON.stringify({
+    MEASURE: "density-natural-width",
+    cards: h.length,
+    minHeight: sorted[0],
+    maxHeight: sorted[sorted.length - 1],
+    medianHeight: sorted[Math.floor(sorted.length / 2)],
+    distinctHeights: [...new Set(sorted)],
+    titlesClamped: P.titlesClamped(),
+    viewport: window.innerWidth + "x" + window.innerHeight,
+  }, null, 1);
+})()'
+
+# ── 4. THE THREE UNMEASURED MODES, EACH BEHIND ITS OWN CONTROL ──────────────
+say "4. AT THE FLOOR ($FLOOR_COLS)"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.floor(true)' \
+  || fatal "could not pin the grid to the floor"
+settle
+"$TAT" eval --pid "$PID" '
+JSON.stringify({ MEASURE: "floor-applied",
+  cols: window.__hudprobe.chain()[0],
+  resolved: getComputedStyle(document.querySelector(".hud__cols")).gridTemplateColumns,
+  cardWidths: [...new Set(window.__hudprobe.cards()
+    .map(c => Math.round(c.getBoundingClientRect().width)))] }, null, 1)'
+
+# THE FLOOR MUST DEMONSTRABLY HAVE APPLIED. If the inline style is dropped or
+# out-ranked, every "at the floor" reading below is silently taken at natural
+# width — a green that measured the wrong thing, which is the exact defect class
+# this script exists to close. Assert the RESOLVED track sizes, not the string
+# we set: the browser resolves gridTemplateColumns to used pixel values, so this
+# is a measurement of what actually laid out. It also keeps FLOOR_COLS honest
+# against the JS literal in the probe, since a drift between them fails here.
+"$POLL" --require '.hud__cardtitle' --eval '
+  (() => {
+    const want = "220px 260px 180px 46px 46px".split(" ").map(parseFloat);
+    const got = getComputedStyle(document.querySelector(".hud__cols"))
+      .gridTemplateColumns.split(" ").map(parseFloat);
+    return got.length === want.length && want.every((w, i) => Math.abs(got[i] - w) <= 1);
+  })()' \
+  || fatal "the floor did NOT apply — resolved grid tracks are not
+220/260/180/46/46. Every measurement below would have been taken at natural
+width while claiming to be at the floor. Refusing to emit a green."
+echo "  floor confirmed applied: resolved tracks are 220/260/180/46/46"
+
+# ---- MODE (i): vertical clipping / height growth --------------------------
+say "4a. CONTROL — inject a 400px node; vclip MUST go red"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tall(true)' >/dev/null
+if ! "$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.vclip() >= 1'; then
+  "$TAT" eval --pid "$PID" 'window.__hudprobe.tall(false)' >/dev/null || true
+  fatal "vclip control DID NOT FIRE. A 400px node inside a card did not make
+scrollHeight exceed clientHeight, so this probe cannot report red and any
+clean reading from it is worthless. Do not report mode (i) as verified."
+fi
+echo "  control fired: vclip reports red on an injected tall node"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tall(false) === true' >/dev/null
+settle
+say "4a. MEASURE — vclip at the floor (same probe) MUST be 0"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.vclip() === 0' \
+  || fatal "MODE (i) RED: plan cards are vertically clipping at the floor."
+echo "  mode (i) no vertical clipping/height loss at the floor: GREEN (control-backed)"
+
+# ---- MODE (iii): rail clipping -------------------------------------------
+say "4b. CONTROL — force .hud__cardright wider than the card; railOut MUST go red"
+"$POLL" --require '.hud__cardtitle' \
+  --eval 'window.__hudprobe.style("probe-rail", ".hud__cardright{min-width:9999px !important}")' >/dev/null
+if ! "$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.railOut() >= 1'; then
+  "$TAT" eval --pid "$PID" 'window.__hudprobe.style("probe-rail", null)' >/dev/null || true
+  fatal "railOut control DID NOT FIRE. Forcing the rail to 9999px did not push
+it past the card content edge, so this probe cannot report red. Do not report
+mode (iii) as verified."
+fi
+echo "  control fired: railOut reports red on an over-wide rail"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.style("probe-rail", null) === true' >/dev/null
+settle
+say "4b. MEASURE — railOut at the floor (same probe) MUST be 0"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.railOut() === 0' \
+  || fatal "MODE (iii) RED: the activity rail is clipped at the floor."
+echo "  mode (iii) activity rail not clipped at the floor: GREEN (control-backed)"
+
+# ---- MODE (ii): page-level horizontal scroll ------------------------------
+# This is the mode documentElement could not answer. The control asks a
+# prior question: can ANY node in the ancestor chain report horizontal
+# overflow? If none can, the chain clips silently and the mode is
+# UNMEASURABLE — which is a finding, not a green.
+say "4c. CONTROL — append a 5000px node; the chain MUST be able to report overflow"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.wide(true)' >/dev/null
+CHAIN_OK=1
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.chainCanReport() === true' \
+  >/dev/null 2>&1 || CHAIN_OK=0
+say "4c. the ancestor chain under the 5000px control"
+"$TAT" eval --pid "$PID" 'JSON.stringify(window.__hudprobe.chain(), null, 1)'
+"$TAT" eval --pid "$PID" 'window.__hudprobe.wide(false)' >/dev/null || true
+settle
+if [ "$CHAIN_OK" -eq 0 ]; then
+  fatal "MODE (ii) UNMEASURABLE. No node from .hud__cols to the root reported
+scrollWidth > clientWidth even under a forced 5000px child, so every ancestor
+clips silently. A clean page-h-scroll reading here would be exactly the
+uninterpretable green WI-1816517 withdrew. Reported, NOT certified."
+fi
+echo "  control fired: the chain can report horizontal overflow"
+say "4c. MEASURE — no ancestor ABOVE .hud__cols overflows at the floor"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.pageOverflow() === 0' \
+  || fatal "MODE (ii) RED: an ancestor above .hud__cols scrolls horizontally."
+echo "  mode (ii) no page-level horizontal scroll at the floor: GREEN (control-backed)"
+
+# ---- MODE (iv): card content overflow (already had a control; re-run it) --
+say "4d. CONTROL — squeeze the grid to 40px columns; hclip MUST go red"
+"$POLL" --require '.hud__cardtitle' \
+  --eval '(() => { document.querySelector(".hud__cols").style.gridTemplateColumns = "repeat(5, 40px)"; return true; })()' >/dev/null
+if ! "$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hclip() >= 1'; then
+  "$TAT" eval --pid "$PID" 'window.__hudprobe.floor(true)' >/dev/null || true
+  fatal "hclip control DID NOT FIRE at 40px columns."
+fi
+echo "  control fired: hclip reports red at 40px columns"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.floor(true) === true' >/dev/null
+settle
+say "4d. MEASURE — hclip at the floor (same probe) MUST be 0"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hclip() === 0' \
+  || fatal "MODE (iv) RED: plan cards overflow horizontally at the floor."
+echo "  mode (iv) no card content overflow at the floor: GREEN (control-backed)"
+
+# ── 5. DENSITY AT THE FLOOR ────────────────────────────────────────────────
+say "5. DENSITY at the floor — whole population"
+"$TAT" eval --pid "$PID" '
+(() => {
+  const P = window.__hudprobe, h = P.heights();
+  const sorted = [...h].sort((a, b) => a - b);
+  return JSON.stringify({
+    MEASURE: "density-at-floor",
+    cards: h.length,
+    minHeight: sorted[0],
+    maxHeight: sorted[sorted.length - 1],
+    medianHeight: sorted[Math.floor(sorted.length / 2)],
+    distinctHeights: [...new Set(sorted)],
+    titlesClamped: P.titlesClamped(),
+  }, null, 1);
+})()'
+"$TAT" eval --pid "$PID" 'window.__hudprobe.floor(false)' >/dev/null || true
+
+# ── 6. SCOPED TO PLAN CARDS — the live half ────────────────────────────────
+# The unit half of this criterion is asserted at HudEntityColumns.test.tsx:918
+# and :924. This is the live half: a real non-plan board must render cards and
+# NONE of them may carry the compact-plan selectors.
+say "6. SCOPE — the Work items board renders cards, and none is a plan card"
+"$TAT" eval --pid "$PID" \
+  "window.location.href = '/adv?tab=hud&hudtab=items&slug=papercusp&ws=papercusp-workspace'" >/dev/null 2>&1 || true
+if ! "$TAT" wait --pid "$PID" --selector '.hud__card' --timeout 90000 >/dev/null 2>&1; then
+  fatal "the Work items board never rendered a card, so 'no plan selectors
+here' would be vacuously true. Not a green."
+fi
+settle
+# --require '.hud__card' fuses the presence guard into the SAME evaluation as
+# the absence claim, so nothing can slip between "cards rendered" and
+# "no plan selectors".
+"$POLL" --require '.hud__card' --require-min 1 \
+  --eval 'document.querySelectorAll(".hud__cardtitle").length === 0
+          && document.querySelectorAll(".hud__cardright").length === 0' \
+  || fatal "SCOPE RED: the compact-plan selectors leaked onto the Work items board."
+"$TAT" eval --pid "$PID" '
+JSON.stringify({ MEASURE: "scope-items-board",
+  cards: document.querySelectorAll(".hud__card").length,
+  planTitles: document.querySelectorAll(".hud__cardtitle").length,
+  planRails: document.querySelectorAll(".hud__cardright").length }, null, 1)'
+echo "  scope holds: plan-only selectors absent from a populated non-plan board"
+
+say "ALL MODES GREEN — and every one of them behind a control that fired on this run"
