@@ -35,7 +35,12 @@ import {
   type ReleaseProfileVerdict,
 } from '@papercusp/release-profile';
 import { getRubric as defaultGetRubric, listRubrics as defaultListRubrics } from '@papercusp/operator-core/lib/rubrics';
-import { listScorecards as defaultListScorecards, type ScorecardRow } from '@papercusp/operator-core/lib/scorecards';
+import {
+  evaluateScorecardInstrumentContract,
+  listScorecards as defaultListScorecards,
+  type ScorecardInstrumentContractEvaluation,
+  type ScorecardRow,
+} from '@papercusp/operator-core/lib/scorecards';
 import {
   readRunningGeneration as defaultReadRunningGeneration,
   readBgHostActiveEnterMs as defaultReadBgHostActiveEnterMs,
@@ -68,6 +73,22 @@ export function classifyRatingForGate(rating: string): ComponentRawVerdict {
 
 const VERDICT_SEVERITY: Record<ComponentRawVerdict, number> = { pass: 0, unknown: 1, fail: 2 };
 
+function formatInstrumentContractFailure(contract: ScorecardInstrumentContractEvaluation): string {
+  const checks: Array<[label: string, values: string[]]> = [
+    ['missing bindings', contract.missingBindings],
+    ['duplicate bindings', contract.duplicateBindings],
+    ['missing snapshots', contract.missingSnapshots],
+    ['extra snapshots', contract.extraSnapshots],
+    ['stale snapshots', contract.staleSnapshots],
+    ['window mismatches', contract.windowMismatches],
+    ['verdict mismatches', contract.verdictMismatches],
+  ];
+  const failures = checks.filter(([, values]) => values.length > 0);
+  return failures.length > 0
+    ? failures.map(([label, values]) => `${label}: ${values.join(', ')}`).join('; ')
+    : 'the contract validator rejected the scorecard';
+}
+
 /** PURE: the worst-case verdict across a scorecard's ratings, with the criterion that
  *  produced it. A release gate does not average away one broken/unknown criterion —
  *  any single non-pass criterion sinks the whole component. */
@@ -98,6 +119,8 @@ export const DEFAULT_RUBRIC_STALE_AFTER_MS = 6 * 60 * 60_000;
 export interface RubricComponentDeps {
   getRubric?: typeof defaultGetRubric;
   listScorecards?: typeof defaultListScorecards;
+  /** Injectable clock for the persisted scorecard instrument-contract check. */
+  nowMs?: () => number;
   /** WI-5277: read the LIVE bg-host generation boundary, to judge whether the latest
    *  scorecard's generation still exists. Defaults to the real systemd read. */
   readBgHostActiveEnterMs?: () => Promise<number | null>;
@@ -128,6 +151,7 @@ export function rubricReleaseComponent(rubricRef: string, opts: RubricComponentO
   const maxAgeMs = opts.maxAgeMs ?? DEFAULT_RUBRIC_STALE_AFTER_MS;
   const getRubricFn = opts.deps?.getRubric ?? defaultGetRubric;
   const listScorecardsFn = opts.deps?.listScorecards ?? defaultListScorecards;
+  const nowMsFn = opts.deps?.nowMs ?? Date.now;
   const readBoundaryFn = opts.deps?.readBgHostActiveEnterMs ?? defaultReadBgHostActiveEnterMs;
 
   return {
@@ -188,6 +212,27 @@ export function rubricReleaseComponent(rubricRef: string, opts: RubricComponentO
           reason:
             `latest scorecard for '${rubricRef}' is INCOMPLETE ` +
             `(missing: ${latest.missingKeys.join(', ') || 'none'}; extra: ${latest.extraKeys.join(', ') || 'none'})`,
+          measuredAt: latest.createdAt,
+          evidence,
+          lineage,
+        };
+      }
+      // Release-gating scorecards written before the typed emission path can still be
+      // persisted in the historical issue ledger. Re-check the instrument contract on
+      // this consumer boundary so a lucky/hand-authored rating cannot authorize GO just
+      // because scorecards:evaluate/emit rejected the same shape at write time.
+      const instrumentContract = evaluateScorecardInstrumentContract({
+        rubric,
+        ratings: latest.ratings,
+        instrumentSnapshots: latest.instrumentSnapshots,
+        nowMs: nowMsFn(),
+      });
+      if (rubric.releaseGating && !instrumentContract.valid) {
+        return {
+          verdict: 'unknown',
+          reason:
+            `latest scorecard for '${rubricRef}' has an invalid instrument contract — ` +
+            formatInstrumentContractFailure(instrumentContract),
           measuredAt: latest.createdAt,
           evidence,
           lineage,

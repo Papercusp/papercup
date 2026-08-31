@@ -37,8 +37,10 @@ function rubric(overrides: Partial<Rubric> = {}): Rubric {
     title: 'Test rubric',
     description: '',
     criteria: [
-      { key: 'c1', title: 'C1', model: 'm', method: 'me', driftMarkers: 'd' },
-      { key: 'c2', title: 'C2', model: 'm', method: 'me', driftMarkers: 'd' },
+      // Explicitly manual criteria keep this generic fixture valid under the strict
+      // release-gating instrument contract; instrument-backed behavior is covered below.
+      { key: 'c1', title: 'C1', model: 'm', method: 'me', driftMarkers: 'd', instrumentKey: 'none' },
+      { key: 'c2', title: 'C2', model: 'm', method: 'me', driftMarkers: 'd', instrumentKey: 'none' },
     ],
     ratingScale: ['pass', 'fail', 'unknown'],
     methodRef: null,
@@ -143,6 +145,75 @@ describe('rubricReleaseComponent — real adapter, injected deps', () => {
     const result = await comp.check();
     expect(result.verdict).toBe('pass');
     expect(result.evidence[0]).toEqual({ ref: 'EI-1', kind: 'scorecard', detail: { sourceHive: null } });
+  });
+
+  it('unknown when a persisted release-gating scorecard is missing its instrument snapshot', async () => {
+    const nowMs = Date.parse('2026-07-16T12:00:00.000Z');
+    const instrumentedRubric = rubric({
+      criteria: [
+        {
+          key: 'c1',
+          title: 'C1',
+          model: 'm',
+          method: 'me',
+          driftMarkers: 'd',
+          instrumentKey: 'metrics.c1',
+          window: { kind: 'rolling', ms: 60 * 60_000 },
+        },
+        { key: 'c2', title: 'C2', model: 'm', method: 'me', driftMarkers: 'd', instrumentKey: 'none' },
+      ],
+    });
+    const comp = rubricReleaseComponent('test-rubric', {
+      deps: {
+        getRubric: async () => instrumentedRubric,
+        listScorecards: async () => [scorecardRow({ instrumentSnapshots: {} })],
+        nowMs: () => nowMs,
+      },
+    });
+
+    const result = await comp.check();
+
+    expect(result.verdict).toBe('unknown');
+    expect(result.reason).toContain('invalid instrument contract');
+    expect(result.reason).toContain('missing snapshots: metrics.c1');
+  });
+
+  it('passes an instrument-backed scorecard only when its snapshot is fresh and verdict-consistent', async () => {
+    const nowMs = Date.parse('2026-07-16T12:00:00.000Z');
+    const instrumentedRubric = rubric({
+      criteria: [
+        {
+          key: 'c1',
+          title: 'C1',
+          model: 'm',
+          method: 'me',
+          driftMarkers: 'd',
+          instrumentKey: 'metrics.c1',
+          window: { kind: 'rolling', ms: 60 * 60_000 },
+        },
+        { key: 'c2', title: 'C2', model: 'm', method: 'me', driftMarkers: 'd', instrumentKey: 'none' },
+      ],
+    });
+    const comp = rubricReleaseComponent('test-rubric', {
+      deps: {
+        getRubric: async () => instrumentedRubric,
+        listScorecards: async () => [
+          scorecardRow({
+            instrumentSnapshots: {
+              'metrics.c1': {
+                verdict: 'pass',
+                measuredAt: '2026-07-16T11:30:00.000Z',
+              },
+            },
+          }),
+        ],
+        nowMs: () => nowMs,
+      },
+    });
+
+    const result = await comp.check();
+
+    expect(result.verdict).toBe('pass');
   });
 
   it('fail when any criterion is rated broken/fail', async () => {
