@@ -10,22 +10,28 @@ interface FakeChild {
   stdout: { on: (e: string, cb: (b: Buffer) => void) => void };
   stderr: { on: (e: string, cb: (b: Buffer) => void) => void };
   on: (e: string, cb: (arg: unknown) => void) => void;
+  pid: number;
   kill: ReturnType<typeof vi.fn>;
   killed: boolean;
+  _emitError: (error: Error) => void;
   _emitClose: (code: number) => void;
 }
 let lastChild: FakeChild;
 
 function makeChild(): FakeChild {
   const closeCbs: Array<(c: number) => void> = [];
+  const errorCbs: Array<(error: Error) => void> = [];
   const child: FakeChild = {
     stdout: { on: () => {} },
     stderr: { on: () => {} },
     on: (e, cb) => {
       if (e === 'close') closeCbs.push(cb as (c: number) => void);
+      if (e === 'error') errorCbs.push(cb as (error: Error) => void);
     },
+    pid: 4242,
     kill: vi.fn(),
     killed: false,
+    _emitError: (error) => errorCbs.forEach((cb) => cb(error)),
     _emitClose: (code) => closeCbs.forEach((cb) => cb(code)),
   };
   return child;
@@ -37,6 +43,12 @@ const spawnMock = vi.fn(() => {
 });
 const execFileSyncMock = vi.fn();
 const persistSqlMock = vi.fn();
+const taskManagerMocks = vi.hoisted(() => ({
+  begin: vi.fn(),
+  complete: vi.fn(),
+  finish: vi.fn(),
+  scopePath: vi.fn(),
+}));
 vi.mock('node:child_process', async (orig) => {
   const actual = await orig<typeof import('node:child_process')>();
   return {
@@ -54,6 +66,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     getOrgPg: () => ({ sql: persistSqlMock }),
   };
 });
+vi.mock('./task-manager/enroll-sync', () => ({
+  beginSyncEnrolment: (...args: unknown[]) => taskManagerMocks.begin(...args),
+  completeSyncEnrolment: (...args: unknown[]) => taskManagerMocks.complete(...args),
+  finishSyncEnrolment: (...args: unknown[]) => taskManagerMocks.finish(...args),
+  syncEnrolmentScopePath: (...args: unknown[]) => taskManagerMocks.scopePath(...args),
+}));
 
 type Store = typeof import('./testing-run-store');
 const req = (over: Partial<Parameters<Store['startRun']>[0]> = {}) =>
@@ -65,6 +83,20 @@ beforeEach(async () => {
   spawnMock.mockClear();
   execFileSyncMock.mockReset();
   persistSqlMock.mockReset();
+  taskManagerMocks.begin.mockReset();
+  taskManagerMocks.complete.mockReset();
+  taskManagerMocks.finish.mockReset();
+  taskManagerMocks.scopePath.mockReset();
+  taskManagerMocks.scopePath.mockReturnValue(null);
+  taskManagerMocks.begin.mockImplementation(() => ({
+    taskId: 'task-test-run',
+    confined: false,
+    scopeUnit: null,
+    enrolled: true,
+    registrationReady: null,
+    releaseEnvironmentTransport: vi.fn(),
+    wrap: vi.fn((binary: string, argv: string[]) => ({ binary, argv })),
+  }));
   store = await import('./testing-run-store');
 });
 
@@ -75,6 +107,114 @@ describe('startRun', () => {
     expect(snap.command).toEqual(['npx', 'vitest', 'run']);
     expect(snap.runId).toBeTruthy();
     expect(spawnMock).toHaveBeenCalledWith('npx', ['vitest', 'run'], expect.objectContaining({ cwd: '/tmp' }));
+  });
+
+  it('enrols before spawning and wraps the command with the exact task spec/env/cwd', () => {
+    const enrolment = {
+      taskId: 'task-confined',
+      confined: true,
+      scopeUnit: 'pc-task-confined.scope',
+      enrolled: true,
+      registrationReady: null,
+      releaseEnvironmentTransport: vi.fn(),
+      wrap: vi.fn((binary: string, argv: string[], _env: unknown, _cwd: string) => ({
+        binary: 'systemd-run',
+        argv: ['--unit=pc-task-confined.scope', binary, ...argv],
+      })),
+    };
+    taskManagerMocks.begin.mockReturnValueOnce(enrolment);
+    taskManagerMocks.scopePath.mockReturnValueOnce('/user.slice/papercusp.slice/pc-task-confined.scope');
+
+    const snap = store.startRun(req({ label: 'a'.repeat(400), command: 'node', args: ['worker.js'] }));
+    const beginOrder = taskManagerMocks.begin.mock.invocationCallOrder[0]!;
+    const spawnOrder = spawnMock.mock.invocationCallOrder[0]!;
+    const completeOrder = taskManagerMocks.complete.mock.invocationCallOrder[0]!;
+
+    expect(beginOrder).toBeLessThan(spawnOrder);
+    expect(spawnOrder).toBeLessThan(completeOrder);
+    expect(taskManagerMocks.begin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        class: 'test-run',
+        title: 'a'.repeat(300),
+        argv: ['node', 'worker.js'],
+        cwd: '/tmp',
+        launchedBy: 'testing-run-store',
+        detail: { runId: snap.runId, kind: 'vitest' },
+      }),
+    );
+    expect(enrolment.wrap).toHaveBeenCalledWith(
+      'node',
+      ['worker.js'],
+      expect.objectContaining({
+        PAPERCUSP_TEST_RUN_GROUP: snap.runId,
+        PAPERCUSP_TEST_ATTRIBUTION: '1',
+        PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui',
+      }),
+      '/tmp',
+    );
+    expect(spawnMock).toHaveBeenCalledWith(
+      'systemd-run',
+      ['--unit=pc-task-confined.scope', 'node', 'worker.js'],
+      expect.objectContaining({ cwd: '/tmp', env: expect.any(Object), detached: true }),
+    );
+    expect(taskManagerMocks.complete).toHaveBeenCalledWith(enrolment, expect.objectContaining({
+      class: 'test-run',
+      argv: ['node', 'worker.js'],
+      cwd: '/tmp',
+      launchedBy: 'testing-run-store',
+      detail: { runId: snap.runId, kind: 'vitest' },
+    }), 4242);
+  });
+
+  it('finishes the enrolled task on a synchronous spawn error', () => {
+    const spawnError = new Error('spawn unavailable');
+    spawnMock.mockImplementationOnce(() => {
+      throw spawnError;
+    });
+
+    const snap = store.startRun(req({ command: 'missing' }));
+    const enrolment = taskManagerMocks.begin.mock.results[0]?.value;
+
+    expect(snap.status).toBe('error');
+    expect(taskManagerMocks.complete).not.toHaveBeenCalled();
+    expect(taskManagerMocks.finish).toHaveBeenCalledWith(
+      enrolment,
+      { state: 'exited', exitCode: null, exitReason: 'spawn error: spawn unavailable' },
+      { scopeCgroupPath: null },
+    );
+  });
+});
+
+describe('task lifecycle handlers', () => {
+  it('finishes once on child error even when the child subsequently closes', () => {
+    const snap = store.startRun(req());
+    const enrolment = taskManagerMocks.begin.mock.results[0]?.value;
+    const childError = new Error('ENOENT');
+
+    lastChild._emitError(childError);
+    lastChild._emitClose(1);
+
+    expect(store.getRun(snap.runId)?.status).toBe('error');
+    expect(taskManagerMocks.finish).toHaveBeenCalledTimes(1);
+    expect(taskManagerMocks.finish).toHaveBeenCalledWith(
+      enrolment,
+      { state: 'exited', exitCode: null, exitReason: 'spawn error: ENOENT' },
+      { scopeCgroupPath: null },
+    );
+  });
+
+  it('finishes a normal close with the observed exit code and derived scope path', () => {
+    taskManagerMocks.scopePath.mockReturnValueOnce('/user.slice/pc-test-run.scope');
+    const snap = store.startRun(req());
+    const enrolment = taskManagerMocks.begin.mock.results[0]?.value;
+    lastChild._emitClose(7);
+
+    expect(store.getRun(snap.runId)?.status).toBe('fail');
+    expect(taskManagerMocks.finish).toHaveBeenCalledWith(
+      enrolment,
+      { state: 'exited', exitCode: 7 },
+      { scopeCgroupPath: '/user.slice/pc-test-run.scope' },
+    );
   });
 });
 
@@ -221,9 +361,7 @@ describe('fallback persistence worktree snapshots (EI-18795303393201472)', () =>
       if (args.includes('status')) return porcelainAnswers.shift();
       return '';
     });
-    let capturedValues: unknown[] = [];
-    persistSqlMock.mockImplementation((_strings: TemplateStringsArray, ...values: unknown[]) => {
-      capturedValues = values;
+    persistSqlMock.mockImplementation((_strings: TemplateStringsArray, ..._values: unknown[]) => {
       return Promise.resolve([]);
     });
     const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
@@ -231,7 +369,11 @@ describe('fallback persistence worktree snapshots (EI-18795303393201472)', () =>
     try {
       store.startRun(req({ kind: 'shell' }));
       lastChild._emitClose(0);
-      await vi.waitFor(() => expect(persistSqlMock).toHaveBeenCalled());
+      await vi.waitFor(() =>
+        expect(persistSqlMock.mock.calls.some((call) => call.at(-1) === true)).toBe(true),
+      );
+      const fallbackCall = persistSqlMock.mock.calls.find((call) => call.at(-1) === true);
+      const capturedValues = fallbackCall?.slice(1) ?? [];
       expect(capturedValues[10]).toBe('after-sha');
       expect(capturedValues.at(-1)).toBe(true);
     } finally {

@@ -26,6 +26,13 @@ import { isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { resolveGitContext } from './testing-branch-resolve';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
+import {
+  beginSyncEnrolment,
+  completeSyncEnrolment,
+  finishSyncEnrolment,
+  syncEnrolmentScopePath,
+} from './task-manager/enroll-sync';
+import type { TaskSpec } from './task-manager/types';
 
 /** A postgres-js-like tagged-template client; injectable so persistence seams are testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown>;
@@ -419,23 +426,48 @@ export function startRun(req: SpawnRequest): RunSnapshot {
   // process.cwd() is therefore not a safe implicit tree for detached runs.
   const cwd = req.cwd ?? resolveAgentWorkspaceRoot({});
   const worktreeBefore = captureWorktreeSnapshot(cwd);
+  const childEnv = {
+    ...process.env,
+    PAPERCUSP_TEST_RUN_GROUP: runId,
+    // P-004 (deterministic-coverage-census): arm coverage attribution, so an admin-UI
+    // run contributes the same surface→test evidence an agent's `testing:run` does. A
+    // unit fork disarms itself off the no-real-pg rail — see attribution/context.ts.
+    PAPERCUSP_TEST_ATTRIBUTION: '1',
+    // P-014: tell the in-process reporter (vitest/playwright) to stamp
+    // rows with source='admin-ui' instead of inferring ci/local. For
+    // node/shell runners we additionally write a single fallback row
+    // from this store at close (see persistFallbackRow below).
+    PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui',
+  };
+  const taskSpec: TaskSpec = {
+    class: 'test-run',
+    title: req.label.slice(0, 300),
+    argv: [req.command, ...req.args],
+    cwd,
+    launchedBy: 'testing-run-store',
+    detail: { runId, kind: req.kind },
+  };
+  // task-manager P-008: mint the task id + confinement decision before the
+  // fork. Ledger writes remain fire-and-forget so the synchronous startRun API
+  // keeps its existing shape and a persistence outage never prevents a test
+  // run from starting.
+  const enrolment = beginSyncEnrolment(taskSpec);
+  const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'test-run');
+  const wrapped = enrolment.wrap(req.command, req.args, childEnv, cwd);
+  let enrolmentFinished = false;
+  const finishEnrolment = (outcome: Parameters<typeof finishSyncEnrolment>[1]): void => {
+    // ChildProcess emits `error` followed by `close` for an asynchronous spawn
+    // failure. The task ledger has one terminal transition, so make the two
+    // notifications idempotent just as the in-memory snapshot transition is.
+    if (enrolmentFinished) return;
+    enrolmentFinished = true;
+    finishSyncEnrolment(enrolment, outcome, { scopeCgroupPath });
+  };
   let proc: ChildProcess;
   try {
-    proc = spawn(req.command, req.args, {
+    proc = spawn(wrapped.binary, wrapped.argv, {
       cwd,
-      env: {
-        ...process.env,
-        PAPERCUSP_TEST_RUN_GROUP: runId,
-        // P-004 (deterministic-coverage-census): arm coverage attribution, so an admin-UI
-        // run contributes the same surface→test evidence an agent's `testing:run` does. A
-        // unit fork disarms itself off the no-real-pg rail — see attribution/context.ts.
-        PAPERCUSP_TEST_ATTRIBUTION: '1',
-        // P-014: tell the in-process reporter (vitest/playwright) to stamp
-        // rows with source='admin-ui' instead of inferring ci/local. For
-        // node/shell runners we additionally write a single fallback row
-        // from this store at close (see persistFallbackRow below).
-        PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui',
-      },
+      env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       // Detached runs are process-group leaders. This is required both for
       // admin cancellation and for timeout recovery launched by testing:run:
@@ -449,6 +481,13 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     snapshot.output = e instanceof Error ? e.message : String(e);
     _runs.set(runId, { snapshot, proc: null, cwd, worktreeBefore });
     void persistRunSnapshot(snapshot);
+    finishEnrolment(
+      {
+        state: 'exited',
+        exitCode: null,
+        exitReason: `spawn error: ${e instanceof Error ? e.message : String(e)}`,
+      },
+    );
     return snapshot;
   }
 
@@ -464,16 +503,32 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     if (state.snapshot.finishedAt === null) state.snapshot.finishedAt = Date.now();
     void persistRunSnapshot(state.snapshot);
     void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
+    finishEnrolment(
+      {
+        state: 'exited',
+        exitCode: null,
+        exitReason: `spawn error: ${e.message}`,
+      },
+    );
   });
   proc.on('close', (code) => {
     state.snapshot.exitCode = code;
     state.snapshot.finishedAt = Date.now();
-    if (state.snapshot.status !== 'cancelled') {
+    if (state.snapshot.status !== 'cancelled' && state.snapshot.status !== 'error') {
       state.snapshot.status = code === 0 ? 'pass' : 'fail';
     }
     void persistRunSnapshot(state.snapshot);
     void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
+    finishEnrolment({
+      state: state.snapshot.status === 'cancelled' ? 'killed' : 'exited',
+      exitCode: code,
+    });
   });
+
+  // Registration follows a successful spawn. The process listeners above are
+  // attached first so a very fast child cannot lose output or its terminal
+  // lifecycle event while the asynchronous ledger write is being scheduled.
+  completeSyncEnrolment(enrolment, taskSpec, proc.pid ?? null);
 
   return snapshot;
 }
