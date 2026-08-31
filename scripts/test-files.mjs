@@ -32,6 +32,7 @@ import {
   classifyGovernedTestProcessOutcome,
   createGovernedProcessDemandSampler,
   governedProcessIdempotencyKey,
+  isRetryableAdmissionFailure,
   runGovernedTestProcess,
 } from './lib/governed-test-process.mjs';
 import {
@@ -51,6 +52,17 @@ export { reapPreemptMarkerDebris };
 // lib/vitest-summary.mjs (WI-37607) so `test:affected` can share the one detector instead of
 // having none — see that function's header for why the split existed and what it cost.
 export { parseTransformFailure };
+
+/**
+ * A governed child that never starts has no test verdict. Keep the reason for
+ * that refusal typed all the way to the terminal marker: retryable PG
+ * contention is actionable backpressure, while every other pre-launch failure
+ * is simply undetermined. The retryability predicate lives beside the
+ * governed runner, so this router does not duplicate its PG-code contract.
+ */
+export function classifyGovernedAdmissionFailure(error) {
+  return isRetryableAdmissionFailure(error) ? 'admission-starved' : 'undetermined';
+}
 import {
   TEST_FILE_EXIT_FAILED,
   TEST_FILE_EXIT_NOT_MEASURED,
@@ -2118,10 +2130,12 @@ export function runCapturedTestProcess(command, args, options = {}) {
     stderr: '',
     error: Object.assign(new Error(error instanceof Error ? error.message : String(error)), {
       code: 'GOVERNED_ADMISSION_FAILED',
+      governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
     }),
     timedOut: false,
     actualDemand: plannedDemand,
     governedAdmissionError: true,
+    governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
   }));
 }
 
@@ -2293,7 +2307,10 @@ export async function main(
         stderr: '',
         error: Object.assign(new Error(error instanceof Error ? error.message : String(error)), {
           code: 'GOVERNED_ADMISSION_FAILED',
+          governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
         }),
+        governedAdmissionError: true,
+        governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
       }));
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
@@ -2311,6 +2328,9 @@ export async function main(
         unmatchedCount: 0,
         failed: groupFailed,
         launchError: Boolean(result.error),
+        ...(result.governedAdmissionError
+          ? { governedAdmissionFailureKind: result.governedAdmissionFailureKind ?? 'undetermined' }
+          : {}),
       });
       continue;
     }
@@ -2354,6 +2374,9 @@ export async function main(
         unmatchedCount: group.routes.length,
         failed: false,
         launchError: true,
+        ...(result.governedAdmissionError
+          ? { governedAdmissionFailureKind: result.governedAdmissionFailureKind ?? 'undetermined' }
+          : {}),
       });
       continue;
     }
@@ -2596,7 +2619,19 @@ export async function main(
   }
 
   const summary = aggregateGroupResults(groupResults);
-  if (summary.launchError) return TEST_FILE_EXIT_NOT_MEASURED;
+  if (summary.launchError) {
+    if (summary.governedAdmissionFailureKind) {
+      console.error(
+        `TEST_FILE_NOT_MEASURED requested=${summary.requested} executed=${summary.executed} ` +
+          `matched=${summary.matched} measuredFiles=0 status=not-measured ` +
+          `reason=${summary.governedAdmissionFailureKind} — governed test-process admission ` +
+          (summary.governedAdmissionFailureKind === 'admission-starved'
+            ? 'was refused after retryable database contention; no test file ran. Retry when the admission queue clears.'
+            : 'failed before a test process started; no test file ran. The cause is undetermined, so do not triage the named files.'),
+      );
+    }
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
   if (summary.anyUnmatched) {
     console.error(formatRouteError(
       `requested=${summary.requested} matched=${summary.matched}; refusing a false-green zero/partial-match run`,
