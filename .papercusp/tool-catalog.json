@@ -9882,7 +9882,7 @@
       "guidance": {
         "when": "You have a durable HOW-IT-WORKS runbook / failure-mode / hard-won gotcha to write down (the CLAUDE.md \"write it as an anchored agent-insights MDX\" rule). Pass `documents` with the files/symbols the doc covers so it ships drift-tracked.",
         "notWhen": "For a quick personal fact use memory:remember (not a doc). To EDIT an existing doc call this tool again with overwrite:true — do NOT hand-edit the .mdx: Postgres is canonical and the file is a projection, so a hand-edit is refused by the next projection and never lands. To only declare a subject_ref use harness_docs:anchor.",
-        "chaining": "docs:author { slug, title, description, body, documents } → (later, on a drift nudge) harness_docs:verify { docId }."
+        "chaining": "docs:author { slug, title, description, body, documents } → (later, on a drift nudge) harness_docs:verify { docId }. To REWRITE one: docs:get { slugs:[ref], source:true } → edit → overwrite:true."
       }
     },
     {
@@ -9913,7 +9913,7 @@
       "guidance": {
         "when": "You have slugs from docs:outline and need page contents. Use `heading` with either headings[].id or headings[].text (single-slug) when only one section of a long page is relevant.",
         "notWhen": "You do not yet know the slug — call docs:outline first. To fetch another harness's docs from outside, use cross_harness:docs_get.",
-        "chaining": "docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads. A result carrying `trust` (OKF v0.2) reports the page's reliability: `stale:true` means it is past its author-set stale_after and its content is prefixed with a ⚠ STALE banner — re-check those claims against the code before acting on them. No `trust` field = unverified and not stale, which is nearly every doc today."
+        "chaining": "docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads. ABOUT TO REWRITE the page? Read it with { source: true } instead — the default body is a rendered, preamble-prefixed projection, so writing it back through docs:author flattens JSX/imports and injects the header; page to the end with `offset`/`nextOffset` first. A result carrying `trust` (OKF v0.2) reports the page's reliability: `stale:true` means it is past its author-set stale_after and (on a rendered read only) its content is prefixed with a ⚠ STALE banner — re-check those claims against the code before acting on them. No `trust` field = unverified and not stale, which is nearly every doc today."
       }
     },
     {
