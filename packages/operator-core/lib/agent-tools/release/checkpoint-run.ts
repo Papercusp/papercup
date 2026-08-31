@@ -578,9 +578,10 @@ export default defineTool({
     // WI-38026, whose holder went `suspect` while still making tool calls.
     //
     // EI-20209536730887204 follow-up: the ambiguous verdict now gets the REQUIRED confirmation
-    // its helper has always prescribed. A delivered wake proves a live peer can still receive
-    // coordination, so stand down; a miss fails open, preserving this rail's foundational rule
-    // that an uncertain coordination signal must never wedge the fleet's only verdict lever.
+    // its helper has always prescribed. An execution-confirmed pickup proves a live peer can
+    // resume, so stand down; a queued/delivered wake without pickup confirmation fails open,
+    // preserving this rail's foundational rule that an uncertain coordination signal must never
+    // wedge the fleet's only verdict lever.
     //
     // Carried to the launch stamp below rather than stamped here, because that seam is
     // OVERWRITE-not-merge (see the EI-20031402866608444 note): a second ctx.metadata() call on a
@@ -621,8 +622,8 @@ export default defineTool({
 
       // P-008 direct-wake escalation. Parked/recorded owners are alive but not
       // currently executing, and draining/suspect owners are ambiguous. A
-      // required wake is the cheapest falsifier in both cases: delivery means
-      // stand down; a terminal miss feeds the shared force guard below instead
+      // required wake is the cheapest falsifier in both cases: execution-confirmed pickup means
+      // stand down; a terminal miss or unconfirmed queue feeds the shared force guard below instead
       // of the old "missed wake => launch anyway" split-brain path.
       let wakeCount = 0;
       const shouldWakeOwner =
@@ -640,7 +641,10 @@ export default defineTool({
           workspaceId: callerWorkspaceId,
         });
         wakeCount = wake.woken;
-        if (wakeCount > 0 && !criticalProgressLease.expired) {
+        // `woken`/`queued` only means the wake was accepted by the await-event pump. It does not
+        // prove the target started a turn, so it must never authorize the liveness-confirmed
+        // stand-down. Only the explicit execution handshake is strong enough for that branch.
+        if (wake.pickupConfirmed === true && !criticalProgressLease.expired) {
           ctx.metadata?.({
             standDown: 'condition_claimed_liveness_confirmed',
             standDownWorkItem: ownership.workItem,
