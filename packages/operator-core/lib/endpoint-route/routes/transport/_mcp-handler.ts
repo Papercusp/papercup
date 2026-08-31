@@ -2839,6 +2839,7 @@ const handler = createMcpHandler(
                         }
                       })(),
                       aggregateScope,
+                      ...(projectionSpec?.pick ? { preservePaths: projectionSpec.pick } : {}),
                     });
                 return withScopeGuessWarning(replayedResult, dispatchSpawnCtx);
               }
@@ -3023,6 +3024,7 @@ const handler = createMcpHandler(
                       }
                     })(),
                     aggregateScope,
+                    ...(projectionSpec?.pick ? { preservePaths: projectionSpec.pick } : {}),
                   });
               // EI-19415249247575123: a `not_found` returned while this process is KNOWN to
               // have talked to a DIFFERENT Postgres cluster is a confidently wrong answer —

@@ -99,6 +99,9 @@ export interface ResultDoorOpts {
    *  outputGroupId/turnId is preferred; legacy clients use a documented
    *  start-time compatibility cohort (see beginResultDoorAggregate). */
   aggregateScope?: ResultDoorAggregateScope | null;
+  /** Explicit caller-selected paths that must survive a bounded identity
+   * fallback when the result-door is applied after `projection.pick`. */
+  preservePaths?: readonly string[];
 }
 
 export interface ResultDoorAggregateScope {
@@ -1165,6 +1168,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         : opts.toolName === 'events:status'
           ? { preserveTopLevelKeys: ['event_inspection'] as const }
           : {}),
+      ...(opts.preservePaths && opts.preservePaths.length > 0 ? { preservePaths: opts.preservePaths } : {}),
     });
     const structuralText = JSON.stringify(projected);
     let inserted = false;
