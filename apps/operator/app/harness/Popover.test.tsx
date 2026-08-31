@@ -11,6 +11,8 @@
  *  - content props (ariaLabel → aria-label, contentClassName, zIndex/style)
  *    land on RP.Content when open.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
@@ -69,6 +71,48 @@ describe('Popover (harness Radix-Popover wrapper)', () => {
     const dialog = screen.getByRole('dialog');
     expect(dialog.className).toContain('my-panel');
     expect(dialog.style.zIndex).toBe(String(POPPER_WRAPPER_FLOOR_Z + 100));
+  });
+
+  /**
+   * EI-21925095206580441: RP.Content used to carry NO surface styling at
+   * all, so a caller that forgot to paint `contentClassName` (or passed one
+   * with no background rule) rendered a fully TRANSPARENT panel — every
+   * structural assertion (rows present, role=dialog, aria-label) is equally
+   * true of an invisible panel, so only a screenshot ever caught it.
+   *
+   * `pc-popover-content` (Popover.css) is now stamped unconditionally so the
+   * failure mode inverts: painted-by-default, explicitly-overridden rather
+   * than silently-invisible. This asserts BOTH halves of that fix, so
+   * either regressing alone fails the test:
+   *  - the TSX still merges the default class in (with AND without a
+   *    caller contentClassName);
+   *  - the stylesheet still declares a background for it.
+   */
+  it('always stamps the default pc-popover-content surface class, painted opaque', () => {
+    render(
+      <Popover open onOpenChange={vi.fn()} ariaLabel="x" trigger={<button>t</button>}>
+        <div>body</div>
+      </Popover>,
+    );
+    expect(screen.getByRole('dialog').classList.contains('pc-popover-content')).toBe(true);
+  });
+
+  it('keeps the default surface class alongside a caller contentClassName', () => {
+    render(
+      <Popover open onOpenChange={vi.fn()} ariaLabel="x" trigger={<button>t</button>} contentClassName="my-panel">
+        <div>body</div>
+      </Popover>,
+    );
+    const classes = screen.getByRole('dialog').classList;
+    expect(classes.contains('pc-popover-content')).toBe(true);
+    expect(classes.contains('my-panel')).toBe(true);
+  });
+
+  it('Popover.css declares a background for .pc-popover-content — the actual paint, not just the class name', () => {
+    const css = readFileSync(join(__dirname, 'Popover.css'), 'utf8');
+    const rule = /:where\(\.pc-popover-content\)\s*\{([^}]*)\}/.exec(css);
+    expect(rule, 'expected a :where(.pc-popover-content) { ... } rule in Popover.css').toBeTruthy();
+    expect(/background\s*:/.test(rule![1])).toBe(true);
   });
 
   /**

@@ -5,6 +5,7 @@ import * as RT from '@radix-ui/react-tooltip';
 import type { CSSProperties, ReactNode, RefObject } from 'react';
 import { useCallback, useState } from 'react';
 import { TOOLTIP_FLOOR_Z, usePopperZ } from './popper-z';
+import './Popover.css';
 
 /**
  * A modal dialog traps focus to its own subtree. Radix's default portal target
@@ -173,7 +174,7 @@ export function Popover({
         onPointerDownOutside={guardOutside}
         onFocusOutside={guardOutside}
         onInteractOutside={guardOutside}
-        className={contentClassName}
+        className={contentClassName ? `pc-popover-content ${contentClassName}` : 'pc-popover-content'}
         style={baseStyle}
       >
         {children}
