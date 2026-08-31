@@ -8,11 +8,16 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { spawnSync } from "node:child_process";
 
 const SYSTEMD_DIR = join(__dirname, "..", "systemd");
-const SCRIPT = join(SYSTEMD_DIR, "papercusp-user-manager-watchdog.sh");
+// Overridable so `scripts/mutation-probe.sh` can point these cases at a
+// snapshot of the script OUTSIDE the tree (tier 2) instead of mutating the
+// shared checkout, which the git-sync sweep would happily commit mid-probe.
+const SCRIPT =
+  process.env.PROBE_SCRIPT ??
+  join(SYSTEMD_DIR, "papercusp-user-manager-watchdog.sh");
 const SERVICE = join(SYSTEMD_DIR, "papercusp-user-manager-watchdog.service");
 const TIMER = join(SYSTEMD_DIR, "papercusp-user-manager-watchdog.timer");
 const README = join(SYSTEMD_DIR, "README.md");
@@ -95,6 +100,12 @@ async function makeFixture(options: FixtureOptions = {}) {
   return {
     marker,
     logPath,
+    lingerDir,
+    unit: `user@${uid}.service`,
+    /** Write the durable marker `loginctl enable-linger` would have created. */
+    async enableDurableLinger(username: string = SELF_USER) {
+      await writeFile(join(lingerDir, username), "");
+    },
     async run(options: RunOptions) {
       await writeFile(managerState, options.state + "\n");
       return spawnSync("bash", [SCRIPT], {
@@ -105,10 +116,13 @@ async function makeFixture(options: FixtureOptions = {}) {
           SYSTEMCTL_LOG: logPath,
           SYSTEMCTL_STATE: managerState,
           STUB_LINGER: options.linger ?? "yes",
+          STUB_LINGER_FAIL: options.lingerFails ? "1" : "0",
           STUB_START_FAIL: options.startFails ? "1" : "0",
-          PAPERCUSP_USER_MANAGER_WATCHDOG_UID: "1000",
+          PAPERCUSP_USER_MANAGER_WATCHDOG_UID: String(uid),
           PAPERCUSP_USER_MANAGER_WATCHDOG_GRACE_SEC: "60",
           PAPERCUSP_USER_MANAGER_WATCHDOG_STATE_DIR: stateDir,
+          PAPERCUSP_USER_MANAGER_WATCHDOG_LINGER_DIR:
+            options.lingerDir ?? lingerDir,
           PAPERCUSP_USER_MANAGER_WATCHDOG_NOW_SEC: String(options.now),
         },
       });
@@ -214,6 +228,72 @@ describe("papercusp-user-manager-watchdog.sh", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("systemctl start user@1000.service failed");
     expect(await readFile(fixture.marker, "utf8")).toBe("900\n");
+    await fixture.cleanup();
+  });
+
+  // WI-1430770. `loginctl show-user` reads logind's LIVE user object, which is
+  // destroyed once the user manager exits and the last session is removed — so
+  // it exits 1 EXACTLY when the manager is down. The script used to treat that
+  // as fatal and abort before any recovery, which is why on 2026-08-30 the
+  // desktop and the whole agent fleet stayed down 13m52s across 13 consecutive
+  // runs until the owner logged back in by hand. These three cases pin the
+  // durable marker as the authority so that coupling cannot return.
+  it("recovers the manager when logind cannot answer because the manager is down", async () => {
+    const fixture = await makeFixture({ uid: SELF_UID });
+    await fixture.enableDurableLinger();
+
+    expect(
+      (await fixture.run({ now: 1_000, state: "inactive", lingerFails: true }))
+        .status,
+    ).toBe(0);
+    const recovered = await fixture.run({
+      now: 1_100,
+      state: "inactive",
+      lingerFails: true,
+    });
+
+    expect(recovered.status).toBe(0);
+    expect(recovered.stdout).toContain(`restored: ${fixture.unit} is active`);
+    expect(await readFile(fixture.logPath, "utf8")).toContain(
+      `start ${fixture.unit}\n`,
+    );
+    expect(await exists(fixture.marker)).toBe(false);
+    await fixture.cleanup();
+  });
+
+  it("still skips when logind cannot answer and linger is genuinely disabled", async () => {
+    const fixture = await makeFixture({ uid: SELF_UID });
+    // No durable marker written: linger really is off for this uid.
+
+    const result = await fixture.run({
+      now: 1_000,
+      state: "inactive",
+      lingerFails: true,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("does not have linger enabled");
+    expect(await readFile(fixture.logPath, "utf8")).not.toContain(
+      `start ${fixture.unit}`,
+    );
+    await fixture.cleanup();
+  });
+
+  it("fails loudly when neither the durable marker nor logind can answer", async () => {
+    const fixture = await makeFixture({ uid: SELF_UID });
+
+    const result = await fixture.run({
+      now: 1_000,
+      state: "inactive",
+      lingerFails: true,
+      lingerDir: "/nonexistent/papercusp-linger",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("could not determine linger state");
+    expect(await readFile(fixture.logPath, "utf8")).not.toContain(
+      `start ${fixture.unit}`,
+    );
     await fixture.cleanup();
   });
 });

@@ -134,7 +134,11 @@ fi
 case "$active_state" in
   active)
     clear_marker
-    echo "[$SCRIPT_NAME] healthy: $UNIT is active"
+    # Naming the linger source on the healthy path is what makes it verifiable
+    # from the journal that the DURABLE marker — not logind's live user object —
+    # is the authority. If this ever reads "loginctl" on a host where the marker
+    # should exist, the watchdog is one manager-exit away from being inert again.
+    echo "[$SCRIPT_NAME] healthy: $UNIT is active (linger source: $linger_source)"
     exit 0
     ;;
   activating|deactivating|reloading)
