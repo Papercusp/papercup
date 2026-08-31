@@ -47,6 +47,31 @@ import { breachedTripwires, refreshTripwireCurrents, type GoalTripwireLike } fro
 
 export const GOAL_SPEND_ROLLUP_INTERVAL_MS = 5 * 60_000;
 
+/**
+ * Self-describing scope labels for the PERSISTED breakdown.
+ *
+ * Every caveat about these two numbers used to live only in this module's
+ * comments, while the jsonb an operator actually reads showed `potCents` and
+ * `sessionCents` bare and side by side, with nothing on the values saying they
+ * measure DISJOINT populations. Read cold, that shape says "two meters for one
+ * quantity", and the ~2x gap between them then reads as a defect rather than as
+ * the partition it is.
+ *
+ * That is not hypothetical: EI-21970344408288271 was filed as a major bug
+ * concluding the spend tripwire "is not a trustworthy circuit breaker — it is a
+ * coin flip between two instruments." The natural repair from that reading is to
+ * switch enforcement to the larger meter — which is precisely what the authority
+ * boundary above forbids, since the session leg is unpriced-tolerant and its
+ * attribution is not a billing boundary. A misreading whose obvious fix is a
+ * real regression is worth spending two fields to prevent.
+ *
+ * So the constraint rides ON the value. Pinned, not hand-maintained: the session
+ * label is only true while the session query keeps its goal_pots exclusion, and
+ * `spend-rollup-scope-labels.test.ts` fails if that clause is removed.
+ */
+export const GOAL_SPEND_POT_SCOPE = 'inside-goal-pots:authoritative' as const;
+export const GOAL_SPEND_SESSION_SCOPE = 'outside-goal-pots:diagnostic-only' as const;
+
 /** The SESSION leg's contribution — samples the pot leg cannot see. */
 export interface GoalSessionSpend {
   costUsd: number;
@@ -205,6 +230,11 @@ export async function writeGoalSpendSnapshot(
       potSamples: rollup.pot.samples,
       potUnpricedSamples: rollup.pot.unpricedSamples,
       measured: rollup.pot.measured,
+      // The scope labels are what stop potCents and sessionCents being read as
+      // rival totals of one quantity: they are disjoint partitions of the
+      // ledger, and only the pot leg may control anything.
+      potScope: GOAL_SPEND_POT_SCOPE,
+      sessionScope: GOAL_SPEND_SESSION_SCOPE,
       // Everything below is diagnostic-only and must never be read as the
       // authoritative spend snapshot or a terminal-control input.
       sessionCents: rollup.sessionCents,
