@@ -41,6 +41,7 @@ import type { BulkConfidence } from "@papercusp/operator-core/lib/attention/bulk
 import { Check, ChevronDown, ShieldCheck } from "lucide-react";
 import { Button } from "../../harness/Button";
 import { Checkbox } from "../../harness/Checkbox";
+import { Tooltip } from "../../harness/Tooltip";
 import "./review-report.css";
 
 /** Keep the report's owner-facing confidence vocabulary pinned to the
@@ -738,22 +739,35 @@ function ReviewRowMenu({
           aria-label={`Actions for ${rowTitle}`}
         >
           {actions.map((action) => (
-            <button
+            // The label is deliberately ALWAYS truthy. Tooltip early-returns a bare
+            // fragment when `label` is falsy, so a label toggling undefined <-> reason
+            // after mount would swap the element TYPE at this JSX position and remount
+            // the button, staleing any ref held across it (the hazard that put
+            // AgentInspectorModal on BUTTON_TITLE_ALLOWED_FILES). Keeping it non-empty
+            // in both states lets us use the shared primitive instead of a native title.
+            <Tooltip
               key={action.id}
-              type="button"
-              role="menuitem"
-              className={`review-report__row-menu-item review-report__row-menu-item--${action.tone ?? "default"}`}
-              data-testid={`review-row-menu-${rowId}-${action.id}`}
-              disabled={busy || action.disabled === true}
-              title={action.disabled === true ? action.disabledReason : undefined}
-              onClick={(event) => {
-                event.stopPropagation();
-                setOpen(false);
-                action.run();
-              }}
+              label={
+                action.disabled === true
+                  ? (action.disabledReason ?? "Unavailable")
+                  : (action.description ?? action.label)
+              }
             >
-              {action.label}
-            </button>
+              <button
+                type="button"
+                role="menuitem"
+                className={`review-report__row-menu-item review-report__row-menu-item--${action.tone ?? "default"}`}
+                data-testid={`review-row-menu-${rowId}-${action.id}`}
+                disabled={busy || action.disabled === true}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpen(false);
+                  action.run();
+                }}
+              >
+                {action.label}
+              </button>
+            </Tooltip>
           ))}
         </span>
       ) : null}
