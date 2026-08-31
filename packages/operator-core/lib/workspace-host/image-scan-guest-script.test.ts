@@ -725,7 +725,9 @@ describe('image scan guest script — bundled secret findings are enumerable', (
   /** jq is a hard dependency of the guest script itself, so a missing one is a real failure. */
   const jqAvailable = (() => {
     try {
-      execFileSync('jq', ['--version'], { stdio: 'pipe' });
+      // WI-41180: bound every sync spawn in the pure lane — it blocks the shared worker's
+      // event loop, so vitest cannot time it out and one hang wedges ~2,740 files.
+      execFileSync('jq', ['--version'], { stdio: 'pipe', timeout: 10_000, killSignal: 'SIGKILL' });
       return true;
     } catch {
       return false;
@@ -768,6 +770,10 @@ describe('image scan guest script — bundled secret findings are enumerable', (
     writeFileSync(path, JSON.stringify(report), 'utf8');
     const out = execFileSync('jq', ['-c', '--argjson', 'cap', String(cap), program, path], {
       encoding: 'utf8',
+      // WI-41180: see the `jq --version` probe above — a sync spawn is uninterruptible by
+      // vitest, so a jq program that never terminates would wedge the whole pure lane.
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
     });
     return JSON.parse(out);
   }
