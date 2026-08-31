@@ -165,17 +165,19 @@ describe("listWorkItems { audit: 'worked-then-abandoned' } (EI-19320339017813143
   /**
    * ⚠ THE FALSE-POSITIVE REGRESSION, caught on live data before this shipped.
    *
-   * `ISSUE_TERMINAL_STATES` is resolved/closed/deprecated/done and omits `dropped`, so
-   * negating the issue family's OWN list reclassified every dropped issue as open.
-   * Measured live 2026-08-30: 645 issue-family hits of which 263 (41%, the largest
-   * single category) were `dropped` — deliberately closed work handed to a reader as
-   * abandoned. `auditWhereSql` negates the CROSS-FAMILY union instead.
+   * `ISSUE_TERMINAL_STATES` omitted `dropped` until EI-21921121818266895 (now fixed),
+   * so at the time this shipped, negating the issue family's OWN list reclassified
+   * every dropped issue as open. Measured live 2026-08-30: 645 issue-family hits of
+   * which 263 (41%, the largest single category) were `dropped` — deliberately closed
+   * work handed to a reader as abandoned. `auditWhereSql` negates the CROSS-FAMILY
+   * union instead — belt-and-suspenders even now that ISSUE_TERMINAL_STATES itself
+   * is complete, since a future per-family list is exactly this bug waiting to recur.
    *
    * This is its own test rather than another row in the case above because it is the
    * one that fails if the open branch ever goes back to the caller's family list, and
    * it must not be able to hide behind three sibling assertions.
    */
-  it('does NOT flag a DROPPED issue-family row — dropped is terminal, though ISSUE_TERMINAL_STATES omits it', async () => {
+  it('does NOT flag a DROPPED issue-family row — the negation scopes on the cross-family union, not the caller-family list', async () => {
     await seed('WI-dropped-change', { kind: 'change', status: 'dropped', releasedDaysAgo: STALE });
     await seed('WI-dropped-bug', { kind: 'bug', status: 'dropped', releasedDaysAgo: STALE });
     await seed('WI-dropped-task', { kind: 'task', status: 'dropped', releasedDaysAgo: STALE });
