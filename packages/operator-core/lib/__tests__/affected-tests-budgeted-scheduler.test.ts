@@ -1265,6 +1265,53 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     expect(second.budgetMs).toBeCloseTo(8_000 - first.waitedMs, -2);
   }, 20_000);
 
+  it('records the GRANT instant, so a holder\'s hold duration is measurable rather than inferred from attempt-start', async () => {
+    // `startedAt` is stamped when a caller begins TRYING, so it silently includes that
+    // caller's own queue wait. Reading it as "held since" overstates the hold by exactly the
+    // holder's wait — an error made and retracted during this investigation. `acquiredAt` is
+    // written at the mkdir that IS the grant, so the two are distinguishable.
+    const lockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR as string;
+    const blocker = deferred<void>();
+    const blocking = deferred<void>();
+    const first = withFsMutex(
+      'wi1490656-acquiredat',
+      async () => {
+        blocking.resolve();
+        await blocker.promise;
+      },
+      { timeoutMs: 10_000, staleMs: 60_000, retryMs: 5 },
+    );
+    await blocking.promise;
+
+    // Second caller starts NOW and is forced to queue, so its attempt-start precedes its grant
+    // by a measurable margin.
+    const attemptStartedAt = Date.now();
+    let ownerJson: Record<string, string> = {};
+    const second = withFsMutex(
+      'wi1490656-acquiredat',
+      async () => {
+        ownerJson = JSON.parse(
+          readFileSync(join(lockRoot, 'wi1490656-acquiredat.lock', 'owner.json'), 'utf8'),
+        );
+      },
+      { timeoutMs: 10_000, staleMs: 60_000, retryMs: 5 },
+    );
+    await new Promise<void>((done) => setTimeout(done, 300));
+    blocker.resolve();
+    await first;
+    await second;
+
+    expect(ownerJson.startedAt).toBeTruthy();
+    expect(ownerJson.acquiredAt).toBeTruthy();
+    const startedAt = Date.parse(ownerJson.startedAt);
+    const acquiredAt = Date.parse(ownerJson.acquiredAt);
+    // THE POINT: they are DIFFERENT, and the gap is this caller's queue wait. Before this
+    // field existed there was no way to tell a long-held lock from a long-queued one.
+    expect(acquiredAt).toBeGreaterThan(startedAt);
+    expect(startedAt).toBeGreaterThanOrEqual(attemptStartedAt - 50);
+    expect(acquiredAt - startedAt).toBeGreaterThanOrEqual(200);
+  }, 20_000);
+
   it('classifies a REAL admission timeout, so exhausting the budget cannot become a lost run', async () => {
     const release = deferred<void>();
     const acquired = deferred<void>();

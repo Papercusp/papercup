@@ -368,7 +368,16 @@ export async function withFsMutex(name, fn, opts = {}) {
       }
       try {
         await mkdir(lockDir);
-        await writeFile(join(lockDir, 'owner.json'), `${JSON.stringify(owner, null, 2)}\n`);
+        // WI-1490656: `startedAt` is when this caller began TRYING, so it includes its own
+        // queue wait and cannot answer "how long has the lock been HELD" — the one question a
+        // triager staring at a stalled pipeline actually asks. Reading it as a hold duration
+        // produced a wrong, confidently-reported measurement during this very investigation.
+        // The mkdir above IS the grant, so stamp the grant instant here and make it
+        // answerable instead of inviting the same misreading again.
+        await writeFile(
+          join(lockDir, 'owner.json'),
+          `${JSON.stringify({ ...owner, acquiredAt: new Date().toISOString() }, null, 2)}\n`,
+        );
         break;
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
