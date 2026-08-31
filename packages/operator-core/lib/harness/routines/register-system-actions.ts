@@ -461,10 +461,21 @@ import './cargo-test-action';
 // call site (hive-git-gc-routine.ts) — no bespoke reconcile sweep needed.
 import './hive-git-gc-action';
 // context-injection-retrieval-reach-and-visibility-2026-08-03 P-018 (D-064):
-// `system:corpus-term-df` — the ephemeral (tier:'ephemeral', 6h) cadence that
-// rebuilds the corpus document-frequency table `corpusQueryText` selects query
-// terms with. Slow on purpose: DF only feeds a RANKING among ~100 candidates,
-// and that ordering does not turn over on the timescale the corpus grows.
+// `system:corpus-term-df` — the DURABLE (tier:'durable', cron '7 */6 * * *')
+// cadence that rebuilds the corpus document-frequency table `corpusQueryText`
+// selects query terms with. Slow on purpose: DF only feeds a RANKING among ~100
+// candidates, and that ordering does not turn over on the timescale the corpus
+// grows.
+//
+// ⚠ It was tier:'ephemeral' at a 6h interval_sec until WI-1406487, and that was
+// STRUCTURALLY UNFIREABLE: the ephemeral executor arms an in-process
+// managedSetInterval that restarts from zero on every bg-host restart, and the
+// host's longest measured uptime (336 min) is SHORTER than the 360-min period,
+// so the timer never once reached its own deadline — active:true, an "armed" log
+// line every boot, no error anywhere, and no fire for 35.7h. Any ephemeral
+// cadence whose period approaches host uptime has the same defect. The durable
+// tier is immune because `next_fire_at` is a Postgres column that survives the
+// restart. Do not move this back.
 // Additive by construction — until the table is first populated the lookup
 // returns null and the leg keeps its original length ordering, so there is
 // nothing to stage dark.
