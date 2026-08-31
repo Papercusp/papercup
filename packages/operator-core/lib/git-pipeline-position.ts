@@ -1194,6 +1194,21 @@ export interface PipelinePosition {
      * as "definitely a real regression", only as "nothing here says otherwise".
      */
     verdictStale: boolean;
+    /**
+     * WI-1752145: WHEN the cached verdict beside it was observed (`gate_health.observedAt`) —
+     * the vintage of `stalled` / `consecutiveReds` / `failingTests`, which are the fields a
+     * reader acts on and which carried no stamp on this surface at all.
+     *
+     * It was already being computed one module over (`git-pipeline-stats.ts` resolves it to
+     * feed `evaluateGateVerdictFreshness`) and then DROPPED here, so the only thing that
+     * survived the projection was the derived `verdictStale` boolean. That is the same defect
+     * as EI-19325520469216548 — cited at the very destructure that discards it — one field
+     * over: a caller could be told a verdict was stale but never how old it was, and could not
+     * tell "observed 40 seconds ago" from "observed last Tuesday".
+     *
+     * ⚠ Null means the blob carried no readable stamp — NOT "fresh".
+     */
+    verdictObservedAtMs: number | null;
     /** Human-readable reason `verdictStale` fired, or null when it did not. */
     verdictStaleReason: string | null;
     /** WHICH rule fired — see `GateVerdictFreshness.reasonCode` in gate-verdict-freshness.ts.
@@ -2884,6 +2899,13 @@ export function computeStages(
    * "fix the reds" lever for a change that was never resolvable in the first place.
    */
   targetUnresolvedDetail: string | null = null,
+  /**
+   * WI-1752145: injected so the abort-vintage sentence below is deterministically testable in
+   * BOTH directions — a fresh abort must render its age WITHOUT a staleness marker, and a stale
+   * one must render the marker. A disclosure that cannot be shown to stay silent on fresh input
+   * is one that passes vacuously.
+   */
+  nowMs: number = Date.now(),
 ): StageState[] {
   // A path whose runtime does NOT go through the release pipeline (bg-host, gateway,
   // embed-sidecar) is never carried by staging->main->:3070 at all: reporting those
@@ -3221,6 +3243,22 @@ export function computeStages(
           `Gate ABORTED before judging (${g.inconclusive.status}) — it rendered NO verdict${gateAbortRefireClause(
             g.inconclusive.status,
           )} ${g.inconclusive.detail ?? 'See the green-checkpoint log for the blocking condition.'}${
+            // WI-1752145: the abort's OWN age, on the sentence a reader acts on. This record is
+            // LATCHED — written by a scoped jsonb_set that does NOT advance the top-level
+            // `observedAt` — so it persists until a later tick overwrites it, and every other
+            // vintage on this payload describes the VERDICT instead. Stating the age
+            // unconditionally is the vintage stamp; the WARNING is gated on it actually being
+            // old, so a fresh abort is not decorated and the marker keeps its meaning.
+            (() => {
+              const v = gateAbortVintage({
+                status: g.inconclusive!.status,
+                observedAtMs: g.inconclusive!.observedAtMs,
+                nowMs,
+              });
+              if (v.age !== null) return ` (abort observed ${v.age} ago.)${v.warning ? ` ${v.warning}` : ''}`;
+              return v.warning ? ` ${v.warning}` : '';
+            })()
+          }${
             g.consecutiveReds > 0
               ? ` ⚠ The gate counters still show ${g.consecutiveReds} consecutive red(s)${
                   g.observedCandidate ? ` on ${g.observedCandidate}` : ''
@@ -4892,6 +4930,11 @@ export async function gitPipelinePosition(
     // saw only an undifferentiated red while /admin/git, reading the same snapshot directly,
     // already showed the full staleness verdict.
     verdictStale: gateFreshness.stale,
+    // WI-1752145: the vintage BEHIND `gateFreshness.stale`. git-pipeline-stats already resolved
+    // it (`gate.verdictObservedAtMs`) to compute the boolean above and it was discarded here —
+    // the same projection-boundary drop EI-19325520469216548 names three fields up. Passing the
+    // raw stamp through is what lets the summary say HOW stale, not merely THAT it is.
+    verdictObservedAtMs: snap.gate.verdictObservedAtMs ?? null,
     verdictStaleReason: gateFreshness.reason,
     verdictStaleReasonCode: gateFreshness.reasonCode,
     candidateAgeMs: snap.gate.candidateAgeMs,
