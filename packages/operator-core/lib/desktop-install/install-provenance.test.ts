@@ -10,6 +10,7 @@ import {
   writeInstallStamp,
   gcStrandedInstallTmp,
   resolveSourceGitProvenance,
+  resolveUncommittedSources,
   DOWNGRADE_REFUSAL_THRESHOLD_MS,
   INSTALLED_FROM_BASENAME,
   type InstallStamp,
@@ -243,5 +244,93 @@ describe('resolveSourceGitProvenance', () => {
     } finally {
       await fs.rm(repo, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * EI-21974793277035753. `resolveSourceGitProvenance` above answers "last commit TOUCHING
+ * these paths"; it cannot tell you whether the bytes being installed are IN that commit.
+ * Without this the stamp names a sha whose blob differs from what landed on disk, and does
+ * so with the authority of a machine-generated record.
+ *
+ * The `undefined` vs `[]` split is the point of most of these cases: an unknown that
+ * renders as "clean" is the exact failure being fixed, one level up.
+ */
+describe('resolveUncommittedSources', () => {
+  let repo: string;
+
+  const git = (...args: string[]) => run('git', args, { cwd: repo });
+
+  beforeEach(async () => {
+    repo = await fs.mkdtemp(path.join(os.tmpdir(), 'pc-uncommitted-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  /** A repo whose single hook is committed and byte-identical to HEAD. */
+  async function committedHook() {
+    await git('init', '-q');
+    await git('config', 'user.name', 'Papercusp Test');
+    await git('config', 'user.email', 'test@papercusp.local');
+    await git('config', 'commit.gpgsign', 'false');
+    await fs.writeFile(path.join(repo, 'hook.sh'), '#!/bin/bash\necho ok\n');
+    await git('add', '.');
+    await git('commit', '-qm', 'hook');
+  }
+
+  it('reports [] when the requested file matches HEAD', async () => {
+    await committedHook();
+    expect(await resolveUncommittedSources(repo, ['hook.sh'])).toEqual([]);
+  });
+
+  // The positive control for the clean case above: a checker that can only ever answer
+  // "clean" would pass that test too, so it has to be shown catching a real difference.
+  it('names a file whose working-tree bytes differ from HEAD', async () => {
+    await committedHook();
+    await fs.writeFile(path.join(repo, 'hook.sh'), '#!/bin/bash\necho TAMPERED\n');
+    expect(await resolveUncommittedSources(repo, ['hook.sh'])).toEqual(['hook.sh']);
+  });
+
+  it('still names it once STAGED — staging is not committing, and the sha is still wrong', async () => {
+    await committedHook();
+    await fs.writeFile(path.join(repo, 'hook.sh'), '#!/bin/bash\necho STAGED\n');
+    await git('add', 'hook.sh');
+    expect(await resolveUncommittedSources(repo, ['hook.sh'])).toEqual(['hook.sh']);
+  });
+
+  it('names a brand-new untracked hook, which `git diff HEAD` alone cannot see', async () => {
+    await committedHook();
+    await fs.writeFile(path.join(repo, 'newhook.sh'), '#!/bin/bash\necho new\n');
+    expect(await resolveUncommittedSources(repo, ['newhook.sh'])).toEqual(['newhook.sh']);
+  });
+
+  it('reports every dirty file in the requested set, sorted', async () => {
+    await committedHook();
+    await fs.writeFile(path.join(repo, 'hook.sh'), '#!/bin/bash\necho b\n');
+    await fs.writeFile(path.join(repo, 'another.sh'), '#!/bin/bash\necho a\n');
+    expect(await resolveUncommittedSources(repo, ['hook.sh', 'another.sh'])).toEqual([
+      'another.sh',
+      'hook.sh',
+    ]);
+  });
+
+  it('ignores dirt outside the requested set (an unrelated edit is not a hook problem)', async () => {
+    await committedHook();
+    await fs.writeFile(path.join(repo, 'unrelated.txt'), 'dirty\n');
+    expect(await resolveUncommittedSources(repo, ['hook.sh'])).toEqual([]);
+  });
+
+  it('returns undefined — NOT [] — for a non-repo path (the packaged app)', async () => {
+    // "I could not tell" must stay distinguishable from "I checked, all clean". Collapsing
+    // these is what would let the stamp resume lying, silently, wherever git is absent.
+    expect(await resolveUncommittedSources(repo, ['hook.sh'])).toBeUndefined();
+  });
+
+  it('returns undefined for a repo with no HEAD yet, rather than claiming clean', async () => {
+    await git('init', '-q');
+    await fs.writeFile(path.join(repo, 'hook.sh'), '#!/bin/bash\n');
+    expect(await resolveUncommittedSources(repo, ['hook.sh'])).toBeUndefined();
   });
 });

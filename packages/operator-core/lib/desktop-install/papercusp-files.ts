@@ -2944,33 +2944,62 @@ export function mergeClaudeHookSettings(
  * outage — the verdict must be "this file definitely does not parse", never "I could not tell".
  */
 export async function checkHookSyntax(
-  filePath: string,
+  content: Buffer,
   name: string,
 ): Promise<{ ok: true } | { ok: false; detail: string }> {
+  // Fed over STDIN, not as a path, for two reasons that both bit during development:
+  //  1. the staged file is named `<hook>.psu-install.<pid>.tmp`, and `node --check` infers
+  //     module format from the EXTENSION — it rejects a `.tmp` file with
+  //     ERR_UNKNOWN_FILE_EXTENSION no matter how valid the JavaScript is. Path-checking the
+  //     staged copy would therefore have refused all 24 `.mjs` hooks forever, silently
+  //     freezing them at their installed versions. Renaming the staged file is not
+  //     available either: `gcStrandedInstallTmp` matches /\.psu-install\.\d+\.tmp$/.
+  //  2. stdin checks the EXACT bytes about to be written, closing the read→validate window
+  //     that path-checking the source would leave open.
   const argv: string[] | null = name.endsWith('.sh')
-    ? ['bash', '-n', filePath]
+    ? ['bash', '-n']
     : name.endsWith('.mjs')
-      ? ['node', '--check', filePath]
+      ? ['node', '--input-type=module', '--check']
       : name.endsWith('.py')
-        ? ['python3', '-c', 'import ast,sys; ast.parse(open(sys.argv[1],"rb").read())', filePath]
+        ? ['python3', '-c', 'import ast,sys; ast.parse(sys.stdin.buffer.read())']
         : null;
   if (!argv) return { ok: true };
   try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    await promisify(execFile)(argv[0], argv.slice(1), { timeout: 10_000 });
+    const { spawn } = await import('node:child_process');
+    return await new Promise((resolve) => {
+      const child = spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'ignore', 'pipe'] });
+      let stderr = '';
+      let settled = false;
+      const done = (v: { ok: true } | { ok: false; detail: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(v);
+      };
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        done({ ok: true });
+      }, 10_000);
+      child.stderr?.on('data', (d) => {
+        if (stderr.length < 4096) stderr += String(d);
+      });
+      // The interpreter could not be spawned at all (missing, not executable). That is
+      // "could not tell", never "does not parse" — condemning here would refuse working
+      // hooks on any box without python3 and turn a diagnostic into an outage.
+      child.on('error', () => done({ ok: true }));
+      // A child killed by a signal reports code === null: also could-not-tell.
+      child.on('close', (code) => {
+        if (code === 0 || code === null) return done({ ok: true });
+        const detail = stderr.trim().split('\n').slice(0, 3).join('; ');
+        done({ ok: false, detail: detail || `exit ${code}` });
+      });
+      // An interpreter that bails before draining stdin gives us EPIPE; that is its
+      // verdict arriving early, not an error to propagate.
+      child.stdin?.on('error', () => {});
+      child.stdin?.end(content);
+    });
+  } catch {
     return { ok: true };
-  } catch (e) {
-    const err = e as { code?: unknown; stderr?: unknown; message?: string };
-    // A non-numeric `code` (ENOENT, ETIMEDOUT) is the interpreter failing to run, not the
-    // file failing to parse — fail safe. Only a real non-zero exit condemns the file.
-    if (typeof err.code !== 'number') return { ok: true };
-    const detail = String(err.stderr || err.message || '')
-      .trim()
-      .split('\n')
-      .slice(0, 3)
-      .join('; ');
-    return { ok: false, detail: detail || `exit ${err.code}` };
   }
 }
 
@@ -3047,17 +3076,14 @@ async function installClaudeHooks(
       // parser because the terminator line hadn't been written yet). rename(2) is
       // atomic on the same filesystem, so a concurrent reader always sees either the
       // whole old file or the whole new one, never a torn prefix.
-      const tmp = `${dst}.psu-install.${process.pid}.tmp`;
-      await fs.writeFile(tmp, data, { mode });
-      await fs.chmod(tmp, mode);
-      // EI-21974793277035753: parse-check the staged copy BEFORE it becomes visible.
-      // rename(2) below guarantees readers see a whole file; this is what makes it a
-      // valid one. Refusing leaves the previously installed copy in place, which is the
-      // safe direction: a stale working hook beats a live broken one, and for the
-      // fail-open gate a broken copy would silently stop gating rather than error.
-      const syntax = await checkHookSyntax(tmp, name);
+      // EI-21974793277035753: parse-check the bytes BEFORE staging them. rename() below
+      // guarantees a reader sees a whole file; this is what makes it a valid one.
+      // Refusing keeps the previously installed copy, which is the safe direction: a
+      // stale working hook beats a live broken one, and for the fail-open bash gate a
+      // broken copy would silently stop gating rather than error. Checked before the
+      // write so a refused hook never creates a temp file for the GC to collect.
+      const syntax = await checkHookSyntax(data, name);
       if (!syntax.ok) {
-        await fs.unlink(tmp).catch(() => {});
         refused.push(name);
         console.error(
           `[desktop-install] cc hooks: REFUSING ${name} — it does not parse ` +
@@ -3065,6 +3091,9 @@ async function installClaudeHooks(
         );
         continue;
       }
+      const tmp = `${dst}.psu-install.${process.pid}.tmp`;
+      await fs.writeFile(tmp, data, { mode });
+      await fs.chmod(tmp, mode);
       await fs.rename(tmp, dst);
       installed.push(name);
     } catch (e) {
