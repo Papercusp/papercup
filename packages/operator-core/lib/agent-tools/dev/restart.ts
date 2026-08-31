@@ -421,6 +421,20 @@ async function writeRestartAudit(
   }
 }
 
+/**
+ * EI-21930094737784126: the ONE predicate for "does the cgroup preflight BLOCK this
+ * call", read by BOTH the dry-run preview and the confirmed path.
+ *
+ * It is a single function on purpose. The preview is where an agent decides whether
+ * to fire at all, so a preview that predicts a refusal the confirmed call would not
+ * make DETERS the correct action — the mirror image of EI-21365722353248238, where a
+ * preview promised a restart the confirmed call then refused. Two copies of
+ * `blocked && drain === 0` would drift in exactly that direction, silently.
+ */
+function gitSyncPreflightBlocks(blocked: boolean, drainSec: number): boolean {
+  return blocked && drainSec === 0;
+}
+
 export default defineTool({
   name: 'dev:restart',
   description:
@@ -549,6 +563,11 @@ export default defineTool({
     // dry-run note and the real debounce path below quote the SAME window.
     const cooldownSec = COOLDOWN_SEC[target] ?? STAGING_COOLDOWN_SEC;
 
+    // EI-21930094737784126: hoisted ABOVE the dry-run branch deliberately. The drain
+    // budget changes what the confirmed call would DO, so a preview that cannot see it
+    // cannot answer the only question a preview is asked (see gitSyncPreflightBlocks).
+    const gitSyncDrainSec = Math.max(0, Math.trunc(args.git_sync_drain_sec ?? 0));
+
     // Dry run — ctx-free, takes no lock, drains nobody.
     if (!args.confirm) {
       if (target === 'desktop-dev') {
@@ -610,13 +629,23 @@ export default defineTool({
           ? {
               git_sync_collision: {
                 kind: gitSyncPreview.kind,
-                would_block: gitSyncPreview.blocked,
+                // EI-21930094737784126: answer for the call the caller is ACTUALLY
+                // about to make, drain budget included — not for a hypothetical one
+                // with no budget. Same predicate as the confirmed path below.
+                would_block: gitSyncPreflightBlocks(gitSyncPreview.blocked, gitSyncDrainSec),
+                ...(gitSyncPreview.blocked && gitSyncDrainSec > 0
+                  ? { preflight_advisory: true, drain_sec: gitSyncDrainSec }
+                  : {}),
                 ...gitSyncPreview.detail,
               },
             }
           : {}),
         note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} confirm:true ALONE is not enough — the real restart also needs the enablement gate: pass authorize:true + a short \`reason\` (≤300 chars) in the same call, or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process. Without it the call is REFUSED outright (ok:false, nothing drained).${
-          gitSyncPreview.blocked ? ` ⚠ ${gitSyncPreview.note}` : ''
+          gitSyncPreview.blocked
+            ? gitSyncDrainSec > 0
+              ? ` ℹ A git-sync operation shares this cgroup, but you passed git_sync_drain_sec:${gitSyncDrainSec} — on that path the cgroup preflight is ADVISORY and the workspace-wide \`git-sync\` barrier arbitrates instead (fires hold it only ~5-10s). This preview reserves nothing; the confirmed call can still refuse with drain_timeout, which is transient and side-effect-free — retry rather than abandon.`
+              : ` ⚠ ${gitSyncPreview.note} On a merely BUSY host the supported way through is git_sync_drain_sec (up to ${GIT_SYNC_RESTART_BARRIER_DRAIN_SEC}s) — WAIT for the drain. override_git_sync_collision is for a WEDGED host: it SIGKILLs an in-flight commit and strands a peer's uncommitted work.`
+            : ''
         }${preview.blocked ? ` ⚠ ${preview.note}` : ''}`,
       });
     }
@@ -704,7 +733,6 @@ export default defineTool({
     // inside this unit, systemctl restart would SIGKILL its commit and orphan the
     // lease. This covers both scheduled bg-host fires and manual :3070/:3170
     // fires, unlike a target-name-only bg-host check.
-    const gitSyncDrainSec = Math.max(0, Math.trunc(args.git_sync_drain_sec ?? 0));
     const gitSync = await checkGitSyncCollision(target, args.override_git_sync_collision === true);
     // EI-21930094737784126: this preflight is a CGROUP PROXY ("is a git-sync process
     // inside this unit?"), not the authoritative signal. On bg-host the git-sync worker
@@ -713,7 +741,7 @@ export default defineTool({
     // it to ADVISORY and let the barrier below arbitrate — that is the whole difference
     // between a lever that fires and one that refuses 20/20. With no budget it stays a
     // hard refusal, so the default path is unchanged.
-    if (gitSync.blocked && gitSyncDrainSec === 0) {
+    if (gitSyncPreflightBlocks(gitSync.blocked, gitSyncDrainSec)) {
       return json({
         ok: false,
         target,

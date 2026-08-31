@@ -633,6 +633,75 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
     expect(gitSyncCollisionM).toHaveBeenCalledWith('bg-host', false);
   });
 
+  it('previews the DRAIN-BUDGETED call honestly — advisory, not would_block (EI-21930094737784126)', async () => {
+    // The preview is where an agent decides whether to fire at all. Reporting
+    // would_block:true for a call the confirmed path would NOT refuse deters the
+    // correct action — the mirror of EI-21365722353248238, where the preview instead
+    // promised a restart the confirmed call refused. Both are the same defect.
+    gitSyncCollisionM.mockResolvedValue(blocked());
+    const b = body(await call({ target: 'bg-host', git_sync_drain_sec: 45 }));
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      git_sync_collision: {
+        kind: 'operation-in-flight',
+        would_block: false,
+        preflight_advisory: true,
+        drain_sec: 45,
+        collidingResources: ['git-sync:papercusp'],
+      },
+    });
+    expect(b.note).toContain('git_sync_drain_sec:45');
+    expect(b.note).toContain('ADVISORY');
+  });
+
+  it('the preview and the confirmed path never disagree about whether the preflight blocks', async () => {
+    // The anti-drift guard for the shared predicate. Two hand-maintained copies of
+    // `blocked && drain === 0` would diverge silently, and the preview diverging is
+    // the expensive direction (an agent stands down on a lever that would have fired).
+    for (const drain of [0, 45]) {
+      gitSyncCollisionM.mockResolvedValue(blocked());
+      const preview = body(await call({ target: 'bg-host', ...(drain ? { git_sync_drain_sec: drain } : {}) }));
+
+      gitSyncCollisionM.mockResolvedValue(blocked());
+      // Let the confirmed path reach its own preflight decision and stop just after
+      // it: the cooldown claim succeeds, then the barrier refuses. Anything the call
+      // does past the preflight is not what this test compares.
+      mockResolvedTyped(acquireM, {
+        ok: true,
+        mode: 'exclusive',
+        status: 'held',
+        lock_id: 'COOL-PARITY',
+        expires_ts: new Date(),
+        shared_holders: [],
+        fence_seq: 1,
+      });
+      gitSyncBarrierM.mockResolvedValue({ acquired: false, resource: 'git-sync', reason: 'drain_timeout', holders: [] });
+      const confirmed = body(
+        await call({
+          confirm: true,
+          authorize: true,
+          target: 'bg-host',
+          reason: 'preflight parity probe',
+          ...(drain ? { git_sync_drain_sec: drain } : {}),
+        }),
+      );
+      const confirmedRefusedOnPreflight = confirmed.reason === 'git_sync_collision_operation_in_flight';
+      expect(preview.git_sync_collision.would_block).toBe(confirmedRefusedOnPreflight);
+    }
+  });
+
+  it('a preview WITHOUT a budget names git_sync_drain_sec as the way through, not the override', async () => {
+    // #do-not-override-gitsync: the refusal used to point only at
+    // override_git_sync_collision, which SIGKILLs a commit mid-flight. The lever a
+    // refused caller reads about must be the safe one.
+    gitSyncCollisionM.mockResolvedValue(blocked());
+    const b = body(await call({ target: 'bg-host' }));
+    expect(b.git_sync_collision.would_block).toBe(true);
+    expect(b.note).toContain('git_sync_drain_sec');
+    expect(b.note).toContain('WEDGED');
+  });
+
   it('refuses before cooldown, drain, signal, or audit when the target cgroup owns the live operation', async () => {
     gitSyncCollisionM.mockResolvedValue(blocked());
     const b = body(await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'reload code' }));

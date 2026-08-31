@@ -489,6 +489,38 @@ describe('git-sync collision probe shell', () => {
     expect(judgeGitSyncCollision({ target: 'bg-host', probe, override: false }).blocked).toBe(true);
   });
 
+  it('the refusal points at git_sync_drain_sec, and marks the override as wedged-host-only (EI-21930094737784126)', async () => {
+    // A refusal is read as instructions. This one used to name only
+    // override_git_sync_collision, which SIGKILLs an in-flight commit and strands a
+    // peer's uncommitted work — so the note taught the dangerous lever and never
+    // mentioned the safe one, on a host where the cgroup proxy is ~always true.
+    const readProcess = vi.fn(async () => ({
+      alive: true,
+      cgroupPath: '/user.slice/app.slice/papercup-bg-host.service/worker',
+    }));
+    const probe = await probeGitSyncCollision(
+      deps({
+        readHolders: async () => [
+          {
+            resource: 'git-sync:papercusp',
+            owner: 'system:git-sync:4242:uuid',
+            acquiredAtMs: 1_000,
+            expiresAtMs: 601_000,
+          },
+        ],
+        readProcess,
+      }),
+      'bg-host',
+    );
+    const verdict = judgeGitSyncCollision({ target: 'bg-host', probe, override: false });
+    expect(verdict.blocked).toBe(true);
+    expect(verdict.note).toContain('git_sync_drain_sec');
+    // The override must still be reachable, but qualified — never as the plain
+    // way through a merely busy host.
+    expect(verdict.note).toContain('override_git_sync_collision');
+    expect(verdict.note).toMatch(/WEDGED host only/);
+  });
+
   it('ignores an advisory/manual holder whose owner is not a git-sync operation identity', async () => {
     const readProcess = vi.fn();
     const probe = await probeGitSyncCollision(

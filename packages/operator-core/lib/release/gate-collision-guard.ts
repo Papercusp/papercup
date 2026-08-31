@@ -652,8 +652,11 @@ export function judgeGitSyncCollision(input: {
       overridden: false,
       note:
         `Restart REFUSED — NOTHING was done: no cooldown claimed, no drain, no signal. Git-sync IS IN FLIGHT: ${operations}. ` +
-        `${why} Wait for the operation to settle, or, if the host is itself wedged and the restart is the remedy, ` +
-        're-call with override_git_sync_collision:true and record why.',
+        `${why} EI-21930094737784126: this check is a CGROUP PROXY, so on a host that runs git-sync itself it is ~always true ` +
+        'while the workspace-wide `git-sync` barrier it stands in for is free about half the time (fires hold it only ~5-10s). ' +
+        'The supported way through a merely BUSY host is to re-call with git_sync_drain_sec:<seconds> — that WAITS for the drain ' +
+        'and lets the barrier arbitrate. override_git_sync_collision:true is for a WEDGED host only: it SIGKILLs an in-flight ' +
+        "commit and strands a peer's uncommitted work, so pass it only when the restart is itself the remedy, and record why.",
       detail,
     };
   }
