@@ -724,6 +724,81 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
   });
 });
 
+describe('WI-1632193 — a DECLARED announced gate is legitimate even when no catalog family matches', () => {
+  // The gap this closes is narrow and exact. `announcedGate` (await.ts) is set only
+  // from an UNFIRED, non-superseded declaration, so a key whose declarations have all
+  // been superseded — or fired for a reason other than 'event' — falls through to the
+  // orphan guard and is told "NO KNOWN EMITTER". Since WI-1632193 the catalog no
+  // longer MATCHES `plan:<slug>:<gate>` either (the announcedShape row is documented,
+  // never matched), so without this check a real declared plan gate would be warned
+  // about — the EI-21666331086562886 failure, in a louder form.
+  const supersededRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 7,
+    subscriberId: 'su-declarer',
+    eventKey: 'plan:my-plan:sidecar-released',
+    firedAt: '2026-08-30T00:00:00.000Z',
+    firedReason: 'superseded', // NOT 'event' ⇒ not a latch, and not unfired ⇒ not announcedGate
+    causalGeneration: 1,
+    expectedCondition: null,
+    note: null,
+    ...overrides,
+  });
+
+  /** Only the includeSuperseded read sees history — exactly how the real store behaves. */
+  const withDeclarationHistory = (rows: unknown[]) =>
+    vi.mocked(findAnnouncementsForKey).mockImplementation((async (
+      _key: string,
+      opts?: { includeSuperseded?: boolean },
+    ) => (opts?.includeSuperseded ? rows : [])) as never);
+
+  it('clears the orphan warning and says the gate is DECLARED', async () => {
+    withDeclarationHistory([supersededRow()]);
+    const out = await call({ event: 'plan:my-plan:sidecar-released' });
+
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(out.unknown_event_key_advice).toBeUndefined();
+    expect(out.declared_announced_gate).toBe(true);
+    expect(out.declared_announced_gate_advice).toMatch(/has been declared/);
+    // It must NOT masquerade as the uncatalogued-but-firing case: there is no catalog
+    // gap to file for a runtime-minted key, and telling an agent to file one is noise.
+    expect(out.uncatalogued_event_key).toBeUndefined();
+    expect(out.ok).toBe(true);
+  });
+
+  it('THE POINT — a TYPO of a sibling family is still warned about, because it was never declared', async () => {
+    // `plan:draft-redy:x` is a typo of `plan-draft-ready` (`plan:draft-ready:<slug>`).
+    // It is structurally identical to the real gate above — same namespace, same
+    // segment count — so nothing but the declaration registry can tell them apart.
+    // This is the assertion WI-1632193 exists for; it FAILED while the `plan-event`
+    // family still matched, because the catalog answered "yes, catalogued" for it.
+    withDeclarationHistory([]); // nothing was ever declared under this key
+    const out = await call({ event: 'plan:draft-redy:x' });
+
+    expect(out.declared_announced_gate).toBeUndefined();
+    expect(out.unknown_event_key).toBe(true);
+    expect(out.unknown_event_key_advice).toMatch(/NO KNOWN EMITTER/);
+    expect(out.ok).toBe(true); // warn, never reject
+  });
+
+  it('FAIL-SOFT — an unavailable declaration read leaves the warning exactly as it was', async () => {
+    // Every probe in this handler is fail-soft on purpose: an unreadable source must
+    // never manufacture a reassurance, which would be the orphan guard going quiet
+    // for the one reason nobody can see.
+    vi.mocked(findAnnouncementsForKey).mockImplementation((async (
+      _key: string,
+      opts?: { includeSuperseded?: boolean },
+    ) => {
+      if (opts?.includeSuperseded) throw new Error('store unavailable');
+      return [];
+    }) as never);
+
+    const out = await call({ event: 'plan:my-plan:sidecar-released' });
+    expect(out.declared_announced_gate).toBeUndefined();
+    expect(out.unknown_event_key).toBe(true);
+    expect(out.ok).toBe(true);
+  });
+});
+
 describe('EI-18701276960172209 — a self-declared gate with no known emitter is not automatically legitimate', () => {
   const declaredRow = (overrides: Record<string, unknown> = {}) => ({
     id: 1,
