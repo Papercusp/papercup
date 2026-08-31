@@ -981,9 +981,16 @@ export function wakeTurnText(d: DeliveryWork): string {
   const note = d.note ? ` (your note: ${d.note})` : '';
   const summary = d.summary ? ` — ${d.summary}` : '';
   const payload = d.payload != null ? ` payload: ${JSON.stringify(d.payload).slice(0, 400)}` : '';
+  // EI-21925527092611786: stamp the delivery's OWN await_id (the event_wake_deliveries
+  // row's await_id column — always populated, independent of payload shape) so a stale/
+  // delayed re-delivery of an earlier, already-retired timeout is mechanically
+  // distinguishable from one about the CURRENTLY live registration on the same key,
+  // instead of forcing a second events:status round-trip to tell them apart.
   const timeout = payloadIsTimeout(d.payload)
-    ? ' [TIMEOUT (fired_reason: timeout) — the event did NOT fire before your deadline;' +
-      ' the awaited source did NOT complete]'
+    ? ` [TIMEOUT (fired_reason: timeout, await_id: ${d.awaitId}) — the event did NOT fire before your deadline;` +
+      ' the awaited source did NOT complete. If a re-arm on this key already created a NEWER await_id,' +
+      ' cross-check events:status active_awaits before re-arming again — this delivery is only about' +
+      ` await_id ${d.awaitId}]`
     : '';
   // EI-16648: an always-armed inbox-wake (`coord:inbox-wake:<owner>`) can be
   // CONSUMED late. A continuously-busy recipient's OWN periodic coord:inbox
