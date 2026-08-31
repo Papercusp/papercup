@@ -42,6 +42,11 @@ import {
   isActivationAuditExemptTemplate,
 } from './plan-activation-gate';
 import {
+  assertNoSilentRubricTemplateDataLoss,
+  type RubricLossAck,
+} from './rubric-loss-guard';
+import { RUBRIC_TEMPLATE_NAME } from './rubric-template';
+import {
   resolvePlanScope,
   syntheticPlanPath,
   deriveIndexFromContent,
@@ -116,6 +121,14 @@ export interface PlanWriteMeta {
  */
 export interface TemplateDataPatch {
   data: unknown;
+  /**
+   * EI-21972673091438558: the caller's EXPLICIT acknowledgement of rubric content this
+   * write intentionally removes. A rubric's criteria live in `template_data`, so every
+   * door writing this column is checked here at the persistence boundary — the generic
+   * `plans:set-template-data` verb has no acknowledgement arguments and therefore never
+   * sets this, while rubrics:propose / rubrics:amend pass the ones their caller supplied.
+   */
+  rubricLossAck?: RubricLossAck;
 }
 
 /**
@@ -432,6 +445,26 @@ export async function withPlanLock<T>(
     const writesInputSchema = inputSchema !== undefined;
     // And for the declared OUTPUT schema (plans:set-output-schema, P-026/D-017).
     const writesOutputSchema = outputSchema !== undefined;
+
+    // EI-21972673091438558 — the rubric loss-guard, at the ONE seam both doors cross.
+    // A rubric IS a plan row whose criteria live in template_data, so `rubrics:propose`
+    // and the generic `plans:set-template-data` both arrive here. Only the first used to
+    // be guarded (and only against a snapshot read OUTSIDE this lock), which left the
+    // generic verb able to silently delete every criterion of a live rubric — structure
+    // validation cannot tell a 27-criterion array from a 1-criterion one. Enforcing it
+    // HERE guards door two and any future door three, and compares against the row this
+    // transaction is actually replacing rather than a pre-lock read.
+    if (writesTemplateData && cur) {
+      const templateName = deriveIndexFromContent(newBody ?? cur.content).template;
+      if (templateName === RUBRIC_TEMPLATE_NAME) {
+        assertNoSilentRubricTemplateDataLoss({
+          slug,
+          storedTemplateData: cur.template_data ?? null,
+          nextTemplateData: templateData!.data,
+          ...(templateData!.rubricLossAck ? { ack: templateData!.rubricLossAck } : {}),
+        });
+      }
+    }
 
     let newVersion = curVersion;
     // The body to record a revision against (afterWrite): the new body for a content

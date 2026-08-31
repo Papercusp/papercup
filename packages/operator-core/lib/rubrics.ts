@@ -38,6 +38,11 @@ import {
   type RubricCriterionWindow,
   type RubricCriterionCheck,
 } from './agent-tools/plans/rubric-template';
+import {
+  collectRubricLossViolations,
+  REPLICATION_DRILL_MARKER,
+  type RubricLossAck,
+} from './agent-tools/plans/rubric-loss-guard';
 import { isConversationAuditRequiredValue } from './agent-tools/plans/plan-activation-gate';
 import { assertCriterionCheckPathsResolve } from './rubrics-criterion-checks';
 import { assertAcceptanceRubricCitationPathsResolve } from './rubrics-citation-checks';
@@ -966,24 +971,35 @@ export interface ProposeRubricInput {
 // edit that would drop a stored criterion or gut its procedure text fails loud instead of
 // silently losing content (caught by ensureFirstPartyRubricsSeeded, logged, retried later).
 
-/** The marker string that tags an embedded replication drill in method/replication
- *  prose. Losing it from a criterion's combined procedure text is a guard violation. */
-export const REPLICATION_DRILL_MARKER = 'REPLICATION DRILL';
+// EI-21972673091438558: the RULE CORE now lives at the shared template_data persistence
+// boundary (agent-tools/plans/rubric-loss-guard.ts) so `plans:set-template-data` — the
+// generic structured-write door, which validates STRUCTURE only — cannot silently delete
+// the criteria this guard exists to protect. Re-exported here because this module is the
+// long-standing import site for them; there is ONE definition, not two dialects of "loss".
+export {
+  REPLICATION_DRILL_MARKER,
+  METHOD_SHRINK_GUARD_RATIO,
+  METHOD_SHRINK_GUARD_MIN_CHARS,
+  criterionProcedureText,
+} from './agent-tools/plans/rubric-loss-guard';
 
-/** A criterion's combined procedure text must not shrink below this fraction of the
- *  stored text (0.6 ⇒ a >40% shrink violates) without an explicit allowMethodShrink. */
-export const METHOD_SHRINK_GUARD_RATIO = 0.6;
-
-/** The shrink-ratio guard only applies when the STORED procedure text is at least this
- *  long — a 50-char method being reworded shouldn't trip a loss guard; a 4,600-char
- *  drill being gutted must. The MARKER guard applies regardless of length. */
-export const METHOD_SHRINK_GUARD_MIN_CHARS = 200;
-
-/** A criterion's full procedure text: method + replication drill combined. Comparing
- *  the COMBINED text (D-002) means moving a drill between the two fields is never a
- *  violation — only genuine text loss is. */
-function criterionProcedureText(c: { method?: string; replication?: string }): string {
-  return `${c.method ?? ''}${c.replication ? `\n${c.replication}` : ''}`;
+/**
+ * The caller's loss acknowledgements, lifted off a propose input into the shape the
+ * shared rule core and the persistence boundary both take. ONE reader of these four
+ * fields, so the pre-write check and the in-lock check can never disagree about what
+ * the caller acknowledged.
+ */
+function rubricLossAckOf(input: ProposeRubricInput): RubricLossAck {
+  return {
+    ...(input.dropKeys ? { dropKeys: input.dropKeys } : {}),
+    ...(input.allowMethodShrink !== undefined
+      ? { allowMethodShrink: input.allowMethodShrink }
+      : {}),
+    ...(input.shrinkReason !== undefined ? { shrinkReason: input.shrinkReason } : {}),
+    ...(input.classDowngradeReason !== undefined
+      ? { classDowngradeReason: input.classDowngradeReason }
+      : {}),
+  };
 }
 
 /**
@@ -994,97 +1010,21 @@ function criterionProcedureText(c: { method?: string; replication?: string }): s
  *     chars) or loses its REPLICATION DRILL marker → requires `allowMethodShrink:true`
  *     + a non-empty `shrinkReason`.
  * `stored === null` (a brand-new rubric) and an identical re-propose both pass.
+ *
+ * EI-21972673091438558: the RULES now live in rubric-loss-guard.ts and are enforced
+ * again inside the write lock, at the template_data persistence boundary every door
+ * crosses. This function stays the propose path's EARLY, richer-worded rejection —
+ * it fails before any lock is taken and names the rubric — but it is no longer the
+ * only thing standing between a caller and a silently gutted rubric.
  */
 export function assertNoSilentRubricLoss(stored: Rubric | null, input: ProposeRubricInput): void {
   if (!stored) return;
 
-  const proposedByKey = new Map(input.criteria.map((c) => [c.key, c]));
-  const acked = new Set(input.dropKeys ?? []);
-  const violations: string[] = [];
-
-  // 1) dropped criteria — every stored key must survive or be explicitly acknowledged.
-  const dropped = stored.criteria.filter((c) => !proposedByKey.has(c.key) && !acked.has(c.key));
-  if (dropped.length > 0) {
-    violations.push(
-      `DROPS ${dropped.length} stored criteri${dropped.length === 1 ? 'on' : 'a'}: ${dropped
-        .map((c) => `'${c.key}'`)
-        .join(', ')} — acknowledge intentional removal with dropKeys:[${dropped
-        .map((c) => `"${c.key}"`)
-        .join(', ')}], or rubrics:get the stored rubric and resubmit ALL criteria (a partial list silently deletes the rest)`,
-    );
-  }
-
-  // 2) procedure loss on surviving criteria — marker loss or a sharp combined shrink.
-  const shrinkViolations: string[] = [];
-  for (const storedCrit of stored.criteria) {
-    const proposed = proposedByKey.get(storedCrit.key);
-    if (!proposed) continue; // handled by the drop guard above
-    const before = criterionProcedureText(storedCrit);
-    const after = criterionProcedureText(proposed);
-    if (before.includes(REPLICATION_DRILL_MARKER) && !after.includes(REPLICATION_DRILL_MARKER)) {
-      shrinkViolations.push(
-        `criterion '${storedCrit.key}' LOSES its '${REPLICATION_DRILL_MARKER}' testing procedure (stored method+replication carries the marker; the proposal's doesn't)`,
-      );
-    } else if (
-      before.length >= METHOD_SHRINK_GUARD_MIN_CHARS &&
-      after.length < before.length * METHOD_SHRINK_GUARD_RATIO
-    ) {
-      const pct = Math.round((1 - after.length / before.length) * 100);
-      shrinkViolations.push(
-        `criterion '${storedCrit.key}' procedure text (method+replication) shrinks ${before.length} → ${after.length} chars (−${pct}%)`,
-      );
-    }
-  }
-  // 2b) structured-check loss (P-011 / D-006) — a stored criterion's deterministic
-  //    `check` resubmitted absent silently converts a machine-enforced criterion back
-  //    to fuzzy judgment: the same silent-weakening family as a procedure shrink, so it
-  //    rides the same allowMethodShrink + shrinkReason ack (a check IS procedure, in
-  //    structured form). Changing a check's content (different files / different
-  //    instrument) is a visible edit, not a silent loss — only total removal is guarded.
-  const checkLosses = stored.criteria.filter((c) => {
-    if (!c.check) return false;
-    const proposed = proposedByKey.get(c.key);
-    return proposed !== undefined && proposed.check === undefined;
-  });
-  if (checkLosses.length > 0) {
-    shrinkViolations.push(
-      ...checkLosses.map(
-        (c) =>
-          `criterion '${c.key}' LOSES its structured ${c.check!.kind} check (deterministic enforcement reverts to fuzzy judgment)`,
-      ),
-    );
-  }
-
-  // 3) criterion-class weakening (P-008) — a stored 'violatable' criterion resubmitted
-  //    without the class (or downgraded to settle-once) silently removes its
-  //    provisional-until-terminal protection, the same silent-weakening family as a
-  //    procedure shrink. Upgrades (settle-once → violatable) are never guarded.
-  const downgraded = stored.criteria.filter((c) => {
-    if (c.criterionClass !== 'violatable') return false;
-    const proposed = proposedByKey.get(c.key);
-    return proposed !== undefined && proposed.criterionClass !== 'violatable';
-  });
-  if (downgraded.length > 0 && (input.classDowngradeReason ?? '').trim() === '') {
-    violations.push(
-      `DOWNGRADES ${downgraded.length} 'violatable' criteri${downgraded.length === 1 ? 'on' : 'a'} to settle-once: ${downgraded
-        .map((c) => `'${c.key}'`)
-        .join(', ')} — mid-run ratings of these would stop being stamped provisional. If intentional, pass a non-empty classDowngradeReason; otherwise resubmit them with criterionClass:'violatable'`,
-    );
-  }
-
-  if (shrinkViolations.length > 0) {
-    if (input.allowMethodShrink && (input.shrinkReason ?? '').trim() !== '') {
-      // conscious, explained shrink — allowed.
-    } else if (input.allowMethodShrink) {
-      violations.push(
-        `${shrinkViolations.join('; ')} — allowMethodShrink is set but shrinkReason is empty: explain WHY the procedure is intentionally shrinking`,
-      );
-    } else {
-      violations.push(
-        `${shrinkViolations.join('; ')} — if intentional, pass allowMethodShrink:true + shrinkReason; otherwise restore the full procedure text (rubrics:get the stored rubric and edit from it)`,
-      );
-    }
-  }
+  const violations = collectRubricLossViolations(
+    stored.criteria,
+    input.criteria,
+    rubricLossAckOf(input),
+  );
 
   if (violations.length > 0) {
     // EI-10148: this is a CALLER error (the proposal args would silently lose stored
@@ -1716,7 +1656,14 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
           );
         }
       }
-      return { newBody: body, templateData: { data: templateData }, value: true };
+      // The boundary guard re-checks this write against the row it is replacing, INSIDE
+      // the lock (EI-21972673091438558). Pass the caller's acknowledgements through so an
+      // intentional, acked removal still lands — an unacked one is refused at both ends.
+      return {
+        newBody: body,
+        templateData: { data: templateData, rubricLossAck: rubricLossAckOf(input) },
+        value: true,
+      };
     },
   );
   if (result.kind === 'busy') {
@@ -1904,7 +1851,10 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
 
       return {
         newBody: body,
-        templateData: { data: templateData },
+        // Same as propose: the in-lock boundary guard needs the amendment's own
+        // acknowledgements (EI-21972673091438558) — `amended` is the re-proposal that
+        // assertNoSilentRubricLoss just checked, so its acks are the authoritative ones.
+        templateData: { data: templateData, rubricLossAck: rubricLossAckOf(amended) },
         value: true,
       };
     },
