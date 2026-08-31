@@ -258,7 +258,23 @@ export interface SharedAdmissionOptions {
   onAdmissionNotice?: (line: string, info: AdmissionNoticeInfo) => void;
   /** Fires once per acquisition, with how long it queued and the bound it was given. */
   onAdmissionAcquired?: (info: { waitedMs: number; budgetMs: number }) => void;
+  /**
+   * EI-21917992245424964 — a self-description published into the admission mutex's owner
+   * record, so a BLOCKED peer can judge whether waiting is worth it without a coord
+   * round-trip and without this holder being awake to answer.
+   *
+   * Scalars only (bounded and key-capped by `fs-mutex`); anything else is dropped rather
+   * than coerced, so a missing field keeps reading as "not declared".
+   */
+  admissionIntent?: Record<string, string | number | boolean>;
 }
+
+/**
+ * EI-21917992245424964 — render a holder's owner record as ONE decision-shaped line for the
+ * queued notice, which is re-announced for the whole wait. Emits `intent=undeclared` rather
+ * than omitting the field, and falls open to the raw text on any parse failure.
+ */
+export function formatAdmissionHolder(ownerText: unknown, now?: number): string;
 
 /**
  * WI-1639265 — the launcher-published wall-clock deadline, absolute epoch ms.
