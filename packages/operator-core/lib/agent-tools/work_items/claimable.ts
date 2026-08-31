@@ -28,7 +28,7 @@
  * work_items:claim_next / scheduler:get_next.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, readJsonResult } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { readIssueClaimability } from '../../scheduler/get-next';
@@ -76,6 +76,45 @@ export default defineTool({
       'scheduler:get_next (claims the single top-ranked eligible item — same floors)',
       'work_items:observe (claimability of specific ids you already have)',
     ],
+    /**
+     * Base-rate stamp (EI-19375528138828761). Both numbers are ALREADY computed
+     * here, so this costs nothing: `claimableCount` survived every floor,
+     * `matchedByFilter` is what the spec's own filter selected before floors —
+     * and floors only ever REMOVE, so population >= matched holds by
+     * construction.
+     *
+     * What it buys: "3 claimable" alone cannot distinguish a nearly-drained
+     * lane from a wide lane whose rows are almost all floored out — and those
+     * two want opposite actions (wind down vs. fix the floors/spec). The ratio
+     * says which. This is the drain-call read, which is exactly where a
+     * filtered slice misread as a census is most expensive.
+     */
+    denominator: (result) => {
+      const j = readJsonResult<{ claimableCount?: number; matchedByFilter?: number }>(result);
+      // On the MCP transport the envelope may be TOON, where readJsonResult
+      // returns undefined (presence.ts documents the same trap). TOON renders
+      // nested scalars as `key: N` lines, so fall back to a cheap regex rather
+      // than silently never stamping on the most common transport.
+      const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
+      const read = (key: string, v: number | undefined): number | undefined => {
+        if (typeof v === 'number') return v;
+        const m = new RegExp(`\\b${key}\\b["']?\\s*:\\s*(\\d+)`).exec(text);
+        return m ? Number(m[1]) : undefined;
+      };
+      const matched = read('claimableCount', j?.claimableCount);
+      const population = read('matchedByFilter', j?.matchedByFilter);
+      // Self-gate rather than guess: an unreadable envelope is not a zero.
+      if (matched === undefined || population === undefined) return null;
+      return {
+        matched,
+        population,
+        of: 'in-lane rows the spec filter matched',
+        note:
+          matched < population
+            ? `${population - matched} matched the filter but were removed by claim floors`
+            : undefined,
+      };
+    },
     byRole: {
       mug: {
         when:

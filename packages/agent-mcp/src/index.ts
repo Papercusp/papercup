@@ -174,6 +174,10 @@ export type { DeltaResponse, DeltaIngestResult, DeltaDispatch, DeltaDispatchResu
 // their content-encoded result with readJsonResult.
 export { applySeeAlso, resolveSeeAlso, renderSeeAlsoText, readJsonResult } from '@papercusp/tooldef';
 export type { SeeAlso, SeeAlsoEntry, SeeAlsoPointer } from '@papercusp/tooldef';
+// Base-rate stamping (EI-19375528138828761): a filtered result reports the
+// population it was drawn from, so a slice is never read as a census.
+export { applyDenominator, resolveDenominator, renderDenominatorText } from '@papercusp/tooldef';
+export type { Denominator, DenominatorSpec } from '@papercusp/tooldef';
 // Host ambient result-annotator seam (agent-managed-compaction P-013) — the operator
 // wires its banded context gauge via context-gauge-wiring.ts, same as delta-flag-wiring.
 export { setResultAnnotator, resetResultAnnotator, applyResultAnnotator } from '@papercusp/tooldef';
