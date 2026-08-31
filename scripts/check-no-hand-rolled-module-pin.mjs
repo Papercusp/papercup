@@ -83,7 +83,6 @@ const SKIP_DIR = new Set([
 const ALLOW = new Set([
   'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx',
   'libs/generic/sse/src/server/channel.ts',
-  'libs/generic/tooldef/src/tool-projection.ts',
 ]);
 
 function* walk(dir) {
