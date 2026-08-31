@@ -7,6 +7,7 @@ import {
   classifyGovernedTestProcessOutcome,
   createGovernedProcessDemandSampler,
   governedProcessIdempotencyKey,
+  isRetryableAdmissionFailure,
   runGovernedTestProcess,
   GOVERNED_TEST_PROCESS_DEFAULT_DISK_BYTES,
   GOVERNED_TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS,
@@ -324,5 +325,151 @@ describe('receipt lifecycle and demand accounting', () => {
     sampler.attach(0);
     expect(() => sampler.sample()).not.toThrow();
     expect(sampler.stop()).toEqual(planned);
+  });
+});
+
+/**
+ * WI-1410919 — a retryable ADMISSION failure is retried; a post-launch failure never is.
+ *
+ * `pg-bounded-txn.ts` already raises `OrgTxnTimeoutError` with `pgCode` in {55P03, 57014}
+ * and a message ending "— retry shortly". Nothing acted on that advice at this seam: the
+ * rejection was flattened into `GOVERNED_ADMISSION_FAILED` and rendered as "could not
+ * launch Vitest", so a database lock was reported as a Vitest launch failure over a run
+ * that measured zero files.
+ *
+ * The load-bearing test here is the SECOND one. Retrying is the easy half; the half that
+ * can cause real damage is retrying a failure that arrived AFTER the child started, which
+ * would re-run tests. `started` is asserted to dominate every other signal — that case
+ * uses an error that IS retryable by code, so a regression cannot pass by accident.
+ */
+describe('governed admission retry (WI-1410919)', () => {
+  const contention = (pgCode: string) =>
+    Object.assign(new Error(`operator write timed out (pg ${pgCode}) — retry shortly`), {
+      name: 'OrgTxnTimeoutError',
+      pgCode,
+    });
+
+  const api = (runGovernedOperation: unknown) => ({
+    admissionContextFromEnvironment: vi.fn(() => undefined),
+    governedExecutionLeaseTtlForTimeout: vi.fn(() => 1000),
+    runGovernedOperation,
+  });
+
+  const baseOptions = (extra: Record<string, unknown> = {}) => ({
+    workspaceId: 'ws',
+    env: {},
+    owner: 'runner',
+    timeoutMs: 1000,
+    // Injected so bounded-retry assertions cost no wall-clock.
+    sleep: async () => {},
+    ...extra,
+  });
+
+  it('retries a retryable admission failure and then succeeds', async () => {
+    const logged: string[] = [];
+    let calls = 0;
+    const runGovernedOperation = vi.fn(async (_input: unknown, run: (ctx: typeof context) => Promise<unknown>) => {
+      calls += 1;
+      if (calls < 3) throw contention('55P03');
+      return run(context);
+    });
+
+    const result = await runGovernedTestProcess(
+      baseOptions({ executionApi: api(runGovernedOperation), log: (line: string) => logged.push(line) }),
+      async () => 'child ran',
+    );
+
+    expect(result).toBe('child ran');
+    expect(calls).toBe(3);
+    // The retry must be VISIBLE: a silent one hides fleet-wide DB contention.
+    expect(logged).toHaveLength(2);
+    expect(logged[0]).toContain('GOVERNED_ADMISSION_RETRY');
+    expect(logged[0]).toContain('attempt=2/3');
+    expect(logged[0]).toContain('pgCode=55P03');
+  });
+
+  it('NEVER retries once the child has started, even for a retryable error', async () => {
+    // The safety constraint. The error here is retryable BY CODE, so if `started` were
+    // not dominant this would retry and re-run the tests.
+    let launches = 0;
+    const runGovernedOperation = vi.fn(async (_input: unknown, run: (ctx: typeof context) => Promise<unknown>) => {
+      await run(context);
+      throw contention('55P03');
+    });
+
+    await expect(
+      runGovernedTestProcess(baseOptions({ executionApi: api(runGovernedOperation), log: () => {} }), async () => {
+        launches += 1;
+        return 'child ran';
+      }),
+    ).rejects.toThrow(/retry shortly/);
+
+    expect(launches, 'the child must run exactly once — a retry here would re-run tests').toBe(1);
+    expect(runGovernedOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a failure the database did not mark retryable', async () => {
+    const runGovernedOperation = vi.fn(async () => {
+      throw Object.assign(new Error('governor refused: over capacity'), { pgCode: '42P01' });
+    });
+    await expect(
+      runGovernedTestProcess(baseOptions({ executionApi: api(runGovernedOperation) }), async () => 'child ran'),
+    ).rejects.toThrow(/over capacity/);
+    expect(runGovernedOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after the attempt bound and rethrows the original error', async () => {
+    const runGovernedOperation = vi.fn(async () => {
+      throw contention('57014');
+    });
+    await expect(
+      runGovernedTestProcess(
+        baseOptions({ executionApi: api(runGovernedOperation), admissionRetryAttempts: 2, log: () => {} }),
+        async () => 'child ran',
+      ),
+    ).rejects.toThrow(/57014/);
+    // Bounded: the point is to ride out contention, not to retry forever.
+    expect(runGovernedOperation).toHaveBeenCalledTimes(2);
+  });
+
+  it('takes no admission at all on the inherited path, so there is nothing to retry', async () => {
+    const runGovernedOperation = vi.fn();
+    const executionApi = {
+      admissionContextFromEnvironment: vi.fn(() => context),
+      governedExecutionLeaseTtlForTimeout: vi.fn(() => 1000),
+      runGovernedOperation,
+    };
+    const result = await runGovernedTestProcess(
+      baseOptions({ executionApi, env: { PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(context) } }),
+      async () => 'child ran',
+    );
+    expect(result).toBe('child ran');
+    expect(runGovernedOperation).not.toHaveBeenCalled();
+  });
+
+  it('detects retryability by PROPERTY and through a wrapped cause chain', () => {
+    // `instanceof` would answer false across a duplicated module record — the failure
+    // direction that looks exactly like "not retryable", i.e. like the bug being unfixed.
+    expect(isRetryableAdmissionFailure(contention('55P03'))).toBe(true);
+    expect(isRetryableAdmissionFailure(contention('57014'))).toBe(true);
+    expect(isRetryableAdmissionFailure({ pgCode: '55P03' })).toBe(true);
+    expect(
+      isRetryableAdmissionFailure(Object.assign(new Error('wrapped'), { cause: contention('55P03') })),
+      'the governor may wrap the originating PG error rather than rethrow it',
+    ).toBe(true);
+
+    expect(isRetryableAdmissionFailure(new Error('plain'))).toBe(false);
+    expect(isRetryableAdmissionFailure({ pgCode: '42P01' })).toBe(false);
+    expect(isRetryableAdmissionFailure(null)).toBe(false);
+    expect(isRetryableAdmissionFailure(undefined)).toBe(false);
+    // A name alone is not evidence: the contention CODE is what carries the meaning.
+    expect(isRetryableAdmissionFailure({ name: 'OrgTxnTimeoutError' })).toBe(false);
+  });
+
+  it('terminates on a cyclic cause chain instead of hanging', () => {
+    const a: Record<string, unknown> = { name: 'A' };
+    const b: Record<string, unknown> = { name: 'B', cause: a };
+    a.cause = b;
+    expect(isRetryableAdmissionFailure(a)).toBe(false);
   });
 });
