@@ -286,6 +286,23 @@ const TAB_CHROME_READS: Record<string, string> = {
   // "you can only navigate to where you already are" shape. Contrast WI-6385,
   // where scoping was both possible and correct because the leg REPORTED on
   // the lens rather than choosing it.
+  // The per-pot learning drawer's settings-config read (P-013 / D-011). It
+  // renders at LearningTab.tsx:915 — beside the rail and picker, and OUTSIDE
+  // LearningViewContent (:1038) — so it appears in every view's recording
+  // without belonging to any view.
+  //
+  // Like the rail above, this is a case where taking the lens pot would be
+  // actively WRONG rather than merely unnecessary. The read IS pot-scoped — but
+  // to `?lpot`, the pot the drawer was OPENED on, which is deliberately not the
+  // lens pot: D-005/D-008 route a DORMANT pot's controls through the every-pot
+  // picker precisely so the drawer can open for a pot that owns no rail chip and
+  // is not the current lens. Scoping it to the lens would render one pot's
+  // budget under another pot's name — the exact mislabelling this guard exists
+  // to catch, produced by "fixing" it.
+  "hive.overrides":
+    "per-pot learning drawer — scoped to ?lpot (the pot it was opened on), which " +
+    "is deliberately independent of the lens; it is gated `enabled: false` until " +
+    "a pot is actually open",
   "automation.catalog":
     "pot-chip rail — the lens SELECTOR itself; it must enumerate every learning " +
     "pot to be navigable, so a pot arg would collapse it to the current pot",

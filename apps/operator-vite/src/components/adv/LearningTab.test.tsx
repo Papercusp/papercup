@@ -629,6 +629,11 @@ vi.mock("@papercusp/sync", async () => ({
   // it the re-export is undefined and vitest surfaces the throw as the generic
   // "error when mocking a module", which reads like an unrelated hoisting bug.
   lazyWithRetry: (await import("react")).lazy,
+  // P-013: the tab renders LearningPotDrawer, whose scout-cycle budget fields
+  // write the pot config through useSyncMutate. This factory ENUMERATES the
+  // module, so an export the tree reaches but this list omits fails every test
+  // in the file at import time — not on the assertion that needed it.
+  useSyncMutate: () => async () => ({ ok: true }),
   useSyncQuery: (opts: {
     queryName: string;
     args?: unknown;
