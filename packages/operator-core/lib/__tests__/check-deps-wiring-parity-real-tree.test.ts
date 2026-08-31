@@ -1,0 +1,82 @@
+/**
+ * check-deps-wiring-parity-real-tree.test.ts — the WIRING that puts
+ * `lint:deps-wiring-parity` on a blocking path (WI-1728261, 2026-08-31).
+ *
+ * Its sibling `check-deps-wiring-parity.test.ts` proves the DETECTOR works, but runs it
+ * over synthetic fixtures — "proves the detector works, runs it over nothing", the exact
+ * shape check-lint-guard-reachability flags as a guard that enforces on no path. This
+ * test EXECUTES the guard over the real tree in `--fail` mode, which is what classifies
+ * it as BLOCKING (the ENFORCING_TEST_RE discriminator: it spawns the script over the
+ * repo root).
+ *
+ * `--fail` blocks on NEW findings only: the 44 findings / 33 distinct rows that existed
+ * when it was wired live in its SHRINK-ONLY FAIL_BASELINE (see the script). Wiring it
+ * unbaselined would have red-pinned the fleet on debt that accrued over the entire
+ * period the check did not exist — the rot mode the reachability meta-guard documents.
+ */
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+const REPO_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../..');
+
+function runGuard(args: string[]): { stdout: string; exitCode: number } {
+  let stdout = '';
+  let exitCode = 0;
+  try {
+    stdout = execFileSync('node', ['scripts/check-deps-wiring-parity.mjs', ...args], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 180_000,
+    });
+  } catch (e) {
+    const err = e as { status?: number | null; stdout?: string };
+    exitCode = err.status ?? 1;
+    stdout = err.stdout ?? '';
+  }
+  return { stdout, exitCode };
+}
+
+describe('lint:deps-wiring-parity over the real tree (blocking wiring)', () => {
+  it('finds no NEW deps-seam divergence beyond the shrink-only baseline', () => {
+    const { stdout, exitCode } = runGuard(['--fail']);
+
+    // Exit 2 = EXIT_NOT_CHECKED (zero candidate files) — a scan that examined nothing
+    // must never read as a clean bill of health, so fail loudly rather than pass.
+    expect(stdout).not.toContain('NOT CHECKED');
+    expect(exitCode, `guard reported NEW divergence:\n${stdout}`).toBe(0);
+  });
+
+  it('actually examined the tree — a guard measuring nothing is not a passing guard', () => {
+    const { stdout } = runGuard([]);
+    const examined = /examined (\d+) files/.exec(stdout);
+    expect(examined, `no "examined N files" line in:\n${stdout}`).not.toBeNull();
+    expect(Number(examined![1])).toBeGreaterThan(1000);
+  });
+
+  /**
+   * The regression this whole guard exists for, asserted against the LIVE tree rather
+   * than a fixture: Scout's two production entry points must wire `ScoutCycleDeps`
+   * identically. If someone drops a seam from either one, this fails by name.
+   */
+  it('keeps Scout’s two entry points wired identically (the defect that has recurred 4x)', () => {
+    const { stdout, exitCode } = runGuard([
+      '--fail',
+      '--files=packages/operator-core/lib/scout/run.ts,' +
+        'packages/operator-core/lib/scout/scout-cycle-action.ts,' +
+        'packages/operator-core/lib/blueprint-steps/ops/scout-cycle.ts',
+    ]);
+    expect(stdout).not.toContain('ScoutCycleDeps');
+    expect(exitCode, `ScoutCycleDeps diverged again:\n${stdout}`).toBe(0);
+  });
+
+  it('reports stale baseline rows so the baseline can only shrink', () => {
+    const { stdout } = runGuard([]);
+    // A stale row means a recorded divergence was fixed; the guard must SAY so, or the
+    // baseline silently accumulates rows that no longer correspond to anything.
+    if (stdout.includes('STALE baseline row')) {
+      expect(stdout).toContain('prune from FAIL_BASELINE');
+    }
+  });
+});

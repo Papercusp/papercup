@@ -365,8 +365,55 @@ export function findWiringParityGaps(sources, opts = {}) {
  * ⚠ Add a row ONLY for a divergence that is deliberate (one entry point genuinely
  * should not carry the concern) or already filed. State which, and why, on the row.
  */
+/**
+ * ⚠ The reason string on every row seeded at wiring time. These divergences are
+ * RECORDED, NOT ADJUDICATED — nobody has yet decided which are deliberate asymmetries
+ * and which are latent instances of the Scout defect. Saying so plainly is the point:
+ * a baseline row that claims a judgement nobody made is worse than one that admits it.
+ *
+ * When you touch one of these lanes, adjudicate ITS row: either fix the divergence
+ * (the row then goes STALE and the guard tells you to prune it) or replace this string
+ * with the actual reason that asymmetry is correct.
+ */
+const NOT_ADJUDICATED = 'pre-existing at guard wiring (WI-1728261) — recorded, not adjudicated';
+
 const FAIL_BASELINE = new Map([
-  // Seeded from the measured `--list` run at wiring time; see this file's git history.
+  // Seeded from the measured `--list` run, 2026-08-31: 44 findings / 33 distinct rows
+  // over 7,147 files. Wiring the guard unbaselined would have red-pinned the fleet on
+  // debt that accrued over the whole period this check did not exist.
+  ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|verifyBindingOverride', NOT_ADJUDICATED],
+  ['CalibrationCaptureDeps|apps/operator/bin/host-bootstrap.ts|getSql,insert,nowMs,workspaceId', NOT_ADJUDICATED],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|reach,revive', NOT_ADJUDICATED],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem,settleConversation', NOT_ADJUDICATED],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/reply.ts|mintGraduationWorkItem,settleConversation', NOT_ADJUDICATED],
+  ['DurableGatewayAdmissionOptions|packages/operator-core/lib/resource-governor/execution.ts|now', NOT_ADJUDICATED],
+  ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_get.ts|progress', NOT_ADJUDICATED],
+  ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_outline.ts|progress', NOT_ADJUDICATED],
+  ['EngineCtx|packages/operator-core/lib/agent-tools/docs/get.ts|progress', NOT_ADJUDICATED],
+  ['EngineCtx|packages/operator-core/lib/agent-tools/docs/outline.ts|progress', NOT_ADJUDICATED],
+  ['GetInProcessStatusOpts|packages/operator-core/lib/agent-tools/dev/dogfood_substrate_status.ts|resolveDhtBootstrapProbeStaleMs,resolveSidecarLive', NOT_ADJUDICATED],
+  ['GetInProcessStatusOpts|packages/operator-core/lib/endpoint-route/routes/discovery/build-federation-status.ts|resolveClaimStats,resolveRemoteBootedHandles', NOT_ADJUDICATED],
+  ['GovernedOperationInput|packages/operator-core/lib/agent-tools/testing/run.ts|measureActualDemand', NOT_ADJUDICATED],
+  ['GracefulRecycleOpts|apps/operator/bin/hono-host.ts|closeSubstrate,dropReplicationTracking,exit,isSaturated,killSelf', NOT_ADJUDICATED],
+  ['InterruptDeps|packages/operator-core/lib/agent-tools/turn/interrupt.ts|sendYield', NOT_ADJUDICATED],
+  ['KillDeps|packages/operator-core/lib/agent-tools/fleet/kill.ts|audit,cancelNursery,clearPresence,deactivateLoop,findHost,findLiveUnmanaged,markSessionEnded,presenceExists,releaseSeatConsumptions,repairStaleAdvSessionTerminalMarkers', NOT_ADJUDICATED],
+  ['KillDeps|packages/operator-core/lib/agent-tools/fleet/kill.ts|alive,kill,sleep', NOT_ADJUDICATED],
+  ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts|fetchPresenceRows', NOT_ADJUDICATED],
+  ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-agent.ts|fetchHivePresenceRows', NOT_ADJUDICATED],
+  ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts|fetchPresenceRows', NOT_ADJUDICATED],
+  ['LockAuthorityDeps|packages/operator-core/lib/shared-pot-loop/composition-rig.ts|fetchPresenceRows', NOT_ADJUDICATED],
+  ['LockAuthorityDeps|packages/operator-core/lib/shared-pot/suite/checks.ts|fetchHivePresenceRows,fetchPresenceRows', NOT_ADJUDICATED],
+  ['LockAuthorityDeps|packages/operator-core/lib/shared-pot/suite/checks.ts|fetchPresenceRows', NOT_ADJUDICATED],
+  ['PgRetryOpts|packages/operator-core/lib/pot/soak-report.ts|sleep', NOT_ADJUDICATED],
+  ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice', NOT_ADJUDICATED],
+  ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice,resolveHomeLogKeyHex', NOT_ADJUDICATED],
+  ['RunGitSyncOpts|packages/operator-core/lib/harness/git-sync/content-guard.ts|loadRoster', NOT_ADJUDICATED],
+  ['RunGitSyncOpts|packages/operator-core/lib/harness/git-sync/git-sync-action.ts|log,readText,writeText', NOT_ADJUDICATED],
+  ['RunGitSyncOpts|packages/operator-core/lib/harness/git-sync/run-git-sync.ts|loadRoster,readText,writeText', NOT_ADJUDICATED],
+  ['RunGitSyncOpts|packages/operator-core/lib/harness/git-sync/run-git-sync.ts|loadRoster,writeText', NOT_ADJUDICATED],
+  ['ScoutTickDeps|packages/operator-core/lib/scout/capacity-storm-drill.ts|ackRevisionRequests,claimFire,fireGate,persistStageArtifacts,readRevisionRequests,recordFire,refreshOutcomes', NOT_ADJUDICATED],
+  ['ScoutTickDeps|packages/operator-core/lib/scout/scheduler.ts|newCycleId', NOT_ADJUDICATED],
+  ['WireCrossHiveBoundaryDeps|packages/operator-core/lib/deployment/cross-hive-frame.ts|loadOutboundGrants', NOT_ADJUDICATED],
 ]);
 
 /** The line-independent identity a baseline row matches on. */
@@ -425,8 +472,25 @@ function main() {
   } else if (opts.list) {
     // The MEASURED population, in baseline-row form — this is how FAIL_BASELINE is
     // re-seeded. Never hand-write a baseline row from a grep.
-    for (const f of allFindings) console.log(`  ['${findingKey(f)}', 'REASON HERE'],`);
-    console.log(`\ncheck-deps-wiring-parity: ${allFindings.length} finding(s) over ${sources.length} files.`);
+    //
+    // DEDUPED on the baseline key, because the key is line-independent by design: two
+    // sites in one file omitting the same seams collapse to one row, which is exactly
+    // what the Map that consumes these rows does. Emitting the duplicate would produce
+    // a baseline whose row count never matches the finding count, and re-seeding from
+    // it would look like it had silently lost rows.
+    const seen = new Set();
+    let rows = 0;
+    for (const f of allFindings) {
+      const k = findingKey(f);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      rows += 1;
+      console.log(`  ['${k}', 'REASON HERE'],`);
+    }
+    console.log(
+      `\ncheck-deps-wiring-parity: ${allFindings.length} finding(s) over ${sources.length} files ` +
+        `(${rows} distinct baseline row(s)).`,
+    );
   } else if (allFindings.length === 0) {
     console.log(`check-deps-wiring-parity: ✓ examined ${sources.length} files, every deps seam is wired identically at all production sites.`);
   } else {
@@ -451,10 +515,23 @@ function main() {
   }
 
   if (staleBaseline.length > 0) {
-    console.log(
-      `\n⚠ ${staleBaseline.length} STALE baseline row(s) — the divergence no longer exists; prune from FAIL_BASELINE:\n` +
-        staleBaseline.map((k) => `    ${k}`).join('\n'),
-    );
+    if (opts.includeObservers) {
+      // ⚠ DO NOT report these as prunable. `--include-observers` widens the seam set,
+      // which changes each finding's `missing` list — and the baseline key is built
+      // FROM that list, so every baselined row stops matching and looks stale. Telling
+      // the reader to prune here would destroy a valid baseline on the strength of a
+      // diagnostic run. Staleness is only meaningful against the default population.
+      console.log(
+        `\nⓘ ${staleBaseline.length} baseline row(s) did not match under --include-observers. ` +
+          'That is EXPECTED — widening the population rewrites finding keys. Staleness is ' +
+          'only meaningful in the default mode; do NOT prune the baseline from this run.',
+      );
+    } else {
+      console.log(
+        `\n⚠ ${staleBaseline.length} STALE baseline row(s) — the divergence no longer exists; prune from FAIL_BASELINE:\n` +
+          staleBaseline.map((k) => `    ${k}`).join('\n'),
+      );
+    }
   }
 
   if (opts.fail && newFindings.length > 0) process.exit(1);

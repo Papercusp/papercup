@@ -433,6 +433,64 @@ describe('makeScoutCycleAction', () => {
     expect(calls.ran).toBe(1);
     expect(mockGetHiveScoutCfg).not.toHaveBeenCalled();
   });
+
+  /**
+   * WI-1728261 — P-019's cross-node single-runner gate is the FOURTH seam this action
+   * and the `blender:cycle` blueprint op disagreed about, and the first in the OTHER
+   * direction: the blueprint op has wired it since 2026-06-19 while this factory never
+   * had the parameter at all, so `if (deps.hiveRunnerGate)` in run.ts silently skipped
+   * the gate and every node of a shared Hive ran its own scout loop.
+   *
+   * `runScoutCycleTick`'s own consumption of the gate is covered separately below;
+   * THESE pin that the action actually THREADS the seam through — the half that was
+   * missing. The structural guarantee the two entry points cannot drift again is
+   * `lint:deps-wiring-parity`, not a test.
+   */
+  it('stands down without running a cycle when the node is NOT the elected Hive runner (WI-1728261)', async () => {
+    const calls = { ran: 0, persisted: 0 };
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      fakeBuilder({ idleRatio: 1 }, calls), // cadence WOULD fire — the gate overrides
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => ({ run: false, reason: 'not-hive-runner' }),
+    );
+    await handler(ctx);
+    expect(calls.ran).toBe(0);
+    expect(calls.persisted).toBe(0);
+  });
+
+  // THE POSITIVE CONTROL for the assertion above. Without it `calls.ran === 0` also
+  // passes when the handler bails early for any unrelated reason — a vacuous test that
+  // would keep passing if the seam were never threaded at all (which is the very bug).
+  it('runs the cycle when the SAME fixture reports this node IS the elected runner (WI-1728261)', async () => {
+    const calls = { ran: 0, persisted: 0 };
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      fakeBuilder({ idleRatio: 1 }, calls),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => ({ run: true, reason: 'authority' }),
+    );
+    await handler(ctx);
+    expect(calls.ran).toBe(1);
+  });
+
+  it('unwired ⇒ no gate — the PG-free factory contract the other seams also keep (WI-1728261)', async () => {
+    const calls = { ran: 0, persisted: 0 };
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      fakeBuilder({ idleRatio: 1 }, calls),
+    );
+    await handler(ctx);
+    expect(calls.ran).toBe(1);
+  });
 });
 
 describe('registerScoutCycleAction', () => {
@@ -595,59 +653,3 @@ describe('runScoutCycleTick — WI-1664060 pot-config layering', () => {
   });
 });
 
-/**
- * WI-1728261 — P-019's cross-node single-runner gate is the FOURTH seam this action
- * and the `blender:cycle` blueprint op disagreed about. It is also the first in the
- * OTHER direction: the blueprint op has wired it since 2026-06-19, this path never
- * had the parameter at all, so `if (deps.hiveRunnerGate)` in run.ts silently skipped
- * it and every node of a shared Hive ran its own scout loop.
- *
- * These pin the SEAM being threaded through the action. The structural guarantee that
- * the two entry points cannot drift again is `lint:deps-wiring-parity`, not a test.
- */
-describe('makeScoutCycleAction — P-019 hive single-runner gate (WI-1728261)', () => {
-  const hermeticCalls = () => ({ ran: 0, persisted: 0 });
-
-  it('stands down without running a cycle when the node is NOT the elected Hive runner', async () => {
-    const calls = hermeticCalls();
-    const handler = makeScoutCycleAction(
-      async () => ({ provenance: [], costUsd: 0.1 }),
-      fakeBuilder({ idleRatio: 1 }, calls), // cadence WOULD fire — the gate overrides
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      async () => ({ run: false, reason: 'not-hive-runner' }),
-    );
-    await handler(ctx);
-    expect(calls.ran).toBe(0);
-    expect(calls.persisted).toBe(0);
-  });
-
-  // THE POSITIVE CONTROL for the assertion above. Without it, `calls.ran === 0` also
-  // passes when the handler bails early for any unrelated reason — a vacuous test that
-  // would keep passing if the gate were never consulted at all.
-  it('runs the cycle when the SAME fixture reports this node IS the elected runner', async () => {
-    const calls = hermeticCalls();
-    const handler = makeScoutCycleAction(
-      async () => ({ provenance: [], costUsd: 0.1 }),
-      fakeBuilder({ idleRatio: 1 }, calls),
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      async () => ({ run: true, reason: 'authority' }),
-    );
-    await handler(ctx);
-    expect(calls.ran).toBe(1);
-  });
-
-  it('unwired ⇒ no gate — the PG-free factory contract the other seams also keep', async () => {
-    const calls = hermeticCalls();
-    const handler = makeScoutCycleAction(async () => ({ provenance: [], costUsd: 0.1 }), fakeBuilder({ idleRatio: 1 }, calls));
-    await handler(ctx);
-    expect(calls.ran).toBe(1);
-  });
-});
