@@ -220,6 +220,22 @@ export interface ProbeResult {
    */
   wedged?: boolean;
   /**
+   * WI-1647443 — embed-sidecar only: did THIS probe actually reach the model,
+   * or was it answered by the sidecar's LRU in front of it?
+   *
+   * `'yes'` = the response's per-request cache accounting proves every probe
+   * text was inferred during this request. `'no'` = a usable vector came back
+   * but it was served from the cache (or coalesced), so the ONNX worker was
+   * NOT exercised and `latencyMs` is a cache-lookup time, not an embed time.
+   * `'unknown'` = the sidecar is too old to report `cache` at all, or it
+   * ignored the `bypassCache` request — the question is undecidable from this
+   * response, which is deliberately NOT the same as `'no'`.
+   *
+   * Undefined = this probe is not the embed sidecar, or it never got as far as
+   * a usable vector. Never read an absent value as `'yes'`.
+   */
+  embedModelExercised?: 'yes' | 'no' | 'unknown';
+  /**
    * The listener's accept queue at probe time, when it could be read:
    * `pending` connections established-but-not-accepted, out of the `backlog`
    * limit. Carried on the result so a reader sees the EVIDENCE for `wedged`
@@ -664,6 +680,78 @@ export const PORTLESS_PROBE_NAME_SET: ReadonlySet<string> = new Set<string>(
  */
 export const EMBED_SIDECAR_FUNCTIONAL_PROBE_TIMEOUT_MS = 1_200;
 const EMBED_SIDECAR_FUNCTIONAL_PROBE_TEXT = 'health probe';
+
+/**
+ * WI-1647443 — the probe text is a CONSTANT, and the sidecar caches on
+ * `${model}:${kind}\0${text}`. So the first probe after a sidecar boot infers
+ * and every probe after that is an LRU hit whose recency is refreshed on the
+ * way out, meaning the entry can never age out of the 1024-entry LRU while the
+ * probe keeps running. A dead ONNX worker therefore passed the *functional*
+ * probe indefinitely: HTTP and the cache were alive, and the one thing this
+ * probe exists to certify was never touched.
+ *
+ * The repair has two halves, and it needs both:
+ *
+ * 1. **Duty-cycled real inference** — at most once per this interval, a probe
+ *    sends `bypassCache: true` (EI-19323982006772080) so the model actually
+ *    runs. That bounds how long a dead worker can hide to one interval, at a
+ *    cost of ~one short embed per interval per host rather than one per ~30s
+ *    tick. The back-off clock advances ONLY on PROVEN inference (see
+ *    `probeEmbedSidecar`), so a failing or unprovable exercise re-tries on the
+ *    very next tick instead of flapping up/down across the interval.
+ * 2. **Stating the population on every probe** — the note and
+ *    `embedModelExercised` say which of the two happened, so a cached probe is
+ *    a *stated* non-measurement rather than a silent false green, and the
+ *    reported `latencyMs` is never read as an embed time when it is a cache
+ *    lookup.
+ *
+ * A rotating probe text was the third candidate and was rejected: bucketing by
+ * time dedupes across every host sharing one sidecar, so a host taking an LRU
+ * hit cannot tell whether the entry was written a second or a bucket ago — no
+ * single host ever gets a bounded verdict of its own, which is the whole point
+ * of a per-host health probe.
+ */
+export const EMBED_SIDECAR_EXERCISE_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Budget for a probe that deliberately bypasses the cache. A cached probe
+ * answers in ~2ms; a real gemma query embed measured ~170ms/doc on an idle
+ * sidecar (EI-19323982006772080) and queues behind other work on the sidecar's
+ * single FIFO, so the 1.2s interactive budget above would turn ordinary queue
+ * pressure into a phantom DOWN. Failing to embed one short query inside THIS
+ * budget is still a real outage for a service whose contract is interactive
+ * embedding, so it stays a DOWN — the note names the exercising mode so
+ * triage isn't sent looking for an HTTP fault.
+ */
+export const EMBED_SIDECAR_EXERCISE_PROBE_TIMEOUT_MS = 6_000;
+
+/**
+ * Should THIS probe force a real inference? Pure so the duty cycle is testable
+ * without touching the module clock. `lastProvenMs === null` (nothing has been
+ * proven yet — fresh process) always exercises: the first probe of a process
+ * is exactly when "does this sidecar embed at all?" is unanswered.
+ */
+export function embedSidecarProbeShouldExercise(
+  nowMs: number,
+  lastProvenMs: number | null,
+  intervalMs: number = EMBED_SIDECAR_EXERCISE_INTERVAL_MS,
+): boolean {
+  if (lastProvenMs === null) return true;
+  return nowMs - lastProvenMs >= intervalMs;
+}
+
+/**
+ * When this host last obtained PROOF (`cache.inferred === texts.length`) that
+ * the sidecar's model ran. Plain module state, matching `downStreaks` /
+ * `lastHealth` below; a split module record would at worst exercise once per
+ * interval per record, which errs toward measuring more often, never less.
+ */
+let lastEmbedSidecarProvenInferenceMs: number | null = null;
+
+/** Test seam: forget the duty-cycle back-off so a case starts from a fresh process. */
+export function __resetEmbedSidecarExerciseClockForTests(): void {
+  lastEmbedSidecarProvenInferenceMs = null;
+}
 
 function toMs(v: Date | string | number | null | undefined): number | null {
   if (v == null) return null;
@@ -1221,10 +1309,19 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
  * (desktop app, tests, bench) — see `embed-sidecar-wiring.ts`.
  */
 export async function probeEmbedSidecar(
-  timeoutMs = EMBED_SIDECAR_FUNCTIONAL_PROBE_TIMEOUT_MS,
+  timeoutMs?: number,
+  opts: {
+    /**
+     * Force this probe into (`true`) or out of (`false`) cache-bypassing mode.
+     * Omitted ⇒ the duty cycle decides — see `embedSidecarProbeShouldExercise`.
+     */
+    exercise?: boolean;
+  } = {},
 ): Promise<ProbeResult> {
   const name = PORTLESS_PROBE_NAMES.embedSidecar;
   const start = Date.now();
+  const exercise =
+    opts.exercise ?? embedSidecarProbeShouldExercise(start, lastEmbedSidecarProvenInferenceMs);
   let url: string;
   try {
     const spawnMod = await import('./memory/embed-sidecar-spawn');
@@ -1244,14 +1341,28 @@ export async function probeEmbedSidecar(
     return { name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'embed-sidecar liveness unknown (spawn-module read failed)' };
   }
   const embedUrl = `${url}/embed`;
-  const budgetMs = Number.isFinite(timeoutMs) ? Math.max(1, Math.trunc(timeoutMs)) : EMBED_SIDECAR_FUNCTIONAL_PROBE_TIMEOUT_MS;
+  const budgetMs = Number.isFinite(timeoutMs)
+    ? Math.max(1, Math.trunc(timeoutMs as number))
+    : exercise
+      ? EMBED_SIDECAR_EXERCISE_PROBE_TIMEOUT_MS
+      : EMBED_SIDECAR_FUNCTIONAL_PROBE_TIMEOUT_MS;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), budgetMs);
   try {
     const response = await fetch(embedUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'gemma', kind: 'query', texts: [EMBED_SIDECAR_FUNCTIONAL_PROBE_TEXT] }),
+      body: JSON.stringify({
+        model: 'gemma',
+        kind: 'query',
+        texts: [EMBED_SIDECAR_FUNCTIONAL_PROBE_TEXT],
+        // Only sent when this probe means to measure the model. An older
+        // sidecar bundle accepts the unknown field, ignores it, and answers
+        // from its LRU in ~2ms — which is precisely why the response is asked
+        // to PROVE the bypass below rather than the flag being taken as
+        // evidence that it happened.
+        ...(exercise ? { bypassCache: true } : {}),
+      }),
       signal: ctl.signal,
     });
     if (!response.ok) {
@@ -1294,13 +1405,64 @@ export async function probeEmbedSidecar(
         note: `⚠ embed sidecar DOWN (functional POST /embed returned no usable vector within ${budgetMs}ms) — the response shape is invalid for the shared embedding client.`,
       };
     }
+    // WI-1647443: a usable vector proves HTTP + response shape. Whether it
+    // proves the MODEL is a separate question, and the response is the only
+    // thing that can answer it — asking for `bypassCache` is not evidence the
+    // bypass happened (an older bundle accepts the unknown field, ignores it,
+    // and answers from its LRU). Ask the one helper that owns the question
+    // rather than reading `cache` here, so this probe and the bench CLI cannot
+    // drift into disagreeing about what counts as a measurement.
+    let measured: import('./memory/embed-sidecar-server').EmbedMeasuredVerdict;
+    try {
+      const serverMod = await import('./memory/embed-sidecar-server');
+      measured = serverMod.embedResponseMeasuredModel(body as Record<string, unknown>, 1);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      measured = { ok: false, code: 'no-accounting', reason: `cache-accounting verdict unavailable (${detail})` };
+    }
+    const latencyMs = Date.now() - start;
+    if (measured.ok) {
+      // Back off ONLY on proof. A failed or unprovable exercise leaves the
+      // clock alone so the next tick tries again, which is what stops a dead
+      // worker from producing one DOWN followed by an interval of cached ups.
+      lastEmbedSidecarProvenInferenceMs = Date.now();
+      return {
+        name,
+        up: true,
+        status: response.status,
+        latencyMs,
+        url: embedUrl,
+        embedModelExercised: 'yes',
+        note:
+          `functional POST /embed OK — the model ran for THIS probe (1/1 texts inferred` +
+          `${exercise ? ', bypassCache' : ''}, budget ${budgetMs}ms, ${latencyMs}ms)`,
+      };
+    }
+    if (measured.code === 'served-from-cache') {
+      return {
+        name,
+        up: true,
+        status: response.status,
+        latencyMs,
+        url: embedUrl,
+        embedModelExercised: 'no',
+        note:
+          `embed sidecar answered, but the model was NOT exercised: this vector came from the sidecar's LRU, ` +
+          `so ${latencyMs}ms is a cache lookup and this probe says nothing about the ONNX worker. ` +
+          `A real inference is forced at most every ${Math.round(EMBED_SIDECAR_EXERCISE_INTERVAL_MS / 1000)}s (WI-1647443).`,
+      };
+    }
     return {
       name,
       up: true,
       status: response.status,
-      latencyMs: Date.now() - start,
+      latencyMs,
       url: embedUrl,
-      note: `functional POST /embed OK (one gemma query vector, budget ${budgetMs}ms)`,
+      embedModelExercised: 'unknown',
+      note:
+        `embed sidecar answered with a usable vector, but whether the model ran is UNDECIDABLE` +
+        `${exercise ? ' — this probe asked for bypassCache and the response did not account for it' : ''}: ` +
+        `${measured.reason} Treat this as "not proven", never as a healthy embed.`,
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -1312,6 +1474,7 @@ export async function probeEmbedSidecar(
       url: embedUrl,
       note:
         `⚠ embed sidecar DOWN (functional POST /embed failed within ${budgetMs}ms: ${detail}) — ` +
+        `${exercise ? 'this probe was the periodic cache-BYPASSING one, so the budget covers a real inference and the failure is the model or its queue, not the HTTP layer. ' : ''}` +
         `the shared warm-model embedding process for this host. This host's sidecar is REQUIRED ` +
         `(in-process fallback retired by WI-4021/D-003): embed calls reject loudly ` +
         `(sidecar_required_unavailable) and memory writes park in the write journal until it returns.`,

@@ -193,14 +193,36 @@ export interface EmbedResponse {
  *   `hits === 0` being checked negatively, so a malformed or partial body
  *   fails instead of passing by omission.
  */
+export type EmbedMeasuredVerdict =
+  | { ok: true }
+  | {
+      ok: false;
+      /**
+       * WHY it is not a model measurement, as a discriminant, so a caller
+       * branching on the two very different failures — "the response says it
+       * came from the cache" versus "the response cannot say" — never has to
+       * regex `reason` or re-parse `cache` itself. Re-parsing is how two
+       * probes come to disagree, which is the thing this helper exists to
+       * prevent.
+       *
+       * `'served-from-cache'` is the only code that positively establishes the
+       * model was NOT run. Every other code means UNDECIDABLE: the response is
+       * silent, malformed, or self-inconsistent, and the honest report is "not
+       * proven", never "did not happen".
+       */
+      code: 'no-accounting' | 'malformed' | 'not-a-partition' | 'served-from-cache';
+      reason: string;
+    };
+
 export function embedResponseMeasuredModel(
   body: Pick<EmbedResponse, 'cache'> | Record<string, unknown>,
   textCount: number,
-): { ok: true } | { ok: false; reason: string } {
+): EmbedMeasuredVerdict {
   const cache = (body as { cache?: unknown }).cache;
   if (cache === undefined || cache === null) {
     return {
       ok: false,
+      code: 'no-accounting',
       reason:
         'response carries no `cache` accounting — this sidecar predates EI-19323982006772080, so whether it served the model or its LRU is UNKNOWN. Do not report a throughput number from it.',
     };
@@ -208,7 +230,7 @@ export function embedResponseMeasuredModel(
   const c = cache as Partial<EmbedCacheAccounting>;
   const nums = [c.hits, c.coalesced, c.inferred];
   if (!nums.every((n) => typeof n === 'number' && Number.isFinite(n))) {
-    return { ok: false, reason: `malformed cache accounting: ${JSON.stringify(cache)}` };
+    return { ok: false, code: 'malformed', reason: `malformed cache accounting: ${JSON.stringify(cache)}` };
   }
   const hits = c.hits as number;
   const coalesced = c.coalesced as number;
@@ -216,12 +238,14 @@ export function embedResponseMeasuredModel(
   if (hits + coalesced + inferred !== textCount) {
     return {
       ok: false,
+      code: 'not-a-partition',
       reason: `cache accounting does not partition the request: hits ${hits} + coalesced ${coalesced} + inferred ${inferred} != ${textCount} texts`,
     };
   }
   if (inferred !== textCount) {
     return {
       ok: false,
+      code: 'served-from-cache',
       reason: `only ${inferred} of ${textCount} texts reached the model (${hits} served from the LRU, ${coalesced} coalesced onto an in-flight duplicate) — a throughput figure computed from this response measures the cache, not the model. Send unique texts, or set bypassCache:true.`,
     };
   }
