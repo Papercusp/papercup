@@ -175,11 +175,24 @@ describe('dev:listening_ports contract', () => {
     expect(returns).toContain('no row at all');
   });
 
-  it('offers the two filters the corpus actually asks for', () => {
+  it('offers the three filters the corpus actually asks for', () => {
     // 79% of the sampled atoms want the owner; both directions appear —
     // port->owner (dominant) and pid->ports (`lsof -nP -p "$APPID" …`).
+    // `app` is the third direction (EI-21967021435856392): app->URL, where the
+    // absence of any lookup cost ~25 tool calls to answer "where is the portal".
     const keys = Object.keys((tool as { args: { shape: Record<string, unknown> } }).args.shape).sort();
-    expect(keys).toEqual(['limit', 'pid', 'port']);
+    expect(keys).toEqual(['app', 'limit', 'pid', 'port']);
+  });
+
+  it('tells the reader how to disambiguate an empty app-filter result', () => {
+    // Zero rows for an `app` filter has two causes with different next actions,
+    // and the contract is useless if it does not separate them where the agent
+    // reads it. Same discipline as ownerVisible, one level up.
+    const returns = tool.guidance?.returns ?? '';
+    expect(returns).toContain('appFilter');
+    expect(returns).toMatch(/known:false/);
+    expect(returns).toMatch(/NOTHING IS SERVING IT|registered but/i);
+    expect(returns).toContain('registry-unavailable');
   });
 
   it('routes health questions away to dev:service_health', () => {
