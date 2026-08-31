@@ -1,9 +1,17 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
+  WORKSPACE_HOST_PUI_COMPANION_PATH,
+  WORKSPACE_HOST_PUI_ENTRYPOINT,
+  WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+  WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS,
+} from "@papercusp/deployment-driver";
 import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
 
 import {
@@ -34,14 +42,35 @@ const CUPBOARD = "https://papercusp-cupboard.aviynw.workers.dev";
 const SIGNING_PUBLIC_KEY =
   "untrusted comment: minisign public key: 5D3A7DD4A7089944\nRWREmQin1H06XfseQbDxZxnbUzVEFqNzYLmA5gnCdg+6cAKucqh02Be5\n";
 /** The bundle cannot initialize a workspace without this entrypoint, so the gate requires it. */
-const INITIALIZER_PATH = "bin/papercusp-remote-initializer";
-const INITIALIZER_BODY = "#!/usr/bin/env node\n// fixture stand-in for the remote initializer\n";
-const PUI_PATH = "bin/pui";
-const PUI_BODY = "#!/usr/bin/env bash\nexit 0\n";
-const PUI_COMPANION_PATH = "pui-companion.wasm";
-const PUI_COMPANION_BODY = "fixture pui companion";
-const PUI_MANIFEST_PATH = "pui-install.json";
-const PUI_MANIFEST_BODY = '{"schemaVersion":1}\n';
+const INITIALIZER_PATH = WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT;
+
+/**
+ * Fixture bodies for the materials the release gate requires, keyed by the contract's own exported
+ * paths so this file cannot drift from it by restating a path.
+ *
+ * The LIST is derived below from `WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS`; this map only supplies
+ * bytes. That split is deliberate: a newly-required material fails HERE, naming itself and pointing
+ * at this map, instead of surfacing as a gate rejection naming a path this file never mentions.
+ */
+const REQUIRED_MATERIAL_BODIES: Readonly<Record<string, string>> = {
+  [WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT]:
+    "#!/usr/bin/env node\n// fixture stand-in for the remote initializer\n",
+  [WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT]:
+    "#!/usr/bin/env node\n// fixture stand-in for the material-delivery program\n",
+  [WORKSPACE_HOST_PUI_ENTRYPOINT]: "#!/usr/bin/env bash\nexit 0\n",
+  [WORKSPACE_HOST_PUI_COMPANION_PATH]: "fixture pui companion",
+  [WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH]: '{"schemaVersion":1}\n',
+};
+
+const REQUIRED_MATERIALS = WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS.map((required) => {
+  const body = REQUIRED_MATERIAL_BODIES[required.path];
+  if (body === undefined)
+    throw new Error(
+      `required release material '${required.path}' has no fixture body — ` +
+        "add one to REQUIRED_MATERIAL_BODIES so this fixture keeps producing an admissible bundle",
+    );
+  return { path: required.path, executable: required.executable === true, body };
+});
 const BOOTSTRAP_SCRIPT_SHA = "216345ddd771dd1d653c597ee5aaa285181374414a4e80551d1bc9a0d9b9f667";
 
 const roots: string[] = [];
@@ -103,10 +132,9 @@ function inputDocument(overrides: Record<string, unknown> = {}): Record<string, 
     builder: { templatePath: "infra/images/workspace-host.pkr.hcl" },
     materials: [
       { path: "template.pkr.hcl", executable: false },
-      { path: INITIALIZER_PATH, executable: true },
-      { path: PUI_PATH, executable: true },
-      { path: PUI_COMPANION_PATH },
-      { path: PUI_MANIFEST_PATH },
+      ...REQUIRED_MATERIALS.map(({ path, executable }) =>
+        executable ? { path, executable: true } : { path },
+      ),
     ],
     cleanRoom: { zone: "us-central1-a", serviceAccountEmail: "papercusp-vm@example.iam.gserviceaccount.com", subnetwork: "pc-p046-rel-subnet" },
     compatibilityRequest: {
@@ -165,11 +193,12 @@ async function fixture(
   roots.push(root);
   await writeFile(join(root, "template.pkr.hcl"), TEMPLATE_BODY, "utf8");
   await mkdir(join(root, "bin"), { recursive: true });
-  await writeFile(join(root, INITIALIZER_PATH), INITIALIZER_BODY, "utf8");
-  await writeFile(join(root, PUI_PATH), PUI_BODY, "utf8");
-  await chmod(join(root, PUI_PATH), 0o755);
-  await writeFile(join(root, PUI_COMPANION_PATH), PUI_COMPANION_BODY, "utf8");
-  await writeFile(join(root, PUI_MANIFEST_PATH), PUI_MANIFEST_BODY, "utf8");
+  for (const material of REQUIRED_MATERIALS) {
+    const target = join(root, material.path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, material.body, "utf8");
+    if (material.executable) await chmod(target, 0o755);
+  }
   const manifestPath = join(root, "manifest.json");
   await writeFile(manifestPath, JSON.stringify(publication), "utf8");
   const inputPath = join(root, "input.json");

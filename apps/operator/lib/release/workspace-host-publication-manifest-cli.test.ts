@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { workspaceHostRequiredReleaseMaterialFixtures } from "@papercusp/deployment-driver";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
@@ -53,28 +54,10 @@ const CLEAN_AUDIT_LOG = [
 ].join("\n");
 
 const MATERIALS = [
-  {
-    path: "bin/papercusp-remote-initializer",
-    sha256: digest("initializer"),
-    sizeBytes: 36_345,
-    executable: true,
-  },
-  {
-    path: "bin/pui",
-    sha256: digest("pui"),
-    sizeBytes: 24_801_280,
-    executable: true,
-  },
-  {
-    path: "pui-companion.wasm",
-    sha256: digest("pui-companion"),
-    sizeBytes: 1_048_576,
-  },
-  {
-    path: "pui-install.json",
-    sha256: digest("pui-install-manifest"),
-    sizeBytes: 512,
-  },
+  // Derived from the release-gate contract rather than restated: a material added there must
+  // reach this fixture on its own, or every assembly case below fails naming a path this file
+  // never mentions.
+  ...workspaceHostRequiredReleaseMaterialFixtures(),
   {
     path: "papercusp-desktop/bin/audit-release-bundle.py",
     sha256: digest("auditor"),

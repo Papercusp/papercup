@@ -4,10 +4,10 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
-  WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
   buildWorkspaceHostBuildManifest,
   deriveWorkspaceHostCanonicalArtifactUrls,
+  workspaceHostRequiredReleaseMaterialFixtures,
   type WorkspaceHostImageArtifact,
 } from '@papercusp/deployment-driver';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -85,28 +85,10 @@ async function fixture(
         sha256: bundleSha256,
         sizeBytes: bundle.byteLength,
       },
-      {
-        path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
-        sha256: 'f'.repeat(64),
-        sizeBytes: 2_048,
-        executable: true,
-      },
-      {
-        path: 'bin/pui',
-        sha256: '6'.repeat(64),
-        sizeBytes: 8_192,
-        executable: true,
-      },
-      {
-        path: 'pui-companion.wasm',
-        sha256: '7'.repeat(64),
-        sizeBytes: 4_096,
-      },
-      {
-        path: 'pui-install.json',
-        sha256: '8'.repeat(64),
-        sizeBytes: 512,
-      },
+      // Derived from the release-gate contract, never restated: a material added there must reach
+      // this fixture on its own, or the publisher rejects the upload with a 400 naming a path this
+      // file never mentions.
+      ...workspaceHostRequiredReleaseMaterialFixtures(),
     ],
     parameters: [{ name: 'distribution_profile', value: 'vm-release' }],
     targets: [{ provider: 'gcp', locations: ['us-central1'] }],
