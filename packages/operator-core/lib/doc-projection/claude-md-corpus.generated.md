@@ -2229,8 +2229,16 @@ would otherwise drown your one new one.
 > from that set is not evidence (EI-18766822535373909). `--files` *declares* it, which is the
 > evidence `git status` cannot supply.
 
-⚠⚠ **`lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
-`tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`). A change confined
+⚠⚠ **A BARE `npm run lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
+`tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`), so a clean bare run says
+NOTHING about an edit anywhere else, and grepping its output for your paths finds nothing because
+they were never compiled. **Always pass `--files=<the files you edited>`** — that form ROUTES each
+path to the baseline-gated leg that OWNS it (`apps/operator` → `lint:tsc:operator`, plus
+`:operator-vite`, `:orchestrator`, `:papercusp-libs`, `:scripts`, `:workspaces`). A `--files` set
+lying entirely outside operator-core RUNS the owning leg for you (`status=routed`); a MIXED set
+compiles only the in-scope files (`status=partial filesUnchecked=N`) and prints the exact command
+for the rest. Read the `LINT_TSC_RESULT status=`, not just the exit code — `partial` is not `clean`.
+A change confined
 to another workspace — **`libs/generic/*`, `libs/papercusp/*`, `apps/*`, other
 `packages/*`** — is typechecked by NEITHER `lint:tsc` NOR vitest, so a type-only
 regression there is invisible to *both* routine checks and first reds the
