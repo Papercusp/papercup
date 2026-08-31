@@ -30,8 +30,10 @@
  * Server-only.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   closeSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -1181,6 +1183,12 @@ export type SpawnConsoleResult =
        * `error`; it never rejects.
        */
       childExit?: Promise<SpawnChildExit>;
+      /**
+       * Opt-in proof that a scripted headless kickoff entered the backend's
+       * native transcript. Absent for ordinary launches; callers that opt in
+       * must require `persisted === true` before claiming the kickoff ran.
+       */
+      kickoffProof?: KickoffProofResult;
     }
   | { status: 'error'; error: string; code: number };
 
@@ -1189,6 +1197,20 @@ export interface SpawnChildExit {
   code: number | null;
   signal: NodeJS.Signals | null;
   error?: Error;
+}
+
+/** Parent-visible result for the optional detached launch-kickoff receipt. */
+export interface KickoffProofResult {
+  persisted: boolean;
+  nativeRef: string | null;
+  reason: string | null;
+}
+
+/** Injectable seams for the detached kickoff-proof receipt poll. */
+export interface KickoffProofProbes {
+  readReceipt?: (path: string) => string;
+  sleep?: (ms: number) => Promise<void>;
+  windowMs?: number;
 }
 
 /** Keep observing a detached child after the bounded early-exit probe ends. */
