@@ -37,7 +37,7 @@ export default defineTool({
   guidance: {
     when: 'You (the fleet leader) want to reclaim member slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
     notWhen:
-      'The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don\'t target them (pausing the Hive Mug ≠ drain your fleet-leader peers).',
+      'The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don\'t target them (pausing the pot operator ≠ drain your fleet-leader peers).',
     chaining: 'fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → capability:launch-agent for a fresh ad-hoc agent (or fleet:launch-on-plan for a plan-bound member).',
   },
   capability: 'coord:write',
@@ -90,9 +90,9 @@ export default defineTool({
       `2. Release all locks (any files you have claimed via \`locks:acquire\`).\n` +
       `3. Unclaim your work-items (any items you are currently assigned to — return them to the pool via \`work_items:release\`).\n` +
       `4. End your turn cleanly (print \`DONE\` or \`IDLE\`; the fleet leader will let you sleep).\n\n` +
-      `**Timeline:** The Mug will wait ~${args.timeout_sec} seconds for you to complete. If you need more time or can't comply (e.g., you're at a critical checkpoint), escalate with a brief message.\n\n` +
+      `**Timeline:** The fleet leader will wait ~${args.timeout_sec} seconds for you to complete. If you need more time or can't comply (e.g., you're at a critical checkpoint), escalate with a brief message.\n\n` +
       (args.reason ? `**Reason:** ${args.reason}\n\n` : '') +
-      `**Propose/dispose:** You own your timing. If you're in the middle of something checkpoint-safe, you may defer — reply with your status and the Mug will decide whether to wait or escalate.`;
+      `**Propose/dispose:** You own your timing. If you're in the middle of something checkpoint-safe, you may defer — reply with your status and the fleet leader will decide whether to wait or escalate.`;
 
     const env = await runBulk(
       beeIds,

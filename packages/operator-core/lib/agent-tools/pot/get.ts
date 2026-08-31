@@ -25,7 +25,7 @@ export default defineTool({
     when: 'You want one pot in depth: is the pot scheduled to wake, who are the members and how loaded, how much work is queued.',
     notWhen: 'A list of all pots — pot:list. The raw per-agent fleet view across the workspace — fleet:assignments.',
     chaining:
-      'pot:list to find the slug; pot:wake to fire the Mug now; pot:declare-wake to change the cadence; pot:dissolve to tear it down.',
+      'pot:list to find the slug; pot:wake to fire the pot operator now; pot:declare-wake to change the cadence; pot:dissolve to tear it down.',
     seeAlso: [
       'pot:list (all pots at a glance)',
       'fleet:assignments (the raw per-agent fleet view)',

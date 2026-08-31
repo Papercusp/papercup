@@ -1,14 +1,14 @@
 /**
- * pot:set-steering — the owner's steering write surface for the Mug
+ * pot:set-steering — the owner's steering write surface for the pot operator
  * (queen-steering-panel-2026-06-15, brief B-01; CONTRACT C-1).
  *
  * Writes the `owner-steering:*` hive_settings (via owner-steering.ts) — a focus
- * directive, the plans the Mug may pick up NOW (eligibility, DISTINCT from
+ * directive, the plans the pot operator may pick up NOW (eligibility, DISTINCT from
  * lifecycle status, D-002), and a new-work pause (immediate or until a timestamp).
  * Then it (1) refreshes the 👑 Mug tab (`notifySyncInvalidate('pot.steering')`)
- * and (2) WAKES the Mug, so a steering change is honoured on its next survey
+ * and (2) WAKES the pot operator, so a steering change is honoured on its next survey
  * immediately rather than at the next cadence tick. The 👑 Mug tab (B-04) writes
- * through this; the Mug wake-brief (B-02) reads the same keys via getOwnerSteering.
+ * through this; the pot operator wake-brief (B-02) reads the same keys via getOwnerSteering.
  *
  * Sibling of `pot:pause` (the other harness:write Pot-control verb). Read twin:
  * `pot:get-steering`.
@@ -30,16 +30,16 @@ export default defineTool({
   name: 'pot:set-steering',
   profile: 'engineer',
   description:
-    '⛔ RETIRED (D-048): this tool REFUSES while the Mug/Kettle/Cup tier is retired — it wrote steering and then woke that tier, so it is gated as an actuator, not merely stale. Historically it set the owner steering the pot operator read on every wake: a focus `directive`, `eligiblePlans` / `eligiblePots` (what it may pick up + the placement scope NOW), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxCups`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), the federated Blender priming override `federatedPriming`, and `createWakeSuppressPlans` (EI-13608). Read current steering with pot:get-steering.',
+    '⛔ RETIRED (D-048): this tool REFUSES while the autonomous pot-operator tier is retired — it wrote steering and then woke that tier, so it is gated as an actuator, not merely stale. Historically it set the owner steering the pot operator read on every wake: a focus `directive`, `eligiblePlans` / `eligiblePots` (what it may pick up + the placement scope NOW), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxCups`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), the federated Blender priming override `federatedPriming`, and `createWakeSuppressPlans` (EI-13608). Read current steering with pot:get-steering.',
   guidance: {
-    when: 'Steering the Mug from the owner surface — focus it on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Mug tab is the UI for this.',
+    when: 'Steering the pot operator from the owner surface — focus it on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 steering tab is the UI for this.',
     notWhen:
       'Freezing the WHOLE pot (all autonomous wakes) — pot:pause. Per-plan lifecycle (draft/ready/shipped) — plans:*. Stopping ONE cup — fleet:drain / fleet:cancel.',
     chaining:
-      'pot:set-steering { eligiblePlans:[...], directive:"only these plans" } → the Mug wakes + honours it next placement. pot:set-steering { pauseNewWork:true } → it drives existing work to terminal then idles. pot:get-steering reads the current state; clear:true resets.',
+      'pot:set-steering { eligiblePlans:[...], directive:"only these plans" } → the pot operator wakes + honours it next placement. pot:set-steering { pauseNewWork:true } → it drives existing work to terminal then idles. pot:get-steering reads the current state; clear:true resets.',
     seeAlso: [
       'pot:get-steering (read the current steering before changing it)',
-      'pot:pause (freeze the whole pot instead of steering the Mug)',
+      'pot:pause (freeze the whole pot instead of steering the pot operator)',
     ],
   },
   capability: 'harness:write',
@@ -57,21 +57,21 @@ export default defineTool({
       .max(LIMITS.BRIEF)
       .nullable()
       .optional()
-      .describe(`Free-text directive surfaced in the Mug wake brief. null or "" clears it. Max ${LIMITS.BRIEF} chars.`),
+      .describe(`Free-text directive surfaced in the pot operator wake brief. null or "" clears it. Max ${LIMITS.BRIEF} chars.`),
     eligiblePlans: z
       .array(z.string().min(1).max(200))
       .max(200)
       .optional()
-      .describe('Plan slugs the Mug may pick up NOW (eligibility ≠ lifecycle status). [] = no restriction (default).'),
+      .describe('Plan slugs the pot operator may pick up NOW (eligibility ≠ lifecycle status). [] = no restriction (default).'),
     eligiblePots: z
       .array(z.string().min(1).max(200))
       .max(500)
       .optional()
-      .describe('The placement SCOPE — pot/harness slugs the home Mug may place into (→ survey allowedHarnesses). [] = no restriction (default).'),
+      .describe('The placement SCOPE — pot/harness slugs the home operator may place into (→ survey allowedHarnesses). [] = no restriction (default).'),
     includeUnplannedWork: z
       .boolean()
       .optional()
-      .describe('Whether plan-LESS ("loose") work-items — those with no source plan — are placed. Default true; false ⇒ the Mug works ONLY plan-tied items. Independent of eligiblePlans (the "Non-plan work items" toggle).'),
+      .describe('Whether plan-LESS ("loose") work-items — those with no source plan — are placed. Default true; false ⇒ the pot operator works ONLY plan-tied items. Independent of eligiblePlans (the "Non-plan work items" toggle).'),
     modelTiers: z
       .array(
         z.object({
@@ -94,7 +94,7 @@ export default defineTool({
       .nonnegative()
       .nullable()
       .optional()
-      .describe('THROTTLE (P-006): min seconds between Mug wakes — effective floor = MAX(system 60s, this). Raises the interval to slow the loop. null / 0 clears it.'),
+      .describe('THROTTLE (P-006): min seconds between operator wakes — effective floor = MAX(system 60s, this). Raises the interval to slow the loop. null / 0 clears it.'),
     maxCups: z
       .number()
       .int()
@@ -110,7 +110,7 @@ export default defineTool({
       })
       .nullable()
       .optional()
-      .describe('THROTTLE (P-006): gate idle background activities. Each defaults ON; false suppresses that activity (gym cycles / Blender ideation / doc-curation / Mug review-iteration of Blender drafts). null / {} clears it.'),
+      .describe('THROTTLE (P-006): gate idle background activities. Each defaults ON; false suppresses that activity (gym cycles / Blender ideation / doc-curation / operator review-iteration of Blender drafts). null / {} clears it.'),
     autoScaleOut: z
       .boolean()
       .nullable()
@@ -120,7 +120,7 @@ export default defineTool({
       .enum(['serial', 'balanced', 'parallel'])
       .nullable()
       .optional()
-      .describe('P-009 (ADVISORY): decomposition-aggressiveness hint the Mug reads in its wake brief — serial ↔ balanced ↔ max-parallel lanes. null clears it (Mug\'s own judgement).'),
+      .describe('P-009 (ADVISORY): decomposition-aggressiveness hint the pot operator reads in its wake brief — serial ↔ balanced ↔ max-parallel lanes. null clears it (the operator\'s own judgement).'),
     modelOverrides: z
       .record(z.string(), z.string().max(120))
       .nullable()
@@ -139,11 +139,11 @@ export default defineTool({
       .array(z.string().min(1).max(200))
       .max(200)
       .optional()
-      .describe('EI-13608: plan slugs whose UNASSIGNED work_items:create should NOT wake the Mug — for a KNOWN cup-forbidden plan (e.g. gated on a live 2-machine rig or an owner decision) that re-homes items unassigned and would otherwise burn a no-op survey+decide cycle per create. Does not affect eligibility/placement. [] clears it (default: no suppression).'),
+      .describe('EI-13608: plan slugs whose UNASSIGNED work_items:create should NOT wake the pot operator — for a KNOWN cup-forbidden plan (e.g. gated on a live 2-machine rig or an owner decision) that re-homes items unassigned and would otherwise burn a no-op survey+decide cycle per create. Does not affect eligibility/placement. [] clears it (default: no suppression).'),
     pauseNewWork: z
       .boolean()
       .optional()
-      .describe('Pause starting NEW work — the Mug drives existing placements to terminal then idles.'),
+      .describe('Pause starting NEW work — the pot operator drives existing placements to terminal then idles.'),
     pausedUntil: z
       .number()
       .int()
@@ -161,14 +161,14 @@ export default defineTool({
     // invalid_args at the point of the typo.
   }).strict(),
   async handler(args, ctx) {
-    // D-048 ruled this TIER, from its own guidance: "Steering the Mug from the
+    // D-048 ruled this TIER, from its own guidance: "Steering the pot operator from the
     // owner surface … The 👑 Mug tab is the UI for this". This is the ONE of the
     // four that is a true ACTUATOR under the D-017 scope rule — it WRITES
     // (setOwnerSteering) and then calls requestUrgentPotWake, i.e. it can arm a
     // wake on a tier the owner retired. So this gate is harm-prevention, not
     // merely refusing to advertise a dead surface.
     const retired = await refuseIfMugKettleRetired(
-      'steer the Mug',
+      'steer the pot operator',
       'Drive the app with an su session (GOAL mode) instead.',
     );
     if (retired) return retired;
@@ -224,7 +224,7 @@ export default defineTool({
       .then(({ notifySyncInvalidate }) => notifySyncInvalidate('pot.steering', {}))
       .catch(() => {});
 
-    // Wake the Mug so the new steering is honoured on its next survey now, not at
+    // Wake the pot operator so the new steering is honoured on its next survey now, not at
     // the next cadence tick. Fire-and-forget (the wake reports, never throws).
     const wake = await requestUrgentPotWake({
       reason: 'owner steering updated',

@@ -46,7 +46,7 @@ export default defineTool({
   description:
     "Stand up a NEW local pot (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the pot operator. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
   guidance: {
-    when: 'Standing up a NEW local pot (its home harness + Mug) in one call. Operator/user only.',
+    when: 'Standing up a NEW local pot (its home harness + operator) in one call. Operator/user only.',
     notWhen:
       'Deploying an EXISTING pot to a cloud frame — deploy:pot. A plain non-pot harness — harness:create. From a cup — not allowed (spin a kind:harness subharness instead).',
     chaining:
@@ -77,7 +77,7 @@ export default defineTool({
       .min(0)
       .max(86_400)
       .optional()
-      .describe('Wake the Mug after N seconds (0 = now). Omit ⇒ create idle; wake later with pot:wake / pot:declare-wake.'),
+      .describe('Wake the pot operator after N seconds (0 = now). Omit ⇒ create idle; wake later with pot:wake / pot:declare-wake.'),
     kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff context for the first wake. Auto-truncated to 2000 chars if longer.'),
     blueprintId: z
       .string()
