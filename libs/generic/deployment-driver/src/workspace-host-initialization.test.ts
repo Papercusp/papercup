@@ -5,6 +5,7 @@ import {
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
   ReplaySafeWorkspaceHostInitializationExecutor,
+  WorkspaceHostCredentialDeliveryCapabilityError,
   buildWorkspaceHostBackupCredentialManifest,
   buildWorkspaceHostBackupRestoreCredentialRebindRequest,
   executeWorkspaceHostInitialization,
@@ -436,6 +437,7 @@ describe("workspace-host credential lifecycle", () => {
       workspaceId: "workspace-1",
       hostId: "host-1",
       requestedAt: REQUESTED_AT,
+      deliveryCapabilities: CAPABLE,
       action: "rotate",
       currentCredentialRefs: refs("old"),
       currentDelivery: delivery(1),
@@ -459,6 +461,7 @@ describe("workspace-host credential lifecycle", () => {
       workspaceId: "workspace-1",
       hostId: "host-1",
       requestedAt: REQUESTED_AT,
+      deliveryCapabilities: CAPABLE,
       currentCredentialRefs: refs(),
       currentDelivery: delivery(),
     } as const;
@@ -528,6 +531,7 @@ describe("workspace-host credential lifecycle", () => {
       workspaceId: "workspace-1",
       hostId: "host-1",
       requestedAt: REQUESTED_AT,
+      deliveryCapabilities: CAPABLE,
       ...restoreBody,
     });
     expect(restored.steps.filter((step) => step.kind === "bind")).toHaveLength(
@@ -558,6 +562,7 @@ describe("workspace-host credential lifecycle", () => {
         workspaceId: "workspace-1",
         hostId: "host-1",
         requestedAt: REQUESTED_AT,
+        deliveryCapabilities: CAPABLE,
         action: "restore-rebind",
         backup: manifest,
         nextCredentialRefs: { cloudCredentialRef: refs().cloudCredentialRef },
@@ -629,5 +634,129 @@ describe("validateWorkspaceHostInitializationCanary", () => {
         "restore did not rebind all credential channels",
       ]),
     );
+  });
+});
+
+/**
+ * D-215 point 6 — a provider declaring `fileTransfer: false` cannot carry the git or agent
+ * credential channels, and must be refused at PLAN time.
+ *
+ * The refusal these tests pin is the difference between a request rejected before anything is
+ * provisioned and a VM that boots, initializes, and then fails inside `bind()` with
+ * "delivered material ... is not present on the host" — a message that cannot distinguish a
+ * provider that was never able to deliver from a delivery that was attempted and lost.
+ */
+describe("credential delivery capability gate", () => {
+  /** Cloud-only: the one channel that is ambient, and therefore the exemption in D-215 point 4. */
+  function cloudOnly(): Pick<
+    WorkspaceHostInitializationRequest,
+    "credentialRefs" | "credentialDelivery"
+  > {
+    return {
+      credentialRefs: { cloudCredentialRef: refs().cloudCredentialRef },
+      credentialDelivery: { cloud: delivery().cloud },
+    };
+  }
+
+  it("refuses a git channel on a provider that cannot transfer files", () => {
+    let thrown: unknown;
+    try {
+      planWorkspaceHostInitialization(
+        request({
+          deliveryCapabilities: NO_FILE_TRANSFER,
+          credentialRefs: {
+            cloudCredentialRef: refs().cloudCredentialRef,
+            gitCredentialRef: refs().gitCredentialRef,
+          },
+          credentialDelivery: { cloud: delivery().cloud, git: delivery().git },
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    // A DISTINCT error type, not a generic validation message: an API edge must be able to tell
+    // "this provider structurally cannot do this" from "your request body is malformed".
+    expect(thrown).toBeInstanceOf(WorkspaceHostCredentialDeliveryCapabilityError);
+    expect((thrown as WorkspaceHostCredentialDeliveryCapabilityError).channel).toBe("git");
+    expect((thrown as WorkspaceHostCredentialDeliveryCapabilityError).capability).toBe(
+      "fileTransfer",
+    );
+  });
+
+  it("refuses an agent channel on a provider that cannot transfer files", () => {
+    expect(() =>
+      planWorkspaceHostInitialization(
+        request({
+          deliveryCapabilities: NO_FILE_TRANSFER,
+          credentialRefs: {
+            cloudCredentialRef: refs().cloudCredentialRef,
+            agentCredentialRef: refs().agentCredentialRef,
+          },
+          credentialDelivery: { cloud: delivery().cloud, agent: delivery().agent },
+        }),
+      ),
+    ).toThrow(WorkspaceHostCredentialDeliveryCapabilityError);
+  });
+
+  it("still plans the ambient cloud channel on that same provider", () => {
+    // CALIBRATION. Without this the two refusals above are satisfied by a gate that rejects
+    // everything, and the D-215 point 4 exemption would be untested — the exemption is what keeps
+    // `bind()` from passing against a file we invented for a family that has none.
+    const plan = planWorkspaceHostInitialization(
+      request({ deliveryCapabilities: NO_FILE_TRANSFER, ...cloudOnly() }),
+    );
+    expect(plan.steps.map((step) => step.id)).toContain("bind-cloud");
+    expect(plan.steps.some((step) => step.id === "bind-git")).toBe(false);
+  });
+
+  it("plans every channel when the provider declares file transfer", () => {
+    // Positive control: the gate is off the path entirely for a capable provider.
+    const plan = planWorkspaceHostInitialization(request({ deliveryCapabilities: CAPABLE }));
+    expect(plan.steps.map((step) => step.id)).toEqual(
+      expect.arrayContaining(["bind-cloud", "bind-git", "bind-agent"]),
+    );
+  });
+
+  it("refuses an undeclared capability rather than assuming one", () => {
+    // Fail-closed on a malformed declaration. An absent boolean must not read as "capable" —
+    // that is exactly the decorative-boolean behaviour this decision exists to end.
+    expect(() =>
+      planWorkspaceHostInitialization(
+        request({ deliveryCapabilities: {} as never, ...cloudOnly() }),
+      ),
+    ).toThrow(/deliveryCapabilities.fileTransfer must be declared/);
+  });
+
+  it("applies the same gate to every credential lifecycle action", () => {
+    const base = {
+      contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
+      workspaceId: "workspace-1",
+      hostId: "host-1",
+      requestedAt: REQUESTED_AT,
+      deliveryCapabilities: NO_FILE_TRANSFER,
+    } as const;
+    expect(() =>
+      planWorkspaceHostCredentialLifecycle({
+        ...base,
+        operationId: "rotate-x",
+        action: "rotate",
+        currentCredentialRefs: refs("old"),
+        currentDelivery: delivery(),
+        nextCredentialRefs: refs("new"),
+        nextDelivery: delivery(2),
+      }),
+    ).toThrow(WorkspaceHostCredentialDeliveryCapabilityError);
+    // Revocation too: if the provider could never place the file, there is no artifact for a
+    // revoke to remove, and planning one would assert a cleanup that never had anything to clean.
+    expect(() =>
+      planWorkspaceHostCredentialLifecycle({
+        ...base,
+        operationId: "revoke-x",
+        action: "revoke",
+        currentCredentialRefs: refs(),
+        currentDelivery: delivery(),
+        channels: ["git"],
+      }),
+    ).toThrow(WorkspaceHostCredentialDeliveryCapabilityError);
   });
 });

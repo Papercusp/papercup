@@ -30,6 +30,8 @@ import {
 import type { WorkspaceHostCredentialRefs } from './workspace-host-types';
 
 const REQUESTED_AT = '2026-08-25T22:00:00.000Z';
+/** These fixtures exercise the git/agent families, so they need a file-transfer-capable provider. */
+const CAPABLE = { fileTransfer: true } as const;
 const EXPIRES_AT = '2026-08-25T23:00:00.000Z';
 
 function cloudRef(generation = 1) {
@@ -329,6 +331,7 @@ describe('workspace-host credential namespace', () => {
     const plan = planWorkspaceHostInitialization({
       contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
       operationId: 'byoc-canary-init-001',
+      deliveryCapabilities: CAPABLE,
       workspaceId: 'papercusp-workspace',
       hostId: 'byoc-canary-01',
       requestedAt: REQUESTED_AT,
@@ -440,6 +443,7 @@ describe('workspace-host credential resolver', () => {
     const plan = planWorkspaceHostCredentialLifecycle({
       contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
       operationId: 'byoc-canary-rotate-001',
+      deliveryCapabilities: CAPABLE,
       workspaceId: 'papercusp-workspace',
       hostId: 'byoc-canary-01',
       requestedAt: REQUESTED_AT,
@@ -474,6 +478,7 @@ describe('workspace-host credential resolver', () => {
     const plan = planWorkspaceHostCredentialLifecycle({
       contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
       operationId: 'byoc-canary-revoke-001',
+      deliveryCapabilities: CAPABLE,
       workspaceId: 'papercusp-workspace',
       hostId: 'byoc-canary-01',
       requestedAt: REQUESTED_AT,
@@ -497,6 +502,7 @@ describe('workspace-host credential resolver', () => {
     const plan = planWorkspaceHostCredentialLifecycle({
       contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
       operationId: 'byoc-canary-reconnect-001',
+      deliveryCapabilities: CAPABLE,
       workspaceId: 'papercusp-workspace',
       hostId: 'byoc-canary-01',
       requestedAt: REQUESTED_AT,
@@ -532,6 +538,7 @@ describe('workspace-host credential resolver', () => {
     const plan = planWorkspaceHostCredentialLifecycle({
       contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
       operationId: 'byoc-canary-restore-001',
+      deliveryCapabilities: CAPABLE,
       workspaceId: 'papercusp-workspace',
       hostId: 'byoc-canary-01',
       requestedAt: REQUESTED_AT,
@@ -568,6 +575,7 @@ describe('workspace-host credential resolver', () => {
     const plan = planWorkspaceHostCredentialLifecycle({
       contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
       operationId: 'byoc-canary-reconnect-002',
+      deliveryCapabilities: CAPABLE,
       workspaceId: 'papercusp-workspace',
       hostId: 'byoc-canary-01',
       requestedAt: REQUESTED_AT,

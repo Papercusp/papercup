@@ -143,8 +143,9 @@ export function createWorkspaceHostCanaryRoute(
       }
 
       let operations;
+      let deliveryCapabilities;
       try {
-        ({ operations } = await dependencies.resolveOperationsForHost({
+        ({ operations, deliveryCapabilities } = await dependencies.resolveOperationsForHost({
           workspaceId,
           hostId,
           controller,
@@ -177,6 +178,7 @@ export function createWorkspaceHostCanaryRoute(
           source: body.source as never,
           credentials: body.credentials as never,
           operations,
+          deliveryCapabilities,
           ...(body.destroyFinalization ? { destroyFinalization: body.destroyFinalization as never } : {}),
           onPhaseStart: () => {
             phaseStarted = true;

@@ -42,7 +42,11 @@ type ControllerOwnedRequestField =
   | 'operationId'
   | 'workspaceId'
   | 'hostId'
-  | 'requestedAt';
+  | 'requestedAt'
+  // Supplied by the runner from the run input's provider profile, not by the action describing
+  // WHICH lifecycle operation to perform. A caller states the operation; the controller states
+  // what the provider can carry.
+  | 'deliveryCapabilities';
 type CredentialLifecycleActionInput<T> = T extends unknown
   ? Omit<T, ControllerOwnedRequestField>
   : never;

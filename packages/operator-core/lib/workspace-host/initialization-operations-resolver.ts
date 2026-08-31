@@ -28,6 +28,7 @@ import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_RUNTIME_ROOT,
+  type WorkspaceHostDeliveryCapabilities,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostInitializationHostOperations,
 } from '@papercusp/deployment-driver';
@@ -41,6 +42,7 @@ import {
 } from './gcp-iap-initialization-operations';
 import {
   GCP_WORKSPACE_HOST_TARGET,
+  GCP_WORKSPACE_HOST_TRANSPORT_FEATURES,
   resolveGcpWorkspaceHostInstanceIdentity,
   type GcpInstanceGuestAttribute,
   type GcpWorkspaceHostApiClient,
@@ -393,6 +395,24 @@ export function resolveWorkspaceHostInitializationOperations(
   return new GcpIapWorkspaceHostInitializationOperations(profile);
 }
 
+/**
+ * The declared transport capabilities of the provider that will execute this host's operations.
+ *
+ * Read from the provider's own feature declaration rather than assumed: a target whose transport
+ * cannot transfer files cannot carry the git or agent credential channels, and the planner refuses
+ * those at plan time (D-215 point 6). Dispatching on target here — beside the adapter resolution
+ * that already dispatches on it — is what keeps a future AWS/Azure adapter from silently
+ * inheriting GCP's answer.
+ */
+export function resolveWorkspaceHostDeliveryCapabilities(
+  desired: WorkspaceHostDesiredSpec,
+): WorkspaceHostDeliveryCapabilities {
+  if (desired.target !== GCP_WORKSPACE_HOST_TARGET) {
+    throw new UnsupportedWorkspaceHostInitializationTargetError(String(desired.target));
+  }
+  return GCP_WORKSPACE_HOST_TRANSPORT_FEATURES;
+}
+
 /** Raised when the controller's own initialization settings are missing or unusable. */
 export class WorkspaceHostInitializationControllerProfileError extends Error {
   readonly problems: readonly string[];
@@ -546,7 +566,11 @@ export interface ResolveOperationsForHostInput {
  */
 export async function resolveWorkspaceHostInitializationOperationsForHost(
   input: ResolveOperationsForHostInput,
-): Promise<{ desired: WorkspaceHostDesiredSpec; operations: WorkspaceHostInitializationHostOperations }> {
+): Promise<{
+  desired: WorkspaceHostDesiredSpec;
+  operations: WorkspaceHostInitializationHostOperations;
+  deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
+}> {
   const read = input.readDesiredSpec ?? readWorkspaceHostDesiredSpec;
   const lookup = await read(input.workspaceId, input.hostId);
   if (!lookup.desired) {
@@ -589,5 +613,6 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
   return {
     desired,
     operations,
+    deliveryCapabilities: resolveWorkspaceHostDeliveryCapabilities(desired),
   };
 }

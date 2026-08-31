@@ -684,13 +684,29 @@ function gcpClipboardFallback(): WorkspaceHostTransportProfile['compatibility'][
   };
 }
 
+/**
+ * The transport features EVERY GCP workspace-host transport provides.
+ *
+ * Named and exported because it is now load-bearing beyond the profile: the initialization
+ * resolver reads `fileTransfer` from it to decide whether this provider may carry the git and
+ * agent credential channels (D-215 point 6). A caller that needs that answer must read it from
+ * here rather than restate a boolean, or the capability gate ends up asserting a copy.
+ */
+export const GCP_WORKSPACE_HOST_TRANSPORT_FEATURES = Object.freeze({
+  command: true,
+  pty: true,
+  tcpForward: true,
+  fileTransfer: true,
+  clipboard: false,
+} as const);
+
 /** Stable machine-readable profile consumed by psu and the desktop connection manager. */
 export function buildGcpWorkspaceHostTransportProfile(
   input: GcpWorkspaceHostTransportProfileInput,
 ): WorkspaceHostTransportProfile {
   const common = {
     supportedClientPlatforms: ['linux', 'macos', 'windows'],
-    features: { command: true, pty: true, tcpForward: true, fileTransfer: true, clipboard: false },
+    features: { ...GCP_WORKSPACE_HOST_TRANSPORT_FEATURES },
     reconnect: 'recreate' as const,
   };
   if (input.kind === 'gcp-direct-ssh') {

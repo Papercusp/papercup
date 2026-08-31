@@ -106,8 +106,9 @@ export default defineTool({
     }
 
     let operations;
+    let deliveryCapabilities;
     try {
-      ({ operations } = await resolveWorkspaceHostInitializationOperationsForHost({
+      ({ operations, deliveryCapabilities } = await resolveWorkspaceHostInitializationOperationsForHost({
         workspaceId,
         hostId,
         controller,
@@ -133,6 +134,7 @@ export default defineTool({
         workspaceId,
         hostId,
         operations,
+        deliveryCapabilities,
         source: body.source as never,
         credentialRefs: body.credentialRefs as never,
         credentialDelivery: body.credentialDelivery as never,
