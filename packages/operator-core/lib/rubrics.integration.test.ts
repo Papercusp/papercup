@@ -953,3 +953,112 @@ describe('workspace scope follows activeWorkspaceId (WI-976 regression)', () => 
     );
   });
 });
+
+// ─── EI-21972673091438558: the template_data PERSISTENCE BOUNDARY ────────────────────
+// A rubric IS a plan row and its criteria live in `template_data`. TWO doors write that
+// column; only `rubrics:propose` used to be guarded. `plans:set-template-data` validates
+// STRUCTURE ONLY — a criteria array of length 1 satisfies its zod schema exactly as well
+// as one of length 27 — so a live rubric could be gutted through it without a word.
+//
+// The rules are unit-pinned in agent-tools/plans/rubric-loss-guard.test.ts. THESE cases
+// pin the WIRING: that the guard actually runs on the generic door, against the row the
+// transaction is replacing, and that a refusal leaves the stored rubric intact. Driving
+// the SAME withPlanLock + evaluateSetTemplateData pair the tool handler uses is the point
+// — asserting on the guard function alone would pass even if nothing called it.
+describe('template_data persistence boundary — the set-template-data door', () => {
+  /** Read the rubric's stored template_data straight off the row, so a resubmission is
+   *  schema-valid by construction rather than by a hand-written fixture that can drift. */
+  async function storedTemplateData(slug: string): Promise<{ criteria: { key: string }[] }> {
+    const rows = await db.adminSql<{ template_data: { criteria: { key: string }[] } }[]>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${slug}`;
+    return rows[0]!.template_data;
+  }
+
+  /** The exact pair `plans:set-template-data`'s handler runs (set-template-data.ts). */
+  async function setTemplateDataDoor(slug: string, data: unknown) {
+    const { withPlanLock } = await import('./agent-tools/plans/with-plan-lock');
+    const { evaluateSetTemplateData } = await import('./agent-tools/plans/set-template-data');
+    return withPlanLock(null as never, { slug, intent: 'plans:set-template-data' }, async (current, meta) =>
+      evaluateSetTemplateData(current, data, slug, meta?.inputSchema ?? null),
+    );
+  }
+
+  async function seedRubric(slug: string) {
+    await rubrics.proposeRubric({
+      rubricId: slug,
+      characteristic: 'queen-coordination',
+      title: 'Guarded rubric',
+      criteria: sampleCriteria,
+      by: 'author-a',
+    });
+  }
+
+  it('REFUSES a set-template-data write that would silently delete a stored criterion', async () => {
+    await seedRubric('guarded-rubric');
+    const before = await storedTemplateData('guarded-rubric');
+    expect(before.criteria.length).toBeGreaterThan(1);
+
+    // The whole bug in one object: structurally valid, one criterion shorter.
+    const gutted = { ...before, criteria: before.criteria.slice(0, 1) };
+    const droppedKey = before.criteria[1]!.key;
+
+    await expect(setTemplateDataDoor('guarded-rubric', gutted)).rejects.toThrow(
+      new RegExp(`SILENTLY LOSE[\\s\\S]*${droppedKey}`),
+    );
+
+    // The refusal rolls back inside the lock — the stored rubric is untouched.
+    const after = await storedTemplateData('guarded-rubric');
+    expect(after.criteria.map((c) => c.key)).toEqual(before.criteria.map((c) => c.key));
+    expect((await rubrics.getRubric('guarded-rubric'))?.criteria).toHaveLength(
+      before.criteria.length,
+    );
+  });
+
+  it('REFUSES a template_data CLEAR, which erases every criterion at once', async () => {
+    await seedRubric('clearable-rubric');
+    await expect(setTemplateDataDoor('clearable-rubric', null)).rejects.toThrow(/SILENTLY LOSE/);
+    expect((await storedTemplateData('clearable-rubric')).criteria.length).toBeGreaterThan(1);
+  });
+
+  it('still ACCEPTS an additive write — how P-001 added its criterion through this door', async () => {
+    await seedRubric('growable-rubric');
+    const before = await storedTemplateData('growable-rubric');
+    const added = {
+      ...before,
+      criteria: [
+        ...before.criteria,
+        {
+          key: 'portfolio-activity-floor',
+          title: 'Portfolio activity floor',
+          model: 'A standing goal with zero portfolio acts in its graded window is FAILING, not unknown.',
+          method: 'Count portfolio acts by the holder inside the graded window; zero over >=60min scores fail.',
+          driftMarkers: 'A window scored `unknown` while the ledger was available and returned zero acts.',
+        },
+      ],
+    };
+    const result = await setTemplateDataDoor('growable-rubric', added);
+    expect(result.kind).toBe('ok');
+    expect((await storedTemplateData('growable-rubric')).criteria.map((c) => c.key)).toContain(
+      'portfolio-activity-floor',
+    );
+  });
+
+  it('leaves a NON-rubric plan\'s structured data alone (the guard is scoped, not global)', async () => {
+    // A plan-input plan writes template_data too and has no criteria to lose; the guard
+    // must not fire on it, or every parameterized plan write becomes collateral damage.
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', 'plain-plan',
+              ${'---\ntitle: Plain\nstatus: active\ncreated: 2026-06-20\nupdated: 2026-06-20\n---\n\n## Now\n\nwork\n'},
+              md5('plain-plan'), 1, 'Plain', 'active', '2026-06-20', '2026-06-20', 'queen-1', false,
+              NULL, ${JSON.stringify({ criteria: [{ key: 'a' }] })}::text::jsonb, 'local')`;
+    // No declared schema ⇒ the door's own `no_template` rejection, NOT a loss-guard throw.
+    const result = await setTemplateDataDoor('plain-plan', { criteria: [] });
+    expect(result.kind).toBe('ok');
+    expect((result as { value: { ok: boolean; code?: string } }).value.code).toBe('no_template');
+  });
+});
