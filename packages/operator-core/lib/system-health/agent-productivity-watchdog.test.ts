@@ -23,6 +23,7 @@ import {
   DEGENERATE_WAKE_MIN_CALLS,
   DEGENERATE_WAKE_TELEMETRY_RATIO,
   DEGENERATE_WAKE_MAX_WORK_CALLS,
+  DEGENERATE_WAKE_MAX_PROGRESS_CALLS,
   resolveDegenerateWake,
   IDEATE_PASS_GRACE_MS,
 } from './agent-productivity-watchdog';
@@ -325,6 +326,7 @@ describe('resolveDegenerateWake — WI-7129', () => {
     recentCalls: DEGENERATE_WAKE_MIN_CALLS,
     recentTelemetryCalls: 0,
     recentWorkCalls: 1,
+    recentProgressCalls: 1,
   };
 
   it('flags a mature telemetry-only window', () => {
@@ -350,6 +352,15 @@ describe('resolveDegenerateWake — WI-7129', () => {
       ...healthyBase,
       recentTelemetryCalls: DEGENERATE_WAKE_MIN_CALLS,
       recentWorkCalls: DEGENERATE_WAKE_MAX_WORK_CALLS + 1,
+    });
+    expect(out).toMatchObject({ degenerate: false, reason: 'work-present' });
+  });
+
+  it('does not mistake hook-heavy healthy work for degeneration', () => {
+    const out = resolveDegenerateWake({
+      ...healthyBase,
+      recentTelemetryCalls: DEGENERATE_WAKE_MIN_CALLS,
+      recentProgressCalls: DEGENERATE_WAKE_MAX_PROGRESS_CALLS + 1,
     });
     expect(out).toMatchObject({ degenerate: false, reason: 'work-present' });
   });
@@ -385,6 +396,7 @@ describe('degenerate-wake SQL readers', () => {
           recent_calls: '100',
           recent_telemetry_calls: '81',
           recent_work_calls: '2',
+          recent_progress_calls: '1',
         },
       ];
     }) as unknown as Sql;
@@ -397,6 +409,7 @@ describe('degenerate-wake SQL readers', () => {
       recentCalls: 100,
       recentTelemetryCalls: 81,
       recentWorkCalls: 2,
+      recentProgressCalls: 1,
     });
     expect(statement).toContain('recent_telemetry_calls');
     expect(statement).toContain('work_items:%');
@@ -429,6 +442,7 @@ describe('runAgentProductivitySweepOnce — degenerate-wake leg', () => {
     recentCalls: 100,
     recentTelemetryCalls: 81,
     recentWorkCalls: 2,
+    recentProgressCalls: 1,
   };
 
   it('emits one workspace wave with fleet and held-claim evidence', async () => {
@@ -453,6 +467,7 @@ describe('runAgentProductivitySweepOnce — degenerate-wake leg', () => {
           totalCalls: 100,
           telemetryCalls: 81,
           workCalls: 2,
+          progressCalls: 1,
           heldClaims: ['WI-123', 'WI-456'],
         },
       ],

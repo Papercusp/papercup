@@ -122,6 +122,12 @@ export const DEGENERATE_WAKE_WINDOW_MS = 30 * 60_000;
 export const DEGENERATE_WAKE_MIN_CALLS = 40;
 export const DEGENERATE_WAKE_TELEMETRY_RATIO = 0.75;
 export const DEGENERATE_WAKE_MAX_WORK_CALLS = 5;
+/**
+ * False-positive guard from the live calibration: hook telemetry can dominate
+ * a healthy session's RAW rows.  Real agent-origin, non-telemetry calls are the
+ * progress counter that distinguishes that healthy case from degeneration.
+ */
+export const DEGENERATE_WAKE_MAX_PROGRESS_CALLS = 5;
 
 const TELEMETRY_TOOL_NAMES = [
   'coord:glance',
@@ -169,12 +175,14 @@ export interface AgentCallCensus {
   agentOriginCalls: number;
   /** Every origin, hook included — the phase discriminator. */
   anyOriginCalls: number;
-  /** Agent-origin calls in the trailing degenerate-wake window. */
+  /** Calls of every origin in the trailing degenerate-wake window. */
   recentCalls?: number;
   /** Telemetry calls in that trailing window. */
   recentTelemetryCalls?: number;
   /** Work calls in that trailing window. */
   recentWorkCalls?: number;
+  /** Agent-origin, non-telemetry calls in that trailing window. */
+  recentProgressCalls?: number;
 }
 
 /** One wedged agent, as reported inside a wave. */
@@ -256,6 +264,7 @@ export interface DegenerateWakeVictim {
   totalCalls: number;
   telemetryCalls: number;
   workCalls: number;
+  progressCalls: number;
   telemetryRatio: number;
   /** null means the claim read degraded; never render that as "no claim". */
   heldClaims: string[] | null;
@@ -296,7 +305,8 @@ export function resolveDegenerateWake(
     !census ||
     census.recentCalls == null ||
     census.recentTelemetryCalls == null ||
-    census.recentWorkCalls == null
+    census.recentWorkCalls == null ||
+    census.recentProgressCalls == null
   ) {
     return { degenerate: false, reason: 'not-measured', telemetryRatio: null };
   }
@@ -310,6 +320,9 @@ export function resolveDegenerateWake(
     return { degenerate: false, reason: 'below-call-floor', telemetryRatio: ratio };
   }
   if (census.recentWorkCalls > DEGENERATE_WAKE_MAX_WORK_CALLS) {
+    return { degenerate: false, reason: 'work-present', telemetryRatio: ratio };
+  }
+  if (census.recentProgressCalls > DEGENERATE_WAKE_MAX_PROGRESS_CALLS) {
     return { degenerate: false, reason: 'work-present', telemetryRatio: ratio };
   }
   if (ratio <= DEGENERATE_WAKE_TELEMETRY_RATIO) {
@@ -442,6 +455,7 @@ export function makeReadAgentProductivity(
       recent_calls: string;
       recent_telemetry_calls: string;
       recent_work_calls: string;
+      recent_progress_calls: string;
     }[]>`
       WITH subjects AS (
         SELECT * FROM unnest(
@@ -456,19 +470,21 @@ export function makeReadAgentProductivity(
              ) AS agent_calls,
              count(ti.id) AS any_calls,
             count(ti.id) FILTER (
-               WHERE ti.call_origin IS DISTINCT FROM 'hook'
-                 AND ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+               WHERE ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
              ) AS recent_calls,
             count(ti.id) FILTER (
-               WHERE ti.call_origin IS DISTINCT FROM 'hook'
-                 AND ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+               WHERE ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
                  AND lower(ti.tool_name) = ANY(${[...TELEMETRY_TOOL_NAMES]}::text[])
              ) AS recent_telemetry_calls,
             count(ti.id) FILTER (
+               WHERE ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+                 AND (lower(ti.tool_name) LIKE 'work_items:%' OR lower(ti.tool_name) LIKE 'scheduler:%')
+             ) AS recent_work_calls,
+             count(ti.id) FILTER (
                WHERE ti.call_origin IS DISTINCT FROM 'hook'
                  AND ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
-                 AND (lower(ti.tool_name) LIKE 'work_items:%' OR lower(ti.tool_name) LIKE 'scheduler:%')
-             ) AS recent_work_calls
+                 AND lower(ti.tool_name) <> ALL(${[...TELEMETRY_TOOL_NAMES]}::text[])
+             ) AS recent_progress_calls
         FROM subjects s
         LEFT JOIN harness_shared.tool_invocations ti
                ON ti.coord_owner_id = s.owner_id
@@ -483,6 +499,7 @@ export function makeReadAgentProductivity(
         recentCalls: Number(r.recent_calls),
         recentTelemetryCalls: Number(r.recent_telemetry_calls),
         recentWorkCalls: Number(r.recent_work_calls),
+        recentProgressCalls: Number(r.recent_progress_calls),
       });
     }
     return out;
@@ -791,6 +808,7 @@ async function defaultEscalateDegenerateWakeWave(wave: DegenerateWakeWave): Prom
       return (
         `  • ${v.ownerLabel} (${v.ownerId}) — ${(v.telemetryRatio * 100).toFixed(1)}% telemetry ` +
         `(${v.telemetryCalls}/${v.totalCalls}), ${v.workCalls} work call(s), ` +
+        `${v.progressCalls} agent-origin progress call(s), ` +
         `fleet ${v.fleetSlug ?? '(none)'}, held ${claims}`
       );
     });
@@ -805,8 +823,12 @@ async function defaultEscalateDegenerateWakeWave(wave: DegenerateWakeWave): Prom
       `more than ${(DEGENERATE_WAKE_TELEMETRY_RATIO * 100).toFixed(0)}% telemetry over ` +
       `at least ${DEGENERATE_WAKE_MIN_CALLS} calls in the trailing ` +
       `${DEGENERATE_WAKE_WINDOW_MS / 60_000} minutes, while producing no more than ` +
-      `${DEGENERATE_WAKE_MAX_WORK_CALLS} work calls. They remain heartbeat-fresh and ` +
-      `look live on count-based surfaces while spending wakes without advancing work.\n\n` +
+      `${DEGENERATE_WAKE_MAX_WORK_CALLS} work calls and no more than ` +
+      `${DEGENERATE_WAKE_MAX_PROGRESS_CALLS} ` +
+      `agent-origin non-telemetry progress calls — the guard that prevents hook-generated ` +
+      `telemetry from classifying a healthy working agent as degenerate. They remain ` +
+      `heartbeat-fresh and look live on count-based surfaces while spending wakes ` +
+      `without advancing work.\n\n` +
       `${victimLines.join('\n')}\n\n` +
       `A victim holding NO CLAIM is the sharpest case: it is burning wakes with no ` +
       `registered unit to advance. A victim holding a claim may be silently blocking a ` +
@@ -826,6 +848,7 @@ async function defaultEscalateDegenerateWakeWave(wave: DegenerateWakeWave): Prom
       minCalls: DEGENERATE_WAKE_MIN_CALLS,
       telemetryRatioThreshold: DEGENERATE_WAKE_TELEMETRY_RATIO,
       maxWorkCalls: DEGENERATE_WAKE_MAX_WORK_CALLS,
+      maxProgressCalls: DEGENERATE_WAKE_MAX_PROGRESS_CALLS,
       victims: wave.victims.slice(0, 40),
     },
   });
@@ -979,6 +1002,7 @@ export async function runAgentProductivitySweepOnce(
         totalCalls: measured.recentCalls!,
         telemetryCalls: measured.recentTelemetryCalls!,
         workCalls: measured.recentWorkCalls!,
+        progressCalls: measured.recentProgressCalls!,
         telemetryRatio: d.telemetryRatio,
         heldClaims: heldClaims === null ? null : (heldClaims.get(c.ownerId) ?? []),
       });
