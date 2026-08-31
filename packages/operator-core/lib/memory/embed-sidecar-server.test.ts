@@ -14,6 +14,7 @@ import type { GovernedOperationInput, runGovernedOperation } from '../resource-g
 import {
   createEmbedSidecarServer,
   defaultWorkerStates,
+  embedResponseMeasuredModel,
   EMBED_SIDECAR_CONCURRENCY_ENV,
   resolveWarmModels,
   resolveWarmRerankers,
@@ -63,7 +64,20 @@ describe('resolveEmbedSidecarConcurrency', () => {
 describe('validateEmbedRequest', () => {
   it('accepts a minimal valid request and defaults model to gemma', () => {
     const v = validateEmbedRequest({ kind: 'query', texts: ['hi'] });
-    expect(v).toEqual({ model: 'gemma', kind: 'query', texts: ['hi'] });
+    expect(v).toEqual({ model: 'gemma', kind: 'query', texts: ['hi'], bypassCache: false });
+  });
+
+  it('accepts bypassCache and rejects a non-boolean one (EI-19323982006772080)', () => {
+    expect(validateEmbedRequest({ kind: 'query', texts: ['hi'], bypassCache: true })).toEqual({
+      model: 'gemma',
+      kind: 'query',
+      texts: ['hi'],
+      bypassCache: true,
+    });
+    // '1' / 'false' are the shapes a shell probe sends by accident; silently
+    // coercing them would leave a bench believing it bypassed a cache it did not.
+    expect(validateEmbedRequest({ kind: 'query', texts: ['hi'], bypassCache: '1' })).toHaveProperty('error');
+    expect(validateEmbedRequest({ kind: 'query', texts: ['hi'], bypassCache: 'false' })).toHaveProperty('error');
   });
 
   it('rejects unknown models, bad kinds, and bad texts', () => {
@@ -718,6 +732,136 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     await post('a');
     await post('a'); // caching disabled ⇒ re-infers
     expect(embedCalls).toBe(2);
+  });
+
+  // EI-19323982006772080 — the sidecar answered a repeated-text throughput
+  // probe from its LRU and said nothing about it: 1ms/doc cached vs 353ms/doc
+  // uncached, a ~350x error in the OPTIMISTIC direction. These tests pin the
+  // per-request accounting that makes the difference reportable, and — more
+  // importantly — pin the VERDICT function, so a later change that keeps the
+  // counters but stops refusing an unmeasured response trips a named test.
+  describe('per-request cache accounting (EI-19323982006772080)', () => {
+    let embedCalls = 0;
+    const bootCounting = async (): Promise<void> => {
+      embedCalls = 0;
+      handle = createEmbedSidecarServer({
+        port: 0,
+        warmAtBoot: false,
+        log: () => {},
+        concurrency: 1,
+        builders: {
+          gemma: async () => async (text: string) => {
+            embedCalls++;
+            return [text.length];
+          },
+          local: fakeBuilders.local,
+          harrier: fakeBuilders.harrier,
+        },
+      });
+      baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    };
+    const embed = async (
+      texts: string[],
+      bypassCache?: boolean,
+    ): Promise<{ cache: { hits: number; coalesced: number; inferred: number } }> => {
+      const res = await fetch(`${baseUrl}/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'query', texts, ...(bypassCache === undefined ? {} : { bypassCache }) }),
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as { cache: { hits: number; coalesced: number; inferred: number } };
+    };
+
+    it('REFUSES a repeated-text probe and ACCEPTS the same probe on unique texts', async () => {
+      await bootCounting();
+      const cold = await embed(['alpha', 'beta']);
+      expect(cold.cache).toEqual({ hits: 0, coalesced: 0, inferred: 2 });
+      expect(embedResponseMeasuredModel(cold, 2)).toEqual({ ok: true });
+
+      // The bug, reproduced: identical texts, identical request, a response
+      // that used to be indistinguishable from the one above.
+      const warm = await embed(['alpha', 'beta']);
+      expect(warm.cache).toEqual({ hits: 2, coalesced: 0, inferred: 0 });
+      expect(embedCalls).toBe(2); // nothing re-inferred — the LRU served it
+      const verdict = embedResponseMeasuredModel(warm, 2);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.ok === false && verdict.reason).toMatch(/0 of 2 texts reached the model/);
+    });
+
+    it('counts a coalesced duplicate SEPARATELY from an LRU hit', async () => {
+      await bootCounting();
+      // Four copies of one text in ONE request: the first registers the
+      // in-flight unit, the other three join it. Nothing was cached — reporting
+      // these as `hits` would answer "the cache served you" for a request that
+      // never touched the cache.
+      const body = await embed(['dup', 'dup', 'dup', 'dup']);
+      expect(body.cache).toEqual({ hits: 0, coalesced: 3, inferred: 1 });
+      expect(embedCalls).toBe(1);
+      const verdict = embedResponseMeasuredModel(body, 4);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.ok === false && verdict.reason).toMatch(/coalesced/);
+    });
+
+    it('bypassCache:true reaches the model for every text, without reading or writing the LRU', async () => {
+      await bootCounting();
+      await embed(['a']); // warm the LRU
+      expect((await embed(['a'])).cache.hits).toBe(1); // ordinary repeat: cached
+
+      const bypassed = await embed(['a', 'a'], true);
+      // Not served from the LRU, and the in-request duplicate did NOT coalesce
+      // — a bypass that coalesced would serve N texts from one forward pass,
+      // the same optimistic reading one layer down.
+      expect(bypassed.cache).toEqual({ hits: 0, coalesced: 0, inferred: 2 });
+      expect(embedResponseMeasuredModel(bypassed, 2)).toEqual({ ok: true });
+      expect(embedCalls).toBe(3); // 1 warm + 2 bypassed
+
+      // ...and it left the cache the caller asked it not to touch alone.
+      expect((await embed(['a'])).cache.hits).toBe(1);
+      expect(embedCalls).toBe(3);
+    });
+
+    it('treats a response with NO cache accounting as undecidable, never as a pass', () => {
+      // Rig hosts run INSTALLED sidecar bundles with no update path
+      // (EI-19330215508907244), so a probe CAN meet a sidecar that predates
+      // this field. That must not read as good news.
+      const legacy = { vectors: [[1]], dims: 1, runtime: 'node-onnx-worker', modelRev: 'r1' };
+      const verdict = embedResponseMeasuredModel(legacy, 1);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.ok === false && verdict.reason).toMatch(/predates EI-19323982006772080/);
+
+      // CONTROL — the two hand-written checks a caller reaches for instead of
+      // the helper. Both are DELIBERATELY WRONG and kept here permanently: they
+      // are what "assert the cache was cold" looks like when written by hand,
+      // and both report a clean pass on a body that never carried the field.
+      // Keeping them beside the real subject is what proves the assertion below
+      // can fail — if someone "fixes" embedResponseMeasuredModel by defaulting a
+      // missing `cache` to zeroes, the real subject collapses onto these
+      // controls and this test goes red instead of going quietly optimistic.
+      const hitsOf = (body: Record<string, unknown>): number | undefined =>
+        (body as { cache?: { hits?: number } }).cache?.hits;
+      const naiveTruthiness = (body: Record<string, unknown>): boolean => !hitsOf(body);
+      const naiveEquality = (body: Record<string, unknown>): boolean => hitsOf(body) === 0;
+      expect(naiveTruthiness(legacy)).toBe(true); // false green
+      expect(naiveEquality(legacy)).toBe(false); // fails, but for the wrong reason
+      expect(verdict.ok).not.toBe(naiveTruthiness(legacy));
+
+      // CALIBRATION — on a body that really is fully inferred, the real subject
+      // and the naive checks agree. Without this, the controls above would also
+      // "pass" if the subject simply refused everything.
+      const honest = { cache: { hits: 0, coalesced: 0, inferred: 1 } };
+      expect(embedResponseMeasuredModel(honest, 1)).toEqual({ ok: true });
+      expect(naiveTruthiness(honest)).toBe(true);
+    });
+
+    it('rejects counts that do not partition the request', () => {
+      const verdict = embedResponseMeasuredModel({ cache: { hits: 1, coalesced: 0, inferred: 1 } }, 4);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.ok === false && verdict.reason).toMatch(/does not partition/);
+      const malformed = embedResponseMeasuredModel({ cache: { hits: 1 } }, 1);
+      expect(malformed.ok).toBe(false);
+      expect(malformed.ok === false && malformed.reason).toMatch(/malformed/);
+    });
   });
 
   it('does not cache failures: a failed embed retries on the next request', async () => {

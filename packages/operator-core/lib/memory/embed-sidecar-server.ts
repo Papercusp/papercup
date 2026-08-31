@@ -132,6 +132,40 @@ export interface EmbedRequest {
   model: EmbedSidecarModel;
   kind: GemmaEmbedKind;
   texts: string[];
+  /** EI-19323982006772080: serve every text from the model — no LRU read, no
+   *  LRU write, no coalescing onto an in-flight identical text. For throughput
+   *  probes, which otherwise have to nonce-suffix their inputs to defeat the
+   *  cache and silently measure it whenever they forget. Do not trust the flag
+   *  alone: `cache.inferred` in the response reports what actually happened. */
+  bypassCache?: boolean;
+}
+
+/**
+ * EI-19323982006772080: what population THIS response was computed over.
+ *
+ * The sidecar keeps a 1024-entry LRU keyed on the embed input, so a benchmark
+ * that holds its texts constant across runs — the natural way to write one —
+ * measures cache hits rather than inference. Measured 2026-08-02: the same
+ * probe read 1ms/doc on repeated texts and 353ms/doc on unique ones, a ~350x
+ * error in the OPTIMISTIC direction, with nothing in the response to say which
+ * you got. The process-global counters on /healthz cannot answer it either:
+ * they are cumulative across every caller, so they cannot attribute a hit to
+ * the request that took it.
+ *
+ * The three counts PARTITION the request: `hits + coalesced + inferred` always
+ * equals `texts.length`. That is what makes them an accounting rather than
+ * three loose gauges — a caller can tell "nothing was cached" from "I did not
+ * ask about the cache", which is the distinction the silent version destroyed.
+ */
+export interface EmbedCacheAccounting {
+  /** Texts served from the LRU. No inference ran for these. */
+  hits: number;
+  /** Texts that joined an already-in-flight identical text. Not an LRU hit —
+   *  the request self-deduplicated — but no ADDITIONAL inference ran either. */
+  coalesced: number;
+  /** Texts that actually reached the model during THIS request. The only
+   *  count a throughput measurement may be divided by. */
+  inferred: number;
 }
 
 export interface EmbedResponse {
@@ -139,6 +173,59 @@ export interface EmbedResponse {
   dims: number;
   runtime: string;
   modelRev: string;
+  /** Per-request cache accounting — see {@link EmbedCacheAccounting}. Ask
+   *  {@link embedResponseMeasuredModel} rather than reading it by hand. */
+  cache: EmbedCacheAccounting;
+}
+
+/**
+ * Did this response measure the MODEL, or the cache in front of it?
+ *
+ * The one place that question is answered, so a probe never re-derives it and
+ * two probes cannot disagree. It refuses in the direction that costs nothing:
+ *
+ * - A response from a sidecar too old to report `cache` at all is
+ *   **undecidable**, never ok. Rig hosts run installed sidecar bundles with no
+ *   update path (EI-19330215508907244), so "the field is missing" is a live
+ *   case, and a caller hand-writing `!body.cache?.hits` would read that absent
+ *   field as a clean pass — the exact false green this item exists to kill.
+ * - `inferred` is checked POSITIVELY against the text count rather than
+ *   `hits === 0` being checked negatively, so a malformed or partial body
+ *   fails instead of passing by omission.
+ */
+export function embedResponseMeasuredModel(
+  body: Pick<EmbedResponse, 'cache'> | Record<string, unknown>,
+  textCount: number,
+): { ok: true } | { ok: false; reason: string } {
+  const cache = (body as { cache?: unknown }).cache;
+  if (cache === undefined || cache === null) {
+    return {
+      ok: false,
+      reason:
+        'response carries no `cache` accounting — this sidecar predates EI-19323982006772080, so whether it served the model or its LRU is UNKNOWN. Do not report a throughput number from it.',
+    };
+  }
+  const c = cache as Partial<EmbedCacheAccounting>;
+  const nums = [c.hits, c.coalesced, c.inferred];
+  if (!nums.every((n) => typeof n === 'number' && Number.isFinite(n))) {
+    return { ok: false, reason: `malformed cache accounting: ${JSON.stringify(cache)}` };
+  }
+  const hits = c.hits as number;
+  const coalesced = c.coalesced as number;
+  const inferred = c.inferred as number;
+  if (hits + coalesced + inferred !== textCount) {
+    return {
+      ok: false,
+      reason: `cache accounting does not partition the request: hits ${hits} + coalesced ${coalesced} + inferred ${inferred} != ${textCount} texts`,
+    };
+  }
+  if (inferred !== textCount) {
+    return {
+      ok: false,
+      reason: `only ${inferred} of ${textCount} texts reached the model (${hits} served from the LRU, ${coalesced} coalesced onto an in-flight duplicate) — a throughput figure computed from this response measures the cache, not the model. Send unique texts, or set bypassCache:true.`,
+    };
+  }
+  return { ok: true };
 }
 
 /** transformers.js ONNX in a worker thread — the space-defining runtime tag. */
@@ -266,7 +353,7 @@ export function validateRerankRequest(body: unknown): RerankRequest | { error: s
  */
 export function validateEmbedRequest(body: unknown): EmbedRequest | { error: string } {
   if (typeof body !== 'object' || body === null) return { error: 'body must be a JSON object' };
-  const b = body as { model?: unknown; kind?: unknown; texts?: unknown };
+  const b = body as { model?: unknown; kind?: unknown; texts?: unknown; bypassCache?: unknown };
   const model = b.model === undefined ? 'gemma' : b.model;
   if (!EMBED_SIDECAR_MODELS.includes(model as EmbedSidecarModel)) {
     return { error: `unknown model '${String(model)}' — expected one of: ${EMBED_SIDECAR_MODELS.join(', ')}` };
@@ -287,7 +374,15 @@ export function validateEmbedRequest(body: unknown): EmbedRequest | { error: str
       return { error: `texts[${i}] exceeds ${MAX_TEXT_CHARS} chars (got ${t.length}) — truncate before embedding` };
     }
   }
-  return { model: model as EmbedSidecarModel, kind: b.kind, texts: b.texts as string[] };
+  if (b.bypassCache !== undefined && typeof b.bypassCache !== 'boolean') {
+    return { error: `bypassCache must be a boolean (got '${String(b.bypassCache)}')` };
+  }
+  return {
+    model: model as EmbedSidecarModel,
+    kind: b.kind,
+    texts: b.texts as string[],
+    bypassCache: b.bypassCache === true,
+  };
 }
 
 type WarmState = 'cold' | 'warming' | 'warm' | 'failed';
@@ -797,31 +892,52 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     work: (signal: AbortSignal) => Promise<number[]>,
     signal: AbortSignal,
     batch: QueueBatch,
+    // EI-19323982006772080: the per-request half of the accounting. The global
+    // counters below feed /healthz and are cumulative across every caller, so
+    // they can say the process has taken hits but never that THIS request did.
+    // Both are incremented at the same three sites so the per-request view and
+    // the process view cannot drift apart.
+    tally?: EmbedCacheAccounting,
+    bypassCache = false,
   ): Promise<number[]> => {
     if (signal.aborted) return Promise.reject(new SidecarRequestAbortedError());
-    const cached = cacheGet(key);
-    if (cached) {
-      cacheHits++;
-      return Promise.resolve(cached);
+    if (!bypassCache) {
+      const cached = cacheGet(key);
+      if (cached) {
+        cacheHits++;
+        if (tally) tally.hits++;
+        return Promise.resolve(cached);
+      }
     }
-    let entry = inflight.get(key);
+    // A bypassing request must not JOIN an in-flight duplicate either: the
+    // point is to make every text pay real inference, and coalescing would
+    // silently serve N texts from one forward pass — the same optimistic
+    // reading, one layer down from the LRU.
+    let entry = bypassCache ? undefined : inflight.get(key);
     if (entry) {
       cacheHits++;
+      if (tally) tally.coalesced++;
     } else {
       cacheMisses++;
+      if (tally) tally.inferred++;
       entry = { task: enqueue(work, batch), consumers: 0 };
-      inflight.set(key, entry);
-      const owned = entry;
-      void owned.task.promise
-        .then(
-          (value) => {
-            if (owned.consumers > 0) cachePut(key, value);
-          },
-          () => {},
-        )
-        .finally(() => {
-          if (inflight.get(key) === owned) inflight.delete(key);
-        });
+      // Registering a bypassing unit would let a LATER ordinary request
+      // coalesce onto it, and caching its result would poison the LRU the
+      // caller asked to be left alone. It runs unshared, start to finish.
+      if (!bypassCache) {
+        inflight.set(key, entry);
+        const owned = entry;
+        void owned.task.promise
+          .then(
+            (value) => {
+              if (owned.consumers > 0) cachePut(key, value);
+            },
+            () => {},
+          )
+          .finally(() => {
+            if (inflight.get(key) === owned) inflight.delete(key);
+          });
+      }
     }
     const owned = entry;
     owned.consumers++;
@@ -873,6 +989,8 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     text: string,
     signal: AbortSignal,
     batch: QueueBatch,
+    tally?: EmbedCacheAccounting,
+    bypassCache = false,
   ): Promise<number[]> =>
     computeCached(
       `${model}:${kind}\0${text}`,
@@ -895,6 +1013,8 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         }),
       signal,
       batch,
+      tally,
+      bypassCache,
     );
 
   // One PAIR per unit, matching /embed's one-text-per-unit choice. A cross-
@@ -958,14 +1078,22 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     }
     try {
       const batch = createQueueBatch();
+      // EI-19323982006772080: counted per request, so the answer to "did this
+      // measure the model?" travels WITH the vectors it is about instead of
+      // living in a process-global gauge the caller has to sample separately
+      // and cannot attribute to itself.
+      const tally: EmbedCacheAccounting = { hits: 0, coalesced: 0, inferred: 0 };
       const vectors = await Promise.all(
-        v.texts.map((text) => embedOneCached(v.model, v.kind, text, signal, batch)),
+        v.texts.map((text) =>
+          embedOneCached(v.model, v.kind, text, signal, batch, tally, v.bypassCache === true),
+        ),
       );
       const body: EmbedResponse = {
         vectors,
         dims: vectors[0]?.length ?? 0,
         runtime: EMBED_SIDECAR_RUNTIME,
         modelRev: MODEL_REVS[v.model],
+        cache: tally,
       };
       json(res, 200, body);
     } catch (e) {

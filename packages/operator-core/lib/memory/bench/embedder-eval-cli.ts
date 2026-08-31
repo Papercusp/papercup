@@ -90,6 +90,7 @@ import {
   GEMMA_TARGET_DIMS,
 } from '@papercusp/memory';
 import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
+import { embedResponseMeasuredModel } from '../embed-sidecar-server';
 import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
@@ -138,16 +139,36 @@ function dot(a: number[], b: number[]): number {
   return s;
 }
 
-/** A leg that calls a running sidecar over the D-004 wire shape. */
+/**
+ * A leg that calls a running sidecar over the D-004 wire shape.
+ *
+ * EI-19323982006772080: this leg feeds `embedAll`, whose wall-clock seconds are
+ * reported as embed throughput — and the corpus is a FIXTURE, so every run
+ * after the first sends texts the sidecar's 1024-entry LRU already holds. That
+ * read 1ms/doc against a true 353ms/doc, a ~350x overstatement, and nothing in
+ * the old response shape could tell the two apart. Two changes make the number
+ * honest: ask for the model explicitly, and refuse to time a response that says
+ * it came from somewhere else.
+ */
 function sidecarLeg(url: string, model: string): Leg {
   const call = (kind: 'document' | 'query'): EmbedFn => async (text: string) => {
     const res = await fetch(`${url.replace(/\/$/, '')}/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, kind, texts: [text] }),
+      // A benchmark wants the model, not the cache in front of it.
+      body: JSON.stringify({ model, kind, texts: [text], bypassCache: true }),
     });
     if (!res.ok) throw new Error(`sidecar_embed_${res.status}: ${await res.text().catch(() => '')}`);
     const j = (await res.json()) as { vectors: number[][] };
+    // Verify rather than trust the flag: an older sidecar bundle accepts
+    // `bypassCache` as an unknown field, ignores it, and answers 200 from the
+    // LRU. That response is indistinguishable from a real one except here.
+    const measured = embedResponseMeasuredModel(j, 1);
+    if (!measured.ok) {
+      throw new Error(
+        `sidecar_embed_not_measured: ${measured.reason} — the timings from this leg would be a throughput figure for the cache, so the run is stopped instead of reported.`,
+      );
+    }
     return j.vectors[0];
   };
   return { name: `sidecar:${model}`, doc: call('document'), query: call('query') };
