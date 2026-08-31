@@ -535,90 +535,22 @@ export async function emitScorecard(
       const sameAcceptanceAuthor = deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity;
       const lineageRelated = deps.lineageRelated ?? areAcceptanceLineageRelated;
       const identityWorkspace = rubric.workspaceId || input.workspaceId || activeWorkspaceId();
-      const callerIsImplementer =
-        implementer != null &&
-        (await sameAcceptanceAuthor(implementer, input.createdBy, { workspaceId: identityWorkspace }));
-      const callerInImplementerLineage =
-        implementer != null &&
-        (await lineageRelated(implementer, input.createdBy, { workspaceId: identityWorkspace }));
-      if (!callerIsImplementer && callerInImplementerLineage) {
-        return {
-          ok: false as const,
-          code: 'grader_in_implementer_lineage' as const,
-          error:
-            `grader '${input.createdBy}' is in acceptance-rubric author '${implementer}'s spawn/rebind lineage — ` +
-            'a related session cannot supply the independent grading; launch or assign a lineage-independent grader',
-        };
-      }
-      // EI-21461866696604065: an acceptance rubric's sole vetting critic cannot
-      // also be its independent grader. That collapses the intended three-party
-      // chain (author -> critic -> grader) into two parties and makes the result
-      // self-sealing: the grader is least able to notice the omissions in their
-      // own critique. Read the same canonical meta-scorecards the acceptance gate
-      // trusts, restricted to the current rubric revision. Several critics do not
-      // trigger this narrow refusal PROVIDED at least one of them is independent of
-      // the grader — that critic still independently challenged the rubric. A list
-      // of critics who all resolve to the grader is not independence (WI-905074).
-      if (!callerIsImplementer) {
-        // EI-21828643965337454: a failed revision read must not be flattened into
-        // "no revision". The latter is a valid unversioned rubric; the former
-        // would make the current-revision filter vacuously true and let the sole
-        // vetting critic grade their own rubric. Refuse before reading scorecards
-        // so the failure cannot be mistaken for an unvetted/empty history.
-        const revisionRead = await readRubricPlanRevision(rubric.rubricId);
-        if (!revisionRead.ok) {
-          return {
-            ok: false as const,
-            code: 'grader_is_sole_vetting_critic_revision_unreadable' as const,
-            error:
-              `acceptance rubric '${rubric.rubricId}' current revision could not be read, so the ` +
-              `sole-vetting-critic guard cannot verify that its vetting attestation is current; ` +
-              `retry after the rubric plan-row read recovers`,
-          };
-        }
-        const currentRevision = revisionRead.revision;
-        const vettingCards = await listScorecards({
-          rubricRef: META_ACCEPTANCE_RUBRIC_ID,
-          subjectRef: rubric.rubricId,
-          limit: 50,
-        });
-        const currentVetting = vettingCards.find(
-          (card) =>
-            card.rubricResolved &&
-            card.missingKeys.length === 0 &&
-            !card.synthesized &&
-            (card.vetting?.consultId != null || card.vetting?.workItemId != null) &&
-            (currentRevision == null || card.vetting?.rubricRevision === currentRevision),
-        );
-        const critics = currentVetting?.vetting?.critics ?? [];
-        // WI-905074: what preserves the three-party chain is an INDEPENDENT critic,
-        // not a second row in the list. The old `critics.length === 1` made the
-        // identity comparison unreachable for two or more critics, so a vetting
-        // record whose critics all resolved to the grader's own identity/lineage
-        // was never compared and sailed through the guard written to trip on it.
-        if (critics.length > 0) {
-          const criticResolvesToGrader = await Promise.all(
-            critics.map((critic) =>
-              lineageRelated(critic, input.createdBy, { workspaceId: identityWorkspace }),
-            ),
-          );
-          if (criticResolvesToGrader.every(Boolean)) {
-            const standing =
-              critics.length === 1
-                ? 'is the sole recorded vetting critic'
-                : `is the only distinct party among the ${critics.length} recorded vetting critics`;
-            return {
-              ok: false as const,
-              code: 'grader_is_sole_vetting_critic' as const,
-              error:
-                `grader '${input.createdBy}' ${standing} for acceptance rubric ` +
-                `'${rubric.rubricId}' — no recorded critic is independent of the grader, so rubric ` +
-                `fitness and work compliance would be attested by the same party; use a different ` +
-                `independent grader`,
-            };
-          }
-        }
-      }
+      // EI-21974075442192005: every rail resolved here is a pure IDENTITY fact,
+      // settled before a single criterion is rated — yet all of them used to be
+      // reachable ONLY through this terminal call, so a launched reviewer could
+      // complete an entire grading pass and only then learn it could never file
+      // the result. The rails now live in `grader-eligibility.ts`, which
+      // `scorecards:evaluate` pre-flights against, so the disqualification is
+      // discoverable before the work. Codes, messages and evaluation order are
+      // unchanged; do not re-implement any of them here or in the pre-flight.
+      const eligibility = await resolveAcceptanceGraderEligibility({
+        rubric,
+        callerId: input.createdBy,
+        workspaceId: identityWorkspace,
+        deps: { sameAcceptanceAuthor, lineageRelated },
+      });
+      if (eligibility.refusal) return { ok: false as const, ...eligibility.refusal };
+      const callerIsImplementer = eligibility.callerIsImplementer;
       if (!callerIsImplementer && acceptance) {
         const resolveAuthorSessionState = deps.resolveAuthorSessionState ?? defaultResolveAuthorSessionState;
         const rebindHint = await authorRebindHint(implementer, resolveAuthorSessionState, {
