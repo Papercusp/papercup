@@ -60,6 +60,19 @@ const pbkdf2Async: (...a: unknown[]) => Promise<Buffer> = (...a) =>
 
 const SERVICE_NAME = 'papercusp-device-keypair';
 
+/**
+ * Request-only env sidecars share the primary operator's identity directory,
+ * but they are not identity owners.  A stale child must therefore be able to
+ * READ an existing device key while being unable to mint, replace, or delete
+ * the device keypair.  Keep this check here as a second line of defence below
+ * local-announce-identity's load-only resolver: older bundles can still reach
+ * this module through a different call path, and a default-service write must
+ * never split the primary/legacy mirrors.
+ */
+export function identityWritesAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PAPERCUSP_IDENTITY_MODE !== 'load-only' && !env.PAPERCUSP_ENV_OPERATOR_ID;
+}
+
 function identityDir(): string {
   return process.env.PAPERCUSP_IDENTITY_DIR || join(homedir(), '.papercusp', 'identity');
 }
@@ -147,6 +160,12 @@ export async function keychainStore(
   privateKeyDer: Buffer,
   serviceName: string = SERVICE_NAME,
 ): Promise<void> {
+  if (!identityWritesAllowed()) {
+    throw new Error(
+      'request-only sidecar identity guard: device key writes are load-only; ' +
+        'run the primary operator to create or repair the device identity',
+    );
+  }
   const b64 = privateKeyDer.toString('base64');
 
   invalidateLoadCache(serviceName, keychainId);
@@ -231,6 +250,12 @@ export async function keychainDelete(
   keychainId: string,
   serviceName: string = SERVICE_NAME,
 ): Promise<void> {
+  if (!identityWritesAllowed()) {
+    throw new Error(
+      'request-only sidecar identity guard: device key deletion is load-only; ' +
+        'run the primary operator to change the device identity',
+    );
+  }
   invalidateLoadCache(serviceName, keychainId);
   await trySecretTool('delete', keychainId, '', serviceName);
   await trySecurityCli('delete', keychainId, '', serviceName);

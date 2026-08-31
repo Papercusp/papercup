@@ -66,7 +66,8 @@
 
 import { spawn, type StdioOptions } from 'node:child_process';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { existsSync, mkdirSync, openSync, writeSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { detectPapercupRoot, hasPapercupMarkers } from './register-papercusp';
 import { readEnvSwitcherPrefs } from './env-switcher-prefs';
@@ -219,6 +220,65 @@ export interface SpawnedOperator {
   id: string;
   port: number;
   pid?: number;
+}
+
+export interface BundledSidecarIdentity {
+  /** SHA of the bytes this sidecar was built from, when attested. */
+  readonly buildSha: string | null;
+  /** Version baked into the sidecar provenance, when available. */
+  readonly version: string | null;
+  /** Why the identity was (or was not) established. */
+  readonly source: 'build-provenance' | 'build-stamp' | 'unknown';
+  /** True only when the provenance also hashes this exact serve.mjs. */
+  readonly bytesVerified: boolean;
+}
+
+/**
+ * Read a bundled env-sidecar's own provenance without borrowing the primary
+ * process's `PAPERCUSP_BUILD_SHA`.  The launcher previously spread
+ * `process.env` into every child, so an old serve.mjs reported the primary's
+ * SHA and looked current.  A missing/partial provenance is deliberately
+ * represented as unknown; it is never promoted to the parent's identity.
+ */
+export function readBundledSidecarIdentity(bundlePath: string): BundledSidecarIdentity {
+  const dir = dirname(bundlePath);
+  const provenance = join(dir, 'build-provenance.json');
+  try {
+    const parsed = JSON.parse(readFileSync(provenance, 'utf8')) as {
+      buildSha?: unknown;
+      gitHeadAtEmit?: unknown;
+      gitHead?: unknown;
+      version?: unknown;
+      artifacts?: Array<{ name?: unknown; sha256?: unknown }>;
+    };
+    const buildSha =
+      typeof parsed.buildSha === 'string' && parsed.buildSha.trim()
+        ? parsed.buildSha.trim()
+        : typeof parsed.gitHeadAtEmit === 'string' && parsed.gitHeadAtEmit.trim()
+          ? parsed.gitHeadAtEmit.trim()
+          : typeof parsed.gitHead === 'string' && parsed.gitHead.trim()
+            ? parsed.gitHead.trim()
+            : null;
+    const version = typeof parsed.version === 'string' && parsed.version.trim() ? parsed.version.trim() : null;
+    const artifact = parsed.artifacts?.find((a) => a?.name === 'serve.mjs');
+    let bytesVerified = false;
+    if (typeof artifact?.sha256 === 'string' && /^[0-9a-f]{64}$/i.test(artifact.sha256)) {
+      const actual = createHash('sha256').update(readFileSync(bundlePath)).digest('hex');
+      bytesVerified = actual.toLowerCase() === artifact.sha256.toLowerCase();
+    }
+    return { buildSha, version, source: 'build-provenance', bytesVerified };
+  } catch {
+    // Older bundles may carry only the lightweight stamp emitted by the rig
+    // composer.  It is useful provenance for diagnostics, but not a byte hash.
+    try {
+      const stamp = readFileSync(join(dir, 'BUILD-STAMP.txt'), 'utf8');
+      const sha = /^sha=([^\s]+)\s/m.exec(stamp)?.[1]?.trim() || null;
+      const version = /^version=([^\s]+)\s/m.exec(stamp)?.[1]?.trim() || null;
+      return { buildSha: sha, version, source: 'build-stamp', bytesVerified: false };
+    } catch {
+      return { buildSha: null, version: null, source: 'unknown', bytesVerified: false };
+    }
+  }
 }
 
 export interface LaunchEnvOperatorsDeps {
@@ -489,6 +549,9 @@ export function viteChildEnv(
     ...(selfPort != null ? { PAPERCUSP_API_TARGET: `http://127.0.0.1:${selfPort}` } : {}),
     // The provisioning launcher must not re-run for the children (no recursion).
     PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
+    // Vite is a request-only sibling too; keep any node-side route it imports
+    // from generating/repairing the shared device identity.
+    PAPERCUSP_IDENTITY_MODE: 'load-only',
   };
   delete env.PORT;
   delete env.OPERATOR_E2E_PORT;
@@ -591,12 +654,19 @@ function defaultSpawnOperator(
       const envDir = dirname(entry.bundlePath);
       const spaDir = join(envDir, 'spa');
       const docsDir = join(envDir, 'internal-docs');
+      const bundleIdentity = readBundledSidecarIdentity(entry.bundlePath);
+      const parentBuildSha = process.env.PAPERCUSP_BUILD_SHA?.trim() || '';
       const log = openEnvOperatorLog(entry.id);
       writeSpawnHeader(log.fd, entry.id, entry.port, [process.execPath, entry.bundlePath], {
         PAPERCUSP_HONO_PORT: String(entry.port),
         PAPERCUSP_ENV_OPERATOR_ID: entry.id,
         PAPERCUSP_BACKGROUND_WORKERS: '0',
         PAPERCUSP_USE_EMBEDDED_PG: '0',
+        PAPERCUSP_IDENTITY_MODE: 'load-only',
+        PAPERCUSP_ENV_OPERATOR_BUILD_SHA: bundleIdentity.buildSha ?? 'unknown',
+        PAPERCUSP_ENV_OPERATOR_PARENT_SHA: parentBuildSha || 'unknown',
+        PAPERCUSP_ENV_OPERATOR_PROVENANCE: bundleIdentity.source,
+        PAPERCUSP_ENV_OPERATOR_BYTES_VERIFIED: String(bundleIdentity.bytesVerified),
       });
       const child = spawn(process.execPath, [entry.bundlePath], {
         cwd: envDir,
@@ -643,6 +713,16 @@ function defaultSpawnOperator(
           //     with this attach-not-manage path.
           PAPERCUSP_ENV_OPERATOR_ID: entry.id,
           PAPERCUSP_USE_EMBEDDED_PG: '0',
+          // Never let a request-only child borrow the primary's build stamp.
+          // Unknown provenance stays empty and lets build-info use a baked
+          // bundle SHA (or null), rather than fabricating freshness.
+          PAPERCUSP_BUILD_SHA: bundleIdentity.buildSha ?? '',
+          PAPERCUSP_BUILD_VERSION: bundleIdentity.version ?? '',
+          PAPERCUSP_IDENTITY_MODE: 'load-only',
+          PAPERCUSP_ENV_OPERATOR_BUILD_SHA: bundleIdentity.buildSha ?? '',
+          PAPERCUSP_ENV_OPERATOR_PARENT_SHA: parentBuildSha,
+          PAPERCUSP_ENV_OPERATOR_PROVENANCE: bundleIdentity.source,
+          PAPERCUSP_ENV_OPERATOR_BYTES_VERIFIED: String(bundleIdentity.bytesVerified),
         },
       });
       child.unref();
@@ -685,6 +765,7 @@ function defaultSpawnOperator(
       PAPERCUSP_HONO_PORT: String(entry.port),
       PAPERCUSP_BACKGROUND_WORKERS: '0',
       PAPERCUSP_DBOS_ENABLE: '0',
+      PAPERCUSP_IDENTITY_MODE: 'load-only',
     });
     const child = spawn(cmd as string, args as string[], {
       cwd: join(treePath, 'apps', 'operator'),
@@ -697,6 +778,10 @@ function defaultSpawnOperator(
         // ── EI-126 single-writer safety — the extra envs are request-only siblings ──
         PAPERCUSP_BACKGROUND_WORKERS: '0',
         PAPERCUSP_DBOS_ENABLE: '0',
+        PAPERCUSP_IDENTITY_MODE: 'load-only',
+        PAPERCUSP_BUILD_SHA: '',
+        PAPERCUSP_BUILD_VERSION: '',
+        PAPERCUSP_ENV_OPERATOR_PARENT_SHA: process.env.PAPERCUSP_BUILD_SHA?.trim() ?? '',
         // The provisioning launcher must not re-run for the children (no recursion).
         PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
         // Each child reached by top-level navigation, not the primary's IPC fast path;

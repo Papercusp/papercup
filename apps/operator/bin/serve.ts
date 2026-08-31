@@ -241,6 +241,15 @@ function writeParentDeathDiagnostic(message: string): void {
 // lit because of this). Scoping by id gives each sibling (and the primary)
 // its own lock, so they can legitimately cold-start concurrently.
 const ENV_OPERATOR_ID = process.env.PAPERCUSP_ENV_OPERATOR_ID || null;
+/** Request-only children may be launched from either the bundled env path or
+ * a source/Vite path.  Keep the role marker independent of the env id so an
+ * older launcher that only sets the explicit mode still cannot publish the
+ * primary discovery records. */
+const REQUEST_ONLY_SIDEcar = Boolean(
+  ENV_OPERATOR_ID ||
+    process.env.PAPERCUSP_IDENTITY_MODE === 'load-only' ||
+    process.env.PAPERCUSP_REQUEST_ONLY === '1',
+);
 /** Pure — exported so the scoping rule is unit-testable without a full module
  *  re-import (serve.ts has non-idempotent module-load side effects — DBOS
  *  workflow registration — that a `vi.resetModules()` re-import re-triggers). */
@@ -1680,7 +1689,7 @@ async function main(): Promise<void> {
           /* ignore */
         }
         // WI-3287: never unlink the PRIMARY's discovery file from a sibling shutdown.
-        if (!ENV_OPERATOR_ID) {
+        if (!REQUEST_ONLY_SIDEcar) {
           try {
             unlinkSync(OPERATOR_JSON);
           } catch {
@@ -1692,7 +1701,7 @@ async function main(): Promise<void> {
           // allowed to publish there. A refused publish uses the per-port
           // record below; env-sidecar siblings must never touch the primary's
           // global record.
-          if (!ENV_OPERATOR_ID) {
+          if (!REQUEST_ONLY_SIDEcar) {
             removeOwnedPgDiscoveryFile(EMBEDDED_PG_JSON, process.pid, pg.port);
           }
           removeOwnedPgDiscoveryFile(
@@ -1778,7 +1787,7 @@ async function main(): Promise<void> {
       // would clobber the primary's own discovery with itself, breaking every
       // future `--ensure` / reconnect. Siblings are reached by direct port
       // navigation (the env switcher), not through this file.
-      if (!ENV_OPERATOR_ID) {
+      if (!REQUEST_ONLY_SIDEcar) {
         const discovery: OperatorDiscovery = {
           httpUrl,
           port: info.port,
@@ -1819,7 +1828,7 @@ async function main(): Promise<void> {
     bootedHandlesPgPublisher?.stop();
     bootedHandlesPgPublisher = null;
     if (pg) {
-      if (!ENV_OPERATOR_ID) {
+      if (!REQUEST_ONLY_SIDEcar) {
         removeOwnedPgDiscoveryFile(EMBEDDED_PG_JSON, process.pid, pg.port);
       }
       removeOwnedPgDiscoveryFile(

@@ -110,7 +110,24 @@ export interface ResolveLocalAnnounceIdentityOpts {
    * no-op to silence it (a per-tick caller), or your own reporter.
    */
   onAttestationUnavailable?: (args: { keychainId: string; cause: unknown }) => void;
+  /**
+   * Identity lifecycle for this caller. `load-only` is the request-only
+   * sidecar contract: return an already-cached, keychain-verified identity or
+   * fail closed WITHOUT GitHub I/O, gist creation, key generation, cache
+   * writes, or encrypted-mirror writes. Defaults from
+   * PAPERCUSP_IDENTITY_MODE; ordinary substrate owners remain `authoring`.
+   */
+  identityMode?: 'authoring' | 'load-only';
 }
+
+/**
+ * Bundled-sidecar capability marker checked by env-operator-launcher before it
+ * starts (or keeps) a request-only bundle. An old bundle that lacks this exact
+ * marker predates the load-only behavior and is not admitted to the shared
+ * identity directory.
+ */
+export const REQUEST_ONLY_IDENTITY_GUARD_V1 =
+  'papercusp-request-only-identity-load-only-v1';
 
 export interface LocalHiveMemberAnnounceIdentityMember {
   githubUserId: number;
@@ -388,10 +405,31 @@ export async function resolveLocalAnnounceIdentity(
   if (!opts.logCoreKeyHex) {
     throw new Error('resolveLocalAnnounceIdentity: logCoreKeyHex required');
   }
+  const identityMode =
+    opts.identityMode ??
+    (process.env.PAPERCUSP_IDENTITY_MODE === 'load-only' ? 'load-only' : 'authoring');
   const loadKeypair = opts.loadKeypair ?? loadOrGenerateDeviceKeypair;
   const resolveUser = opts.resolveGithubUser ?? defaultResolveGithubUser;
   const buildKeychainId = opts.buildKeychainId ?? resolveDeviceKeychainId;
   const cachePath = cachePathFor(opts);
+
+  if (identityMode === 'load-only') {
+    // This branch is intentionally the whole request-only identity surface.
+    // `identityFromCache` reads the cache and keychain only. It never calls the
+    // user/gist resolvers and the verifier is load-only unless a test supplied
+    // an explicit loader. In particular, never fall through to
+    // loadOrGenerateDeviceKeypair: a miss must disable federation in this
+    // request-serving process, not mint a second machine identity.
+    const cached = await identityFromCache(
+      cachePath,
+      opts.loadKeypair ?? loadExistingDeviceKeypair,
+    );
+    if (cached) return cached;
+    throw new Error(
+      `${REQUEST_ONLY_IDENTITY_GUARD_V1}: no cached, keychain-verified identity; ` +
+        'request-only sidecars may load identity but never create or repair it',
+    );
+  }
 
   // This is deliberately before every GitHub operation. The cache is accepted on
   // the success path only while fresh and only after the current keychain still
