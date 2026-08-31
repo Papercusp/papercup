@@ -565,6 +565,60 @@ describe('AutomationPane — non-routine schedules', () => {
     expect(meta).toContain('not armed');
   });
 
+  /**
+   * EI-19294826146331487 — owner, 2026-07-27: *"the pane is listing sweeps you can neither see
+   * running nor turn off."* WI-6447 fixed the SEEING half (the tests just above). This is the
+   * TURNING-OFF half: a code-declared in-process sweep now carries a `tier='in-process'` arm-state
+   * routines row, so the catalog reports it `controllable` and the pane's EXISTING toggle renders
+   * for it instead of the inert padlock.
+   */
+  const sweep = (over: Partial<Routine> = {}): Routine =>
+    routine({
+      name: 'system-health',
+      category: 'infra',
+      family: 'health',
+      cadence: 'every 30s',
+      spend: 'none',
+      spendWhy: 'An on/off record for a sweep declared in code — it is fired by nothing',
+      spawnsAgent: false,
+      source: 'routines',
+      control: 'routine',
+      controllable: true,
+      ...over,
+    });
+
+  /** Healthy `spend:'none'` rows fold into the collapsed Running bucket in this lens. */
+  const openRunningBucket = () => {
+    H.nuqsState.systemOpen = ['running'];
+  };
+
+  it('offers a real switch for an in-process sweep instead of the padlock', () => {
+    openRunningBucket();
+    renderPane({ routines: [sweep()] }, 'system');
+    expect(screen.getByTestId('automation-toggle-system-health')).toBeTruthy();
+    expect(screen.queryByTestId('automation-nocontrol-system-health')).toBeNull();
+  });
+
+  it('NEGATIVE CONTROL: the identical row still shows the padlock while it is uncontrollable', () => {
+    // The pre-fix state, kept permanently. Without it the assertion above would also pass against
+    // a pane that had simply stopped rendering padlocks at all.
+    openRunningBucket();
+    renderPane(
+      {
+        routines: [
+          sweep({
+            controllable: false,
+            control: 'none',
+            controlWhy: 'A central sweep on the in-process tier — it has no per-row switch yet.',
+          }),
+        ],
+      },
+      'system',
+    );
+    expect(screen.queryByTestId('automation-toggle-system-health')).toBeNull();
+    expect(screen.getByTestId('automation-nocontrol-system-health')).toBeTruthy();
+  });
+
   it('renders the unverified rows as unknown, never as armed', () => {
     // The 7 external-process rows: live fire-state needs P-014 federation, so
     // nothing has checked them. Asserting "running" there is the bug.
