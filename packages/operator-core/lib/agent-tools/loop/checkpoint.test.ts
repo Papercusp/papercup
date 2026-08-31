@@ -472,6 +472,26 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(setLoopCarryNote).not.toHaveBeenCalled();
   });
 
+  it('EI-21922421392042550: lifts a flattened executable tool probe into the nested probe field', () => {
+    const probe = {
+      kind: 'tool' as const,
+      tool: LOOP_CONTINUITY_TEST_TOOL,
+      args: { value: 'green' },
+      schemaRevision: continuityProbeRevision(LOOP_CONTINUITY_TEST_TOOL)!,
+      expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+    };
+    const parsed = parse({
+      did: 'progress',
+      checks: [{ claim: 'gate is green', ...probe }],
+    }) as { checks: Array<Record<string, unknown>> };
+
+    expect(parsed.checks[0]).toEqual({ claim: 'gate is green', probe });
+    // `kind` is the executable discriminator here, not the legacy claim alias;
+    // the pre-existing `{kind, command, result}` compatibility path is covered
+    // by the checksLint/absenceLint tests elsewhere in this suite.
+    expect(parsed.checks[0]).not.toHaveProperty('kind');
+  });
+
   it('warns when left/next imperatively invokes a singleton mutator without its precondition', async () => {
     const b = body(
       await call({

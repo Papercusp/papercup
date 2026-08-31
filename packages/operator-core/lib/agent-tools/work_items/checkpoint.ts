@@ -356,6 +356,22 @@ class ReplaceWouldDropError extends Error {
   }
 }
 
+/** EI-21923095696933477: `retireIds` opt-in — the caller names exactly which
+ * carried rows they intend to retire, so an unlisted stored row can never be
+ * dropped by omission (unlike a blind `confirmRetire:true`, which retires
+ * whatever the store computes with no cross-check against what the caller
+ * actually saw). Thrown from the transform, same as ReplaceWouldDropError,
+ * when the supplied set disagrees — in either direction — with what a plain
+ * `rowsMode:'replace'` write would actually drop. */
+class RetireIdsMismatchError extends Error {
+  constructor(
+    readonly requested: string[],
+    readonly actual: string[],
+  ) {
+    super('checkpoint_retire_ids_mismatch');
+  }
+}
+
 /** Hard cap on a stored checkpoint (matches the `checkpoint` arg's max). */
 const CHECKPOINT_CAP = 32000;
 const TRUNCATION_MARKER = '…[older checkpoint content truncated]…\n';
@@ -420,7 +436,37 @@ function rowsModeSpec() {
         '`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows. This controls CHECK ROWS only, ' +
         "never the checkpoint body: a full authoritative body+rows replacement is `append:false, rowsMode:'replace', " +
         'confirmShrink:true, confirmRetire:true`. Without confirmShrink, a >50% body shrink is auto-preserved and its ' +
-        'checks become additive; without confirmRetire, omitted carried checks are refused before write.',
+        'checks become additive; without confirmRetire, omitted carried checks are refused before write. Prefer ' +
+        '`retireIds` over a blind `confirmRetire:true` when your view of the carried set may be an excerpt.',
+    );
+}
+
+/**
+ * EI-21923095696933477: an opt-in, STRONGER alternative to `confirmRetire`. A
+ * caller whose view of the carried set is an excerpt (a post-compaction carry
+ * document renders only a bounded prefix) can pass `confirmRetire:true` and
+ * retire rows it never actually read — the incident this exists to prevent
+ * lost the only record of where a credential came from this way. Naming
+ * exactly which carried rows to retire makes that structurally impossible:
+ * the write refuses, before anything is stored and regardless of
+ * `confirmRetire`, unless this set EXACTLY matches what the replace would
+ * actually drop — naming both a dropped row the caller missed and a supplied
+ * id that would not actually have dropped (a stale snapshot).
+ */
+function retireIdsSpec() {
+  return z
+    .array(z.string().min(1))
+    .max(CARRY_NOTE_MAX_CHECKS * 2)
+    .optional()
+    .describe(
+      "rowsMode:'replace' safety, STRONGER than `confirmRetire` alone (EI-21923095696933477): name exactly the " +
+        'carried row `id`s (or claim text for a row with no `id` — the same identity `carryRowKey` uses) you intend ' +
+        'to retire. The write refuses — even with confirmRetire:true — unless this set EXACTLY matches what would ' +
+        'actually be dropped, naming both any row you missed and any name that would not have dropped, so an ' +
+        'unlisted stored row can never be dropped by omission. Use this instead of a blind confirmRetire:true ' +
+        "whenever your view of the carried set may be an excerpt (e.g. a post-compaction carry document) rather " +
+        'than the full stored list — call work_items:get first for the complete set, or send `rowsMode:"replace"` ' +
+        'with neither `confirmRetire` nor `retireIds` to see the full drop list in a refusal before committing to one.',
     );
 }
 
@@ -662,6 +708,7 @@ const itemSpec = z.object({
   confirmRetire: looseBoolean().describe(
     "rowsMode:'replace' safety (WI-42106): if the supplied checks would RETIRE carried rows, refuse before writing unless true. The refusal names every dropped claim; merge mode never needs this.",
   ),
+  retireIds: retireIdsSpec(),
   dependsOn: dependsOnSpec(),
   checks: checksSpec(),
 });
@@ -703,7 +750,11 @@ export default defineTool({
       'A blocked write carries `errorCode` (`shrink_blocked` / `append_base_unreadable`) plus structured `recovery` args: ' +
       '`append:true` to preserve prior content (also the form for a concise successor addendum to a detailed prior note), ' +
       'or `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true` for an intentional full body+rows replacement. ' +
-      'A verify-read miss is `checkpoint_verify_failed`.',
+      'A verify-read miss is `checkpoint_verify_failed`. ' +
+      'EI-21923095696933477: retiring rows off a carry-document EXCERPT rather than a fresh work_items:get read? ' +
+      'Prefer `retireIds` over a blind `confirmRetire:true` — name exactly which carried row ids/claims to drop; ' +
+      'the write refuses (`checkpoint_retire_ids_mismatch`, naming both directions of the mismatch) unless that ' +
+      'set exactly matches what the replace would actually drop, so an unlisted stored row can never be dropped by omission.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -744,6 +795,11 @@ export default defineTool({
       ),
       confirmRetire: looseBoolean().describe(
         "single shorthand default for `confirmRetire`; also the items[] default. Required only when rowsMode:'replace' would retire carried checks.",
+      ),
+      retireIds: retireIdsSpec().describe(
+        "single shorthand default for `retireIds`; also the items[] default. A STRONGER, opt-in alternative to " +
+          "`confirmRetire` (EI-21923095696933477): name exactly the carried row ids/claims a rowsMode:'replace' " +
+          'should retire, and the write refuses on any mismatch instead of trusting a blind confirmRetire:true.',
       ),
       checks: checksSpec(),
       dependsOn: dependsOnSpec(),
@@ -851,6 +907,7 @@ export default defineTool({
         const wantsAppend = it.append ?? args.append ?? false;
         const rowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
         const wantsConfirmRetire = it.confirmRetire ?? args.confirmRetire ?? false;
+        const wantsRetireIds = it.retireIds ?? args.retireIds;
         const rawSuppliedChecks = it.checks ?? args.checks;
         const isChecksOnlyPatch = checkpoint === undefined && rawSuppliedChecks !== undefined;
         // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
@@ -1178,10 +1235,32 @@ export default defineTool({
                 // rewording as a lost predecessor, even though the row was replaced
                 // in place and retained its slot/evidence.
                 const keptCheckKeys = new Set(merged.map((c) => carryRowKey(c)));
-                droppedCheckClaims = prior
-                  .filter((c) => c.claim.trim().length > 0 && !keptCheckKeys.has(carryRowKey(c)))
-                  .map((c) => c.claim.trim());
-                if (rowsMode === 'replace' && !wantsConfirmRetire && droppedCheckClaims.length > 0) {
+                const droppedRows = prior.filter(
+                  (c) => c.claim.trim().length > 0 && !keptCheckKeys.has(carryRowKey(c)),
+                );
+                droppedCheckClaims = droppedRows.map((c) => c.claim.trim());
+                // EI-21923095696933477: retireIds is a STRONGER, opt-in check — the
+                // caller names exactly which rows they intend to retire, so an
+                // unlisted stored row can never be dropped by omission. It gates
+                // INDEPENDENTLY of confirmRetire (naming the set is itself the
+                // informed consent) and refuses in EITHER mismatch direction: a
+                // real drop the caller didn't name, or a named id that would not
+                // actually have dropped (a stale snapshot of the carried set).
+                if (rowsMode === 'replace' && wantsRetireIds !== undefined) {
+                  // Caller-facing identity: exactly what the docs promise (a
+                  // row's `id`, else its raw claim text) — NOT carryRowKey's
+                  // internal `id:`/`claim:`-prefixed dedup key, which the
+                  // caller has no way to know to reproduce.
+                  const retireIdentity = (c: { id?: string; claim?: string }) =>
+                    sanitizeCarryRowId(c.id) ?? (c.claim ?? '').trim();
+                  const droppedKeys = new Set(droppedRows.map((c) => retireIdentity(c)));
+                  const requestedKeys = new Set(wantsRetireIds);
+                  const setsMatch =
+                    droppedKeys.size === requestedKeys.size && [...droppedKeys].every((k) => requestedKeys.has(k));
+                  if (!setsMatch) {
+                    throw new RetireIdsMismatchError([...requestedKeys], [...droppedKeys]);
+                  }
+                } else if (rowsMode === 'replace' && !wantsConfirmRetire && droppedCheckClaims.length > 0) {
                   throw new ReplaceWouldDropError(droppedCheckClaims);
                 }
                 if (merged.length === 0) return body.length > 0 ? body : null;
@@ -1406,8 +1485,27 @@ export default defineTool({
           checksDropped: error.droppedChecks,
           message:
             "rowsMode:'replace' would RETIRE the carried checks named above and confirmRetire was not true — " +
-            'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
+            'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or name ' +
+            'exactly the rows above in `retireIds` for a mismatch-checked retirement, or omit ' +
             'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
+        });
+        // EI-21923095696933477: the retireIds sibling of replaceWouldDropResponse —
+        // reports what was requested vs what would actually drop so the caller can
+        // resend a corrected set without a second blind guess.
+        const retireIdsMismatchResponse = (error: RetireIdsMismatchError) => ({
+          ok: false as const,
+          id: it.id,
+          error: 'checkpoint_retire_ids_mismatch',
+          errorCode: 'checkpoint_retire_ids_mismatch',
+          retryable: true,
+          retireIdsRequested: error.requested,
+          retireIdsActual: error.actual,
+          message:
+            'retireIds did not exactly match the rows this replace would actually drop — NOTHING was written. ' +
+            `Requested: ${error.requested.length ? error.requested.join(', ') : '(none)'}. ` +
+            `Would actually drop: ${error.actual.length ? error.actual.join(', ') : '(none)'}. ` +
+            'Re-send retireIds naming exactly the rows in "Would actually drop", or omit retireIds and use ' +
+            'confirmRetire:true instead.',
         });
         // EI-21864672058763701 / EI-21864782390076614: setWorkItemCheckpointWithPrior
         // now runs its write under boundedOrgTxn (acquireTimeoutMs 8_000), so a stall
@@ -1441,6 +1539,7 @@ export default defineTool({
             ...depsOpt,
           });
         } catch (error) {
+          if (error instanceof RetireIdsMismatchError) return retireIdsMismatchResponse(error);
           if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
           if (error instanceof OrgTxnTimeoutError) return timeoutResponse(error);
           throw error;
@@ -1479,7 +1578,8 @@ export default defineTool({
               },
             );
           } catch (error) {
-            if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
+            if (error instanceof RetireIdsMismatchError) return retireIdsMismatchResponse(error);
+          if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
             if (error instanceof OrgTxnTimeoutError) return timeoutResponse(error);
             throw error;
           }
