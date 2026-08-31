@@ -1176,6 +1176,80 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
   });
 
+  it('does not emit a launch for a draft plan with a dependency-free todo item', () => {
+    const placement = compileGoalPlanPlacement({
+      plan: { harness: 'papercusp', slug: 'draft', ambiguousMatches: 1 },
+      status: 'draft',
+      itemStatuses: ['todo'],
+      actionableItemId: 'P-001',
+      source: {},
+      now: NOW,
+    });
+
+    expect(placement).toMatchObject({
+      state: 'blocked',
+      reconciliation: { action: 'resolve-plan-blockers', toolCall: null },
+    });
+    expect(placement.reconciliation.reason).toMatch(/draft.*cannot launch/i);
+  });
+
+  it('skips a blocked first worklist plan and emits the next eligible launch', async () => {
+    const brief = await readGoalPortfolioBrief({
+      workspaceId: WS,
+      goalId: 'goal-1',
+      sql: mockSql({
+        portfolio: {
+          'goal-1': {
+            ...portfolioRow,
+            plans: [
+              {
+                ref: 'plan:papercusp/draft',
+                ordinal: 1,
+                harness: 'papercusp',
+                slug: 'draft',
+                title: 'Draft plan',
+                status: 'draft',
+                ambiguousMatches: 1,
+                items: [
+                  { id: 'P-001', text: 'Blocked by start gate', status: 'todo', phase: 'Build', blockedBy: [], seq: 1 },
+                ],
+              },
+              {
+                ref: 'plan:papercusp/beta',
+                ordinal: 2,
+                harness: 'papercusp',
+                slug: 'beta',
+                title: 'Eligible plan',
+                status: 'active',
+                ambiguousMatches: 1,
+                items: [{ id: 'P-001', text: 'Launch me', status: 'todo', phase: 'Build', blockedBy: [], seq: 1 }],
+              },
+            ],
+          },
+        },
+      }),
+      now: NOW,
+      launch,
+    });
+
+    expect(brief?.worklist).toMatchObject([
+      { placement: { state: 'blocked', reconciliation: { toolCall: null } } },
+      {
+        placement: {
+          state: 'unplaced',
+          reconciliation: {
+            action: 'launch-plan-fleet',
+            toolCall: { tool: 'fleet:launch-on-plan', args: { plan: 'beta' } },
+          },
+        },
+      },
+    ]);
+    const rendered = renderGoalPortfolioBrief(brief!);
+    expect(rendered).toContain('MANDATORY NEXT PLAN PLACEMENT');
+    expect(rendered).toContain('plan:papercusp/beta is the highest-priority eligible worklist plan');
+    expect(rendered).not.toContain('Call fleet:launch-on-plan exactly once with {"name":"papercusp-draft');
+  });
+
   it('ignores an expired actionable lease instead of compiling a false placement', () => {
     expect(
       compileGoalPlanPlacement({

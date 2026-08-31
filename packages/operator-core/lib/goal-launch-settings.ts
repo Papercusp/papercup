@@ -688,6 +688,14 @@ export function compileGoalPlanPlacement(args: {
     normalizedStatus === 'shipped' ||
     normalizedStatus === 'superseded' ||
     (normalizedItems.length > 0 && normalizedItems.every((status) => status === 'done' || status === 'dropped'));
+  // A draft plan may contain dependency-free todo items, but the plan start
+  // oracle still refuses it until the owner approves the plan and supplies all
+  // declared inputs. Treating that row as `unplaced` produced a launch action
+  // that could never succeed and, worse, kept it as the first mandatory action
+  // on every GOAL wake, starving later eligible worklist plans. Draft (and
+  // paused/unknown operational) plans are therefore blocked at the portfolio
+  // compiler; only an approved/active plan may emit a fleet launch call.
+  const planStartable = normalizedStatus === 'ready' || normalizedStatus === 'active' || normalizedStatus === 'started';
   const blocked = !terminal && args.actionableItemId == null;
   const planHarness = args.plan.harness?.trim() || null;
   const planSlug = args.plan.slug.trim();
@@ -725,14 +733,18 @@ export function compileGoalPlanPlacement(args: {
     state = 'terminal';
     action = 'none';
     reason = 'The plan is terminal; no placement repair is required.';
-  } else if (blocked) {
-    state = 'blocked';
-    action = 'resolve-plan-blockers';
-    reason = 'The plan has non-terminal work but no dependency-free todo item.';
   } else if (planIdentityProblem) {
     state = 'blocked';
     action = 'resolve-plan-identity';
     reason = planIdentityProblem;
+  } else if (!planStartable) {
+    state = 'blocked';
+    action = 'resolve-plan-blockers';
+    reason = `The plan is ${normalizedStatus || 'unresolved'} and cannot launch until its lifecycle/start gate is satisfied.`;
+  } else if (blocked) {
+    state = 'blocked';
+    action = 'resolve-plan-blockers';
+    reason = 'The plan has non-terminal work but no dependency-free todo item.';
   } else if (!activeLane) {
     state = 'unplaced';
     action = 'launch-plan-fleet';
