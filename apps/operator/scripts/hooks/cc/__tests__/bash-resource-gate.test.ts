@@ -234,6 +234,77 @@ function runGateAsync(
 }
 
 /**
+ * FAITHFUL async twin of `runGate` — same env, same `GateOut`, same retry (WI-1507930).
+ *
+ * `runGateAsync` above is deliberately minimal: it exists for the atom sweep, which reads only
+ * stderr. It is NOT a drop-in for an ordinary verdict test, and using it as one silently costs two
+ * things this file paid for:
+ *   - it omits `PAPERCUSP_NATIVE_BG_ADVISORY: 'off'`, so the bg advisory reoccupies the single
+ *     ADVISORY slot and reds ~12 `expectAllow` assertions of unrelated guards (see runGate's env);
+ *   - it coerces a non-numeric exit `code` to 0, which ERASES the `status:null` infrastructure
+ *     outcome — exactly the load-induced kill WI-1036031's one-shot retry exists to survive, and
+ *     the one `describeGateExit` is built to explain. Coerced to 0 it reads as a clean allow.
+ * This twin keeps both, so a converted test is byte-equivalent in verdict AND in failure diagnosis.
+ *
+ * Why it exists: 877 of this file's 879 tests each pay one full serial `spawnSync` of the hook
+ * (~129ms measured 2026-08-31 — 113.6s of the file). Those spawns are independent and read-only, so
+ * the wall time is pure serialisation. Note `.concurrent` ALONE cannot fix that: `runGate` is
+ * `spawnSync`, which blocks the event loop, so concurrent tests calling it interleave nothing.
+ * Parallelism needs BOTH an async runner and `.concurrent`.
+ *
+ * Same rule as `runGateAsync`: anything that needs the event loop blocked — or that talks to the
+ * in-process stub operator — must keep using `runGate`.
+ */
+function runGateAsyncFull(
+  payload: unknown,
+  env: Record<string, string> = {},
+  attempt = 0,
+): Promise<GateOut> {
+  ensureGateCredentials();
+  return new Promise((resolvePromise) => {
+    const child = execFile(
+      'bash',
+      [SCRIPT],
+      {
+        encoding: 'utf8',
+        env: {
+          NODE_ENV: 'test',
+          PATH: process.env.PATH ?? '',
+          HOME: fakeHome,
+          PAPERCUSP_SID: nextSid(),
+          PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // dead port — fail-open fast
+          PC_HEAVY_LOAD1_OVERRIDE: '0',
+          PAPERCUSP_NATIVE_BG_ADVISORY: 'off',
+          ...env,
+        },
+        timeout: 15_000,
+      },
+      (err, stdout, stderr) => {
+        // Mirror runGate's carry-out of signal/error rather than collapsing them into a status.
+        const e = err as (Error & { code?: unknown; signal?: string | null }) | null;
+        const code = e?.code;
+        const out: GateOut = {
+          stdout: stdout ?? '',
+          stderr: stderr ?? '',
+          status: typeof code === 'number' ? code : e ? null : 0,
+          signal: e?.signal ?? null,
+          error: e && typeof code !== 'number' ? e.message : null,
+        };
+        // RETRY EXACTLY ONCE on an infrastructure outcome — identical rule and rationale to
+        // runGate's (WI-1036031): the gate is a pure read-only evaluation and the retry gets its
+        // own PAPERCUSP_SID, so nothing carries over from the killed attempt.
+        if (attempt === 0 && out.status === null && (out.signal || out.error)) {
+          resolvePromise(runGateAsyncFull(payload, env, attempt + 1));
+          return;
+        }
+        resolvePromise(out);
+      },
+    );
+    child.stdin?.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  });
+}
+
+/**
  * Bounded-concurrency map, preserving input order in the result.
  *
  * The cap is the point: each task spawns a CPU-bound Python process, and this
@@ -925,7 +996,10 @@ describe('tauri-agent-tools target guard (EI-10939)', () => {
 });
 
 describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, agent sessions) — EI-2376 recurrence guard', () => {
-  it.each([
+  // WI-1507930 pilot: these cases are pure, read-only, independent verdict probes — each one
+  // spawns the hook, reads a decision, shares nothing. `.concurrent` alone would buy NOTHING here
+  // (runGate is spawnSync and blocks the event loop), so it is paired with runGateAsyncFull.
+  it.concurrent.each([
     ['bare reset --hard', 'git reset --hard'],
     ['reset --hard HEAD', 'git reset --hard HEAD'],
     ['reset --hard a remote ref', 'git reset --hard origin/staging'],
@@ -962,11 +1036,11 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
     ['stash pop', 'git stash pop'],
     ['stash apply', 'git stash apply'],
     ['stash push with an explicit `--` path (no longer exempt — see EI-18215743778965613)', 'git stash push -- path/to/file.ts'],
-  ])('denies %s', (_label, command) => {
-    expectGitDeny(runGate(bashCmd(command), AGENT));
+  ])('denies %s', async (_label, command) => {
+    expectGitDeny(await runGateAsyncFull(bashCmd(command), AGENT));
   });
 
-  it.each([
+  it.concurrent.each([
     ['checkout of an explicit single file', 'git checkout -- path/to/file.ts'],
     ['restore of an explicit single file', 'git restore path/to/file.ts'],
     ['stash list', 'git stash list'],
@@ -984,8 +1058,8 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
     ['rtk-wrapped safe read (no false positive)', 'rtk git status'],
     ['time-wrapped safe read (no false positive)', 'time git log --oneline'],
     ['env-wrapped safe read (no false positive)', 'env FOO=bar git diff --stat'],
-  ])('allows %s', (_label, command) => {
-    expectAllow(runGate(bashCmd(command), AGENT));
+  ])('allows %s', async (_label, command) => {
+    expectAllow(await runGateAsyncFull(bashCmd(command), AGENT));
   });
 
   // ── EI-7872: the guard keys on the SHARED TREE, not a fragile env marker ──
