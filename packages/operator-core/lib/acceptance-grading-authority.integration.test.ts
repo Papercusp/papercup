@@ -271,3 +271,82 @@ describe('readGraderSelectionVia against real Postgres — the live grading casc
     expect(via.size).toBe(1);
   });
 });
+
+/**
+ * FALSIFIABILITY — permanent in-test controls, no tree mutation.
+ *
+ * A guard that has never failed is a guard nobody has tested. The repo's
+ * mutation-probe table prescribes, for "a MODULE / logic you import", keeping a
+ * deliberately-wrong implementation PERMANENTLY in the test file rather than
+ * mutating production code: this checkout is swept and committed by git-sync on a
+ * schedule, so a file held mutated for the duration of a run can be committed even
+ * when nothing goes wrong and no handler fails — a `trap` does not close that
+ * window. Same pattern, and same wording, as the sibling unit suite's
+ * "CONTROL (falsifiability, in-test — no tree mutation)" cases.
+ *
+ * These run the DEFECTIVE variants of the real query against the SAME real
+ * fixtures and assert they produce the WRONG answer. That is what converts the
+ * assertions above from "they passed" into "they would have caught this" — and it
+ * matters most here precisely because the read fails SOFT: every defect below
+ * degrades to an empty map, which the gate reads as "every card ranks floor",
+ * i.e. silent reversion to pre-P-004 latest-wins with nothing red anywhere.
+ */
+describe('CONTROLS (falsifiability, in-test — no tree mutation)', () => {
+  it('the pre-P-004 liveness predicate WOULD empty the map on a closed cascade', async () => {
+    // The defect D-007 names by name: copying `closed_at IS NULL` from the two
+    // OTHER readers of these rows. By gate time the cascade has usually closed, so
+    // this empties the map in exactly the common case. If the real query ever
+    // acquires this predicate, the "reads a CLOSED cascade" case above goes red.
+    await truncate();
+    await insertCascade({
+      routing: gradingRouting([{ ownerId: 'su-grader-1', via: 'floor' }]),
+      closedAt: '2026-08-30T13:00:00Z',
+    });
+
+    const defective = (await rootSql`
+      SELECT routing FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS}
+         AND routing -> 'cascade' ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
+         AND routing -> 'cascade' ->> 'rubricId' = ${RUBRIC}
+         AND closed_at IS NULL
+    `) as unknown as Array<{ routing: unknown }>;
+
+    expect(graderSelectionVia(defective.map((r) => r.routing))).toEqual(new Map());
+    // …while the real read, against this very row, does not.
+    expect((await readGraderSelectionVia(WS, RUBRIC)).get('su-grader-1')).toBe('floor');
+  });
+
+  it('a wrong jsonb path WOULD silently match nothing on a real grading row', async () => {
+    // A typo'd path is the defect a fake `sql` tag can never catch: the unit tests
+    // supply rows directly, so the path is never exercised against real jsonb.
+    // Here `selection` is looked up one level too high — the shape a plausible
+    // refactor produces — and the fail-soft read turns it into a clean empty map.
+    await truncate();
+    await insertCascade({ routing: gradingRouting([{ ownerId: 'su-grader-1', via: 'floor' }]) });
+
+    const defective = (await rootSql`
+      SELECT routing FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS}
+         AND routing ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
+    `) as unknown as Array<{ routing: unknown }>;
+
+    expect(defective).toHaveLength(0);
+    expect((await readGraderSelectionVia(WS, RUBRIC)).size).toBe(1);
+  });
+
+  it('CALIBRATION: the fixtures and the folding instrument are themselves sound', async () => {
+    // Guards the controls above from passing for the WRONG reason. If the INSERT
+    // silently wrote nothing, or `graderSelectionVia` returned empty for every
+    // input, both controls would "pass" while proving nothing at all. This pins
+    // that the same instrument, on the same table, does return a non-empty fold.
+    await truncate();
+    await insertCascade({ routing: gradingRouting([{ ownerId: 'su-grader-1', via: 'floor' }]) });
+
+    const rows = (await rootSql`
+      SELECT routing FROM harness_shared.consult_state WHERE workspace_id = ${WS}
+    `) as unknown as Array<{ routing: unknown }>;
+
+    expect(rows).toHaveLength(1);
+    expect(graderSelectionVia(rows.map((r) => r.routing)).get('su-grader-1')).toBe('floor');
+  });
+});
