@@ -9,6 +9,7 @@ import {
   classifyAffectedBlastRadius,
   durationEstimate,
   emptyDurationHistory,
+  formatAdmissionHolder,
   formatAffectedTaskShardMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
@@ -38,6 +39,10 @@ import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+const SCHEDULER_SRC = readFileSync(
+  resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'),
+  'utf8',
+);
 
 // HYGIENE, NOT A FIX — do not read this as the reason the timeouts went away.
 //
@@ -1370,5 +1375,66 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     // And the queue notices must be routed to `errSync` (stderr AND the run log), not left on
     // the scheduler's `console.error` default, which never reaches RUN_LOG_PATH.
     expect(AFFECTED_TESTS_SRC).toMatch(/onAdmissionNotice:\s*\(line\)\s*=>\s*errSync\(line\)/);
+  });
+});
+
+// EI-21917992245424964: a blocked peer could see THAT a holder existed and never whether it
+// was worth waiting for, so the safe default was always to wait. The notice is the surface
+// that has to answer it — it is re-announced on a 60s cadence for the whole queue wait, and
+// it previously spent all of that repeating four identity fields as pretty-printed JSON.
+describe('formatAdmissionHolder', () => {
+  it('renders a declared holder as one line carrying scope and a bounded ETA', () => {
+    const line = formatAdmissionHolder(
+      JSON.stringify({
+        pid: 4242,
+        host: 'somehost',
+        name: 'papercusp-test-process-admission',
+        acquiredAt: '2026-08-31T12:00:00.000Z',
+        intent: { scope: 'git-status', tasks: 90, etaMinSec: 1560, etaFromTasks: '61/90' },
+      }),
+      Date.parse('2026-08-31T12:02:00.000Z'),
+    );
+
+    expect(line).toContain('pid=4242');
+    expect(line).toContain('held=120s');
+    expect(line).toContain('scope=git-status');
+    expect(line).toContain('etaMinSec=1560');
+    // The ratio must travel WITH the ETA: a lower bound read as an estimate is the
+    // confidently-wrong number this whole record exists to stop producing.
+    expect(line).toContain('etaFromTasks=61/90');
+    expect(line).not.toContain('\n');
+  });
+
+  it('says intent=undeclared rather than staying silent, so "did not say" cannot read as "cheap"', () => {
+    const line = formatAdmissionHolder(
+      JSON.stringify({
+        pid: 7,
+        host: 'somehost',
+        startedAt: '2026-08-31T12:00:00.000Z',
+        name: 'papercusp-test-process-admission',
+      }),
+    );
+
+    expect(line).toContain('intent=undeclared');
+  });
+
+  it('falls open to the raw text instead of throwing while a caller is already blocked', () => {
+    expect(formatAdmissionHolder('not json at all')).toBe('not json at all');
+    expect(formatAdmissionHolder(undefined)).toBe('');
+    // A JSON array parses but is not an owner record; it must not be mined for fields.
+    expect(formatAdmissionHolder('[1,2,3]')).toBe('[1,2,3]');
+  });
+
+  it('is what the queued notice actually calls, not a helper nothing reaches', () => {
+    expect(SCHEDULER_SRC).toMatch(/holder: \$\{formatAdmissionHolder\(owner\)\}/);
+    expect(SCHEDULER_SRC).toMatch(/intent:\s*options\?\.admissionIntent/);
+  });
+
+  it('is fed by affected-tests, which derives its declaration instead of hand-maintaining it', () => {
+    // Derived from the run's own settled facts — the acquisition sits below the derivation
+    // boundary, so these are known by then and cannot drift from what the run really does.
+    expect(AFFECTED_TESTS_SRC).toMatch(/admissionIntent,/);
+    expect(AFFECTED_TESTS_SRC).toContain('scope: derivationSource');
+    expect(AFFECTED_TESTS_SRC).toContain('etaFromTasks');
   });
 });

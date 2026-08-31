@@ -5439,6 +5439,54 @@ function persistCleanFirstPassTaskVerdict({ task: context, value }) {
 // `let` + the declaration ABOVE the publication boundary on purpose: EI-21361599312981776
 // pins that NOTHING may sit between `publishPreemptReadyMarker()` and the first task shard,
 // so only the `try {` opener is allowed to intervene.
+// EI-21917992245424964: what this run IS, published into the shared admission mutex's owner
+// record so a BLOCKED peer can decide whether waiting is worth it without a coord round-trip
+// and without this process being awake to answer. Measured 2026-08-30: a peer read "it is
+// progressing, so I will not interrupt it" off a holder that had just entered a ~26-minute
+// leg whose output nobody wanted, because the owner record carried identity and no value.
+//
+// Every field here is DERIVED from what the run has already computed, not separately
+// declared — the acquisition sits below the derivation boundary (see the comment under
+// `publishPreemptReadyMarker()`), so the scope and the task list are settled facts by now.
+// A declared-and-forgotten field would rot; a derived one cannot.
+//
+// `etaMinSec` is deliberately named a MINIMUM and shipped beside the ratio it was computed
+// over. A task with no duration history contributes zero, so the sum is a LOWER BOUND, and
+// a lower bound presented as an estimate is exactly the confidently-wrong number this repo
+// keeps getting bitten by. `etaFromTasks=3/9` tells a reader how much of the run the number
+// actually saw; if it reads 0/9 the ETA means nothing and says so.
+const admissionIntent = (() => {
+  try {
+    let known = 0;
+    let etaMs = 0;
+    for (const t of tasks) {
+      const estimate = durationEstimate(durationHistory, taskKey(t));
+      if (Number.isFinite(estimate) && estimate > 0) {
+        known += 1;
+        etaMs += estimate;
+      }
+    }
+    const intent = {
+      scope: derivationSource,
+      paths: changedPathsOverride ? changedPathsOverride.length : (changedPathTotal ?? 0),
+      workspaces: affected.length,
+      tasks: tasks.length,
+      etaMinSec: Math.round(etaMs / 1000),
+      etaFromTasks: `${known}/${tasks.length}`,
+    };
+    // The holder's own declaration that its output is expendable — "kill me rather than
+    // queue behind me". Opt-in and OMITTED when unset, never defaulted to false: absence
+    // has to keep reading as "did not say", because a run that never considered the
+    // question is not the same as one that decided it is load-bearing.
+    if (process.env.AFFECTED_TESTS_DISCARDABLE === "1") intent.discardable = true;
+    return intent;
+  } catch {
+    // Disclosure, not a rail. A run must never fail to start because it could not describe
+    // itself; an undeclared holder is exactly the status quo this improves on.
+    return undefined;
+  }
+})();
+
 let initialPool;
 
 // This is the irreversible execution boundary: derivation, dry-run, and empty
@@ -5463,6 +5511,8 @@ try {
   // to grep. A queued run therefore froze its log mid-run with no explanation and was read
   // as a hang (zero children + ep_poll + flat log is the same signature either way).
   onAdmissionNotice: (line) => errSync(line),
+  // EI-21917992245424964: published into the mutex owner record for blocked peers.
+  admissionIntent,
   });
 } catch (error) {
   // WI-1639265: the run was launched with less wall clock than the work already known to be

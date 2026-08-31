@@ -466,3 +466,102 @@ describe('peekFsMutexSync', () => {
     await rm(dir, { recursive: true, force: true });
   });
 });
+
+// EI-21917992245424964: the owner record carried IDENTITY (pid/host/startedAt/name) and
+// nothing about whether the holder was worth waiting for, so a blocked peer's only safe
+// default was to wait — measured at ~26 minutes for a run whose output nobody wanted.
+// `intent` is the value half, readable by any waiter with no round-trip and without the
+// holder being awake.
+describe('withFsMutex owner intent', () => {
+  it('publishes a declared intent into the owner record a blocked peer reads', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    let seen: Record<string, unknown> | undefined;
+    await withFsMutex(
+      'npm-install',
+      async () => {
+        // Peek from INSIDE the critical section: this is exactly the vantage point of a
+        // peer that is blocked while this holder runs.
+        seen = peekFsMutexSync('npm-install').owner as Record<string, unknown>;
+      },
+      { timeoutMs: 5_000, intent: { scope: 'explicit', tasks: 3, etaMinSec: 12 } },
+    );
+
+    expect(seen?.intent).toEqual({ scope: 'explicit', tasks: 3, etaMinSec: 12 });
+    // The identity fields a waiter and the reclaim path depend on must survive alongside it.
+    expect(seen?.pid).toBe(process.pid);
+    expect(seen?.host).toBe(hostname());
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('omits the intent key entirely when nothing was declared, so absence stays absence', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    let seen: Record<string, unknown> | undefined;
+    await withFsMutex(
+      'npm-install',
+      async () => {
+        seen = peekFsMutexSync('npm-install').owner as Record<string, unknown>;
+      },
+      { timeoutMs: 5_000 },
+    );
+
+    expect(seen).toBeTruthy();
+    expect('intent' in (seen ?? {})).toBe(false);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('cannot be used to shadow the identity fields the reclaim path trusts', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    const deadPid = 2_147_483_647;
+    let seen: Record<string, unknown> | undefined;
+    await withFsMutex(
+      'npm-install',
+      async () => {
+        seen = peekFsMutexSync('npm-install').owner as Record<string, unknown>;
+      },
+      // A caller naming `pid`/`host` must land under `intent`, never over the real values —
+      // otherwise a self-description could forge a dead owner and invite its own reclaim.
+      { timeoutMs: 5_000, intent: { pid: deadPid, host: 'somewhere-else' } },
+    );
+
+    expect(seen?.pid).toBe(process.pid);
+    expect(seen?.host).toBe(hostname());
+    expect(seen?.intent).toEqual({ pid: deadPid, host: 'somewhere-else' });
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('drops unrepresentable values rather than coercing them, and bounds long strings', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    let seen: Record<string, unknown> | undefined;
+    await withFsMutex(
+      'npm-install',
+      async () => {
+        seen = peekFsMutexSync('npm-install').owner as Record<string, unknown>;
+      },
+      {
+        timeoutMs: 5_000,
+        intent: {
+          keep: 'yes',
+          long: 'x'.repeat(500),
+          // A coerced "[object Object]" would read as data; dropping reads as "not declared".
+          nested: { a: 1 },
+          notFinite: Number.NaN,
+        } as unknown as Record<string, string | number | boolean>,
+      },
+    );
+
+    const intent = seen?.intent as Record<string, unknown>;
+    expect(intent.keep).toBe('yes');
+    expect('nested' in intent).toBe(false);
+    expect('notFinite' in intent).toBe(false);
+    expect(String(intent.long)).toHaveLength(201); // 200 chars + the truncation marker
+    await rm(dir, { recursive: true, force: true });
+  });
+});
