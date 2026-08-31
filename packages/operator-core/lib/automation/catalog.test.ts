@@ -285,4 +285,56 @@ describe('collapseFanOut', () => {
     ]);
     expect(out[0]!.controllable).toBe(false);
   });
+
+  /*
+   * EI-19294826146331487 — an INSTALL and a VIEW are not the same kind of group member.
+   *
+   * A sweep declared in code shows up twice: as its `tier='in-process'` arm-state routines row
+   * (the switch) and as the live inventory observation of the same timer (a view). The view is
+   * never controllable and its `installSlug` is a SOURCE name, so treating it as an install both
+   * vetoed the real switch and would have pointed the click at 'in-process', which `routines:set`
+   * cannot address.
+   */
+  it('lets a routines row control a group it shares with an inventory VIEW of the same sweep', () => {
+    const members = [
+      row({ name: 'system-health', installSlug: 'papercusp', source: 'routines', controllable: true }),
+      row({
+        name: 'system-health',
+        installSlug: 'in-process',
+        source: 'in-process',
+        controllable: false,
+        control: 'none',
+      }),
+    ];
+    const out = collapseFanOut(members);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.controllable).toBe(true);
+    // ...and the click goes only to install slugs `routines:set` can actually write.
+    expect(out[0]!.installs).toEqual(['papercusp']);
+
+    // NEGATIVE CONTROL — the pre-fix rule, kept here so this cannot pass vacuously. It is the
+    // exact expression that produced the padlock, and it still answers `false` on this input.
+    expect(members.every((m) => m.controllable)).toBe(false);
+  });
+
+  it('still refuses when a REAL second install is uncontrollable, view or no view', () => {
+    // The original guarantee — a switch must not silently miss a pot — is untouched: the
+    // exclusion applies to non-routines views only, never to another routines install.
+    const out = collapseFanOut([
+      row({ name: 'git-sync', installSlug: 'a', source: 'routines', controllable: true }),
+      row({ name: 'git-sync', installSlug: 'b', source: 'routines', controllable: false }),
+      row({ name: 'git-sync', installSlug: 'managed', source: 'managed', controllable: false }),
+    ]);
+    expect(out[0]!.controllable).toBe(false);
+    expect(out[0]!.installs).toEqual(['a', 'b']);
+  });
+
+  it('falls back to every member when the group has no routines row at all', () => {
+    const out = collapseFanOut([
+      row({ name: 'pty-keepalive', installSlug: 'managed', source: 'managed', controllable: false }),
+      row({ name: 'pty-keepalive', installSlug: 'in-process', source: 'in-process', controllable: false }),
+    ]);
+    expect(out[0]!.controllable).toBe(false);
+    expect(out[0]!.installs).toEqual(['in-process', 'managed']);
+  });
 });

@@ -250,6 +250,40 @@ describe('isClockDriven — who can be judged late', () => {
     expect(isClockDriven({ source: 'other', kind: 'triggered', nextFireAt: '2026-07-26T18:00:00.000Z' })).toBe(false);
   });
 
+  /*
+   * EI-19294826146331487 — an ARM-STATE row (`tier='in-process'`) carries the SWEEP's cadence in
+   * `reschedule_interval_sec` purely so the pane can render "every 30s". No executor reads the
+   * row, so it has no `next_fire_at` and never will. Judging it by the clock reported all 17
+   * sweeps as stalled and needing attention — the same false alarm P-008 was fixed to stop.
+   */
+  it('never judges an arm-state row by the clock, cadence or not', () => {
+    expect(
+      isClockDriven({ source: 'routines', kind: 'scheduled', rescheduleIntervalSec: 30, tier: 'in-process' }),
+    ).toBe(false);
+    expect(
+      routineLiveness({
+        active: true,
+        nextFireAt: null,
+        clockDriven: isClockDriven({
+          source: 'routines',
+          kind: 'scheduled',
+          rescheduleIntervalSec: 30,
+          tier: 'in-process',
+        }),
+      }),
+    ).toBe('running');
+  });
+
+  it('CALIBRATION: the SAME input on any other tier still is clock-driven', () => {
+    // Without this, the exemption above would also pass if `rescheduleIntervalSec` had simply
+    // stopped counting for every row — a much larger and silent behaviour change.
+    for (const tier of ['durable', 'ephemeral', null, undefined]) {
+      expect(
+        isClockDriven({ source: 'routines', kind: 'scheduled', rescheduleIntervalSec: 30, tier }),
+      ).toBe(true);
+    }
+  });
+
   // End-to-end shape of the regression: a managed timer must come out RUNNING.
   it('leaves a managed timer with a cadence and no next fire reading as running', () => {
     const clockDriven = isClockDriven({ source: 'other', kind: 'scheduled', nextFireAt: null });

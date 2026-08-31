@@ -273,15 +273,6 @@ export const BLUEPRINT_SPEND: Readonly<Record<string, SpendEntry>> = {
 };
 
 /**
- * `system:loop-wake` is a SENTINEL target_role, not a registered handler: the DBOS
- * fire recognises a loop by `reschedule_interval_sec IS NOT NULL` + `target_owner_id`
- * and delivers a `coord:send {wake}` to the owner rather than running an action
- * inline (loop.ts LOOP_WAKE_ACTION). It therefore never appears in
- * `listSystemActions()`, and the registry cross-check must exempt it.
- */
-export const SENTINEL_TARGET_ROLES: readonly string[] = ['system:loop-wake'];
-
-/**
  * The `target_role` carried by an ARM-STATE row — a `tier='in-process'` routines row standing for
  * a sweep DECLARED IN CODE, whose `active` column is that sweep's on/off switch
  * (EI-19294826146331487, migration 1046).
@@ -293,6 +284,19 @@ export const SENTINEL_TARGET_ROLES: readonly string[] = ['system:loop-wake'];
  * machinery that maintains it.
  */
 export const IN_PROCESS_SWEEP_TARGET_ROLE = 'in-process:sweep';
+
+/**
+ * `system:loop-wake` is a SENTINEL target_role, not a registered handler: the DBOS
+ * fire recognises a loop by `reschedule_interval_sec IS NOT NULL` + `target_owner_id`
+ * and delivers a `coord:send {wake}` to the owner rather than running an action
+ * inline (loop.ts LOOP_WAKE_ACTION). It therefore never appears in
+ * `listSystemActions()`, and the registry cross-check must exempt it.
+ *
+ * `IN_PROCESS_SWEEP_TARGET_ROLE` is the second sentinel, for a stronger reason: an ARM-STATE row
+ * is dispatched by NO executor at all, which is why it is deliberately not a `system:` role.
+ * Referenced rather than repeated so the exemption cannot drift from the value actually written.
+ */
+export const SENTINEL_TARGET_ROLES: readonly string[] = ['system:loop-wake', IN_PROCESS_SWEEP_TARGET_ROLE];
 
 /**
  * `system:<action>` → does firing it bill a model?

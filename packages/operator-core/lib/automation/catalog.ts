@@ -548,6 +548,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       kind,
       cron,
       rescheduleIntervalSec: r.reschedule_interval_sec,
+      tier: r.tier,
     });
     const liveness = routineLiveness({ active, nextFireAt: iso(r.next_fire_at), clockDriven });
     const { control, why: controlWhy } = routineControl({ source: 'routines' });
