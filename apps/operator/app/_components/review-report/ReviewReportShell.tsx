@@ -224,6 +224,69 @@ export interface ReviewRowMenuAction {
   run: () => void;
 }
 
+/**
+ * THE registry of per-row recoveries, and the only place their wording lives.
+ *
+ * Both flows previously built this set inline, which is how two surfaces that
+ * are meant to be one product grow two different vocabularies for the same
+ * control — and how a recovery added for one flow silently fails to appear in
+ * the other. The label takes the flow's own SUBJECT so the wording can stay
+ * flow-appropriate ("Dismiss this finding" vs "Dismiss this item") without
+ * either consumer owning a second copy of the phrasing.
+ *
+ * A control added here is immediately offerable by both flows; neither can add
+ * one without adding it here first, because `reviewRowControl` only accepts
+ * these ids.
+ */
+export const REVIEW_ROW_CONTROLS = {
+  "apply-one": { label: () => "Apply just this one" },
+  open: { label: (subject: string) => `Open ${subject}` },
+  recheck: {
+    label: (subject: string) => `Re-check against the live ${subject}`,
+  },
+  reconcile: {
+    label: (subject: string) => `Reconcile with the live ${subject}`,
+  },
+  retry: { label: () => "Send back to the resolver" },
+  dismiss: {
+    label: (subject: string) => `Dismiss this ${subject}`,
+    tone: "danger" as const,
+  },
+} as const;
+
+export type ReviewRowControlId = keyof typeof REVIEW_ROW_CONTROLS;
+
+/**
+ * Build one row control from the registry. Consumers supply only what is
+ * genuinely theirs — the subject noun, whether it is available here, and what
+ * to run — never the wording or the tone.
+ */
+export function reviewRowControl(
+  id: ReviewRowControlId,
+  spec: {
+    subject?: string;
+    run: () => void;
+    disabled?: boolean;
+    disabledReason?: string;
+  },
+): ReviewRowMenuAction {
+  const entry = REVIEW_ROW_CONTROLS[id];
+  const control: ReviewRowMenuAction = {
+    id,
+    label: entry.label(spec.subject ?? ""),
+    run: spec.run,
+  };
+  if ("tone" in entry) control.tone = entry.tone;
+  if (spec.disabled) {
+    control.disabled = true;
+    // The "a greyed control still owes an explanation" invariant, enforced at
+    // the one place controls are built rather than trusted at each call site.
+    control.disabledReason =
+      spec.disabledReason ?? "Not available for this row.";
+  }
+  return control;
+}
+
 export interface ReviewReportRow {
   /** Stable row id (e.g. the scanner's findingId) — the unit Apply targets. */
   id: string;
