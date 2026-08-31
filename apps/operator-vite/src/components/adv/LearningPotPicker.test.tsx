@@ -117,8 +117,15 @@ const rowFor = (slug: string): HTMLElement => {
   return el;
 };
 
-const checkboxFor = (slug: string): HTMLInputElement => {
-  const box = rowFor(slug).querySelector<HTMLInputElement>('input[type="checkbox"]');
+/**
+ * The row's toggle is the shared Radix primitive (@/app/harness/Checkbox), which
+ * renders a <button role="checkbox">, NOT a native <input type=checkbox> — the
+ * design-primitives lint forbids a native one outside the primitive. Query the
+ * ARIA role so this keeps hitting the real toggle target whichever element the
+ * primitive renders.
+ */
+const checkboxFor = (slug: string): HTMLElement => {
+  const box = rowFor(slug).querySelector<HTMLElement>('[role="checkbox"]');
   if (!box) throw new Error(`row ${slug} has no checkbox`);
   return box;
 };

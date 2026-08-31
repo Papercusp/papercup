@@ -592,7 +592,7 @@ export default function LearningPotRail() {
         .pc-potrail__poptext:disabled { cursor: default; color: var(--fg-mute); }
         .pc-potrail__arm {
           all: unset; cursor: pointer; display: inline-flex; align-items: center;
-          justify-content: center; width: 22px; height: 20px; border-radius: 5px;
+          justify-content: center; width: 22px; height: 20px; min-height: 20px; border-radius: 5px;
           color: var(--fg-mute);
         }
         .pc-potrail__arm[data-on="1"] { color: var(--good); }

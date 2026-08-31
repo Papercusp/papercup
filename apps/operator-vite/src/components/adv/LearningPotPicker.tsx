@@ -21,6 +21,7 @@ import { useCallback, useMemo, useState } from "react";
 import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import type { AutomationCatalog } from "@papercusp/operator-core/lib/automation/catalog";
+import { Checkbox } from "@/app/harness/Checkbox";
 import { Modal } from "@/app/harness/Modal";
 import { potHomeLabel } from "@/lib/pot-label";
 import { useLexicon } from "@/lib/useLexicon";
@@ -83,12 +84,11 @@ function PotRow({
   return (
     <li className="pc-potpick__row" data-learning={row.learning} data-slug={row.potSlug}>
       <label className="pc-potpick__pick">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={checked}
           disabled={disabled}
           onChange={() => onToggle(row.potSlug)}
-          aria-label={`Select ${label}`}
+          ariaLabel={`Select ${label}`}
         />
         <span className="pc-potpick__name">{label}</span>
       </label>
