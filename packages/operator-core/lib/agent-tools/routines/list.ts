@@ -156,25 +156,24 @@ export function attestGateHealth(value: unknown, nowMs: number = Date.now()): un
       : null;
   const inconclusiveStatus =
     inconclusiveBlock && typeof inconclusiveBlock.status === 'string' ? inconclusiveBlock.status : null;
-  const inconclusiveAttestation =
+  const abortVintage =
     inconclusiveStatus === null
+      ? null
+      : gateAbortVintage({
+          status: inconclusiveStatus,
+          observedAtMs: epochMs(inconclusiveBlock?.observedAtMs),
+          nowMs,
+        });
+  const inconclusiveAttestation =
+    inconclusiveStatus === null || abortVintage === null
       ? null
       : {
           status: inconclusiveStatus,
-          ...(() => {
-            const v = gateAbortVintage({
-              status: inconclusiveStatus,
-              observedAtMs: epochMs(inconclusiveBlock?.observedAtMs),
-              nowMs,
-            });
-            return {
-              observedAt: isoAt(v.observedAtMs),
-              ageMs: v.ageMs,
-              age: v.age === null ? null : `${v.age} ago`,
-              stale: v.stale,
-              warning: v.warning,
-            };
-          })(),
+          observedAt: isoAt(abortVintage.observedAtMs),
+          ageMs: abortVintage.ageMs,
+          age: abortVintage.age === null ? null : `${abortVintage.age} ago`,
+          stale: abortVintage.stale,
+          warning: abortVintage.warning,
         };
 
   return {

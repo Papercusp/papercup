@@ -2942,7 +2942,7 @@ describe('computeStages: position x health', () => {
       ).detail ?? '';
     expect(detail).toMatch(/ABORTED before judging/i);
     // The vintage itself, on the sentence a reader acts on.
-    expect(detail).toContain('abort observed 3h ago');
+    expect(detail).toContain('observed 3h ago');
     // And the escalation that says the claim may no longer describe now.
     expect(detail).toContain('LATCHED');
   });
@@ -2952,7 +2952,7 @@ describe('computeStages: position x health', () => {
     const detail =
       stage(computeStages(input({ gate: abortObservedAt(now - 4_000) }), null, now), 'gate').detail ?? '';
     expect(detail).toMatch(/ABORTED before judging/i);
-    expect(detail).toContain('abort observed 4s ago');
+    expect(detail).toContain('Abort observed 4s ago');
     // The control. A caveat printed on every read is one a reader stops seeing, so the
     // marker must stay silent here — otherwise the assertion above proves nothing.
     expect(detail).not.toContain('LATCHED');

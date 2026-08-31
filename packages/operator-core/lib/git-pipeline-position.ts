@@ -49,6 +49,7 @@ import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contrac
 import { describeRefusal, refuseAnswer, type RefusedAnswer } from './field-reliability';
 import { describeRefireBudget } from './release/in-flight-retriage';
 import { gateAbortLever, gateAbortRefireClause, gateAbortVintage } from './release/gate-abort-status';
+import { formatIdleAge } from './format/relative-time';
 import { reconcileGateVerdictFreshnessWithCheckpointRun } from './release/gate-verdict-freshness';
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
@@ -3255,8 +3256,11 @@ export function computeStages(
                 observedAtMs: g.inconclusive!.observedAtMs,
                 nowMs,
               });
-              if (v.age !== null) return ` (abort observed ${v.age} ago.)${v.warning ? ` ${v.warning}` : ''}`;
-              return v.warning ? ` ${v.warning}` : '';
+              // The warning already states the age, so the bare parenthetical is for the
+              // fresh case ONLY — otherwise a stale abort prints its age twice in one
+              // sentence, which reads as two separate observations rather than one.
+              if (v.warning) return ` ${v.warning}`;
+              return v.age === null ? '' : ` (Abort observed ${v.age} ago.)`;
             })()
           }${
             g.consecutiveReds > 0
@@ -5016,6 +5020,15 @@ export async function gitPipelinePosition(
   if (gate.verdictStale && gate.stalled) {
     notes.push(
       `⚠ THIS RED MAY BE STALE (do not go re-fix the test(s) it names on this evidence alone): ${gate.verdictStaleReason ?? 'the recorded verdict is unverified'}` +
+        // WI-1752145: WHEN this verdict was observed — the vintage of the `consecutiveReds` /
+        // `stalled` / `failingTests` a reader is being warned about. `verdictStale` said THAT
+        // the reading was unverified; it could not say HOW OLD, because the stamp behind it was
+        // dropped at this module's projection boundary. Distinct from `candidateAgeMs` below,
+        // which is the age of the judged COMMIT at verdict time — a different clock answering a
+        // different question, and the one that was standing in for this.
+        (gate.verdictObservedAtMs != null
+          ? ` The verdict itself was observed ${formatIdleAge((Date.now() - gate.verdictObservedAtMs) / 1000)} ago.`
+          : '') +
         (gate.candidateAgeMs != null
           ? ` — the judged candidate was ${Math.round(gate.candidateAgeMs / 60_000)}min old at verdict time` +
             (gate.commitsBehindTip != null && gate.commitsBehindTip > 0
