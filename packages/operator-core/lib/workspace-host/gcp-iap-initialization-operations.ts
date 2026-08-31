@@ -157,14 +157,39 @@ function isWorkspaceHostCredentialLifecycleStep(
   return (WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS as readonly string[]).includes(step.kind);
 }
 
+/** The transport half of a profile: everything except which program to run at the far end. */
+export type GcpIapWorkspaceHostTransportProfile = Omit<
+  GcpIapWorkspaceHostInitializationProfile,
+  'remoteEntrypoint'
+>;
+
+/** One program to run on the host, with the bytes to feed its stdin. */
+export interface GcpIapRemoteInvocation {
+  /** Absolute path to a binary shipped in the signed workspace-host release. */
+  readonly entrypoint: string;
+  readonly entrypointLabel: string;
+  /** argv AFTER the entrypoint. */
+  readonly args: readonly string[];
+  readonly stdin: string;
+}
+
 /**
- * Build one non-interactive OpenSSH invocation over GCP IAP. The remote side
- * receives one typed request on stdin; no shell script, scp staging, or resolved
- * credential bytes cross this boundary.
+ * Build one non-interactive OpenSSH invocation over GCP IAP.
+ *
+ * SHARED BY EVERY HOST PROGRAM ON PURPOSE — initialization and credential delivery both route
+ * through here. The options below are security-critical (`IdentitiesOnly`, `StrictHostKeyChecking`,
+ * the pinned `HostKeyAlias`, `ClearAllForwardings`), and a second builder that re-derived them
+ * would be free to drift: both would keep connecting, one of them less safely, and nothing would
+ * fail until it mattered. One definition means a hardening change reaches every caller at once.
+ *
+ * NOTE WHAT THIS FUNCTION DOES NOT DO: it asserts nothing about `stdin`. Secret-isolation is the
+ * CALLER's obligation, because the two callers have opposite duties — initialization must never
+ * carry material and asserts so, delivery carries it by definition (D-215). Asserting here would
+ * have to be conditional, and a conditional assertion proves only that the condition was not met.
  */
-export function buildGcpIapWorkspaceHostInitializationCommand(
-  profile: GcpIapWorkspaceHostInitializationProfile,
-  step: GcpIapWorkspaceHostInitializationStep,
+export function buildGcpIapSshInvocation(
+  profile: GcpIapWorkspaceHostTransportProfile,
+  invocation: GcpIapRemoteInvocation,
 ): GcpIapWorkspaceHostInitializationCommand {
   requireCondition(GCP_PROJECT_ID.test(profile.projectId), 'GCP project id has an invalid value');
   const zone = requireGcpName(profile.zone, 'GCP zone');
@@ -176,14 +201,11 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
     : undefined;
   const sshExecutable = requireExecutable(profile.sshExecutable ?? 'ssh', 'OpenSSH executable');
   const gcloudExecutable = requireExecutable(profile.gcloudExecutable ?? 'gcloud', 'gcloud executable');
-  const remoteEntrypoint = requireExecutable(profile.remoteEntrypoint, 'Remote initializer', true);
-  assertWorkspaceHostSecretIsolation(step, `workspaceHost.gcpIap.initialization.${step.id}`);
-
-  const protocolRequest = {
-    protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
-    step: isWorkspaceHostCredentialLifecycleStep(step) ? encodeWorkspaceHostCredentialLifecycleStep(step) : step,
-  };
-  assertWorkspaceHostSecretIsolation(protocolRequest, 'workspaceHost.gcpIap.initialization.request');
+  const remoteEntrypoint = requireExecutable(
+    invocation.entrypoint,
+    invocation.entrypointLabel,
+    true,
+  );
 
   const proxyCommand = [
     gcloudExecutable,
@@ -197,12 +219,7 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
     '--verbosity=error',
   ].join(' ');
   const target = `${profile.sshUser}@${instanceName}`;
-  const remoteCommand = [
-    remoteEntrypoint,
-    '--protocol-version',
-    GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
-    '--json-stdin',
-  ]
+  const remoteCommand = [remoteEntrypoint, ...invocation.args]
     .map(quotePosixShellArg)
     .join(' ');
 
@@ -236,8 +253,34 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
       target,
       remoteCommand,
     ],
-    stdin: `${JSON.stringify(protocolRequest)}\n`,
+    stdin: invocation.stdin,
   };
+}
+
+/**
+ * Build the initialization invocation. The remote side receives one typed request on stdin; no
+ * shell script, scp staging, or resolved credential bytes cross THIS boundary — the assertions
+ * below are what make that true, and they run on the step and on the encoded request separately
+ * so a leak is attributed to whichever of the two introduced it.
+ */
+export function buildGcpIapWorkspaceHostInitializationCommand(
+  profile: GcpIapWorkspaceHostInitializationProfile,
+  step: GcpIapWorkspaceHostInitializationStep,
+): GcpIapWorkspaceHostInitializationCommand {
+  assertWorkspaceHostSecretIsolation(step, `workspaceHost.gcpIap.initialization.${step.id}`);
+
+  const protocolRequest = {
+    protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
+    step: isWorkspaceHostCredentialLifecycleStep(step) ? encodeWorkspaceHostCredentialLifecycleStep(step) : step,
+  };
+  assertWorkspaceHostSecretIsolation(protocolRequest, 'workspaceHost.gcpIap.initialization.request');
+
+  return buildGcpIapSshInvocation(profile, {
+    entrypoint: profile.remoteEntrypoint,
+    entrypointLabel: 'Remote initializer',
+    args: ['--protocol-version', GCP_IAP_INITIALIZATION_PROTOCOL_VERSION, '--json-stdin'],
+    stdin: `${JSON.stringify(protocolRequest)}\n`,
+  });
 }
 
 /** Real process runner with bounded output and secret-safe failures. */
