@@ -30,8 +30,13 @@ import { join, resolve } from 'node:path';
 export interface ClaimTimeStalePathHint {
   /** The stored hint exactly as filed. */
   requested: string;
-  /** 'moved' = resolvedTo names the current location; 'missing' = no rename chain found. */
-  status: 'moved' | 'missing';
+  /**
+   * 'moved'   = resolvedTo names the current location.
+   * 'missing' = the path WAS here and was deleted, with no rename chain found.
+   * 'unknown' = the path is absent AND this checkout has no history for it at all,
+   *             so it was never here. See `hasAnyHistory` for why that is not 'missing'.
+   */
+  status: 'moved' | 'missing' | 'unknown';
   /** The current canonical path, when follow-resolution succeeded. */
   resolvedTo?: string;
 }
@@ -75,6 +80,30 @@ async function nextRename(cur: string, cwd: string): Promise<string | null> {
     if (parts.length >= 3 && parts[0].startsWith('R') && parts[1] === cur) return parts[2];
   }
   return null;
+}
+
+/**
+ * Does this checkout have ANY history for `p`? This is the discriminator between the
+ * two very different situations that both present as "the file is not on disk":
+ *
+ *   - history EXISTS  → the path was genuinely here and is gone. 'missing' is true.
+ *   - history ABSENT  → the path was NEVER in this checkout. Saying 'missing' is a FALSE
+ *                       ABSENCE, and it is the failure this guard exists to avoid.
+ *
+ * EI-21930229853756240: measured 2026-08-31, a claim reported two present, HEAD-tracked
+ * files as 'missing'. Neither was deleted — the resolver had resolved against the RELEASE
+ * checkout (pinned to green `main`, which had not advanced in days), where files added to
+ * staging afterwards have never existed. `existsSync` answered correctly about the WRONG
+ * TREE. Both flagged paths returned no deletion commit AND no history whatsoever, while a
+ * genuinely deleted file returned its deletion commit — so this check separates them
+ * exactly, without the guard having to know which checkout it is standing in.
+ *
+ * That generality is the point: a stale deploy is only one way to end up in the wrong
+ * tree, and the guard should not have to enumerate them.
+ */
+async function hasAnyHistory(p: string, cwd: string): Promise<boolean> {
+  const out = await git(['log', '--format=%H', '-n', '1', '--', p], cwd);
+  return Boolean(out && out.trim());
 }
 
 /** Resolve one dead path forward through its rename chain; null ⇒ unresolvable here. */
@@ -128,13 +157,28 @@ export async function getClaimTimeStalePathHints(ref: {
       candidates.map(async (requested): Promise<ClaimTimeStalePathHint> => {
         try {
           const resolvedTo = await resolveMovedPath(requested, topLevel);
-          return resolvedTo ? { requested, status: 'moved', resolvedTo } : { requested, status: 'missing' };
+          if (resolvedTo) return { requested, status: 'moved', resolvedTo };
+          // Absent AND never here ⇒ 'unknown', never 'missing'. Failing toward "I could
+          // not tell" is the only safe direction: the note tells the agent to distrust
+          // the stored path AND not to search for it, so a false 'missing' closes both
+          // exits at once and leaves them with nowhere to go.
+          return (await hasAnyHistory(requested, topLevel))
+            ? { requested, status: 'missing' }
+            : { requested, status: 'unknown' };
         } catch {
-          return { requested, status: 'missing' };
+          // Fail-soft in the same direction as everything else here: an errored probe is
+          // an unanswered question, not a dead path.
+          return { requested, status: 'unknown' };
         }
       }),
     );
-    return hints.length > 0 ? hints : null;
+    if (hints.length === 0) return null;
+    // EVERY candidate unknown is the signature of standing in the wrong tree entirely —
+    // a stale release checkout, a partial clone, a work-item whose files are not created
+    // yet. Report nothing at all, exactly as the not-a-git-work-tree case already does:
+    // "the probe could not run" must never render as "every path is missing" (WI-6737).
+    if (hints.every((h) => h.status === 'unknown')) return null;
+    return hints;
   } catch {
     return null;
   }
@@ -150,13 +194,27 @@ export function stalePathHintsNote(hints: ClaimTimeStalePathHint[] | null): stri
   const moved = hints.filter((h): h is ClaimTimeStalePathHint & { resolvedTo: string } =>
     Boolean(h.status === 'moved' && h.resolvedTo),
   );
-  const missingCount = hints.length - moved.length;
+  const missingCount = hints.filter((h) => h.status === 'missing').length;
+  // Counted and worded SEPARATELY from `missing`. An 'unknown' path may be perfectly
+  // valid in the agent's own tree, so the note must not claim it is gone, and must not
+  // forbid working from it — the whole defect in EI-21930229853756240 was a note that
+  // did both about files that were present all along.
+  const unknown = hints.filter((h) => h.status === 'unknown');
+  const affirmed = moved.length + missingCount;
   const movedText = moved.map((h) => `'${h.requested}' → '${h.resolvedTo}'`).join('; ');
+  if (affirmed === 0) return null;
   return (
-    `⚠ STALE PATH HINTS: ${hints.length} stored payload path(s) no longer exist at HEAD` +
+    `⚠ STALE PATH HINTS: ${affirmed} stored payload path(s) no longer exist at HEAD` +
     (movedText ? ` — ${movedText}` : '') +
     (missingCount > 0 ? ` (${missingCount} unresolved)` : '') +
     '. Work from the resolvedTo locations; do NOT take a stored path literally or fall back to a ' +
-    'repository-wide search. [EI-21267393427094356]'
+    'repository-wide search. [EI-21267393427094356]' +
+    (unknown.length > 0
+      ? ` — SEPARATELY, ${unknown.length} path(s) could not be checked here (absent from this ` +
+        `checkout with no history for them, so this is probably not the tree they live in): ` +
+        `${unknown.map((h) => `'${h.requested}'`).join(', ')}. Treat these as UNVERIFIED, not ` +
+        `dead — verify with \`git rev-parse --verify --quiet staging:<path>\` before abandoning one. ` +
+        `[EI-21930229853756240]`
+      : '')
   );
 }

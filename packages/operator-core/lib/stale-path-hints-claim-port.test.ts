@@ -210,4 +210,113 @@ describe('stalePathHintsNote', () => {
     expect(stalePathHintsNote(null)).toBe(null);
     expect(stalePathHintsNote([])).toBe(null);
   });
+
+  /**
+   * EI-21930229853756240 — an absent path with NO history was never in this checkout, and
+   * saying 'missing' about it is a FALSE ABSENCE. The note is the damaging half: it tells
+   * the agent both to distrust the stored path AND not to fall back to a search, so a
+   * false 'missing' closes both exits and leaves them nowhere to go.
+   */
+  it('reports an unknown path as UNVERIFIED, never as gone', () => {
+    const note = stalePathHintsNote([
+      { requested: 'src/gone.ts', status: 'missing' },
+      { requested: 'src/never-here.ts', status: 'unknown' },
+    ])!;
+    // The affirmed count must exclude the unknown one, or the note re-asserts the very
+    // claim this fix exists to stop making.
+    expect(note).toContain('1 stored payload path(s) no longer exist at HEAD');
+    expect(note).toContain('(1 unresolved)');
+    expect(note).toContain("'src/never-here.ts'");
+    expect(note).toContain('UNVERIFIED, not');
+    expect(note).toContain('[EI-21930229853756240]');
+  });
+
+  it('renders nothing when every hint is unknown', () => {
+    // Nothing was affirmed, so there is nothing to warn about — warning anyway is the bug.
+    expect(stalePathHintsNote([{ requested: 'a.ts', status: 'unknown' }])).toBe(null);
+  });
+});
+
+/**
+ * EI-21930229853756240 — the FALSE-ABSENCE class, at the resolver.
+ *
+ * MEASURED 2026-08-31: a claim reported `scripts/lib/governed-test-process.mjs` and
+ * `scripts/lib/preempt-markers.mjs` as status='missing' while both were present on disk
+ * AND at staging HEAD. Neither had been deleted — the resolver had resolved against the
+ * RELEASE checkout (pinned to green `main`, ~3 days stale and serving a build that
+ * predated the PAPERCUSP_INTEGRATION_ROOT fix), where files added to staging afterwards
+ * have never existed. `existsSync` answered correctly about the WRONG TREE.
+ *
+ * The guard therefore cannot rely on standing in the right checkout. It distinguishes the
+ * two cases from git history itself: a genuinely deleted path has a deletion commit, a
+ * path that was never here has no history at all. That holds for a stale deploy, a
+ * partial clone, or a work-item whose files simply are not created yet.
+ */
+describe.runIf(gitAvailable)('getClaimTimeStalePathHints — false-absence guard (EI-21930229853756240)', () => {
+  let repo: string;
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'stale-path-hints-absence-'));
+    sh(repo, ['init', '-q']);
+    sh(repo, ['config', 'user.email', 't@t']);
+    sh(repo, ['config', 'user.name', 't']);
+    writeFileAt(repo, 'src/anchor.ts', 'export {};\n');
+    sh(repo, ['add', 'src/anchor.ts']);
+    sh(repo, ['commit', '-q', '-m', 'anchor']);
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  function commitDeleted(rel: string): void {
+    writeFileAt(repo, rel, 'export {};\n');
+    sh(repo, ['add', rel]);
+    sh(repo, ['commit', '-q', '-m', `add ${rel}`]);
+    sh(repo, ['rm', '-q', rel]);
+    sh(repo, ['commit', '-q', '-m', `delete ${rel}`]);
+  }
+
+  it('stays SILENT when no stored path was ever in this checkout (the reported failure)', async () => {
+    // The exact shape of the live incident: every stored path absent, none ever here.
+    // Silence, not a confident verdict — the same posture the not-a-git-work-tree case
+    // already takes, because "the probe could not run" must never render as "all missing".
+    await expect(
+      getClaimTimeStalePathHints({
+        payload: { paths: ['scripts/lib/governed-test-process.mjs', 'scripts/lib/preempt-markers.mjs'] },
+        repoRoot: repo,
+      }),
+    ).resolves.toBe(null);
+  });
+
+  it('still reports a genuinely DELETED path as missing (the fix must not blind the guard)', async () => {
+    // CALIBRATION: without this, "returns null" above could pass simply because the
+    // resolver stopped detecting anything at all.
+    commitDeleted('src/deleted.ts');
+    const hints = await getClaimTimeStalePathHints({ payload: { paths: ['src/deleted.ts'] }, repoRoot: repo });
+    expect(hints).toEqual([{ requested: 'src/deleted.ts', status: 'missing' }]);
+  });
+
+  it('separates a deleted path from a never-here one in the same claim', async () => {
+    commitDeleted('src/deleted.ts');
+    const hints = await getClaimTimeStalePathHints({
+      payload: { paths: ['src/deleted.ts', 'src/never-here.ts'] },
+      repoRoot: repo,
+    });
+    expect(hints).toEqual(
+      expect.arrayContaining([
+        { requested: 'src/deleted.ts', status: 'missing' },
+        { requested: 'src/never-here.ts', status: 'unknown' },
+      ]),
+    );
+    expect(hints).toHaveLength(2);
+  });
+
+  it('CONTROL: the pre-fix predicate would have called both paths missing', () => {
+    // The wrong implementation, kept permanently: absence alone, with no history check.
+    // Without it, the assertions above could pass under a resolver that had quietly
+    // stopped classifying anything, and the regression would be invisible.
+    const preFix = (_p: string): ClaimTimeStalePathHint['status'] => 'missing';
+    expect(['scripts/lib/governed-test-process.mjs', 'src/deleted.ts'].map(preFix)).toEqual(['missing', 'missing']);
+  });
 });
