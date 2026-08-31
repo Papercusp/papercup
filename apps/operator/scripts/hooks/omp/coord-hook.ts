@@ -1984,6 +1984,51 @@ export interface ToolResultEvent {
   content?: unknown;
 }
 
+/** Positive edit evidence sent to locks:release after a native OMP writer returns. */
+export interface NativeEditProof {
+  success: true;
+  source: 'omp';
+  tool: string;
+  paths: string[];
+}
+
+const OMP_NATIVE_EDIT_TOOLS = new Set(['write', 'edit', 'ast_edit', 'multi_edit']);
+
+/** Classify only an explicit/recognizable successful native result. Lock intent or
+ * an absent result is not mutation proof and must never reach attribution. */
+export function nativeEditResultSucceeded(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    return text.length > 0 && !/^(?:error|failed|failure|denied|permission denied)\b/i.test(text);
+  }
+  if (Array.isArray(value)) return value.length > 0 && value.every(nativeEditResultSucceeded);
+  if (typeof value !== 'object') return false;
+  const result = value as Record<string, unknown>;
+  if (result.is_error === true || result.isError === true) return false;
+  if (result.ok === false || result.success === false) return false;
+  if (typeof result.status === 'string' && ['error', 'failed', 'failure', 'denied'].includes(result.status.toLowerCase())) return false;
+  if (result.error) return false;
+  if (result.ok === true || result.success === true || result.is_error === false || result.isError === false) return true;
+  if (typeof result.status === 'string' && ['ok', 'success', 'succeeded', 'completed', 'applied'].includes(result.status.toLowerCase())) return true;
+  for (const key of ['content', 'result', 'output', 'message', 'path', 'filePath', 'file_path']) {
+    if (result[key] !== undefined && result[key] !== null && result[key] !== '' && !(Array.isArray(result[key]) && result[key].length === 0)) return true;
+  }
+  return (result.type === 'text' || result.type === 'tool_result') && Boolean(result.text);
+}
+
+/** Build proof from the cached tool metadata and exact acquired paths. */
+export function nativeEditProofForResult(
+  toolName: string,
+  result: unknown,
+  paths: readonly string[],
+): NativeEditProof | undefined {
+  if (!OMP_NATIVE_EDIT_TOOLS.has(toolName) || paths.length === 0 || paths.some((path) => !path)) return undefined;
+  if (!nativeEditResultSucceeded(result)) return undefined;
+  return { success: true, source: 'omp', tool: toolName, paths: [...paths] };
+}
+
 /**
  * In-process toolCallId → lock_id cache. Same OMP process handles
  * both tool_call and tool_result, so an in-memory Map is sufficient
@@ -1993,6 +2038,8 @@ export interface ToolResultEvent {
 interface AcquiredLock {
   lockId: string;
   coordinationDomain?: string;
+  toolName: string;
+  paths: string[];
 }
 
 const acquiredLocks = new Map<string, AcquiredLock>();
@@ -4830,6 +4877,8 @@ export async function onToolCall(
   if (r.ok === true && typeof r.lock_id === 'string') {
     acquiredLocks.set(event.toolCallId, {
       lockId: r.lock_id,
+      toolName: event.toolName,
+      paths: [...paths],
       ...(coordinationDomain ? { coordinationDomain } : {}),
     });
     await recordHookSuccess();
@@ -4847,6 +4896,7 @@ export async function onToolResult(event: ToolResultEvent): Promise<void> {
   const lock = acquiredLocks.get(event.toolCallId);
   if (lock === undefined) return;
   acquiredLocks.delete(event.toolCallId);
+  const proof = nativeEditProofForResult(lock.toolName, event.content, lock.paths);
   // Best-effort release. Missed releases are covered by the lock's
   // TTL (1200s) so a network blip does NOT leak a lock permanently.
   await callMcpTool('locks:release', {
@@ -4854,6 +4904,7 @@ export async function onToolResult(event: ToolResultEvent): Promise<void> {
     ...(lock.coordinationDomain
       ? { coordination_domain: lock.coordinationDomain }
       : {}),
+    ...(proof ? { native_edit_proof: proof } : {}),
   });
 }
 

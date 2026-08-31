@@ -3723,6 +3723,86 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     await onToolResult({ type: 'tool_result', toolCallId: 'never' });
     expect(called).toBe(false);
   });
+
+  it('forwards positive native edit proof with exact acquired paths', async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as {
+        params: { name: string; arguments: Record<string, unknown> };
+      };
+      calls.push({ name: body.params.name, args: body.params.arguments });
+      const payload = body.params.name === 'locks:acquire'
+        ? { ok: true, lock_id: 'L-proof', held: ['a.ts', 'b.ts'] }
+        : { ok: true };
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    await onToolCall({
+      type: 'tool_call',
+      toolName: 'multi_edit',
+      toolCallId: 'tc-proof',
+      input: { paths: [join(repo, 'a.ts'), join(repo, 'b.ts')] },
+    });
+    await onToolResult({
+      type: 'tool_result',
+      toolCallId: 'tc-proof',
+      content: { success: true },
+    });
+
+    const release = calls.find((call) => call.name === 'locks:release');
+    expect(release?.args).toMatchObject({
+      lock_id: 'L-proof',
+      native_edit_proof: {
+        success: true,
+        source: 'omp',
+        tool: 'multi_edit',
+        paths: ['a.ts', 'b.ts'],
+      },
+    });
+  });
+
+  it('releases after a failed native result without attaching edit proof', async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as {
+        params: { name: string; arguments: Record<string, unknown> };
+      };
+      calls.push({ name: body.params.name, args: body.params.arguments });
+      const payload = body.params.name === 'locks:acquire'
+        ? { ok: true, lock_id: 'L-failed', held: ['a.ts'] }
+        : { ok: true };
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    await onToolCall({
+      type: 'tool_call',
+      toolName: 'write',
+      toolCallId: 'tc-proof-failed',
+      input: { path: join(repo, 'a.ts'), content: 'x' },
+    });
+    await onToolResult({
+      type: 'tool_result',
+      toolCallId: 'tc-proof-failed',
+      content: { ok: false, error: 'write failed' },
+    });
+
+    const release = calls.find((call) => call.name === 'locks:release');
+    expect(release?.args).toEqual({ lock_id: 'L-failed' });
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────

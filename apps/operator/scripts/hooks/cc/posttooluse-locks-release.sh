@@ -239,6 +239,75 @@ def release_confirmed(inner, expected_paths):
     return inner.get('ok') is True
 
 
+NATIVE_EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit'}
+
+
+def native_edit_result_succeeded(response):
+    """Return True only when a native edit result carries usable success evidence.
+
+    Claude's PostToolUse payload has had both structured and text result shapes.
+    A lock claim or a missing result is never evidence; accept explicit success
+    markers and the known successful tool-result envelopes, while rejecting every
+    explicit error/failure marker. This is deliberately conservative because the
+    value is forwarded as edit attribution proof.
+    """
+    if response is None:
+        return False
+    if isinstance(response, bool):
+        return response
+    if isinstance(response, str):
+        text = response.strip()
+        if not text:
+            return False
+        return not re.match(r'^(?:error|failed|failure|denied|permission denied)\\b', text, re.I)
+    if isinstance(response, list):
+        return bool(response) and all(native_edit_result_succeeded(item) for item in response)
+    if not isinstance(response, dict):
+        return False
+
+    if response.get('is_error') is True or response.get('isError') is True:
+        return False
+    if response.get('ok') is False or response.get('success') is False:
+        return False
+    status = response.get('status')
+    if isinstance(status, str) and status.lower() in {'error', 'failed', 'failure', 'denied'}:
+        return False
+    if response.get('error'):
+        return False
+    if response.get('ok') is True or response.get('success') is True:
+        return True
+    if response.get('is_error') is False or response.get('isError') is False:
+        return True
+    if isinstance(status, str) and status.lower() in {'ok', 'success', 'succeeded', 'completed', 'applied'}:
+        return True
+
+    # Common Claude tool-result envelopes. A non-empty content/result is a
+    # successful response only after the explicit failure checks above.
+    for key in ('content', 'result', 'output', 'message', 'filePath', 'file_path',
+                'structuredPatch', 'oldString', 'newString', 'path'):
+        if key in response and response[key] not in (None, '', []):
+            return True
+    if response.get('type') in ('text', 'tool_result') and response.get('text'):
+        return True
+    return False
+
+
+def native_edit_proof(tool, response, paths):
+    """Build positive proof for one Claude native edit, or None."""
+    if tool not in NATIVE_EDIT_TOOLS:
+        return None
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
+        return None
+    if not native_edit_result_succeeded(response):
+        return None
+    return {
+        'success': True,
+        'source': 'claude',
+        'tool': tool,
+        'paths': list(paths),
+    }
+
+
 def recover_failed_code_mode_edit(current_cache_path):
     """Release cached nested apply_patch locks when its parent exec completes."""
     if tool_name not in ('exec', 'functions.exec', 'functions__exec'):
@@ -369,6 +438,13 @@ if release_paths:
     release_args['paths'] = release_paths
 if coordination_domain:
     release_args['coordination_domain'] = coordination_domain
+
+# EI-21641025582934324: lock acquisition is intent, not mutation. Only a
+# successful recognized Claude edit result may accompany the release, and the
+# proof paths must come from the cached paths that this grant actually released.
+proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), release_paths)
+if proof is not None:
+    release_args['native_edit_proof'] = proof
 
 # EI-1400: a single-shot release used to give up instantly on ANY transport
 # error (including a transient connection-refused during the :3070 restart

@@ -199,7 +199,96 @@ def is_complete_granted(state, batch_id):
     return True
 
 
-def release_batch(state):
+NATIVE_EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit'}
+
+
+def native_edit_result_succeeded(response):
+    """Conservatively classify a native edit result as successful."""
+    if response is None:
+        return False
+    if isinstance(response, bool):
+        return response
+    if isinstance(response, str):
+        text = response.strip()
+        if not text:
+            return False
+        return not re.match(r'^(?:error|failed|failure|denied|permission denied)\\b', text, re.I)
+    if isinstance(response, list):
+        return bool(response) and all(native_edit_result_succeeded(item) for item in response)
+    if not isinstance(response, dict):
+        return False
+    if response.get('is_error') is True or response.get('isError') is True:
+        return False
+    if response.get('ok') is False or response.get('success') is False:
+        return False
+    status = response.get('status')
+    if isinstance(status, str) and status.lower() in {'error', 'failed', 'failure', 'denied'}:
+        return False
+    if response.get('error'):
+        return False
+    if response.get('ok') is True or response.get('success') is True:
+        return True
+    if response.get('is_error') is False or response.get('isError') is False:
+        return True
+    if isinstance(status, str) and status.lower() in {'ok', 'success', 'succeeded', 'completed', 'applied'}:
+        return True
+    for key in ('content', 'result', 'output', 'message', 'filePath', 'file_path',
+                'structuredPatch', 'oldString', 'newString', 'path'):
+        if key in response and response[key] not in (None, '', []):
+            return True
+    if response.get('type') in ('text', 'tool_result') and response.get('text'):
+        return True
+    return False
+
+
+def result_records():
+    """Index PostToolBatch records by tool_use_id across Claude wire aliases."""
+    records = {}
+    for key in ('tool_calls', 'toolCalls', 'calls', 'tools', 'tool_results', 'toolResults', 'results', 'responses'):
+        values = payload.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            tool_id = value.get('tool_use_id') or value.get('toolUseId') or value.get('id')
+            if isinstance(tool_id, str) and tool_id:
+                records[tool_id] = value
+    return records
+
+
+def native_edit_batch_proof(state):
+    """Require one successful recognized result for every expected edit."""
+    expected = state.get('tool_use_ids')
+    paths = state.get('release_paths')
+    if not isinstance(expected, list) or not expected or not all(isinstance(x, str) and x for x in expected):
+        return None
+    if not isinstance(paths, list) or not paths or not all(isinstance(x, str) and x for x in paths):
+        return None
+    records = result_records()
+    tools = []
+    for tool_id in dict.fromkeys(expected):
+        record = records.get(tool_id)
+        if not isinstance(record, dict):
+            return None
+        tool = record.get('tool_name') or record.get('toolName') or record.get('name')
+        response = None
+        for key in ('tool_response', 'toolResponse', 'tool_result', 'toolResult', 'response', 'result', 'output'):
+            if key in record:
+                response = record[key]
+                break
+        if tool not in NATIVE_EDIT_TOOLS or not native_edit_result_succeeded(response):
+            return None
+        tools.append(tool)
+    return {
+        'success': True,
+        'source': 'claude',
+        'tools': tools,
+        'paths': list(paths),
+    }
+
+
+def release_batch(state, proof=None):
     lock_id = state.get('lock_id')
     if not isinstance(lock_id, str) or not lock_id:
         return False
@@ -210,6 +299,8 @@ def release_batch(state):
     domain = state.get('coordination_domain')
     if isinstance(domain, str) and domain:
         release_args['coordination_domain'] = domain
+    if proof is not None:
+        release_args['native_edit_proof'] = proof
     body = json.dumps({
         'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
         'params': {'name': 'locks:release', 'arguments': release_args},
@@ -282,7 +373,8 @@ for batch_id in groups:
         # statuses, including allowed/denied/running and partial payloads,
         # intentionally skip the network write and only clean local artifacts.
         if is_complete_granted(state, batch_id):
-            if release_batch(state):
+            proof = native_edit_batch_proof(state)
+            if proof is not None and release_batch(state, proof):
                 write_marker('last-success.json', {'ts': now_iso(), 'owner': owner})
                 write_marker(owner_marker_name('success'), {'ts': now_iso(), 'owner': owner})
         # Cleanup occurs for every state we successfully claimed.  A failed

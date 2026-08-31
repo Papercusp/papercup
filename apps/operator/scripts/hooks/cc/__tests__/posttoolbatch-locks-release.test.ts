@@ -115,7 +115,11 @@ function batchInput(toolUseIds: string[], owner = 'batch-owner') {
   return {
     hook_event_name: 'PostToolBatch',
     session_id: owner,
-    tool_calls: toolUseIds.map((tool_use_id) => ({ tool_use_id })),
+    tool_calls: toolUseIds.map((tool_use_id) => ({
+      tool_use_id,
+      tool_name: 'Edit',
+      tool_response: { ok: true },
+    })),
   };
 }
 
@@ -142,6 +146,12 @@ describe('posttoolbatch-locks-release.sh', () => {
         lock_id: 'batch-lock',
         paths: ['src/first.ts', 'src/second.ts'],
         coordination_domain: '/repo',
+        native_edit_proof: {
+          success: true,
+          source: 'claude',
+          tools: ['Edit', 'Edit'],
+          paths: ['src/first.ts', 'src/second.ts'],
+        },
       },
     });
     expectClean('complete', ['tu-first', 'tu-second']);
@@ -178,6 +188,38 @@ describe('posttoolbatch-locks-release.sh', () => {
     expect(releaseRequests).toHaveLength(0);
     expectClean('marker-denied', ['tu-one', 'tu-two']);
   });
+
+  it('does not release a complete granted batch when one native result fails', async () => {
+    writeBatch('result-failed', 'granted', ['tu-one', 'tu-two']);
+
+    const out = await runHook(BATCH_HOOK, {
+      ...batchInput(['tu-one', 'tu-two']),
+      tool_calls: [
+        { tool_use_id: 'tu-one', tool_name: 'Edit', tool_response: { ok: true } },
+        { tool_use_id: 'tu-two', tool_name: 'Edit', tool_response: { is_error: true, error: 'not applied' } },
+      ],
+    });
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(0);
+    expectClean('result-failed', ['tu-one', 'tu-two']);
+  });
+
+  it('does not release a complete granted batch when a result tool is not a native edit', async () => {
+    writeBatch('unknown-tool', 'granted', ['tu-one', 'tu-two']);
+
+    const out = await runHook(BATCH_HOOK, {
+      ...batchInput(['tu-one', 'tu-two']),
+      tool_calls: [
+        { tool_use_id: 'tu-one', tool_name: 'Edit', tool_response: { ok: true } },
+        { tool_use_id: 'tu-two', tool_name: 'Read', tool_response: { ok: true } },
+      ],
+    });
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(0);
+    expectClean('unknown-tool', ['tu-one', 'tu-two']);
+  });
 });
 
 describe('posttooluse-locks-release.sh batch deferral', () => {
@@ -196,5 +238,52 @@ describe('posttooluse-locks-release.sh batch deferral', () => {
     expect(fs.readFileSync(join(cache, `${toolUseId}.lock`), 'utf8')).toBe('per-tool-lock');
     expect(fs.existsSync(join(cache, `${toolUseId}.paths`))).toBe(true);
     expect(fs.existsSync(join(cache, `${toolUseId}.domain`))).toBe(true);
+  });
+
+  it('forwards positive proof only for a successful recognized native result', async () => {
+    const toolUseId = 'tu-proof';
+    writeBatch('not-a-batch', 'allowed', []);
+    fs.rmSync(join(cache, 'batch-not-a-batch.state.json'), { force: true });
+    fs.writeFileSync(join(cache, `${toolUseId}.lock`), 'single-lock');
+    fs.writeFileSync(join(cache, `${toolUseId}.paths`), JSON.stringify(['src/first.ts']));
+    fs.writeFileSync(join(cache, `${toolUseId}.domain`), '/repo');
+
+    const out = await runHook(POST_HOOK, {
+      tool_name: 'Edit',
+      tool_use_id: toolUseId,
+      session_id: 'single-owner',
+      tool_response: { ok: true },
+    });
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(1);
+    expect(releaseRequests[0]?.params?.arguments).toMatchObject({
+      lock_id: 'single-lock',
+      paths: ['src/first.ts'],
+      coordination_domain: '/repo',
+      native_edit_proof: {
+        success: true,
+        source: 'claude',
+        tool: 'Edit',
+        paths: ['src/first.ts'],
+      },
+    });
+  });
+
+  it('does not attach proof for a failed native result', async () => {
+    const toolUseId = 'tu-proof-failed';
+    fs.writeFileSync(join(cache, `${toolUseId}.lock`), 'single-lock');
+    fs.writeFileSync(join(cache, `${toolUseId}.paths`), JSON.stringify(['src/first.ts']));
+
+    const out = await runHook(POST_HOOK, {
+      tool_name: 'Edit',
+      tool_use_id: toolUseId,
+      session_id: 'single-owner',
+      tool_response: { is_error: true, error: 'edit failed' },
+    });
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(1);
+    expect(releaseRequests[0]?.params?.arguments).not.toHaveProperty('native_edit_proof');
   });
 });
