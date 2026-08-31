@@ -698,9 +698,28 @@ const SCHEDULER_CONFIG = (() => {
     throw error;
   }
 })();
+// WI-1669424: the sibling of WI-1492652, same class, same file. This default was `tmpdir()`,
+// which resolves under /tmp/pcv here — a tree swept BOTH at boot (/etc/tmpfiles.d/tmp.conf
+// sets `D /tmp 1777 root root 7d`, and capital D + `--remove` empties it) and mid-session.
+// Losing this file is silent: readDurationHistory() treats a missing path as "first run, no
+// history yet", so the scheduler just runs on cold estimates until it re-learns them.
+//
+// ⚠ ONLY THE DIRECTORY MOVES — same rule as the verdict cache below. The filename carries the
+// history IDENTITY (the `v1` version constant, which readDurationHistory checks), so a
+// relocation must not touch it. Note this store is deliberately NOT ROOT-scoped the way the
+// verdict cache is: it was global under tmpdir(), and adding a scope here would be an identity
+// change smuggled into a durability fix. (It also could not work — ROOT is defined below.)
+//
+// writeDurationHistoryAtomic() mkdirs recursively and renames atomically, so a missing dir is
+// not a concern.
 const TASK_DURATION_HISTORY_PATH =
   process.env.AFFECTED_TASK_HISTORY_PATH ??
-  join(tmpdir(), "papercusp-affected-task-durations-v1.json");
+  join(
+    homedir(),
+    ".papercusp",
+    "cache",
+    "papercusp-affected-task-durations-v1.json",
+  );
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Accept the conventional `--flag=value` spelling for value-taking flags before
