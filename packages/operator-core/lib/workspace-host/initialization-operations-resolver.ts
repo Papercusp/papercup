@@ -43,10 +43,10 @@ import {
 import { createGcpWorkspaceHostAcquireAuth } from '../cloud-workspaces/gcp-preflight';
 import { createGcpWorkspaceHostApiClient } from './gcp-api-client';
 import {
-  GcpIapDeliveringWorkspaceHostInitializationOperations,
   UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
   type WorkspaceHostCredentialMaterialSource,
-} from './gcp-iap-credential-delivery';
+} from './credential-material-source';
+import { GcpIapDeliveringWorkspaceHostInitializationOperations } from './gcp-iap-credential-delivery';
 import { isHostedProviderCredentialRef, resolveHostedGcpAuth } from './hosted-gcp-auth';
 import {
   GcpIapWorkspaceHostInitializationOperations,

@@ -24,7 +24,6 @@ import {
 } from '@papercusp/deployment-driver';
 import type {
   WorkspaceHostCredentialChannel,
-  WorkspaceHostCredentialFamily,
   WorkspaceHostCredentialLifecycleStep,
   WorkspaceHostInitializationHostOperationResult,
   WorkspaceHostInitializationHostOperations,
@@ -32,6 +31,10 @@ import type {
   WorkspaceHostInitializationSupportedStepKind,
 } from '@papercusp/deployment-driver';
 
+import {
+  UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
+  type WorkspaceHostCredentialMaterialSource,
+} from './credential-material-source';
 import {
   NodeGcpIapWorkspaceHostInitializationCommandRunner,
   buildGcpIapSshInvocation,
@@ -198,76 +201,6 @@ export async function deliverGcpIapWorkspaceHostCredentialMaterial(
 }
 
 /* ------------------------------------------------------------------------------------------ */
-
-/**
- * One binding's need for material, as the controller sees it.
- *
- * `family` is DERIVED from `credentialRef` here, exactly as the delivery request derives it, and
- * for the same reason: two fields naming one fact can disagree, and the disagreement gets settled
- * silently in favour of whichever field the reader happened to consult.
- */
-export interface WorkspaceHostCredentialMaterialRequest {
-  readonly channel: WorkspaceHostCredentialChannel;
-  readonly credentialRef: string;
-  readonly family: WorkspaceHostCredentialFamily;
-  readonly generation: number;
-}
-
-/**
- * The controller-side seam that turns a public credential REFERENCE into the bytes it names.
- *
- * The initialization contract has always said the material arrives "out of band" and that the
- * resolver named by the typed reference produces it; this is that resolver's interface, and it is
- * deliberately the ONLY thing in the controller that is allowed to hold material. It is a seam
- * rather than an implementation because which identity a reference resolves to is a product
- * decision D-215 explicitly left open — the delivery mechanism is identity-agnostic, and wiring it
- * to one concrete minting path would have quietly made that decision here.
- */
-export interface WorkspaceHostCredentialMaterialSource {
-  resolve(request: WorkspaceHostCredentialMaterialRequest): Promise<WorkspaceHostCredentialMaterial>;
-}
-
-/**
- * Raised when a binding needs delivered material and the controller has no source for it.
- *
- * This refuses on the CONTROLLER, before the tunnel opens, rather than letting the host answer
- * `delivered material for family 'X' is not present on the host`. Those are the same underlying
- * gap, but the host's version blames the host — it is the message that made this defect look like
- * a broken VM for six holders of this item (D-215's "Measured" section). Naming the missing
- * controller configuration is the whole difference.
- */
-export class WorkspaceHostCredentialMaterialUnavailableError extends Error {
-  readonly channel: WorkspaceHostCredentialChannel;
-  readonly family: WorkspaceHostCredentialFamily;
-  readonly generation: number;
-
-  constructor(request: WorkspaceHostCredentialMaterialRequest) {
-    super(
-      `No credential material source is configured, so channel '${request.channel}' (family ` +
-        `'${request.family}', generation ${request.generation}) cannot be delivered. This family ` +
-        `requires material to be written to the host before bind, so binding it would fail on the ` +
-        `host with a message that blames the host rather than this configuration.`,
-    );
-    this.name = 'WorkspaceHostCredentialMaterialUnavailableError';
-    this.channel = request.channel;
-    this.family = request.family;
-    this.generation = request.generation;
-  }
-}
-
-/**
- * The default source: none. Refuses every request, naming the gap.
- *
- * A no-op that returned empty bytes would be worse than this error in the one way that matters —
- * `bind()` only checks that the path EXISTS, so empty material would make every binding step pass
- * and the canary go green against credentials that authenticate nothing.
- */
-export const UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE: WorkspaceHostCredentialMaterialSource =
-  {
-    resolve(request: WorkspaceHostCredentialMaterialRequest): Promise<WorkspaceHostCredentialMaterial> {
-      return Promise.reject(new WorkspaceHostCredentialMaterialUnavailableError(request));
-    },
-  };
 
 interface WorkspaceHostCredentialBindingNeed {
   readonly channel: WorkspaceHostCredentialChannel;

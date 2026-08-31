@@ -18,9 +18,11 @@ import {
   deliverGcpIapWorkspaceHostCredentialMaterial,
   parseGcpIapWorkspaceHostCredentialDeliveryReceipt,
   type GcpIapWorkspaceHostCredentialDeliveryProfile,
-  type WorkspaceHostCredentialMaterialRequest,
-  type WorkspaceHostCredentialMaterialSource,
 } from './gcp-iap-credential-delivery';
+import type {
+  WorkspaceHostCredentialMaterialRequest,
+  WorkspaceHostCredentialMaterialSource,
+} from './credential-material-source';
 import type {
   GcpIapWorkspaceHostInitializationCommand,
   GcpIapWorkspaceHostInitializationCommandRunner,
