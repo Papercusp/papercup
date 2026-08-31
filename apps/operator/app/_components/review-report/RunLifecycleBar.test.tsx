@@ -101,7 +101,7 @@ describe("deriveRunLifecycleState", () => {
     const never = deriveRunLifecycleState(
       input({
         phase: "running",
-        liveness: { state: "stale", ageMs: 600_000, measuredFrom: "launch" },
+        liveness: { state: "stale", ageMs: 600_000, measuredFrom: "start" },
       }),
     );
     expect(never.detail).toContain("never reported after launching");
