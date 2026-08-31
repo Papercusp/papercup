@@ -847,6 +847,45 @@ export function parseKilledBySignalReport(raw: unknown): string | null {
 }
 
 /**
+ * Decide `ended_by` for a child whose exit THIS process watched.
+ *
+ * The rule is one line, but it was re-encoded inline at three separate writers
+ * (`harness/spawn.ts`, `agent-mcp/console-launch.ts`, `agent-mcp/bootstrap-su.ts`), and
+ * a rule spelled out three times is a rule that drifts. It did: `spawn.ts` tested only
+ * its OWN timeout flag, so a worker killed by anything else — a sidecar restart tearing
+ * down the cgroup (the original WI-38054 scenario), a peer's `processes:kill`, the OOM
+ * killer — was recorded as a voluntary exit (EI-21908787009967815).
+ *
+ * ⚠ The asymmetry that makes this worth centralizing: the two mistakes are NOT equally
+ * bad. Recording a kill as `'self'` produces a row that positively ASSERTS the session
+ * chose to stop, and `isInvoluntaryEnd` then answers false — a silent wrong answer.
+ * Recording a voluntary exit as `'signal'` is merely wrong and loud: it names a signal
+ * that will not survive scrutiny. So this resolves toward `'signal'` on ANY positive
+ * evidence of a kill, and reaches `'self'` only when nothing observed one.
+ *
+ * ⚠ `exitCode` is deliberately NOT an input. The 128+N convention looks like it could
+ * settle this for free, but a process may exit 143 of its own accord, so inferring a
+ * kill from the number manufactures exactly the attribution migration 800 refuses to
+ * invent. Only a signal someone actually OBSERVED counts.
+ */
+export function endedByForObservedExit(
+  observedSignal: string | null | undefined,
+  opts: { killedByUs?: boolean; killedByUsSignal?: string } = {},
+): { endedBy: Extract<AdvSessionEndedBy, 'self' | 'signal'>; signal: string | null } {
+  // A signal the runtime reported wins: it is the strongest evidence available, and it
+  // names the ACTUAL signal rather than the one we assume we sent.
+  if (observedSignal != null && observedSignal !== '') {
+    return { endedBy: 'signal', signal: observedSignal };
+  }
+  // A kill we performed ourselves is still a kill even when the runtime surfaced no
+  // signal — a caught SIGTERM can exit 0 and look perfectly voluntary.
+  if (opts.killedByUs) {
+    return { endedBy: 'signal', signal: opts.killedByUsSignal ?? 'SIGTERM' };
+  }
+  return { endedBy: 'self', signal: null };
+}
+
+/**
  * The caveat for a row's `exit_code`, or `null` when the number means what it says.
  *
  * MEASURED against the real node-pty in this tree: killing a child with SIGHUP yields

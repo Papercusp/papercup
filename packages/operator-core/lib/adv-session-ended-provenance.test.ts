@@ -4,6 +4,7 @@ import {
   advSessionEndedAtCaveat,
   advSessionExitCodeCaveat,
   describeSessionEndTime,
+  endedByForObservedExit,
   isInvoluntaryEnd,
   isObserverEndedSession,
   parseKilledBySignalReport,
@@ -235,5 +236,75 @@ describe('a KILLED session is not a voluntary exit (WI-38054)', () => {
     expect(advSessionExitCodeCaveat(reaped)).not.toBeNull();
     // ...and the timestamp stays trustworthy, so "same second" remains provable.
     expect(isObserverEndedSession(reaped)).toBe(false);
+  });
+});
+
+/**
+ * The WRITE side. Everything above asserts how a row READS once written; these assert
+ * the rule that decides what gets written, which is where EI-21908787009967815 lived.
+ *
+ * WI-38054 fixed the reading and fixed ONE writer. The rule was then re-encoded inline
+ * at three writers, and `harness/spawn.ts` drifted: it asked only "did I time this out?"
+ * so every kill performed by anyone ELSE landed as a voluntary exit.
+ */
+describe('endedByForObservedExit — the write-side rule (EI-21908787009967815)', () => {
+  it('REGRESSION: a worker killed by someone else is a KILL, not a voluntary exit', () => {
+    // The reported shape: the runner observed SIGKILL, and THIS route never timed out,
+    // because it was not the killer. Pre-fix, the only input was `killedByUs` and this
+    // row was written ended_by='self' — a row asserting the agent chose to stop.
+    const verdict = endedByForObservedExit('SIGKILL', { killedByUs: false });
+    expect(verdict.endedBy).toBe('signal');
+    expect(verdict.signal).toBe('SIGKILL');
+    // The property that actually matters: the persisted row must answer "was it killed?"
+    // correctly. This is the assertion the original bug got wrong at the reading end.
+    expect(isInvoluntaryEnd({ endedBy: verdict.endedBy })).toBe(true);
+  });
+
+  it('CONTROL: the pre-fix timeout-only rule FAILS that case (proves this guard can fail)', () => {
+    // A permanent, deliberately-wrong implementation of the same rule, kept here so the
+    // assertions above cannot pass vacuously. If someone reverts the fix, the test above
+    // fails; if someone weakens the ASSERTIONS, this control starts passing and fails.
+    const preFix = (signal: string | null, killedByUs: boolean) =>
+      killedByUs ? { endedBy: 'signal' as const } : { endedBy: 'self' as const };
+
+    expect(preFix('SIGKILL', false).endedBy).toBe('self');
+    expect(preFix('SIGKILL', false).endedBy).not.toBe(endedByForObservedExit('SIGKILL', { killedByUs: false }).endedBy);
+    // ...and it is wrong in the direction that matters: it reads as voluntary.
+    expect(isInvoluntaryEnd({ endedBy: preFix('SIGKILL', false).endedBy })).toBe(false);
+  });
+
+  it('CALIBRATION: the control agrees with the real rule everywhere the bug was NOT', () => {
+    // Without this, the control above could "pass" simply by being wrong about
+    // everything, which would say nothing about the one case under test.
+    const preFix = (killedByUs: boolean) => (killedByUs ? 'signal' : 'self');
+    expect(preFix(true)).toBe(endedByForObservedExit(null, { killedByUs: true }).endedBy);
+    expect(preFix(false)).toBe(endedByForObservedExit(null, { killedByUs: false }).endedBy);
+  });
+
+  it('still attributes the kill WE perform, even when the child caught it and exited 0', () => {
+    // A caught SIGTERM exits cleanly and surfaces no signal, so `killedByUs` is the only
+    // remaining evidence. This is the WI-38054 behaviour and must not regress.
+    const verdict = endedByForObservedExit(null, { killedByUs: true });
+    expect(verdict).toEqual({ endedBy: 'signal', signal: 'SIGTERM' });
+  });
+
+  it('prefers the OBSERVED signal over the one we assume we sent', () => {
+    // We SIGTERM on timeout, but an escalation may land SIGKILL. Recording 'SIGTERM'
+    // would name a signal that did not kill it.
+    expect(endedByForObservedExit('SIGKILL', { killedByUs: true }).signal).toBe('SIGKILL');
+  });
+
+  it('a clean exit stays a clean exit — the rule must not over-fire', () => {
+    expect(endedByForObservedExit(null)).toEqual({ endedBy: 'self', signal: null });
+    expect(endedByForObservedExit(undefined)).toEqual({ endedBy: 'self', signal: null });
+    // An empty string is absence, not a signal name; it must not manufacture a kill.
+    expect(endedByForObservedExit('').endedBy).toBe('self');
+  });
+
+  it('does NOT infer a kill from a 128+N exit code — that attribution is unobserved', () => {
+    // 143 is SIGTERM by convention, but a process may exit 143 deliberately. The rule
+    // takes no exitCode at all; this pins that as intent rather than an oversight.
+    expect(endedByForObservedExit(null, { killedByUs: false }).endedBy).toBe('self');
+    expect(endedByForObservedExit.length).toBe(2); // (observedSignal, opts) — no exitCode
   });
 });

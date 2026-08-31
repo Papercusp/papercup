@@ -33,7 +33,7 @@ import { SUPERUSER_TOKEN_PATH } from '../../../superuser-token';
 import { launchRun } from '../../../harness-launch';
 import { firePluginLifecycle } from '../../../plugin-host-runtime';
 import { emitPipelineEvent } from '../../../events/pipeline-events';
-import { recordAdvSession, markAdvSessionEnded } from '../../../adv-sessions';
+import { recordAdvSession, markAdvSessionEnded, endedByForObservedExit } from '../../../adv-sessions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { operatorApiBase } from '../../../operator-api-base';
 import { resolveSpawnBackendModel, isOmpBackendExplicitlyConfigured } from '../../../harness-invoke-once';
@@ -806,15 +806,22 @@ const invoke = defineTool({
       try {
         // WI-38054: a timed-out worker did not choose to stop — THIS route SIGTERMs it
         // (see the configuredTimeoutMs note above), so recording 'self' claimed a
-        // voluntary exit for a kill we ourselves performed. Only `timedOut` is
-        // attributed; an ordinary non-zero exit stays 'self' rather than guessing.
-        const killedByTimeout = r.timedOut ?? false;
-        await markAdvSessionEnded(
-          advSessionRowId,
-          r.exitCode ?? null,
-          killedByTimeout ? 'signal' : 'self',
-          { signal: killedByTimeout ? 'SIGTERM' : null },
-        );
+        // voluntary exit for a kill we ourselves performed.
+        //
+        // EI-21908787009967815: `timedOut` alone was too narrow, because it only knows
+        // about kills THIS route performed. A worker killed by anyone else — a sidecar
+        // restart tearing down the cgroup (the original WI-38054 scenario), a peer's
+        // `processes:kill`, the OOM killer — is equally involuntary and was recorded as
+        // 'self'. The runner now carries the signal Node reports on `close`, so prefer
+        // that OBSERVATION and keep `timedOut` only as the fallback for the kill we
+        // perform ourselves. An ordinary non-zero exit still stays 'self': a non-zero
+        // code is a failed run, not a kill, and guessing otherwise is the manufactured
+        // attribution migration 800 refuses to invent.
+        const { endedBy, signal } = endedByForObservedExit(r.endedSignal, {
+          killedByUs: r.timedOut ?? false,
+          killedByUsSignal: 'SIGTERM',
+        });
+        await markAdvSessionEnded(advSessionRowId, r.exitCode ?? null, endedBy, { signal });
       } catch (e) {
         console.warn(`[invoke] failed to mark adv session ${advSessionRowId} as ended:`, e);
       }

@@ -171,6 +171,23 @@ export interface SpawnInvokeOnceResult {
   exitCode: number;
   stderr: string;
   timedOut?: boolean;
+  /**
+   * The signal NAME that killed the child ('SIGTERM', 'SIGKILL', …), or null when
+   * it exited on its own.
+   *
+   * EI-21908787009967815, and the direct sequel to WI-38054. Node passes this as the
+   * SECOND argument of `close`, and this runner destructured only `code` — the exact
+   * shape that made `psu-pty-host.mjs` record every killed terminal as a voluntary
+   * exit. Dropping it here left `spawn.ts` with only its OWN `timedOut` flag to reason
+   * from, so a worker killed by anyone else (a sidecar restart tearing down the cgroup,
+   * an operator `processes:kill`, the OOM killer) reached `markAdvSessionEnded` as
+   * `ended_by='self'` — a row positively asserting the exit was voluntary.
+   *
+   * Carried as the name Node gives, NOT re-derived from `exitCode`: a 128+N exit code
+   * is a CONVENTION a process may also produce deliberately, so inferring a kill from
+   * it would manufacture the attribution migration 800 deliberately refuses to invent.
+   */
+  endedSignal?: string | null;
   /** True when the release-fixer's bounded pre-turn silence guard fired. */
   firstTurnTimedOut?: boolean;
   /**
@@ -784,7 +801,12 @@ function runChild(
       Date.now() - launchedAt < 5_000 &&
       stdout.length === 0 &&
       stderr.length === 0;
-    child.on('close', (code) => {
+    // WI-38054 / EI-21908787009967815: `closeSignal` MUST be read here. Node passes the
+    // signal NAME as `close`'s second argument, and it is the ONLY evidence that the
+    // child was killed rather than choosing to exit — `code` is null in exactly that
+    // case, so the surviving value cannot carry it. Destructuring only `code` (as this
+    // did) is what let a reaped worker reach adv_sessions as ended_by='self'.
+    child.on('close', (code, closeSignal) => {
       cleanup();
       if (settled) return;
       if (isScopeLaunchFailure(code)) {
@@ -834,6 +856,11 @@ function runChild(
           output: extractAgentOutput(stdout),
           exitCode: 1,
           stderr: stderr.trim() || 'aborted (fleet:cancel)',
+          // An abort IS a kill we performed. The exitCode is normalized to 1 above so
+          // callers cannot read a cancel as success; that normalization erases the
+          // signal, so carry it explicitly rather than leaving the row to claim the
+          // child chose to stop.
+          endedSignal: closeSignal ?? null,
           rawStdoutTail: rawStdoutTail(stdout),
         });
         return;
@@ -866,6 +893,7 @@ function runChild(
         exitCode,
         stderr,
         timedOut,
+        endedSignal: closeSignal ?? null,
         firstTurnTimedOut,
         rawStdoutTail: rawStdoutTail(stdout),
       });
