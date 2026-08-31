@@ -364,6 +364,17 @@ export function normalizeTestFilePaths(
  */
 const ROUTER_EXIT_ROUTE_ERROR = 2;
 
+export type RouterNotMeasuredReason = 'admission-starved' | 'undetermined';
+
+export interface RouterNotMeasuredMarker {
+  requested: number;
+  executed: number;
+  matched: number;
+  measuredFiles: 0;
+  status: 'not-measured';
+  reason: RouterNotMeasuredReason;
+}
+
 /** Resource reservation made for one resident router/Vitest process. */
 export const TEST_PROCESS_DEFAULT_MEMORY_BYTES = 1024 * 1024 * 1024;
 export const TEST_PROCESS_DEFAULT_DISK_BYTES = 256 * 1024 * 1024;
@@ -666,9 +677,10 @@ export type TestFilesCoreResult =
         | 'invalid_root'
         | 'ambiguous_workspace_path'
         | 'aborted'
-        | 'timeout'
-        | 'route_error'
-        | 'no_report'
+      | 'timeout'
+      | 'route_error'
+        | 'not_measured'
+      | 'no_report'
         | 'name_filter_no_match'
         | 'all_tests_skipped';
       hint?: string;
@@ -679,6 +691,12 @@ export type TestFilesCoreResult =
       files?: number;
       routerOutput?: string;
       detachedRunId?: string;
+      status?: 'not-measured';
+      reason?: RouterNotMeasuredReason;
+      requested?: number;
+      executed?: number;
+      matched?: number;
+      measuredFiles?: 0;
   };
 
 /**
@@ -1003,6 +1021,47 @@ export function parseRouterTestResult(
   };
 }
 
+/**
+ * Parse the router's typed NOT-MEASURED terminal marker.
+ *
+ * A governed admission refusal exits with the same reserved code as an ordinary
+ * route refusal, so the marker is the only safe discriminator at this layer.
+ * Keep this parser strict: malformed numbers, non-zero measuredFiles, unknown
+ * reasons, or a different status must fall through to the existing route_error
+ * result rather than being treated as a typed admission refusal.
+ */
+export function parseRouterNotMeasuredMarker(output: string): RouterNotMeasuredMarker | null {
+  const markerRe =
+    /^TEST_FILE_NOT_MEASURED\s+requested=(\d+)\s+executed=(\d+)\s+matched=(\d+)\s+measuredFiles=(\d+)\s+status=(not-measured)\s+reason=(admission-starved|undetermined)(?:\s+—.*)?$/gm;
+  let marker: RegExpExecArray | null = null;
+  for (const match of output.matchAll(markerRe)) marker = match;
+  if (!marker) return null;
+
+  const requested = Number(marker[1]);
+  const executed = Number(marker[2]);
+  const matched = Number(marker[3]);
+  const measuredFiles = Number(marker[4]);
+  if (
+    ![requested, executed, matched, measuredFiles].every(Number.isSafeInteger) ||
+    requested < 1 ||
+    executed < 0 ||
+    matched < 0 ||
+    matched > requested ||
+    executed > matched ||
+    measuredFiles !== 0
+  ) {
+    return null;
+  }
+  return {
+    requested,
+    executed,
+    matched,
+    measuredFiles: 0,
+    status: 'not-measured',
+    reason: marker[6] as RouterNotMeasuredReason,
+  };
+}
+
 const VITEST_LAYER_CONFIGS = {
   integration: [
     'vitest.integration.config.ts',
@@ -1277,9 +1336,33 @@ export async function runTestFilesCore(opts: {
         ...(detachedRunId ? { detachedRunId } : {}),
       };
     }
-    // A route/launch error never produced a report — surface the router's own
-    // diagnostics (they name the cause: unmatched path, mid-install corruption).
-    if (outcome.code === ROUTER_EXIT_ROUTE_ERROR || outcome.code === null) {
+    // A typed router refusal is still exit 2, but its strict marker distinguishes
+    // governed admission starvation from an ordinary route/launch error. Parse
+    // only the reserved exit code so a test's arbitrary output cannot manufacture
+    // a not-measured result on a successful run.
+    if (outcome.code === ROUTER_EXIT_ROUTE_ERROR) {
+      const notMeasured = parseRouterNotMeasuredMarker(outcome.output);
+      if (notMeasured) {
+        return {
+          ok: false,
+          runId,
+          root,
+          error: 'not_measured',
+          ...notMeasured,
+          routerOutput: outcome.output.slice(-2000),
+        };
+      }
+    }
+    // Name-filter and all-skipped refusals intentionally retain their report so
+    // the typed branches below can explain the vacuous run. Every other exit-2
+    // result has no trustworthy report and remains the existing route_error.
+    const hasReportBackedRefusal = /^(?:TEST_FILE_NAME_FILTER_NO_MATCH|TEST_FILE_ALL_SKIPPED)\b/m.test(
+      outcome.output,
+    );
+    if (
+      (outcome.code === ROUTER_EXIT_ROUTE_ERROR && !hasReportBackedRefusal) ||
+      outcome.code === null
+    ) {
       return { ok: false, runId, root, error: 'route_error', routerOutput: outcome.output.slice(-2000) };
     }
 

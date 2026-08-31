@@ -9,6 +9,7 @@ import { transformSync } from 'esbuild';
 import {
   aggregateGroupResults,
   canonicalMatch,
+  classifyGovernedAdmissionFailure,
   collectionAttributionMarker,
   discoverTestRoute,
   discoverVitestRoute,
@@ -301,6 +302,14 @@ describe('test-files router', () => {
   });
 });
 
+describe('governed admission refusal classification (EI-21984099786606751)', () => {
+  it('keeps retryable database contention distinct from other pre-launch failures', () => {
+    expect(classifyGovernedAdmissionFailure({ pgCode: '57014' })).toBe('admission-starved');
+    expect(classifyGovernedAdmissionFailure({ pgCode: '55P03' })).toBe('admission-starved');
+    expect(classifyGovernedAdmissionFailure({ pgCode: 'XX000' })).toBe('undetermined');
+  });
+});
+
 // P-009 / WI-4534: the false-green refusal. A raw `vitest run <paths>` reports success while
 // silently skipping what you asked for — exit 0 on a PARTIAL match (asked 3, ran 2), and exit 0
 // on a ZERO match under --passWithNoTests. evaluateMatch is the guard that turns both into a hard
@@ -541,6 +550,49 @@ describe('aggregateGroupResults — no group may be silently abandoned (EI-13535
     expect(summary.launchError).toBe(true);
   });
 
+  it('preserves one governed admission kind for the typed NOT-MEASURED marker', () => {
+    const launchErrorGroup = {
+      requested: 2,
+      matched: 2,
+      executed: 0,
+      unmatchedCount: 0,
+      failed: false,
+      launchError: true,
+      governedAdmissionFailureKind: 'admission-starved',
+    };
+    expect(aggregateGroupResults([launchErrorGroup])).toMatchObject({
+      launchError: true,
+      governedAdmissionFailureKind: 'admission-starved',
+    });
+  });
+
+  it('collapses mixed governed admission kinds to undetermined', () => {
+    const base = {
+      requested: 1,
+      matched: 1,
+      executed: 0,
+      unmatchedCount: 0,
+      failed: false,
+      launchError: true,
+    };
+    expect(aggregateGroupResults([
+      { ...base, governedAdmissionFailureKind: 'admission-starved' },
+      { ...base, governedAdmissionFailureKind: 'undetermined' },
+    ]).governedAdmissionFailureKind).toBe('undetermined');
+  });
+
+  it('does not call an ordinary launch error governed admission', () => {
+    const summary = aggregateGroupResults([{
+      requested: 1,
+      matched: 0,
+      executed: 0,
+      unmatchedCount: 1,
+      failed: false,
+      launchError: true,
+    }]);
+    expect(summary.governedAdmissionFailureKind).toBeUndefined();
+  });
+
   it('a single clean group (the common case) still reports ok/passed correctly', () => {
     const summary = aggregateGroupResults([okGroup(2, 2, 2)]);
     expect(summary).toMatchObject({ ok: true, requested: 2, matched: 2, executed: 2, anyFailed: false });
@@ -575,6 +627,58 @@ describe('aggregateGroupResults — no group may be silently abandoned (EI-13535
   it('a clean run with no timed-out group reports anyTimedOut=false (no false positive)', () => {
     const summary = aggregateGroupResults([okGroup(1, 1, 1), okGroup(2, 2, 2)]);
     expect(summary.anyTimedOut).toBe(false);
+  });
+});
+
+describe('governed admission refusal terminal marker (EI-21984099786606751)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it('emits a strict NOT-MEASURED marker and exit 2 for an admission refusal', async () => {
+    const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    let code: number;
+    try {
+      code = await main(
+        ['packages/operator-core/lib/__tests__/test-file-router.test.ts'],
+        {
+          runCapturedTestProcessImpl: async () => ({
+            status: null,
+            signal: null,
+            stdout: '',
+            stderr: '',
+            timedOut: false,
+            error: Object.assign(new Error('statement timeout'), { code: 'GOVERNED_ADMISSION_FAILED' }),
+            governedAdmissionError: true,
+            governedAdmissionFailureKind: 'admission-starved',
+          }),
+        },
+      );
+    } finally {
+      if (readyMarker === undefined) delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+      else process.env.PC_HEAVY_PREEMPT_READY_FILE = readyMarker;
+      if (finalizationMarker === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationMarker;
+    }
+
+    expect(code).toBe(2);
+    const output = errSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(output).toMatch(
+      /TEST_FILE_NOT_MEASURED requested=1 executed=0 matched=1 measuredFiles=0 status=not-measured reason=admission-starved\b/,
+    );
+    expect(output).not.toContain('TEST_FILE_RESULT');
   });
 });
 

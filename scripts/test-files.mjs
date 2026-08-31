@@ -1238,6 +1238,21 @@ export function aggregateGroupResults(groupResults) {
   const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
   const executed = groupResults.reduce((sum, g) => sum + g.executed, 0);
   const launchError = groupResults.some((g) => g.launchError);
+  // A governed admission refusal is a typed NOT-MEASURED outcome, not a route
+  // error. Keep the type only when every launch-error group carries it: a
+  // mixture of an admission refusal and an ordinary launch failure cannot be
+  // honestly attributed to admission, while different admission kinds collapse
+  // to `undetermined` rather than choosing one group arbitrarily.
+  const launchErrorGroups = groupResults.filter((g) => g.launchError);
+  const governedAdmissionKinds = launchErrorGroups
+    .map((g) => g.governedAdmissionFailureKind)
+    .filter((kind) => kind === 'admission-starved' || kind === 'undetermined');
+  const governedAdmissionFailureKind =
+    launchErrorGroups.length > 0 && governedAdmissionKinds.length === launchErrorGroups.length
+      ? [...new Set(governedAdmissionKinds)].length === 1
+        ? governedAdmissionKinds[0]
+        : 'undetermined'
+      : undefined;
   const anyUnmatched = groupResults.some((g) => g.unmatchedCount > 0);
   const anyFailed = groupResults.some((g) => g.failed);
   // EI-21902345477441137: a group the watchdog reaped produced NO verdict — `failed` is
@@ -1277,6 +1292,7 @@ export function aggregateGroupResults(groupResults) {
     anyUnmatched,
     anyFailed,
     launchError,
+    governedAdmissionFailureKind,
     anyTimedOut,
   };
 }
@@ -2315,9 +2331,13 @@ export async function main(
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       if (result.error) {
-        console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Node:test: ${result.error.message}`));
+        if (!result.governedAdmissionError) {
+          console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Node:test: ${result.error.message}`));
+        }
       }
-      const groupFailed = Boolean(result.error) || result.status !== 0;
+      const groupFailed = result.governedAdmissionError
+        ? false
+        : Boolean(result.error) || result.status !== 0;
       if (groupFailed) {
         console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} runner=node:test executed=${result.error ? 0 : exact.length} status=failed`);
       }
@@ -2374,9 +2394,6 @@ export async function main(
         unmatchedCount: group.routes.length,
         failed: false,
         launchError: true,
-        ...(result.governedAdmissionError
-          ? { governedAdmissionFailureKind: result.governedAdmissionFailureKind ?? 'undetermined' }
-          : {}),
       });
       continue;
     }
@@ -2490,9 +2507,11 @@ export async function main(
       }
     }
     if (result.error) {
-      console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`));
-      if (looksLikeMidInstallCorruption(result.error.message)) {
-        console.error(MID_INSTALL_HINT);
+      if (!result.governedAdmissionError) {
+        console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`));
+        if (looksLikeMidInstallCorruption(result.error.message)) {
+          console.error(MID_INSTALL_HINT);
+        }
       }
       groupResults.push({
         requested: verdict.requested,
@@ -2501,6 +2520,9 @@ export async function main(
         unmatchedCount: 0,
         failed: false,
         launchError: true,
+        ...(result.governedAdmissionError
+          ? { governedAdmissionFailureKind: result.governedAdmissionFailureKind ?? 'undetermined' }
+          : {}),
       });
       continue;
     }

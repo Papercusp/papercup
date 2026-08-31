@@ -39,6 +39,7 @@ import runTool, {
   discoverKnownHiveCheckoutRoots,
   groupDirectVitestRoutes,
   normalizeTestFilePaths,
+  parseRouterNotMeasuredMarker,
   parseRouterTestResult,
   selectTestFileRoot,
 } from '../run';
@@ -71,6 +72,12 @@ interface RunResult {
   detachedRunId?: string;
   hint?: string;
   routerOutput?: string;
+  status?: 'not-measured';
+  reason?: 'admission-starved' | 'undetermined';
+  requested?: number;
+  executed?: number;
+  matched?: number;
+  measuredFiles?: 0;
   passed?: number;
   failed?: number;
   skipped?: number;
@@ -402,6 +409,25 @@ describe('testing:run (integration)', () => {
       byFile: { [NODE_TEST_TARGET]: { passed: 2, failed: 0, skipped: 0, collectionFailed: false } },
     });
     expect(parseRouterTestResult('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed', [NODE_TEST_TARGET])).toBeNull();
+  });
+
+  it('parses a strict typed NOT-MEASURED router marker without turning ordinary route errors into one', () => {
+    const marker = [
+      'TEST_FILE_ROUTE_ERROR (group cwd=packages/operator-core) could not launch Vitest: statement timeout',
+      'TEST_FILE_NOT_MEASURED requested=2 executed=0 matched=2 measuredFiles=0 status=not-measured reason=admission-starved — governed test-process admission was refused after retryable database contention.',
+    ].join('\n');
+    expect(parseRouterNotMeasuredMarker(marker)).toEqual({
+      requested: 2,
+      executed: 0,
+      matched: 2,
+      measuredFiles: 0,
+      status: 'not-measured',
+      reason: 'admission-starved',
+    });
+    expect(parseRouterNotMeasuredMarker('TEST_FILE_ROUTE_ERROR requested=1 matched=0')).toBeNull();
+    expect(parseRouterNotMeasuredMarker(
+      'TEST_FILE_NOT_MEASURED requested=2 executed=0 matched=2 measuredFiles=1 status=not-measured reason=admission-starved',
+    )).toBeNull();
   });
 
   it('returns structured actual/expected values for a real failing assertion', async () => {
