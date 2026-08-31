@@ -797,8 +797,43 @@ describe('the enriched plan card (plan-visibility-revamp-2026-08-23 P-007)', () 
     expect(document.querySelector('.hud__track')).toBeNull();
   });
 
-  it('suppresses the header age on plan cards — ✎ already says it in the meta row', () => {
+  it('suppresses the header age on plan cards — ⚒ in the rail is the age that matters', () => {
+    // Was "✎ already says it in the meta row" until
+    // hud-plan-card-density-2026-08-31 D-001 dropped BOTH the meta row and ✎.
+    // The assertion is unchanged and still correct; only its reason moved — the
+    // header age is redundant because the rail's ⚒ last-work carries the
+    // recency signal a reader actually scans for.
     renderPlanBoard([metaPlan()]);
     expect(document.querySelector('.hud__age')).toBeNull();
+    expect(document.querySelector('.hud__cardright')!.textContent).toContain('⚒');
+  });
+});
+
+/**
+ * The D-004 SCOPING CONTROL — hud-plan-card-density-2026-08-31 P-005.
+ *
+ * The compact form is discriminated on `card.plan`, which only `toPlanCard`
+ * writes. That is one boolean standing between "the Plans board got denser" and
+ * "every board in the HUD silently lost its slug, its chips and its reason
+ * line", and nothing in the plan-card suite above can catch a regression in it:
+ * those tests only ever render plan cards, so a branch that started matching
+ * everything would leave all of them green.
+ *
+ * So this control renders the OTHER card kind and asserts the legacy tree
+ * survives verbatim. It is the falsifier for D-004, and it fails in exactly the
+ * direction that matters — widening the branch, not narrowing it.
+ */
+describe('the compact form is scoped to PLAN cards only (D-004)', () => {
+  it('leaves a work-item card on the legacy tree: handle + reason, no compact title', () => {
+    renderCols({}, { items: [item({ id: 'WI-9', title: 'A real work item' })] });
+
+    // What a non-plan card MUST still have.
+    expect(document.querySelector('.hud__handle')!.textContent).toBe('WI-9');
+    expect(document.querySelector('.hud__reason')!.textContent).toBe('A real work item');
+
+    // What only a plan card may grow.
+    expect(document.querySelector('.hud__cardtitle')).toBeNull();
+    expect(document.querySelector('.hud__cardright')).toBeNull();
+    expect(document.querySelector('.hud__pip')).toBeNull();
   });
 });
