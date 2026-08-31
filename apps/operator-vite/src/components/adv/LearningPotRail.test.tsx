@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type {
   AutomationArming,
   AutomationCatalog,
@@ -85,10 +86,21 @@ function scope(disabledPots: string[]): AutomationArming['potScope'] {
   };
 }
 
+/**
+ * The adapter is REQUIRED, not ceremony: P-008 made the rail's `+N idle` chip
+ * open the scope picker, and that open state is URL state (nuqs), per the repo
+ * rule that anything user-meaningful is addressable — which is also what lets
+ * P-009 retarget its call sites at the picker. Without an adapter every render
+ * here throws "nuqs requires an adapter" before a single assertion runs.
+ */
 function renderRail(a: AutomationArming | null) {
   H.arming = a;
   H.queries.length = 0;
-  return render(<LearningPotRail />);
+  return render(
+    <NuqsTestingAdapter>
+      <LearningPotRail />
+    </NuqsTestingAdapter>,
+  );
 }
 
 function chips(container: HTMLElement): HTMLElement[] {
@@ -460,5 +472,52 @@ describe('the per-pot popover', () => {
       `none of [${classes.join(', ')}] declares a background, so the panel is ` +
         `transparent and the page shows through it`,
     ).toBe(true);
+  });
+});
+
+/**
+ * P-008 wired the rail's `+N idle` chip to the every-pot scope picker.
+ *
+ * D-005 designated THIS chip as the picker's trigger and deliberately left it
+ * inert until the picker existed — "wire it there rather than adding a second
+ * entry point" — so a dormant pot's ONLY route to its controls runs through
+ * here. If this chip stops opening the picker, 47 of 54 pots silently lose
+ * every control they have, and nothing else in this suite would notice: the
+ * chip still renders, still counts correctly, and still reads the same.
+ */
+describe('the idle chip opens the scope picker', () => {
+  it('is a real button, not inert text', () => {
+    const { container } = renderRail(
+      arming({ gymPots: [gym('alpha', { enabled: false })], potScope: scope([]) }),
+    );
+    const idle = container.querySelector('.pc-potrail__dormant');
+    expect(idle).not.toBeNull();
+    expect(idle?.tagName).toBe('BUTTON');
+  });
+
+  it('writes the picker’s URL key when clicked', async () => {
+    // URL state, not component state — that is what lets P-009 retarget its
+    // three useOpenArming call sites at this picker.
+    H.arming = arming({
+      gymPots: [gym('alpha', { enabled: false })],
+      potScope: scope([]),
+    });
+    const updates: string[] = [];
+    const { container } = render(
+      <NuqsTestingAdapter onUrlUpdate={(e) => updates.push(e.queryString)}>
+        <LearningPotRail />
+      </NuqsTestingAdapter>,
+    );
+
+    const idle = container.querySelector<HTMLElement>('.pc-potrail__dormant');
+    if (!idle) throw new Error('no idle chip rendered');
+    // nuqs THROTTLES its URL write, so asserting straight after the click reads
+    // an empty update list and looks exactly like a chip that is not wired.
+    await act(async () => {
+      fireEvent.click(idle);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    expect(updates.join('&')).toContain('lpick=true');
   });
 });

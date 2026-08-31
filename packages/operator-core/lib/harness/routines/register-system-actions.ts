@@ -611,3 +611,14 @@ import './project-history-refresh-action';
 // canonical system-action seam but intentionally has NO seeded cadence. The
 // purpose-built plans:audit-unshipped tool fires the same implementation on demand.
 import './unshipped-plans-audit-action';
+// EI-21921833535413808: `system:account-capacity-reprobe` — a walled account whose upstream
+// window actually reset (or was never really full — `usageWalled` is a THRESHOLD CHECK on a
+// projection, not an observed refusal) had NOTHING to re-ask upstream: a walled account is
+// routed no live traffic, so its projection never self-corrects, and only a human/agent
+// thinking to run `accounts:probe-capacity` by hand recovered it (measured: +50% of the usable
+// Claude pool from one manual call). Fires the tool's own `runCapacityProbe` core,
+// `walledOnly: true, apply: true`, per provider — cheap by construction (only accounts already
+// flagged full are probed; a genuinely-walled account is just re-confirmed). A bespoke
+// ephemeral (tier:'ephemeral', 300s) operator-HOME cadence, same deviation reasoning as
+// supervision-reconcile-action. Seeded ACTIVE by seed-account-capacity-reprobe-routine.ts.
+import './account-capacity-reprobe-action';

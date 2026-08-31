@@ -2017,6 +2017,70 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         expect(r.ok).toBe(true);
         expect(r.checksDropped).toBeUndefined();
       });
+
+      // EI-21923095696933477: retireIds is a STRONGER, opt-in alternative to
+      // confirmRetire — it names the exact rows a replace intends to retire and
+      // refuses on any mismatch, so a row the caller never saw (a compaction
+      // excerpt showed only a subset) can never be dropped by a blind
+      // confirmRetire:true.
+      it('EI-21923095696933477: accepts a replace with retireIds naming exactly the dropped rows, without confirmRetire', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const r = await one({
+          id: 'WI-7',
+          checkpoint: 'new body',
+          checks: [{ claim: 'a brand new claim' }],
+          rowsMode: 'replace',
+          retireIds: ['gate is green', 'main is at abc123', 'deploy landed'],
+        });
+        expect(r.ok).toBe(true);
+        expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
+      });
+
+      it('EI-21923095696933477: refuses (even with confirmRetire:true) when retireIds MISSES a row that would actually drop', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const r = await one({
+          id: 'WI-7',
+          checkpoint: 'new body',
+          checks: [{ claim: 'a brand new claim' }],
+          rowsMode: 'replace',
+          confirmRetire: true,
+          retireIds: ['gate is green', 'main is at abc123'], // missing "deploy landed"
+        });
+        expect(r).toMatchObject({
+          ok: false,
+          errorCode: 'checkpoint_retire_ids_mismatch',
+          retryable: true,
+          retireIdsRequested: ['gate is green', 'main is at abc123'],
+        });
+        expect(r.retireIdsActual).toEqual(
+          expect.arrayContaining(['gate is green', 'main is at abc123', 'deploy landed']),
+        );
+        expect(r.message).toContain('deploy landed');
+      });
+
+      it('EI-21923095696933477: refuses when retireIds names a row that would NOT actually drop (a stale snapshot)', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const r = await one({
+          id: 'WI-7',
+          checkpoint: 'new body',
+          checks: THREE, // keeps every carried row — nothing actually drops
+          rowsMode: 'replace',
+          retireIds: ['gate is green'], // caller believes this drops; it does not
+        });
+        expect(r).toMatchObject({ ok: false, errorCode: 'checkpoint_retire_ids_mismatch' });
+        expect(r.retireIdsActual).toEqual([]);
+      });
+
+      it('EI-21923095696933477: an empty retireIds:[] matches a replace that drops nothing', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const r = await one({ id: 'WI-7', checkpoint: 'new body', checks: THREE, rowsMode: 'replace', retireIds: [] });
+        expect(r.ok).toBe(true);
+        expect(r.checksDropped).toBeUndefined();
+      });
     });
 
     it('EI-20232161144151845: a dependency-only patch preserves the body and bypasses shrink protection', async () => {

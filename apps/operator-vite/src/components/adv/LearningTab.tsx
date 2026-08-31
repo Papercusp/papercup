@@ -129,6 +129,7 @@ import { SignalsPanel } from "./SignalsPanel";
 import { AnalyzePanel } from "./AnalyzePanel";
 import LearningLoopControl from "./LearningLoopControl";
 import LearningPotRail from "./LearningPotRail";
+import LearningPotPicker from "./LearningPotPicker";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
 import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Tooltip } from "@/app/harness/Tooltip";
@@ -892,6 +893,12 @@ export default function LearningTab() {
           answers a third question — the loop's SCOPE — that belongs to neither.
           Renders nothing until a pot has a gym row or a governor lane. */}
       <LearningPotRail />
+      {/* P-008's every-pot scope picker. Mounted here rather than inside the
+          rail because the rail renders nothing when no pot has a learning row,
+          and the picker must still be reachable then — it is the surface that
+          enumerates every pot, including the ones the rail has nothing to say
+          about. It is a modal driven by URL state, so it costs nothing closed. */}
+      <LearningPotPicker />
 
       <div className="pc-learning__controls">
         {/* The per-tab pot picker that lived here is GONE (owner directive

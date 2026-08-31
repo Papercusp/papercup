@@ -31,6 +31,7 @@ import {
   maskKey,
   readElevenLabsKey,
 } from "../../packages/operator-core/lib/voice-credentials.ts";
+import { readIntegrationKey } from "../../packages/operator-core/lib/integration-credentials.ts";
 
 const ENV_FILE = join(homedir(), ".config", "papercusp-phone", "livekit.env");
 
@@ -126,24 +127,60 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   }
 
-  const key = await readElevenLabsKey();
-  if (!key) {
-    // A missing key is a real, actionable state — not an error to swallow. The
-    // worker will still start; it just cannot speak, which is worth saying now
-    // rather than discovering on the first call.
+  // ── Deepgram: the vendor the worker ACTUALLY ships, on BOTH legs.
+  //
+  // D-011 pinned STT to Deepgram nova-3; D-015 pinned TTS to Deepgram Aura
+  // (ttsTtfb 652ms -> 180ms, which is what put speech-to-speech under the
+  // 1500ms target). So this is the one key a supervised worker cannot start
+  // correctly without — and until now it reached the worker ONLY through
+  // `capability:bash { integration_env }`, i.e. only when an agent hand-launched
+  // it. A systemd unit has no such door, so it would have resolved stt=gemini
+  // and tts=gemini SILENTLY, which is precisely the class that cost four
+  // measurement runs. PHONE_REQUIRE_VENDORS makes that loud; this makes it not
+  // happen.
+  //
+  // Read from the SAME encrypted store integration_env reads
+  // (harness_shared.operator_integration_credentials), so there is still exactly
+  // one copy of the secret — the rule this whole file exists to honour.
+  const deepgramKey = (await readIntegrationKey("SIDESTAGE_DEEPGRAM_API_KEY"))?.trim();
+  if (deepgramKey) {
+    const dgResult = upsertEnvLine(ENV_FILE, "DEEPGRAM_API_KEY", deepgramKey);
+    console.log(
+      `[phone-secrets] DEEPGRAM_API_KEY ${dgResult} in ${ENV_FILE} (${maskKey(deepgramKey)}) — ` +
+        `sourced from the encrypted integration-credential store, not a second copy.`,
+    );
+  } else {
     console.error(
-      "[phone-secrets] no ElevenLabs key in the operator voice-credential store.\n" +
-        "Save one via the operator settings UI (or setup:save_key), then re-run this.",
+      "[phone-secrets] ⚠ no SIDESTAGE_DEEPGRAM_API_KEY in the integration-credential store.\n" +
+        "The worker ships Deepgram for BOTH STT (nova-3, D-011) and TTS (Aura, D-015).\n" +
+        "Without it a supervised worker resolves gemini on both legs and misses the latency\n" +
+        "target — and PHONE_REQUIRE_VENDORS in the unit will refuse to start rather than let\n" +
+        "it run as something other than what was measured.",
     );
     process.exitCode = 1;
-    return;
   }
 
-  const result = upsertEnvLine(ENV_FILE, "ELEVEN_API_KEY", key);
-  console.log(
-    `[phone-secrets] ELEVEN_API_KEY ${result} in ${ENV_FILE} (${maskKey(key)}) — ` +
-      `sourced from the operator voice-credential store, not a second copy.`,
-  );
+  // ── ElevenLabs: kept in sync, but NOT fatal, and deliberately last.
+  //
+  // D-007 established that the stored ElevenLabs credential is not a usable
+  // `sk_` key, so the shipping TTS is Deepgram Aura. Syncing the key still
+  // matters — the elevenlabs arm remains in the seam and P-004's item text names
+  // it — but its ABSENCE must not abort this script. It used to `return` here,
+  // which after the Deepgram leg above would have meant a wall on a vendor we do
+  // NOT ship silently skipping the vendor we DO.
+  const key = await readElevenLabsKey();
+  if (key) {
+    const result = upsertEnvLine(ENV_FILE, "ELEVEN_API_KEY", key);
+    console.log(
+      `[phone-secrets] ELEVEN_API_KEY ${result} in ${ENV_FILE} (${maskKey(key)}) — ` +
+        `sourced from the operator voice-credential store, not a second copy.`,
+    );
+  } else {
+    console.log(
+      "[phone-secrets] no usable ElevenLabs key — EXPECTED, see D-007. TTS ships Deepgram Aura; " +
+        "the elevenlabs arm stays in the seam for when a real sk_ key exists.",
+    );
+  }
 }
 
 // Not top-level await: the repo's tsx transform emits CJS, which rejects it.

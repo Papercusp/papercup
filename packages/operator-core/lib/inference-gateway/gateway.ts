@@ -4946,6 +4946,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
                   { account: metadata.accountId, status },
                 );
+                // EI-21921571654476580: this is the OTHER exhaustion exit — reached
+                // when the classifier already ruled retryIntent false, OR none of the
+                // wait/absorb/downgrade rungs' own conditions matched (e.g. absorb is
+                // disabled, or retryDeadlineAt/transientWaitedMs are already spent).
+                // Either way this IS the gateway's final answer for this request, so
+                // the same override applies as the catch-block exhaustion path: don't
+                // forward a raw upstream `x-should-retry: true` that invites a
+                // downstream SDK to retry a terminal condition silently forever.
+                if (status === 429 || status === 529) {
+                  outHeaders['x-should-retry'] = 'false';
+                  outHeaders[RETRIES_EXHAUSTED_HEADER] = String(attemptsUsed);
+                  log(
+                    'warn',
+                    `inference-gateway: upstream ${status} on '${metadata.accountId}' for ${model} was not rescued (retry-intent=${retryIntent}) after ${attemptsUsed} attempt(s) — forwarding terminal ${status} with x-should-retry=false`,
+                  );
+                }
                 sseForward = (outHeaders['content-type'] ?? '').includes('text/event-stream');
                 res.writeHead(status, outHeaders);
               },

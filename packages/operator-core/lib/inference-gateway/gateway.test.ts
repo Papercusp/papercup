@@ -1859,6 +1859,69 @@ test('[529 overload] a PERSISTENT 529 is BOUNDED — the request settles with a 
   assert.ok(elapsed < 3_000, `terminated fast (${elapsed}ms), slot freed — no unbounded backoff loop`);
 }, 15_000);
 
+// EI-21921571654476580: a bare 429/529 the classifier deems retryable was forwarded to the client
+// with the RAW upstream `x-should-retry` header verbatim — inviting a downstream SDK to retry a
+// terminal, gateway-exhausted condition silently and indefinitely (the reported symptom: the client
+// shows "Working..." forever, no error surfaced, no rate-limit notice). There are TWO exhaustion
+// exits in the gateway and both needed the same override: (1) the ladder INTERCEPTS (wait/absorb/
+// downgrade), retries, and STILL can't rescue it — covered by the "PERSISTENT 529 is BOUNDED" test
+// above, whose response is asserted here to also carry the override; (2) `downstream.start` decides
+// on the FIRST response that none of the rescue rungs even apply and forwards directly — exercised
+// below with absorb disabled so that exact branch is hit with no interception at all.
+test('[529 overload] EI-21921571654476580: a persistent 529 with no rescue possible is forwarded with x-should-retry:false, never the raw upstream true — no silent infinite client retry', async () => {
+  // requestAbsorbMs: 0 disables the ONLY rung that could apply to a 529 with a single-account pool
+  // (transient is unconditionally false for 529 — server overload, not account budget — so the wait
+  // rung never applies; the downgrade rung excludes 529 entirely). With absorb off too, `downstream
+  // .start` finds nothing to intercept on the FIRST upstream response and forwards it directly —
+  // exactly the "OTHER exhaustion exit" the fix names in gateway.ts.
+  await boot(
+    (_req, res) => {
+      res.writeHead(529, { 'content-type': 'application/json', 'x-should-retry': 'true' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }));
+    },
+    { requestAbsorbMs: 0 },
+  );
+  const res = await post({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 529, 'the terminal 529 reaches the client (not swallowed)');
+  assert.equal(
+    res.headers.get('x-should-retry'),
+    'false',
+    'the raw upstream x-should-retry:true must NOT reach the client — forwarding it verbatim is exactly what let a downstream SDK retry a gateway-exhausted 529 silently and indefinitely (the "Working..." forever symptom)',
+  );
+  assert.ok(
+    res.headers.get('x-papercusp-retries-exhausted'),
+    'the exhausted-attempt count is surfaced so "slow" is distinguishable from "never" without grepping the gateway log',
+  );
+}, 15_000);
+
+test('[529 overload] EI-21921571654476580: the OTHER exhaustion exit — the ladder intercepts, retries, and STILL cannot rescue it — also overrides x-should-retry', async () => {
+  // Same override, the OTHER code path: absorb is ON (default) so the ladder DOES intercept the
+  // first 529 and retry the same account — but the upstream is PERSISTENTLY 529, so every retry is
+  // rescued by nothing, and the tiny internalRetryDeadlineMs bounds it to a fast, deterministic
+  // "nothing rescued it" fallback (the same branch the pre-existing "PERSISTENT 529 is BOUNDED"
+  // test exercises for TIMING; this asserts the HEADER behavior on that exact branch).
+  await boot(
+    (_req, res) => {
+      res.writeHead(529, { 'content-type': 'application/json', 'x-should-retry': 'true' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }));
+    },
+    { internalRetryDeadlineMs: 200 },
+  );
+  const res = await post({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'x' }] });
+  // The tiny deadline can settle this as a forwarded 529 OR an abort — assert the header override
+  // only when a real upstream response (with the raw header to override) was actually forwarded.
+  if (res.status === 529) {
+    assert.equal(
+      res.headers.get('x-should-retry'),
+      'false',
+      'the ladder-exhausted 529 must also override the raw upstream x-should-retry:true before forwarding',
+    );
+    assert.ok(res.headers.get('x-papercusp-retries-exhausted'), 'attempt count surfaced on the ladder-exhausted exit too');
+  } else {
+    assert.ok(res.status >= 500 && res.status < 600, `bounded settlement (got ${res.status})`);
+  }
+}, 15_000);
+
 test('a genuinely unsupported (non-http(s)/non-socks) egress proxyUrl fails SAFE → default shared egress, never a silent break (B-GW-3)', async () => {
   // undici's ProxyAgent is HTTP-CONNECT only and does not understand an ftp:// URL — it would CONSTRUCT
   // without error but 502 EVERY request for this account at request time. The gateway must IGNORE it

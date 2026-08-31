@@ -256,7 +256,7 @@ describe('validateClaimSpec — invalid: filter vocabulary', () => {
     expect(combinatorError).toBeDefined();
     expect(combinatorError).toContain('top-level COMBINATOR key');
     expect(combinatorError).toContain('{ any: [...] }');
-    expect(combinatorError.toLowerCase()).toContain('sibling');
+    expect(combinatorError?.toLowerCase()).toContain('sibling');
   });
 
   it('accepts the actual combinator syntax the confused-op error points to (OR/AND/NOT already work)', () => {

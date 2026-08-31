@@ -151,7 +151,15 @@ export function potArmingDetail(
   return { potSlug, gym, lanes };
 }
 
-function masterSwitch(arming: AutomationArming, potSlug: string): PotSegmentState {
+/**
+ * The pot-level master switch (D-001's gate), read under rules 1 and 2 below.
+ *
+ * EXPORTED for the P-008 picker. The picker needs this same verdict for all 54
+ * pots, and the one thing it must not do is re-derive it: this module's header
+ * and D-006 both name re-deriving the pot-scope rule as how it gets inverted
+ * somewhere new. One reader, two surfaces.
+ */
+export function potMasterSwitch(arming: AutomationArming, potSlug: string): PotSegmentState {
   // Rule 2: a failed read is 'unknown', never 'on'.
   // NULLISH, not `=== null`. The type says `AutomationPotScope | null`, which
   // makes a strict null check look exhaustive — but this value crosses a sync
@@ -224,7 +232,7 @@ export function buildLearningPotRail(arming: AutomationArming | null | undefined
   const gymBySlug = new Map<string, AutomationGymArm>();
   for (const g of arming.gymPots ?? []) if (g?.harnessSlug) gymBySlug.set(g.harnessSlug, g);
   const chips = learningPotSlugs(arming).map<LearningPotChip>((potSlug) => {
-    const learning = masterSwitch(arming, potSlug);
+    const learning = potMasterSwitch(arming, potSlug);
     const gym = gymSegment(gymBySlug.get(potSlug));
     const lanes = laneSegment(
       (arming.lanes ?? []).filter((l) => l != null && laneBelongsToPot(l, potSlug)),

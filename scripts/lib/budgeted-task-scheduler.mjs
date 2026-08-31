@@ -800,6 +800,19 @@ async function runBudgetedTasksWithoutSharedAdmission(tasks, options) {
  * admitted resident workload until `runTask` settles.  `withFsMutex` releases
  * in a finally block and reclaims a stale/dead owner, so a failed or crashed
  * runner cannot leave later verification permanently wedged.
+ *
+ * EI-21921867787033533: under heavy fleet-wide load this mutex is a real,
+ * intentional serialization point — most concurrent `test:affected` callers
+ * are correctly BLOCKED here, one at a time, for as long as ~4h
+ * (SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS). Every liveness probe (systemd
+ * ActiveState, process state, CPU%) reads a queued caller as "alive but doing
+ * nothing", indistinguishable from a genuine wedge. `withFsMutex` already
+ * supports an `onWaiting` callback for exactly this — fired once, the first
+ * time a caller actually has to wait — but nothing wired it up here, so a
+ * queued `test:affected` produced zero diagnostic output for however long it
+ * queued. Wiring it in costs nothing on the (usual) uncontended path and
+ * turns a silent multi-hour queue wait into one attributable stderr line the
+ * moment it starts waiting.
  */
 export async function runBudgetedTasks(tasks, options) {
   return withFsMutex(
@@ -809,6 +822,13 @@ export async function runBudgetedTasks(tasks, options) {
       timeoutMs: SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS,
       staleMs: SHARED_TEST_PROCESS_ADMISSION_STALE_MS,
       retryMs: SHARED_TEST_PROCESS_ADMISSION_RETRY_MS,
+      onWaiting: ({ owner, elapsedMs }) => {
+        console.error(
+          `AFFECTED_TESTS_ADMISSION_QUEUED waiting on the shared test-process ` +
+            `admission mutex (${Math.round(elapsedMs / 1000)}s so far) — this is ` +
+            `normal serialization under fleet load, not a hang; holder: ${String(owner).trim()}`,
+        );
+      },
     },
   );
 }

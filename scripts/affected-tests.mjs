@@ -237,6 +237,16 @@ const RUN_LOG_ROOT = join(tmpdir(), "papercusp-affected-tests");
 mkdirSync(RUN_LOG_ROOT, { recursive: true });
 sweepStaleTestScratch(RUN_LOG_ROOT);
 const RUN_LOG_PATH = join(RUN_LOG_ROOT, `${RUN_TOKEN}.log`);
+// EI-21921867787033533: `Full run log: ${RUN_LOG_PATH}` was previously emitted to
+// stdout/stderr ONLY on a clean terminal path (every `outSync`/`errSync` call further
+// down this file) — so a run that WEDGES (reaches the shared test-process admission
+// mutex, or any other silent-wait state, and never terminates) leaves an observer with
+// no way to find its own log file short of guessing the `/tmp/papercusp-affected-tests/`
+// naming pattern. Emit the path once, immediately, before any work that could hang —
+// via `errSync` (not `console.error`/`process.stderr.write`) so it also lands in the
+// log itself and stays inside the synchronous-write contract
+// `affected-tests-stdout-ordering.test.ts` enforces on this file.
+errSync(`Full run log: ${RUN_LOG_PATH}`);
 // EI-21429853249887727: a near-tree-wide checkpoint forwarded 5,976 paths to
 // lint:required-field-strands as ONE `--files=...` argument. Linux caps a single argv
 // entry well below ARG_MAX, so node:child_process.spawn threw E2BIG synchronously and the

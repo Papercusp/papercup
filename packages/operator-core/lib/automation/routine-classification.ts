@@ -505,6 +505,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'HTTP GET of the embed sidecar /healthz + a coord broadcast on a tripped breaker — no spawn/dispatch/wake',
   },
+  'system:account-capacity-reprobe': {
+    spend: 'none',
+    why: 'One minimal upstream request per already-walled account (a header read) plus a DB projection write and gateway readmit — no spawn/dispatch/wake',
+  },
   'system:readiness-drift-monitor': {
     spend: 'none',
     why: 'Reconciles the work_item_blocked readiness sidecar against its SQL oracle and repairs drift',

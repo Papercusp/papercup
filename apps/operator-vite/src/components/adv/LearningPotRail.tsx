@@ -39,6 +39,7 @@ import { Tooltip } from "@/app/harness/Tooltip";
 import { potHomeLabel } from "@/lib/pot-label";
 import { useLexicon } from "@/lib/useLexicon";
 import { runAgentTool } from "./run-tool";
+import { useOpenPotPicker } from "./LearningPotPicker";
 import {
   buildLearningPotRail,
   partitionLearningPotRail,
@@ -401,6 +402,7 @@ export function LearningPotRailChip({
 
 export default function LearningPotRail() {
   const t = useLexicon();
+  const openPicker = useOpenPotPicker();
   const catalogQuery = useSyncQuery<AutomationCatalog>({
     queryName: "automation.catalog",
     args: {},
@@ -449,11 +451,19 @@ export default function LearningPotRail() {
       {dormant.length > 0 ? (
         <li className="pc-potrail__chip pc-potrail__chip--dormant">
           <Tooltip
-            label={`${dormant.length} ${potWord} ${many ? "have" : "has"} a learning setup — a gym autoloop or governor lanes — with nothing armed right now. ${many ? "They are" : "It is"} not switched off; nothing is running for ${many ? "them" : "it"}.`}
+            label={`${dormant.length} ${potWord} ${many ? "have" : "has"} a learning setup — a gym autoloop or governor lanes — with nothing armed right now. ${many ? "They are" : "It is"} not switched off; nothing is running for ${many ? "them" : "it"}. Open the scope picker to see every ${t("pot", { lower: true })}.`}
           >
-            <span className="pc-potrail__dormant">
+            {/* P-008 made this live. D-005 designated this chip as the picker's
+                trigger and left it deliberately inert until the picker existed
+                — "wire it there rather than adding a second entry point" — so
+                this chip is the ONE route to a dormant pot's controls. */}
+            <button
+              type="button"
+              className="pc-potrail__dormant"
+              onClick={openPicker}
+            >
               {`+${dormant.length} idle`}
-            </span>
+            </button>
           </Tooltip>
         </li>
       ) : null}
@@ -500,6 +510,16 @@ export default function LearningPotRail() {
         .pc-potrail__segnum { color: var(--fg-mute); }
         .pc-potrail__spend { color: var(--fg); font-weight: 500; }
         .pc-potrail__chip--dormant { border-style: dashed; color: var(--fg-mute); }
+        /* The idle chip is a real button now (P-008), so it needs the button
+           reset — without it the UA stylesheet paints a grey box mid-rail. */
+        .pc-potrail__dormant {
+          background: none; border: none; padding: 0; margin: 0;
+          font: inherit; color: inherit; cursor: pointer;
+        }
+        .pc-potrail__dormant:hover { color: var(--fg); }
+        .pc-potrail__dormant:focus-visible {
+          outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 999px;
+        }
         .pc-potrail__dormant { color: var(--fg-mute); }
         .pc-potrail__sr {
           position: absolute; width: 1px; height: 1px; margin: -1px;

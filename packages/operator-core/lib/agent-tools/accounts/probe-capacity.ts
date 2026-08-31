@@ -109,6 +109,126 @@ function reportRow(r: CapacityProbeResult) {
   };
 }
 
+/** Args for {@link runCapacityProbe} — the same shape as the `accounts:probe-capacity` tool's
+ *  own zod args, so a caller (the tool handler, or a scheduled system action) picks defaults
+ *  identically to a direct MCP invocation. */
+export interface CapacityProbeArgs {
+  id?: string;
+  ids?: string[];
+  provider?: AccountProvider;
+  model?: string;
+  walledOnly?: boolean;
+  apply?: boolean;
+  workspace?: string;
+}
+
+/**
+ * The core of `accounts:probe-capacity` — extracted (EI-21921833535413808) so a SCHEDULED
+ * re-probe (`system:account-capacity-reprobe`) can call the exact same probe→apply→readmit
+ * path an on-demand agent invocation does, rather than re-implementing it and risking drift.
+ * The tool's `handler` below is now a thin wrapper: `ok(await runCapacityProbe(args))`.
+ */
+export async function runCapacityProbe(args: CapacityProbeArgs) {
+  const { loadAccountPool, updateAccountPool } = await import('../../deployment/account-pool-store');
+  const { recordProbeFailure } = await import('../../deployment/account-pool');
+  const { recordAccountWindowWithBurnAlert } = await import('../../inference-gateway/burn-alert');
+  const ws = args.workspace ?? activeWorkspaceId();
+  const apply = args.apply ?? true;
+  const provider: AccountProvider = args.provider ?? 'claude';
+
+  const pool = await loadAccountPool(ws);
+  const wanted = new Set([...(args.id ? [args.id] : []), ...(args.ids ?? [])]);
+  const providerAccounts = pool.accounts.filter((a) => (a.provider ?? 'claude') === provider);
+  const accounts = wanted.size > 0 ? providerAccounts.filter((a) => wanted.has(a.id)) : providerAccounts;
+
+  const results = await probeCapacityForAccounts(accounts, {
+    walledOnly: args.walledOnly ?? false,
+    fullUtil: DRAIN_FULL_UTIL,
+    ...(args.model ? { codexModel: args.model } : {}),
+  });
+
+  // Record every USABLE reading — a probe reading is exactly what live traffic would have written, so
+  // recording it is never a "force". A failed probe writes nothing (we must not invent a window).
+  const applied: string[] = [];
+  const burnTransitions: import('../../deployment/account-pool').BurnTransition[] = [];
+  if (apply) {
+    const t = Date.now();
+    for (const r of results) {
+      if (!r.ok) {
+        // The probe itself failed (network/auth/timeout) — no window was observed. Persist that
+        // fact so a later accounts:status read can tell "we just asked and got nothing" apart
+        // from "no one has asked in days" instead of silently keeping the old, now-unverified
+        // projection (EI-18809949582687481).
+        await updateAccountPool((p) => recordProbeFailure(p, r.accountId, t), ws);
+        continue;
+      }
+      const w = r.windows;
+      if (w.utilization === undefined && w.utilization7d === undefined) continue;
+      // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
+      // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
+      // edge), so a probe that makes a wall VISIBLE is never silent about it.
+      const { transition } = await recordAccountWindowWithBurnAlert(
+        r.accountId,
+        {
+          utilization: w.utilization,
+          windowResetAt: w.windowResetAt,
+          utilization7d: w.utilization7d,
+          windowResetAt7d: w.windowResetAt7d,
+        },
+        t,
+        ws,
+      );
+      if (transition) burnTransitions.push(transition);
+      applied.push(r.accountId);
+    }
+    if (applied.length > 0) {
+      void trackDetached(import('../../sync-sse'))
+        .then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {}))
+        .catch(() => {});
+    }
+  }
+
+  // Converge the gateway's in-memory exclusions with the projection we just wrote (see
+  // readmitIntoGateway). Only accounts that actually PROVED they serve are readmitted — a 429 reply
+  // confirms a real wall, and readmitting that account would just send the fleet back to hammer it.
+  const selectedAccountIds = new Set(accounts.map((account) => account.id));
+  const serving = results
+    .filter((r) => selectedAccountIds.has(r.accountId) && r.ok && r.status !== 429)
+    .map((r) => r.accountId);
+  const gateway = apply
+    ? await readmitIntoGateway(serving, provider)
+    : { converged: false, readmitted: [], healthyAccounts: null as number | null };
+
+  return {
+    probed: results.length,
+    provider,
+    // ⚠ `unwalled` is a DELTA — accounts this call CORRECTED. A healthy account was never walled, so it
+    // never appears here, and an empty array means "nothing needed fixing", NOT "nothing works". Judge
+    // capacity from `serving` (a STATE array) or from rows[].status, never from this one. A gate phrased
+    // over `unwalled` being non-empty is unsatisfiable by construction (EI-20742908053146075).
+    unwalled: results.filter((r) => r.unwalls).map((r) => r.accountId),
+    /** STATE, not delta: accounts that answered upstream RIGHT NOW without a 429. This is the field to
+     *  gate a launch on. */
+    serving,
+    confirmedWalled: results.filter((r) => r.ok && !r.unwalls && r.status === 429).map((r) => r.accountId),
+    failed: results.filter((r) => !r.ok).map((r) => r.accountId),
+    applied,
+    /** WI-41147 leg c: burn-verdict transitions this probe's writes surfaced (each was also
+     *  stated as a fact + severe-event broadcast — the never-silent wall). */
+    burnTransitions,
+    dryRun: !apply,
+    /** Did this call also converge the gateway's SEPARATE in-memory exclusion set? Reported rather than
+     *  assumed — the projection write and the gateway readmit can succeed independently. */
+    gatewayConverged: gateway.converged,
+    gatewayReadmitted: gateway.readmitted,
+    gatewayHealthyAccounts: gateway.healthyAccounts,
+    ...(gateway.warning ? { warning: gateway.warning } : {}),
+    rows: results.map(reportRow),
+  };
+}
+
+export type CapacityProbeReport = Awaited<ReturnType<typeof runCapacityProbe>>;
+
 export default defineTool({
   name: 'accounts:probe-capacity',
   description:
@@ -149,101 +269,6 @@ export default defineTool({
     workspace: wsArg,
   }),
   async handler(args) {
-    const { loadAccountPool, updateAccountPool } = await import('../../deployment/account-pool-store');
-    const { recordProbeFailure } = await import('../../deployment/account-pool');
-    const { recordAccountWindowWithBurnAlert } = await import('../../inference-gateway/burn-alert');
-    const ws = args.workspace ?? activeWorkspaceId();
-    const apply = args.apply ?? true;
-    const provider: AccountProvider = args.provider ?? 'claude';
-
-    const pool = await loadAccountPool(ws);
-    const wanted = new Set([...(args.id ? [args.id] : []), ...(args.ids ?? [])]);
-    const providerAccounts = pool.accounts.filter((a) => (a.provider ?? 'claude') === provider);
-    const accounts = wanted.size > 0 ? providerAccounts.filter((a) => wanted.has(a.id)) : providerAccounts;
-
-    const results = await probeCapacityForAccounts(accounts, {
-      walledOnly: args.walledOnly ?? false,
-      fullUtil: DRAIN_FULL_UTIL,
-      ...(args.model ? { codexModel: args.model } : {}),
-    });
-
-    // Record every USABLE reading — a probe reading is exactly what live traffic would have written, so
-    // recording it is never a "force". A failed probe writes nothing (we must not invent a window).
-    const applied: string[] = [];
-    const burnTransitions: import('../../deployment/account-pool').BurnTransition[] = [];
-    if (apply) {
-      const t = Date.now();
-      for (const r of results) {
-        if (!r.ok) {
-          // The probe itself failed (network/auth/timeout) — no window was observed. Persist that
-          // fact so a later accounts:status read can tell "we just asked and got nothing" apart
-          // from "no one has asked in days" instead of silently keeping the old, now-unverified
-          // projection (EI-18809949582687481).
-          await updateAccountPool((p) => recordProbeFailure(p, r.accountId, t), ws);
-          continue;
-        }
-        const w = r.windows;
-        if (w.utilization === undefined && w.utilization7d === undefined) continue;
-        // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
-        // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
-        // edge), so a probe that makes a wall VISIBLE is never silent about it.
-        const { transition } = await recordAccountWindowWithBurnAlert(
-          r.accountId,
-          {
-            utilization: w.utilization,
-            windowResetAt: w.windowResetAt,
-            utilization7d: w.utilization7d,
-            windowResetAt7d: w.windowResetAt7d,
-          },
-          t,
-          ws,
-        );
-        if (transition) burnTransitions.push(transition);
-        applied.push(r.accountId);
-      }
-      if (applied.length > 0) {
-        void trackDetached(import('../../sync-sse'))
-          .then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {}))
-          .catch(() => {});
-      }
-    }
-
-    // Converge the gateway's in-memory exclusions with the projection we just wrote (see
-    // readmitIntoGateway). Only accounts that actually PROVED they serve are readmitted — a 429 reply
-    // confirms a real wall, and readmitting that account would just send the fleet back to hammer it.
-    const selectedAccountIds = new Set(accounts.map((account) => account.id));
-    const serving = results
-      .filter((r) => selectedAccountIds.has(r.accountId) && r.ok && r.status !== 429)
-      .map((r) => r.accountId);
-    const gateway = apply
-      ? await readmitIntoGateway(serving, provider)
-      : { converged: false, readmitted: [], healthyAccounts: null as number | null };
-
-    return ok({
-      probed: results.length,
-      provider,
-      // ⚠ `unwalled` is a DELTA — accounts this call CORRECTED. A healthy account was never walled, so it
-      // never appears here, and an empty array means "nothing needed fixing", NOT "nothing works". Judge
-      // capacity from `serving` (a STATE array) or from rows[].status, never from this one. A gate phrased
-      // over `unwalled` being non-empty is unsatisfiable by construction (EI-20742908053146075).
-      unwalled: results.filter((r) => r.unwalls).map((r) => r.accountId),
-      /** STATE, not delta: accounts that answered upstream RIGHT NOW without a 429. This is the field to
-       *  gate a launch on. */
-      serving,
-      confirmedWalled: results.filter((r) => r.ok && !r.unwalls && r.status === 429).map((r) => r.accountId),
-      failed: results.filter((r) => !r.ok).map((r) => r.accountId),
-      applied,
-      /** WI-41147 leg c: burn-verdict transitions this probe's writes surfaced (each was also
-       *  stated as a fact + severe-event broadcast — the never-silent wall). */
-      burnTransitions,
-      dryRun: !apply,
-      /** Did this call also converge the gateway's SEPARATE in-memory exclusion set? Reported rather than
-       *  assumed — the projection write and the gateway readmit can succeed independently. */
-      gatewayConverged: gateway.converged,
-      gatewayReadmitted: gateway.readmitted,
-      gatewayHealthyAccounts: gateway.healthyAccounts,
-      ...(gateway.warning ? { warning: gateway.warning } : {}),
-      rows: results.map(reportRow),
-    });
+    return ok(await runCapacityProbe(args));
   },
 });

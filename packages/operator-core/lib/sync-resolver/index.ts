@@ -4731,7 +4731,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── phone.plane — the Phone rail tab's live call-plane status ──
+  // ── phone.plane — REMOVED 2026-08-30 (owner directive: the phone surface does
+  // not belong to the operator app; it belongs to the SUITE phone app reached
+  // from the Portal). Nothing in this registry serves a phone pane any more.
+  // Historical marker only — do not re-add a phone query here.
+  // ── (removed) ──
   //
   // (WI-1403107, owner ask 2026-08-30 "add a phone button to the sidebar".)
   // The self-hosted media plane from plan phone-app-2026-08-30 P-002 is two
@@ -4747,33 +4751,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // as `inactive`, identical to a stopped one, so a pane rendering activeState
   // alone would show a typo'd unit name as a service that is merely down.
   // NOT table-backed — refreshes on mount and on manual invalidate.
-  'phone.plane': {
-    // systemd-backed (probeUnitStates), deliberately no Postgres dependency and
-    // therefore no table-driven push invalidation — the same shape as
-    // designEvidence.report above. Declared EMPTY rather than omitted: the
-    // undeclared-baseline ratchet in __tests__/resolver-backing-table-coverage
-    // is closed, and an empty declaration is the positive way to say "this
-    // query has zero backing tables", not a parking-lot append to the baseline.
-    backingTables: [] as const,
-    resolve: async () => {
-      const { probeUnitStates } = await import('../agent-tools/dev/systemd-service-probe');
-      const { states, unitsUnknown } = await probeUnitStates(
-        ['papercusp-phone-livekit', 'papercusp-phone-sip'],
-        'user',
-      );
-      return states.map((u) => ({
-        id: u.unit,
-        unit: u.unit,
-        // What the unit IS, for a reader who does not know the unit names.
-        role: u.unit.includes('sip') ? 'SIP gateway' : 'Media server',
-        known: u.known,
-        activeState: u.activeState,
-        subState: u.subState ?? null,
-        up: u.known && u.activeState === 'active',
-        unknownUnit: unitsUnknown.includes(u.unit),
-      }));
-    },
-  },
 
   // ── learning.health — the composite learning-infra status chip ──
   //

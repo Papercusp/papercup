@@ -51,6 +51,11 @@ export { reapPreemptMarkerDebris };
 // lib/vitest-summary.mjs (WI-37607) so `test:affected` can share the one detector instead of
 // having none — see that function's header for why the split existed and what it cost.
 export { parseTransformFailure };
+import {
+  TEST_FILE_EXIT_FAILED,
+  TEST_FILE_EXIT_NOT_MEASURED,
+  TEST_FILE_EXIT_PASSED,
+} from './lib/test-file-exit-codes.mjs';
 import { peekFsMutexSync } from './lib/fs-mutex.mjs';
 import { repoLockName } from './npm-install-safe.mjs';
 import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';

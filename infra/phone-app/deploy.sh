@@ -21,6 +21,15 @@ SIP_BIN="$HOME/.local/bin/livekit-sip"
 HEALTH_URL="http://127.0.0.1:7890/"
 UNITS=(papercusp-phone-livekit.service papercusp-phone-sip.service)
 
+# The P-004 agent worker. Its tree is NOT in this repo — it is its own git repo
+# under .papercusp-workspaces/<workspace>/.papercusp/apps/phone-app — so unlike
+# the two media-plane units this one is rendered from a template with a real
+# path. Overridable because the workspace segment is the one part of it that is
+# genuinely machine-specific.
+WORKER_UNIT="papercusp-phone-worker.service"
+WORKER_DIR="${PHONE_WORKER_DIR:-$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app/worker}"
+NODE_BIN="${PHONE_NODE_BIN:-$(command -v node || echo /usr/bin/node)}"
+
 ROTATE=0; STATUS_ONLY=0
 for a in "$@"; do
   case "$a" in
@@ -131,6 +140,8 @@ render() {
   content="${content//'${PHONE_LIVEKIT_API_KEY}'/$PHONE_LIVEKIT_API_KEY}"
   content="${content//'${PHONE_LIVEKIT_API_SECRET}'/$PHONE_LIVEKIT_API_SECRET}"
   content="${content//'${PHONE_LAN_IFACE}'/$LAN_IFACE}"
+  content="${content//'${PHONE_WORKER_DIR}'/$WORKER_DIR}"
+  content="${content//'${PHONE_NODE_BIN}'/$NODE_BIN}"
   # Only a real placeholder counts: ${UPPER_SNAKE}. Prose that merely mentions a
   # dollar-brace must not trip this, or the guard cries wolf on its own comments.
   local leftover
@@ -152,6 +163,19 @@ say "rendered livekit-server.yaml + livekit-sip.yaml into $CONF_DIR"
 step "Install units"
 mkdir -p "$UNIT_DIR"
 for u in "${UNITS[@]}"; do install -m 644 "$HERE/systemd/$u" "$UNIT_DIR/$u"; say "installed $u"; done
+
+# The worker unit is RENDERED (machine paths), and only when the worker tree is
+# actually present. Installing a unit whose WorkingDirectory does not exist buys
+# nothing but a crash-loop that StartLimitBurst then freezes — a confusing
+# `failed` in the Phone pane instead of an honest "not installed here".
+if [[ -d "$WORKER_DIR" ]]; then
+  render "$HERE/systemd/$WORKER_UNIT.tmpl" "$UNIT_DIR/$WORKER_UNIT"
+  chmod 644 "$UNIT_DIR/$WORKER_UNIT"   # render() writes 0600 for secret files; a unit is not one
+  UNITS+=("$WORKER_UNIT")
+  say "rendered $WORKER_UNIT (worker dir: $WORKER_DIR, node: $NODE_BIN)"
+else
+  say "SKIP $WORKER_UNIT — no worker tree at $WORKER_DIR (set PHONE_WORKER_DIR to override)"
+fi
 systemctl --user daemon-reload
 
 step "Start"

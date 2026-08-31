@@ -1,0 +1,48 @@
+# Papercusp Phone app — the agent worker (plan phone-app-2026-08-30, P-004).
+# Docs: infra/phone-app/README.md in the papercusp repo.
+#
+# RENDERED by deploy.sh rather than copied like the other two units. Those two
+# run binaries under %h/.local/bin, which %h expresses fine. This one runs the
+# worker tree, which lives OUTSIDE the papercusp repo — it is its own git repo
+# under .papercusp-workspaces/<workspace>/.papercusp/apps/phone-app — so its
+# path is a machine fact, not something a specifier can reach. deploy.sh
+# substitutes it and REFUSES to write the unit if the placeholder is left
+# unresolved, so a broken unit is never installed.
+[Unit]
+Description=Papercusp Phone app — LiveKit agent worker (plan phone-app-2026-08-30 P-004)
+After=network.target papercusp-phone-livekit.service
+Wants=papercusp-phone-livekit.service
+# Same crash-loop policy as the media plane: a genuinely broken worker should
+# stop and STAY stopped so it is visible, rather than retrying forever.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=${PHONE_WORKER_DIR}
+
+# The env file is the ONLY door a confined worker has to its credentials. There
+# is no interactive shell here, and `capability:bash { integration_env }` — the
+# path by which the Deepgram key reached every measurement run — does not exist
+# for systemd. Populate it with `npx tsx infra/phone-app/sync-worker-secrets.ts`,
+# which derives each key from the operator's own encrypted store so there is
+# never a second copy to drift.
+EnvironmentFile=%h/.config/papercusp-phone/livekit.env
+
+# REFUSE TO START on the wrong vendors, rather than run as something other than
+# what was measured. Four P-004 runs were scored against configurations they did
+# not have (two stolen by a stale worker, two on a silent Gemini STT fallback);
+# PHONE_REQUIRE_VENDORS exists because of that, and this is it doing its job in
+# production rather than only in a benchmark. Deepgram nova-3 STT (D-011) plus
+# Deepgram Aura TTS (D-015) are what put speech-to-speech at p50 1226ms against
+# the 1500ms target. If the env file is missing the Deepgram key, the worker
+# resolves gemini on both legs — and this line turns that from a silent 600ms
+# regression into a refusal to start.
+Environment=PHONE_REQUIRE_VENDORS=stt:deepgram,tts:deepgram
+
+ExecStart=${PHONE_NODE_BIN} --import tsx src/agent.ts start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -79,6 +79,11 @@ export interface BespokeActiveSeed {
 
 export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'acceptance-grading-sweep', seedScript: 'seed-acceptance-grading-sweep-routine.ts' },
+  // EI-21921833535413808: the scheduled walled-account re-probe — landed defaulting ACTIVE
+  // (a false wall silently loses real capacity, and the fix is a bounded, self-correcting
+  // read+narrow-write), added here in the SAME change so the "seed script nobody ever ran"
+  // guard covers it from day one.
+  { name: 'account-capacity-reprobe', seedScript: 'seed-account-capacity-reprobe-routine.ts' },
   { name: 'cargo-test', seedScript: 'seed-cargo-test-routine.ts' },
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'consult-expiry-sweep', seedScript: 'seed-consult-expiry-routine.ts' },
