@@ -68,7 +68,7 @@ vi.mock('../../pilot-participant-receipts', async (importOriginal) => ({
   persistPilotParticipantBindingReceipt: (...args: unknown[]) => pilotReceipts.persistBinding(...args),
 }));
 
-import { claimWorkItem, classifyClaimFailure, commentWorkItem, explainIssueClaimFloors, getWorkItem } from '../../work-items';
+import { claimWorkItem, classifyClaimFailure, commentWorkItem, explainIssueClaimFloors, getWorkItem, type WorkItem } from '../../work-items';
 import { resolveWorkItemReleaseRequest } from '../../work-items-release-request';
 import { assessForceRelease, notifyForceTransition, recordForceTransitionAudit } from './release-force-guard';
 import { mockResolvedTyped, mockReturnTyped } from '../../testing/typed-mock';
@@ -591,7 +591,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     getM.mockResolvedValue({
       id: 'EI-PENDING', kind: 'bug', family: 'issue', harness: 'papercup', assignee: null,
     } as never);
-    classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
+    mockReturnTyped(classifyM, { reason: 'gated', holder: null });
     explainFloorsM.mockResolvedValue([
       {
         id: 'EI-PENDING',
@@ -622,6 +622,27 @@ describe('work_items:claim handler (keyed-array)', () => {
   });
 
   /**
+   * A COMPLETE `WorkItem` with a `Partial` override seam, so a fixture is checked against the
+   * real interface instead of cast past it with `as never`. That cast is what defeats
+   * `vi.mocked()`: it stops the fixture being typechecked, so when `WorkItem` gains a required
+   * field the stale fixture fails at RUNTIME, in the fleet's green gate, in a file whose author
+   * never touched it (`lint:mock-cast-escape`, baseline shrink-only). The 29 pre-existing casts
+   * in this file are out of scope here; new tests should use this and the seam is here to adopt.
+   */
+  const issueItem = (over: Partial<WorkItem> = {}): WorkItem => ({
+    id: 'EI-FIXTURE', kind: 'bug', family: 'issue', harness: 'papercup',
+    title: 'fixture', summary: '', state: 'open',
+    assignee: null, takenAt: null, lastProgressAt: null, assignedBy: null, createdBy: null,
+    severity: null, goalId: null, parent: null, payload: null, origin: 'local',
+    auditVerdict: null, verifiedAuthorGithubUserId: null,
+    rank: null, rankWriter: null, rankUpdatedAt: null, priority: null,
+    terminalOwner: null, terminalCompletionRef: null, terminalCompletionEvidence: null,
+    completionAuthority: null,
+    createdAt: '2026-08-31T12:37:57.000Z', updatedAt: '2026-08-31T12:37:57.000Z', closedAt: null,
+    ...over,
+  });
+
+  /**
    * EI-21973318733042066 — a launched independent reviewer was briefed to claim a review
    * work-item created seconds earlier as its first act, and `work_items:claim` refused twice
    * with this floor. MEASURED: the admission promoter is a 30-minute cron, and that item stayed
@@ -630,26 +651,24 @@ describe('work_items:claim handler (keyed-array)', () => {
    * between waiting and proceeding unclaimed. It chose right by judgment; nothing helped it.
    */
   it('EI-21973318733042066: a self-clearing floor renders its BOUND and its remedy', async () => {
-    claimM.mockResolvedValue(null as never);
-    getM.mockResolvedValue({
-      id: 'EI-PENDING', kind: 'bug', family: 'issue', harness: 'papercup', assignee: null,
-    } as never);
-    classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
-    explainFloorsM.mockResolvedValue([
+    mockResolvedTyped(claimM, null);
+    mockResolvedTyped(getM, issueItem({ id: 'EI-PENDING' }));
+    mockReturnTyped(classifyM, { reason: 'gated', holder: null });
+    mockResolvedTyped(explainFloorsM, [
       {
         id: 'EI-PENDING',
         admissible: false,
         refusedBy: 'admission-pending',
         detail: 'duplicate screening is pending',
         retry: {
-          clearsOnItsOwn: true,
+          clearsOnItsOwn: true as const,
           expectedWithinSec: 1800,
           guaranteedWithinSec: 3600,
           basis: 'the work-item-admission-promoter cron tick',
         },
         remedy: 'assign_to names the intended owner',
       },
-    ] as never);
+    ]);
 
     const hint = (await body({ id: 'EI-PENDING', harness: 'papercup' })).results[0].hint as string;
 
@@ -670,19 +689,17 @@ describe('work_items:claim handler (keyed-array)', () => {
     // Without this, a bug that unconditionally appended the clauses would pass every assertion
     // above. `retry` absent must mean "advertises no bound", never "is permanent" — and a
     // permanent floor must not acquire a self-clearing promise it cannot keep.
-    claimM.mockResolvedValue(null as never);
-    getM.mockResolvedValue({
-      id: 'EI-OBS', kind: 'bug', family: 'issue', harness: 'papercup', assignee: null,
-    } as never);
-    classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
-    explainFloorsM.mockResolvedValue([
+    mockResolvedTyped(claimM, null);
+    mockResolvedTyped(getM, issueItem({ id: 'EI-OBS' }));
+    mockReturnTyped(classifyM, { reason: 'gated', holder: null });
+    mockResolvedTyped(explainFloorsM, [
       {
         id: 'EI-OBS',
         admissible: false,
         refusedBy: 'observation-lane',
         detail: 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
       },
-    ] as never);
+    ]);
 
     const hint = (await body({ id: 'EI-OBS', harness: 'papercup' })).results[0].hint as string;
 
