@@ -890,6 +890,24 @@ export default function ReviewReportShell({
     if (!actionSettled || action === null) return;
 
     restoreActionFocusAfterBusy.current = null;
+
+    // A FAILED apply focuses the first failed row, not the header buttons
+    // (P-010). Failed rows leave the pending pool, which empties the selection
+    // — and the old rule ("nothing selected ⇒ focus Dismiss") then parked
+    // keyboard focus on CLOSE immediately after a failure, inviting the owner
+    // to discard the only surface naming what did not land. The row it lands on
+    // carries the reason and the retry menu.
+    const firstErroredRowId = groups
+      .flatMap((group) => group.rows)
+      .find((row) => row.error != null)?.id;
+    if (action === "apply" && firstErroredRowId != null) {
+      const rowNode = rowNodes.current.get(firstErroredRowId);
+      if (rowNode) {
+        rowNode.focus({ preventScroll: true });
+        return;
+      }
+    }
+
     const target =
       action === "dismiss" || liveSelected.size === 0
         ? dismissButtonRef.current
