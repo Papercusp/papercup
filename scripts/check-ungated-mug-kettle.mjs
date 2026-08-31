@@ -86,6 +86,7 @@ import { substrateRemediationLines } from "./lib/mug-kettle-substrate.mjs";
 import {
   collectActiveRetiredGuidance,
   findRetiredGuidanceOffenders,
+  guidanceTextFor,
 } from "./lib/retired-tier-guidance.mjs";
 
 const REPO_ROOT = path.resolve(
@@ -465,7 +466,17 @@ if (checkFile) {
   const CENSUS_FAMILIES =
     "ui, tool, flag, spawn-role, prompt, wake, system-action, blueprint-launch";
   const roleDoor = inspectFile(abs, src);
-  const guidanceOffenders = findRetiredGuidanceOffenders(checkFile, src);
+  // WI-1726926: normalize exactly as the CORPUS scan does. `findRetiredGuidanceOffenders`
+  // takes already-normalized text, so passing raw source re-enables comment scanning and
+  // makes this single-file view DISAGREE with the gate's own verdict — reporting offenders
+  // in the historical comments the guard deliberately allows. Measured before the fix:
+  // launch-prompt.ts read 1 offender here and 0 in the corpus; decide.ts read 2 vs 0.
+  // That divergence lands on whoever is using --check to confirm their own fix, and it is
+  // how a census over raw source reported 1,325 offenders against a real 382.
+  const guidanceOffenders = findRetiredGuidanceOffenders(
+    checkFile,
+    guidanceTextFor(checkFile, src),
+  );
 
   if (roleDoor && roleDoor.gated) {
     console.log(`GATED  ${checkFile}:${roleDoor.line}  ${roleDoor.detail}`);
