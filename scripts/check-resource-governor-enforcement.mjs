@@ -10,7 +10,7 @@
  */
 import { readFileSync } from "node:fs";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
-import { listTrackedFiles } from "./lib/tracked-files.mjs";
+import { describeUnscanned, listTrackedFiles } from "./lib/tracked-files.mjs";
 import { stripCommentsAndStrings } from "./lib/strip-comments-and-strings.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -2024,13 +2024,22 @@ function main() {
       ? `; ${coverage.pending.length} NOT ENFORCED and therefore UNSCANNED: ` +
         coverage.pending.map((r) => `${r.id}(${r.enforcement})`).join(", ")
       : "");
+  // WI-6776: the submodule half of coverage was hand-rolled as a bare COUNT
+  // ("3 unscanned submodule(s)"), which says a gap exists but not why it exists or
+  // what it costs. In a release-shaped checkout (papercusp-checkpoint /
+  // papercusp-release) submodule source is git archive-extracted, so there is no .git
+  // to descend into and this scan reaches ZERO submodule files — about 22% of the tree
+  // — while still printing a confident ✓. describeUnscanned() diagnoses the cause by
+  // TREE SHAPE (present-but-not-a-repo vs absent vs uninitialized) instead of guessing
+  // "not initialized" for all three, so the success line can no longer overstate itself.
+  const unscannedNote = describeUnscanned(unscanned);
   if (findings.length === 0) {
     console.log(
-      `[resource-governor-enforcement] OK — ${coverageLine}; active writer evidence clean${unscanned.length ? `; ${unscanned.length} unscanned submodule(s)` : ""}.`,
+      `[resource-governor-enforcement] OK — ${coverageLine}; active writer evidence clean.${unscannedNote}`,
     );
     return;
   }
-  console.error(`[resource-governor-enforcement] coverage: ${coverageLine}`);
+  console.error(`[resource-governor-enforcement] coverage: ${coverageLine}${unscannedNote}`);
   console.error(
     "[resource-governor-enforcement] FAIL — capless admission/queue/state policy violations:",
   );
