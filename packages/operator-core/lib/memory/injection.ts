@@ -60,6 +60,7 @@ import {
 } from './recall-query';
 import { memoryTierOf } from './two-tier';
 import { annotateSupersededMemory } from './temporal-render';
+import { systemDistinctId } from '../flag-distinct-id';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
   MemoryTimeoutError,
@@ -222,6 +223,63 @@ const MAX_HARNESS_FANOUT = 20;
  */
 /** Exported so the P-002 guard probes at production's own ceiling, not a copy. */
 export const INJECTION_TOTAL_LIMIT = 12;
+
+/**
+ * A memory entry with the optional body that should be shown in the injected
+ * block. Keep this separate from `text`: retrieval ordering and near-duplicate
+ * collapse must continue to operate on the stored body, while the staleness
+ * banner is a display-time warning only.
+ */
+type InjectionMemoryEntry = MemoryEntry & { injectionText?: string };
+
+/**
+ * Fold the nightly anchor-sweep verdict into the pre-turn display path.
+ *
+ * This mirrors the explicit `memory:search` consumer: the feature flag is the
+ * same default-on kill switch, the verdict is loaded only for returned ids,
+ * and every failure returns the original entries. The helper's banner rides a
+ * display-only field so the warning changes what the agent sees without
+ * changing rank, feedback filtering, or near-duplicate identity.
+ */
+async function applyStoredMemoryStaleness(
+  entries: MemoryEntry[],
+  workspaceId: string,
+): Promise<InjectionMemoryEntry[]> {
+  if (entries.length === 0) return entries;
+  try {
+    const [{ FLAGS }, { getFlag }] = await Promise.all([
+      import('@papercusp/flags'),
+      import('@papercusp/flags/server'),
+    ]);
+    if (!(await getFlag(FLAGS.MEMORY_STALENESS_IN_RECALL, systemDistinctId()))) return entries;
+
+    const ids = entries
+      .map((entry) => entry.id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    if (ids.length === 0) return entries;
+
+    const { loadMemoryStaleness, applyMemoryStaleness } = await import('./recall-staleness');
+    const { sql } = getOrgPg();
+    const verdicts = await withMemoryTimeout(
+      loadMemoryStaleness(sql, ids),
+      'memory staleness',
+      MEMORY_INJECT_TIMEOUT_MS,
+    );
+    const rows = applyMemoryStaleness(
+      entries.map((entry) => ({ ...entry, memory: entry.text })),
+      verdicts,
+    );
+
+    return rows.map((row, index) => {
+      if (!row.staleness || typeof row.memory !== 'string') return entries[index]!;
+      return { ...entries[index]!, injectionText: row.memory };
+    });
+  } catch {
+    // Anchor verdicts are advisory hygiene. A flag, table, PG, or timeout
+    // failure must never suppress an otherwise healthy memory injection.
+    return entries;
+  }
+}
 
 /**
  * Watermark window for the pre-turn dedup (docs-and-memory-as-projections D-006):
@@ -1039,7 +1097,7 @@ async function buildBlockInner(
   // the same entries PARTITIONED by pool (same object references, so the
   // filters below shrink both views coherently). Attribution comes from each
   // entry's own scope, not from which call returned it.
-  let ranked: MemoryEntry[] = [];
+  let ranked: InjectionMemoryEntry[] = [];
   let userResults: MemoryEntry[] = [];
   let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   let hiveHits: Array<{ hit: MemoryEntry; slug: string }> = [];
@@ -1127,6 +1185,7 @@ async function buildBlockInner(
         console.log(`[memory-injection] search-detail scopes=${scopes.length} searchMs=${searchMs}`);
       }
     });
+    ranked = await applyStoredMemoryStaleness(ranked, input.workspaceId);
 
     // Partition the ONE ranked result by pool, by each entry's own scope. The
     // entries are shared by reference with `ranked`, so the filters below shrink
@@ -1536,17 +1595,18 @@ async function buildBlockInner(
   for (const hit of ranked) {
     const row = (label?: string): RenderRow => {
       const fullText = hit.text ?? '';
-      const annotatedText = annotateSupersededMemory(fullText, hit.metadata);
+      const displayText = hit.injectionText ?? fullText;
+      const annotatedText = annotateSupersededMemory(displayText, hit.metadata);
       // WI-6870: clamp the RENDERED text to MAX_ENTRY_CHARS so a single oversized memory
       // can't blow the whole budget by itself. Dedup below still compares the FULL text
       // (not this clamped copy), so two distinct long entries that happen to share a
       // >900-char prefix are never mistaken for near-duplicates.
-      const displayText =
+      const boundedText =
         annotatedText.length > MAX_ENTRY_CHARS
           ? `${annotatedText.slice(0, MAX_ENTRY_CHARS)}… (truncated — memory:search for the rest)`
           : annotatedText;
       return {
-        line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${displayText}`,
+        line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${boundedText}`,
         id: hit.id,
         text: fullText,
         entry: hit,
