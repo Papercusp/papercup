@@ -651,6 +651,13 @@ export function assembleSchedulerClaimResult(legs: {
    */
   planItemLanded?: unknown;
   planItemLandedWarning?: unknown;
+  /**
+   * EI-19329513980117751: another work-item shares this one's stored payload paths and
+   * has already landed. A PATH check, not a similarity score — the measured duplicate
+   * pairs diverge in prose and agree only on paths.
+   */
+  siblingPathOverlap?: unknown;
+  siblingPathOverlapWarning?: unknown;
   planDecisions?: readonly unknown[] | null;
   planDecisionsNote?: string | null;
   priorAttemptBrief?: unknown;
@@ -735,6 +742,12 @@ export function assembleSchedulerClaimResult(legs: {
       ? {
           planItemLanded: legs.planItemLanded,
           planItemLandedWarning: legs.planItemLandedWarning,
+        }
+      : {}),
+    ...(legs.siblingPathOverlap
+      ? {
+          siblingPathOverlap: legs.siblingPathOverlap,
+          siblingPathOverlapWarning: legs.siblingPathOverlapWarning,
         }
       : {}),
     ...(legs.premises ? { premises: legs.premises, premisesNote: legs.premisesNote } : {}),
@@ -1463,6 +1476,10 @@ export default defineTool({
       planItemLanded: unknown;
       planItemLandedWarning: string;
     } | null;
+    let siblingPathOverlapHint = null as {
+      siblingPathOverlap: unknown;
+      siblingPathOverlapWarning: string;
+    } | null;
 
     const enrichSuccessfulClaim = async (): Promise<void> => {
       // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
@@ -1554,7 +1571,7 @@ export default defineTool({
           sourcePlanSlug?: string | null;
           sourcePlanItemIds?: string[] | null;
         };
-        [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint] =
+        [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint, siblingPathOverlapHint] =
           await Promise.all([
             import('../../plan-decisions-claim-port')
               .then(async (m) => {
@@ -1651,6 +1668,26 @@ export default defineTool({
                     });
                     const warning = m.planItemLandedWarning(hint, wi.id as string);
                     return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
+                  })
+                  .catch(() => null)
+              : Promise.resolve(null),
+            // EI-19329513980117751: a DIFFERENT work-item shares this one's stored paths
+            // and has already landed. Reaches the sibling WITHOUT a plan, unlike every
+            // other sibling-finding leg here — the measured duplicate-filing instances
+            // are all plan-less, so those legs are structurally silent for exactly the
+            // population that suffers this. Same fail-soft seam as every leg above.
+            wi?.id
+              ? import('../../sibling-path-overlap-claim-port')
+                  .then(async (m) => {
+                    const hint = await m.getClaimTimeSiblingPathOverlap({
+                      workItemId: wi.id as string,
+                      payload: wi.payload,
+                      workspaceId: ident.workspaceId ?? undefined,
+                    });
+                    const warning = m.siblingPathOverlapWarning(hint, wi.id as string);
+                    return hint && warning
+                      ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning }
+                      : null;
                   })
                   .catch(() => null)
               : Promise.resolve(null),
@@ -1791,6 +1828,8 @@ export default defineTool({
           planItemContradictionWarning: planContradictionHint?.planItemContradictionWarning,
           planItemLanded: planItemLandedHint?.planItemLanded,
           planItemLandedWarning: planItemLandedHint?.planItemLandedWarning,
+          siblingPathOverlap: siblingPathOverlapHint?.siblingPathOverlap,
+          siblingPathOverlapWarning: siblingPathOverlapHint?.siblingPathOverlapWarning,
           behaviorContract: behaviorContractHint?.behaviorContract,
           behaviorContractNote: behaviorContractHint?.behaviorContractNote,
           pathHints: pathHintsHint?.pathHints,

@@ -79,14 +79,21 @@ export function json(payload: Record<string, unknown>, isError = false) {
  * plan to a fleet" is NOT a separate engine — it is `fleet:take-leadership` (the handoff
  * agent becomes the leader, D-002); the other rungs reuse existing tools.
  */
+/**
+ * ⚠ BUDGETED TEXT. This constant is inlined into EVERY registry tool's
+ * `guidance.chaining`, so a character added here is a character added to ~8 tools
+ * at once and the P-011 prompt-weight ratchet (1500-char budget / 1600 hard cap,
+ * `tools-md-sync.test.ts`) reds on the growth. Measured 2026-08-31: a +155-char
+ * rewrite put fleet:create over the HARD CAP and three siblings over budget.
+ * Keep any edit length-neutral or shorter, and re-run
+ * `testing:run packages/operator-core/lib/__tests__/tools-md-sync.test.ts`.
+ */
 export const ROUTING_LADDER =
-  'Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. ' +
-  '(1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. ' +
-  '(2) FLEET — hand the plan to ' +
-  'an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then ' +
-  'drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } ' +
-  '(it creates the fleet, opens the member windows AND auto-starts them on the plan; ' +
-  'capability:terminal is command-only and refuses an agent launch with "Wrong door").';
+  'Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. ' +
+  '(1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to ' +
+  'an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then ' +
+  'drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, ' +
+  'NOT capability:terminal (it refuses agent launches).';
 
 /**
  * Best-effort: recolor the CALLER's live terminal to a fleet's bound scheme right
