@@ -25,7 +25,8 @@ const mocks = vi.hoisted(() => ({
   headcountEvents: [] as Record<string, unknown>[],
 }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: (...args: unknown[]) => mocks.orgSql(...args) }),
 }));
 
