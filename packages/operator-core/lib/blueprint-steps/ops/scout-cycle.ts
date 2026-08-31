@@ -115,7 +115,7 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         { checkHiveSingleRunner },
         { scoutWorkspaceCeilingGate },
         { readWorkItemAdmissionProducerPressure },
-        { scoutPotGate },
+        { scoutPotGate, scoutConfigDelta },
       ] = await Promise.all([
         import('../../scout/register-scout-action.js'),
         import('../../learning-governor/registrants.js'),
@@ -150,6 +150,14 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         // was once wired only in the routine path and silently refused nothing
         // here for months, which is the failure this line is copying the fix of.
         potGate: scoutPotGate,
+        // WI-1664060: the pot's settings-resident scout/cadence/budget deltas.
+        // THIS op is where the layering was missing: it lived inside the
+        // `system:scout-cycle` routine action's body, and this — the path that
+        // actually runs Scout in production — never applied it, so the tuning the
+        // owner sets in the learning drawer was written and never read. Third
+        // instance of the shape the P-051 comment above describes; the merge now
+        // happens once, inside runScoutCycleTick, for whichever path runs.
+        resolveConfigDelta: scoutConfigDelta,
         // P-010: preserve routine/blueprint parity for queue-health throttling.
         admissionPressureGate: readWorkItemAdmissionProducerPressure,
       };

@@ -308,8 +308,13 @@ async function layerPotConfigDelta(
  * a flag or a governor preflight — Scout's gate is the cadence (D-009).
  */
 export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycleDeps): Promise<ScoutTickResult> {
-  const cfg = parseScoutCycleConfig(input.payloadTemplate);
-  const tickDeps = (deps.buildDeps ?? productionDepsBuilder)(input, deps.runCycle);
+  // Layer the pot's settings-resident deltas FIRST: both consumers below read
+  // payloadTemplate (parseScoutCycleConfig for cadence/budget/timeout, and the
+  // deps builder for the `scout` block), so merging here — rather than in either
+  // caller — is what keeps the two entry points identical (WI-1664060).
+  const layered = await layerPotConfigDelta(input, deps);
+  const cfg = parseScoutCycleConfig(layered.payloadTemplate);
+  const tickDeps = (deps.buildDeps ?? productionDepsBuilder)(layered, deps.runCycle);
   const note = async (rec: ScoutTickRecord): Promise<void> => {
     try {
       await tickDeps.recordTick?.(rec);

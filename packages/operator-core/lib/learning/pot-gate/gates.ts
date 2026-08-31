@@ -72,3 +72,68 @@ export async function gymDisabledPots(sql: Sql, workspaceId: string): Promise<Re
   const { disabledPotSlugs } = await import('./store');
   return new Set(await disabledPotSlugs(sql, { workspaceId }));
 }
+
+/** The settings-resident sections the learning drawer owns, in layering order. */
+const SCOUT_CONFIG_SECTIONS = ['scout', 'cadence', 'budget'] as const;
+
+/**
+ * Scout's settings-resident config resolver (WI-1664060) — the per-pot `scout`
+ * (judgment tuning), `cadence` (fire threshold / heartbeat / floors) and `budget`
+ * (per-cycle spend) deltas the owner sets in the learning drawer, which
+ * `runScoutCycleTick` shallow-merges per section over the routine payload.
+ *
+ * It belongs in THIS file for the reason the header gives. This layering used to
+ * live inside the `system:scout-cycle` routine action's body, so the
+ * `blender:cycle` blueprint op — the path that actually runs Scout in production
+ * — never applied it, and the owner's tuning was written to hive_settings and
+ * never read. Same shape as the P-051 ceiling above it: one lane, two
+ * entrypoints, a concern wired at only one of them. Now there is one resolver
+ * and one merge site, and both entrypoints pass this.
+ *
+ * WORKSPACE-scoped Scout (WORKSPACE_COORDINATION ON) ticks under the workspace
+ * SENTINEL slug, which has no `hive_settings` row — so a per-hive override could
+ * never apply and the owner's model config once sat unread while Scout ran engine
+ * defaults (2026-07-01). Hence the HOME-hive fallback, the same resolution the
+ * Queen's steering uses.
+ *
+ * Fails OPEN like every helper here (R-5): any read failure returns null and the
+ * routine payload is used unchanged — behaviour-neutral when no delta is set,
+ * which is the common case, and never a reason a tick does not run.
+ */
+export async function scoutConfigDelta(input: {
+  workspaceId: string;
+  installSlug: string;
+}): Promise<Record<string, Record<string, unknown>> | null> {
+  try {
+    const { getHiveLocalBlueprintConfig } = await import('../../hive-settings-store');
+
+    let home: string | null = null;
+    try {
+      const [{ resolvePotHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
+        import('../../pot/wake'),
+        import('../../harness/operator-home-harness'),
+      ]);
+      home = resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();
+    } catch {
+      /* home resolution unavailable → primary scope only, as before */
+    }
+
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const section of SCOUT_CONFIG_SECTIONS) {
+      let delta = await getHiveLocalBlueprintConfig(input.workspaceId, input.installSlug, section);
+      if (delta == null && home && home !== input.installSlug) {
+        delta = await getHiveLocalBlueprintConfig(input.workspaceId, home, section);
+      }
+      if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
+        out[section] = delta as Record<string, unknown>;
+      }
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  } catch (e) {
+    console.warn(
+      `[learning-pot-gate] scout config read failed for ${input.installSlug} — using the ` +
+        `routine payload unchanged (fail-open, R-5): ${e instanceof Error ? e.message : e}`,
+    );
+    return null;
+  }
+}

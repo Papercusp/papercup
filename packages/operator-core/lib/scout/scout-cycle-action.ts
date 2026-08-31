@@ -25,7 +25,7 @@ import { registerSystemAction, type SystemActionCtx } from '../harness/routines/
 import { recordScoutTickToGovernor } from '../learning-governor/registrants';
 import { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
 import { readWorkItemAdmissionProducerPressure } from '../work-items-admission-promoter';
-import { scoutPotGate } from '../learning/pot-gate/gates';
+import { scoutConfigDelta, scoutPotGate } from '../learning/pot-gate/gates';
 import {
   runScoutCycleTick,
   parseScoutCycleConfig,
@@ -73,6 +73,14 @@ export function makeScoutCycleAction(
   // PG-free contract — unwired in unit tests, wired at boot (and, separately,
   // in the blueprint op that also runs Scout; both must carry it, see gates.ts).
   potGate?: (input: { workspaceId: string; installSlug: string }) => Promise<{ enabled: boolean }>,
+  // WI-1664060: the pot's settings-resident scout/cadence/budget deltas. Same
+  // PG-free contract as the gates above — unwired in unit tests, wired at boot,
+  // and wired IDENTICALLY in the blueprint op (see gates.ts: a concern carried by
+  // only one of Scout's two entrypoints silently no-ops in the other).
+  resolveConfigDelta?: (input: {
+    workspaceId: string;
+    installSlug: string;
+  }) => Promise<Record<string, Record<string, unknown>> | null>,
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
     // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate
@@ -82,63 +90,17 @@ export function makeScoutCycleAction(
       console.log(`[scout-cycle] ${ctx.installSlug}: skipped — owner idle-activity toggle (scout) is OFF`);
       return;
     }
-    // P-015 (domain-generic-hive-architecture-2026-06-18 / D-005): layer the hive's
-    // settings-resident STRUCTURED scout delta (hive_settings.localBlueprint.scout)
-    // onto the routine payload's `scout` block, so the per-hive scout tuning the owner
-    // sets in /settings/pot-customization reaches the cycle — run.ts reads
-    // payload.scout → parseScoutConfigBlock → resolveScoutConfig. The per-hive scout
-    // routine ticks under the hive's HOME install_slug (provision-learning-loop.ts), so
-    // ctx.installSlug IS the hive home slug (the hive_settings scope). Fail-soft: any
-    // read failure (no hive row / PG down) ⇒ the payload is used unchanged — so this is
-    // behavior-neutral when no per-hive scout delta is set (the common case) and never
-    // breaks a tick. Shallow per-section merge: a hive delta section overrides the
-    // payload's (today the payload carries no scout block, so the delta layers over the
-    // engine defaults — exactly the D-005 per-hive-over-default intent).
-    let payloadTemplate = ctx.payloadTemplate;
-    try {
-      const { getHiveLocalBlueprintConfig } = await import('../hive-settings-store');
-      // WORKSPACE-scoped scout (WORKSPACE_COORDINATION ON): ctx.installSlug is the
-      // workspace SENTINEL — not a hive, so it has no hive_settings row and a per-hive
-      // override could NEVER apply (the owner's gpt-5.4 model config sat unread
-      // on the home hive while scout ran engine defaults, 2026-07-01). Fall back to
-      // the HOME hive's row — the same resolution the Queen's steering uses. Fail-soft
-      // like the primary read.
-      let home: string | null = null;
-      try {
-        const [{ resolvePotHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
-          import('../pot/wake'),
-          import('../harness/operator-home-harness'),
-        ]);
-        home = resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();
-      } catch {
-        /* home resolution unavailable → defaults, as before */
-      }
-      // Settings-resident sections layered onto the routine payload (D-005 +
-      // learning-settings 2026-07-19): `scout` (judgment tuning), `cadence`
-      // (fire threshold / heartbeat / floors — ScoutCadenceOptions), `budget`
-      // (per-cycle spend). run.ts reads payload.cadence/budget/scout, so the
-      // owner's settings become the live knobs without touching the routine row.
-      for (const section of ['scout', 'cadence', 'budget'] as const) {
-        let delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, ctx.installSlug, section);
-        if (delta == null && home && home !== ctx.installSlug) {
-          delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, home, section);
-        }
-        if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
-          const base = (payloadTemplate ?? {}) as Record<string, unknown>;
-          const baseSection =
-            base[section] && typeof base[section] === 'object' && !Array.isArray(base[section])
-              ? (base[section] as Record<string, unknown>)
-              : {};
-          payloadTemplate = {
-            ...base,
-            [section]: { ...baseSection, ...(delta as Record<string, unknown>) },
-          };
-        }
-      }
-    } catch {
-      // hive_settings unavailable → use the routine payload as-is (behavior-neutral).
-    }
-
+    // P-015 (domain-generic-hive-architecture-2026-06-18 / D-005): the hive's
+    // settings-resident `scout` / `cadence` / `budget` deltas are layered onto the
+    // routine payload by `runScoutCycleTick` via the injected `resolveConfigDelta`
+    // seam (production wiring: learning/pot-gate/gates.ts `scoutConfigDelta`).
+    //
+    // That merge USED TO LIVE HERE, in this action's body, which is exactly why it
+    // was missing from the `blender:cycle` blueprint op — the path that actually
+    // runs Scout in production. The owner's per-pot tuning was written to
+    // hive_settings and never read (WI-1664060), the same one-lane-two-entrypoints
+    // shape as the P-051 ceiling regression. Do NOT re-add a read here: one merge
+    // site on the shared tick is what keeps the two entry points identical.
     const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
     const admissionQueueScope = (await isWorkspaceCoordinationOn())
       ? ({ kind: 'workspace' } as const)
@@ -149,7 +111,7 @@ export function makeScoutCycleAction(
         workspaceId: ctx.workspaceId,
         installSlug: ctx.installSlug,
         admissionQueueScope,
-        payloadTemplate,
+        payloadTemplate: ctx.payloadTemplate,
       },
       {
         runCycle,
@@ -158,6 +120,7 @@ export function makeScoutCycleAction(
         ...(workspaceCeilingGate ? { workspaceCeilingGate } : {}),
         ...(admissionPressureGate ? { admissionPressureGate } : {}),
         ...(potGate ? { potGate } : {}),
+        ...(resolveConfigDelta ? { resolveConfigDelta } : {}),
       },
     );
 
@@ -194,6 +157,9 @@ export function registerScoutCycleAction(runCycle: ScoutCycleRunner): void {
       scoutWorkspaceCeilingGate,
       readWorkItemAdmissionProducerPressure,
       scoutPotGate,
+      // WI-1664060: the per-pot scout/cadence/budget layering. The blueprint op
+      // wires this SAME helper — that parity is the whole point of the seam.
+      scoutConfigDelta,
     ),
   );
 }
