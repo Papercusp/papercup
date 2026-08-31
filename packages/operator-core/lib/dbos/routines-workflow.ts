@@ -922,10 +922,20 @@ async function routinesTickImpl(): Promise<void> {
   // EI-19409061552037718: the STALE-ROUTINE-EXECUTOR watchdog — this process's own
   // boot-commit-vs-tree-HEAD drift, judged only against ITSELF (no cross-process
   // coordination, no change to claiming/dispatch above). Silently disabled unless
-  // THIS process carries PAPERCUSP_DBOS_ROUTINES=1 (the common case — only :3070
-  // always does; a desktop/staging host only if an owner explicitly opted in), so
-  // it is a complete no-op on every host that doesn't need it. Fail-soft; kill
-  // switch PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC<=0.
+  // THIS process carries PAPERCUSP_DBOS_ROUTINES=1, so it is a complete no-op on every
+  // host that doesn't need it. Fail-soft; kill switch
+  // PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC<=0.
+  //
+  // ⚠ WI-1565914 — this comment used to claim ":3070 always does". It does NOT, and that
+  // false reassurance is a large part of why the gap below went unnoticed for weeks:
+  // anyone auditing "is the host serving agent calls covered?" read this line and
+  // concluded yes. MEASURED 2026-08-31: all six :3070 listeners (pids 1612877, 236800,
+  // 236826, 236843, 236850, 236858) have PAPERCUSP_DBOS_ROUTINES *unset*; only :3270 and
+  // :3271 carry =1. So :3070 has never once evaluated its own staleness, while :3271
+  // truthfully reported "RECOVERED" 106 times — an all-clear over a population that never
+  // included the host anybody cared about. The ledger-derived sweep immediately below is
+  // what actually covers :3070; do not read this self-check as covering anything but the
+  // process it runs in.
   await DBOS.runStep(
     async () => {
       try {
@@ -939,6 +949,36 @@ async function routinesTickImpl(): Promise<void> {
       }
     },
     { name: 'stale-routine-executor-sweep' },
+  );
+
+  // WI-1565914: the STALE SERVING HOST sweep — the same question as the self-check above,
+  // asked from OUTSIDE every host. It reads `harness_shared.tool_invocations` (migration
+  // 1043 stamps the serving host + the sha it loaded) and judges a host by the calls it
+  // ACTUALLY SERVED, so it covers hosts that run no routines, and hosts whose code
+  // predates the detector entirely — the two populations a self-check structurally cannot
+  // reach. It also reports ABSOLUTE code age rather than hours-since-boot, which is the
+  // only way an 18-day-old process is distinguishable from a 7-hour-old one.
+  //
+  // `inconclusive` is a first-class outcome and is deliberately NOT an alert: while hosts
+  // have not yet restarted onto 1043 code the population is empty, and paging on a
+  // measurement that measured nothing is how an all-clear earns undeserved credibility.
+  // It is equally never logged as healthy. Fail-soft; kill switch
+  // PAPERCUSP_LEDGER_HOST_STALE_CODE_MAX_AGE_SEC<=0.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { hostCodeStalenessFromLedgerSweep } = await import(
+          '../harness/routines/host-code-staleness-from-ledger'
+        );
+        const result = await hostCodeStalenessFromLedgerSweep({});
+        if (result.outcome === 'alerted' || result.outcome === 'error' || result.outcome === 'inconclusive') {
+          console.warn(`[stale-serving-host] ${result.outcome}: ${result.reason}`);
+        }
+      } catch (e) {
+        console.warn(`[stale-serving-host] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'stale-serving-host-sweep' },
   );
 
   // EI-19457924854150358: the SYNC-READ PAYLOAD BUDGET watchdog — reads the

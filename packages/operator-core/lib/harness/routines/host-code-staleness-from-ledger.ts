@@ -242,3 +242,190 @@ export function evaluateLedgerHostStaleness(input: EvaluateLedgerStalenessInput)
     stale,
   };
 }
+
+// ── tunables (env-overridable, like every sibling watchdog) ───────────────────────────
+
+/** How old a host's LOADED CODE may be before it is called stale. Default 3 days — far
+ *  above any normal restart cadence here, and far below the 17.5-day case that went
+ *  unnoticed. `<=0` disables the sweep (kill switch). */
+export function ledgerStaleCodeMaxAgeSec(): number {
+  const n = Number(process.env.PAPERCUSP_LEDGER_HOST_STALE_CODE_MAX_AGE_SEC ?? 259_200);
+  return Number.isFinite(n) ? n : 259_200;
+}
+
+/** Ledger window the population is drawn from. Default 15 min: long enough that a
+ *  low-traffic host still appears, short enough that a host which has since restarted is
+ *  not reported on the strength of calls it served before rebooting. */
+export function ledgerHostWindowSec(): number {
+  const n = Number(process.env.PAPERCUSP_LEDGER_HOST_WINDOW_SEC ?? 900);
+  return Number.isFinite(n) && n > 0 ? n : 900;
+}
+
+// A commit's timestamp is immutable, so this memo never needs invalidating — which is
+// what makes resolving absolute code age affordable on every tick.
+const commitTimeCache = new Map<string, number | null>();
+
+/** Commit time of a sha, in ms. Null when unresolvable (pruned object, shallow clone,
+ *  non-checkout host) — never a guess, because a fabricated age is worse than none. */
+export async function resolveCommitTimeMs(sha: string): Promise<number | null> {
+  const key = sha.trim().toLowerCase();
+  if (!key) return null;
+  const hit = commitTimeCache.get(key);
+  if (hit !== undefined) return hit;
+  let value: number | null = null;
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { stdout } = await promisify(execFile)('git', ['show', '-s', '--format=%ct', key], { timeout: 5_000 });
+    const secs = Number(stdout.trim());
+    value = Number.isFinite(secs) && secs > 0 ? secs * 1_000 : null;
+  } catch {
+    value = null;
+  }
+  commitTimeCache.set(key, value);
+  return value;
+}
+
+export function _resetCommitTimeCacheForTests(): void {
+  commitTimeCache.clear();
+}
+
+export interface LedgerHostSnapshot {
+  observations: LedgerHostObservation[];
+  callsUnattributed: number;
+}
+
+/**
+ * Read the window's per-host footprint straight from the ledger.
+ *
+ * `callsUnattributed` is collected deliberately alongside it: rows carrying no
+ * serving_host are calls this instrument CANNOT see, and counting them is what keeps a
+ * partial view from reading as a complete one.
+ */
+export async function collectLedgerHostObservations(opts: {
+  workspaceId?: string;
+  windowMs?: number;
+  now?: number;
+}): Promise<LedgerHostSnapshot> {
+  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const windowMs = opts.windowMs ?? ledgerHostWindowSec() * 1_000;
+  const since = new Date((opts.now ?? Date.now()) - windowMs).toISOString();
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+
+  const rows = (await sql`
+    SELECT serving_host, serving_process_id, serving_build_sha,
+           count(*)::bigint AS calls,
+           min(invoked_at) AS first_seen,
+           max(invoked_at) AS last_seen
+      FROM harness_shared.tool_invocations
+     WHERE workspace_id = ${workspaceId}
+       AND invoked_at >= ${since}::timestamptz
+       AND serving_host IS NOT NULL
+     GROUP BY 1, 2, 3
+  `) as Array<{
+    serving_host: string;
+    serving_process_id: string | null;
+    serving_build_sha: string | null;
+    calls: string | number;
+    first_seen: Date | string;
+    last_seen: Date | string;
+  }>;
+
+  const unattributed = (await sql`
+    SELECT count(*)::bigint AS n
+      FROM harness_shared.tool_invocations
+     WHERE workspace_id = ${workspaceId}
+       AND invoked_at >= ${since}::timestamptz
+       AND serving_host IS NULL
+  `) as Array<{ n: string | number }>;
+
+  return {
+    observations: rows.map((r) => ({
+      servingHost: r.serving_host,
+      servingProcessId: r.serving_process_id,
+      servingBuildSha: r.serving_build_sha,
+      calls: Number(r.calls),
+      firstSeenMs: new Date(r.first_seen).getTime(),
+      lastSeenMs: new Date(r.last_seen).getTime(),
+    })),
+    callsUnattributed: Number(unattributed[0]?.n ?? 0),
+  };
+}
+
+export interface LedgerStalenessSweepResult {
+  outcome: 'alerted' | 'healthy' | 'inconclusive' | 'skipped' | 'error';
+  reason: string;
+  verdict?: LedgerStalenessVerdict;
+}
+
+/**
+ * The sweep. Unlike the in-process self-check next door, this places NO
+ * `PAPERCUSP_DBOS_ROUTINES` condition on its SUBJECTS: it runs on whichever host executes
+ * routines and reports about EVERY host, including ones that run no routines at all. That
+ * inversion is the entire point — the host serving agent calls is exactly the one that
+ * never self-reported.
+ *
+ * Paging fires ONLY on a conclusive verdict with stale hosts. An inconclusive verdict is
+ * returned and traced but never paged: alerting on a measurement that measured nothing
+ * trains readers to ignore the page, which is how the original all-clear kept its
+ * credibility. Equally, it is never reported as `healthy`.
+ */
+export async function hostCodeStalenessFromLedgerSweep(opts: {
+  now?: number;
+  workspaceId?: string;
+  installSlug?: string;
+}): Promise<LedgerStalenessSweepResult> {
+  const maxAgeSec = ledgerStaleCodeMaxAgeSec();
+  if (maxAgeSec <= 0) return { outcome: 'skipped', reason: 'kill switch' };
+
+  const now = opts.now ?? Date.now();
+  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const installSlug = opts.installSlug ?? operatorHomeHarnessSlug();
+
+  try {
+    const [snapshot, headSha] = await Promise.all([
+      collectLedgerHostObservations({ workspaceId, now }),
+      resolveCurrentHeadCommit(),
+    ]);
+
+    // Resolve commit times up front for the distinct shas actually present (a handful),
+    // so the decider stays pure and synchronous — and therefore fully testable.
+    const shas = [...new Set(snapshot.observations.map((o) => o.servingBuildSha).filter((s): s is string => !!s))];
+    const times = new Map<string, number | null>();
+    for (const sha of shas) times.set(sha, await resolveCommitTimeMs(sha));
+
+    const verdict = evaluateLedgerHostStaleness({
+      observations: snapshot.observations,
+      callsUnattributed: snapshot.callsUnattributed,
+      headSha,
+      commitTimeMs: (sha) => times.get(sha) ?? null,
+      now,
+      maxCodeAgeMs: maxAgeSec * 1_000,
+    });
+
+    if (!verdict.conclusive) return { outcome: 'inconclusive', reason: verdict.reason, verdict };
+    if (verdict.stale.length === 0) return { outcome: 'healthy', reason: verdict.reason, verdict };
+
+    // Scope the debounce to the worst offender's host, so two stale hosts cannot
+    // suppress each other's page.
+    const identity = verdict.stale[0]!.servingHost;
+    const windowHours = 6;
+    const already = await recentWatchdogFires(workspaceId, installSlug, windowHours, 'stale-serving-host', identity);
+    if (already > 0) return { outcome: 'skipped', reason: 'debounced', verdict };
+
+    const claimed = await claimWatchdogFire({
+      workspaceId,
+      installSlug,
+      source: 'stale-serving-host',
+      reason: scopedFireReason(`stale serving host: ${verdict.reason}`, identity, 'stale-serving-host'),
+      wakeAt: null,
+      windowHours,
+      scopeKey: identity,
+    });
+    if (!claimed) return { outcome: 'skipped', reason: 'debounced (raced or backed off)', verdict };
+    return { outcome: 'alerted', reason: verdict.reason, verdict };
+  } catch (e) {
+    return { outcome: 'error', reason: e instanceof Error ? e.message : String(e) };
+  }
+}
