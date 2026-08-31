@@ -695,7 +695,7 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read coordination messages, acks, and handoffs addressed to you or broadcast. Returns counts by kind plus a priority-ranked (not newest-first) `limit` window (default 50; `coord:orient.inboxLimit` maps to `limit`). Ambient system broadcasts are excluded by default; include_ambient shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
+    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default 50). Ambient system broadcasts are excluded by default; include_ambient shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
       COORD_KIND_FILTER_DESCRIPTION +
       " `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`)." +
       " This is a VIEW, not a delta: re-reading the same window does not empty it.",
