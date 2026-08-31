@@ -216,8 +216,21 @@ describe('P-006 canonical work_item_deps admission guard', () => {
     ).toEqual(['unlinkIssue']);
   });
 
-  it('every raw-DML capability carries a reviewable reason', () => {
-    expect(RAW_WORK_ITEM_DEPS_CAPABILITIES.size).toBeGreaterThan(0);
-    expect([...RAW_WORK_ITEM_DEPS_CAPABILITIES.values()].every((reason) => reason.trim().length >= 40)).toBe(true);
+  it('every raw-DML capability carries a reviewable reason — the floor proven on FIXTURES', () => {
+    // The floor is stated once, as a predicate, so its teeth are proven against synthetic
+    // values rather than against `RAW_WORK_ITEM_DEPS_CAPABILITIES.size > 0`. Retiring the
+    // last raw-DML site is the whole point of the canonical-facade design this guard
+    // enforces, and `.every()` is VACUOUSLY true on an empty map — so the size control was
+    // load-bearing AND self-defeating: it reds the guard at the exact moment the cleanup it
+    // tracks succeeds. WI-1556492.
+    const hasReviewableReason = (reason: string): boolean => reason.trim().length >= 40;
+
+    expect(hasReviewableReason('x'.repeat(40)), 'a 40-char reason clears the floor').toBe(true);
+    expect(hasReviewableReason('too terse to review'), 'a terse reason does not').toBe(false);
+    expect(hasReviewableReason(`   ${'x'.repeat(39)}   `), 'padding does not buy length').toBe(false);
+
+    for (const [path, reason] of RAW_WORK_ITEM_DEPS_CAPABILITIES) {
+      expect(hasReviewableReason(reason), `${path} reason`).toBe(true);
+    }
   });
 });

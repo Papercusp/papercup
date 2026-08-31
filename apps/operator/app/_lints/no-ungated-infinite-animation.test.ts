@@ -143,8 +143,28 @@ describe('the real tree', () => {
     expect(stale, `baseline entries that are now fixed — delete them from scripts/no-ungated-infinite-animation.baseline.json`).toEqual([]);
   });
 
-  it('proves the guard is non-vacuous: the baseline is a real, non-empty set', () => {
-    expect(readBaseline().size).toBeGreaterThan(0);
+  it('proves the ratchet is non-vacuous — from FIXTURES, so it survives the baseline reaching zero', () => {
+    // Deliberately NOT `expect(readBaseline().size).toBeGreaterThan(0)`. The test directly
+    // above drives the baseline toward zero on purpose ("the entry should be deleted so the
+    // ratchet keeps its teeth"), so a live-population non-vacuity control makes these two
+    // tests pull in opposite directions — and reds this file at the exact moment the cleanup
+    // it tracks finally succeeds. The baseline holds 2 entries (measured 2026-08-31), so that
+    // inversion is two fixes away, not hypothetical. WI-1556492.
+    //
+    // Both teeth below are synthetic, matching this file's stated posture, and therefore
+    // cannot decay as the tree gets cleaner.
+
+    // 1. the detector still fires on a re-introduction of the class...
+    const offenders = findOffendersInCss('.pc-fixture { animation: pcFixtureSpin 1s linear infinite; }\n');
+    expect(offenders.map((o) => o.selector)).toEqual(['.pc-fixture']);
+
+    // 2. ...and the baseline filter the real-tree test applies suppresses ONLY the selectors
+    //    actually recorded — so a NEW offender is still reported, including once the baseline
+    //    is EMPTY, which is the state this ratchet is driving towards.
+    const notBaselined = (baseline: Set<string>) => offenders.filter((o) => !baseline.has(o.selector));
+    expect(notBaselined(new Set(['.pc-fixture'])), 'a recorded selector is suppressed').toEqual([]);
+    expect(notBaselined(new Set(['.pc-unrelated'])), 'an unrecorded selector is reported').toHaveLength(1);
+    expect(notBaselined(new Set()), 'an EMPTY baseline still reports offenders').toHaveLength(1);
   });
 
   it('has the animations this item removed actually gone from globals.css', () => {

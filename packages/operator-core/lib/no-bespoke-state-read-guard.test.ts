@@ -258,12 +258,20 @@ describe('no-bespoke-state-read guard:the shrink-only baseline', () => {
     expect(BASELINE.has('dev:reaper_status')).toBe(false);
   });
 
-  it('is non-empty on purpose, and every entry trips the signature it grandfathers', () => {
-    // The asymmetry vs lint:no-raw-setinterval's empty baseline: P-020 (which
-    // retires these) is blocked-by P-007 and has not run. Each entry must still be
-    // a genuine candidate — an entry that does not trip the signature is dead
-    // weight that hides nothing and would rot silently.
-    expect(BASELINE.size).toBeGreaterThan(0);
+  it('grandfathers only genuine candidates — signature proven on FIXTURES, so an emptied baseline stays green', () => {
+    // Each entry must still be a genuine candidate — an entry that does not trip the
+    // signature is dead weight that hides nothing and would rot silently.
+    //
+    // The TEETH of that check are proven against synthetic names, deliberately NOT
+    // against `BASELINE.size > 0`. P-020 exists precisely to retire every entry here,
+    // and the test below already asserts the guard "stops expiring once the baseline is
+    // actually empty" — so a live-population non-vacuity control would red this file the
+    // day P-020 lands, contradicting its own sibling four tests down. WI-1556492.
+    expect(isStateReadCandidate({ name: 'fixture:get_status', capability: null }), 'a read-shaped state door trips it').toBe(true);
+    expect(isStateReadCandidate({ name: 'fixture:set_status', capability: null }), 'a mutating verb does not').toBe(false);
+    expect(isStateReadCandidate({ name: 'fixture:get_widget', capability: null }), 'a non-state noun does not').toBe(false);
+    expect(isStateReadCandidate({ name: 'fixturestatus', capability: null }), 'an unqualified name does not').toBe(false);
+
     for (const name of BASELINE) {
       expect(isStateReadCandidate({ name, capability: null }), `${name} should trip the signature`).toBe(true);
     }

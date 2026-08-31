@@ -386,13 +386,35 @@ describe('exemptions cannot go quiet', () => {
 
   // An exemption without a stated reason and an exit path is indistinguishable from the
   // hardcoded roster this whole design exists to avoid.
+  //
+  // The rule is stated ONCE as a predicate so its teeth can be proven against a synthetic bad
+  // entry rather than against `Object.keys(EXEMPT).length > 0`. Clearing the last exemption is
+  // the stated exit path of every entry in the set ("Clear them and DELETE this entry — that is
+  // the whole exit path"), so a live-population non-vacuity control reds this file at the moment
+  // that goal is reached. WI-1556492.
+  const exemptionDefects = (entry: { reason?: unknown; detail?: unknown; filedAs?: unknown }): string[] => {
+    const defects: string[] = [];
+    if (!entry.reason) defects.push('reason');
+    if (!entry.detail) defects.push('detail');
+    else if (String(entry.detail).length <= 40) defects.push('detail is a real explanation');
+    if (!entry.filedAs) defects.push('filedAs');
+    return defects;
+  };
+
+  it('rejects an exemption that omits its reason, its explanation or its filed id', () => {
+    const ok = { reason: 'committed-errors', detail: 'x'.repeat(41), filedAs: 'WI-1' };
+    expect(exemptionDefects(ok), 'a complete entry has no defects').toEqual([]);
+    expect(exemptionDefects({ ...ok, reason: undefined })).toContain('reason');
+    expect(exemptionDefects({ ...ok, detail: undefined })).toContain('detail');
+    expect(exemptionDefects({ ...ok, detail: 'too short to be an explanation' })).toContain(
+      'detail is a real explanation',
+    );
+    expect(exemptionDefects({ ...ok, filedAs: undefined })).toContain('filedAs');
+  });
+
   it('every real EXEMPT entry carries a reason, a detail and a filed id', () => {
-    expect(Object.keys(EXEMPT).length).toBeGreaterThan(0);
     for (const [rel, entry] of Object.entries(EXEMPT)) {
-      expect(entry.reason, `${rel} reason`).toBeTruthy();
-      expect(entry.detail, `${rel} detail`).toBeTruthy();
-      expect(String(entry.detail).length, `${rel} detail is a real explanation`).toBeGreaterThan(40);
-      expect(entry.filedAs, `${rel} filedAs`).toBeTruthy();
+      expect(exemptionDefects(entry), `${rel}`).toEqual([]);
     }
   });
 
