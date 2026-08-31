@@ -31,14 +31,22 @@
  */
 import { useCallback, useMemo, useState } from "react";
 import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
-import { useSyncQuery } from "@papercusp/sync";
+import { useSyncMutate, useSyncQuery } from "@papercusp/sync";
 import type { AutomationCatalog } from "@papercusp/operator-core/lib/automation/catalog";
 import { Modal } from "@/app/harness/Modal";
 import { potHomeLabel } from "@/lib/pot-label";
 import { useLexicon } from "@/lib/useLexicon";
+import {
+  budgetOverrideOf,
+  hiveOverrideSetRest,
+  type HiveOverrideRow,
+  type HiveOverrideSetArgs,
+  type HiveOverrideSetResp,
+} from "@/lib/hive-override-set";
 import { runAgentTool } from "./run-tool";
 import {
   buildPotDrawer,
+  type PotDrawerConfigField,
   type PotDrawerField,
   type PotDrawerSection,
 } from "./learning-pot-drawer";
