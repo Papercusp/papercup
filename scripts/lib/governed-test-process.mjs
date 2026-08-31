@@ -318,6 +318,43 @@ export function withGovernedAdmissionContext(env, context) {
 }
 
 /**
+ * PG contention codes `pg-bounded-txn.ts` raises as `OrgTxnTimeoutError`, whose own
+ * message ends "— retry shortly".  55P03 = lock_timeout waiting on a row/advisory lock,
+ * 57014 = statement_timeout.  Both mean "the database was busy", never "your work is
+ * wrong", and until now nothing acted on that advice at this seam: the rejection was
+ * flattened into `GOVERNED_ADMISSION_FAILED` and rendered as `could not launch Vitest`,
+ * so a database lock was reported as a Vitest launch failure — two misattributions
+ * stacked on a run that measured nothing.
+ */
+const RETRYABLE_ADMISSION_PG_CODES = new Set(['55P03', '57014']);
+const DEFAULT_ADMISSION_RETRY_ATTEMPTS = 3;
+const DEFAULT_ADMISSION_RETRY_BASE_MS = 250;
+/** Emitted on every retry so fleet-wide DB contention stays VISIBLE. */
+export const GOVERNED_ADMISSION_RETRY_MARKER = 'GOVERNED_ADMISSION_RETRY';
+
+/**
+ * Is this admission rejection one the database itself told us to retry?
+ *
+ * Detected by PROPERTY, never `instanceof`: this repo's module graph can legitimately
+ * produce two copies of a class (tsx's CJS preflight beside the ESM loader, a symlinked
+ * `node_modules/@papercusp/*`, a bundled copy beside source), and an `instanceof` check
+ * silently answers false across that split — failing closed in the direction that looks
+ * like "not retryable", which is indistinguishable from the bug being unfixed.
+ *
+ * The `cause` chain is walked to a bounded depth because the governor may wrap the
+ * originating PG error rather than rethrowing it; the depth bound keeps a cyclic or
+ * pathologically deep chain from turning this predicate into a hang.
+ */
+export function isRetryableAdmissionFailure(error, maxDepth = 4) {
+  for (let node = error, depth = 0; node && typeof node === 'object' && depth <= maxDepth; depth++) {
+    const pgCode = node.pgCode;
+    if (typeof pgCode === 'string' && RETRYABLE_ADMISSION_PG_CODES.has(pgCode)) return true;
+    node = node.cause;
+  }
+  return false;
+}
+
+/**
  * Run a child behind one durable process receipt.  A valid inherited context
  * means the caller already owns the resident process receipt, so no second
  * admission is created; the same typed context is simply forwarded.
@@ -325,6 +362,14 @@ export function withGovernedAdmissionContext(env, context) {
  * The callback receives `(context, childEnv, { inherited })` and must resolve
  * only after the child lifetime has ended.  That keeps the lease alive through
  * the actual process, rather than releasing it immediately after `spawn()`.
+ *
+ * A retryable ADMISSION failure (see `isRetryableAdmissionFailure`) is retried with
+ * bounded exponential backoff.  ⛔ THE CONSTRAINT THAT MAKES THIS SAFE, and the reason
+ * it is not simply `catch { retry }`: only a failure from BEFORE the child started may
+ * be retried.  `started` flips the instant the callback is entered, which happens only
+ * after admission has succeeded — so a rejection carrying `started === true` arrived at
+ * or after child launch, and retrying it would RE-RUN TESTS.  That case rethrows
+ * immediately regardless of how retryable the error looks.
  */
 export async function runGovernedTestProcess(options, run) {
   if (!options || typeof options !== 'object') throw new Error('governed test process options are required');
@@ -360,8 +405,44 @@ export async function runGovernedTestProcess(options, run) {
     ...(options.settle ? { settle: options.settle } : {}),
     ...(options.measureActualDemand ? { measureActualDemand: options.measureActualDemand } : {}),
   };
-  return api.runGovernedOperation(
-    operation,
-    (context) => run(context, withGovernedAdmissionContext(env, context), { inherited: false }),
-  );
+  const maxAttempts = Math.max(1, options.admissionRetryAttempts ?? DEFAULT_ADMISSION_RETRY_ATTEMPTS);
+  const backoffBaseMs = options.admissionRetryBaseMs ?? DEFAULT_ADMISSION_RETRY_BASE_MS;
+  // Injected in tests so a bounded-retry assertion costs no wall-clock, and so the
+  // retry path can be exercised without a real governor or a real database.
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const log = options.log ?? ((line) => console.error(line));
+
+  for (let attempt = 1; ; attempt++) {
+    // Scoped PER ATTEMPT, not per call: a later attempt must judge its own launch, not
+    // inherit a previous one's.
+    let started = false;
+    try {
+      return await api.runGovernedOperation(operation, (context) => {
+        started = true;
+        return run(context, withGovernedAdmissionContext(env, context), { inherited: false });
+      });
+    } catch (error) {
+      // `started` first: a post-launch failure is never retried, however retryable the
+      // error looks. Re-running tests is a worse outcome than surfacing the error.
+      if (started || attempt >= maxAttempts || !isRetryableAdmissionFailure(error)) throw error;
+      const delayMs = backoffBaseMs * 2 ** (attempt - 1);
+      // A silent retry would hide fleet-wide DB contention — real signal about the box,
+      // and an invisible mitigation is how a degradation becomes permanent.
+      log(
+        `${GOVERNED_ADMISSION_RETRY_MARKER} attempt=${attempt + 1}/${maxAttempts} ` +
+          `pgCode=${admissionFailurePgCode(error) ?? 'unknown'} delayMs=${delayMs} ` +
+          `owner=${options.owner ?? 'unknown'}`,
+      );
+      await sleep(delayMs);
+    }
+  }
+}
+
+/** The contention code that made a rejection retryable, for the retry marker. */
+function admissionFailurePgCode(error, maxDepth = 4) {
+  for (let node = error, depth = 0; node && typeof node === 'object' && depth <= maxDepth; depth++) {
+    if (typeof node.pgCode === 'string' && RETRYABLE_ADMISSION_PG_CODES.has(node.pgCode)) return node.pgCode;
+    node = node.cause;
+  }
+  return null;
 }
