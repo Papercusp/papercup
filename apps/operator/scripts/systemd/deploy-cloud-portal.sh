@@ -32,6 +32,7 @@ HEALTH_WAIT_SEC="${PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC:-60}"
 CURL_TIMEOUT_SEC="${PAPERCUSP_CLOUD_PORTAL_CURL_TIMEOUT_SEC:-5}"
 PORT_RELEASE_WAIT_SEC="${PAPERCUSP_CLOUD_PORTAL_PORT_RELEASE_WAIT_SEC:-30}"
 FALLBACK_LOG="${PAPERCUSP_CLOUD_PORTAL_FALLBACK_LOG:-$HOME/.papercusp/logs/cloud-portal-legacy.log}"
+PROC_ROOT="${PAPERCUSP_CLOUD_PORTAL_PROC_ROOT:-/proc}"
 
 MODE="install"
 TEMP_PATH=""
@@ -93,6 +94,7 @@ validate_inputs() {
   require_absolute NODE_BIN "$NODE_BIN"
   require_absolute UNIT_DIR "$UNIT_DIR"
   require_absolute TEMP_DIR "$TEMP_DIR"
+  require_absolute PROC_ROOT "$PROC_ROOT"
   [[ -f "$TEMPLATE" ]] || die "unit template is missing: $TEMPLATE"
   [[ -d "$PORTAL_ROOT" ]] || die "portal root is not a directory: $PORTAL_ROOT"
   [[ -f "$PORTAL_ROOT/package.json" ]] || die "portal package.json is missing: $PORTAL_ROOT/package.json"
@@ -227,6 +229,16 @@ start_managed() {
   wait_for_health "$PORTAL_PORT"
 }
 
+managed_unit_runs_current_artifact() {
+  local main_pid arg
+  main_pid="$(systemctl_user show "$UNIT_NAME" --property=MainPID --value 2>/dev/null || true)"
+  [[ "$main_pid" =~ ^[0-9]+$ && "$main_pid" != 0 && -r "$PROC_ROOT/$main_pid/cmdline" ]] || return 1
+  while IFS= read -r -d '' arg; do
+    [[ "$arg" == "$STANDALONE_ENTRY" ]] && return 0
+  done < "$PROC_ROOT/$main_pid/cmdline"
+  return 1
+}
+
 listener_pid() {
   local output
   output="$("$SS_BIN" -ltnpH "sport = :$PORTAL_PORT" 2>/dev/null || true)"
@@ -295,9 +307,28 @@ handoff() {
   # A prior successful handoff is idempotent: do not restart a healthy managed
   # service merely because this helper was invoked again.
   if systemctl_user is-active --quiet "$UNIT_NAME" 2>/dev/null &&
+    managed_unit_runs_current_artifact &&
     wait_for_health "$PORTAL_PORT"; then
     log "$UNIT_NAME is already active and healthy; legacy handoff not needed"
     return 0
+  fi
+
+  # daemon-reload updates systemd's unit definition but does not replace an
+  # already-running process. A prior development-generation unit can therefore
+  # be healthy while still running `next dev`. Inspect the live MainPID above;
+  # if it is stale, restart the managed unit onto the newly-installed standalone
+  # artifact instead of returning a false idempotent success.
+  if systemctl_user is-active --quiet "$UNIT_NAME" 2>/dev/null; then
+    log "$UNIT_NAME is healthy but running a stale command; restarting onto the standalone artifact"
+    if systemctl_user restart "$UNIT_NAME" && wait_for_health "$PORTAL_PORT"; then
+      log "handoff complete: $UNIT_NAME runs the standalone production artifact and passed health check"
+      return 0
+    fi
+    systemctl_user stop "$UNIT_NAME" >/dev/null 2>&1 || true
+    if restore_legacy_listener; then
+      die "managed portal restart/health failed; legacy listener restored (still terminal-scoped)"
+    fi
+    die "managed portal restart/health failed and rollback could not restore the legacy listener; inspect $FALLBACK_LOG"
   fi
 
   local old_pid old_pgid

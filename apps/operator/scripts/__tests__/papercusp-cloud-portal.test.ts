@@ -16,6 +16,7 @@ interface Fixture {
   binDir: string;
   logPath: string;
   analyzeLogPath: string;
+  procRoot: string;
 }
 
 function fixture(): Fixture {
@@ -26,15 +27,18 @@ function fixture(): Fixture {
   const unitDir = join(dir, "systemd", "user");
   const tempDir = join(dir, "tmp");
   const binDir = join(dir, "bin");
+  const procRoot = join(dir, "proc");
   mkdirSync(nextDir, { recursive: true });
   mkdirSync(standaloneDir, { recursive: true });
   mkdirSync(unitDir, { recursive: true });
   mkdirSync(tempDir, { recursive: true });
   mkdirSync(binDir, { recursive: true });
+  mkdirSync(join(procRoot, "4242"), { recursive: true });
   writeFileSync(join(portalRoot, "package.json"), '{"name":"portal-fixture"}\n');
   writeFileSync(join(nextDir, "next"), "#!/usr/bin/env bash\nexit 0\n");
   chmodSync(join(nextDir, "next"), 0o755);
   writeFileSync(join(standaloneDir, "standalone-entry.mjs"), "export {};\n");
+  writeFileSync(join(procRoot, "4242", "cmdline"), Buffer.from("node\0old-next-dev\0"));
   return {
     dir,
     portalRoot,
@@ -42,6 +46,7 @@ function fixture(): Fixture {
     binDir,
     logPath: join(dir, "systemctl.log"),
     analyzeLogPath: join(dir, "systemd-analyze.log"),
+    procRoot,
   };
 }
 
@@ -54,6 +59,7 @@ function envFor(files: Fixture): NodeJS.ProcessEnv {
     PAPERCUSP_CLOUD_PORTAL_TMPDIR: join(files.dir, "tmp"),
     PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC: "0",
     PAPERCUSP_CLOUD_PORTAL_SYSTEMD_ANALYZE: "/bin/true",
+    PAPERCUSP_CLOUD_PORTAL_PROC_ROOT: files.procRoot,
   };
 }
 
@@ -163,6 +169,7 @@ esac
     expect(script).toContain("STANDALONE_ENTRY");
     expect(script).toContain("process_lineage_is_next_dev");
     expect(script).toContain("restore_legacy_listener");
+    expect(script).toContain("managed_unit_runs_current_artifact");
     expect(script).toContain('cd -- "$PORTAL_ROOT"');
     expect(script).toContain('TEMP_DIR="${PAPERCUSP_CLOUD_PORTAL_TMPDIR:-${TMPDIR:-/tmp}}"');
     expect(script).toContain('mktemp "$TEMP_DIR/.${UNIT_NAME}.tmp.XXXXXX.service"');
@@ -174,6 +181,36 @@ esac
     expect(script).not.toMatch(/systemctl_user\s+stop[^\n]*3081/);
     expect(script.indexOf("validate_legacy_listener")).toBeLessThan(script.indexOf("stop_legacy_listener"));
     expect(script.indexOf("restore_legacy_listener")).toBeGreaterThan(script.indexOf("start_managed"));
+  });
+
+  it("restarts an active managed dev generation instead of misreporting it as current", () => {
+    const files = fixture();
+    const systemctl = join(files.binDir, "systemctl");
+    writeFileSync(systemctl, `#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+shift
+case "$1" in
+  daemon-reload|enable|restart|stop|reset-failed|start) exit 0 ;;
+  is-active) exit 0 ;;
+  show) printf '4242\n'; exit 0 ;;
+  *) exit 1 ;;
+esac
+`);
+    chmodSync(systemctl, 0o755);
+    try {
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: "/bin/true",
+        SYSTEMCTL_LOG: files.logPath,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("running a stale command; restarting onto the standalone artifact");
+      expect(result.stdout).toContain("runs the standalone production artifact and passed health check");
+      expect(readFileSync(files.logPath, "utf8")).toContain("--user restart papercusp-cloud-portal.service\n");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
   });
 
   it("documents the separate proxy and the managed cgroup verification", () => {
