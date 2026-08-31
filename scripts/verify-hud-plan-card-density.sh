@@ -140,14 +140,26 @@ say "2. installing probes"
 
   P.heights = () => P.cards().map(c => Math.round(c.getBoundingClientRect().height));
 
+  // THE GRID THAT ACTUALLY HOLDS THE PLAN CARDS.
+  //
+  // ⚠ NEVER go back to document.querySelector(".hud__cols") — it was tried and
+  // it silently matched the HIDDEN sessions panel (.hud__panel--sessions,
+  // clientWidth 0) while the plan cards lived in a different subtree. Every
+  // write went to the wrong node and every read confirmed it, so the
+  // "floor confirmed applied" assertion PASSED while the plans grid was
+  // untouched: a self-consistent lie. Only the 40px control catching nothing
+  // exposed it. Deriving the container FROM a real card makes that class of
+  // error impossible — the element is by construction the one being measured.
+  P.cols = () => { const c = P.cards()[0]; return c ? c.closest(".hud__cols") : null; };
+
   // THE SCROLL CHAIN. documentElement cannot answer the page-h-scroll question
-  // here, so instead of trusting one node this walks every ancestor from
-  // .hud__cols to the root and reports which ones overflow and which CLIP.
-  // An ancestor above .hud__cols that overflows is a real page-level defect;
-  // .hud__cols overflowing is BY DESIGN (hud.css:591 overflow-x:auto).
+  // here, so instead of trusting one node this walks every ancestor from the
+  // plans grid to the root and reports which ones overflow and which CLIP.
+  // An ancestor above the grid that overflows is a real page-level defect;
+  // the grid itself overflowing is BY DESIGN (hud.css:591 overflow-x:auto).
   P.chain = () => {
     const out = [];
-    let el = document.querySelector(".hud__cols");
+    let el = P.cols();
     while (el) {
       const cs = getComputedStyle(el);
       out.push({
@@ -170,14 +182,39 @@ say "2. installing probes"
   P.chainCanReport = () => P.chain().some(e => e.over);
 
   // ── mutation helpers (controls) ──
-  P.floor = on => {
-    const c = document.querySelector(".hud__cols");
+  // TRACK TEMPLATES. Kept as JS literals rather than interpolated from the
+  // shell: splicing a value into a single-quoted eval argument splits it on
+  // whitespace, and these specs have spaces in them. FLOOR_COLS in the shell
+  // must match TPL.floor; the resolved-track assertion below fails if it drifts.
+  //
+  // WHY A "roomy" TEMPLATE EXISTS. The HUD is only ~550px wide here (a left
+  // sidebar and the op-chat both take width), and the weighted floor sums to
+  // 752px + gaps — so the grid is ALREADY PINNED AT ITS FLOOR at "natural"
+  // width. Taking the baseline from the ambient layout therefore compared the
+  // floor against ITSELF and made "no growth at the floor" trivially true: a
+  // vacuous green that no control could expose, because the control was
+  // measuring a real property in a comparison that had no contrast. `roomy`
+  // forces a genuinely wider layout so the floor is a real change from it.
+  P.TPL = {
+    roomy: "400px 520px 400px 46px 46px",
+    floor: "220px 260px 180px 46px 46px",
+    squeeze: "40px 40px 40px 40px 40px",
+  };
+  P.tpl = name => {
+    const c = P.cols();
     if (!c) return false;
-    // Kept as a JS literal rather than interpolated from the shell: splicing a
-    // value into a single-quoted eval argument splits it on whitespace, and the
-    // floor spec has spaces in it. FLOOR_COLS above must match this string.
-    c.style.gridTemplateColumns = on ? "220px 260px 180px 46px 46px" : "";
+    c.style.gridTemplateColumns = name === null ? "" : P.TPL[name];
     return true;
+  };
+  // Resolved (used) track widths — what actually laid out, not what we asked
+  // for. This is the falsifier for "did the template really apply".
+  P.tracks = () => {
+    const c = P.cols();
+    return c ? getComputedStyle(c).gridTemplateColumns.split(" ").map(parseFloat) : [];
+  };
+  P.tracksAre = name => {
+    const want = P.TPL[name].split(" ").map(parseFloat), got = P.tracks();
+    return got.length === want.length && want.every((w, i) => Math.abs(got[i] - w) <= 1);
   };
   P.tall = on => {
     const c = P.cards()[0]; if (!c) return false;
@@ -222,8 +259,13 @@ settle
 (() => {
   const P = window.__hudprobe, h = P.heights();
   const sorted = [...h].sort((a, b) => a - b);
+  // Captured HERE, at natural width, and compared against at the floor. Mode
+  // (i) returns -1 (never a pass) if this was never set, so a reordering of
+  // this script cannot silently turn the height mode into a vacuous green.
+  P.setBaseline();
   return JSON.stringify({
     MEASURE: "density-natural-width",
+    baselineHeight: P._baseline,
     cards: h.length,
     minHeight: sorted[0],
     maxHeight: sorted[sorted.length - 1],
