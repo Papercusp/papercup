@@ -33,10 +33,6 @@ import {
 import type { PotLearningScope } from '../../learning/pot-gate/core';
 import { listHives } from '../../hive-store';
 
-function json(obj: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
-}
-
 /** What each named pot looked like before the write — `null` = no row (⇒ enabled). */
 type PriorState = Record<string, PotLearningScope | null>;
 
@@ -173,16 +169,24 @@ export default defineTool({
       }
     }
 
-    return json({
-      ok: true,
-      pots,
-      enabled: args.enabled,
-      dryRun: outcome.dryRun,
-      applied: outcome.applied,
-      reverted: outcome.reverted,
-      preview: outcome.preview,
-      verify: outcome.verify,
-      auditId: outcome.auditId,
-    });
+    // token-opt P-003: return `{ data }` and let the framework own wire encoding
+    // (including auto-TOON on the MCP transport) rather than hand-rolling the legacy
+    // inline-JSON content envelope. This tool has one mechanical return and no isError
+    // slot in use, so the migration is shape-for-shape.
+    // (Deliberately not spelling that envelope out here: the ratchet's detector is a
+    // text scan, so quoting the pattern in a comment counts as an offender.)
+    return {
+      data: {
+        ok: true,
+        pots,
+        enabled: args.enabled,
+        dryRun: outcome.dryRun,
+        applied: outcome.applied,
+        reverted: outcome.reverted,
+        preview: outcome.preview,
+        verify: outcome.verify,
+        auditId: outcome.auditId,
+      },
+    };
   },
 });

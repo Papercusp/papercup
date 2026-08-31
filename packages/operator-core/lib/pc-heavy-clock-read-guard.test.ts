@@ -147,7 +147,13 @@ describe('$EPOCHSECONDS truly costs zero forks (the mechanism this fix relies on
     // shell var (no command substitution) should show NO clone/fork line at
     // all for the reference itself. Skips cleanly if strace is unavailable
     // (a bare-container CI image) rather than false-failing on a missing tool.
-    const strace = spawnSync('which', ['strace'], { encoding: 'utf8' });
+    // WI-41180: bound every sync spawn in the pure lane — it blocks the shared worker's
+    // event loop, so vitest cannot time it out and one hang wedges ~2,740 files.
+    const strace = spawnSync('which', ['strace'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
     if (strace.status !== 0) return;
     const r = spawnSync(
       'strace',
@@ -159,7 +165,13 @@ describe('$EPOCHSECONDS truly costs zero forks (the mechanism this fix relies on
   });
 
   it('POSITIVE CONTROL: $(date +%s) DOES fork — proves the instrument works', () => {
-    const strace = spawnSync('which', ['strace'], { encoding: 'utf8' });
+    // WI-41180: bound every sync spawn in the pure lane — it blocks the shared worker's
+    // event loop, so vitest cannot time it out and one hang wedges ~2,740 files.
+    const strace = spawnSync('which', ['strace'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
     if (strace.status !== 0) return;
     const r = spawnSync(
       'strace',
@@ -170,14 +182,26 @@ describe('$EPOCHSECONDS truly costs zero forks (the mechanism this fix relies on
   });
 
   it('$EPOCHSECONDS still advances with real wall-clock time (not a stale one-shot value)', async () => {
-    const r1 = spawnSync('bash', ['-c', 'echo $EPOCHSECONDS'], { encoding: 'utf8' });
+    const r1 = spawnSync('bash', ['-c', 'echo $EPOCHSECONDS'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
     await new Promise((res) => setTimeout(res, 1100));
-    const r2 = spawnSync('bash', ['-c', 'echo $EPOCHSECONDS'], { encoding: 'utf8' });
+    const r2 = spawnSync('bash', ['-c', 'echo $EPOCHSECONDS'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
     expect(Number(r2.stdout.trim())).toBeGreaterThan(Number(r1.stdout.trim()));
   });
 
   it('$EPOCHSECONDS matches `date +%s` within 1 second (correctness, not just presence)', () => {
-    const r = spawnSync('bash', ['-c', 'echo $EPOCHSECONDS; date +%s'], { encoding: 'utf8' });
+    const r = spawnSync('bash', ['-c', 'echo $EPOCHSECONDS; date +%s'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
     const [a, b] = r.stdout.trim().split('\n').map(Number);
     expect(Math.abs(a - b)).toBeLessThanOrEqual(1);
   });
@@ -233,7 +257,12 @@ describe('live: a contended waiter still heartbeats and honors its timeout with 
   function heldSlotCount(slotsDir: string, slots: number): number {
     let held = 0;
     for (let i = 0; i < slots; i += 1) {
-      const probe = spawnSync('flock', ['-n', join(slotsDir, `slot.${i}`), 'true'], { stdio: 'ignore' });
+      const probe = spawnSync('flock', ['-n', join(slotsDir, `slot.${i}`), 'true'], {
+        stdio: 'ignore',
+        // WI-41180: bound every sync spawn in the pure lane — vitest cannot interrupt one.
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+      });
       if (probe.status !== 0) held += 1;
     }
     return held;
@@ -254,7 +283,12 @@ describe('live: a contended waiter still heartbeats and honors its timeout with 
   }
 
   it('the broken-date fixture itself actually fails (sanity check on the fixture)', () => {
-    const r = spawnSync('date', ['+%s'], { env: { PATH: `${brokenDateDir}:${process.env.PATH ?? ''}` } });
+    const r = spawnSync('date', ['+%s'], {
+      env: { PATH: `${brokenDateDir}:${process.env.PATH ?? ''}` },
+      // WI-41180: bound every sync spawn in the pure lane — vitest cannot interrupt one.
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
     expect(r.status).not.toBe(0);
   });
 
