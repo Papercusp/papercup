@@ -41,7 +41,7 @@ export interface AdoptionRow {
 
 /**
  * The best-effort owning USER for an identity. Per-user identity isn't built yet
- * (su-584a8 owns it), so we fall back to the stable per-session ownerId — correct
+ * (not yet scheduled), so we fall back to the stable per-session ownerId — correct
  * on a single box, and forward-compatible (when a real user id arrives in
  * ctx.userId, names mint under it instead).
  */

@@ -1,7 +1,8 @@
 /**
  * hive-epoch-crypto-impl — the v1 CRYPTO FOUNDATION behind the `HiveEpochCrypto`
  * seam (shared-pot-release-testing Brief RE-KEY / C-001 / E-001 / Move 2).
- * su-ed300's half; K (su-313d1) owns the boundary/distribution/serving consumer.
+ * This is the CRYPTO-FOUNDATION half; the boundary/distribution/serving consumer is
+ * the other lane of the same split (see the SPLIT block in hive-epoch-crypto.ts).
  *
  * OWNER-GREENLIT (the owner, 2026-06-19): member-remove / go-private MUST cut a removed
  * peer's READ access to post-boundary content. The load-bearing cut is CRYPTO:

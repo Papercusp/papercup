@@ -10,10 +10,9 @@
  *   critics (P-005) → debate + recombine (P-006) → routing (P-007) →
  *   Queen-triage cadence (P-008).
  *
- * This module SEEDS the contract the steps hand each other. Per the lane split
- * (su-797a5 owns P-004), this file is seeded here and EXTENDED by P-005/P-006
- * (su-d1170: `Critique`, `Proposal`) and consumed by P-007 (su-80be9) +
- * the verification lane (su-b6c3f).
+ * This module SEEDS the contract the steps hand each other. Per the lane split,
+ * this file is seeded under P-004 and EXTENDED by P-005/P-006 (`Critique`,
+ * `Proposal`), then consumed by P-007 + the verification lane.
  *
  * Two design rules carried from the plan's ratified decisions:
  *  - **Forced diversity (D-004):** divergence is structural, not a single

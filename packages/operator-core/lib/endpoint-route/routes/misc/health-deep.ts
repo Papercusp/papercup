@@ -11,7 +11,7 @@
  *
  * Additive — the existing liveness/boot probes are unchanged. Public + cheap
  * (one trivial query, hard deadline). Coordinates with self-healing D-001
- * (su-67d39 owns the loop-saturation-survival angle); this is the
+ * (D-001 covers the loop-saturation-survival angle); this is the
  * subsystem-roundtrip angle.
  *
  * False-alarm guard: a CLEAN "memory disabled/unreachable" (`available()`

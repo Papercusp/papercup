@@ -122,7 +122,7 @@ export interface BenchTask {
 /* -------------------------------------------------------------------------- */
 
 /**
- * The iso-budget ceiling for ONE generation attempt. BRIEF 7 (P-011, su-4ac61) owns the canonical
+ * The iso-budget ceiling for ONE generation attempt. BRIEF 7 (P-011) defines the canonical
  * type + the enforcement semantics; this is the minimal structural shape the generation side consumes.
  * Reconcile to BRIEF 7's exported type when it lands (alias or re-export — single source of truth).
  */
@@ -399,7 +399,7 @@ export interface BenchHarnessRun {
 }
 
 /**
- * Port (P-019 / BRIEF 2, su-1226c owns the impl): spin a throwaway harness of `blueprintId` over the
+ * Port (P-019 / BRIEF 2 carries the impl): spin a throwaway harness of `blueprintId` over the
  * checkout, feed `task.problemStatement` as the work_item, run to DONE under `budget`, return telemetry.
  * The FULL Papercusp arm passes 'external-bench' (full spine); Baseline A passes 'coding-solo' (one worker).
  * Everything else (clone, infra, cap, diff-extract, grader) is byte-identical → the only delta is the spine.

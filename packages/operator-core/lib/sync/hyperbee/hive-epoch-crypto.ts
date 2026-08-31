@@ -9,12 +9,12 @@
  * the ciphertext bytes but cannot decrypt them.
  *
  * SPLIT (see brief-REKEY-c001-move2.md + findings-REKEY.md):
- *   - su-ed300 owns the CRYPTO FOUNDATION = the real implementation of this interface
+ *   - The CRYPTO-FOUNDATION lane = the real implementation of this interface
  *     (epoch group-key + content-core encryption). v1 = a per-epoch symmetric content
  *     key wrapped-to-each-remaining-member's device key; the interface is deliberately
  *     MLS/TreeKEM-able so RFC 9420 (forward-secrecy + post-compromise security) can
  *     later re-implement it WITHOUT touching the boundary/distribution code.
- *   - su-313d1 (K) owns BOUNDARY + DISTRIBUTION + SERVING-UNDER-EPOCHS + the live
+ *   - The BOUNDARY lane = BOUNDARY + DISTRIBUTION + SERVING-UNDER-EPOCHS + the live
  *     cut-off witness — the CONSUMER of this interface.
  *
  * This file defines the contract + types + a fail-closed stub. It is INERT until the

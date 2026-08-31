@@ -198,14 +198,15 @@ beforeEach(async () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// Flag arms. SCHEDULER_MAINTAINED_READY (being added to libs/flags/src/types.ts by
-// su-0e44e) will switch the claim from the inline `NOT EXISTS` predicate to the indexed
-// work_item_blocked sidecar — behavior must be IDENTICAL either way. The flag is NOT wired
-// into the claim path yet (verified: claimFloorsWhereSql / get-next.ts read no flag), so we
-// run the DEFAULT (inline) arm and, in EVERY case, assert the maintained sidecar AGREES with
-// the inline oracle — proving the two readiness sources are byte-equivalent ahead of the
-// switch. When su-0e44e lands the flag, add a second arm that sets it true and re-runs cases
-// 1–2 through the same body (see TODO below).
+// Flag arms. SCHEDULER_MAINTAINED_READY is declared in libs/flags/src/types.ts, and once
+// it is READ by the claim path it switches the claim from the inline `NOT EXISTS` predicate
+// to the indexed work_item_blocked sidecar — behavior must be IDENTICAL either way. It is
+// NOT wired into the claim path yet (re-verify: `grep -rn SCHEDULER_MAINTAINED_READY
+// packages/operator-core/lib/scheduler/ | grep -v '\.test\.'` — empty means still unwired),
+// so we run the DEFAULT (inline) arm and, in EVERY case, assert the maintained sidecar
+// AGREES with the inline oracle — proving the two readiness sources are byte-equivalent
+// ahead of the switch. CONDITION, not a person: when that grep is non-empty, add a second
+// arm that sets the flag true and re-runs cases 1–2 through the same body (see TODO below).
 //
 // TODO(su-0e44e75b): once SCHEDULER_MAINTAINED_READY is wired into claimFloorsWhereSql /
 // get-next.ts, parametrize the "claim respects blocking" describes over
