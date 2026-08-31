@@ -22,6 +22,7 @@
  *     --mirror-root=/path/to/operator/public/internal/docs
  */
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -167,6 +168,138 @@ export function formatMissingDocMirrors(missing) {
   return lines.join('\n');
 }
 
+/**
+ * ── FRESHNESS: the half that was missing (EI-21929043331389136) ──────────────
+ *
+ * Everything above answers "does every source page HAVE a twin". Existence was
+ * never the failure mode. Measured 2026-08-31: the vetting runbook's source was
+ * fixed on 2026-08-30 to stop telling agents to pass a hand-typed responder
+ * count, and for the next ten days the served twin — the page agents actually
+ * read at /internal/docs — still said `pass max_agents:3`. Both twins existed
+ * the entire time, so this script reported DOCS_MIRROR_OK on every run.
+ *
+ * A completeness check cannot see stale content, so this adds the orthogonal
+ * question: is the mirror BUILT FROM the source as it stands now?
+ *
+ * Kept pure and injectable for the same reason as the mapping rules above: the
+ * verdict must be testable without a git repository or an Astro build.
+ */
+
+/** @typedef {{ stale: boolean, reason: string, detail: string }} FreshnessVerdict */
+
+/**
+ * Judge mirror freshness from already-gathered git facts.
+ *
+ * @param {{
+ *   sourceDirty: readonly string[],
+ *   mirrorDirty: readonly string[],
+ *   sourceCommitTs: number | null,
+ *   mirrorCommitTs: number | null,
+ * }} facts
+ * @returns {FreshnessVerdict}
+ */
+export function judgeMirrorFreshness(facts) {
+  const { sourceDirty, mirrorDirty, sourceCommitTs, mirrorCommitTs } = facts;
+
+  // A dirty mirror means a rebuild is staged in this working tree. The rebuild
+  // regenerates every page wholesale, so the tree in hand IS current — judging
+  // it against the older COMMITTED watermark would red a checkout that already
+  // holds the fix, which is the fastest way to teach people to ignore a guard.
+  if (mirrorDirty.length > 0) {
+    return {
+      stale: false,
+      reason: 'rebuild-staged',
+      detail: `${mirrorDirty.length} mirror file(s) modified in the working tree — a rebuild is staged here`,
+    };
+  }
+
+  if (sourceDirty.length > 0) {
+    return {
+      stale: true,
+      reason: 'source-edited-without-rebuild',
+      detail:
+        `${sourceDirty.length} docs source page(s) are modified while the served mirror is untouched:\n` +
+        sourceDirty.slice(0, 10).map((p) => `  - ${p}`).join('\n') +
+        (sourceDirty.length > 10 ? `\n  … and ${sourceDirty.length - 10} more` : ''),
+    };
+  }
+
+  // Both sides clean: the only remaining evidence is which was committed last.
+  // A source page committed AFTER the newest mirror commit is a page whose fix
+  // may never have reached the surface agents read.
+  //
+  // ADVISORY, not a failure, and the reason is a real false-positive path, not
+  // caution: a source edit that does not change rendered output (frontmatter
+  // the renderer drops, a reflow) advances the source watermark while a rebuild
+  // produces a byte-identical mirror and therefore no commit. Failing here would
+  // leave that checkout permanently red with `docs:rebuild` — the prescribed fix
+  // — unable to clear it, which is worse than the drift.
+  //
+  // Making it hard needs a BUILD STAMP: postbuild-copy recording the source
+  // commit the mirror was generated from, so freshness becomes "was this mirror
+  // built from a source state at or after HEAD" instead of a date comparison.
+  // That is a build-pipeline change, deliberately not made under this item.
+  if (sourceCommitTs !== null && mirrorCommitTs !== null && sourceCommitTs > mirrorCommitTs) {
+    const behindSec = sourceCommitTs - mirrorCommitTs;
+    return {
+      stale: false,
+      reason: 'source-newer-than-mirror-advisory',
+      detail:
+        `the newest docs SOURCE commit is ${Math.round(behindSec / 3600)}h newer than the newest ` +
+        `MIRROR commit (source ${new Date(sourceCommitTs * 1000).toISOString()} > ` +
+        `mirror ${new Date(mirrorCommitTs * 1000).toISOString()}) — the served pages predate the source`,
+    };
+  }
+
+  return { stale: false, reason: 'current', detail: 'the served mirror is at or ahead of the docs source' };
+}
+
+/**
+ * Gather the git facts `judgeMirrorFreshness` needs.
+ *
+ * @param {{ repoRoot?: string, sourceRel?: string, mirrorRel?: string, runGit?: (args: string[]) => string }} [options]
+ */
+export function readMirrorFreshnessFacts(options = {}) {
+  const repoRoot = options.repoRoot ?? REPO_ROOT;
+  const sourceRel = options.sourceRel ?? 'apps/operator-docs/src/content/docs';
+  const mirrorRel = options.mirrorRel ?? 'apps/operator/public/internal/docs';
+  const runGit =
+    options.runGit ??
+    ((args) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+
+  const dirtyIn = (rel) =>
+    runGit(['status', '--porcelain', '--', rel])
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => line.slice(3).trim())
+      .filter(Boolean);
+
+  const commitTsOf = (rel) => {
+    const out = runGit(['log', '-1', '--format=%ct', '--', rel]).trim();
+    return out ? Number.parseInt(out, 10) : null;
+  };
+
+  return {
+    sourceDirty: dirtyIn(sourceRel),
+    mirrorDirty: dirtyIn(mirrorRel),
+    sourceCommitTs: commitTsOf(sourceRel),
+    mirrorCommitTs: commitTsOf(mirrorRel),
+  };
+}
+
+/** @param {FreshnessVerdict} verdict */
+export function formatStaleMirror(verdict) {
+  return [
+    `DOCS_MIRROR_STALE (${verdict.reason}): the served docs no longer match their source.`,
+    verdict.detail,
+    '',
+    'Agents read the SERVED twin at /internal/docs, so a stale mirror keeps handing them the',
+    'instruction the source edit was written to delete — silently, with every twin present.',
+    '',
+    'FIX: run `npm run docs:rebuild`.',
+  ].join('\n');
+}
+
 export function printUsage() {
   console.log('Usage: node scripts/check-docs-mirror.mjs [--source-root=DIR] [--mirror-root=DIR]');
 }
@@ -182,6 +315,19 @@ export function main(argv = process.argv.slice(2)) {
   if (result.missing.length > 0) {
     console.error(formatMissingDocMirrors(result.missing));
     return 1;
+  }
+
+  // Only meaningful against the real repo layout; a --source-root/--mirror-root
+  // run is a mapping-rules exercise over a fixture tree and has no git history.
+  if (!options.sourceRoot && !options.mirrorRoot) {
+    const freshness = judgeMirrorFreshness(readMirrorFreshnessFacts());
+    if (freshness.stale) {
+      console.error(formatStaleMirror(freshness));
+      return 1;
+    }
+    if (freshness.reason === 'source-newer-than-mirror-advisory') {
+      console.warn(`DOCS_MIRROR_ADVISORY: ${freshness.detail}\nIf a docs source page changed rendered output, run \`npm run docs:rebuild\`.`);
+    }
   }
 
   console.log(
