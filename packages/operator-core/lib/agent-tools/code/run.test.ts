@@ -678,6 +678,82 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     });
   });
 
+  // EI-21972587349695167: a depth-boundary array containing ordinary values (rather
+  // than MCP `{ text }` entries) used to fall through to `[]`. That made a real
+  // pending-migration list indistinguishable from an empty one.
+  describe('nested ordinary arrays at a depth boundary (EI-21972587349695167)', () => {
+    const nestedSummary = () => ({
+      envelope: {
+        envelope: {
+          drift: {
+            ok: true,
+            in_sync: false,
+            missing: ['1047-spawn-governor-observation.sql'],
+            extra: [],
+            content_drift: Array.from({ length: 40 }, (_, index) => ({
+              name: `migration-${index}`,
+              expected: 'e'.repeat(700),
+              actual: 'a'.repeat(700),
+            })),
+            schema_ahead: ['future-migration.sql'],
+          },
+        },
+      },
+    });
+
+    it('keeps a bounded prefix of non-empty nested arrays', () => {
+      const shaped = shapeCodeRunSummary({ summary: nestedSummary() }) as {
+        summary: {
+          envelope: {
+            envelope: {
+              drift: {
+                missing: string[];
+                content_drift: Array<{ name: string }>;
+                schema_ahead: string[];
+              };
+            };
+          };
+        };
+        summaryNotice: { truncated: true; paths: string[] };
+      };
+
+      expect(shaped.summary.envelope.envelope.drift.missing).toContain('1047-spawn-governor-observation.sql');
+      expect(shaped.summary.envelope.envelope.drift.content_drift.length).toBeGreaterThan(0);
+      expect(shaped.summary.envelope.envelope.drift.content_drift[0]?.name).toBe('migration-0');
+      expect(shaped.summary.envelope.envelope.drift.schema_ahead).toContain('future-migration.sql');
+      expect(shaped.summaryNotice.paths).toContain('summary.envelope.envelope.drift.content_drift');
+    });
+
+    it('CONTROL: the pre-fix boundary fallback would erase every ordinary array', () => {
+      const preFix = {
+        missing: [],
+        content_drift: [],
+        schema_ahead: [],
+      };
+
+      expect(preFix.missing).not.toContain('1047-spawn-governor-observation.sql');
+      expect(preFix.content_drift).toHaveLength(0);
+      expect(preFix.schema_ahead).not.toContain('future-migration.sql');
+    });
+  });
+
+  // The minimal projection is a separate fallback from the depth-boundary ladder.
+  // Keep its nested arrays truthful too, otherwise a very wide object can still
+  // launder a non-empty collection into `[]` after every ladder rung rejects.
+  it('keeps nested arrays when the minimal object projection is required', () => {
+    const summary = {
+      pending: ['1047-spawn-governor-observation.sql'],
+      ...Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`field${index}`, 'x'.repeat(1_000)])),
+    };
+    const shaped = shapeCodeRunSummary({ summary }) as {
+      summary: { pending: string[] };
+      summaryNotice: { truncated: true };
+    };
+
+    expect(shaped.summary.pending).toContain('1047-spawn-governor-observation.sql');
+    expect(shaped.summaryNotice.truncated).toBe(true);
+  });
+
   it('preserves background launch handles inside nested MCP result envelopes', () => {
     const launched = Array.from({ length: 9 }, (_, index) => ({
       result: {

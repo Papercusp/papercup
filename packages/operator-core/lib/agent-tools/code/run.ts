@@ -913,22 +913,14 @@ function projectCodeRunSummaryDepthBoundary(
   options: CodeRunSummaryProjectionOptions,
   stats: CodeRunSummaryProjectionStats,
 ): unknown | undefined {
-  // `content` itself is one level below the raw MCP result object, so the array
-  // can be the value that hits the boundary on the least aggressive projection
-  // rung. Recognize it here as well as when the containing result object is at
-  // the boundary.
   if (Array.isArray(value)) {
-    const content = projectCodeRunSummaryTextContent(value, path, options, stats);
-    if (content === undefined) return undefined;
-    stats.valuesTruncated++;
-    stats.omittedItems++;
-    noteCodeRunSummaryPath(stats, path);
-    return content;
+    return projectCodeRunSummaryBoundaryArray(value, path, options, stats);
   }
   if (!isCodeRunSummaryRecord(value)) return undefined;
 
   const projected: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
+    const childPath = path ? `${path}.${key}` : key;
     // EI-21382842145185659: ordinary nested records (for example rows returned by
     // dev:pg_query) are DATA, not MCP launch handles. The old handle-context
     // whitelist kept only `status`, so a large row batch silently changed from
@@ -938,13 +930,21 @@ function projectCodeRunSummaryDepthBoundary(
     if (isCodeRunSummaryScalar(entry)) {
       projected[key] =
         typeof entry === 'string'
-          ? clipCodeRunSummaryString(entry, `${path}.${key}`, options.stringChars, stats)
+          ? clipCodeRunSummaryString(entry, childPath, options.stringChars, stats)
           : entry;
+      continue;
+    }
+
+    // A depth-boundary record still needs to expose bounded prefixes of ordinary
+    // nested arrays. Returning [] for a non-empty array makes a pending collection
+    // look like a complete empty result (EI-21972587349695167). Keep non-array
+    // records omitted here: the aggressive boundary intentionally preserves only
+    // scalar fields (and array prefixes), which keeps nested payloads bounded.
+    if (Array.isArray(entry)) {
+      const boundaryProjection = projectCodeRunSummaryDepthBoundary(entry, childPath, options, stats);
+      if (boundaryProjection !== undefined) projected[key] = boundaryProjection;
     }
   }
-
-  const content = projectCodeRunSummaryTextContent(value.content, `${path}.content`, options, stats);
-  if (content !== undefined) projected.content = content;
   if (Object.keys(projected).length === 0) return undefined;
 
   // The boundary projection is intentionally selective. Keep the omission visible so a
@@ -952,6 +952,63 @@ function projectCodeRunSummaryDepthBoundary(
   stats.valuesTruncated++;
   stats.omittedItems++;
   noteCodeRunSummaryPath(stats, path);
+  return projected;
+}
+
+/**
+ * Keep a truthful one-level prefix for every array that reaches a depth boundary.
+ * `projectCodeRunSummaryTextContent` is deliberately specialized for MCP text
+ * envelopes, but using it as the only array shape test turned ordinary arrays into
+ * `[]` whenever their entries were not `{ text: string }` (EI-21972587349695167).
+ */
+function projectCodeRunSummaryBoundaryArray(
+  value: unknown[],
+  path: string,
+  options: CodeRunSummaryProjectionOptions,
+  stats: CodeRunSummaryProjectionStats,
+): unknown[] {
+  const content = projectCodeRunSummaryTextContent(value, path, options, stats);
+  if (content !== undefined) {
+    stats.valuesTruncated++;
+    stats.omittedItems++;
+    noteCodeRunSummaryPath(stats, path);
+    return content;
+  }
+
+  // An actually empty array is already an unambiguous, complete value.
+  if (value.length === 0) return [];
+
+  const projected: unknown[] = [];
+  const limit = Math.min(value.length, options.arrayLimit);
+  for (let index = 0; index < limit; index += 1) {
+    const entry = value[index];
+    const entryPath = `${path}[${index}]`;
+    if (isCodeRunSummaryScalar(entry)) {
+      projected.push(
+        typeof entry === 'string' ? clipCodeRunSummaryString(entry, entryPath, options.stringChars, stats) : entry,
+      );
+      continue;
+    }
+
+    const boundaryProjection = projectCodeRunSummaryDepthBoundary(entry, entryPath, options, stats);
+    if (boundaryProjection !== undefined) {
+      projected.push(boundaryProjection);
+      continue;
+    }
+
+    // Preserve the fact that this array had an element even when that element's
+    // shape contains no boundary-safe scalar fields. The notice/path remains the
+    // authoritative disclosure of what was omitted.
+    projected.push(Array.isArray(entry) ? [null] : {});
+    stats.valuesTruncated++;
+    stats.omittedItems++;
+    noteCodeRunSummaryPath(stats, entryPath);
+  }
+  if (value.length > options.arrayLimit) {
+    stats.arraysTruncated++;
+    stats.omittedItems += value.length - options.arrayLimit;
+    noteCodeRunSummaryPath(stats, path);
+  }
   return projected;
 }
 
@@ -1057,10 +1114,23 @@ function minimalCodeRunSummaryProjection(
     }
   }
   for (const [key, entry] of entries.filter(([, candidate]) => !isCodeRunSummaryScalar(candidate))) {
-    const empty = Array.isArray(entry) ? [] : {};
-    const withCandidate = { ...projected, [key]: empty };
+    const scratch = newCodeRunSummaryProjectionStats();
+    const candidate = projectCodeRunSummaryValue(
+      entry,
+      `summary.${key}`,
+      0,
+      {
+        arrayLimit: 1,
+        stringChars: CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS,
+        maxDepth: 1,
+      },
+      scratch,
+    );
+    const withCandidate = { ...projected, [key]: candidate };
     if (codeRunSummarySerializedChars(withCandidate) <= budget) {
-      projected[key] = empty;
+      projected[key] = candidate;
+      mergeCodeRunSummaryStats(stats, scratch);
+    } else {
       stats.valuesTruncated++;
       stats.omittedItems++;
       noteCodeRunSummaryPath(stats, `summary.${key}`);
