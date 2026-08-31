@@ -36,6 +36,7 @@
  * Server-only.
  */
 import type postgres from 'postgres';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 export const CLOUD_RESOURCE_OBLIGATION_VERSION = 'cloud-resource-obligations-v1';
 
@@ -44,6 +45,31 @@ export const CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS = 21_600_000; // 6h, mat
 
 /** Minimum time between successive escalations of the SAME obligation (avoid re-filing every tick). */
 export const CLOUD_RESOURCE_OBLIGATION_DEFAULT_ESCALATION_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
+
+/**
+ * Hard ceiling on IN-USE suppression, measured from the obligation's own creation.
+ *
+ * An obligation whose originating work-item is still non-terminal is not a leak — the
+ * resource is still being used by live work (see `openSourceWorkItemKeys` below). But an
+ * open work-item must never become a permanent cloaking device: a stalled or abandoned
+ * holder would otherwise hide a genuinely leaked, metered resource forever. Past this
+ * ceiling the obligation escalates anyway, with the still-open source named in the body
+ * so the reader knows the suppression was overridden rather than never applied.
+ */
+export const CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS = 7 * 24 * 60 * 60 * 1000; // 7d
+
+/**
+ * Key for the "is this obligation's originating work-item still open?" lookup.
+ *
+ * Composite on (workspaceId, sourceWorkItemId) rather than the bare work-item id: the
+ * sweep is workspace-independent and reads every open obligation across the install, so
+ * a bare id could match a same-named row in a different tenant and suppress a real leak.
+ * Encoded with JSON.stringify so no separator character has to be assumed illegal in
+ * either identifier.
+ */
+export function cloudResourceObligationSourceKey(workspaceId: string, sourceWorkItemId: string): string {
+  return JSON.stringify([workspaceId, sourceWorkItemId]);
+}
 
 function requireNonEmpty(value: string, label: string): string {
   if (!value.trim()) throw new Error(`${label} must not be empty`);
@@ -225,6 +251,28 @@ export interface CloudResourceObligationEscalationCandidate {
   /** true when a prior escalation already exists (this is a re-nudge, not the first). */
   hadPriorEscalation: boolean;
   priorEscalationWorkItemId: string;
+  /**
+   * true when this escalated DESPITE its originating work-item still being open — i.e.
+   * in-use suppression was overridden by the age ceiling. Distinguishes "nobody owns
+   * this" from "the owner is still running but has held it far too long".
+   */
+  suppressionCeilingOverridden: boolean;
+}
+
+export interface CloudResourceObligationEscalationOptions {
+  /**
+   * Keys (see {@link cloudResourceObligationSourceKey}) of obligations whose originating
+   * work-item is still NON-terminal. Those resources are in active use, not leaked, and
+   * are suppressed until the age ceiling below.
+   *
+   * OMITTED means "not established" and suppresses nothing — every caller that cannot
+   * answer the question keeps the pre-existing escalate-on-time behaviour. Failing toward
+   * escalation is deliberate: an escalation files a work-item for a human/agent to judge,
+   * whereas a wrong suppression silently hides a metered resource.
+   */
+  openSourceWorkItemKeys?: ReadonlySet<string>;
+  /** Override the in-use suppression ceiling (measured from obligation creation). */
+  inUseSuppressionCeilingMs?: number;
 }
 
 /**
@@ -233,18 +281,35 @@ export interface CloudResourceObligationEscalationCandidate {
  *   - past their own grace period (createdAtMs + graceMs <= evaluatedAtMs), AND
  *   - never escalated before, OR the last escalation is older than escalateCooldownMs
  *     (so a live escalation work-item is re-nudged rather than silently going stale,
- *     but not re-filed every single tick).
+ *     but not re-filed every single tick), AND
+ *   - NOT still in use — i.e. its originating work-item is terminal, unknown, or the
+ *     in-use suppression ceiling has elapsed.
+ *
+ * The in-use gate exists because "teardown owed 23.1h" carries NO information about
+ * whether the originating work finished: this sweep is owner-independent by design, so
+ * it fires on schedule regardless. Measured 2026-08-31, all four open obligations shared
+ * one still-open source work-item (WI-40474) whose holder was live and mid-Packer-run;
+ * the sweep filed four "undischarged resource" bugs against infrastructure that was
+ * actively in use, and would have re-filed all four every 12h until that work closed.
+ * Deleting on that evidence would have broken a live release cut.
+ *
  * Ordered oldest-first — the longest-standing obligation is the most urgent one.
  */
 export function selectCloudResourceObligationsToEscalate(
   rows: readonly CloudResourceObligationRow[],
   evaluatedAtMs: number,
   escalateCooldownMs: number = CLOUD_RESOURCE_OBLIGATION_DEFAULT_ESCALATION_COOLDOWN_MS,
+  options: CloudResourceObligationEscalationOptions = {},
 ): CloudResourceObligationEscalationCandidate[] {
   if (!Number.isFinite(evaluatedAtMs)) throw new Error('evaluatedAtMs must be finite');
   if (!Number.isSafeInteger(escalateCooldownMs) || escalateCooldownMs < 0) {
     throw new Error('escalateCooldownMs must be a non-negative safe integer');
   }
+  const ceilingMs = options.inUseSuppressionCeilingMs ?? CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS;
+  if (!Number.isSafeInteger(ceilingMs) || ceilingMs < 0) {
+    throw new Error('inUseSuppressionCeilingMs must be a non-negative safe integer');
+  }
+  const openSourceKeys = options.openSourceWorkItemKeys;
   const out: CloudResourceObligationEscalationCandidate[] = [];
   for (const row of rows) {
     if (row.closedAtMs !== null || !row.teardownOwed) continue; // caller should already filter; re-assert
@@ -252,6 +317,13 @@ export function selectCloudResourceObligationsToEscalate(
     if (!pastGrace) continue;
     const dueForNudge = row.lastEscalatedAtMs === null || evaluatedAtMs - row.lastEscalatedAtMs >= escalateCooldownMs;
     if (!dueForNudge) continue;
+    const ageMs = evaluatedAtMs - row.createdAtMs;
+    const sourceStillOpen =
+      openSourceKeys !== undefined &&
+      row.sourceWorkItemId !== '' &&
+      openSourceKeys.has(cloudResourceObligationSourceKey(row.workspaceId, row.sourceWorkItemId));
+    // In active use AND still inside the ceiling — not a leak, so stay quiet.
+    if (sourceStillOpen && ageMs < ceilingMs) continue;
     out.push({
       id: row.id,
       workspaceId: row.workspaceId,
@@ -262,12 +334,42 @@ export function selectCloudResourceObligationsToEscalate(
       purpose: row.purpose,
       sourceWorkItemId: row.sourceWorkItemId,
       createdAtMs: row.createdAtMs,
-      ageMs: evaluatedAtMs - row.createdAtMs,
+      ageMs,
       hadPriorEscalation: row.lastEscalatedAtMs !== null,
       priorEscalationWorkItemId: row.escalationWorkItemId,
+      suppressionCeilingOverridden: sourceStillOpen,
     });
   }
   return out.sort((a, b) => a.createdAtMs - b.createdAtMs);
+}
+
+/**
+ * Which of these obligations' originating work-items are still NON-terminal?
+ *
+ * Terminal vocabulary is DERIVED from ANY_FAMILY_TERMINAL_STATES rather than re-listed
+ * here — the obligation ledger sees both work-item families, and a hand-copied status
+ * list is exactly the drift that made `dropped` invisible to a sibling consumer for a
+ * month (EI-21921121818266895).
+ */
+export async function readOpenSourceWorkItemKeys(
+  sql: postgres.Sql,
+  rows: readonly CloudResourceObligationRow[],
+): Promise<Set<string>> {
+  const workspaceIds = [...new Set(rows.map((r) => r.workspaceId).filter((s) => s !== ''))];
+  const sourceIds = [...new Set(rows.map((r) => r.sourceWorkItemId).filter((s) => s !== ''))];
+  if (workspaceIds.length === 0 || sourceIds.length === 0) return new Set();
+  const found = (await sql`
+    SELECT workspace_id, feature_id
+      FROM harness_shared.work_items
+     WHERE workspace_id = ANY(${workspaceIds as string[]}::text[])
+       AND feature_id = ANY(${sourceIds as string[]}::text[])
+       AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+  `) as unknown as Array<Record<string, unknown>>;
+  const out = new Set<string>();
+  for (const raw of found) {
+    out.add(cloudResourceObligationSourceKey(String(raw.workspace_id ?? ''), String(raw.feature_id ?? '')));
+  }
+  return out;
 }
 
 /**
@@ -312,12 +414,26 @@ export interface CloudResourceObligationSweepResult {
 export async function runCloudResourceObligationSweepOnce(
   sql: postgres.Sql,
   deps: CloudResourceObligationSweepDeps,
-  opts: { evaluatedAtMs?: number; escalateCooldownMs?: number } = {},
+  opts: { evaluatedAtMs?: number; escalateCooldownMs?: number; inUseSuppressionCeilingMs?: number } = {},
 ): Promise<CloudResourceObligationSweepResult> {
   const evaluatedAtMs = opts.evaluatedAtMs ?? Date.now();
   const open = await listOpenCloudResourceObligations(sql);
-  const candidates = selectCloudResourceObligationsToEscalate(open, evaluatedAtMs, opts.escalateCooldownMs);
   const errors: Array<{ id: number; error: string }> = [];
+  // Which of these are still in ACTIVE USE? An obligation whose originating work-item is
+  // still open is not a leak — see selectCloudResourceObligationsToEscalate. A failure to
+  // establish this must not strand the sweep, so fall back to suppressing nothing (the
+  // pre-existing escalate-on-time behaviour) rather than aborting the tick.
+  let openSourceWorkItemKeys: ReadonlySet<string> | undefined;
+  try {
+    openSourceWorkItemKeys = await readOpenSourceWorkItemKeys(sql, open);
+  } catch (err) {
+    errors.push({ id: 0, error: `source work-item state read failed: ${(err as Error).message}` });
+    openSourceWorkItemKeys = undefined;
+  }
+  const candidates = selectCloudResourceObligationsToEscalate(open, evaluatedAtMs, opts.escalateCooldownMs, {
+    openSourceWorkItemKeys,
+    inUseSuppressionCeilingMs: opts.inUseSuppressionCeilingMs,
+  });
   let escalated = 0;
   for (const c of candidates) {
     try {
@@ -344,6 +460,17 @@ export async function runCloudResourceObligationSweepOnce(
         (c.hadPriorEscalation
           ? `\n\nThis is a RE-NUDGE — a prior escalation ${c.priorEscalationWorkItemId} was filed for ` +
             `this same resource and appears to still be open.`
+          : '') +
+        (c.suppressionCeilingOverridden
+          ? `\n\n⚠ THE ORIGINATING WORK-ITEM ${c.sourceWorkItemId} IS STILL OPEN. Obligations whose ` +
+            `source work-item is still running are normally suppressed as in-use rather than filed as ` +
+            `leaks; this one escalated because it has been open for ` +
+            `${(c.ageMs / 3_600_000).toFixed(1)}h, past the ` +
+            `${(CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS / 3_600_000).toFixed(0)}h ceiling. ` +
+            `So do NOT assume the resource is abandoned: confirm with ${c.sourceWorkItemId}'s holder ` +
+            `before tearing anything down. Either that work is genuinely still using it (in which case ` +
+            `the resource is fine and the WORK-ITEM is what has stalled), or the work-item has been ` +
+            `abandoned open and both it and the resource need closing.`
           : '');
       const result = await deps.capture({
         title,
