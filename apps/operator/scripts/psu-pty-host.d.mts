@@ -28,6 +28,30 @@ export function hostCodeStaleness({ loaded, path, }?: {
  *  @param {EnvironmentMap} [env]
  */
 export function reexecExitCodeFrom(env?: EnvironmentMap, ppid?: number): number | null;
+/**
+ * Publish the parent-visible proof for a plain launch kickoff.
+ *
+ * The parent creates an empty 0600 file before detaching the child and passes
+ * its path plus a random token through the existing PAPERCUSP_* environment
+ * chain. Treat both values as untrusted at this boundary: only replace an
+ * absolute, same-UID, regular 0600 empty placeholder, and never follow a
+ * symlink. The receipt is written to a unique same-directory 0600 temporary
+ * file, fsynced, and atomically renamed over that exact placeholder. A failed
+ * publication is returned as a negative result so a receipt problem can never
+ * tear down an otherwise usable host.
+ *
+ * @param {{persisted?: boolean, nativeRef?: string | null, reason?: string | null}} proof
+ * @param {EnvironmentMap} [env]
+ * @returns {{published: boolean, reason?: string}}
+ */
+export function publishKickoffProofReceipt(proof: {
+    persisted?: boolean;
+    nativeRef?: string | null;
+    reason?: string | null;
+}, env?: EnvironmentMap): {
+    published: boolean;
+    reason?: string;
+};
 /** Byte-accurate (not JS-code-unit) wire limit check. Exported so the exact
  * UTF-8 boundary is regression-tested without weakening the runtime guard. */
 export function controlPayloadWithinLimit(payload: any, maxBytes?: number): boolean;
@@ -1552,6 +1576,11 @@ export const PSU_PTY_DIR: string;
  * session-port seed while keeping the allocation deterministic. Mirrored by
  * operator-core/lib/events/await/psu-pty-discovery.ts. */
 export const MAX_CONTROL_PAYLOAD_BYTES: number;
+/** Environment keys for the optional detached kickoff-proof rendezvous. Keep
+ * these string-identical to operator-core/lib/console-spawn.ts: this host is a
+ * standalone ESM process and cannot import the TypeScript module. */
+export const KICKOFF_PROOF_PATH_ENV: "PAPERCUSP_KICKOFF_PROOF_PATH";
+export const KICKOFF_PROOF_TOKEN_ENV: "PAPERCUSP_KICKOFF_PROOF_TOKEN";
 /**
  * How long a SHUTDOWN gives the child to exit on SIGHUP before the host escalates
  * to a whole-process-tree SIGKILL. A claude TUI flushes its transcript on SIGHUP,
