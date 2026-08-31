@@ -60,7 +60,7 @@
  */
 import type { Sql } from 'postgres';
 import { selectRanked, selectionPolicy, type Selected } from '@papercusp/ranked-selection';
-import { COORD_ROLES, canonicalCoordRole } from '../agent-tools/coordination/roles';
+import { canonicalCoordRole } from '../agent-tools/coordination/roles';
 import type { ConsultRouteParams, RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
 import { selectionSnapshot } from './relevance-router';
 import { DEAD_RESPONDER_STATES } from './get-feedback-core';

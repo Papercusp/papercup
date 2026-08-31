@@ -244,12 +244,38 @@ describe('selectAcceptanceGrader (D-009)', () => {
     });
 
     expect(out.verdict).toBe('assigned');
-    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-reviewer']);
-    expect(out.eligibility).toEqual({ eligibleCount: 1, qualifiedCount: 1, measured: true });
-    // The PERSISTED pool is the coord-capable one too. cascade-core's refill leg
+    // The judge is refused by role. The MISSING-ROLE candidate is NOT: role
+    // eligibility is a denylist (plan D-003). It used to be a COORD_ROLES
+    // allowlist, and because roles are read from the TTL-reaped coord_presence
+    // projection, "no row" is the normal case for a live agent — that exclusion
+    // rejected 100% of real candidates and kept the grading cascade from ever
+    // opening. Admitting the unknown-role candidate here IS the regression this
+    // test now pins.
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-missing-role', 'su-reviewer']);
+    expect(out.eligibility).toEqual({ eligibleCount: 2, qualifiedCount: 2, measured: true });
+    // The PERSISTED pool is the grader-eligible one too. cascade-core's refill leg
     // extends an exhausted menu from `candidates`, so persisting the router's
     // unfiltered list would let a refill wake the judge this test just refused.
-    expect(out.routing?.candidates.map((c) => c.ownerId)).toEqual(['su-reviewer']);
+    expect(out.routing?.candidates.map((c) => c.ownerId)).toEqual(['su-missing-role', 'su-reviewer']);
+  });
+
+  it('CONTROL: a live su-role candidate — the only role that actually exists in production — is selectable', async () => {
+    // The falsifying control for the allowlist regression. Across the WHOLE
+    // database coord_presence carries only agent_role='su' and NULL; 'su' is
+    // absent from COORD_ROLES. Under the old allowlist this fixture returned
+    // zero eligible and freshReason 'no_eligible_non_excluded' — which is
+    // exactly what production did, silently, for every plan.
+    const out = await selectAcceptanceGrader(params, {
+      getSql: () => fakeSql([]),
+      getPartyKeys: noParties,
+      getCandidateRoles: roleLookup({ 'su-real': 'su' }),
+      route: async () => routed([candidate('su-real', 'live', 0.8)]),
+    });
+
+    expect(out.verdict).toBe('assigned');
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-real']);
+    expect(out.eligibility).toMatchObject({ eligibleCount: 1, qualifiedCount: 1, measured: true });
+    expect(out.freshReason).toBeUndefined();
   });
 });
 
