@@ -7,12 +7,14 @@
 //! and drives the session from the outside.
 //!
 //! ## Dockview shape (Brief 50)
-//! The work area is a **stacked** group by default (tab-like: one agent expanded,
-//! the rest collapsed to title rows) so N agents stay readable instead of tiling
-//! ever-thinner. Four `swap_tiled_layout` presets cycle with `Alt+[`/`Alt+]`
+//! The full PUI is the **primary** pane on launch; the work area remains a
+//! stacked auxiliary group (tab-like: one agent expanded, the rest collapsed
+//! to title rows) so N agents stay readable without making an empty shell the
+//! first thing a user sees. Four `swap_tiled_layout` presets cycle with
+//! `Alt+[`/`Alt+]`
 //! (zellij's default Previous/NextSwapLayout binds — we ship layouts, never
 //! config, D-006):
-//!   * `stacked`      — work stack 60% │ HUD 40%  (the default; best for many agents)
+//!   * `stacked`      — PUI 70% │ work stack 30%  (the launch default)
 //!   * `stacked-left` — the mirror (HUD docked left; the `:dock left` target, D-008)
 //!   * `split`        — work area as even rows │ HUD  (good for 2–3 visible at once)
 //!   * `grid`         — work area auto-tiled 2D, no split_direction → zellij BSP (4/6 visible)
@@ -29,41 +31,42 @@ use std::path::{Path, PathBuf};
 
 use crate::hives::HiveGroup;
 
-/// The workbench layout in zellij KDL: a stacked work area beside the fixed `pui`
-/// HUD, plus four swap presets (see the module doc). The base arrangement
-/// matches the `stacked` preset so the session opens docked-and-stacked.
-pub const WORKBENCH_KDL: &str = r#"// Papercusp workbench — stacked work area + pui HUD, with dockview swap presets.
+/// The workbench layout in zellij KDL: the full `pui` as the primary pane beside
+/// a stacked work area, plus four swap presets (see the module doc). The base
+/// arrangement matches the `stacked` preset so the session opens directly into
+/// the TUI instead of focusing an empty shell.
+pub const WORKBENCH_KDL: &str = r#"// Papercusp workbench — primary pui TUI + stacked work area, with dockview swap presets.
 // (dockview-workbench-2026-06-05 / Brief 50). Alt+[ / Alt+] cycle the presets.
 layout {
     pane size=1 borderless=true {
         plugin location="zellij:tab-bar"
     }
     pane split_direction="vertical" {
-        pane name="work" stacked=true focus=true size="60%" {
-            pane
-        }
-        pane name="pui" size="40%" {
+        pane name="pui" focus=true size="70%" {
             command "pui"
             args "hud"
+        }
+        pane name="work" stacked=true size="30%" {
+            pane
         }
     }
     pane size=2 borderless=true {
         plugin location="zellij:status-bar"
     }
 
-    // ── Preset: stacked (default) — agents stack tab-like beside the HUD ──
+    // ── Preset: stacked (default) — the full TUI is primary; agents stack beside it ──
     swap_tiled_layout name="stacked" {
         tab {
             pane size=1 borderless=true {
                 plugin location="zellij:tab-bar"
             }
             pane split_direction="vertical" {
-                pane name="work" stacked=true size="60%" {
-                    children
-                }
-                pane name="pui" size="40%" {
+                pane name="pui" focus=true size="70%" {
                     command "pui"
                     args "hud"
+                }
+                pane name="work" stacked=true size="30%" {
+                    children
                 }
             }
             pane size=2 borderless=true {
@@ -781,6 +784,28 @@ mod tests {
         // The base arrangement (before any swap) opens docked-and-stacked so N
         // agents are tab-like, not ever-thinner tiles (Brief 50 / D-001).
         assert!(WORKBENCH_KDL.contains("name=\"work\" stacked=true"));
+    }
+
+    #[test]
+    fn launch_puts_the_full_tui_in_the_primary_focused_pane() {
+        let base = WORKBENCH_KDL
+            .split_once("swap_tiled_layout")
+            .map(|(base, _)| base)
+            .expect("workbench declares swap layouts after its base layout");
+        let pui = base
+            .find("pane name=\"pui\" focus=true size=\"70%\"")
+            .expect("base layout must make pui the focused primary pane");
+        let work = base
+            .find("pane name=\"work\" stacked=true size=\"30%\"")
+            .expect("base layout must keep a smaller stacked work area");
+        assert!(pui < work, "pui must precede the auxiliary work area");
+
+        let stacked = WORKBENCH_KDL
+            .split_once("swap_tiled_layout name=\"stacked\"")
+            .map(|(_, stacked)| stacked)
+            .expect("stacked preset exists");
+        assert!(stacked.contains("pane name=\"pui\" focus=true size=\"70%\""));
+        assert!(stacked.contains("pane name=\"work\" stacked=true size=\"30%\""));
     }
 
     #[test]
