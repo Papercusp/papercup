@@ -1336,16 +1336,19 @@ async function readEscalationCounters(
   errTicks: number;
   oversizedKeys: string[];
   contentTicks: number;
+  /** EI-21906459740652039: consecutive ticks the cumulative-limit guard has peeled. */
+  cumulativePeelTicks: number;
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
   prevPublishBlockedAtCommit: string | null;
 }> {
   const { sql } = getOrgPg();
   const rows = await sql<
-    { et: number; lo: string[] | null; ct: number; pubrefused: string | null; pubblocked: string | null; lastpub: string | null }[]
+    { et: number; lo: string[] | null; ct: number; cpt: number; pubrefused: string | null; pubblocked: string | null; lastpub: string | null }[]
   >`
     SELECT coalesce((metadata->>'consecutive_error_ticks')::int, 0) AS et,
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo,
            coalesce((metadata->>'consecutive_content_error_ticks')::int, 0) AS ct,
+           coalesce((metadata->>'consecutive_cumulative_peel_ticks')::int, 0) AS cpt,
            metadata->'own_head_publish'->>'refused' AS pubrefused,
            metadata->'own_head_publish'->>'blockedAtCommit' AS pubblocked,
            metadata->>'last_publish_blocked_at' AS lastpub
@@ -1358,6 +1361,7 @@ async function readEscalationCounters(
     errTicks: rows[0]?.et ?? 0,
     oversizedKeys: rows[0]?.lo ?? [],
     contentTicks: rows[0]?.ct ?? 0,
+    cumulativePeelTicks: rows[0]?.cpt ?? 0,
     publishRefusal: refused ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null } : null,
     prevPublishBlockedAtCommit: rows[0]?.lastpub ?? null,
   };
@@ -1734,6 +1738,9 @@ async function recordOutcome(
    *  decision acted on, persisted so the NEXT tick can tell a new freeze from a
    *  persisting one and broadcast only on the transition. */
   publishBlockedAtCommit: string | null,
+  /** EI-21906459740652039: consecutive ticks the cumulative-limit guard has peeled,
+   *  persisted so the next tick can tell a CHRONIC peel from a one-off one. */
+  consecutiveCumulativePeelTicks: number,
 ): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
@@ -2713,6 +2720,13 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const errTicks = tickErrors.length > 0 ? prev.errTicks + 1 : 0;
   // EI-438: consecutive ticks with a file still quarantined (drives P-005 escalate-to-human).
   const contentTicks = outcome.contentErrors.length > 0 ? prev.contentTicks + 1 : 0;
+  // EI-21906459740652039: the cumulative-limit peel's own consecutive-tick counter.
+  // Same shape as contentTicks, and for the same reason the content guard needed one:
+  // the oversized BROADCAST is edge-triggered, so without a persisted count a peel
+  // that never stops is indistinguishable from one that never happened again.
+  const cumulativePeelTicks = outcome.oversized.some((f) => f.exclusionReason === 'cumulative-limit')
+    ? prev.cumulativePeelTicks + 1
+    : 0;
 
   try {
     // STEP `git-sync:record` — outcome recording + the whole escalation/dispatch tail as
@@ -2728,6 +2742,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         contentTicks,
         prevContentTicks: prev.contentTicks,
         prevOversizedKeys: prev.oversizedKeys,
+        cumulativePeelTicks,
         // EI-21230011589307899: surface a frozen own-head publish. Read from the
         // previous tick's publish leg — see readEscalationCounters.
         publishRefusal: prev.publishRefusal,
@@ -5294,6 +5309,10 @@ async function recordAndEscalateTick(a: {
   contentTicks: number;
   prevContentTicks: number;
   prevOversizedKeys: string[];
+  /** EI-21906459740652039: consecutive ticks (incl. this one) the cumulative-limit
+   *  guard peeled — persisted here and read back by the NEXT tick, so a CHRONIC peel
+   *  the edge-triggered oversized broadcast structurally cannot see gets re-announced. */
+  cumulativePeelTicks: number;
   /** EI-21230011589307899: the previous tick's own-head-publish refusal (or null when
    *  publishing cleanly), and the freeze point seen one tick before that. */
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
@@ -5315,6 +5334,7 @@ async function recordAndEscalateTick(a: {
     contentTicks,
     a.pushMode,
     a.publishRefusal?.blockedAtCommit ?? null,
+    a.cumulativePeelTicks,
   );
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
