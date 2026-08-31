@@ -3801,7 +3801,8 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     });
 
     const release = calls.find((call) => call.name === 'locks:release');
-    expect(release?.args).toEqual({ lock_id: 'L-failed' });
+    expect(release?.args).toMatchObject({ lock_id: 'L-failed' });
+    expect(release?.args).not.toHaveProperty('native_edit_proof');
   });
 });
 

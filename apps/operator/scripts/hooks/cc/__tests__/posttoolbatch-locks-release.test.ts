@@ -220,6 +220,23 @@ describe('posttoolbatch-locks-release.sh', () => {
     expect(releaseRequests).toHaveLength(0);
     expectClean('unknown-tool', ['tu-one', 'tu-two']);
   });
+
+  it('does not attach proof for a textual native failure result', async () => {
+    const toolUseId = 'tu-proof-text-failed';
+    fs.writeFileSync(join(cache, toolUseId + '.lock'), 'single-lock');
+    fs.writeFileSync(join(cache, toolUseId + '.paths'), JSON.stringify(['src/first.ts']));
+
+    const out = await runHook(POST_HOOK, {
+      tool_name: 'Write',
+      tool_use_id: toolUseId,
+      session_id: 'single-owner',
+      tool_response: 'Permission denied: edit refused',
+    });
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(1);
+    expect(releaseRequests[0]?.params?.arguments).not.toHaveProperty('native_edit_proof');
+  });
 });
 
 describe('posttooluse-locks-release.sh batch deferral', () => {

@@ -259,7 +259,7 @@ def native_edit_result_succeeded(response):
         text = response.strip()
         if not text:
             return False
-        return not re.match(r'^(?:error|failed|failure|denied|permission denied)\\b', text, re.I)
+        return not re.match(r'^(?:error|failed|failure|denied|permission denied)\b', text, re.I)
     if isinstance(response, list):
         return bool(response) and all(native_edit_result_succeeded(item) for item in response)
     if not isinstance(response, dict):
