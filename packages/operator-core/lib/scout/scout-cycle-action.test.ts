@@ -343,21 +343,34 @@ describe('makeScoutCycleAction', () => {
   // is layered onto the tick payload's `scout` block so the editor in
   // /settings/pot-customization actually reaches the scout cycle (run.ts reads
   // payload.scout). install_slug is the hive home slug here (per provision-learning-loop).
-  it('layers the hive_settings scout delta onto the tick payload (P-015)', async () => {
-    mockGetHiveScoutCfg.mockResolvedValueOnce({ buckets: { maxMoonshots: 2 }, lenses: ['inversion'] });
+  it('layers the pot config delta onto the tick payload (P-015 / WI-1664060)', async () => {
+    const resolveConfigDelta = vi.fn(async () => ({
+      scout: { buckets: { maxMoonshots: 2 }, lenses: ['inversion'] },
+    }));
     let captured: unknown;
     const capturingBuilder: ScoutTickDepsBuilder = (depsCtx, runCycle) => {
       captured = depsCtx.payloadTemplate;
       return fakeBuilder({ idleRatio: 1 }, { ran: 0, persisted: 0 })(depsCtx, runCycle);
     };
-    const handler = makeScoutCycleAction(async () => ({ provenance: [], costUsd: 0.1 }), capturingBuilder);
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      capturingBuilder,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      resolveConfigDelta,
+    );
     await handler({
       installSlug: 'hive-acme',
       workspaceId: 'w',
       triggerConfig: {},
       payloadTemplate: { budget: { maxCostUsd: 0.5 } },
     });
-    expect(mockGetHiveScoutCfg).toHaveBeenCalledWith('w', 'hive-acme', 'scout');
+    // The action FORWARDS the seam; runScoutCycleTick performs the merge. Asserting
+    // the scope it forwards is what pins the workspace/install pair the production
+    // resolver reads hive_settings under.
+    expect(resolveConfigDelta).toHaveBeenCalledWith({ workspaceId: 'w', installSlug: 'hive-acme' });
     // The delta is merged UNDER `scout`, preserving the routine's existing `budget` block.
     expect(captured).toEqual({
       budget: { maxCostUsd: 0.5 },
@@ -365,14 +378,22 @@ describe('makeScoutCycleAction', () => {
     });
   });
 
-  it('leaves the tick payload unchanged when no hive scout delta is set (P-015 behavior-neutral)', async () => {
-    mockGetHiveScoutCfg.mockResolvedValueOnce(null);
+  it('leaves the tick payload unchanged when no pot config delta is set (P-015 behavior-neutral)', async () => {
+    const resolveConfigDelta = vi.fn(async () => null);
     let captured: unknown;
     const capturingBuilder: ScoutTickDepsBuilder = (depsCtx, runCycle) => {
       captured = depsCtx.payloadTemplate;
       return fakeBuilder({ idleRatio: 1 }, { ran: 0, persisted: 0 })(depsCtx, runCycle);
     };
-    const handler = makeScoutCycleAction(async () => ({ provenance: [], costUsd: 0.1 }), capturingBuilder);
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      capturingBuilder,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      resolveConfigDelta,
+    );
     await handler({
       installSlug: 'hive-acme',
       workspaceId: 'w',
@@ -380,6 +401,37 @@ describe('makeScoutCycleAction', () => {
       payloadTemplate: { budget: { maxCostUsd: 0.5 } },
     });
     expect(captured).toEqual({ budget: { maxCostUsd: 0.5 } });
+  });
+
+  /*
+   * WI-1664060 REGRESSION CONTROL. The bug was not that the merge was wrong — it
+   * was that the merge lived in THIS action's body, so Scout's other entrypoint
+   * (the `blender:cycle` op, the path that actually runs in production) never did
+   * it. An assertion that the action layers correctly therefore cannot detect the
+   * defect; only "the action does not resolve config on its own" can.
+   *
+   * If someone re-adds a hive_settings read here, the seam stops being the single
+   * merge site and the two entrypoints can silently diverge again — so this fails.
+   */
+  it('does NOT read pot config itself — the shared tick owns the one merge site', async () => {
+    mockGetHiveScoutCfg.mockClear();
+    const calls = { ran: 0, persisted: 0 };
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      fakeBuilder({ idleRatio: 1 }, calls),
+    );
+    await handler({
+      installSlug: 'hive-acme',
+      workspaceId: 'w',
+      triggerConfig: {},
+      payloadTemplate: { budget: { maxCostUsd: 0.5 } },
+    });
+    // POSITIVE CONTROL, without which the assertion below is vacuous: a handler
+    // that threw or returned early would also never call the store, and would pass
+    // a bare not-to-have-been-called check while proving nothing. This pins that
+    // the action ran all the way THROUGH the point where the read used to sit.
+    expect(calls.ran).toBe(1);
+    expect(mockGetHiveScoutCfg).not.toHaveBeenCalled();
   });
 });
 
@@ -448,5 +500,97 @@ describe('runScoutCycleTick — P-019 hiveRunnerGate preflight', () => {
     });
     expect(res.fired).toBe(true);
     expect(calls.ran).toBe(1);
+  });
+});
+
+/*
+ * WI-1664060: the pot-config layering is a SEAM on the shared tick, so BOTH Scout
+ * entrypoints get it. It used to live in the routine action's body, and the
+ * `blender:cycle` op — the path that actually runs Scout in production — never
+ * applied it, so the owner's per-pot tuning was written to hive_settings and never
+ * read. Same one-lane-two-entrypoints shape as the P-051 ceiling regression.
+ *
+ * These test the merge where it now happens, and pin the two properties the old
+ * placement could not guarantee: it fires for ANY caller, and it can never fail a
+ * tick.
+ */
+describe('runScoutCycleTick — WI-1664060 pot-config layering', () => {
+  const input = {
+    workspaceId: 'w',
+    installSlug: 'hive-acme',
+    admissionQueueScope: { kind: 'harness' as const, harnessSlug: 'hive-acme' },
+    payloadTemplate: { budget: { maxCostUsd: 0.5 }, scout: { lenses: ['base'] } } as Record<
+      string,
+      unknown
+    >,
+  };
+  const capturing = (
+    sink: { seen?: unknown },
+  ): ScoutTickDepsBuilder => (depsCtx, runCycle) => {
+    sink.seen = depsCtx.payloadTemplate;
+    return {
+      readCadenceState: async () => ({ idleRatio: 1, frictionSignals: 0, lastRunAtMs: null, nowMs: NOW }),
+      runCycle: async ({ budget, cycleId }) =>
+        runCycle({ harnessSlug: depsCtx.installSlug, workspaceId: depsCtx.workspaceId, budget, cycleId }),
+      persistRouted: async () => {},
+      newCycleId: () => 'cyc',
+    };
+  };
+
+  it('merges per SECTION — a delta section overrides key-wise, other sections survive', async () => {
+    const { runScoutCycleTick } = await import('./run');
+    const sink: { seen?: unknown } = {};
+    await runScoutCycleTick(input, {
+      runCycle: async () => ({ provenance: [], costUsd: 0.1 }),
+      buildDeps: capturing(sink),
+      resolveConfigDelta: async () => ({ scout: { lenses: ['inversion'], buckets: { maxMoonshots: 2 } } }),
+    });
+    expect(sink.seen).toEqual({
+      budget: { maxCostUsd: 0.5 },
+      scout: { lenses: ['inversion'], buckets: { maxMoonshots: 2 } },
+    });
+  });
+
+  it('feeds the MERGED payload to the deps builder, not just the cadence/budget parser', async () => {
+    // Both consumers read payloadTemplate — parseScoutCycleConfig for cadence/budget
+    // and the deps builder for the `scout` block. Layering that reached only one of
+    // them would leave Scout's judgment tuning on engine defaults while its budget
+    // honoured the owner, which is the half-applied failure this pins against.
+    const { runScoutCycleTick } = await import('./run');
+    const sink: { seen?: unknown } = {};
+    await runScoutCycleTick(
+      { ...input, payloadTemplate: null },
+      {
+        runCycle: async () => ({ provenance: [], costUsd: 0.1 }),
+        buildDeps: capturing(sink),
+        resolveConfigDelta: async () => ({ budget: { maxCostUsd: 9 } }),
+      },
+    );
+    expect(sink.seen).toEqual({ budget: { maxCostUsd: 9 } });
+  });
+
+  it('fails OPEN on a throwing resolver — the payload is used unchanged, the tick still fires', async () => {
+    const { runScoutCycleTick } = await import('./run');
+    const sink: { seen?: unknown } = {};
+    const res = await runScoutCycleTick(input, {
+      runCycle: async () => ({ provenance: [], costUsd: 0.1 }),
+      buildDeps: capturing(sink),
+      resolveConfigDelta: async () => {
+        throw new Error('hive_settings down');
+      },
+    });
+    expect(res.fired).toBe(true); // an unreadable settings row must never stop a tick
+    expect(sink.seen).toEqual(input.payloadTemplate);
+  });
+
+  it('unwired ⇒ no layering (the hermetic unit-test contract, unchanged behaviour)', async () => {
+    const { runScoutCycleTick } = await import('./run');
+    const sink: { seen?: unknown } = {};
+    const res = await runScoutCycleTick(input, {
+      runCycle: async () => ({ provenance: [], costUsd: 0.1 }),
+      buildDeps: capturing(sink),
+    });
+    expect(res.fired).toBe(true);
+    expect(sink.seen).toEqual(input.payloadTemplate);
   });
 });

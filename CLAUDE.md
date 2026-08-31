@@ -33,21 +33,35 @@
 
 > The most-ignored rule in the repo. Read it before you try to "open the app".
 
-**The ONLY supported way to run or test the app:**
+**The ONLY supported way for an AGENT to run or test the app — it never touches the
+owner's live desktop:**
 
 ```bash
-cd papercusp-desktop && npm run dev   # from the repo root
+scripts/verify-tauri-headless.sh -- bash -c '<your tauri-agent-tools assertions>'
+scripts/verify-tauri-headless.sh --boot-only   # multi-step; run the printed stop script when done
+                                               # under capability:bash: --boot-only-i-accept-task-lifetime
 ```
 
-Then drive the **Tauri window** it opens (agent-driven UI checks:
-`/internal/docs/testing/agent-e2e`). That one command boots embedded PG, the
-operator sidecar, migrations, and the webview. There is no "just the webapp"
-mode.
+It boots `papercusp-desktop` on its OWN auto-picked Xvfb display (≥90) + VirtualGL, with
+its own devUrl port and its own sidecar — embedded PG, migrations, webview, dev-bridge —
+runs your assertions with `VERIFY_TAURI_PID` / `_PORT` / `_DEV_URL` / `_POLL` exported,
+tears the whole tree down even on a failing assertion, and exits with your command's own
+code. `--help` prints the full contract. ⚠ The **database and workspace are NOT isolated**
+by default: every write you click is a real write to live state — pass
+`VERIFY_TAURI_ISOLATED_DB=1` for a throwaway per-run PG + WebView profile before you
+exercise write paths.
+
+**The attended/human form is `cd papercusp-desktop && npm run dev`** (from the repo root).
+It opens a REAL window on the inherited `DISPLAY`, which on this box is the owner's live
+desktop `:1` — so it is for a human who asked for a window, **never** for agent
+verification (agent-e2e §0 forbids focus-stealing; WI-2648 is the incident where synthetic
+input leaked into the owner's real email draft). Either form boots embedded PG, the
+operator sidecar, migrations, and the webview. There is no "just the webapp" mode.
 
 > **You CAN — and therefore MUST — verify UI yourself; "I can't check UI
 > headless" is a mistake, not a constraint.** Launching this shell is within
-> YOUR reach (run the command above — it's just `npm run dev`; first cargo build
-> ~2 min), and you then drive its webview **head-lessly, no focus-steal**, with the
+> YOUR reach (run the command above — it is one script; first cargo build ~2 min),
+> and you then drive its webview **head-lessly, no focus-steal**, with the
 > **`tauri-agent-tools`** CLI: `probe` · `eval` · `dom` · `click` · `type` ·
 > `screenshot` · `check` (CI-style assert, exits 0/1) · `capture` (screenshot +
 > DOM + console + logs). Full playbook: `/internal/docs/testing/agent-e2e` §0–§2
@@ -601,16 +615,28 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
 - **Never hardcode `localhost:5432`** — resolve via `getHarnessAdminUrl()`. Embedded-pg is the ship target; the dev box runs native PG on `:5432`.
 - **Reading PG-canonical state? Query PG — don't dump-and-jq a projection.** Plans, work-items, issues, observations (`engineer_issues`), `tool_invocations`, scorecards, recipes live in Postgres; the `*:list` tools and `docs/plans/*.md` files are *projections*. `dev:pg_query` is for **genuinely ad-hoc / analytic** reads (a one-off group-by, join, or recency slice you won't run repeatedly). A HOT read with a stable shape belongs behind a TOOL that wraps the canonical SQL so it can't drift — e.g. "what's claimable" is `work_items:claimable`, NOT a raw floor query (see the claimability note below). **Before you write `SELECT`, check this table** — these are the reads agents most often hand-write, and each already has a tool that scopes + applies the real semantics for you:
 
-  | you want | use | not |
-  |---|---|---|
-  | what issue-family work is claimable now | `work_items:claimable { harness }` | `WHERE status='open'` / the `work_items_claimable` view (overcounts ~13×) |
-  | a filtered work-item / issue slice | `work_items:list` (server-side filters) | a hand-written `harness_shared.work_items` query |
-  | what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` — `order` is `'updated'\|'created'\|'slug'` (NOT `'recent'` — that value is `invalid_input`; use `order:'updated'` for "the N most-recent plans") | a hand-written `harness_shared.harness_plans` query |
-  | plan COUNTS (by status / harness / day) | `plans:list { groupBy, aggregateOnly }` | a hand-written `GROUP BY` over `harness_plans` |
-  | pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
-  | prose / full-text | exact keyword or phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
-  | definition, references, type truth | `lsp:query` (compiler semantics) | `grep` for a declaration — cannot resolve shadowing or re-exports |
-  | call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` (dot, not colon) | `gitnexus.query` — UNRANKED NOISE, not empty: a wrong answer looks like a confident one (D-021) |
+| you want | use | not |
+|---|---|---|
+| how many tests fail on the **frozen candidate** (what we are actually promoting) | `state:read { cell:'gate.greenCheckpoint.candidateFailures' }` — read `stillBrokenCount` (files with NO fix yet), not `failingFileCount`; each file's `fixInRepairHead` says whether its fix already landed | ANY hand-written `test_runs` query. That table mixes THREE populations and only one judges the candidate: full-suite rows carry `commit_sha=NULL`, and `worktree_dirty=true` rows measure a tree ~100 agents are mutating. Aggregating them reports fleet churn as the gate's verdict (measured: "45 → 29 failing" when the true answer was **1**, already fixed) |
+| what issue-family work is claimable now | `work_items:claimable { harness }` | `WHERE status='open'` / the `work_items_claimable` view (overcounts ~13×) |
+| a filtered work-item / issue slice | `work_items:list` (server-side filters) | a hand-written `harness_shared.work_items` query |
+| what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` — `order` is `'updated'\|'created'\|'slug'` (NOT `'recent'` — that value is `invalid_input`; use `order:'updated'` for "the N most-recent plans") | a hand-written `harness_shared.harness_plans` query |
+| plan COUNTS (by status / harness / day) | `plans:list { groupBy, aggregateOnly }` | a hand-written `GROUP BY` over `harness_plans` |
+| pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
+| prose / full-text | exact keyword or phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
+| definition, references, type truth | `lsp:query` (compiler semantics) | `grep` for a declaration — cannot resolve shadowing or re-exports |
+| call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` (dot, not colon) | `gitnexus.query` — UNRANKED NOISE, not empty: a wrong answer looks like a confident one (D-021) |
+
+⚠ **If `gate.greenCheckpoint.candidateFailures` is unavailable to you, the ONLY query that answers it is scoped to one population — and the blob check is half the answer, not a footnote:**
+
+```sql
+SELECT file_path, status FROM harness_shared.test_runs
+ WHERE source='ci' AND worktree_dirty=false AND commit_sha='<the frozen candidate sha>'
+   AND status IN ('fail','error');   -- 'failed'/'passed' can NEVER match
+```
+
+Then for each path, `git rev-parse <candidate>:<path>` vs `git rev-parse <repairHead>:<path>`: **DIFFERENT blobs mean the fix ALREADY LANDED** and the file is awaiting re-verification, not repair. Equal blobs are the real queue. For a path inside a SUBMODULE the blobs are identical while the gitlink moved, so use `git diff --raw <candidate> <repairHead> -- <sub> | grep '^:160000'` instead — a blob compare there answers about the wrong object, in the false-negative direction. And `filesJudged` is the AFFECTED RADIUS, never the ~6,700-file suite: an empty failing list is **not** "the gate is green".
+
 
 ## Code-describing metadata: derive, pin, or attest — never hand-maintain
 

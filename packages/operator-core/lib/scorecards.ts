@@ -26,6 +26,8 @@ import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry
 import {
   asStructuredObservation,
   normalizeScorecardRatings,
+  scorecardAdmissionExclusion,
+  type ScorecardAdmissionExclusion,
   type ObservationRatings,
   type ObservationSubject,
   type ScorecardAcceptance,
@@ -366,6 +368,13 @@ export interface ScorecardRow {
    */
   generationFreshness?: GenerationFreshness;
 }
+
+/**
+ * The settled-evidence admission policy (EI-21949865560276745) lives in the neutral
+ * observation-types leaf so a reader can inherit it without importing this store.
+ * Re-exported here because this module's trend is its other consumer.
+ */
+export { scorecardAdmissionExclusion, type ScorecardAdmissionExclusion };
 
 /** The projected {@link parseGradedGeneration} shape — see RunningGeneration
  *  (generation-watermark.ts) for what each field means. `bootHeadSha`/`scoutCodeHash`/
@@ -1484,13 +1493,23 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // one is what enters the series. Applied after the superseded filter for the same
   // one-bucket arithmetic reason as above: a provisional card that was ALSO superseded
   // counts once, as superseded.
-  const settledCards = live.filter((r) => !r.provisional);
-  const provisionalExcluded = live.length - settledCards.length;
   // P-013: drop AUDIT-PENDING terminal cards the same way — the grading is final but
   // unverified until a non-author audit settles it (D-004). Same one-bucket
   // arithmetic: a card both provisional and audit-pending counts once, as provisional.
-  const finalCards = settledCards.filter((r) => r.gradingAudit?.state !== 'pending');
-  const gradingAuditPendingExcluded = settledCards.length - finalCards.length;
+  //
+  // EI-21949865560276745: both drops now route through the exported
+  // `scorecardAdmissionExclusion` so a second reader inherits this policy rather than
+  // re-deriving it. The precedence that produces the one-bucket arithmetic lives in the
+  // helper; the two counts below are unchanged in value.
+  const finalCards: ScorecardRow[] = [];
+  let provisionalExcluded = 0;
+  let gradingAuditPendingExcluded = 0;
+  for (const r of live) {
+    const excluded = scorecardAdmissionExclusion(r);
+    if (excluded === 'provisional') provisionalExcluded += 1;
+    else if (excluded === 'grading-audit-pending') gradingAuditPendingExcluded += 1;
+    else finalCards.push(r);
+  }
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...finalCards].reverse();
 

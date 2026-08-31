@@ -17,10 +17,16 @@ const getRubric = vi.fn();
 vi.mock('../rubrics', () => ({
   getRubric: (...a: unknown[]) => getRubric(...a),
 }));
-const listScorecards = vi.fn();
+const listScorecardPage = vi.fn();
 vi.mock('../scorecards', () => ({
-  listScorecards: (...a: unknown[]) => listScorecards(...a),
+  listScorecardPage: (...a: unknown[]) => listScorecardPage(...a),
 }));
+// NOTE: `../harness/improvements/observation-types` is deliberately NOT mocked. The
+// admission policy under test is the REAL one (EI-21949865560276745) — the point of the
+// fix is that this reader inherits the trend's policy rather than re-deriving it, and a
+// stubbed predicate would prove the opposite: the guards below would pass just as well
+// against a local copy that had already drifted. It is a pure predicate in a leaf
+// module, so using the real one costs nothing.
 
 import { readReleaseReadiness, RELEASE_READINESS_RUBRIC_ID } from './learning-release-readiness-read';
 
@@ -58,10 +64,13 @@ describe('readReleaseReadiness', () => {
     vi.clearAllMocks();
     buildProgramSuccessReport.mockResolvedValue(sampleReport);
     getRubric.mockResolvedValue(sampleRubric);
-    listScorecards.mockResolvedValue([
-      { createdAt: '2026-07-12T10:00:00.000Z', score10: 4 },
-      { createdAt: '2026-07-13T01:00:00.000Z', score10: 7 }, // newest — wins latest*
-    ]);
+    listScorecardPage.mockResolvedValue({
+      rows: [
+        { createdAt: '2026-07-12T10:00:00.000Z', score10: 4 },
+        { createdAt: '2026-07-13T01:00:00.000Z', score10: 7 }, // newest — wins latest*
+      ],
+      hasMore: false,
+    });
   });
 
   it('assembles the report + rubric governance from the tool readers (D-001)', async () => {
@@ -79,7 +88,7 @@ describe('readReleaseReadiness', () => {
     });
     expect(snap.errors).toBeUndefined();
     expect(getRubric).toHaveBeenCalledWith(RELEASE_READINESS_RUBRIC_ID);
-    expect(listScorecards).toHaveBeenCalledWith({ rubricRef: RELEASE_READINESS_RUBRIC_ID, limit: 100 });
+    expect(listScorecardPage).toHaveBeenCalledWith({ rubricRef: RELEASE_READINESS_RUBRIC_ID, limit: 100 });
   });
 
   it('a broken ledger read does not blank the rubric line (fail-soft per leg)', async () => {
@@ -99,13 +108,17 @@ describe('readReleaseReadiness', () => {
   });
 
   it('a broken scorecard read degrades to governance-only — the rubric status must not vanish', async () => {
-    listScorecards.mockRejectedValue(new Error('scorecards table sad'));
+    listScorecardPage.mockRejectedValue(new Error('scorecards table sad'));
     const snap = await readReleaseReadiness();
     expect(snap.rubric).toMatchObject({
       status: 'proposed',
       scorecardCount: 0,
       latestScorecardAt: null,
       latestScore10: null,
+      // null EVIDENCE, not a zeroed-out evidence block: "we could not read the
+      // history" and "we read it and there is none" are different answers, and a
+      // fabricated `sampleCount: 0` would render as the latter.
+      scoreEvidence: null,
     });
   });
 
@@ -180,6 +193,193 @@ describe('readReleaseReadiness', () => {
       const bounded = await settledWithin(readReleaseReadiness({ budgetMs: 40 }), 2000);
       expect(bounded).not.toBe(PENDING);
       expect(bounded !== PENDING && bounded.report).toBeNull();
+    });
+  });
+
+  /**
+   * EI-21949865560276745 — the strip rendered `N scorecards · latest X/10`, and both
+   * halves overstated confidence in the same silent direction.
+   *
+   * The score was simply the newest row `listScorecards` returned. That list includes
+   * the two classes the TREND refuses to count as settled evidence — PROVISIONAL
+   * working notes (P-008) and audit-PENDING gradings (P-013) — so a mid-run working
+   * note could BE the release score. Nothing on the strip distinguished it: a
+   * one-sample score and a hundred-sample score render identically, which is exactly
+   * how "a lucky pass becomes permanent evidence".
+   *
+   * The fix is disclosure, not a new judgement — the strip still shows the score, and
+   * now shows the population, window, freshness and truncation behind it.
+   */
+  describe('the score rests on ADMISSIBLE evidence only (EI-21949865560276745)', () => {
+    const settled = (createdAt: string, score10: number) => ({ createdAt, score10 });
+    const provisional = (createdAt: string, score10: number) => ({
+      createdAt,
+      score10,
+      provisional: { violatableKeys: ['never-implements'], stampedAt: createdAt },
+    });
+    const auditPending = (createdAt: string, score10: number) => ({
+      createdAt,
+      score10,
+      gradingAudit: { state: 'pending' },
+    });
+
+    it('a PROVISIONAL newest card does not become the release score', async () => {
+      listScorecardPage.mockResolvedValue({
+        rows: [provisional('2026-07-14T00:00:00.000Z', 10), settled('2026-07-13T01:00:00.000Z', 7)],
+        hasMore: false,
+      });
+
+      const snap = await readReleaseReadiness();
+
+      // 10 is the working note. 7 is the last settled grading.
+      expect(snap.rubric?.latestScore10).toBe(7);
+      expect(snap.rubric?.latestScorecardAt).toBe('2026-07-13T01:00:00.000Z');
+      expect(snap.rubric?.scorecardCount).toBe(1);
+      expect(snap.rubric?.scoreEvidence).toMatchObject({
+        sampleCount: 1,
+        excluded: { provisional: 1, gradingAuditPending: 0 },
+      });
+    });
+
+    it('an audit-PENDING newest card does not become the release score', async () => {
+      listScorecardPage.mockResolvedValue({
+        rows: [auditPending('2026-07-14T00:00:00.000Z', 10), settled('2026-07-13T01:00:00.000Z', 7)],
+        hasMore: false,
+      });
+
+      const snap = await readReleaseReadiness();
+
+      expect(snap.rubric?.latestScore10).toBe(7);
+      expect(snap.rubric?.scoreEvidence).toMatchObject({
+        sampleCount: 1,
+        excluded: { provisional: 0, gradingAuditPending: 1 },
+      });
+    });
+
+    it('a card excluded on BOTH counts is counted once — the figures never sum past what was excluded', async () => {
+      listScorecardPage.mockResolvedValue({
+        rows: [
+          { ...provisional('2026-07-14T00:00:00.000Z', 10), gradingAudit: { state: 'pending' } },
+          settled('2026-07-13T01:00:00.000Z', 7),
+        ],
+        hasMore: false,
+      });
+
+      const snap = await readReleaseReadiness();
+      const ev = snap.rubric?.scoreEvidence;
+
+      expect(ev?.excluded).toEqual({ provisional: 1, gradingAuditPending: 0 });
+      // The invariant the one-bucket rule exists for: excluded + admitted == the page.
+      expect((ev?.excluded.provisional ?? 0) + (ev?.excluded.gradingAuditPending ?? 0) + (ev?.sampleCount ?? 0)).toBe(2);
+    });
+
+    /**
+     * Without this the three guards above would pass just as happily against a reader
+     * that ignored the newest card unconditionally — "never take the newest" satisfies
+     * every assertion that only ever inspects an inadmissible one. The discriminator is
+     * admissibility, not recency.
+     */
+    it('CONTROL: on an all-settled page nothing is excluded and the NEWEST card does win', async () => {
+      listScorecardPage.mockResolvedValue({
+        rows: [settled('2026-07-14T00:00:00.000Z', 10), settled('2026-07-13T01:00:00.000Z', 7)],
+        hasMore: false,
+      });
+
+      const snap = await readReleaseReadiness();
+
+      expect(snap.rubric?.latestScore10).toBe(10);
+      expect(snap.rubric?.scorecardCount).toBe(2);
+      expect(snap.rubric?.scoreEvidence).toMatchObject({
+        sampleCount: 2,
+        excluded: { provisional: 0, gradingAuditPending: 0 },
+      });
+    });
+
+    it('discloses the window the sample spans, over the ADMISSIBLE cards only', async () => {
+      listScorecardPage.mockResolvedValue({
+        rows: [
+          provisional('2026-07-20T00:00:00.000Z', 10), // outside the settled window
+          settled('2026-07-14T00:00:00.000Z', 9),
+          settled('2026-07-11T00:00:00.000Z', 5),
+        ],
+        hasMore: false,
+      });
+
+      const snap = await readReleaseReadiness();
+
+      expect(snap.rubric?.scoreEvidence).toMatchObject({
+        sampleCount: 2,
+        windowStart: '2026-07-11T00:00:00.000Z',
+        windowEnd: '2026-07-14T00:00:00.000Z',
+      });
+      expect(snap.rubric?.scoreEvidence?.latestAgeMs).toBeGreaterThan(0);
+    });
+
+    /**
+     * A count taken over a capped page is a FLOOR. Rendering it as a total is this
+     * repo's own named failure — "a bounded measurement is indistinguishable from a
+     * real zero" — and `hasMore` is authoritative where `rows.length === limit` cannot
+     * tell a full page from an exactly-full one.
+     */
+    it('a full page marks every count a floor, so the cap is never read as a total', async () => {
+      listScorecardPage.mockResolvedValue({
+        rows: [settled('2026-07-14T00:00:00.000Z', 9)],
+        hasMore: true,
+      });
+
+      const snap = await readReleaseReadiness();
+      expect(snap.rubric?.scoreEvidence?.countTruncated).toBe(true);
+    });
+
+    it('CONTROL: a short page is NOT marked truncated', async () => {
+      const snap = await readReleaseReadiness();
+      expect(snap.rubric?.scoreEvidence?.countTruncated).toBe(false);
+    });
+
+    /**
+     * The generation half of the same defect. A card carries a read-time verdict on
+     * whether the generation it graded has since ENDED; the strip dropped it, which is
+     * the 2026-07-17 shape — a 4.5h soak and a 6/6 verdict voided by a restart three
+     * minutes after emit, with nothing downstream any the wiser.
+     */
+    it('surfaces the newest admissible card’s generation freshness', async () => {
+      listScorecardPage.mockResolvedValue({
+        rows: [
+          {
+            ...settled('2026-07-14T00:00:00.000Z', 10),
+            generationFreshness: {
+              status: 'stale',
+              gradedHostStartedAt: '2026-07-13T00:00:00.000Z',
+              liveHostStartedAt: '2026-07-14T00:03:00.000Z',
+              reason: 'bg-host restarted',
+            },
+          },
+        ],
+        hasMore: false,
+      });
+
+      const snap = await readReleaseReadiness();
+      expect(snap.rubric?.scoreEvidence?.latestGenerationFreshness).toBe('stale');
+    });
+
+    it('an unstamped card reports null freshness — absence is not-recorded, never "fresh"', async () => {
+      const snap = await readReleaseReadiness();
+      expect(snap.rubric?.scoreEvidence?.latestGenerationFreshness).toBeNull();
+    });
+
+    it('an empty history is an honest zero, not a missing read', async () => {
+      listScorecardPage.mockResolvedValue({ rows: [], hasMore: false });
+
+      const snap = await readReleaseReadiness();
+
+      expect(snap.rubric?.latestScore10).toBeNull();
+      expect(snap.rubric?.scoreEvidence).toMatchObject({
+        sampleCount: 0,
+        windowStart: null,
+        windowEnd: null,
+        latestAgeMs: null,
+        latestGenerationFreshness: null,
+      });
     });
   });
 });

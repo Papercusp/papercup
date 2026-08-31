@@ -379,6 +379,38 @@ export interface ScorecardGradingAudit {
   auditedAt?: string;
 }
 
+/**
+ * Why a scorecard is NOT admissible as settled evidence — or null when it is
+ * (EI-21949865560276745).
+ *
+ * The trend has always enforced this policy inline, and it was the only place that
+ * knew it: a scorecard LIST returns provisional working notes and audit-pending
+ * gradings alongside settled ones, so every other reader that took "the newest card"
+ * silently took whichever of those happened to be newest. The release-readiness strip
+ * did exactly that (see sync-resolver/learning-release-readiness-read.ts).
+ *
+ * It lives HERE, in the neutral leaf beside the two stamps it reads, rather than in
+ * scorecards.ts: the policy is a pure predicate with no storage dependency, and a
+ * reader must be able to inherit it without dragging the whole scorecard store (and
+ * its PG import) in behind it. Exported rather than copied so a second reader shares
+ * the policy instead of drifting from it.
+ *
+ * ORDER IS LOAD-BEARING: a card that is both provisional AND audit-pending reports
+ * 'provisional', so callers bucketing by this value count it ONCE. Counting it in both
+ * buckets makes the exclusion figures sum past the number actually excluded — the
+ * invisible-arithmetic failure those counts exist to prevent.
+ */
+export type ScorecardAdmissionExclusion = 'provisional' | 'grading-audit-pending';
+
+export function scorecardAdmissionExclusion(row: {
+  provisional?: ScorecardProvisional;
+  gradingAudit?: ScorecardGradingAudit;
+}): ScorecardAdmissionExclusion | null {
+  if (row.provisional) return 'provisional';
+  if (row.gradingAudit?.state === 'pending') return 'grading-audit-pending';
+  return null;
+}
+
 export interface ScorecardVetting {
   /**
    * conversation_id of the get_feedback consult that critiqued the vetted rubric.

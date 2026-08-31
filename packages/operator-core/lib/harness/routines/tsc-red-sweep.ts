@@ -55,8 +55,12 @@ import {
   readRunHeartbeats,
   DWELL_SEC,
 } from '../../../../../scripts/lib/tsc-red-observations.mjs';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+// PURE matcher, shared with the gate's containment logic: longest-mount-wins, boundary-aware,
+// and a path EQUAL to a gitlink is deliberately not "inside" it. Reused rather than re-derived
+// so the ownership test and the gate agree on what "inside a submodule" means.
+import { containingSubmodulePath } from '../../candidate-contains';
 import { listIssues, setIssueState, commentIssue, type EngineerIssue } from '../../issues-engineer';
 import {
   decideTscRedCleared,
@@ -104,6 +108,48 @@ export function debounceKeyFor(file: string): string {
 }
 
 /**
+ * PURE: the two git probes that answer "is anyone ON this file right now?", spelled for the
+ * repository the file actually lives in.
+ *
+ * EI-19468589610261889 — the superproject spelling is a FALSE-EMPTY for any path inside a
+ * submodule, and this is not a cosmetic wrong answer: the superproject stores only a gitlink,
+ * so `git status --porcelain` reports nothing and `git log -1 -- <path>` prints an empty
+ * string for a file that may have been committed minutes ago. Both empties read as
+ * reassurance — "nobody is editing it", "no recent commit, the author has moved on" — so the
+ * guidance fails toward CLAIMING a file a peer is actively holding, which is the exact
+ * collision the ownership test exists to prevent. Measured 2026-08-31: 7 of the 170 files in
+ * the live tsc baseline sit inside 5 submodules (`libs/generic/sync`, `libs/generic/tooldef`,
+ * `libs/papercusp`, `libs/test-config`, `libs/testing-shell`) — i.e. exactly the shared libs
+ * where stomping a peer is most expensive.
+ *
+ * `submodulePaths` is a PARAMETER rather than a `.gitmodules` read so this stays pure and
+ * unit-testable; `[]` restores the plain superproject spelling exactly, which is also the
+ * fail-soft behaviour when discovery fails.
+ *
+ * NOT rewritten: `npm run lint:tsc -- --files=<submodule path>` is correct as-is. Measured
+ * live 2026-08-31 — the gate AUTO-ROUTES it to the owning workspace's sibling gate
+ * (`status=routed`, exit 0, `filesUnchecked=1` stamped honestly) rather than refusing it.
+ */
+export function ownershipTestLines(file: string, submodulePaths: readonly string[] = []): string[] {
+  const sub = containingSubmodulePath([...submodulePaths], file);
+  if (!sub) {
+    return [
+      `  git status --porcelain | grep ${file}   # dirty => someone is editing it RIGHT NOW`,
+      `  git log -1 --format=%cI -- ${file}      # minutes old => author still has context`,
+      `  npm run lint:tsc -- --files=${file}`,
+    ];
+  }
+  const rel = file.slice(sub.length + 1);
+  return [
+    `  # ${file} is inside submodule '${sub}'. Ask its OWN repo: from the superproject both`,
+    `  # probes below return EMPTY for every submodule file, which reads as "unowned" and is wrong.`,
+    `  git -C ${sub} status --porcelain ${rel}   # dirty => someone is editing it RIGHT NOW`,
+    `  git -C ${sub} log -1 --format=%cI -- ${rel}   # minutes old => author still has context`,
+    `  npm run lint:tsc -- --files=${file}`,
+  ];
+}
+
+/**
  * PURE: the capture payload for one dwelled red. Split out so the wording, the severity and
  * the dedup identity are all assertable without a database or a clock.
  *
@@ -111,8 +157,14 @@ export function debounceKeyFor(file: string): string {
  * cosmetic type nit. A committed non-baselined red reds the SHARED green-checkpoint, so it
  * blocks every agent's promotion path, and by the time this sweep files it the red has
  * already outlived its author by DWELL_SEC — meaning nobody is on it.
+ *
+ * `submodulePaths` (default `[]`) selects the ownership-test spelling — see
+ * `ownershipTestLines`.
  */
-export function buildRedCapture(red: DwelledRed): {
+export function buildRedCapture(
+  red: DwelledRed,
+  submodulePaths: readonly string[] = [],
+): {
   title: string;
   body: string;
   watchdogKey: string;
@@ -136,9 +188,7 @@ export function buildRedCapture(red: DwelledRed): {
       `the whole fleet's promotion path, not just this file's author.\n\n` +
       `BEFORE CLAIMING IT, re-run the ownership test — the red may have been fixed between ` +
       `this filing and your reading it:\n` +
-      `  git status --porcelain | grep ${red.file}   # dirty => someone is editing it RIGHT NOW\n` +
-      `  git log -1 --format=%cI -- ${red.file}      # minutes old => author still has context\n` +
-      `  npm run lint:tsc -- --files=${red.file}\n\n` +
+      `${ownershipTestLines(red.file, submodulePaths).join('\n')}\n\n` +
       `Observation window: first seen ${new Date(red.firstSeen * 1000).toISOString()}, ` +
       `last seen ${new Date(red.lastSeen * 1000).toISOString()}.`,
     watchdogKey: debounceKeyFor(red.file),
@@ -170,6 +220,30 @@ export interface TscRedSweepDeps {
   minCleanRuns?: number;
   /** Root the reported paths are relative to (default process.cwd()). */
   repoRoot?: string;
+  /**
+   * Declared submodule mount points, for spelling the ownership test in the repo that
+   * actually holds the file (EI-19468589610261889). Default: read `.gitmodules` under
+   * `repoRoot`. Fail-soft to `[]`, which restores the plain superproject spelling.
+   */
+  submodulePathsFn?: () => readonly string[];
+}
+
+/**
+ * Declared submodule mounts from `.gitmodules`, sync + fail-soft.
+ *
+ * Sync on purpose: the only other filesystem read on this path (`fileExistsFn`) is sync too,
+ * and the sweep must never gain a call that can hang — a missing, unreadable or malformed
+ * `.gitmodules` yields `[]` and the ownership test simply keeps its superproject spelling.
+ */
+export function readDeclaredSubmodulePaths(repoRoot: string): string[] {
+  try {
+    return readFileSync(join(repoRoot, '.gitmodules'), 'utf8')
+      .split('\n')
+      .map((l) => /^\s*path\s*=\s*(.+?)\s*$/.exec(l)?.[1])
+      .filter((p): p is string => !!p);
+  } catch {
+    return [];
+  }
 }
 
 /** The watchdog key a filed issue carries, or '' — mirrors auto-close.ts's accessor. */
@@ -303,9 +377,14 @@ export async function tscRedSweep(deps: TscRedSweepDeps = {}): Promise<TscRedSwe
     claimFireFn = claimWatchdogFire,
     captureFn,
     workspaceIdFn = activeWorkspaceId,
+    repoRoot = process.cwd(),
+    submodulePathsFn = () => readDeclaredSubmodulePaths(repoRoot),
   } = deps;
 
   const results: TscRedSweepResult[] = [];
+  // Read once per tick, not per red: the mount set cannot change mid-sweep, and this keeps the
+  // fail-soft `[]` a single decision rather than one per filed item.
+  const submodulePaths = submodulePathsFn();
   try {
     const observations = readObservationsFn(path ? { path, nowMs } : { nowMs });
     const dwelled: DwelledRed[] = selectDwelledRedsFn(observations, { nowMs });
@@ -337,7 +416,7 @@ export async function tscRedSweep(deps: TscRedSweepDeps = {}): Promise<TscRedSwe
           });
           continue;
         }
-        const capture = buildRedCapture(red);
+        const capture = buildRedCapture(red, submodulePaths);
         // Single-flight: atomically re-check + claim the debounce slot immediately before the
         // one-time side effect, so two overlapping ticks cannot both file (the EI-6777 fix
         // every sibling sweep carries).

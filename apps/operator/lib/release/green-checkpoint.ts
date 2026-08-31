@@ -6471,6 +6471,11 @@ export function buildGreenCheckpointEnv(
   /** Explicit operator capacity contract. `shared` remains the safe default. */
   capacityMode: GreenCheckpointCapacityMode = "shared",
   affectedTestProofGroup?: string | null,
+  /** WI-1702898: the sha this run is JUDGING, stamped onto every test_runs row it
+   *  produces (`commit_sha`) so the rows can be joined to the candidate. Optional —
+   *  omitted ⇒ the reporter falls back to its own `git rev-parse HEAD`, which is the
+   *  pre-WI-1702898 behaviour and can silently resolve to NULL. */
+  judgedCandidate?: string | null,
 ): NodeJS.ProcessEnv {
   const env = canonicalGreenCheckpointSourceEnv(source);
   // EI-19307211919650123 — MUST be set AFTER the strip above (these are the gate
@@ -6483,9 +6488,21 @@ export function buildGreenCheckpointEnv(
   // dropped outright (see classifyGitEntry in libs/test-config). Stamping the source
   // is what makes a gate red retrospectively auditable: "which files failed in run X,
   // and did the same ones fail in X-1" becomes a query instead of archaeology over
-  // ~55min-old logs. `commit_sha` needs no stamp — the reporter resolves it with
-  // `git rev-parse HEAD` in the checkout it ran in, which for the gate IS the judged
-  // candidate.
+  // ~55min-old logs.
+  //
+  // ⚠ WI-1702898 — THE PARAGRAPH THAT USED TO SIT HERE WAS WRONG, and its wrongness is
+  // why the 2026-08-31 escalation happened. It read: "`commit_sha` needs no stamp — the
+  // reporter resolves it with `git rev-parse HEAD` in the checkout it ran in, which for
+  // the gate IS the judged candidate." The PREMISE is true; the MECHANISM does not
+  // deliver it. That resolution runs under a 200ms fail-soft timeout
+  // (`resolveGitContext` in libs/test-config) and degrades to `null` rather than
+  // retrying, so under fleet load an entire suite records `commit_sha=NULL` — measured
+  // at 6,337 distinct files in one day. The largest body of test evidence on the box
+  // could not be joined to the sha it judged, so "what is failing on the candidate"
+  // had no answer and agents hand-wrote SQL that answered a different question.
+  //
+  // The runner KNOWS the sha it chose. Stamping it is an observation; letting the child
+  // infer it is a guess with a timeout attached.
   //
   // Deliberately NOT stamping PAPERCUSP_TEST_RUN_HARNESS / PAPERCUSP_WORKSPACE_ID:
   // the Tests-tab history query requires both to be non-NULL, so leaving them unset
@@ -6494,6 +6511,12 @@ export function buildGreenCheckpointEnv(
   // still indexes exactly the "recent gate runs" read this exists to serve.
   env.PAPERCUSP_TEST_RUN_SOURCE = "ci";
   if (runId) env.PAPERCUSP_TEST_RUN_GROUP = runId;
+  // WI-1702898. Deleted first so a stale value can never ride in from the host and
+  // attribute this run's rows to a candidate it is not judging — a WRONG sha is worse
+  // than the NULL this replaces, because a NULL is visibly unattributed while a wrong
+  // one reads as evidence.
+  delete env.PAPERCUSP_TEST_RUN_COMMIT;
+  if (judgedCandidate) env.PAPERCUSP_TEST_RUN_COMMIT = judgedCandidate;
   // P-007/D-005: this non-PAPERCUSP key must not leak from the host. A repair verifier
   // receives it explicitly while retaining its own process/verdict run group above.
   delete env.AFFECTED_TASK_VERDICT_PROOF_GROUP;
@@ -14900,6 +14923,11 @@ export function realCheckpointDeps(
         runId,
         cfg.greenCheckpointCapacityMode,
         execution?.affectedTestProofGroup,
+        // WI-1702898: the sha this run is judging, so every row it writes can be joined
+        // to it. This is the ONE call site that runs the candidate suite — the legs
+        // below judge no candidate, so stamping them would attribute lint/perf rows to
+        // a sha they did not measure.
+        execution?.candidate,
       );
       log(
         greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env),

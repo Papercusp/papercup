@@ -25,6 +25,18 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
       "packages/operator-core/lib/fleet/",
       "packages/operator-core/lib/pty-",
       "apps/operator/scripts/psu-",
+      // P-001 (spawn-door-governor-migration-2026-08-31, D-006): the lane's
+      // prefixes covered every DOOR but not the two files holding the actual
+      // child-start primitives, so a raw spawn() could be added there and the
+      // scan would stay green. Measured before widening: console-spawn.ts
+      // yielded resource-start-outside-admission with NO registry row, and
+      // orchestrator-runner.ts already carried a row that was inert because
+      // nothing scanned the path it names. Exact-file entries (the style the
+      // P-015 lane uses) rather than a `lib/dbos/` prefix: only these two
+      // files start a child, and a directory prefix would silently adopt
+      // unrelated future files into an active lane.
+      "packages/operator-core/lib/console-spawn.ts",
+      "packages/operator-core/lib/dbos/orchestrator-runner.ts",
     ],
     resourceDimensions: ["cpu", "memory", "process", "pty"],
     fanOut:
@@ -1429,6 +1441,25 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   // ── P-015 sidecar/provider control and upstream-admitted starts ─────────────
+  // P-001 (spawn-door-governor-migration-2026-08-31, D-006). console-spawn is
+  // not a door — it is the low-level child-start PRIMITIVE that governed doors
+  // wrap. resource-governor/spawn-execution.ts imports its result types (:3)
+  // and spawnGovernedAgentProcess admits FIRST and then calls this as its
+  // spawnProcess(context), so the lease is held by the caller across the
+  // child's whole lifetime and re-admitting here would double-count one agent
+  // start. Same shape as the psu-launcher.mjs row above. This row disposes of
+  // the PRIMITIVE only: whether each importer (launch-agent, launch-on-plan,
+  // goals/start, capability/terminal, fleet-headcount-action, goal-auto-start,
+  // terminal-spawn) is itself admitted stays enforced against those files in
+  // their own scanned prefixes — this is not a blanket exemption for callers.
+  [
+    "packages/operator-core/lib/console-spawn.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "spawnConsole/spawnHeadless are the child-start primitive that spawnGovernedAgentProcess wraps, not an independent door: admission and the lease are held by the calling seam across the child's lifetime (spawn-execution.ts imports this module's result types and calls it as spawnProcess(context)), so admitting here would double-count a single agent start; each importer remains separately enforced in its own scanned prefix",
+    },
+  ],
   [
     "packages/operator-core/lib/dbos/orchestrator-runner.ts::resource-start-outside-admission",
     {

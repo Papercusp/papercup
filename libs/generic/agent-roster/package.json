@@ -21,6 +21,11 @@
       "types": "./src/roster-styles.ts",
       "import": "./src/roster-styles.ts",
       "default": "./src/roster-styles.ts"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "import": "./src/types.ts",
+      "default": "./src/types.ts"
     }
   },
   "peerDependencies": {

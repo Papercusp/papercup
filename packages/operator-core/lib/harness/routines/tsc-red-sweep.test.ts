@@ -15,15 +15,21 @@
  * Neither can pass this file.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import {
   tscRedSweep,
   buildRedCapture,
+  ownershipTestLines,
+  readDeclaredSubmodulePaths,
   debounceKeyFor,
   MAX_FILES_PER_TICK,
   DEBOUNCE_HOURS,
   type DwelledRed,
   type TscRedSweepDeps,
 } from './tsc-red-sweep';
+
+/** Repo root, resolved from this file rather than cwd (which differs per vitest project). */
+const REPO_ROOT = fileURLToPath(new URL('../../../../../', import.meta.url));
 
 const NOW = 1_800_000_000_000;
 const nowSec = Math.floor(NOW / 1000);
@@ -108,6 +114,104 @@ describe('buildRedCapture', () => {
     const body = buildRedCapture(red()).body;
     expect(body).toContain('git status --porcelain');
     expect(body).toContain('lint:tsc');
+  });
+});
+
+/**
+ * EI-19468589610261889 — the ownership test must be spelled for the repo that actually holds
+ * the file.
+ *
+ * WHY THIS IS A REAL GUARD AND NOT A WORDING TEST. Measured live 2026-08-31 against the
+ * superproject root: for `libs/generic/tooldef/src/standard-schema.ts` (a real entry in the
+ * live tsc baseline) `git status --porcelain | grep <f>` and `git log -1 --format=%cI -- <f>`
+ * BOTH print nothing, while the same questions asked inside the submodule report the file was
+ * committed 2026-08-30T20:03:00Z. A non-submodule control answers correctly from the root.
+ *
+ * Both empties read as "nobody is on it", so the old spelling failed toward CLAIMING a file a
+ * peer holds — the precise collision the test exists to prevent. The direction is the
+ * severity, which is why the assertions below pin the `-C` form rather than merely asserting
+ * "some git command is mentioned".
+ */
+describe('buildRedCapture — ownership test is spelled for the owning repo', () => {
+  const SUBS = ['libs/generic/tooldef', 'libs/papercusp', 'libs/generic/sync'];
+
+  it('asks the SUBMODULE, not the superproject, for a file inside one', () => {
+    const body = buildRedCapture(
+      red({ file: 'libs/generic/tooldef/src/standard-schema.ts' }),
+      SUBS,
+    ).body;
+    expect(body).toContain('git -C libs/generic/tooldef status --porcelain src/standard-schema.ts');
+    expect(body).toContain(
+      'git -C libs/generic/tooldef log -1 --format=%cI -- src/standard-schema.ts',
+    );
+    // The false-empty superproject spelling must be GONE, not merely supplemented — leaving it
+    // beside the correct one still invites the empty answer that reads as reassurance.
+    expect(body).not.toContain(
+      'git status --porcelain | grep libs/generic/tooldef/src/standard-schema.ts',
+    );
+    expect(body).not.toContain(
+      'git log -1 --format=%cI -- libs/generic/tooldef/src/standard-schema.ts',
+    );
+  });
+
+  it('says WHY, so a reader who runs the old command does not trust its empty output', () => {
+    const body = buildRedCapture(red({ file: 'libs/papercusp/packages/orchestrator/src/x.ts' }), SUBS)
+      .body;
+    expect(body).toContain("inside submodule 'libs/papercusp'");
+    expect(body).toMatch(/return EMPTY/);
+  });
+
+  it('leaves a superproject path exactly as it was', () => {
+    const body = buildRedCapture(red({ file: 'packages/operator-core/lib/x.ts' }), SUBS).body;
+    expect(body).toContain('git status --porcelain | grep packages/operator-core/lib/x.ts');
+    expect(body).toContain('git log -1 --format=%cI -- packages/operator-core/lib/x.ts');
+    expect(body).not.toContain('git -C');
+  });
+
+  it('keeps the superproject spelling when the mount list is empty (fail-soft default)', () => {
+    // Discovery failing must degrade to today's behaviour, never to a half-rewritten command.
+    const body = buildRedCapture(red({ file: 'libs/generic/tooldef/src/standard-schema.ts' })).body;
+    expect(body).toContain('git status --porcelain | grep libs/generic/tooldef/src/standard-schema.ts');
+    expect(body).not.toContain('git -C');
+  });
+
+  it('does NOT rewrite the lint:tsc line — the gate auto-routes a submodule path', () => {
+    // Measured live 2026-08-31: `lint:tsc --files=libs/generic/tooldef/src/standard-schema.ts`
+    // returns status=routed exit=0 (routed to the owning workspace's sibling gate), NOT a
+    // refusal. Rewriting it would break a command that already works.
+    const body = buildRedCapture(
+      red({ file: 'libs/generic/tooldef/src/standard-schema.ts' }),
+      SUBS,
+    ).body;
+    expect(body).toContain('npm run lint:tsc -- --files=libs/generic/tooldef/src/standard-schema.ts');
+  });
+
+  it('picks the LONGEST matching mount when one submodule nests inside another', () => {
+    const nested = ['libs/generic', 'libs/generic/tooldef'];
+    expect(ownershipTestLines('libs/generic/tooldef/src/a.ts', nested).join('\n')).toContain(
+      'git -C libs/generic/tooldef status --porcelain src/a.ts',
+    );
+  });
+
+  it('treats a path EQUAL to a gitlink as not inside it', () => {
+    // Such a path already resolves in the superproject (it IS the gitlink entry), so it needs
+    // no attribution — rewriting it would point at a repo where the path does not exist.
+    expect(ownershipTestLines('libs/generic/tooldef', ['libs/generic/tooldef']).join('\n')).not.toContain(
+      'git -C',
+    );
+  });
+});
+
+describe('readDeclaredSubmodulePaths', () => {
+  it('fails soft to [] when .gitmodules is absent, so the sweep never throws', () => {
+    expect(readDeclaredSubmodulePaths('/nonexistent-root-for-tsc-red-sweep-test')).toEqual([]);
+  });
+
+  it('reads the real repository .gitmodules and finds the mounts this fix depends on', () => {
+    const found = readDeclaredSubmodulePaths(REPO_ROOT);
+    // Calibration: if this ever returns [] the guard above would pass vacuously.
+    expect(found.length).toBeGreaterThan(0);
+    expect(found).toContain('libs/generic/tooldef');
   });
 });
 
