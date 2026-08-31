@@ -100,12 +100,13 @@ export function isNativeEditProofForPaths(
   if (!value || typeof value !== 'object') return false;
   const proof = value as Partial<NativeEditProof>;
   if (proof.success !== true) return false;
-  if (proof.source !== 'claude' && proof.source !== 'codex' && proof.source !== 'omp') return false;
+  const source = proof.source;
+  if (source !== 'claude' && source !== 'codex' && source !== 'omp') return false;
   const tools = [
     ...(typeof proof.tool === 'string' ? [proof.tool] : []),
     ...(Array.isArray(proof.tools) ? proof.tools : []),
   ];
-  if (tools.length === 0 || tools.some((tool) => typeof tool !== 'string' || !NATIVE_EDIT_TOOLS[proof.source].has(tool))) {
+  if (tools.length === 0 || tools.some((tool) => typeof tool !== 'string' || !NATIVE_EDIT_TOOLS[source].has(tool))) {
     return false;
   }
   if (!Array.isArray(proof.paths) || proof.paths.length === 0) return false;
