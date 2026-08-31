@@ -49,6 +49,15 @@ beforeEach(() => {
 });
 
 describe('dev:pg_query — P-005 guard wiring', () => {
+  // EI-21924434989535557: an acceptance-rubric grader launches as role `judge` and
+  // needs this READ-ONLY query surface (read-only txn, row cap, statement timeout —
+  // no write path) to RE-MEASURE a criterion instead of quoting the implementer's
+  // recorded figures. Fixed in commit a1be76b; this is the regression guard that
+  // fix previously lacked — nothing here silently re-narrows the allowlist.
+  it('EI-21924434989535557: grants role `judge` read access, so acceptance graders can RE-MEASURE via SQL', () => {
+    expect(pgQueryTool.agentRoles).toContain('judge');
+  });
+
   it('publishes SQL and relation description as mutually exclusive input alternatives', () => {
     expect(pgQueryTool.args.safeParse({ sql: 'SELECT 1' }).success).toBe(true);
     expect(
