@@ -565,9 +565,6 @@ function collectRanges(text, fileName, { strings, regex }) {
 
 function blankRanges(text, ranges) {
   if (!ranges.length) return text;
-  // split('') — UTF-16 CODE UNITS, which is what both String.length and TypeScript's node
-  // offsets count. Array.from() splits by code POINT, so a single astral emoji (🚨, and this
-  // repo is full of them) desynchronises every offset after it and silently mis-blanks code.
   // Blank by SLICING rather than exploding the source into a character array. The previous
   // `text.split('')` allocated one single-character string per code unit — the 247 MB of repo
   // source this module is asked to mask became ~247 million strings per full scan. Measured
