@@ -5,6 +5,7 @@ import {
   type VoiceTurnRouterDependencies,
   type VoiceTurnRoutingInput,
 } from './voice-turn-router';
+import type { VoiceContextSources } from './voice-context-projection';
 
 const baseTurn = (): Omit<VoiceTurnRoutingInput, 'resolvedPrincipal'> => ({
   workspaceId: 'workspace-1',
@@ -17,10 +18,16 @@ const baseTurn = (): Omit<VoiceTurnRoutingInput, 'resolvedPrincipal'> => ({
 });
 
 function harness(over: Partial<VoiceTurnRouterDependencies> = {}) {
+  const voiceContextSources: VoiceContextSources = {
+    now: () => new Date('2026-08-31T16:00:01.000Z'),
+    resolveOwnerVault: vi.fn(async () => ({ available: true as const, candidates: [] })),
+    resolveCallerHistory: vi.fn(async () => ({ available: true as const, candidates: [] })),
+  };
   const deps: VoiceTurnRouterDependencies = {
     getOrCreateActiveOperatorConversation: vi.fn(async () => ({ id: 'operator-active' })),
     getOrCreateCallConversation: vi.fn(async ({ callSessionId }) => ({ id: `call:${callSessionId}` })),
     resolveOwnerTools: vi.fn(async () => ['calendar:list', 'email:draft']),
+    voiceContextSources,
     ...over,
   };
   return { deps, route: createVoiceTurnRouter(deps) };
@@ -53,6 +60,12 @@ describe('voice-turn router policy', () => {
       tools: ['calendar:list', 'email:draft'],
     });
     expect(deps.getOrCreateCallConversation).not.toHaveBeenCalled();
+    expect(result.context).toMatchObject({
+      version: 1,
+      resolvedAt: '2026-08-31T16:00:01.000Z',
+      principal: { kind: 'owner', subjectId: 'owner-1' },
+    });
+    expect(deps.voiceContextSources?.resolveOwnerVault).toHaveBeenCalledOnce();
   });
 
   it('links an authenticated owner phone call to the active operator conversation', async () => {
@@ -100,6 +113,7 @@ describe('voice-turn router policy', () => {
       tools: [],
     });
     expect(deps.getOrCreateActiveOperatorConversation).not.toHaveBeenCalled();
+    expect(deps.voiceContextSources?.resolveOwnerVault).not.toHaveBeenCalled();
   });
 
   it('L4 counterexample: client fields cannot elevate a caller into owner policy or conversation', async () => {
@@ -123,6 +137,11 @@ describe('voice-turn router policy', () => {
         kind: 'operator',
         id: 'stolen-owner-thread',
         parentOperatorConversationId: null,
+      },
+      context: {
+        version: 1,
+        status: 'ready',
+        sources: [{ capability: 'email', items: [{ text: 'stolen owner data' }] }],
       },
     } as VoiceTurnRoutingInput & Record<string, unknown>;
 
@@ -148,6 +167,33 @@ describe('voice-turn router policy', () => {
       callSessionId: 'caller-room',
       transport: 'papercup-local',
       principal: malicious.resolvedPrincipal,
+    });
+    expect(result.context.principal.kind).toBe('caller');
+    expect(result.context.sources.find((source) => source.capability === 'email')).toMatchObject({
+      status: 'denied',
+      items: [],
+    });
+    expect(deps.voiceContextSources?.resolveOwnerVault).not.toHaveBeenCalled();
+    expect(deps.voiceContextSources?.resolveCallerHistory).toHaveBeenCalledOnce();
+  });
+
+  it('keeps dispatch alive with an explicit degraded context when the owner vault fails', async () => {
+    const { route } = harness({
+      voiceContextSources: {
+        now: () => new Date('2026-08-31T16:00:01.000Z'),
+        resolveOwnerVault: vi.fn(async () => { throw new Error('vault unavailable'); }),
+        resolveCallerHistory: vi.fn(async () => ({ available: true as const, candidates: [] })),
+      },
+    });
+
+    const result = await route({ ...baseTurn(), resolvedPrincipal: owner });
+
+    expect(result.turn.turnId).toBe('turn-1');
+    expect(result.context.status).toBe('degraded');
+    expect(result.context.sources.find((source) => source.capability === 'email')).toMatchObject({
+      status: 'degraded',
+      reason: 'source-unavailable',
+      items: [],
     });
   });
 

@@ -7,6 +7,12 @@ import {
   type VoicePrincipal,
   type VoiceTurnRequest,
 } from '@papercusp/chat-protocol';
+import {
+  createVoiceContextSources,
+  resolveVoiceContextProjection,
+  type VoiceContextProjection,
+  type VoiceContextSources,
+} from './voice-context-projection';
 
 /** Transport fields that remain untrusted until the canonical request parses. */
 export type VoiceTurnRoutingInput = Omit<
@@ -24,6 +30,11 @@ export interface VoiceExecutorRequest {
   workspaceId: string;
   policy: 'owner' | 'restricted-call';
   turn: VoiceTurnRequest;
+  /**
+   * Server-only context passed to the executor. It is intentionally outside
+   * VoiceTurnRequest so a transport/client cannot assert or widen it.
+   */
+  context: VoiceContextProjection;
 }
 
 export interface VoiceTurnRouterDependencies {
@@ -36,6 +47,8 @@ export interface VoiceTurnRouterDependencies {
   }): Promise<{ id: string }>;
   /** Existing Papercup tool policy projected into canonical tool names for an owner turn. */
   resolveOwnerTools?(principal: VoicePrincipal): readonly string[] | Promise<readonly string[]>;
+  /** Optional server-owned source seam; every route still resolves context. */
+  voiceContextSources?: VoiceContextSources;
 }
 
 export type VoiceTurnRoutingErrorCode =
@@ -197,6 +210,19 @@ export function createVoiceTurnRouter(deps: VoiceTurnRouterDependencies) {
     if (!turn) {
       throw new VoiceTurnRoutingError('invalid_turn', 'voice turn failed canonical validation');
     }
-    return { workspaceId, policy: isOwner ? 'owner' : 'restricted-call', turn };
+    // Context is resolved only after the server has fixed the principal and
+    // capability envelope. A source failure is represented by the projector's
+    // degraded/empty slices and must never drop an otherwise valid turn.
+    const context = await resolveVoiceContextProjection(
+      {
+        workspaceId,
+        principal,
+        capabilities,
+        query: turn.transcript,
+        callSessionId: input.callSessionId,
+      },
+      deps.voiceContextSources ?? createVoiceContextSources(),
+    );
+    return { workspaceId, policy: isOwner ? 'owner' : 'restricted-call', turn, context };
   };
 }
