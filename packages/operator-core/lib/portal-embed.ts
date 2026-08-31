@@ -12,7 +12,7 @@ export const PORTAL_EMBED_MESSAGE = 'papercusp:portal-embed' as const;
 export const PORTAL_EMBED_PROTOCOL_VERSION = 1 as const;
 
 /** Operator documents that may be framed by the hosted portal. */
-export const PORTAL_EMBED_PATH_PREFIXES = ['/adv', '/tasks-roster'] as const;
+export const PORTAL_EMBED_PATH_PREFIXES = ['/adv', '/tasks-roster', '/plans', '/inbox'] as const;
 
 export const PORTAL_EMBED_THEMES = ['light', 'dark', 'system'] as const;
 export type PortalEmbedTheme = (typeof PORTAL_EMBED_THEMES)[number];

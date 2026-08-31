@@ -123,6 +123,13 @@ describe('ChromeShell', () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it('renders null for focused portal work routes', () => {
+    pathname = '/plans';
+    search = 'portalEmbed=1&portalTheme=light';
+    const { container } = render(<ChromeShell />);
+    expect(container.firstChild).toBeNull();
+  });
+
   it('renders the header + primary nav on a normal route', () => {
     pathname = '/';
     render(<ChromeShell />);

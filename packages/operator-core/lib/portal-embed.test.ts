@@ -10,13 +10,16 @@ import {
 } from './portal-embed';
 
 describe('portalEmbed protocol', () => {
-  it('recognises only /adv operator documents with an explicit embed flag', () => {
+  it('recognises focused Plans/Inbox operator documents with an explicit embed flag', () => {
     expect(isPortalEmbedLocation('/adv', '?portalEmbed=1')).toBe(true);
     expect(isPortalEmbedLocation('/adv/', '?portalEmbed=true')).toBe(true);
     expect(isPortalEmbedLocation('/adv?tab=workflows&portalEmbed=yes')).toBe(true);
     expect(isPortalEmbedLocation('/adv', '')).toBe(false);
     expect(isPortalEmbedLocation('/settings', '?portalEmbed=1')).toBe(false);
     expect(isPortalEmbedLocation('/tasks-roster', '?portalEmbed=1')).toBe(true);
+    expect(isPortalEmbedLocation('/plans', '?portalEmbed=1')).toBe(true);
+    expect(isPortalEmbedLocation('/inbox', '?portalEmbed=true')).toBe(true);
+    expect(isPortalEmbedLocation('/plans', '')).toBe(false);
   });
 
   it('maps portal themes to the operator semantic themes', () => {
@@ -29,6 +32,8 @@ describe('portalEmbed protocol', () => {
   it('preserves an existing tab query while adding the fallback contract', () => {
     expect(portalEmbedHref('/adv?tab=workflows', 'dark', 'http://127.0.0.1:3081'))
       .toBe('/adv?tab=workflows&portalEmbed=1&portalTheme=dark&portalOrigin=http%3A%2F%2F127.0.0.1%3A3081');
+    expect(portalEmbedHref('/plans', 'light', 'http://127.0.0.1:3081'))
+      .toBe('/plans?portalEmbed=1&portalTheme=light&portalOrigin=http%3A%2F%2F127.0.0.1%3A3081');
     expect(portalEmbedThemeFromSearch('?portalTheme=light')).toBe('light');
     expect(portalEmbedThemeFromSearch('?portalTheme=unknown')).toBe('system');
   });

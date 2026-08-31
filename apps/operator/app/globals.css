@@ -133,6 +133,27 @@ html[data-portal-embed='true'] .pc-advshell {
   max-height: 100dvh;
 }
 
+/* Direction B focused work routes. The canonical panes were designed for the
+ * resizable chat dock, whose parent supplies the flex/height chain. These
+ * routes provide the same chain when the pane is the entire embedded document,
+ * without changing the ordinary sidebar presentation. */
+html[data-portal-embed='true'] .portal-focused-work-surface {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+html[data-portal-embed='true'] .portal-focused-work-surface > .plans-pane,
+html[data-portal-embed='true'] .portal-focused-work-surface > .op-inbox {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
 [data-theme="honeycomb"] {
   /* Legacy harness dashboard tables still consume JS color constants. These
    * vars let the Swarm/honeycomb skin retune those inline styles without

@@ -33,7 +33,7 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 import { isChromeShellNavActive } from './chrome-shell-nav';
-import { isPortalEmbedLocation } from '@papercusp/operator-core/lib/chromeless-routes';
+import { isChromelessPath, isPortalEmbedLocation } from '@papercusp/operator-core/lib/chromeless-routes';
 // OracleDock + TutorialButton remain RETIRED (design-simplification-2026-07-09
 // P-003; see _retired/legacy-web-chats/RESTORE.md). OperatorChatSidebar was
 // retired with them but is REVIVED as the app's PRIMARY chat surface
@@ -75,14 +75,9 @@ import { ChatwootWidget } from './ChatwootWidget';
  * so this skip is server-rendered: the chrome never appears in the HTML
  * for iframe routes, eliminating the flash entirely.
  *
- * Add new iframe-target routes to {@link CHROMELESS_PATH_PREFIXES}.
+ * Keep route presentation in the shared operator-core predicate so focused
+ * portal routes cannot render global chrome by accident.
  */
-const CHROMELESS_PATH_PREFIXES: readonly string[] = [
-  '/pi',
-  '/project-docs',
-  '/el-min',
-];
-
 // GSAP intro-easing equivalent (power3.out ≈ quart-out).
 const INTRO_EASE: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
@@ -150,9 +145,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
   const reducedMotion = useReducedMotion() ?? false;
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
-  const chromeless = CHROMELESS_PATH_PREFIXES.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
+  const chromeless = isChromelessPath(pathname);
   const portalEmbed = isPortalEmbedLocation(pathname, searchParams.toString());
   // When the user is already on the ordinary /adv surface, the Ops CTA is a
   // no-op. A plan dashboard is a query-param takeover that deliberately keeps
