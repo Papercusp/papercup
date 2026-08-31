@@ -81,9 +81,15 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 import {
   GOAL_HOLDER_PRODUCTIVITY_GRACE_MS,
   GOAL_LIVENESS_SWEEP_STATUSES,
+  GOAL_PORTFOLIO_IDLE_AFTER_MS,
   resolveGoalActivity,
   resolveGoalHolderWedge,
 } from '../goals/activity';
+import {
+  readGoalPortfolioThroughput,
+  type GoalPortfolioThroughputRead,
+} from '../goals/portfolio-throughput';
+import type { GoalHolders } from '../goals/holder';
 import {
   parseGoalLaunchSettings,
   type GoalLaunchSettings,
@@ -411,6 +417,22 @@ export interface GoalLivenessSweepDeps {
   /** Grace before a held-but-silent holder is reportable. */
   wedgeGraceMs: number;
   /**
+   * P-002's measurement: per-goal PORTFOLIO throughput, keyed `workspaceId:goalId`.
+   *
+   * Takes the ALREADY-FOLDED holders so the leg does not re-resolve liveness the
+   * sweep has just resolved — one derivation, and no chance of the two disagreeing
+   * between the wedge leg's verdict and this one within a single tick.
+   *
+   * Absent from the returned map ⇒ `not-measured` ⇒ suppressed, exactly like the
+   * wedge leg's productivity read.
+   */
+  readPortfolioThroughput: (
+    holders: ReadonlyMap<string, GoalHolders>,
+  ) => Promise<Map<string, GoalPortfolioThroughputRead>>;
+  escalatePortfolioIdle: (alert: GoalPortfolioIdleAlert) => Promise<void>;
+  /** How long a live holder may place nothing before the goal is reportable. */
+  portfolioIdleAfterMs: number;
+  /**
    * P-020: the goal-activation primitive, dispatched for a `became-ready` goal
    * that opted in via `launch_settings.autoStart` (D-006 — every trigger leg
    * converges on the ONE primitive; this leg never spawns by hand). Bound over
@@ -521,6 +543,175 @@ export function classifyGoalWedge(
     })),
     agentOriginCalls: measured ?? 0,
     heldForMs,
+  };
+}
+
+/* ── the PORTFOLIO-IDLE leg — held, working, and placing nothing ──────────────
+ *
+ * Runs where the WEDGE leg stops. That leg asks "has this holder ever produced
+ * an agent-origin call", so a steward that reads and reports forever answers
+ * `has-produced-work` and the enquiry ends — which is how a goal ran 4+ hours
+ * and $109 with a MONEY ceiling as the first objector.
+ *
+ * ── ⚠ WHY A HOST LEG AND NOT JUST THE SUBSCRIPTION ──────────────────────────
+ *
+ * P-002 registers `goal.portfolioThroughput`, so any agent can now
+ * `state:subscribe` to this condition. That capability is real and is the point
+ * — but a subscription needs a SUBSCRIBER, and the one party guaranteed not to
+ * arm it is the idle steward itself. Relying on it would rebuild the circular
+ * dependency this file's own docblock was written against: "the heartbeat meant
+ * to relaunch a dead steward executes its runs by claiming a work-item, and when
+ * the steward is dead there is nobody alive to claim one."
+ *
+ * A `managedSetInterval` in the operator host has no such dependency. It is
+ * awake precisely when the agent it is judging is not doing its job.
+ *
+ * ── REPORT-ONLY, LIKE ITS SIBLINGS ──────────────────────────────────────────
+ *
+ * It never kills or respawns. Respawn is actively WRONG here and this is the one
+ * leg where that is unambiguous: the holder is alive and working, so a
+ * replacement inherits the same instructions and does the same thing. The repair
+ * is a conversation about whether the goal should still be running, which is a
+ * decision this sweep is not entitled to make.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+export interface GoalPortfolioIdleAlert {
+  goalId: string;
+  workspaceId: string;
+  title: string;
+  /** Minutes since the goal's holders last placed anything. */
+  idleMinutes: number;
+  /** The threshold crossed, so the alert carries its own scale. */
+  idleAfterMinutes: number;
+  /** Portfolio acts in the rate window — usually 0, and 0 is the interesting case. */
+  actsInWindow: number;
+  /** The last thing this goal actually placed, if anything, and when. */
+  lastActTool: string | null;
+  lastActAtMs: number | null;
+  /** The live holders the verdict was measured across. */
+  holders: { ownerId: string; sessionState: string }[];
+}
+
+/**
+ * PURE: is this HELD goal's steward working but placing nothing?
+ *
+ * Mirrors `classifyGoalWedge` deliberately — same administrative short-circuit,
+ * same held-only precondition, same "absent measurement suppresses" rule — so
+ * the two legs cannot drift into disagreeing about which goals they may judge.
+ *
+ * The VERDICT itself is not recomputed here: it arrives already folded on the
+ * throughput reading, from the one resolver the cell also reads. This function
+ * decides only whether the goal is ELIGIBLE to be judged and shapes the alert.
+ */
+export function classifyGoalPortfolioIdle(
+  goal: GoalRowLike,
+  holders: readonly GoalHolderLike[],
+  verdicts: ReadonlyMap<string, LivenessVerdict>,
+  throughputByGoal: ReadonlyMap<string, GoalPortfolioThroughputRead>,
+  nowMs: number,
+): GoalPortfolioIdleAlert | null {
+  void nowMs;
+  // A deliberately paused goal places nothing BY DESIGN, and a terminal one is
+  // over. Same short-circuit, same reason, as every other leg in this file.
+  const activity = resolveGoalActivity({ status: goal.status });
+  if (activity.deliberatelyPaused || activity.terminal) return null;
+
+  const resolved = resolveGoalHoldersFromRows(goal.goalId, goal.workspaceId, holders, verdicts);
+  // Placing nothing is only a finding about somebody who is THERE. An absent
+  // steward is `unheld`/`lost` — a staffing problem the liveness leg already
+  // reports, with a different repair.
+  if (resolved.liveness !== 'held' || resolved.live.length === 0) return null;
+
+  const reading = throughputByGoal.get(goalReadinessKey(goal));
+  // ABSENT ⇒ not-measured ⇒ silence. A degraded throughput read must never
+  // become a wave of "every goal is idle", which is the same conservative rule
+  // the wedge leg's productivity map follows.
+  if (!reading || !reading.idle || reading.idleMinutes == null) return null;
+
+  return {
+    goalId: goal.goalId,
+    workspaceId: goal.workspaceId,
+    title: goal.title,
+    idleMinutes: reading.idleMinutes,
+    idleAfterMinutes: reading.idleAfterMinutes,
+    actsInWindow: reading.actsInWindow,
+    lastActTool: reading.lastActTool,
+    lastActAtMs: reading.lastActAtMs,
+    holders: resolved.live.map((h) => ({
+      ownerId: h.ownerId,
+      sessionState: h.sessionState ?? 'unknown',
+    })),
+  };
+}
+
+/**
+ * The default escalation. Names the CELL, so the recipient can re-read the value
+ * rather than trusting the number in this message — the whole reason P-002
+ * registered one (a transcribed reading has rotted by the time anyone acts on
+ * it).
+ */
+async function defaultEscalatePortfolioIdle(alert: GoalPortfolioIdleAlert): Promise<void> {
+  const last =
+    alert.lastActAtMs == null
+      ? 'It has placed NOTHING since it was picked up.'
+      : `Its last portfolio act was \`${alert.lastActTool}\`, ${alert.idleMinutes} minutes ago.`;
+  await openEscalation({
+    kind: 'goal-portfolio-idle',
+    title: `Goal "${alert.title}" is held and working, but has placed nothing for ${alert.idleMinutes}m`,
+    body:
+      `${alert.holders.length} live holder(s) on \`${alert.goalId}\`. ${last} ` +
+      `Portfolio acts in the last hour: ${alert.actsInWindow}. Threshold: ${alert.idleAfterMinutes}m.\n\n` +
+      `This is NOT a wedged or dead holder — the session is alive and making tool calls. ` +
+      `It is a steward that is reading and reporting without creating, placing or steering any work.\n\n` +
+      `  • Do NOT respawn it. Respawn repairs a DEAD session; this one is alive, and a ` +
+      `replacement inherits the same instructions and does the same thing.\n` +
+      `  • Decide whether the goal should still be running, then either give the steward ` +
+      `something placeable or wind the goal down.\n\n` +
+      `Re-read before acting — this number is already stale: ` +
+      `state:read { cell: 'goal.portfolioThroughput', as: '${alert.goalId}' }`,
+    meta: {
+      dedupKind: 'goal-portfolio-idle',
+      subjectSignature: `${alert.workspaceId}:${alert.goalId}:portfolio-idle`,
+      goalId: alert.goalId,
+      goalWorkspaceId: alert.workspaceId,
+      idleMinutes: alert.idleMinutes,
+      idleAfterMinutes: alert.idleAfterMinutes,
+      actsInWindow: alert.actsInWindow,
+      lastActTool: alert.lastActTool,
+      holders: alert.holders,
+    },
+  });
+}
+
+/** The default measurement — one resolver call per HELD goal, holders threaded in. */
+function makeReadPortfolioThroughput(
+  sql: Sql,
+  idleAfterMs: number,
+): GoalLivenessSweepDeps['readPortfolioThroughput'] {
+  return async (holdersByGoal) => {
+    const out = new Map<string, GoalPortfolioThroughputRead>();
+    for (const [key, holders] of holdersByGoal) {
+      try {
+        out.set(
+          key,
+          await readGoalPortfolioThroughput(sql, {
+            workspaceId: holders.workspaceId,
+            goalId: holders.goalId,
+            idleAfterMs,
+            holders,
+          }),
+        );
+      } catch (e) {
+        // Per-goal failure is per-goal SILENCE, not a dead sweep: omitting the
+        // key makes exactly this goal `not-measured` while the rest still report.
+        console.warn(
+          `[goal-liveness-watchdog] portfolio throughput read failed for ${key} (non-fatal): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
+    return out;
   };
 }
 
@@ -889,6 +1080,9 @@ function sweepDeps(
     readHolderProductivity: makeReadHolderProductivity(sql),
     escalateWedge: defaultEscalateWedge,
     wedgeGraceMs: GOAL_HOLDER_PRODUCTIVITY_GRACE_MS,
+    readPortfolioThroughput: makeReadPortfolioThroughput(sql, GOAL_PORTFOLIO_IDLE_AFTER_MS),
+    escalatePortfolioIdle: defaultEscalatePortfolioIdle,
+    portfolioIdleAfterMs: GOAL_PORTFOLIO_IDLE_AFTER_MS,
     startGoal: (input) => startGoalById(sql, input),
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
@@ -914,6 +1108,7 @@ export async function runGoalLivenessSweepOnce(
   readinessEscalated: number;
   autoStarted: number;
   wedgeEscalated: number;
+  portfolioIdleEscalated: number;
   skipped: boolean;
 }> {
   const deps = sweepDeps(sql, overrides);
@@ -924,6 +1119,7 @@ export async function runGoalLivenessSweepOnce(
       readinessEscalated: 0,
       autoStarted: 0,
       wedgeEscalated: 0,
+      portfolioIdleEscalated: 0,
       skipped: true,
     };
   }
@@ -936,6 +1132,7 @@ export async function runGoalLivenessSweepOnce(
       readinessEscalated: 0,
       autoStarted: 0,
       wedgeEscalated: 0,
+      portfolioIdleEscalated: 0,
       skipped: false,
     };
   }
@@ -1008,9 +1205,17 @@ export async function runGoalLivenessSweepOnce(
   // the end of the enquiry and a holder that never worked reads as healthy.
   let wedgeEscalated = 0;
   const holds: GoalLiveHold[] = [];
+  /**
+   * The SAME fold, kept for the portfolio leg below. Both legs judge exactly the
+   * held goals, and re-folding for the second one would let two verdicts within
+   * one tick disagree about who is held — which is the drift the shared
+   * `resolveGoalHoldersFromRows` exists to prevent in the first place.
+   */
+  const heldHolders = new Map<string, GoalHolders>();
   for (const g of goals) {
     const fold = resolveGoalHoldersFromRows(g.goalId, g.workspaceId, relevant, verdicts);
     if (fold.liveness !== 'held') continue;
+    heldHolders.set(goalReadinessKey(g), fold);
     for (const h of fold.live) {
       holds.push({
         workspaceId: g.workspaceId,
@@ -1056,12 +1261,46 @@ export async function runGoalLivenessSweepOnce(
     }
   }
 
+  // ── the PORTFOLIO-IDLE leg — held, WORKING, and placing nothing (P-002) ────
+  // Runs over the same held population as the wedge leg above and answers the
+  // question that leg cannot: not "has this holder ever worked" but "has it
+  // placed anything lately". A steward can pass the first and fail this one for
+  // hours, which is exactly what $109 bought.
+  let portfolioIdleEscalated = 0;
+  if (heldHolders.size > 0) {
+    // Same conservative rule as every other leg: a degraded read costs SILENCE.
+    // An empty map leaves every goal `not-measured`, which suppresses.
+    let throughput = new Map<string, GoalPortfolioThroughputRead>();
+    try {
+      throughput = await deps.readPortfolioThroughput(heldHolders);
+    } catch (e) {
+      console.warn(
+        `[goal-liveness-watchdog] portfolio-throughput read failed (non-fatal, portfolio leg skipped): ${e instanceof Error ? e.message : String(e)}`,
+      );
+      throughput = new Map();
+    }
+
+    for (const g of goals) {
+      const alert = classifyGoalPortfolioIdle(g, relevant, verdicts, throughput, deps.now());
+      if (!alert) continue;
+      try {
+        await deps.escalatePortfolioIdle(alert);
+        portfolioIdleEscalated += 1;
+      } catch (e) {
+        console.warn(
+          `[goal-liveness-watchdog] portfolio-idle escalate failed for ${alert.goalId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+
   return {
     scanned: goals.length,
     escalated,
     readinessEscalated,
     autoStarted,
     wedgeEscalated,
+    portfolioIdleEscalated,
     skipped: false,
   };
 }
