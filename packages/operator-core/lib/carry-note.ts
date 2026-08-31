@@ -815,6 +815,55 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   return r;
 }
 
+/**
+ * Accept the flattened executable-probe envelope that callers naturally construct
+ * from a check row, e.g. `{ claim, kind: 'tool', tool, args, schemaRevision, expect }`,
+ * lifting it into the canonical nested `{ probe: { kind, tool, args, schemaRevision,
+ * expect } }` shape before the strict row schema sees it.
+ *
+ * EI-21631530729522909 (work_items:checkpoint) / EI-21922421392042550
+ * (loop:checkpoint — this constant had no flattened-probe compat at all, so the
+ * IDENTICAL flattened shape that works on one carry surface was `invalid_args` on
+ * the other): SHARED so both checkpoint tools stay in lockstep — a future probe
+ * field added to one surface and not the other is exactly this bug recurring.
+ *
+ * `coerceCarryRowShape` also treats `kind` as the legacy structured-check claim
+ * alias, so this lift must run FIRST and only for a COMPLETE executable envelope.
+ * Incomplete rows and ordinary `{kind, command, result}` rows keep their existing
+ * validation/compatibility behavior; a nested `probe` object is canonical and
+ * always wins. The lifted fields are removed from the row so the strict row
+ * schema cannot retain a second, ambiguous copy of them.
+ */
+export function normalizeFlattenedContinuityProbeRow(row: unknown): unknown {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const source = row as Record<string, unknown>;
+  if (source.probe !== undefined) return row;
+
+  const kind = source.kind;
+  const targetKey = kind === 'tool' ? 'tool' : kind === 'state-cell' ? 'cell' : null;
+  if (!targetKey) return row;
+
+  // These are the required fields for both discriminated probe variants;
+  // `args`, `projection`, and `as` are optional on their respective shapes.
+  const requiredKeys = [targetKey, 'schemaRevision', 'expect'];
+  if (!requiredKeys.every((key) => Object.prototype.hasOwnProperty.call(source, key))) return row;
+
+  const lifted = { kind } as Record<string, unknown>;
+  const probeKeys =
+    kind === 'tool'
+      ? ['tool', 'args', 'projection', 'schemaRevision', 'expect']
+      : ['cell', 'as', 'schemaRevision', 'expect'];
+  const normalized = { ...source };
+  for (const key of probeKeys) {
+    if (!Object.prototype.hasOwnProperty.call(normalized, key)) continue;
+    lifted[key] = normalized[key];
+    delete normalized[key];
+  }
+  delete normalized.kind;
+  normalized.probe = lifted;
+  return normalized;
+}
+
 /** Fixed legend rendered under the `## Checks` heading so a cold successor reads the
  *  rows correctly with zero prior knowledge. Starts with `_` so line-parsers skip it. */
 export const CARRY_NOTE_CHECKS_LEGEND =

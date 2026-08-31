@@ -49,6 +49,7 @@ import {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_ROW_ID_MAX,
   coerceCarryRowShape,
+  normalizeFlattenedContinuityProbeRow,
   findVerificationConflict,
   sanitizeCarryRowId,
   truncateCarryField,
@@ -80,7 +81,7 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/store';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
-import { continuityProbeSchema } from '../../continuity-probes';
+import { continuityPredicateSchema, continuityProbeSchema } from '../../continuity-probes';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
@@ -420,7 +421,15 @@ export default defineTool({
             // EI-18723223344390510 — the bug where a nested row silently DROPPED those
             // keys and destroyed the evidence. Silent here means "nothing was lost", not
             // "nothing happened"; truncation, which does lose bytes, is reported instead.
-            return Array.isArray(rows) ? rows.map((row, i) => coerceCarryRowShape(row, `checks[${i}]`, [])) : rows;
+            // EI-21922421392042550: also lift the flattened executable-probe envelope
+            // (`{claim, kind:'tool', tool, args, schemaRevision, expect}`) — the SAME
+            // compat shape work_items:checkpoint accepts, which this surface rejected
+            // outright as `checks[0].tool is unrecognized` until this fix.
+            return Array.isArray(rows)
+              ? rows.map((row, i) =>
+                  coerceCarryRowShape(normalizeFlattenedContinuityProbeRow(row), `checks[${i}]`, []),
+                )
+              : rows;
           },
           z
             .array(
@@ -477,6 +486,38 @@ export default defineTool({
                   CARRY_ROW_SOFT_CAPS.verified,
                   'Compatibility alias for `verified` in structured verification rows; prefer `verified`.',
                 ).optional(),
+                // EI-21922421392042550: the preprocessor above lifts these flattened
+                // executable-probe fields into `probe` (normalizeFlattenedContinuityProbeRow,
+                // shared with work_items:checkpoint). They must still be present in the
+                // published row schema because some clients validate the manifest before
+                // invoking the server-side parser.
+                tool: z.string().min(1).max(160).optional().describe('Compatibility field for a flattened tool probe.'),
+                args: z
+                  .record(z.string(), z.unknown())
+                  .optional()
+                  .describe('Compatibility field for flattened tool-probe arguments.'),
+                projection: z.unknown().optional().describe('Compatibility field for a flattened tool-probe projection.'),
+                schemaRevision: z
+                  .string()
+                  .min(1)
+                  .max(160)
+                  .optional()
+                  .describe('Compatibility field for a flattened probe revision.'),
+                expect: continuityPredicateSchema
+                  .optional()
+                  .describe('Compatibility field for a flattened probe predicate.'),
+                cell: z
+                  .string()
+                  .min(1)
+                  .max(120)
+                  .optional()
+                  .describe('Compatibility field for a flattened state-cell probe.'),
+                as: z
+                  .string()
+                  .min(1)
+                  .max(200)
+                  .optional()
+                  .describe('Compatibility field for a flattened state-cell reader.'),
               }),
             )
             .max(CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE),
