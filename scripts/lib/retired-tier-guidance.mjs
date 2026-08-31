@@ -141,6 +141,48 @@ export const ACTIVE_RETIRED_GUIDANCE_EXEMPTIONS = [
     reason:
       "A CLASSIFIER keyword list. The router matches incoming idea TEXT against these strings to decide whether an idea is whole-system; 'queen prompt'/'queen persona'/'queen placement' are inputs to be recognized, not work to be assigned. Dropping them would stop classifying the legacy ideas that still use that vocabulary — the retirement did not un-write the corpus.",
   },
+  {
+    file: "packages/operator-core/lib/agent-tools/coordination/queen-loop-facts.ts",
+    anchor: "STEERING_VOCAB_RE",
+    reason:
+      "The same CLASSIFIER shape as scout/router.ts above: this regex RECOGNISES legacy steering prose ('pause the hive/queen', 'place no new bees') so orient can WITHHOLD those standing facts from a responsive session. The role words are the input alphabet, not an assignment. Deleting them would stop the withholding and start injecting retired-tier steering into live sessions — the exact opposite of this guard's purpose. The reader-facing half of this file (QUEEN_LOOP_WITHHELD_REASON, injected into every orient that withholds) was CORRECTED rather than exempted, so this anchor covers data only.",
+  },
+  {
+    file: "packages/operator-core/lib/agent-tools/coordination/allhive-broadcast-sweep.ts",
+    anchor: "findUnflaggedAllHiveBroadcasts",
+    reason:
+      "`'hive-queen'` here is a PERSISTED cueAuthority stamp value compared in SQL (`body->'cueAuthority'->>'authority' <> 'hive-queen'`), not a role being told to act. The literal is the platform-derived stamp coord-schema.ts/relay-provenance.ts write; rows carrying it exist in the log regardless of the tier's retirement. Note the polarity: this sweep detects broadcasts that LACK the stamp, so retirement makes it MORE load-bearing, not less.",
+  },
+  {
+    file: "packages/operator-core/lib/agent-tools/coordination/allhive-broadcast-sweep.ts",
+    anchor: "writeAllHiveAuditRow",
+    reason:
+      "The human-addressed alert for the detector above ('non-queen HIVE-WIDE broadcast … with no hive-queen authority stamp'). It reports the ABSENCE of a stored stamp to a human reader; it assigns no work to any role and is never injected as agent guidance.",
+  },
+  {
+    file: "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    anchor: "ControlAnchorState['route']",
+    reason:
+      "`{ kind: 'mug' }` is a typed union MEMBER of the control-anchor route, consumed by instruction-lint.ts (mission-constraint rendering), cue-authority.ts and scout/nudge-recipient.ts. It is derived from the launch brief's own `source` string, so it is data about how a session was started. Whether that arm should be retired outright is a D-060 rewrite-vs-retire product call spanning four files — tracked separately; it is not stale guidance prose.",
+  },
+  {
+    file: "packages/operator-core/lib/agent-tools/coordination/glance-tips.ts",
+    anchor: "'wake-mode-manual'",
+    reason:
+      "`audiences: [...]` is a GlanceAudience ENUM (GLANCE_AUDIENCES = user|mug|su|cup), exposed as coord:glance's caller-supplied `audience` zod enum — role-arrives-as-DATA, the blind spot this guard documents. The tip's reader-facing TEXT was corrected ('the queen won't self-drive' → 'agents won't self-drive'); the anchor is the tip ID rather than the audience literal so a NEWLY added tip is never silently exempt.",
+  },
+  {
+    file: "packages/operator-core/lib/agent-tools/coordination/glance-tips.ts",
+    anchor: "'staged-wakes-under-auto'",
+    reason:
+      "GlanceAudience enum data, as above. This tip's text names no role.",
+  },
+  {
+    file: "packages/operator-core/lib/agent-tools/coordination/glance-tips.ts",
+    anchor: "'governor-paused'",
+    reason:
+      "GlanceAudience enum data, as above ('cup' included). This tip's text names no role.",
+  },
 ];
 
 function isExemptSegment(file, segmentText) {
@@ -373,7 +415,6 @@ export function findRetiredGuidanceOffenders(file, source) {
  */
 export const ACTIVE_RETIRED_GUIDANCE_PENDING = [
   { path: "packages/operator-core/lib/agent-tools/pot", offenders: 20 },
-  { path: "packages/operator-core/lib/agent-tools/coordination", offenders: 13 },
   { path: "packages/operator-core/lib/agent-tools/dev", offenders: 6 },
   { path: "packages/operator-core/lib/agent-tools/fleet", offenders: 5 },
   { path: "packages/operator-core/lib/agent-tools/fleet_registry", offenders: 5 },
