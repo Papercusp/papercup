@@ -4745,6 +4745,7 @@ describe('gitPipelinePosition: release-content-drift note (EI-19327418148563597)
 describe('deriveBlocker (P-005)', () => {
   const st = (name: StageName, position: 'past' | 'pending' | 'na', lever: string | null = null): StageState => ({
     name,
+    plane: name === 'pushed' ? 'publish' : 'delivery',
     position,
     health: 'advancing',
     detail: null,
@@ -4760,21 +4761,16 @@ describe('deriveBlocker (P-005)', () => {
   });
 
   /**
-   * Caught by a LIVE run, not a fixture. A change sitting at a healthy `pushed` leg
-   * (git-sync pushes within ~10 min — genuinely "wait") with the gate RED at 5 consecutive
-   * reds behind it reported nextAction: null, i.e. "nothing to do", while a red gate held
-   * main for the entire fleet. That is a FALSE ALL-CLEAR on the one thing the caller most
-   * owns: "the reds are yours to fix, not a queue to wait in."
+   * Caught by a LIVE run, not a fixture. A healthy publish side leg with the gate RED
+   * behind it must not mask the delivery blocker or become one itself.
    */
   it('a self-advancing early stage must NOT mask an actionable stage behind it', () => {
     const r = deriveBlocker([
       st('committed', 'past'),
-      st('pushed', 'pending', null), // healthy, between ticks — waiting is correct HERE
+      st('pushed', 'pending', null), // publish/durability side leg, not a delivery prerequisite
       st('gate', 'pending', 'fix the reds, then release:checkpoint-run'),
     ]);
-    // Where the change SITS is still reported honestly…
-    expect(r.blockedOn).toBe('pushed');
-    // …but the actionable thing is surfaced, and attributed to the stage that owns it.
+    expect(r.blockedOn).toBe('gate');
     expect(r.nextAction).toMatch(/fix the reds/);
     expect(r.actionOwner).toBe('gate');
   });
@@ -4786,14 +4782,26 @@ describe('deriveBlocker (P-005)', () => {
     expect(r.actionOwner).toBe('committed');
   });
 
-  it('picks the FIRST pending stage — a later stage cannot advance until an earlier one has', () => {
+  it('picks the first pending DELIVERY stage and ignores a publish-side remedy', () => {
     const r = deriveBlocker([
       st('committed', 'past'),
       st('pushed', 'pending', 'git-sync:run'),
       st('gate', 'pending', 'release:checkpoint-run'),
     ]);
-    expect(r.blockedOn).toBe('pushed');
-    expect(r.nextAction).toBe('git-sync:run');
+    expect(r.blockedOn).toBe('gate');
+    expect(r.nextAction).toBe('release:checkpoint-run');
+  });
+
+  it('a frozen publish side leg cannot turn an otherwise-live delivery into a block', () => {
+    const r = deriveBlocker([
+      st('committed', 'past'),
+      st('pushed', 'pending', 'repair the p2p publish bridge'),
+      st('gate', 'past'),
+      st('main', 'past'),
+      st('deployed', 'past'),
+      st('serving', 'past'),
+    ]);
+    expect(r).toEqual({ blockedOn: null, nextAction: null, actionOwner: null });
   });
 
   it("SKIPS `na` stages — they are not on this change's route, so they cannot block it", () => {
@@ -4813,7 +4821,7 @@ describe('deriveBlocker (P-005)', () => {
 
   it('a pending stage with NO lever anywhere reports the block with a null action — waiting IS the answer', () => {
     const r = deriveBlocker([st('committed', 'past'), st('pushed', 'pending', null), st('gate', 'pending', null)]);
-    expect(r.blockedOn).toBe('pushed');
+    expect(r.blockedOn).toBe('gate');
     // Distinct from "nothing is pending" (blockedOn null) and from "do this" (action set).
     expect(r.nextAction).toBeNull();
     expect(r.actionOwner).toBeNull();
@@ -5454,13 +5462,18 @@ describe('P-005 ACCEPTANCE TEST — one call answers "is it live, and if not wha
     contains?: Record<string, string[]>;
     servingStale?: boolean;
     deployedAtMs?: number;
+    pushMode?: string | null;
   }) =>
     gitPipelinePosition(
       { path: 'apps/operator/app/x.ts' },
       {
         git: fakeGit({ pathCommit: 'abc1234567', subject: 'my fix', dirty: over.dirty, contains: over.contains ?? {} }),
         loadDeploy: async () => deploy(over.deployedAtMs ? { deployedAtMs: over.deployedAtMs } : {}),
-        loadSnapshot: async () => snap(),
+        loadSnapshot: async () => {
+          const snapshot = snap();
+          snapshot.gitSync.pushMode = over.pushMode ?? null;
+          return snapshot;
+        },
         resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: null }),
         /**
          * EI-20134961617539316. WITHOUT this stub these cases are NOT hermetic:
@@ -5508,11 +5521,29 @@ describe('P-005 ACCEPTANCE TEST — one call answers "is it live, and if not wha
     expect(res.summary).toMatch(/^BLOCKED AT COMMITTED → /);
   });
 
-  it('committed but not pushed ⇒ blocked at PUSHED, and says plainly there is nothing to do', async () => {
-    const res = await run({ contains: { HEAD: ['abc1234567'] } });
+  it('committed but not origin-published ⇒ delivery proceeds to GATE and the summary labels publication as a side leg', async () => {
+    const res = await run({ contains: { HEAD: ['abc1234567'] }, pushMode: 'commit-only:bridged' });
+    expect(res.blockedOn).toBe('gate');
+    expect(res.stages.find((stage) => stage.name === 'pushed')).toMatchObject({
+      plane: 'publish',
+      position: 'pending',
+    });
+    expect(res.summary).toMatch(/origin-publish ✗/);
+    expect(res.summary).toMatch(/PUBLISH\/DURABILITY side leg/);
+    expect(res.summary).toMatch(/local staging→main→:3070 delivery is unaffected/);
+    expect(res.summary).not.toMatch(/(?:BLOCKED|WAITING) AT PUSHED/);
+  });
+
+  it('a normal pushing member keeps origin/staging on its delivery route', async () => {
+    const res = await run({ contains: { HEAD: ['abc1234567'] }, pushMode: 'push' });
     expect(res.blockedOn).toBe('pushed');
-    expect(res.nextAction).toBeNull();
-    expect(res.summary).toMatch(/^WAITING AT PUSHED \(nothing to do/);
+    expect(res.stages.find((stage) => stage.name === 'pushed')).toMatchObject({
+      plane: 'delivery',
+      position: 'pending',
+    });
+    expect(res.summary).toMatch(/^WAITING AT PUSHED/);
+    expect(res.summary).toMatch(/· staging ✗/);
+    expect(res.summary).not.toMatch(/delivery is unaffected/);
   });
 
   it('clean detached candidate ⇒ waits for HEAD containment without calling it committed', async () => {
