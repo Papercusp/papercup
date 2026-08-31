@@ -564,6 +564,14 @@ zero files were measured. Re-run the paths individually and attribute red/green/
 only from those per-file results. Never use a batch `matched=0` as evidence that the named files
 are red, green, or fixed.
 
+⛔ **A PASS at tip is NOT proof the verdict was stale** — the one containment trap that runs the
+*other* direction. `test:file` runs the WORKING TREE, so a peer's uncommitted fix is silently in
+your run: the file passes, you record "stale", and the gate keeps failing on the COMMITTED blob it
+judged. The router stamps this for you — read its `TEST_FILE_PROVENANCE … uncommitted=N` banner and
+the per-path `[DIRTY …]` / `[UNTRACKED …]` labels — and compare any non-clean path against the
+judged candidate before calling it stale. ⚠ For a SUBMODULE path do that **inside** the submodule
+(`git -C <sub> show <pin>:<repo-relative path>`): from the superproject `git status`/`git show`
+answer about the gitlink and report nothing, so the one check that catches this returns empty.
 
 ## Server-side edits and the two-port model — no hot-reload
 
