@@ -127,6 +127,14 @@ export const REVIEW_ACTION_VOCABULARY = {
     verb: "Reaper clears it",
     commit: (n: number) => `Let the reaper clear ${n}`,
   },
+  ack: { verb: "Acknowledge", commit: (n: number) => `Acknowledge ${n}` },
+  drop: { verb: "Drop", commit: (n: number) => `Drop ${n}` },
+  answer: {
+    verb: "Send answer",
+    commit: (n: number) => `Send ${plural(n, "answer")}`,
+  },
+  grant: { verb: "Grant", commit: (n: number) => `Grant ${n}` },
+  dismiss: { verb: "Dismiss", commit: (n: number) => `Dismiss ${n}` },
   resolve: { verb: "Resolve", commit: (n: number) => `Resolve ${n}` },
   retry: { verb: "Retry", commit: (n: number) => `Retry ${n}` },
   // Terminal / manual — never in an apply set, so deliberately no `commit`.
@@ -150,20 +158,17 @@ interface ReviewRowActionBase {
   description?: string;
 }
 
-/**
- * A row's verb: either a key into the shared vocabulary, or an EXPLICITLY
- * declared custom label.
- *
- * The custom arm exists because Inbox's verbs are partly data-driven — the
- * resolver can hand back a recommendation label that no fixed map could hold.
- * Making that an explicit `key: "custom"` rather than a free string keeps the
- * escape honest: a custom verb never claims shared wording, so the commit
- * button falls back to neutral phrasing instead of asserting an agreement it
- * cannot guarantee.
- */
-export type ReviewRowAction =
-  | ({ key: ReviewActionKey } & ReviewRowActionBase)
-  | ({ key: "custom"; label: string } & ReviewRowActionBase);
+/** A row's verb always resolves from the shared vocabulary. There is no
+ * custom-label escape: an unknown persisted action becomes a manual row rather
+ * than pairing arbitrary copy with a neutral commit button. */
+export type ReviewRowAction = { key: ReviewActionKey } & ReviewRowActionBase;
+
+export function reviewActionKey(value: string | null): ReviewActionKey | null {
+  if (value == null) return null;
+  return Object.prototype.hasOwnProperty.call(REVIEW_ACTION_VOCABULARY, value)
+    ? (value as ReviewActionKey)
+    : null;
+}
 
 /**
  * The words a row shows, resolved from the one vocabulary.
@@ -175,7 +180,6 @@ export type ReviewRowAction =
  * could not crash at all.
  */
 export function reviewRowVerb(action: ReviewRowAction): string {
-  if (action.key === "custom") return action.label;
   return REVIEW_ACTION_VOCABULARY[action.key]?.verb ?? action.key;
 }
 
@@ -183,7 +187,7 @@ export function reviewRowVerb(action: ReviewRowAction): string {
  * The words the commit button shows, resolved from the SAME vocabulary.
  *
  * A selection that shares one committable verb is committed in that verb's own
- * words. Anything else — mixed verbs, a custom verb, a terminal verb with no
+ * words. Anything else — mixed verbs or a terminal verb with no
  * commit phrasing — falls back to the neutral label, because there is no
  * single consequence to name and pretending otherwise would be the lie this
  * whole criterion is about.
@@ -195,10 +199,10 @@ export function reviewCommitLabel(
   const count = actions.length;
   if (count === 0) return `${fallback} (0)`;
   const first = actions[0];
-  if (first.key === "custom") return `${fallback} (${count})`;
   if (!actions.every((a) => a.key === first.key))
     return `${fallback} (${count})`;
   const entry = REVIEW_ACTION_VOCABULARY[first.key];
+  if (!entry) return `${fallback} (${count})`;
   return "commit" in entry ? entry.commit(count) : `${fallback} (${count})`;
 }
 
@@ -240,6 +244,10 @@ export interface ReviewRowMenuAction {
  */
 export const REVIEW_ROW_CONTROLS = {
   "apply-one": { label: () => "Apply just this one" },
+  "apply-anyway": {
+    label: () => "Apply anyway",
+    tone: "danger" as const,
+  },
   open: { label: (subject: string) => `Open ${subject}` },
   recheck: {
     label: (subject: string) => `Re-check against the live ${subject}`,
@@ -285,6 +293,60 @@ export function reviewRowControl(
       spec.disabledReason ?? "Not available for this row.";
   }
   return control;
+}
+
+/** Shared renderer for row recoveries. Both the overflow menu and expanded
+ * detail use this component, so consumers cannot define a second wording or
+ * tone for the same owner-facing control. */
+export function ReviewRowActionButtons({
+  actions,
+  busy,
+  testIdPrefix,
+  testIdForAction,
+  role = "button",
+  closeOnRun,
+}: {
+  actions: readonly ReviewRowMenuAction[];
+  busy: boolean;
+  testIdPrefix?: string;
+  testIdForAction?: (actionId: string) => string;
+  role?: "button" | "menuitem";
+  closeOnRun?: () => void;
+}) {
+  return (
+    <>
+      {actions.map((action) => (
+        <Tooltip
+          key={action.id}
+          label={
+            action.disabled === true
+              ? (action.disabledReason ?? "Unavailable")
+              : action.label
+          }
+        >
+          <button
+            type="button"
+            role={role}
+            className={`review-report__row-menu-item review-report__row-menu-item--${action.tone ?? "default"}`}
+            data-testid={
+              testIdPrefix
+                ? (testIdForAction?.(action.id) ??
+                  `${testIdPrefix}-${action.id}`)
+                : undefined
+            }
+            disabled={busy || action.disabled === true}
+            onClick={(event) => {
+              event.stopPropagation();
+              closeOnRun?.();
+              action.run();
+            }}
+          >
+            {action.label}
+          </button>
+        </Tooltip>
+      ))}
+    </>
+  );
 }
 
 export interface ReviewReportRow {
@@ -943,37 +1005,13 @@ function ReviewRowMenu({
           role="menu"
           aria-label={`Actions for ${rowTitle}`}
         >
-          {actions.map((action) => (
-            // The label is deliberately ALWAYS truthy. Tooltip early-returns a bare
-            // fragment when `label` is falsy, so a label toggling undefined <-> reason
-            // after mount would swap the element TYPE at this JSX position and remount
-            // the button, staleing any ref held across it (the hazard that put
-            // AgentInspectorModal on BUTTON_TITLE_ALLOWED_FILES). Keeping it non-empty
-            // in both states lets us use the shared primitive instead of a native title.
-            <Tooltip
-              key={action.id}
-              label={
-                action.disabled === true
-                  ? (action.disabledReason ?? "Unavailable")
-                  : action.label
-              }
-            >
-              <button
-                type="button"
-                role="menuitem"
-                className={`review-report__row-menu-item review-report__row-menu-item--${action.tone ?? "default"}`}
-                data-testid={`review-row-menu-${rowId}-${action.id}`}
-                disabled={busy || action.disabled === true}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setOpen(false);
-                  action.run();
-                }}
-              >
-                {action.label}
-              </button>
-            </Tooltip>
-          ))}
+          <ReviewRowActionButtons
+            actions={actions}
+            busy={busy}
+            role="menuitem"
+            testIdPrefix={`review-row-menu-${rowId}`}
+            closeOnRun={() => setOpen(false)}
+          />
         </span>
       ) : null}
     </span>

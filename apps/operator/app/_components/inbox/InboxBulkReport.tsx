@@ -23,7 +23,9 @@ import type { ReviewReportPresentation } from "../review-report/ReviewReportHost
 import { chunkFindingIds } from "../review-report/run-resume-chunks";
 import ReviewReportShell, {
   partitionReviewRows,
+  reviewActionKey,
   reviewRowControl,
+  ReviewRowActionButtons,
   type ReviewReportGroup,
   type ReviewReportRow,
   type ReviewRowAction,
@@ -208,6 +210,13 @@ function inboxBulkAction(
     };
   }
   if (accounting === "manual") {
+    if (runItem.actionId === "answer" && runItem.draftAnswer?.trim()) {
+      return {
+        key: "answer",
+        tone: "apply",
+        description: "Send the drafted answer through the Inbox resolver.",
+      };
+    }
     return {
       key: runItem.actionId === "answer" ? "you-answer-it" : "you-handle-it",
       tone: "manual",
@@ -217,12 +226,13 @@ function inboxBulkAction(
           : "No safe automatic action — open the item and handle it.",
     };
   }
-  // The resolver's own recommendation wording, which no fixed vocabulary can
-  // hold. Declared `custom` so the commit button knows not to claim this row's
-  // words as the whole selection's consequence.
+  const key = reviewActionKey(runItem.actionId);
+  // Persisted/legacy action ids outside the shared map cannot truthfully enter
+  // Apply-selected: the row and the commit button would have no common words.
+  // The projection makes those rows manual before reaching here; keep this
+  // fallback fail-closed for malformed input.
   return {
-    key: "custom",
-    label: actionText,
+    key: key ?? "you-handle-it",
     description: `Apply: ${actionText}.`,
   };
 }
@@ -302,7 +312,11 @@ export function buildInboxBulkReviewGroups(
   locallyApplied: ReadonlySet<string> = new Set(),
   localErrors: ReadonlyMap<string, string> = new Map(),
   locallyDismissed: ReadonlySet<string> = new Set(),
-  detailFor?: (item: AttentionItem, runItem: BulkRunItem) => ReactNode,
+  detailFor?: (
+    item: AttentionItem,
+    runItem: BulkRunItem,
+    actions?: ReviewRowMenuAction[],
+  ) => ReactNode,
   openSource?: (item: AttentionItem) => void,
   rowActions?: (
     runItem: BulkRunItem,
@@ -341,8 +355,9 @@ export function buildInboxBulkReviewGroups(
     // re-dispatch it. Recovery is deliberate — the run bar's "Re-check and
     // retry", or the row's own drill-in.
     const applyFailed = localError != null && status === "pending";
+    const sharedActionKey = reviewActionKey(runItem.actionId);
     const hasAction =
-      Boolean(runItem.actionId) &&
+      sharedActionKey != null &&
       (!isNavigateAction(runItem.actionId!) ||
         (runItem.actionId === "answer" &&
           Boolean(runItem.draftAnswer?.trim())));
@@ -351,6 +366,7 @@ export function buildInboxBulkReviewGroups(
       status,
       hasAction && Boolean(item),
     );
+    const recoveryActions = rowActions ? rowActions(runItem, item) : [];
     const row: ReviewReportRow = {
       id: runItem.itemId,
       title: item?.title ?? runItem.title ?? runItem.itemId,
@@ -380,10 +396,10 @@ export function buildInboxBulkReviewGroups(
         hasAction &&
         Boolean(item),
       error: localError,
-      ...(rowActions ? { actions: rowActions(runItem, item) } : {}),
+      ...(rowActions ? { actions: recoveryActions } : {}),
       detail:
         status === "pending" && item && detailFor
-          ? detailFor(item, runItem)
+          ? detailFor(item, runItem, recoveryActions)
           : fallbackDetail(runItem),
     };
     if (applyFailed) {
@@ -404,37 +420,42 @@ export function buildInboxBulkReviewGroups(
     group.rows.push(row);
   }
 
-  return [...grouped.values()]
-    .filter((group) => group.rows.length > 0)
-    .flatMap((group) => {
-      const actionable = group.rows.filter((row) => row.selectable === true);
-      const otherResults = group.rows.filter((row) => row.selectable !== true);
+  return (
+    [...grouped.values()]
+      .filter((group) => group.rows.length > 0)
+      .flatMap((group) => {
+        const actionable = group.rows.filter((row) => row.selectable === true);
+        const otherResults = group.rows.filter(
+          (row) => row.selectable !== true,
+        );
 
-      // A completed row can carry the same persisted action id as a still-live
-      // recommendation. Keep the actionable rows in the canonical group and
-      // move the non-selectable history behind its own existing disclosure;
-      // otherwise one live action eagerly mounts every historical detail row.
-      if (actionable.length === 0 || otherResults.length === 0) return [group];
+        // A completed row can carry the same persisted action id as a still-live
+        // recommendation. Keep the actionable rows in the canonical group and
+        // move the non-selectable history behind its own existing disclosure;
+        // otherwise one live action eagerly mounts every historical detail row.
+        if (actionable.length === 0 || otherResults.length === 0)
+          return [group];
 
-      return [
-        { ...group, rows: actionable },
-        {
-          ...group,
-          id: `${group.id}:other-results`,
-          title: `${group.title} · Other results`,
-          description:
-            "Already handled or non-selectable results for this action.",
-          rows: otherResults,
-        },
-      ];
-    })
-    // Failures lead: they are the only rows carrying an unhandled consequence
-    // of the owner's last click (P-010). Everything else stays alphabetical.
-    .sort((a, b) => {
-      const aFailed = a.id === INBOX_BULK_FAILED_GROUP_ID ? 0 : 1;
-      const bFailed = b.id === INBOX_BULK_FAILED_GROUP_ID ? 0 : 1;
-      return aFailed - bFailed || a.title.localeCompare(b.title);
-    });
+        return [
+          { ...group, rows: actionable },
+          {
+            ...group,
+            id: `${group.id}:other-results`,
+            title: `${group.title} · Other results`,
+            description:
+              "Already handled or non-selectable results for this action.",
+            rows: otherResults,
+          },
+        ];
+      })
+      // Failures lead: they are the only rows carrying an unhandled consequence
+      // of the owner's last click (P-010). Everything else stays alphabetical.
+      .sort((a, b) => {
+        const aFailed = a.id === INBOX_BULK_FAILED_GROUP_ID ? 0 : 1;
+        const bFailed = b.id === INBOX_BULK_FAILED_GROUP_ID ? 0 : 1;
+        return aFailed - bFailed || a.title.localeCompare(b.title);
+      })
+  );
 }
 
 interface HydratedRecommendationProps {
@@ -446,61 +467,7 @@ interface HydratedRecommendationProps {
     draftOverride: string | null,
   ) => Promise<{ ok: boolean; error?: string }>;
   onDiscuss?: (item: AttentionItem) => void;
-  onRetry: () => void;
-  onDismiss: () => void;
-  onReconcile: () => void;
-}
-
-function InboxBulkRecoveryActions({
-  item,
-  busy,
-  sourceMissing,
-  onOpen,
-  onRetry,
-  onDismiss,
-  onReconcile,
-}: {
-  item: BulkRunItem;
-  busy: boolean;
-  sourceMissing: boolean;
-  onOpen?: () => void;
-  onRetry: () => void;
-  onDismiss: () => void;
-  onReconcile: () => void;
-}) {
-  return (
-    <div className="inbox-bulk-report__recovery">
-      <button type="button" disabled={busy || !onOpen} onClick={onOpen}>
-        Open source
-      </button>
-      <button
-        type="button"
-        data-testid={`inbox-bulk-retry-${item.itemId}`}
-        disabled={busy}
-        onClick={onRetry}
-      >
-        Retry
-      </button>
-      {sourceMissing ? (
-        <button
-          type="button"
-          data-testid={`inbox-bulk-reconcile-${item.itemId}`}
-          disabled={busy}
-          onClick={onReconcile}
-        >
-          Mark resolved
-        </button>
-      ) : null}
-      <button
-        type="button"
-        data-testid={`inbox-bulk-dismiss-item-${item.itemId}`}
-        disabled={busy}
-        onClick={onDismiss}
-      >
-        Dismiss item
-      </button>
-    </div>
-  );
+  recoveryActions?: ReviewRowMenuAction[];
 }
 
 function HydratedRecommendation({
@@ -509,22 +476,9 @@ function HydratedRecommendation({
   busy,
   onAccept,
   onDiscuss,
-  onRetry,
-  onDismiss,
-  onReconcile,
+  recoveryActions = [],
 }: HydratedRecommendationProps) {
   const detail = usePlanAttentionItem(listItem.id);
-  const actions = (sourceMissing: boolean, openItem?: AttentionItem) => (
-    <InboxBulkRecoveryActions
-      item={runItem}
-      busy={busy}
-      sourceMissing={sourceMissing}
-      onOpen={onDiscuss && openItem ? () => onDiscuss(openItem) : undefined}
-      onRetry={onRetry}
-      onDismiss={onDismiss}
-      onReconcile={onReconcile}
-    />
-  );
   if (detail.loading) {
     return (
       <>
@@ -535,7 +489,18 @@ function HydratedRecommendation({
         >
           Loading this item&rsquo;s live options…
         </span>
-        {actions(false, listItem)}
+        <ReviewRowActionButtons
+          actions={recoveryActions}
+          busy={busy}
+          testIdPrefix={`inbox-bulk-${runItem.itemId}`}
+          testIdForAction={(id) =>
+            id === "reconcile"
+              ? `inbox-bulk-reconcile-${runItem.itemId}`
+              : id === "dismiss"
+                ? `inbox-bulk-dismiss-item-${runItem.itemId}`
+                : `inbox-bulk-${id}-${runItem.itemId}`
+          }
+        />
       </>
     );
   }
@@ -545,7 +510,18 @@ function HydratedRecommendation({
         <span className="inbox-bulk-report__detail-loading" role="alert">
           Could not load this item&rsquo;s current options: {detail.error}
         </span>
-        {actions(false, listItem)}
+        <ReviewRowActionButtons
+          actions={recoveryActions}
+          busy={busy}
+          testIdPrefix={`inbox-bulk-${runItem.itemId}`}
+          testIdForAction={(id) =>
+            id === "reconcile"
+              ? `inbox-bulk-reconcile-${runItem.itemId}`
+              : id === "dismiss"
+                ? `inbox-bulk-dismiss-item-${runItem.itemId}`
+                : `inbox-bulk-${id}-${runItem.itemId}`
+          }
+        />
       </>
     );
   }
@@ -556,7 +532,18 @@ function HydratedRecommendation({
           This item is no longer available in the live Inbox. If you resolved it
           manually, mark it resolved here; otherwise Retry or dismiss it.
         </span>
-        {actions(true, listItem)}
+        <ReviewRowActionButtons
+          actions={recoveryActions}
+          busy={busy}
+          testIdPrefix={`inbox-bulk-${runItem.itemId}`}
+          testIdForAction={(id) =>
+            id === "reconcile"
+              ? `inbox-bulk-reconcile-${runItem.itemId}`
+              : id === "dismiss"
+                ? `inbox-bulk-dismiss-item-${runItem.itemId}`
+                : `inbox-bulk-${id}-${runItem.itemId}`
+          }
+        />
       </>
     );
   }
@@ -577,7 +564,18 @@ function HydratedRecommendation({
           {fallbackDetail(runItem)}
         </span>
       )}
-      {actions(false, hydratedItem)}
+      <ReviewRowActionButtons
+        actions={recoveryActions}
+        busy={busy}
+        testIdPrefix={`inbox-bulk-${runItem.itemId}`}
+        testIdForAction={(id) =>
+          id === "reconcile"
+            ? `inbox-bulk-reconcile-${runItem.itemId}`
+            : id === "dismiss"
+              ? `inbox-bulk-dismiss-item-${runItem.itemId}`
+              : `inbox-bulk-${id}-${runItem.itemId}`
+        }
+      />
     </>
   );
 }
@@ -880,7 +878,7 @@ export default function InboxBulkReport({
         locallyApplied,
         localErrors,
         locallyDismissed,
-        (item, runItem) => (
+        (item, runItem, actions) => (
           <InboxBulkRecommendationDetail
             key={runItem.itemId}
             listItem={item}
@@ -890,9 +888,7 @@ export default function InboxBulkReport({
               acceptSingle(hydratedItem, runItem, draftOverride)
             }
             onDiscuss={onOpenThread}
-            onRetry={() => void retryItem(runItem)}
-            onDismiss={() => void dismissOne(runItem)}
-            onReconcile={() => void reconcileOne(runItem)}
+            recoveryActions={actions}
           />
         ),
         // P-003: the source chip becomes a REAL control that opens the item's
@@ -1188,8 +1184,8 @@ export default function InboxBulkReport({
             <>
               <strong>This run did not finish.</strong> The rows below are what
               it had assessed before it stopped, and they are still applicable.
-              The run&apos;s own error is in the bar above; re-run the same scope
-              from there once you have addressed it.
+              The run&apos;s own error is in the bar above; re-run the same
+              scope from there once you have addressed it.
             </>
           ) : presentation === "live" ? (
             <>

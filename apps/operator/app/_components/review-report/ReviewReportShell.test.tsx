@@ -21,6 +21,7 @@ import ReviewReportShell, {
   REVIEW_ROW_ACCOUNTING,
   REVIEW_ROW_CONTROLS,
   reviewCommitLabel,
+  reviewActionKey,
   reviewRowControl,
   reviewRowVerb,
   type ReviewActionKey,
@@ -224,9 +225,7 @@ describe("rendering", () => {
         screen
           .getByTestId(`review-row-why-${confidence}`)
           .getAttribute("aria-label"),
-      ).toContain(
-        `${confidence} confidence`,
-      );
+      ).toContain(`${confidence} confidence`);
     }
   });
 
@@ -473,7 +472,7 @@ describe("rendering", () => {
     }
   });
 
-  it("refuses to name a single consequence for a mixed or custom selection", () => {
+  it("refuses to name a single consequence for a mixed or terminal selection", () => {
     // Mixed verbs: there is no one thing Apply will do, so it must not claim
     // one. This is the honest fallback, not a missing feature.
     expect(
@@ -483,18 +482,23 @@ describe("rendering", () => {
       ),
     ).toBe("Apply selected (2)");
 
-    // A data-driven verb never claims shared wording either.
-    expect(
-      reviewCommitLabel(
-        [{ key: "custom", label: "Zap" }],
-        "Apply selected",
-      ),
-    ).toBe("Apply selected (1)");
-
     // A terminal verb has no commit phrasing to borrow.
     expect(reviewCommitLabel([{ key: "skipped" }], "Apply selected")).toBe(
       "Apply selected (1)",
     );
+  });
+
+  it("admits only registered action keys, so a Zap/Apply-selected pair is unrepresentable", () => {
+    expect(reviewActionKey("ack")).toBe("ack");
+    expect(reviewActionKey("zap")).toBeNull();
+    const shellSource = readFileSync(
+      resolve(
+        operatorRoot,
+        "app/_components/review-report/ReviewReportShell.tsx",
+      ),
+      "utf8",
+    );
+    expect(shellSource).not.toContain('key: "custom"');
   });
 
   it("renders the row verb and the commit button in the same words", () => {
@@ -533,9 +537,7 @@ describe("rendering", () => {
    * flows cannot drift into two vocabularies for the same recovery, and a
    * control added for one is immediately offerable by the other.
    */
-  const CONTROL_IDS = Object.keys(
-    REVIEW_ROW_CONTROLS,
-  ) as ReviewRowControlId[];
+  const CONTROL_IDS = Object.keys(REVIEW_ROW_CONTROLS) as ReviewRowControlId[];
 
   it("builds every row control from the registry, wording and tone included", () => {
     expect(CONTROL_IDS.length).toBeGreaterThan(0);
@@ -569,6 +571,10 @@ describe("rendering", () => {
 
       // It resolves controls through the shared builder…
       expect(source).toContain("reviewRowControl");
+      expect(source).toContain("ReviewRowActionButtons");
+      // …and consumers own no recovery-button JSX at all. Both their overflow
+      // and expanded details render the shared component.
+      expect(source).not.toContain("<button");
 
       // …and does NOT hand-construct a control object. An inline `id: "open"`
       // beside a `run:` is exactly the second definition site this forbids.

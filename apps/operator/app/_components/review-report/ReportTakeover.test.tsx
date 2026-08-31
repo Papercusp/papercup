@@ -20,6 +20,9 @@ const { nuqs, setQueryStates } = vi.hoisted(() => ({
     Object.assign(nuqs, patch);
   }),
 }));
+const toastInfo = vi.hoisted(() => vi.fn());
+
+vi.mock("sonner", () => ({ toast: { info: toastInfo } }));
 
 import { nuqsParsers } from "@papercusp/test-config/nuqs-mock";
 vi.mock("nuqs", () => ({
@@ -48,6 +51,7 @@ afterEach(() => {
   cleanup();
   for (const k of Object.keys(nuqs)) delete nuqs[k];
   setQueryStates.mockClear();
+  toastInfo.mockClear();
 });
 
 function Probe({
@@ -191,9 +195,13 @@ describe("useReportTakeoverParam", () => {
         [REPORT_TAKEOVER_OWNER_PARAM]: "opcbr",
       }),
     );
+    expect(toastInfo).toHaveBeenCalledWith(
+      expect.stringMatching(/no longer exists.*cleared/i),
+    );
 
     rerender(<AvailabilityProbe paramKey="opcln" />);
     expect(setQueryStates).toHaveBeenCalledTimes(1);
+    expect(toastInfo).toHaveBeenCalledTimes(1);
   });
 
   it("keeps ownership while the run is loading, available, or backgrounded", () => {

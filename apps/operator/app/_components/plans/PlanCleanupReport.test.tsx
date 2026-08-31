@@ -371,6 +371,49 @@ describe("applyPlanCleanupFinding", () => {
     expect(result.error).toMatch(/author/i);
     expect(H.setItemStatus).not.toHaveBeenCalled();
   });
+
+  it("supports an explicit Apply anyway retry after a typed stale refusal", async () => {
+    H.setItemStatus
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "expected_status_mismatch: current=done expected=todo",
+      })
+      .mockResolvedValueOnce({ ok: true });
+    const onClose = vi.fn();
+    render(
+      <PlanCleanupReport
+        run={run()}
+        findings={[finding()]}
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("review-report-apply"));
+    await screen.findByTestId("review-row-error-flip:p-one#P-001");
+    fireEvent.click(screen.getByTestId("review-row-flip:p-one#P-001"));
+    fireEvent.click(screen.getByTestId("review-row-menu-flip:p-one#P-001"));
+    fireEvent.click(
+      screen.getByTestId("review-row-menu-flip:p-one#P-001-apply-anyway"),
+    );
+
+    await waitFor(() => expect(H.setItemStatus).toHaveBeenCalledTimes(2));
+    expect(H.setItemStatus).toHaveBeenLastCalledWith({
+      slug: "p-one",
+      itemId: "P-001",
+      status: "done",
+      harness: "papercusp",
+    });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("does not preselect evidence-free recommendations", () => {
+    const noEvidence = finding({ evidence: [] });
+    const groups = buildPlanCleanupReviewGroups([noEvidence]);
+    expect(groups[0]?.rows[0]).toMatchObject({
+      selectable: false,
+      evidence: expect.arrayContaining(["No evidence was recorded."]),
+    });
+  });
 });
 
 describe("PlanCleanupReport", () => {

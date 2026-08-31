@@ -17,6 +17,7 @@
  */
 import { useEffect, useRef, type ReactNode } from "react";
 import { parseAsString, useQueryStates } from "nuqs";
+import { toast } from "sonner";
 import "./review-report.css";
 
 /**
@@ -145,6 +146,9 @@ export function useReleaseMissingReportTakeover(
     }
     if (loading || available || releasedValueRef.current === value) return;
     releasedValueRef.current = value;
+    toast.info(
+      "That report run no longer exists. Its stale report link was cleared.",
+    );
     void close();
   }, [available, close, enabled, foreground, loading, value]);
 }

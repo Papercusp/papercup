@@ -19,7 +19,9 @@ import {
   type RunLifecycleInput,
 } from "./RunLifecycleBar";
 
-const input = (overrides: Partial<RunLifecycleInput> = {}): RunLifecycleInput => ({
+const input = (
+  overrides: Partial<RunLifecycleInput> = {},
+): RunLifecycleInput => ({
   phase: "review",
   total: 10,
   decided: 10,
@@ -88,7 +90,11 @@ describe("deriveRunLifecycleState", () => {
     const state = deriveRunLifecycleState(
       input({
         phase: "running",
-        liveness: { state: "stale", ageMs: 3_600_000, measuredFrom: "heartbeat" },
+        liveness: {
+          state: "stale",
+          ageMs: 3_600_000,
+          measuredFrom: "heartbeat",
+        },
         notAssessed: 6,
       }),
     );
@@ -140,7 +146,7 @@ describe("deriveRunLifecycleState", () => {
       input({ staleRows: 3, ageMs: REPORT_STALE_AFTER_MS * 2 }),
     );
     expect(state.headline).toBe("3 rows changed since the scan");
-    expect(intents(state)).toEqual(["recheck", "reveal"]);
+    expect(intents(state)).toEqual(["recheck", "apply-anyway", "reveal"]);
   });
 
   it("warns on an old report only while something is still open", () => {
@@ -156,7 +162,13 @@ describe("deriveRunLifecycleState", () => {
 
   it("D-004: a `complete` run renders a real state instead of nothing", () => {
     const state = deriveRunLifecycleState(
-      input({ phase: "complete", total: 7, decided: 7, autoApplied: 7, open: 0 }),
+      input({
+        phase: "complete",
+        total: 7,
+        decided: 7,
+        autoApplied: 7,
+        open: 0,
+      }),
     );
     expect(state.tone).toBe("good");
     expect(state.headline).toBe("Papercup fixed 7 findings on its own");

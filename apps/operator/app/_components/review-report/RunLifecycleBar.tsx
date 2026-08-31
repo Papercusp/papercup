@@ -32,6 +32,8 @@ export type RunLifecycleIntent =
   | "stop"
   /** Re-derive every pending finding against current state. */
   | "recheck"
+  /** Deliberately bypass the recorded-state precondition after a real refusal. */
+  | "apply-anyway"
   /** Reveal the rows a summary line is talking about. */
   | "reveal";
 
@@ -129,10 +131,13 @@ export function deriveRunLifecycleState(
       tone: "warn",
       icon: "!",
       headline: `${applied} applied, ${failed} failed`,
-      detail:
-        "Nothing was left half-written. Each failed row says why, below.",
+      detail: "Nothing was left half-written. Each failed row says why, below.",
       actions: [
-        { intent: "recheck", label: `Re-check and retry ${failed}`, tone: "warn" },
+        {
+          intent: "recheck",
+          label: `Re-check and retry ${failed}`,
+          tone: "warn",
+        },
         { intent: "reveal", label: "Show only failures", tone: "ghost" },
       ],
     };
@@ -167,7 +172,11 @@ export function deriveRunLifecycleState(
           : since,
       actions: [
         { intent: "restart", label: "Restart the resolver", tone: "danger" },
-        { intent: "stop", label: `Keep the ${input.total} it finished`, tone: "ghost" },
+        {
+          intent: "stop",
+          label: `Keep the ${input.total} it finished`,
+          tone: "ghost",
+        },
       ],
     };
   }
@@ -222,9 +231,14 @@ export function deriveRunLifecycleState(
       icon: "⧗",
       headline: `${plural(input.staleRows ?? 0, "row")} changed since the scan`,
       detail:
-        "Applying them now would write over newer work. Re-check them first.",
+        "Applying them now would write over newer work. Re-check them, or explicitly apply anyway.",
       actions: [
         { intent: "recheck", label: "Re-check all", tone: "warn" },
+        {
+          intent: "apply-anyway",
+          label: `Apply ${input.staleRows ?? 0} anyway`,
+          tone: "danger",
+        },
         { intent: "reveal", label: "Show the changed rows", tone: "ghost" },
       ],
     };

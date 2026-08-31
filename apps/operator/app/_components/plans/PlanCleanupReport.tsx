@@ -17,6 +17,7 @@ import {
 } from "@/app/admin/plans/plans-api";
 import ReviewReportShell, {
   partitionReviewRows,
+  ReviewRowActionButtons,
   reviewRowControl,
   type ReviewReportGroup,
   type ReviewReportRow,
@@ -230,12 +231,13 @@ function evidenceLines(finding: PlanCleanupFinding): string[] {
   const lines = finding.evidence.map((entry) =>
     [entry.kind, entry.ref, entry.note].filter(Boolean).join(" · "),
   );
+  if (lines.length === 0) lines.push("No evidence was recorded.");
   if (finding.error) lines.push(`error · ${finding.error}`);
   lines.push(`confidence · ${planCleanupReviewConfidence(finding)}`);
   if (finding.recommendation?.responsibility) {
     lines.push(`responsibility · ${finding.recommendation.responsibility}`);
   }
-  return lines.length > 0 ? lines : ["No evidence was recorded."];
+  return lines;
 }
 
 function reportRow(
@@ -243,7 +245,10 @@ function reportRow(
   locallyApplied: ReadonlySet<string>,
   locallyDismissed: ReadonlySet<string>,
   localErrors: ReadonlyMap<string, string>,
-  detailFor?: (finding: PlanCleanupFinding) => ReactNode,
+  detailFor?: (
+    finding: PlanCleanupFinding,
+    actions?: ReviewRowMenuAction[],
+  ) => ReactNode,
   openSource?: (finding: PlanCleanupFinding) => void,
   rowActions?: (finding: PlanCleanupFinding) => ReviewRowMenuAction[],
 ): ReviewReportRow {
@@ -254,6 +259,7 @@ function reportRow(
   // re-dispatch it. Recovery is deliberate — the run bar's "Re-check and retry"
   // or the row's own recovery drill-in.
   const applyFailed = localError != null && status === "pending";
+  const recoveryActions = rowActions ? rowActions(finding) : [];
   return {
     id: finding.findingId,
     title: finding.target,
@@ -276,10 +282,10 @@ function reportRow(
     transition: { from: finding.from, to: finding.to },
     detail:
       status === "pending" && detailFor
-        ? detailFor(finding)
+        ? detailFor(finding, recoveryActions)
         : (manualReason(finding) ?? undefined),
     error: localError,
-    ...(rowActions ? { actions: rowActions(finding) } : {}),
+    ...(rowActions ? { actions: recoveryActions } : {}),
     evidence: evidenceLines(finding),
     confidence: planCleanupReviewConfidence(finding),
     accounting: reviewAccounting(finding, status),
@@ -288,6 +294,7 @@ function reportRow(
       !applyFailed &&
       status === "pending" &&
       finding.outcome === "recommended" &&
+      finding.evidence.length > 0 &&
       ACTIONABLE_KINDS.has(finding.kind),
   };
 }
@@ -303,7 +310,10 @@ export function buildPlanCleanupReviewGroups(
   locallyApplied: ReadonlySet<string> = new Set(),
   localErrors: ReadonlyMap<string, string> = new Map(),
   locallyDismissed: ReadonlySet<string> = new Set(),
-  detailFor?: (finding: PlanCleanupFinding) => ReactNode,
+  detailFor?: (
+    finding: PlanCleanupFinding,
+    actions?: ReviewRowMenuAction[],
+  ) => ReactNode,
   openSource?: (finding: PlanCleanupFinding) => void,
   rowActions?: (finding: PlanCleanupFinding) => ReviewRowMenuAction[],
 ): ReviewReportGroup[] {
@@ -403,6 +413,7 @@ export interface ApplyFindingResult {
 
 export async function applyPlanCleanupFinding(
   finding: PlanCleanupFinding,
+  options: { allowStale?: boolean } = {},
 ): Promise<ApplyFindingResult> {
   const harness = finding.harnessSlug ?? undefined;
   try {
@@ -417,7 +428,11 @@ export async function applyPlanCleanupFinding(
         slug: finding.planSlug,
         itemId: finding.itemId,
         status: finding.kind === "flip-to-done" ? "done" : "todo",
-        expectedStatus: finding.from as SetStatusArgs["expectedStatus"],
+        ...(!options.allowStale
+          ? {
+              expectedStatus: finding.from as SetStatusArgs["expectedStatus"],
+            }
+          : {}),
         ...(harness ? { harness } : {}),
       });
       const error = writeError(result);
@@ -452,70 +467,6 @@ export async function applyPlanCleanupFinding(
   }
 }
 
-interface PlanCleanupRecoveryDetailProps {
-  finding: PlanCleanupFinding;
-  busy: boolean;
-  onOpen: () => void;
-  onRecheck: () => void;
-  onRetry: () => void;
-  onDismiss: () => void;
-}
-
-function PlanCleanupRecoveryDetail({
-  finding,
-  busy,
-  onOpen,
-  onRecheck,
-  onRetry,
-  onDismiss,
-}: PlanCleanupRecoveryDetailProps) {
-  return (
-    <div
-      className="plan-cleanup-report__recovery"
-      data-testid={`plan-cleanup-recovery-${finding.findingId}`}
-    >
-      <span className="plan-cleanup-report__recovery-copy">
-        {manualReason(finding) ??
-          "Apply the recommendation, or use a recovery path without hiding the finding."}
-      </span>
-      <span className="plan-cleanup-report__recovery-actions">
-        <button
-          type="button"
-          data-testid={`plan-cleanup-open-${finding.findingId}`}
-          disabled={busy}
-          onClick={onOpen}
-        >
-          Open plan
-        </button>
-        <button
-          type="button"
-          data-testid={`plan-cleanup-recheck-${finding.findingId}`}
-          disabled={busy || finding.kind === "semantic"}
-          onClick={onRecheck}
-        >
-          Recheck
-        </button>
-        <button
-          type="button"
-          data-testid={`plan-cleanup-retry-${finding.findingId}`}
-          disabled={busy}
-          onClick={onRetry}
-        >
-          Retry
-        </button>
-        <button
-          type="button"
-          data-testid={`plan-cleanup-dismiss-${finding.findingId}`}
-          disabled={busy}
-          onClick={onDismiss}
-        >
-          Dismiss finding
-        </button>
-      </span>
-    </div>
-  );
-}
-
 export interface PlanCleanupReportProps {
   run: PlanCleanupRun;
   findings: PlanCleanupFinding[];
@@ -535,8 +486,15 @@ export default function PlanCleanupReport({
   onOpenFinding,
   onClose,
 }: PlanCleanupReportProps) {
-  const { accept, dismissFinding, recheckFinding, resume, restart, stop, start } =
-    usePlanCleanupOps();
+  const {
+    accept,
+    dismissFinding,
+    recheckFinding,
+    resume,
+    restart,
+    stop,
+    start,
+  } = usePlanCleanupOps();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // P-010: what the in-flight apply is doing, and what the last one did.
@@ -573,7 +531,10 @@ export default function PlanCleanupReport({
   const planCount = new Set(findings.map((finding) => finding.planSlug)).size;
 
   const onApply = useCallback(
-    async (selectedIds: string[]) => {
+    async (
+      selectedIds: string[],
+      allowStaleIds: ReadonlySet<string> = new Set(),
+    ) => {
       if (busy) return;
       setBusy(true);
       setNotice(null);
@@ -602,7 +563,9 @@ export default function PlanCleanupReport({
             );
             continue;
           }
-          const applied = await applyPlanCleanupFinding(finding);
+          const applied = await applyPlanCleanupFinding(finding, {
+            allowStale: allowStaleIds.has(findingId),
+          });
           if (!applied.ok) {
             failedCount += 1;
             if (applied.stale) {
@@ -617,6 +580,13 @@ export default function PlanCleanupReport({
             continue;
           }
           appliedCount += 1;
+
+          setStaleIds((previous) => {
+            if (!previous.has(findingId)) return previous;
+            const next = new Set(previous);
+            next.delete(findingId);
+            return next;
+          });
 
           // Resolve first, record second. Mark local success immediately so a
           // bookkeeping failure cannot invite a second mutation in this view.
@@ -809,6 +779,11 @@ export default function PlanCleanupReport({
         }
         return;
       }
+      if (intent === "apply-anyway") {
+        const ids = [...staleIds];
+        if (ids.length > 0) void onApply(ids, new Set(ids));
+        return;
+      }
       void (async () => {
         setBusy(true);
         setNotice(null);
@@ -907,6 +882,7 @@ export default function PlanCleanupReport({
       failedIds,
       findings,
       notAssessedIds,
+      onApply,
       onClose,
       recheckFinding,
       restart,
@@ -915,6 +891,7 @@ export default function PlanCleanupReport({
       run.runId,
       run.seedRefs,
       start,
+      staleIds,
       stop,
     ],
   );
@@ -938,6 +915,17 @@ export default function PlanCleanupReport({
             "This recommendation has no registered hand-edit action.",
           run: () => void onApply([finding.findingId]),
         }),
+        ...(staleIds.has(finding.findingId)
+          ? [
+              reviewRowControl("apply-anyway", {
+                run: () =>
+                  void onApply(
+                    [finding.findingId],
+                    new Set([finding.findingId]),
+                  ),
+              }),
+            ]
+          : []),
         reviewRowControl("open", {
           subject: finding.planSlug,
           disabled: !onOpenFinding,
@@ -966,6 +954,7 @@ export default function PlanCleanupReport({
       onOpenFinding,
       onRecheckFinding,
       onRetryFinding,
+      staleIds,
     ],
   );
 
@@ -976,16 +965,26 @@ export default function PlanCleanupReport({
         locallyApplied,
         localErrors,
         locallyDismissed,
-        (finding) => (
-          <PlanCleanupRecoveryDetail
-            key={finding.findingId}
-            finding={finding}
-            busy={busy}
-            onOpen={() => onOpenFinding?.(finding)}
-            onRecheck={() => void onRecheckFinding(finding)}
-            onRetry={() => void onRetryFinding(finding)}
-            onDismiss={() => void onDismissFinding(finding)}
-          />
+        (finding, actions = []) => (
+          <div
+            className="plan-cleanup-report__recovery"
+            data-testid={`plan-cleanup-recovery-${finding.findingId}`}
+          >
+            <span className="plan-cleanup-report__recovery-copy">
+              {manualReason(finding) ??
+                "Apply the recommendation, or use a recovery path without hiding the finding."}
+            </span>
+            <span className="plan-cleanup-report__recovery-actions">
+              <ReviewRowActionButtons
+                actions={actions}
+                busy={busy}
+                testIdPrefix={`plan-cleanup-${finding.findingId}`}
+                testIdForAction={(id) =>
+                  `plan-cleanup-${id}-${finding.findingId}`
+                }
+              />
+            </span>
+          </div>
         ),
         onOpenFinding ? (finding) => onOpenFinding(finding) : undefined,
         rowActions,
@@ -997,9 +996,6 @@ export default function PlanCleanupReport({
       locallyDismissed,
       busy,
       onOpenFinding,
-      onRecheckFinding,
-      onRetryFinding,
-      onDismissFinding,
       rowActions,
     ],
   );
@@ -1029,7 +1025,15 @@ export default function PlanCleanupReport({
       unit="finding"
       busy={busy}
       onIntent={onRunIntent}
-      supports={["rerun", "resume", "restart", "stop", "recheck", "reveal"]}
+      supports={[
+        "rerun",
+        "resume",
+        "restart",
+        "stop",
+        "recheck",
+        "apply-anyway",
+        "reveal",
+      ]}
     />
   );
 
@@ -1083,8 +1087,8 @@ export default function PlanCleanupReport({
             <>
               <strong>This run did not finish.</strong> The rows below are what
               it had assessed before it stopped, and they are still applicable.
-              The run&apos;s own error is in the bar above; re-run the same scope
-              from there once you have addressed it.
+              The run&apos;s own error is in the bar above; re-run the same
+              scope from there once you have addressed it.
             </>
           ) : presentation === "live" ? (
             <>
