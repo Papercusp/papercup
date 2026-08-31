@@ -21,7 +21,7 @@ import type {
 
 const H = vi.hoisted(() => ({
   arming: null as AutomationArming | null,
-  projects: [] as { slug: string }[],
+  projects: [] as { slug: string; harness_kind?: string | null }[],
 }));
 
 vi.mock('@papercusp/sync', () => ({
@@ -85,10 +85,20 @@ function scope(disabledPots: string[]): AutomationArming['potScope'] {
   };
 }
 
-/** The picker is URL-driven, so it opens by starting at its own key. */
-function renderPicker(a: AutomationArming | null, projects: { slug: string }[]) {
+/**
+ * The picker is URL-driven, so it opens by starting at its own key.
+ *
+ * Fixture projects default to `harness_kind:'hive'` — i.e. they are POTS. The
+ * real `harnessProjects.lite` returns every project in the workspace and the
+ * picker filters to pots, so a bare `{ slug }` fixture would model a repo and
+ * be excluded. Pass an explicit `harness_kind` to model a non-pot on purpose.
+ */
+function renderPicker(
+  a: AutomationArming | null,
+  projects: { slug: string; harness_kind?: string | null }[],
+) {
   H.arming = a;
-  H.projects = projects;
+  H.projects = projects.map((p) => ('harness_kind' in p ? p : { ...p, harness_kind: 'hive' }));
   return render(
     <NuqsTestingAdapter searchParams="?lpick=true">
       <LearningPotPicker />
@@ -153,6 +163,18 @@ describe('the scope picker', () => {
       { slug: 'gamma' },
     ]);
     expect(rowNames()).toHaveLength(3);
+  });
+
+  it('does NOT list workspace repos as if they were pots', () => {
+    // Measured live 2026-08-30: this surface rendered 116 rows against 28 real
+    // pots because it read the whole project listing. 38 were `papercusp/libs/*`
+    // submodules — rows whose only possible outcome was a refused write.
+    renderPicker(arming({ gymPots: [gym('alpha')] }), [
+      { slug: 'alpha' },
+      { slug: 'papercusp/libs/generic/cache', harness_kind: 'repo' },
+      { slug: 'papercusp/papercusp-desktop', harness_kind: null },
+    ]);
+    expect(rowNames()).toEqual(['alpha']);
   });
 
   it('puts armed pots first', () => {
