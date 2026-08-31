@@ -8,17 +8,49 @@
  * the Sessions roster uses (workspace-wide, presence-primary; each entry carries
  * fleetSlug + fleetColor = the fleet's scheme.cursor accent).
  *
- * Phase 1 (this): the collapsed pill + the fleet-grouped, fleet-colored roster.
- * Phase 2 (A4): hover a row → preview its plans/work-items; click → live
- * inspector / jump to the item / reach the session.
+ * ── This file is now the HOST, not the implementation ──────────────────────
+ * The roster's pure logic and its row/section rendering live in
+ * `@papercusp/agent-roster` (libs/generic/agent-roster), extracted by P-001 of
+ * portal-universal-bar-and-agent-roster-2026-08-31 so the web portal renders the
+ * SAME roster from the SAME code with its own theme (D-005: an extraction, never
+ * a copy — a copy would fork ~2,700 lines across two repos permanently).
+ *
+ * What stayed HERE is exactly what is operator-specific, and it is what the
+ * package's three seams were designed around:
+ *   · the `advRoster.list` sync query + its 5s cadence (the portal is
+ *     cross-origin from :3070 and has its own auth);
+ *   · the URL state — nuqs, per the repo rule that user-meaningful state is
+ *     agent-readable only from the URL;
+ *   · the chrome (Popover / Tooltip / LivenessDot / ThinkingDot) and the lexicon;
+ *   · the bulk-action endpoints and AgentInspectorModal.
+ *
+ * Every pure function this file used to define is RE-EXPORTED below, unchanged in
+ * name and signature, so the surfaces that import them from here — AgentsPillSessions,
+ * AdvOverviewTab, SwarmTab, AgentsTab, AskComposer, and the tests — did not have
+ * to change at all.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
+import {
+  AgentRoster,
+  ROSTER_STYLES,
+  canFocusWindow,
+  canForkSession,
+  displayName as rosterDisplayName,
+  distinctMachineCount,
+  groupByFleet,
+  isTranscriptFresh,
+  resumableSessionId,
+  thinkingStreamUrl,
+  type RosterAgent,
+  type RosterBulkActions,
+  type RosterChrome,
+  type RosterLabels,
+} from '@papercusp/agent-roster';
 import { Popover } from '@/app/harness/Popover';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { LivenessDot } from '@/app/coord/presence-ui';
-import { LIVE_MS, type Liveness } from '@papercusp/operator-core/lib/liveness';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
 import { useOpenHudConversation } from './use-open-hud-conversation';
@@ -47,322 +79,46 @@ import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import './adv-header-pills.css';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 
-/** The subset of a server RosterEntry (adv-roster.ts) this control reads. The
- *  fleet fields are stamped by resolveFleetInfoByOwner; the base frontend
- *  RosterEntry type doesn't declare them, so we type them here. */
-export interface RosterAgent {
-  ownerId: string;
-  label: string;
-  agent: string | null;
-  role: string | null;
-  intent: string;
-  feature: string | null;
-  currentPlanSlug: string | null;
-  liveness: 'live' | 'idle' | 'stale' | string;
-  /** Authoritative session-lifecycle verdict from the shared server oracle.
-   *  Unlike `liveness`, this distinguishes a genuinely live turn from a parked
-   *  or ended process that is still emitting keepalive heartbeats. */
-  sessionState?: 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded' | string | null;
-  heartbeatAt: string;
-  /** Genuine-activity timestamp (last real turn/tool dispatch, coord_presence.last_active_at)
-   *  — the "since last turn" clock and the basis for activity-liveness. NOT the keepalive
-   *  heartbeat. null on older/pending rows. */
-  lastActiveAt?: string | null;
-  /** Whether an engine loop is armed for this agent (keeps working on a cadence). */
-  loopArmed?: boolean;
-  /** The machine this agent runs on — this machine's fingerprint for a local agent,
-   *  the announced machine_label for a federated (cross-machine, shared-hive) agent. */
-  machineLabel?: string | null;
-  /** True for an agent on THIS machine; false for a federated cross-machine agent. */
-  isLocal?: boolean;
-  fleetSlug?: string | null;
-  fleetColor?: string | null;
-  agentPaneKind?: string | null;
-  /** The agent's latest run-id + its harness — present only for spawned runs
-   *  (bees) that have a thinking log. Enables the "live thinking" click action;
-   *  absent ⇒ no action shown (never a dead button). */
-  runId?: string | null;
-  harnessSlug?: string | null;
-  /** Native session id — the transcript handle for an INTERACTIVE (non-bee)
-   *  CLAUDE session's thinking (su/queen/sentinel). */
-  sessionId?: string | null;
-  /** The omp thread id — an OMP session's transcript handle
-   *  (~/.omp/agent/sessions jsonl). */
-  ompThreadId?: string | null;
-  /** Whether transcript output changed within the recent display window.
-   *  Decoration only: this does not establish a live turn. */
-  transcriptFresh?: boolean | null;
-  /**
-   * @deprecated Compatibility alias for transcriptFresh from older roster
-   * payloads. Do not use it as a liveness/activity verdict.
-   */
-  thinking?: boolean | null;
-  /** Whether a transcript actually RESOLVES for this agent's live-thinking pane.
-   *  Stamped by the server for interactive CLAUDE sessions: false when the recorded
-   *  session_id resolves to no transcript (a parked/ended agent whose transcript is
-   *  gone). Gates the "Live thinking" affordance so clicking never opens an empty
-   *  pane — an unresolvable session shows the honest "unavailable" note instead
-   *  (WI-2680). Absent/true for every other backend (bee / codex / omp). */
-  thinkingResolvable?: boolean;
-  /** The adv_sessions row id + the OS terminal-window handle for this agent, when
-   *  recorded. `windowId` (an X11 window id, resolved via wmctrl) is the most
-   *  direct focus target, but NOT the only one: given `advSessionId`, the
-   *  /adv/sessions/focus endpoint also resolves the window from the adv row's
-   *  stored windowId OR the `[adv:<id>]` window-TITLE fragment (wmctrl), so a live
-   *  session whose windowId wasn't pre-resolved (common for fleet/psu launches)
-   *  is still focusable. pid alone is NOT sufficient — every gnome-terminal shares
-   *  one server pid, so a pid can't be matched back to a window. */
-  advSessionId?: number | null;
-  windowId?: string | null;
-  pid?: number | null;
-}
+/* ── Re-exports: the roster's shared vocabulary ────────────────────────────
+   These moved to @papercusp/agent-roster but are re-exported from here with
+   their original names and signatures. Importing them from this path stays
+   correct, which is why the extraction touched no other operator file. */
+export {
+  activityLiveness,
+  activityLivenessTitle,
+  agentGlyph,
+  canFocusWindow,
+  canForkSession,
+  distinctMachineCount,
+  filterRoster,
+  fmtCompactAge,
+  groupByFleet,
+  hasThinking,
+  isRunningAgent,
+  isTranscriptFresh,
+  machineKey,
+  machineTabs,
+  resumableSessionId,
+  shortOwner,
+  thinkingStreamUrl,
+  LIVE_TURN_MS,
+  type FleetGroup,
+  type MachineTab,
+  type RosterAgent,
+} from '@papercusp/agent-roster';
 
-/** Whether an agent's terminal window can be focused. True when we have a stored
- *  X11 `windowId` (direct wmctrl target) OR an `advSessionId` — the
- *  /adv/sessions/focus endpoint resolves the window from the adv row / the
- *  `[adv:<id>]` title fragment in that case, so the "Focus window" affordance is
- *  offered for a live session even before its windowId is resolved (owner ask
- *  2026-07-11). A resolution miss surfaces as a graceful "focus failed", never a
- *  crash. pid alone is NOT enough (all gnome-terminals share one server pid).
- *  Pure — exported for tests. */
-export function canFocusWindow(a: Pick<RosterAgent, 'windowId' | 'advSessionId'>): boolean {
-  return Boolean(a.windowId) || a.advSessionId != null;
-}
-
-/** The session id to fork/resume this agent's terminal into a NEW window
- *  (WI-3882) — `<agent-cli> -r <id>` (plan-agent-launch P-023,
- *  console-launcher.ts) only accepts claude + omp session ids; codex's
- *  rollout resume is a different mechanism, so it's deliberately excluded
- *  here rather than passing an id that would silently fail. null ⇒ no
- *  Fork/Resume action shown (never a dead button). Pure — exported for tests. */
-export function resumableSessionId(
-  a: Pick<RosterAgent, 'agent' | 'sessionId' | 'ompThreadId'>,
-): string | null {
-  if (a.agent === 'codex') return null;
-  return a.sessionId ?? a.ompThreadId ?? null;
-}
-
-/** Whether an agent's session can be FORKED into a new session (WI-4009;
- *  generalized 2026-07-11) — `--fork-session` (console-launcher.ts's
- *  buildConsoleEnvelope) is claude-only; omp has no fork command. Gates the
- *  Fork button for BOTH active and inactive sessions (owner ask 2026-07-11 —
- *  retracted the earlier "fork only when live" rule): forking BRANCHES a fresh
- *  session from the transcript, safe whether or not the source is still
- *  running. Resume-in-place (no fork) remains available for any non-codex
- *  backend regardless. Pure — exported for tests. */
-export function canForkSession(a: Pick<RosterAgent, 'agent'>): boolean {
-  return a.agent === 'claude';
-}
-
-/** Whether an agent has a viewable thinking stream — a spawned bee's run-log, a
- *  claude session's transcript, a codex session's rollout (keyed by its adv row
- *  id), or an omp session's thread jsonl. Pure — exported for tests.
+/** The row's display NAME: the human owner-label, else a short owner id. NEVER the
+ *  agent TYPE (claude/codex/omp) — that's the backend, not a name.
  *
- *  `thinkingResolvable === false` VETOES the affordance: the server resolved the
- *  interactive claude session's transcript and found none (a parked/ended agent
- *  whose transcript is gone), so opening the pane would show an empty
- *  "waiting/stalled" state. Gating here turns that into the honest "unavailable"
- *  note instead of a misleading empty modal (WI-2680). The veto is safe — it only
- *  fires when the stream WOULD be empty; a live session's transcript file always
- *  resolves, so a working pane is never hidden. */
-export function hasThinking(
-  // Every field below is read defensively (`&&` / `!= null` / `=== false`), so the
-  // handles are genuinely OPTIONAL — a caller with only a `sessionId`, or only a
-  // `runId`, is a valid input. A bare `Pick` made all of them REQUIRED, which is
-  // why partial call-sites (real ones pass a full RosterAgent) had to be forced.
-  a: Partial<Pick<RosterAgent, 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId' | 'thinkingResolvable'>>,
-): boolean {
-  if (a.thinkingResolvable === false) return false;
-  return Boolean(
-    (a.runId && a.harnessSlug)
-    || a.sessionId
-    || (a.agent === 'codex' && a.advSessionId != null)
-    || a.ompThreadId,
-  );
-}
-
-/** Canonical transcript-freshness read with one payload-skew fallback. */
-export function isTranscriptFresh(
-  a: Pick<RosterAgent, 'transcriptFresh' | 'thinking'>,
-): boolean {
-  return a.transcriptFresh ?? a.thinking ?? false;
-}
-
-/** The stream URL for an agent's thinking: the bee run-log stream when it has a
- *  run, else the interactive-session transcript endpoint keyed per backend
- *  (claude sessionId · codex adv-row id · omp thread id); null when none. Pure.
- *  The claude leg gets the agent's `ownerId` as a hint so the backend jumps
- *  straight to that session's isolation dir instead of sweeping all of them (the
- *  ~3s → ms fix).
- *
- *  EI-16982: the claude leg also passes `ended=1` whenever the server already
- *  told us (`thinkingResolvable === false`) that no on-disk transcript exists
- *  for this session. Without it, the backend `/adv/session/thinking` route has
- *  no way to distinguish "a live agent that hasn't taken its first turn yet"
- *  (keep polling) from "an ended agent whose transcript was archived + deleted"
- *  (rematerialize from `harness_shared.session_archives`, WI-3990) — and always
- *  took the former branch, so a parked/ended session's history silently never
- *  loaded even though the archive held it. This was true for ~97% of agents
- *  (measured), not an edge case. `ended` is omitted (not `0`) when resolvable —
- *  the backend treats its absence as "don't know", same as before, for the
- *  live-session case where this signal isn't yet available. */
-export function thinkingStreamUrl(
-  // Every field is read defensively (truthy / `!= null` / `=== false`), so all
-  // handles are genuinely OPTIONAL — a caller with only a `sessionId`, or only a
-  // `runId`, is valid (real call-sites pass a full RosterAgent). A bare `Pick`
-  // made them all REQUIRED, forcing partial call-sites and reddening the
-  // operator-vite typecheck ratchet (matches hasThinking above).
-  a: Partial<
-    Pick<
-      RosterAgent,
-      'ownerId' | 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId' | 'thinkingResolvable'
-    >
-  >,
-): string | null {
-  if (a.runId && a.harnessSlug) {
-    return `/api/harness/${encodeURIComponent(a.harnessSlug)}/agents/${encodeURIComponent(a.runId)}/stream?phase=staging`;
-  }
-  /* WI-41497: the BACKEND legs come first, because `sessionId` is not a claude
-     tell. A codex adv row carries its rollout/thread uuid in `session_id` (237
-     of 257 live codex rows did when this was measured), so a sessionId-first
-     order sent every one of them to the claude leg — `sessionId=<codex uuid>`,
-     which the claude resolver cannot resolve, for a guaranteed empty pane. Same
-     misread as adv-roster's freshness probe had; the two surfaces build the
-     same URL and must not disagree about which backend a row is. */
-  if (a.agent === 'codex' && a.advSessionId != null) {
-    return `/api/adv/session/thinking?codexSessionKey=${encodeURIComponent(String(a.advSessionId))}`;
-  }
-  if (a.ompThreadId) {
-    // WI-41496: the adv-session id names the per-session omp home the
-    // transcript actually lives in (see ompSessionKeyParam in
-    // AgentsPillSessions); without it the route searches the shared ~/.omp home
-    // a psu-launched omp agent never writes to.
-    const key = a.advSessionId != null ? `&ompSessionKey=${encodeURIComponent(String(a.advSessionId))}` : '';
-    return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(a.ompThreadId)}${key}`;
-  }
-  if (a.sessionId) {
-    const owner = a.ownerId ? `&owner=${encodeURIComponent(a.ownerId)}` : '';
-    const ended = a.thinkingResolvable === false ? '&ended=1' : '';
-    return `/api/adv/session/thinking?sessionId=${encodeURIComponent(a.sessionId)}${owner}${ended}`;
-  }
-  return null;
-}
-
-/** Compact "time since" for the roster's last-active pill: 3s / 2m / 4h / 2d.
- *  Empty for a missing/invalid timestamp; a slightly-future ts (clock skew)
- *  clamps to 0s. Pure — exported for tests. */
-export function fmtCompactAge(iso: string | null | undefined, nowMs: number): string {
-  if (!iso) return '';
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return '';
-  const s = Math.max(0, Math.floor((nowMs - t) / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  return `${Math.floor(h / 24)}d`;
-}
-
-/** The window that counts as "live" in this dropdown: took a turn within the last
- *  10 minutes. */
-export const LIVE_TURN_MS = 600_000;
-
-/**
- * The liveness to DISPLAY for a running agent — derived from GENUINE activity
- * (`lastActiveAt`, a real turn / tool dispatch), never the 60s keepalive
- * heartbeat and never a merely-armed loop:
- *   · live  — took a turn within the last minute (LIVE_MS): actively working.
- *   · idle  — took a turn within LIVE_TURN_MS (10m): alive but between turns /
- *             mid-reasoning, or a loop waiting for its next wake.
- *   · stale — no genuine turn in LIVE_TURN_MS: NOT live — a wedged/killed session,
- *             or an armed loop that has stopped firing.
- *
- * `loopArmed` is deliberately NOT a liveness signal here. A HEALTHY loop keeps
- * `lastActiveAt` fresh on its own cadence (so it reads live/idle without help);
- * an armed-but-not-firing loop is exactly the warm-dead session this must report
- * as stale. The old WI-1488 "loop armed ⇒ live" short-circuit painted a KILLED
- * loop-armed session green — owner-reported 2026-07-17: "it thought you were
- * still live even though you didn't have a turn in a few hours".
- *
- * A missing/blank/unparseable `lastActiveAt` (older/pending rows that never
- * stamped it) is `stale`, never a keepalive-derived "live" (the owner's standing
- * rule — the keepalive heartbeat is not evidence of taking turns). Pure —
- * exported for tests.
- */
-export function activityLiveness(
-  a: Pick<RosterAgent, 'lastActiveAt'>,
-  nowMs: number,
-): Liveness {
-  const iso = a.lastActiveAt ?? null;
-  if (!iso) return 'stale';
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return 'stale';
-  const age = nowMs - t;
-  if (age < LIVE_MS) return 'live';
-  if (age < LIVE_TURN_MS) return 'idle';
-  return 'stale';
-}
-
-/** The tooltip for an agent's activity-liveness dot — the honest state plus,
- *  when a loop is armed, whether it is still firing (fresh) or has stalled
- *  (stale). Pure — exported for tests. */
-export function activityLivenessTitle(
-  a: Pick<RosterAgent, 'lastActiveAt' | 'loopArmed'>,
-  nowMs: number,
+ *  Operator binding of the package's `displayName`: the generic form takes a plain
+ *  label normalizer (it must work in a host with no lexicon provider), and this
+ *  adapts the operator's `BoundLexicon` onto it. Callers keep the original
+ *  `displayName(a, lex)` signature. */
+export function displayName(
+  a: Pick<RosterAgent, 'label' | 'ownerId'>,
+  lex?: BoundLexicon,
 ): string {
-  const state = activityLiveness(a, nowMs);
-  if (state === 'live') return `live — took a turn in the last minute${a.loopArmed ? ' · loop armed' : ''}`;
-  if (state === 'idle') return `idle — no turn in the last minute${a.loopArmed ? ' · loop armed' : ''}`;
-  return a.loopArmed
-    ? 'stale — no turn in over 10m (loop armed but not firing)'
-    : 'stale — no turn in over 10m';
-}
-
-/** Distinct machines represented in the roster — local machines by their label,
- *  a still-unlabeled local row folded under one "__local__" bucket, federated rows
- *  by their machineLabel. Used for the "across N machines" pill count. Pure. */
-export function distinctMachineCount(
-  agents: readonly Pick<RosterAgent, 'machineLabel' | 'isLocal'>[],
-): number {
-  const set = new Set<string>();
-  for (const a of agents) {
-    set.add(a.machineLabel ?? (a.isLocal === false ? '__remote__' : '__local__'));
-  }
-  return set.size;
-}
-
-/** The machine-grouping key for an agent (matches distinctMachineCount). Pure. */
-export function machineKey(a: Pick<RosterAgent, 'machineLabel' | 'isLocal'>): string {
-  return a.machineLabel ?? (a.isLocal === false ? '__remote__' : '__local__');
-}
-
-export interface MachineTab {
-  key: string;
-  label: string;
-  isLocal: boolean;
-  count: number;
-}
-
-/**
- * Per-machine tabs for the roster: THIS machine first (labeled "Local"), then each
- * remote machine in the shared hive, alphabetical by label. `count` = agents on that
- * machine. Empty/one-machine setups produce ≤1 tab (the caller then hides the bar).
- * Pure — exported for tests.
- */
-export function machineTabs(agents: readonly RosterAgent[]): MachineTab[] {
-  const byKey = new Map<string, MachineTab>();
-  for (const a of agents) {
-    const key = machineKey(a);
-    const isLocal = a.isLocal !== false;
-    const label = isLocal ? 'Local' : (a.machineLabel ?? 'Remote');
-    const t = byKey.get(key) ?? { key, label, isLocal, count: 0 };
-    t.count += 1;
-    byKey.set(key, t);
-  }
-  return [...byKey.values()].sort((x, y) =>
-    x.isLocal !== y.isLocal ? (x.isLocal ? -1 : 1) : x.label.localeCompare(y.label),
-  );
+  return rosterDisplayName(a, lex ? (raw) => agentDisplayLabel(raw, lex) : undefined);
 }
 
 /** advRoster.list returns a single-element array wrapping the roster object. */
@@ -370,119 +126,73 @@ interface RosterResponse {
   active: RosterAgent[];
 }
 
-/** The cup-cast glyph vocabulary (restore-pot-lexicon D-006) — matches the
- *  zellij roster (apps/tui agent_pane_kind.rs) + AdvAgentsPanel AGENT_KIND_GLYPH.
- *  mug=☕ · kettle=🫖 · cup(worker)=🍵 · papercup=🥤.
- *
- *  Owner 2026-07-12: D-006 assigned the MUG a teacup (🍵) and the worker CUP the
- *  actual coffee-mug (☕) — backwards. Swapped here and in the two sibling maps.
- *
- *  Both generations of pane-kind id are listed (WI-2932): `agentPaneKind` may
- *  still arrive as the pre-rename wire word, so a mixed-generation roster must
- *  render identically. The LEGEND below no longer prints these raw keys — it
- *  routes the display words through the lexicon (see KIND_LEGEND). */
-const KIND_GLYPH: Record<string, string> = {
-  queen: '☕',
-  overwatch: '🫖',
-  bee: '🍵',
-  sentinel: '🥤',
-  planner: '📋',
-  su: '🛠',
-  mug: '☕',
-  kettle: '🫖',
-  cup: '🍵',
-  papercup: '🥤',
+/** The operator's presentational primitives, handed to the shared roster. Module
+ *  scope so the object identity is stable across renders. */
+const OPERATOR_CHROME: RosterChrome = { Tooltip, LivenessDot, ThinkingDot };
+
+/** All POSTs use text/plain (a CORS "simple request" — the desktop webkit2gtk
+ *  build fails preflight OPTIONS silently; the routes parse the raw body as JSON
+ *  regardless). */
+const postText = (url: string, payload: unknown) =>
+  fetch(url, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(payload) });
+
+/** The operator's bulk endpoints. The shared roster owns WHEN these run (and the
+ *  confirm-arming on kill); the routes and their auth are ours. */
+const OPERATOR_BULK: RosterBulkActions = {
+  async message(ownerIds, text) {
+    const res = await postText('/api/admin/coord/send', {
+      to: [...ownerIds],
+      summary: text.slice(0, 120),
+      body: text,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return `Sent to ${ownerIds.length}`;
+  },
+  async wake(ownerIds) {
+    const res = await postText('/api/admin/coord/send', {
+      to: [...ownerIds],
+      summary: '(nudge from the operator)',
+      wake: 'required',
+    });
+    return res.ok ? `Nudged ${ownerIds.length}` : `Wake failed (HTTP ${res.status})`;
+  },
+  async focus(agents) {
+    let ok = 0;
+    await Promise.all(
+      agents.map(async (a) => {
+        try {
+          const res = await postText('/api/adv/sessions/focus', {
+            id: a.advSessionId ?? undefined,
+            windowId: a.windowId ?? undefined,
+            pid: a.pid ?? undefined,
+          });
+          if (res.ok) ok++;
+        } catch { /* best-effort per agent */ }
+      }),
+    );
+    return `Focused ${ok}/${agents.length}`;
+  },
+  async kill(agents) {
+    let ok = 0;
+    await Promise.all(
+      agents.map(async (a) => {
+        try {
+          const res = await postText('/api/adv/sessions/close-window', {
+            id: a.advSessionId ?? undefined,
+            windowId: a.windowId ?? undefined,
+            pid: a.pid ?? undefined,
+          });
+          if (res.ok) ok++;
+        } catch { /* best-effort per agent */ }
+      }),
+    );
+    return `Killed ${ok}/${agents.length}`;
+  },
+  async copyIds(ownerIds) {
+    await navigator.clipboard.writeText(ownerIds.join('\n'));
+    return `Copied ${ownerIds.length} id${ownerIds.length === 1 ? '' : 's'}`;
+  },
 };
-
-/** The legend rows, in cast order. `kind` is the internal id (glyph lookup +
- *  React key); the display word is resolved from the LEXICON at render time —
- *  never the raw wire key. Regression (owner 2026-07-12): this legend used to
- *  render `Object.entries(KIND_GLYPH)` directly, so it showed the stale internal
- *  vocabulary ("queen / overwatch / bee / sentinel") to the owner. planner/su
- *  have no TermKey and stay literal — same contract as AdvAgentsPanel's
- *  kindLegend, which already did this correctly. */
-const KIND_LEGEND: Array<{ kind: string; term: 'brain' | 'overwatch' | 'contributor' | 'operator' | null; literal?: string }> = [
-  { kind: 'mug', term: 'brain' },
-  { kind: 'kettle', term: 'overwatch' },
-  { kind: 'cup', term: 'contributor' },
-  { kind: 'papercup', term: 'operator' },
-  { kind: 'planner', term: null, literal: 'planner' },
-  { kind: 'su', term: null, literal: 'su' },
-];
-
-/** The kind glyph for an agent — from agentPaneKind when present, else role. */
-export function agentGlyph(a: Pick<RosterAgent, 'agentPaneKind' | 'role'>): string {
-  const kind = (a.agentPaneKind ?? a.role ?? '').toLowerCase();
-  return KIND_GLYPH[kind] ?? '·';
-}
-
-/** A short, recognizable owner id — `su-5577c5df-…` → `su-5577c`; a long bee id is
- *  truncated. Pure — exported for tests. */
-export function shortOwner(id: string): string {
-  const m = id.match(/^([a-z]+-[0-9a-f]{5,8})/i);
-  if (m) return m[1];
-  return id.length > 16 ? `${id.slice(0, 15)}…` : id;
-}
-
-/** The row's display NAME: the human owner-label, else a short owner id. NEVER the
- *  agent TYPE (claude/codex/omp) — that's the backend, not a name (it's shown as a
- *  chip in the detail instead). Pure — exported for tests. */
-export function displayName(
-  a: Pick<RosterAgent, 'label' | 'ownerId'>,
-  lex?: BoundLexicon,
-): string {
-  const label = a.label?.trim();
-  return label && label.length > 0
-    ? (lex ? agentDisplayLabel(label, lex) : label)
-    : shortOwner(a.ownerId);
-}
-
-/**
- * Whether a roster entry belongs on the BROADER active/wakeable roster — present
- * (not heartbeat-stale) OR loop-armed. A loop-armed agent keeps working on a
- * cadence even while parked between wakes, so broader fleet/ask surfaces retain
- * it even if its presence heartbeat has gone stale.
- *
- * The "agents running" pill deliberately does NOT use this broader predicate:
- * its wording promises agents running right now, so it filters on the server's
- * authoritative `sessionState === 'live'` verdict below. Pure — exported for
- * the roster surfaces that intentionally include parked/wakeable agents.
- */
-export function isRunningAgent(a: Pick<RosterAgent, 'liveness' | 'loopArmed'>): boolean {
-  return a.liveness !== 'stale' || Boolean(a.loopArmed);
-}
-
-export interface FleetGroup {
-  /** null = the "No fleet" catch-all group. */
-  slug: string | null;
-  color: string | null;
-  agents: RosterAgent[];
-}
-
-/**
- * Group agents by fleet, fleeted groups first (alphabetical by slug), the
- * "No fleet" group last — the same ordering as the zellij roster
- * (fleet_group_sort_key). Within a group, preserve input order (the roster is
- * already newest-heartbeat first). Pure — exported for tests.
- */
-export function groupByFleet(agents: readonly RosterAgent[]): FleetGroup[] {
-  const byFleet = new Map<string, FleetGroup>();
-  for (const a of agents) {
-    const slug = a.fleetSlug && a.fleetSlug.trim() ? a.fleetSlug : null;
-    const key = slug ?? ' no-fleet';
-    let g = byFleet.get(key);
-    if (!g) {
-      g = { slug, color: slug ? a.fleetColor ?? null : null, agents: [] };
-      byFleet.set(key, g);
-    }
-    g.agents.push(a);
-  }
-  return [...byFleet.values()].sort((x, y) => {
-    if ((x.slug === null) !== (y.slug === null)) return x.slug === null ? 1 : -1; // No fleet last
-    if (x.slug === null) return 0;
-    return x.slug.localeCompare(y.slug!);
-  });
-}
 
 export default function AgentsRunningPill() {
   const [open, setOpen] = useQueryState('agentsRoster', parseAsBoolean.withDefault(false));
@@ -636,8 +346,16 @@ export default function AgentsRunningPill() {
   );
 }
 
-/** The fleet-grouped roster list rendered inside the popover. Hovering a row
- *  previews that agent's plan/work-item in the detail strip; clicking pins it. */
+/**
+ * The fleet-grouped roster list rendered inside the popover — the operator's
+ * binding of the shared `AgentRoster`.
+ *
+ * Everything this wrapper adds is operator-specific by construction: the lexicon
+ * (the cast words shown in the kind legend come from the LEXICON, never from the
+ * internal pane-kind ids — the legend used to leak "queen / overwatch / bee /
+ * sentinel" into the UI), the nuqs-backed machine tab, the bulk endpoints, and
+ * the inspector modal.
+ */
 export function AgentsRoster({
   agents,
   nowMs,
@@ -649,477 +367,35 @@ export function AgentsRoster({
    *  once per focus value (WI-5517 — the Overview Agents-tile click-through). */
   focusOwner?: string | null;
 }) {
-  // The cast words shown in the kind legend come from the LEXICON, never from the
-  // internal pane-kind ids (owner 2026-07-12 — the legend was leaking "queen /
-  // overwatch / bee / sentinel" into the UI).
   const lex = useLexicon();
-  const [pinned, setPinned] = useState<string | null>(null);
-  // Keep the most recently previewed agent selected after the pointer leaves the
-  // roster. The detail strip sits directly above the inactive-sessions control;
-  // clearing hover on mouse-leave made that whole section blink out while the
-  // user moved toward it. Falling back to the first visible agent also keeps the
-  // strip mounted before the first hover and across push-driven roster refreshes.
-  const [previewed, setPreviewed] = useState<string | null>(null);
+  const labels = useMemo<RosterLabels>(() => ({
+    term: (key, opts) => lex(key, opts),
+    agentLabel: (raw) => agentDisplayLabel(raw, lex),
+    roleLabel: (raw) => agentRoleLabel(raw, lex),
+  }), [lex]);
+
   const [inspecting, setInspecting] = useState<RosterAgent | null>(null);
   // resume-in-gui-button-2026-08-09: where the inspector's "Resume in GUI" button
   // sends you — the HUD tab with this agent's conversation popup open (and this
   // popover closed). The navigation lives vite-side because AgentInspectorModal is in
   // apps/operator, which cannot import from here.
   const openHudConversation = useOpenHudConversation();
-  // Deep-link focus (?agentsFocus=): pin + preview + scroll — handled ONCE per
-  // focus value (push-driven roster refreshes re-run the effect; re-pinning is
-  // harmless but re-scrolling would fight the user).
-  const focusHandledRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!focusOwner) {
-      focusHandledRef.current = null;
-      return;
-    }
-    if (focusHandledRef.current === focusOwner) return;
-    if (!agents.some((a) => a.ownerId === focusOwner)) return;
-    focusHandledRef.current = focusOwner;
-    setPinned(focusOwner);
-    setPreviewed(focusOwner);
-    const t = window.setTimeout(() => {
-      document
-        .querySelector(`[data-testid="agent-row-${focusOwner}"]`)
-        ?.scrollIntoView({ block: 'nearest' });
-    }, 60);
-    return () => window.clearTimeout(t);
-  }, [focusOwner, agents]);
-  // Shared-hive per-machine tabs: THIS machine ("Local") first, then each connected
-  // machine. Only shown when >1 machine is present; otherwise the whole roster renders
-  // as before. The selected tab rides nuqs (?agentsMachine=); clearing it = Local.
-  const [machineTab, setMachineTab] = useQueryState('agentsMachine', parseAsString);
-  const tabs = useMemo(() => machineTabs(agents), [agents]);
-  const showTabs = tabs.length > 1;
-  const activeTabKey = showTabs
-    ? (machineTab && tabs.some((t) => t.key === machineTab) ? machineTab : tabs[0].key)
-    : null;
-  const shown = useMemo(
-    () => (activeTabKey ? agents.filter((a) => machineKey(a) === activeTabKey) : agents),
-    [agents, activeTabKey],
-  );
-  const groups = useMemo(() => groupByFleet(shown), [shown]);
-  const total = shown.length;
-  // Sticky detail selection (WI-3881): the explicitly pinned/hovered agent wins,
-  // then whoever we were ALREADY showing (if still present), then the first row.
-  // Resolving through this fallback chain means a live-roster refresh that briefly
-  // drops the selected agent — e.g. its heartbeat ages to 'stale' for one push, so
-  // it is filtered out of `running` (see the `liveness !== 'stale'` filter above) —
-  // no longer collapses `active` to null. That null was what made the detail strip
-  // disappear and reappear on every refresh; now it stays mounted, falling through
-  // to the last-shown agent (or the first row) instead of blanking.
-  const lastShownIdRef = useRef<string | null>(null);
-  const active = useMemo(() => {
-    const findIn = (id: string | null) => {
-      if (!id) return null;
-      for (const g of groups) {
-        const a = g.agents.find((x) => x.ownerId === id);
-        if (a) return { agent: a, color: g.color };
-      }
-      return null;
-    };
-    return (
-      findIn(pinned) ??
-      findIn(previewed) ??
-      findIn(lastShownIdRef.current) ??
-      (shown[0] ? findIn(shown[0].ownerId) : null)
-    );
-  }, [groups, shown, pinned, previewed]);
-  // Remember whoever the strip is currently showing, so the next refresh prefers
-  // to keep showing them (sticky) rather than snapping back to the first row.
-  useEffect(() => {
-    if (active) lastShownIdRef.current = active.agent.ownerId;
-  }, [active]);
 
-  // ── Multi-select + bulk actions (owner ask 2026-07-11) ──────────────────
-  // Per-row checkboxes select agents; a bulk bar (shown when ≥1 in the CURRENT
-  // machine-tab view is selected) drives: Message all / Wake all (coord:send
-  // proxy, one call with all ownerIds) · Focus all windows · Kill (close the
-  // terminal window, confirm-armed) · Copy ids. All POSTs use text/plain (a
-  // CORS "simple request" — the desktop webkit2gtk build fails preflight
-  // OPTIONS silently; the routes parse the raw body as JSON regardless).
-  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
-  const [bulkBusy, setBulkBusy] = useState<null | 'message' | 'wake' | 'focus' | 'kill'>(null);
-  const [composing, setComposing] = useState(false);
-  const [msgText, setMsgText] = useState('');
-  const [killArmed, setKillArmed] = useState(false);
-  const [bulkNote, setBulkNote] = useState<string | null>(null);
-  // Only agents in the current view (machine tab) count — switching tabs hides
-  // the bar rather than acting on off-screen selections.
-  const selectedAgents = useMemo(() => shown.filter((a) => selected.has(a.ownerId)), [shown, selected]);
-  const selectedIds = selectedAgents.map((a) => a.ownerId);
-  const allShownSelected = shown.length > 0 && shown.every((a) => selected.has(a.ownerId));
-  const toggleSelected = (ownerId: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(ownerId)) next.delete(ownerId);
-      else next.add(ownerId);
-      return next;
-    });
-    setKillArmed(false);
-    setBulkNote(null);
-  };
-  const selectAllShown = () => {
-    setSelected(new Set(shown.map((a) => a.ownerId)));
-    setKillArmed(false);
-    setBulkNote(null);
-  };
-  const clearSelection = () => {
-    setSelected(new Set());
-    setKillArmed(false);
-    setComposing(false);
-    setBulkNote(null);
-  };
-  const postText = (url: string, payload: unknown) =>
-    fetch(url, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(payload) });
-  const sendBulkMessage = async () => {
-    const text = msgText.trim();
-    if (!text || selectedIds.length === 0) return;
-    setBulkBusy('message');
-    setBulkNote(null);
-    try {
-      const res = await postText('/api/admin/coord/send', { to: selectedIds, summary: text.slice(0, 120), body: text });
-      if (res.ok) {
-        setBulkNote(`Sent to ${selectedIds.length}`);
-        setComposing(false);
-        setMsgText('');
-      } else {
-        setBulkNote(`Message failed (HTTP ${res.status})`);
-      }
-    } catch {
-      setBulkNote('Message failed');
-    } finally {
-      setBulkBusy(null);
-    }
-  };
-  const wakeSelected = async () => {
-    if (selectedIds.length === 0) return;
-    setBulkBusy('wake');
-    setBulkNote(null);
-    try {
-      const res = await postText('/api/admin/coord/send', { to: selectedIds, summary: '(nudge from the operator)', wake: 'required' });
-      setBulkNote(res.ok ? `Nudged ${selectedIds.length}` : `Wake failed (HTTP ${res.status})`);
-    } catch {
-      setBulkNote('Wake failed');
-    } finally {
-      setBulkBusy(null);
-    }
-  };
-  const focusSelected = async () => {
-    const targets = selectedAgents.filter((a) => canFocusWindow(a));
-    if (targets.length === 0) {
-      setBulkNote('None of the selected have a focusable window');
-      return;
-    }
-    setBulkBusy('focus');
-    setBulkNote(null);
-    let ok = 0;
-    await Promise.all(
-      targets.map(async (a) => {
-        try {
-          const res = await postText('/api/adv/sessions/focus', {
-            id: a.advSessionId ?? undefined,
-            windowId: a.windowId ?? undefined,
-            pid: a.pid ?? undefined,
-          });
-          if (res.ok) ok++;
-        } catch { /* best-effort per agent */ }
-      }),
-    );
-    setBulkNote(`Focused ${ok}/${targets.length}`);
-    setBulkBusy(null);
-  };
-  const killSelected = async () => {
-    // Confirm-armed: first click arms ("Confirm kill N?"), second executes.
-    if (!killArmed) {
-      setKillArmed(true);
-      setBulkNote(null);
-      return;
-    }
-    const targets = selectedAgents.filter((a) => canFocusWindow(a));
-    setBulkBusy('kill');
-    setBulkNote(null);
-    let ok = 0;
-    await Promise.all(
-      targets.map(async (a) => {
-        try {
-          const res = await postText('/api/adv/sessions/close-window', {
-            id: a.advSessionId ?? undefined,
-            windowId: a.windowId ?? undefined,
-            pid: a.pid ?? undefined,
-          });
-          if (res.ok) ok++;
-        } catch { /* best-effort per agent */ }
-      }),
-    );
-    const noWindow = selectedAgents.length - targets.length;
-    setBulkNote(`Killed ${ok}/${targets.length}${noWindow > 0 ? ` (${noWindow} had no window)` : ''}`);
-    setKillArmed(false);
-    setBulkBusy(null);
-    setSelected(new Set());
-  };
-  const copyIds = async () => {
-    const text = selectedIds.join('\n');
-    try {
-      await navigator.clipboard.writeText(text);
-      setBulkNote(`Copied ${selectedIds.length} id${selectedIds.length === 1 ? '' : 's'}`);
-    } catch {
-      setBulkNote('Copy failed');
-    }
-  };
+  // Shared-hive per-machine tabs ride nuqs (?agentsMachine=); clearing it = Local.
+  const [machineTab, setMachineTab] = useQueryState('agentsMachine', parseAsString);
 
   return (
-    // The last preview remains selected when the pointer leaves. This keeps the
-    // detail strip mounted while the user moves into it or the inactive-session
-    // section below it.
-    <div
-      className="pc-agents-roster"
-      role="group"
-      aria-label={`${total} agents running`}
-      data-testid="agents-roster"
+    <AgentRoster
+      agents={agents}
+      nowMs={nowMs}
+      focusOwner={focusOwner}
+      chrome={OPERATOR_CHROME}
+      labels={labels}
+      machineTab={typeof machineTab === 'string' ? machineTab : null}
+      onMachineTabChange={(key) => void setMachineTab(key)}
+      bulk={OPERATOR_BULK}
+      onInspect={setInspecting}
     >
-      {showTabs && (
-        <div className="pc-agents-roster__tabs" role="tablist" data-testid="agents-machine-tabs">
-          {tabs.map((t) => (
-            <Tooltip
-              key={t.key}
-              label={t.isLocal ? 'Agents on this machine' : `Agents on ${t.label}`}
-              side="bottom"
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={t.key === activeTabKey}
-                className={`pc-agents-roster__tab${t.key === activeTabKey ? ' is-active' : ''}`}
-                data-testid={`agents-machine-tab-${t.key}`}
-                onClick={() => void setMachineTab(t.key === tabs[0].key ? null : t.key)}
-              >
-                {t.label} <span className="pc-agents-roster__tab-count">{t.count}</span>
-              </button>
-            </Tooltip>
-          ))}
-        </div>
-      )}
-      <div className="pc-agents-roster__legend" aria-hidden>
-        {KIND_LEGEND.map(({ kind, term, literal }) => (
-          <span key={kind} className="pc-agents-roster__legend-item">
-            {KIND_GLYPH[kind] ?? '·'} {term ? lex(term, { lower: true }) : literal}
-          </span>
-        ))}
-      </div>
-      {selectedAgents.length > 0 ? (
-        <div className="pc-agents-roster__bulkbar" data-testid="agents-bulk-bar" role="toolbar" aria-label="Bulk agent actions">
-          <span className="pc-agents-roster__bulk-count" data-testid="agents-bulk-count">{selectedAgents.length} selected</span>
-          <button
-            type="button"
-            className="pc-agents-roster__bulk-btn"
-            data-testid="agents-bulk-message"
-            onClick={() => { setComposing((c) => !c); setKillArmed(false); setBulkNote(null); }}
-          >
-            ✉ Message
-          </button>
-          {/* Bulk-action hints ride the shared Tooltip primitive (constant labels,
-              so the WI-4059 falsy<->truthy remount trap does not apply) — native
-              title= on a button trips the design-primitives lint (EI-9468). */}
-          <Tooltip label="Re-invoke the selected agents (coord wake)">
-            <button
-              type="button"
-              className="pc-agents-roster__bulk-btn"
-              data-testid="agents-bulk-wake"
-              disabled={bulkBusy === 'wake'}
-              onClick={wakeSelected}
-            >
-              {bulkBusy === 'wake' ? 'nudging…' : '⏰ Wake'}
-            </button>
-          </Tooltip>
-          <Tooltip label="Raise the selected agents' terminal windows">
-            <button
-              type="button"
-              className="pc-agents-roster__bulk-btn"
-              data-testid="agents-bulk-focus"
-              disabled={bulkBusy === 'focus'}
-              onClick={focusSelected}
-            >
-              {bulkBusy === 'focus' ? 'focusing…' : '⤢ Focus all'}
-            </button>
-          </Tooltip>
-          <Tooltip label="Copy the selected owner ids to the clipboard">
-            <button
-              type="button"
-              className="pc-agents-roster__bulk-btn"
-              data-testid="agents-bulk-copy"
-              onClick={copyIds}
-            >
-              ⧉ Copy ids
-            </button>
-          </Tooltip>
-          <Tooltip label="Close the selected agents' terminal windows (graceful — SIGHUPs the CLI)">
-            <button
-              type="button"
-              className={`pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--danger${killArmed ? ' is-armed' : ''}`}
-              data-testid="agents-bulk-kill"
-              disabled={bulkBusy === 'kill'}
-              onClick={killSelected}
-            >
-              {bulkBusy === 'kill'
-                ? 'killing…'
-                : killArmed
-                  ? `⚠ Confirm kill ${selectedAgents.length}?`
-                  : '✕ Kill'}
-            </button>
-          </Tooltip>
-          <span className="pc-agents-roster__bulk-spacer" />
-          <button
-            type="button"
-            className="pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--ghost"
-            data-testid="agents-bulk-selectall"
-            onClick={allShownSelected ? clearSelection : selectAllShown}
-          >
-            {allShownSelected ? 'Deselect all' : 'Select all'}
-          </button>
-          <button
-            type="button"
-            className="pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--ghost"
-            data-testid="agents-bulk-clear"
-            onClick={clearSelection}
-          >
-            Clear
-          </button>
-          {bulkNote ? (
-            <span className="pc-agents-roster__bulk-note" data-testid="agents-bulk-note">{bulkNote}</span>
-          ) : null}
-          {composing ? (
-            <div className="pc-agents-roster__compose" data-testid="agents-bulk-compose">
-              <textarea
-                className="pc-agents-roster__compose-input"
-                data-testid="agents-bulk-msg"
-                value={msgText}
-                onChange={(e) => setMsgText(e.target.value)}
-                placeholder={`Message ${selectedAgents.length} agent${selectedAgents.length === 1 ? '' : 's'}…`}
-                rows={2}
-                autoFocus
-              />
-              <div className="pc-agents-roster__compose-actions">
-                <button
-                  type="button"
-                  className="pc-agents-roster__bulk-btn"
-                  data-testid="agents-bulk-msg-send"
-                  disabled={bulkBusy === 'message' || msgText.trim().length === 0}
-                  onClick={sendBulkMessage}
-                >
-                  {bulkBusy === 'message' ? 'sending…' : 'Send'}
-                </button>
-                <button
-                  type="button"
-                  className="pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--ghost"
-                  onClick={() => setComposing(false)}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      <div className="pc-agents-roster__scroll" data-testid="agents-roster-scroll">
-        {groups.map((g) => (
-          <section key={g.slug ?? '__none'} className="pc-agents-roster__group">
-            <header
-              className="pc-agents-roster__group-head"
-              style={g.slug ? { color: g.color ?? undefined } : undefined}
-            >
-              <span className="pc-agents-roster__group-caret" aria-hidden>▾</span>
-              {g.slug ?? 'No fleet'} <span className="pc-agents-roster__group-count">({g.agents.length})</span>
-            </header>
-            {g.agents.map((a) => (
-              <div
-                key={a.ownerId}
-                className={`pc-agents-roster__row${a.ownerId === pinned ? ' is-pinned' : ''}${selected.has(a.ownerId) ? ' is-selected' : ''}`}
-                data-testid={`agent-row-${a.ownerId}`}
-                data-liveness={a.liveness}
-                role="button"
-                tabIndex={0}
-                onMouseEnter={() => setPreviewed(a.ownerId)}
-                onClick={() => {
-                  // Click an agent → open its live thinking (bee run-log or the
-                  // interactive session's transcript); otherwise pin its detail.
-                  // Hover always previews the detail.
-                  if (hasThinking(a)) setInspecting(a);
-                  else setPinned((p) => (p === a.ownerId ? null : a.ownerId));
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    if (hasThinking(a)) setInspecting(a);
-                    else setPinned((p) => (p === a.ownerId ? null : a.ownerId));
-                  }
-                }}
-              >
-                {/* A REAL native accent checkbox (owner-hit 2026-07-11 r3: the
-                    shared Radix primitive's <button>+lucide-svg restyle never
-                    matched the approved native mockup, even once deployed to
-                    dist — because it's an approximation, not the browser's own
-                    checkbox). A native <input type=checkbox> with accent-color
-                    IS the native accent look, and the Tauri/WebKitGTK webview
-                    draws it natively. stopPropagation on click+keydown so
-                    ticking the box never opens the inspector / pins the row (the
-                    row's own onClick/onKeyDown). */}
-                <input
-                  type="checkbox"
-                  className="pc-agents-roster__check"
-                  data-testid={`agent-select-${a.ownerId}`}
-                  checked={selected.has(a.ownerId)}
-                  aria-label={`Select ${displayName(a, lex)}`}
-                  onChange={() => toggleSelected(a.ownerId)}
-                  onClick={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => e.stopPropagation()}
-                />
-                <span className="pc-agents-roster__live">
-                  {isTranscriptFresh(a) ? (
-                    <ThinkingDot size={7} title={`${displayName(a, lex)} — thinking`} />
-                  ) : (
-                    <LivenessDot
-                      liveness={activityLiveness(a, nowMs)}
-                      size={7}
-                      title={activityLivenessTitle(a, nowMs)}
-                    />
-                  )}
-                  {fmtCompactAge(a.lastActiveAt ?? a.heartbeatAt, nowMs) ? (
-                    <span
-                      className="pc-agents-roster__age"
-                      title={`last turn ${fmtCompactAge(a.lastActiveAt ?? a.heartbeatAt, nowMs)} ago`}
-                    >
-                      {fmtCompactAge(a.lastActiveAt ?? a.heartbeatAt, nowMs)}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="pc-agents-roster__glyph" style={g.color ? { color: g.color } : undefined} aria-hidden>
-                  {agentGlyph(a)}
-                </span>
-                <span className="pc-agents-roster__name" style={g.color ? { color: g.color } : undefined} title={`${a.ownerId}${a.agent ? ` · ${a.agent}` : ''}`}>
-                  {displayName(a, lex)}
-                </span>
-                <span className="pc-agents-roster__doing" title={a.intent || undefined}>
-                  {a.feature ? <span className="pc-agents-roster__feat">{a.feature}</span> : null}
-                  {a.intent || (a.currentPlanSlug ? a.currentPlanSlug : '—')}
-                </span>
-              </div>
-            ))}
-          </section>
-        ))}
-      </div>
-      {active ? (
-        <AgentDetailStrip
-          agent={active.agent}
-          color={active.color}
-          pinned={active.agent.ownerId === pinned}
-          nowMs={nowMs}
-          lex={lex}
-          onInspect={setInspecting}
-        />
-      ) : null}
       {inspecting && thinkingStreamUrl(inspecting) ? (
         <AgentInspectorModal
           slug={inspecting.harnessSlug ?? ''}
@@ -1152,77 +428,7 @@ export function AgentsRoster({
           onClose={() => setInspecting(null)}
         />
       ) : null}
-    </div>
-  );
-}
-
-/** The detail strip below the roster — the hovered/pinned agent's plan + work-item
- *  + declared intent (from the roster data). Mirrors the zellij Dossier/Plan-progress
- *  panels at a GUI glance. (Rich queued-work-items via fleet:assignments + jump-to-item
- *  navigation + live inspector are the tracked follow-up.) */
-function AgentDetailStrip({
-  agent,
-  color,
-  pinned,
-  nowMs,
-  lex,
-  onInspect,
-}: {
-  agent: RosterAgent;
-  color: string | null;
-  pinned: boolean;
-  nowMs: number;
-  lex: BoundLexicon;
-  onInspect: (a: RosterAgent) => void;
-}) {
-  return (
-    <div className="pc-agents-roster__detail" data-testid="agent-detail">
-      <div className="pc-agents-roster__detail-head" style={color ? { color } : undefined}>
-        {agentGlyph(agent)} <strong>{displayName(agent, lex)}</strong>
-        {agent.fleetSlug ? <span className="pc-agents-roster__detail-fleet"> · {agent.fleetSlug}</span> : null}
-        <span className="pc-agents-roster__detail-live" title={activityLivenessTitle(agent, nowMs)}> · {activityLiveness(agent, nowMs)}{agent.loopArmed ? ' (loop armed)' : ''}</span>
-        {isTranscriptFresh(agent) ? (
-          <span className="pc-agents-roster__detail-thinking" style={{ marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 4, color: '#6aa84f' }}>
-            <ThinkingDot size={6} /> thinking
-          </span>
-        ) : null}
-        {pinned ? <span className="pc-agents-roster__detail-pin"> · pinned</span> : null}
-      </div>
-      <dl className="pc-agents-roster__detail-grid">
-        <dt>Agent</dt><dd>{agent.agent ?? (agentRoleLabel(agent.role, lex) || '—')} · <code>{shortOwner(agent.ownerId)}</code></dd>
-        <dt>Plan</dt><dd>{agent.currentPlanSlug ?? '—'}</dd>
-        <dt>Work item</dt><dd>{agent.feature ?? '—'}</dd>
-        <dt>Doing</dt><dd>{agent.intent || '(no declared intent)'}</dd>
-      </dl>
-      {/* Guarded: only an agent with a resolvable thinking source (bee run-log,
-          or a claude/codex/omp transcript that ACTUALLY resolves) gets the action —
-          no dead button otherwise. Two "no thinking" cases get an explicit,
-          accurate note instead of a silently-inert row OR an empty modal (WI-2680):
-          (a) a presence-only process that never recorded a session/run/thread
-          handle, and (b) a claude session WITH a handle whose transcript no longer
-          resolves (parked/ended agent, transcript rotated/cleaned away) — flagged
-          by thinkingResolvable===false. */}
-      {hasThinking(agent) ? (
-        <button
-          type="button"
-          className="pc-agents-roster__inspect"
-          data-testid="agent-inspect-btn"
-          onClick={() => onInspect(agent)}
-        >
-          ▶ Live thinking
-        </button>
-      ) : agent.thinkingResolvable === false ? (
-        <div className="pc-agents-roster__nothinking" data-testid="agent-no-thinking-note">
-          Live thinking unavailable — no transcript to stream (this session has ended or
-          its transcript was rotated away since it last took a turn).
-        </div>
-      ) : (
-        <div className="pc-agents-roster__nothinking" data-testid="agent-no-thinking-note">
-          Live thinking unavailable — this {agent.agent ?? 'session'} process recorded no
-          transcript handle (no session row, run-log, or thread id) to stream from.
-        </div>
-      )}
-    </div>
+    </AgentRoster>
   );
 }
 
@@ -1233,6 +439,7 @@ function RosterStyles() {
       .pc-agents-pill__thinking { color: #6aa84f; font-weight: 600; }
       .pc-agents-pill__dots { display: inline-flex; gap: 2px; margin-left: 6px; }
       .pc-agents-pill__dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+      .pc-agents-pill__machines { color: var(--fg-mute); }
       .pc-advshell__agents-pop {
         max-height: min(70vh, 560px);
         overflow-y: auto;
@@ -1257,142 +464,7 @@ function RosterStyles() {
         box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
       }
       #pc-advshell-agents-pop { display: flex; flex-direction: column; min-height: 0; }
-      .pc-agents-roster { font-size: 12px; display: flex; flex-direction: column; min-height: 0; }
-      .pc-agents-roster__tabs { display: flex; gap: 2px; padding: 4px 6px 0; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
-      .pc-agents-roster__tab {
-        font-size: 11px; padding: 3px 9px; border-radius: 6px 6px 0 0; cursor: pointer;
-        background: transparent; color: var(--fg-mute); border: 1px solid transparent; border-bottom: none;
-      }
-      .pc-agents-roster__tab:hover { background: var(--bg-2); }
-      .pc-agents-roster__tab.is-active { background: var(--bg-2); color: var(--fg); border-color: var(--border); }
-      .pc-agents-roster__tab-count { color: var(--fg-mute); font-variant-numeric: tabular-nums; margin-left: 2px; }
-      .pc-agents-pill__machines { color: var(--fg-mute); }
-      .pc-agents-roster__legend {
-        display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 8px 6px;
-        font-size: 10.5px; color: var(--fg-mute); border-bottom: 1px solid var(--border);
-      }
-      .pc-agents-roster__group { padding: 2px 0; }
-      .pc-agents-roster__group-head {
-        display: flex; align-items: baseline; gap: 4px; padding: 5px 8px 2px;
-        font-weight: 600; font-size: 11.5px; color: var(--fg-mute);
-      }
-      .pc-agents-roster__group-count { font-weight: 400; color: var(--fg-mute); font-size: 10.5px; }
-      .pc-agents-roster__row {
-        /* Columns: [select checkbox][live dot+age][glyph][name][doing].
-           The leading checkbox column (owner ask 2026-07-11, multi-select) is
-           auto-width so it hugs the small box. Name column HUGS its content
-           (max-content, capped via the name's own max-width) so a short id like
-           "su-5577c" doesn't reserve a wide track and leave a big gap before the
-           description — the description follows right after. The doing column
-           takes the rest. The native checkbox input is the first grid item, so
-           the template must carry the leading auto track for it or the row
-           shatters (checkbox-less rows use --nocheck below, which drops it). */
-        display: grid; grid-template-columns: auto max-content 16px minmax(40px, max-content) minmax(0, 1fr);
-        align-items: center; gap: 8px; padding: 3px 8px; border-radius: 4px;
-      }
-      /* Rows WITHOUT the leading select checkbox — the inactive-session list and
-         the search-result heads (AgentsPillSessions) — reuse this row for its
-         look but render only 4 cells (age/glyph/name/doing), no checkbox. Using
-         the 5-column template above shifted every cell left by one and dumped the
-         NAME into the fixed 16px glyph column, truncating it to a single letter
-         ("r…" "p…", owner-hit 2026-07-11 r3). This modifier drops that leading
-         checkbox track so the 4 cells land in their own columns. */
-      .pc-agents-roster__row--nocheck {
-        grid-template-columns: max-content 16px minmax(40px, max-content) minmax(0, 1fr);
-      }
-      .pc-agents-roster__row:hover { background: var(--bg-2); }
-      .pc-agents-roster__row[data-liveness="stale"] { opacity: 0.5; }
-      .pc-agents-roster__live { display: inline-flex; align-items: center; gap: 4px; }
-      .pc-agents-roster__age {
-        font-size: 9.5px; color: var(--fg-mute); font-variant-numeric: tabular-nums;
-        line-height: 1; white-space: nowrap;
-      }
-      .pc-agents-roster__glyph { text-align: center; }
-      .pc-agents-roster__name {
-        font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        max-width: 200px; /* caps the hugged name track; longer names ellipsize */
-      }
-      .pc-agents-roster__doing {
-        color: var(--fg-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      }
-      .pc-agents-roster__feat {
-        font-family: ui-monospace, monospace; font-size: 10px; margin-right: 6px;
-        color: var(--accent-strong, #7dd3fc);
-      }
-      .pc-agents-roster__scroll { max-height: 380px; overflow-y: auto; flex: 0 1 auto; min-height: 60px; }
-      .pc-agents-roster__row { cursor: pointer; }
-      .pc-agents-roster__row.is-pinned { background: color-mix(in oklab, var(--accent), transparent 82%); }
-      .pc-agents-roster__detail { border-top: 1px solid var(--border); padding: 6px 8px; background: var(--bg-2); }
-      .pc-agents-roster__detail-head { font-size: 12px; margin-bottom: 4px; }
-      .pc-agents-roster__detail-fleet, .pc-agents-roster__detail-live, .pc-agents-roster__detail-pin {
-        color: var(--fg-mute); font-weight: 400;
-      }
-      .pc-agents-roster__detail-grid {
-        display: grid; grid-template-columns: 68px 1fr; gap: 2px 8px; margin: 0; font-size: 11.5px;
-      }
-      .pc-agents-roster__detail-grid dt { color: var(--fg-mute); }
-      .pc-agents-roster__detail-grid dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .pc-agents-roster__inspect {
-        margin-top: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer;
-        background: var(--accent, #38bdf8); color: var(--accent-ink, #051827);
-        border: 1px solid var(--accent, #38bdf8); border-radius: 4px; font-weight: 600;
-      }
-      .pc-agents-roster__nothinking {
-        margin-top: 6px; font-size: 10.5px; color: var(--fg-mute); font-style: italic;
-      }
-      /* Multi-select + bulk actions (owner ask 2026-07-11) */
-      /* Selected-row indication (owner-hit 2026-07-11: "no visual indication the
-         row is selected"): tinted background + a left accent bar. Placed AFTER
-         :hover/.is-pinned so a selected row stays visibly selected on hover. */
-      .pc-agents-roster__row.is-selected {
-        /* Owner-hit 2026-07-11 (round 2): the 18%-oklab tint read as "no
-           selection indication" in the Tauri/WebKitGTK webview (too subtle on
-           the near-black --bg-1). Stronger + srgb (broadest color-mix support)
-           so the selected row is unmistakable, matching the clearly-highlighted
-           browser render the owner approved. The 4px inset bar is the robust
-           primary cue (no color-mix dependency); the tint is the secondary. */
-        background: color-mix(in srgb, var(--accent, #38bdf8) 30%, transparent);
-        box-shadow: inset 4px 0 0 var(--accent, #38bdf8);
-      }
-      .pc-agents-roster__row.is-selected:hover {
-        background: color-mix(in srgb, var(--accent, #38bdf8) 40%, transparent);
-      }
-      /* Roster select box — a REAL native accent checkbox (owner-hit 2026-07-11
-         r3). The prior Radix <button>+svg restyle could not reproduce the
-         approved native mockup even deployed, so this is a native
-         <input type=checkbox>: accent-color tints the browser's own check with
-         the theme accent, and color-scheme:dark makes the unchecked box render
-         for the dark surface instead of the browser default light box. */
-      .pc-agents-roster__check {
-        width: 13px; height: 13px; box-sizing: border-box;
-        margin: 0; padding: 0; align-self: center; flex: 0 0 auto;
-        accent-color: var(--accent, #38bdf8);
-        color-scheme: dark;
-        cursor: pointer;
-      }
-      .pc-agents-roster__bulkbar {
-        display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
-        padding: 5px 8px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
-        background: color-mix(in oklab, var(--accent), transparent 90%); font-size: 11px;
-      }
-      .pc-agents-roster__bulk-count { font-weight: 600; margin-right: 4px; }
-      .pc-agents-roster__bulk-spacer { flex: 1 1 auto; }
-      .pc-agents-roster__bulk-btn {
-        font: inherit; font-size: 11px; cursor: pointer; padding: 2px 8px; line-height: 1.4;
-        background: var(--bg-1); color: var(--fg); border: 1px solid var(--border); border-radius: 5px;
-      }
-      .pc-agents-roster__bulk-btn:hover { border-color: var(--accent, #38bdf8); }
-      .pc-agents-roster__bulk-btn:disabled { opacity: 0.55; cursor: default; }
-      .pc-agents-roster__bulk-btn--ghost { background: transparent; color: var(--fg-mute); }
-      .pc-agents-roster__bulk-btn--danger { color: #e5484d; border-color: color-mix(in oklab, #e5484d, transparent 55%); }
-      .pc-agents-roster__bulk-btn--danger.is-armed { background: #e5484d; color: #fff; border-color: #e5484d; font-weight: 600; }
-      .pc-agents-roster__bulk-note { color: var(--fg-mute); margin-left: 2px; }
-      .pc-agents-roster__compose { flex: 1 1 100%; display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
-      .pc-agents-roster__compose-input {
-        font: inherit; font-size: 11px; width: 100%; resize: vertical; box-sizing: border-box;
-        background: var(--bg-1); color: var(--fg); border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px;
-      }
-      .pc-agents-roster__compose-actions { display: flex; gap: 4px; }
+${ROSTER_STYLES}
     `}</style>
   );
 }
