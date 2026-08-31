@@ -2448,6 +2448,7 @@ export async function trackGateStall(
   const repairFixerAlive = repairQueue?.fixerSpawnId
     ? await releaseFixerSpawnAlive(sql, repairQueue.fixerSpawnId).catch(() => null)
     : undefined;
+  const fixerLivenessUnknown = repairQueue?.fixerSpawnId != null && repairFixerAlive === null;
   const fixerSuccession = classifyFrozenRepairFixerSuccession(repairQueue, repairFixerAlive, Date.now());
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
   // `main` pin the CLI observed. If it MOVED since the last routine observation, green
@@ -2522,8 +2523,12 @@ export async function trackGateStall(
   });
   const stallAlertedAtReds = ladder.marks.stallAlertedAtReds;
   const stallAlertedAtAgeMs = ladder.marks.stallAlertedAtAgeMs;
-  const stallAlertedAtFixerAgeMs = ladder.marks.stallAlertedAtFixerAgeMs;
-  const stallFixerSuccessionKey = ladder.marks.stallFixerSuccessionKey ?? null;
+  const stallAlertedAtFixerAgeMs = fixerLivenessUnknown
+    ? (gh.stallAlertedAtFixerAgeMs ?? null)
+    : ladder.marks.stallAlertedAtFixerAgeMs;
+  const stallFixerSuccessionKey = fixerLivenessUnknown
+    ? (gh.stallFixerSuccessionKey ?? null)
+    : (ladder.marks.stallFixerSuccessionKey ?? null);
   // EI-21462211894072863: 'no-verdict' shares this branch because it shares its ONE load-bearing
   // property — the tick rendered no verdict, so it must not touch `consecutiveReds`, `firstRedAt`
   // or the failing-test signature. It differs in exactly one way, handled after the shared record

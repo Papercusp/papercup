@@ -261,6 +261,29 @@ describe('decideStallNotification — the fixer-succession axis', () => {
     });
   });
 
+  it('starts a fresh first rung when the fixer-attempt identity changes', () => {
+    const first = decideStallNotification(
+      input({
+        fixerSuccessionAgeMs: FIXER_GAP_MS,
+        fixerSuccessionThresholdMs: FIXER_GAP_MS,
+        fixerSuccessionKey: 'attempt-1',
+      }),
+    );
+    expect(first.marks.stallFixerSuccessionKey).toBe('attempt-1');
+    const successor = decideStallNotification(
+      input({
+        fixerSuccessionAgeMs: FIXER_GAP_MS,
+        fixerSuccessionThresholdMs: FIXER_GAP_MS,
+        fixerSuccessionKey: 'attempt-2',
+        marks: first.marks,
+      }),
+    );
+    expect(successor.shouldNotify).toBe(true);
+    expect(successor.axis).toBe('fixer');
+    expect(successor.rungIndex).toBe(0);
+    expect(successor.marks.stallFixerSuccessionKey).toBe('attempt-2');
+  });
+
   it('describes the fixer-succession rung independently of the gate age', () => {
     const s = describeLadderPosition(
       input({
