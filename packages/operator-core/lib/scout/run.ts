@@ -232,6 +232,73 @@ export interface ScoutCycleDeps {
    * unreadable pot gate must not become a fleet-wide learning outage.
    */
   potGate?: (input: { workspaceId: string; installSlug: string }) => Promise<{ enabled: boolean }>;
+  /**
+   * The pot's settings-resident `scout` / `cadence` / `budget` deltas — the
+   * per-pot tuning the owner sets in the learning drawer (D-005) — shallow-merged
+   * per section over `payloadTemplate` before ANY consumer parses it.
+   *
+   * A SEAM rather than a direct read, for the same reason `potGate` is one: this
+   * file does no I/O, so both entry points wire the SAME production resolver
+   * (learning/pot-gate/gates.ts) and neither can drift from the other.
+   *
+   * It lives HERE, on the shared tick, because putting it in one entry point's
+   * body is precisely how it went missing (WI-1664060): the merge existed only
+   * in the `system:scout-cycle` routine action, while the `blender:cycle` op is
+   * the path that actually runs Scout in production — so the owner's per-pot
+   * tuning was written to hive_settings and never read. That is the third
+   * instance of this exact shape here (P-051's ceiling and the pot gate were the
+   * first two), which is why the layering is applied once, centrally, instead of
+   * being remembered a fourth time.
+   *
+   * Unwired ⇒ no layering (the hermetic unit-test contract), and the production
+   * wiring fails OPEN: an unreadable settings row leaves the routine payload
+   * untouched rather than stopping a tick.
+   */
+  resolveConfigDelta?: (input: {
+    workspaceId: string;
+    installSlug: string;
+  }) => Promise<Record<string, Record<string, unknown>> | null>;
+}
+
+/**
+ * Layer the pot's settings-resident deltas over the routine payload — the ONE
+ * place that happens, for either entry point.
+ *
+ * Shallow PER SECTION (a delta section overrides the payload's same-named block,
+ * key by key), matching the semantics this had while it lived in the routine
+ * action. Fails OPEN in both directions: no resolver, a throwing resolver, or a
+ * null result all yield the input unchanged, so layering can never fail a tick.
+ */
+async function layerPotConfigDelta(
+  input: ScoutCycleInput,
+  deps: ScoutCycleDeps,
+): Promise<ScoutCycleInput> {
+  if (!deps.resolveConfigDelta) return input;
+  let delta: Record<string, Record<string, unknown>> | null;
+  try {
+    delta = await deps.resolveConfigDelta({
+      workspaceId: input.workspaceId,
+      installSlug: input.installSlug,
+    });
+  } catch {
+    return input;
+  }
+  if (!delta || typeof delta !== 'object') return input;
+
+  let payloadTemplate = input.payloadTemplate;
+  let changed = false;
+  for (const [section, sectionDelta] of Object.entries(delta)) {
+    if (!sectionDelta || typeof sectionDelta !== 'object' || Array.isArray(sectionDelta)) continue;
+    const base = (payloadTemplate ?? {}) as Record<string, unknown>;
+    const prior = base[section];
+    const baseSection =
+      prior && typeof prior === 'object' && !Array.isArray(prior)
+        ? (prior as Record<string, unknown>)
+        : {};
+    payloadTemplate = { ...base, [section]: { ...baseSection, ...sectionDelta } };
+    changed = true;
+  }
+  return changed ? { ...input, payloadTemplate } : input;
 }
 
 /**
