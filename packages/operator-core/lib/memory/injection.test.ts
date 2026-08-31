@@ -4,9 +4,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // never touch a real PG. `sqlRows` is the canned result the sql tag returns; the
 // dedup test sets it to mark a memory id as recently-surfaced.
 let sqlRows: Array<Record<string, unknown>> = [];
+let sqlFailure: Error | null = null;
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: async () => sqlRows }),
+  getOrgPg: () => ({
+    sql: async () => {
+      if (sqlFailure) throw sqlFailure;
+      return sqlRows;
+    },
+  }),
 }));
 
 vi.mock('./backend', () => ({
@@ -158,6 +164,7 @@ beforeEach(() => {
   vi.mocked(getMemoryBackend).mockReset();
   recordRecallStatsMock.mockClear();
   sqlRows = [];
+  sqlFailure = null;
   registryProjects = [];
   corpusIoResult = null;
   coverageReport = null;
@@ -1454,6 +1461,60 @@ describe('buildMemoryContextBlock', () => {
       } finally {
         delete process.env[FLAG_ENV];
       }
+    });
+  });
+
+  describe('anchor staleness reaches pre-turn injection (WI-21969321991273109)', () => {
+    const FLAG_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_MEMORY_STALENESS_IN_RECALL';
+    const staleAnchor = {
+      memory_id: 'm-stale',
+      kind: 'file',
+      value: 'packages/gone.ts',
+      last_checked_at: '2026-08-31T09:00:00Z',
+    };
+
+    afterEach(() => {
+      delete process.env[FLAG_ENV];
+    });
+
+    it('prepends the stored dead-anchor warning while leaving healthy hits unchanged', async () => {
+      process.env[FLAG_ENV] = '1';
+      sqlRows = [staleAnchor];
+      useBackend(
+        mockBackend([
+          { id: 'm-stale', text: 'guidance from the removed module', kind: 'project' },
+          { id: 'm-healthy', text: 'guidance from the current module', kind: 'project' },
+        ]),
+      );
+
+      const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'guidance' });
+
+      expect(block).toContain(
+        "- [project] (id=m-stale) ⚠ STALE — dead anchors: file:packages/gone.ts. Verify, don't rely. guidance from the removed module",
+      );
+      expect(block).toContain('- [project] (id=m-healthy) guidance from the current module');
+      expect(block).not.toContain('m-healthy) ⚠ STALE');
+    });
+
+    it('flag-off preserves the pre-staleness block shape', async () => {
+      process.env[FLAG_ENV] = '0';
+      sqlRows = [staleAnchor];
+      useBackend(mockBackend([{ id: 'm-stale', text: 'guidance from the removed module', kind: 'project' }]));
+
+      const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'guidance' });
+
+      expect(block).toBe('## Operator memory (relevant entries)\n\n- [project] (id=m-stale) guidance from the removed module');
+      expect(block).not.toContain('STALE');
+    });
+
+    it('fails open when the stored-verdict lookup fails', async () => {
+      process.env[FLAG_ENV] = '1';
+      sqlFailure = new Error('memory anchors unavailable');
+      useBackend(mockBackend([{ id: 'm-healthy', text: 'guidance from the current module', kind: 'project' }]));
+
+      const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'guidance' });
+
+      expect(block).toBe('## Operator memory (relevant entries)\n\n- [project] (id=m-healthy) guidance from the current module');
     });
   });
 });
