@@ -6,7 +6,11 @@
  * admit foreign logs) because of seed state.
  */
 import { describe, expect, it } from 'vitest';
-import { resolveSeedLogKeys } from './seed-log-admission';
+import {
+  resolveSeedLogAdmissions,
+  resolveSeedLogKeys,
+  validateSeedReplicaForAdmission,
+} from './seed-log-admission';
 
 const KEY_A = 'a'.repeat(64);
 const KEY_B = '0123456789abcdef'.repeat(4).toUpperCase();
@@ -30,7 +34,7 @@ function manifestJson(opts: { potId?: string; stores?: unknown[] } = {}): string
         hash: 'h2',
         sizeBytes: 20,
         source: { type: 'resource', path: 'corestore' },
-        meta: { coreKeys: [KEY_A, KEY_B], coreLengths: { [KEY_A]: 5 } },
+        meta: { coreKeys: [KEY_A, KEY_B], coreLengths: { [KEY_A]: 5, [KEY_B]: 9 } },
       },
     ],
   });
@@ -90,10 +94,129 @@ describe('resolveSeedLogKeys', () => {
           hash: 'h',
           sizeBytes: 1,
           source: { type: 'resource', path: 'c' },
-          meta: { coreKeys: [KEY_A, 'zz', 42, 'abc', null] },
+          meta: {
+            coreKeys: [KEY_A, 'zz', 42, 'abc', null],
+            coreLengths: { [KEY_A]: 5 },
+          },
         },
       ],
     });
     expect(await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps(raw) })).toEqual([KEY_A]);
+  });
+
+  it('requires a positive manifest length for every admitted key', async () => {
+    const raw = manifestJson({
+      stores: [
+        {
+          kind: 'corestore',
+          hash: 'h',
+          sizeBytes: 1,
+          source: { type: 'resource', path: 'c' },
+          meta: {
+            coreKeys: [KEY_A, KEY_B],
+            coreLengths: { [KEY_A]: 5, [KEY_B]: 0 },
+          },
+        },
+      ],
+    });
+    expect(await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps(raw) })).toEqual([KEY_A]);
+  });
+
+  it('carries cutter length and sparse-range provenance into boot admission', async () => {
+    const raw = manifestJson({
+      stores: [
+        {
+          kind: 'corestore',
+          hash: 'h',
+          sizeBytes: 1,
+          source: { type: 'resource', path: 'c' },
+          meta: {
+            coreKeys: [KEY_A],
+            coreLengths: { [KEY_A]: 103 },
+            coreSparseFrom: { [KEY_A]: 77 },
+          },
+        },
+      ],
+    });
+    expect(
+      await resolveSeedLogAdmissions({ potHomeSlug: 'papercusp', ...deps(raw) }),
+    ).toEqual([
+      {
+        keyHex: KEY_A,
+        expectedLength: 103,
+        shippedFrom: 77,
+        seedDir: '/seed',
+      },
+    ]);
+  });
+
+  it('drops a key whose sparse start is outside its declared writer length', async () => {
+    const raw = manifestJson({
+      stores: [
+        {
+          kind: 'corestore',
+          hash: 'h',
+          sizeBytes: 1,
+          source: { type: 'resource', path: 'c' },
+          meta: {
+            coreKeys: [KEY_A],
+            coreLengths: { [KEY_A]: 103 },
+            coreSparseFrom: { [KEY_A]: 103 },
+          },
+        },
+      ],
+    });
+    expect(await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps(raw) })).toEqual([]);
+  });
+});
+
+describe('validateSeedReplicaForAdmission', () => {
+  const admission = {
+    keyHex: KEY_A,
+    expectedLength: 103,
+    shippedFrom: 77,
+    seedDir: '/seed',
+  } as const;
+
+  it('accepts a sparse replica only when the declared shipped range is local', () => {
+    expect(
+      validateSeedReplicaForAdmission(
+        {
+          keyHex: KEY_A,
+          length: 103,
+          contiguousLength: 0,
+          has: (index) => index >= 77 && index < 103,
+        },
+        admission,
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  it('rejects the observed stale seed-only shape: manifest length 103, local length 0', () => {
+    expect(
+      validateSeedReplicaForAdmission(
+        {
+          keyHex: KEY_A,
+          length: 0,
+          contiguousLength: 0,
+          has: () => false,
+        },
+        admission,
+      ),
+    ).toEqual({ ok: false, reason: 'local length 0 is below manifest length 103' });
+  });
+
+  it('rejects a header-only replica that knows the length but lacks shipped blocks', () => {
+    expect(
+      validateSeedReplicaForAdmission(
+        {
+          keyHex: KEY_A,
+          length: 103,
+          contiguousLength: 0,
+          has: () => false,
+        },
+        admission,
+      ),
+    ).toEqual({ ok: false, reason: 'shipped start block 77 is not present locally' });
   });
 });

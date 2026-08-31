@@ -113,7 +113,9 @@ export async function resolveSeedLogAdmissions(
     const keys = meta?.coreKeys;
     const lengths = numberRecord(meta?.coreLengths);
     if (!Array.isArray(keys) || !lengths) return [];
-    const sparseFrom = numberRecord(meta?.coreSparseFrom) ?? {};
+    const sparseFrom =
+      meta?.coreSparseFrom === undefined ? {} : numberRecord(meta.coreSparseFrom);
+    if (!sparseFrom) return [];
     const seen = new Set<string>();
     const admissions: SeedLogAdmission[] = [];
     for (const rawKey of keys) {

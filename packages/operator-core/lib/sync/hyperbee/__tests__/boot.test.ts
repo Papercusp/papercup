@@ -3741,7 +3741,10 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
             hash: 'h',
             sizeBytes: 1,
             source: { type: 'resource', path: 'corestore' },
-            meta: { coreKeys: [SEED_LOG_KEY] },
+            meta: {
+              coreKeys: [SEED_LOG_KEY],
+              coreLengths: { [SEED_LOG_KEY]: 3 },
+            },
           },
         ],
       }),
@@ -3749,15 +3752,23 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
     return dir;
   }
 
-  function fakeRemoteLog(keyHex: string): RemoteLog {
+  function fakeRemoteLog(
+    keyHex: string,
+    opts: {
+      length?: number;
+      has?: (index: number) => boolean;
+      onClose?: () => void;
+    } = {},
+  ): RemoteLog {
     return {
       keyHex,
-      length: 0,
-      contiguousLength: 0,
+      length: opts.length ?? 3,
+      contiguousLength: opts.length ?? 3,
       get: async () => null,
       update: async () => {},
       prefetch: () => {},
-      has: () => false,
+      has: opts.has ?? (() => true),
+      close: async () => opts.onClose?.(),
     };
   }
 
@@ -3775,7 +3786,13 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
     });
   }
 
-  function bootOpts(workspaceId: string) {
+  function bootOpts(
+    workspaceId: string,
+    openRemoteLogOverride: (
+      store: unknown,
+      logKeyHex: string,
+    ) => Promise<RemoteLog> = async (_store, logKeyHex) => fakeRemoteLog(logKeyHex),
+  ) {
     return {
       workspaceRoot: tmpWorkspaceRoot(),
       workspaceId,
@@ -3794,7 +3811,7 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
         3_288,
         `wi3288-${workspaceId}`,
       ).override,
-      openRemoteLogOverride: async (_store: unknown, logKeyHex: string) => fakeRemoteLog(logKeyHex),
+      openRemoteLogOverride,
     };
   }
 
@@ -3821,6 +3838,49 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
 
     expect(handle.admitted.has(SEED_LOG_KEY)).toBe(false);
     expect(handle.admitted.size).toBe(1); // own log only
+  });
+
+  it('does NOT admit a manifest key whose restored target core is still length zero', async () => {
+    const workspaceId = 'ws-wi3288-unrestored';
+    let closed = 0;
+    withSeedEnv(writeSeedDir(HIVE_HOME));
+    const handle = await bootHarnessSubstrate(
+      bootOpts(workspaceId, async (_store, logKeyHex) =>
+        fakeRemoteLog(logKeyHex, {
+          length: 0,
+          has: () => false,
+          onClose: () => { closed += 1; },
+        }),
+      ),
+    );
+    cleanups.push(() => handle.close());
+
+    expect(handle.admitted.has(SEED_LOG_KEY)).toBe(false);
+    expect(handle.admitted.size).toBe(1); // own log only
+    expect(closed).toBe(1); // the rejected Corestore session is not leaked
+    expect(
+      listBootHistory({ workspaceId, harnessSlug: HIVE_HOME })
+        .filter((e) => e.kind === 'merge_error')
+        .map((e) => e.message),
+    ).toContainEqual(expect.stringContaining('local length 0 is below manifest length 3'));
+  });
+
+  it('does NOT admit a header-only replica whose manifest range has no local blocks', async () => {
+    const workspaceId = 'ws-wi3288-header-only';
+    withSeedEnv(writeSeedDir(HIVE_HOME));
+    const handle = await bootHarnessSubstrate(
+      bootOpts(workspaceId, async (_store, logKeyHex) =>
+        fakeRemoteLog(logKeyHex, { length: 3, has: () => false }),
+      ),
+    );
+    cleanups.push(() => handle.close());
+
+    expect(handle.admitted.has(SEED_LOG_KEY)).toBe(false);
+    expect(
+      listBootHistory({ workspaceId, harnessSlug: HIVE_HOME })
+        .filter((e) => e.kind === 'merge_error')
+        .map((e) => e.message),
+    ).toContainEqual(expect.stringContaining('shipped start block 0 is not present locally'));
   });
 
   it('no seed dir ⇒ byte-for-byte today: own log only, no seed events, boot succeeds', async () => {
