@@ -121,6 +121,7 @@ import {
   modelArgsFor,
   normalizeOmpModelSpec,
   ompModelCompatibilityNotice,
+  reconcileResumeModelForAccountRoute,
   ompTitleMitigationArgs,
   ompResponsesCompatibilityEnv,
   reportSessionEnded,
@@ -8144,6 +8145,65 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       "google-vertex/gemini-3.0-pro:high",
     );
     expect(ompModelCompatibilityNotice("opus:high")).toBeNull();
+  });
+
+  it("EI-21995330124084016: reconciles only gateway-routed Opus 5 resume xhigh to supported max", () => {
+    const autoRoute = { mode: "auto", provider: "claude" };
+    const pinnedRoute = { mode: "pin", provider: "claude" };
+
+    expect(
+      reconcileResumeModelForAccountRoute({
+        agent: "claude",
+        model: "claude-opus-5[1m]:xhigh",
+        accountRoute: autoRoute,
+      }),
+    ).toMatchObject({
+      model: "claude-opus-5[1m]:max",
+      reconciled: true,
+      notice: expect.stringMatching(/retired xhigh.*supported strongest level/s),
+    });
+    expect(
+      reconcileResumeModelForAccountRoute({
+        agent: "claude",
+        model: "opus[1m]:xhigh",
+        accountRoute: pinnedRoute,
+      }),
+    ).toMatchObject({ model: "opus[1m]:max", reconciled: true });
+
+    // Route, family, backend, and effort controls stay byte-identical.
+    for (const input of [
+      {
+        agent: "claude",
+        model: "claude-opus-5[1m]:xhigh",
+        accountRoute: { mode: "default", provider: null },
+      },
+      {
+        agent: "claude",
+        model: "claude-sonnet-5[1m]:xhigh",
+        accountRoute: autoRoute,
+      },
+      {
+        agent: "claude",
+        model: "claude-opus-5[1m]:high",
+        accountRoute: autoRoute,
+      },
+      {
+        agent: "omp",
+        model: "claude-opus-5:xhigh",
+        accountRoute: autoRoute,
+      },
+      {
+        agent: "codex",
+        model: "gpt-5.6-sol:xhigh",
+        accountRoute: { mode: "auto", provider: "codex" },
+      },
+    ]) {
+      expect(reconcileResumeModelForAccountRoute(input)).toEqual({
+        model: input.model,
+        notice: null,
+        reconciled: false,
+      });
+    }
   });
 
   it("resumeArgsFor threads a model into each backend resume — codex flags BEFORE the subcommand", () => {
