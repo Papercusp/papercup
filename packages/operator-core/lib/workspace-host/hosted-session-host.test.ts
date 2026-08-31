@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +21,12 @@ import {
   desktopViewerHeartbeatMs,
 } from '../desktop/desktop-lifecycle';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
+import { HOSTED_WORKSPACE_MAX_MESSAGE_BYTES } from '../endpoint-route/hosted-workspace-session';
+
+/** Outbound relay payloads of one wire type, for counting acks and results. */
+function sentOfType(sent: HostedHostOutboundEnvelope[], type: string) {
+  return sent.filter((message) => (message.payload as { type?: string } | undefined)?.type === type);
+}
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -82,13 +89,14 @@ const binding: HostedConnectorBinding = {
   state: 'active',
 };
 
-function harness(root: string) {
+function harness(root: string, files?: SafeRootFileService) {
   const sent: HostedHostOutboundEnvelope[] = [];
   const ptys: FakePty[] = [];
   const audit = vi.fn();
   const adapter = new HostedWorkspaceHostSessionAdapter({
     binding,
     workspaceRoot: root,
+    ...(files ? { files } : {}),
     send: (message) => sent.push(message),
     onAudit: audit,
     createPty: () => {
@@ -271,6 +279,161 @@ describe('HostedWorkspaceHostSessionAdapter', () => {
         code: 'invalid_file_data',
       },
     });
+  });
+
+  it('assembles a chunked upload into the exact bytes and writes the file only once', async () => {
+    const root = await projectRoot();
+    const { sent, open, relay } = harness(root);
+    await open('one');
+    /* Deliberately NOT a multiple of the chunk size: a short FINAL chunk is the
+     * case an off-by-one in the assembler truncates without failing. */
+    const payload = Buffer.from('chunked-upload-payload-'.repeat(40));
+    const chunkBytes = 64;
+    const count = Math.ceil(payload.byteLength / chunkBytes);
+    const target = join(root, 'src', 'chunked.txt');
+    expect(payload.byteLength % chunkBytes).not.toBe(0);
+
+    for (let index = 0; index < count; index += 1) {
+      /* Nothing may exist on disk until the LAST chunk lands: a partial file is
+       * indistinguishable from a complete one to whatever reads it next. */
+      expect(existsSync(target)).toBe(false);
+      await relay('one', {
+        type: 'file.upload',
+        requestId: 'upload-chunked',
+        path: 'src/chunked.txt',
+        encoding: 'base64',
+        data: payload
+          .subarray(index * chunkBytes, Math.min((index + 1) * chunkBytes, payload.byteLength))
+          .toString('base64'),
+        chunk: { uploadId: 'up-1', index, count },
+      });
+    }
+
+    expect(await readFile(target)).toEqual(payload);
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'one',
+      payload: expect.objectContaining({
+        type: 'file.result',
+        requestId: 'upload-chunked',
+        operation: 'upload',
+        bytes: payload.byteLength,
+      }),
+    });
+    /* One result, and one progress ack per NON-final chunk. The ack count is
+     * load-bearing, not cosmetic: it is the client's backpressure signal, and a
+     * missing one stalls the upload until its timeout. */
+    expect(sentOfType(sent, 'file.result')).toHaveLength(1);
+    expect(sentOfType(sent, 'file.progress')).toHaveLength(count - 1);
+  });
+
+  it('refuses an out-of-order chunk instead of assembling the wrong bytes', async () => {
+    const root = await projectRoot();
+    const { sent, open, relay } = harness(root);
+    await open('one');
+    const chunk = (index: number, body: string) =>
+      relay('one', {
+        type: 'file.upload',
+        requestId: 'upload-gap',
+        path: 'src/gap.txt',
+        encoding: 'base64',
+        data: Buffer.from(body).toString('base64'),
+        chunk: { uploadId: 'up-gap', index, count: 3 },
+      });
+    await chunk(0, 'aaa');
+    await chunk(2, 'ccc');
+
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'one',
+      payload: {
+        type: 'operation.error',
+        requestId: 'upload-gap',
+        operation: 'file.upload',
+        code: 'invalid_chunk_sequence',
+      },
+    });
+    expect(existsSync(join(root, 'src', 'gap.txt'))).toBe(false);
+  });
+
+  it('refuses a malformed chunk descriptor rather than writing one chunk as the whole file', async () => {
+    const root = await projectRoot();
+    const { sent, open, relay } = harness(root);
+    await open('one');
+    await relay('one', {
+      type: 'file.upload',
+      requestId: 'upload-bad',
+      path: 'src/bad.txt',
+      encoding: 'base64',
+      data: Buffer.from('first-chunk-only').toString('base64'),
+      // `count` missing: a descriptor that cannot be understood.
+      chunk: { uploadId: 'up-bad', index: 0 },
+    });
+
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'one',
+      payload: {
+        type: 'operation.error',
+        requestId: 'upload-bad',
+        operation: 'file.upload',
+        code: 'invalid_chunk',
+      },
+    });
+    /* The crux of this test. Reading a malformed descriptor as an ABSENT one
+     * would take the whole-file path and persist this single chunk as the
+     * complete file — succeeding loudly while truncating silently. */
+    expect(existsSync(join(root, 'src', 'bad.txt'))).toBe(false);
+  });
+
+  it('refuses a chunk sequence that exceeds the file cap as it accumulates', async () => {
+    const root = await projectRoot();
+    const { sent, open, relay } = harness(root, new SafeRootFileService(root, 96));
+    await open('one');
+    const chunk = (index: number) =>
+      relay('one', {
+        type: 'file.upload',
+        requestId: 'upload-big',
+        path: 'src/big.txt',
+        encoding: 'base64',
+        data: Buffer.alloc(64, 0x61).toString('base64'),
+        chunk: { uploadId: 'up-big', index, count: 4 },
+      });
+    await chunk(0);
+    await chunk(1);
+
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'one',
+      payload: {
+        type: 'operation.error',
+        requestId: 'upload-big',
+        operation: 'file.upload',
+        code: 'file_too_large',
+      },
+    });
+    expect(existsSync(join(root, 'src', 'big.txt'))).toBe(false);
+  });
+
+  it('advertises upload limits on pty.ready so a client knows chunking is understood', async () => {
+    const root = await projectRoot();
+    const { sent, open } = harness(root);
+    await open('one');
+    const ready = sent.find(
+      (message) => (message.payload as { type?: string } | undefined)?.type === 'pty.ready',
+    );
+    expect(ready?.payload).toMatchObject({
+      limits: {
+        maxFileBytes: HOSTED_HOST_MAX_FILE_BYTES,
+        maxUploadChunkBytes: HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
+      },
+    });
+    /* Chunk size must stay under the RELAY's envelope cap once base64 inflates
+     * it, or the frame this advertisement invites the client to send is exactly
+     * the one the relay kills the session for. */
+    expect(Math.ceil((HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES * 4) / 3)).toBeLessThan(
+      HOSTED_WORKSPACE_MAX_MESSAGE_BYTES,
+    );
   });
 });
 
