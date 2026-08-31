@@ -51,6 +51,7 @@ export type ReviewRowAccounting =
   | "ready"
   | "handled"
   | "manual"
+  | "not-assessed"
   | "not-applied";
 
 export interface ReviewReportTransition {
@@ -58,14 +59,51 @@ export interface ReviewReportTransition {
   to: string;
 }
 
+/** Visual weight for a row's action verb. Semantic only — never the sole
+ *  carrier of meaning, because the label always states the action in words. */
+export type ReviewRowActionTone =
+  | "apply"
+  | "good"
+  | "warn"
+  | "danger"
+  | "manual";
+
+/**
+ * The verb naming what happens to this row (D-001).
+ *
+ * The group header already describes the fix KIND, but a sticky header scrolls
+ * out of a long group, so a row twelve deep was a checkbox with no stated
+ * consequence. Every row therefore carries its own verb, in the same vocabulary
+ * as the button that commits it.
+ */
+export interface ReviewRowAction {
+  /** Imperative and short: "Clear blocker", "Archive plan", "You write it". */
+  label: string;
+  tone?: ReviewRowActionTone;
+  /** Presentational glyph. The label alone must still read correctly. */
+  icon?: ReactNode;
+  /** Fuller phrasing for the row's accessible description, when "Clear
+   *  blocker" alone would not tell a screen-reader user what Apply does. */
+  description?: string;
+}
+
 export interface ReviewReportRow {
   /** Stable row id (e.g. the scanner's findingId) — the unit Apply targets. */
   id: string;
   title: string;
+  /** The verb this row commits. Omitted only by a row whose title already IS
+   *  the action (legacy callers); prefer supplying it. */
+  action?: ReviewRowAction;
   /** Compact Option-B identity cells. Plans use plan slug + P-NNN/plan;
    *  Inbox uses source kind + recommended action. */
   sourceLabel?: string;
   referenceLabel?: string;
+  /** Makes the source chip a REAL control that opens the row's subject.
+   *  Without it the chip renders unstyled-as-a-link, because a chip that looks
+   *  clickable and is inert is the affordance bug this replaced (D-001). */
+  onOpenSource?: () => void;
+  /** Accessible name for that control; defaults to "Open <sourceLabel>". */
+  openSourceLabel?: string;
   /** Structured before → after state change. Omitted for action-oriented rows. */
   transition?: ReviewReportTransition;
   /** Evidence lines rendered in the evidence column (already human-readable). */
@@ -112,6 +150,10 @@ export interface ReviewReportShellProps {
   collapseNonSelectableByDefault?: boolean;
   applyLabel?: string;
   dismissLabel?: string;
+  /** The run's own state and controls (RunLifecycleBar), directly under the
+   *  header. Owned by the consumer because only it can service the intents,
+   *  but rendered here so both flows place it identically. */
+  runBar?: ReactNode;
   /** Disables all interaction while an apply is in flight. */
   busy?: boolean;
   /** Flow-specific guarantee / caveat below the grouped findings. */
@@ -139,6 +181,10 @@ export interface ReviewReportPartition {
   ready: number;
   handled: number;
   manual: number;
+  /** Found by the scan but never judged — a stopped or died run, not owner
+   *  work. Kept apart from `manual` because the two need opposite actions:
+   *  manual wants a human, not-assessed wants a resume. */
+  notAssessed: number;
   notApplied: number;
 }
 
@@ -152,6 +198,7 @@ export function partitionReviewRows(
   let ready = 0;
   let handled = 0;
   let manual = 0;
+  let notAssessed = 0;
   let notApplied = 0;
 
   for (const group of groups) {
@@ -167,6 +214,9 @@ export function partitionReviewRows(
         case "manual":
           manual += 1;
           break;
+        case "not-assessed":
+          notAssessed += 1;
+          break;
         case "not-applied":
           notApplied += 1;
           break;
@@ -180,15 +230,60 @@ export function partitionReviewRows(
     }
   }
 
-  const accounted = ready + handled + manual + notApplied;
+  const accounted = ready + handled + manual + notAssessed + notApplied;
   if (results !== accounted) {
     throw new Error(
       `ReviewReport accounting invariant failed: ${results} results != ${accounted} partitioned rows`,
     );
   }
 
-  return { results, ready, handled, manual, notApplied };
+  return { results, ready, handled, manual, notAssessed, notApplied };
 }
+
+/**
+ * Owner-facing tile vocabulary (P-004).
+ *
+ * `RESULTS / READY / HANDLED / MANUAL / NOT APPLIED` is the resolver's own
+ * vocabulary. These labels say what the owner has to DO instead, and the count
+ * that answers "how much is left for me" leads.
+ */
+export const REVIEW_PARTITION_TILES: ReadonlyArray<{
+  id: string;
+  label: string;
+  hint: string;
+  read: (partition: ReviewReportPartition) => number;
+}> = [
+  {
+    id: "ready",
+    label: "Papercup can fix",
+    hint: "Selected below. Apply commits exactly these.",
+    read: (p) => p.ready,
+  },
+  {
+    id: "manual",
+    label: "Needs you",
+    hint: "No safe automatic action — each says what to do and where.",
+    read: (p) => p.manual,
+  },
+  {
+    id: "handled",
+    label: "Already fixed",
+    hint: "Applied, with the evidence recorded.",
+    read: (p) => p.handled,
+  },
+  {
+    id: "not-applied",
+    label: "Skipped",
+    hint: "Dismissed or deliberately left alone.",
+    read: (p) => p.notApplied,
+  },
+  {
+    id: "not-assessed",
+    label: "Not assessed",
+    hint: "Found by the scan but never judged — the run stopped first.",
+    read: (p) => p.notAssessed,
+  },
+];
 
 function initialSelection(
   groups: readonly ReviewReportGroup[],
@@ -317,7 +412,9 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
   const evidence =
     row.evidence.length > 0 ? row.evidence : ["No reason was recorded."];
   const confidenceLabel = CONFIDENCE_LABEL[row.confidence];
-  const detailAction = `${detailOpen ? "Hide" : "Show"} details for ${row.title} — ${confidenceLabel} confidence`;
+  const detailAction = `${detailOpen ? "Hide" : "Show"} why: ${row.title} — ${confidenceLabel} confidence`;
+  const action = row.action;
+  const openSource = row.onOpenSource;
 
   return (
     <li
@@ -367,9 +464,47 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
           </>
         )}
       </span>
+      <span className="review-report__row-verb-slot">
+        {action != null ? (
+          <span
+            className={`review-report__verb review-report__verb--${action.tone ?? "apply"}`}
+            data-testid={`review-row-verb-${row.id}`}
+            data-verb-tone={action.tone ?? "apply"}
+            title={action.description ?? action.label}
+          >
+            {action.icon != null ? (
+              <span className="review-report__verb-icon" aria-hidden="true">
+                {action.icon}
+              </span>
+            ) : null}
+            <span className="review-report__verb-label">{action.label}</span>
+          </span>
+        ) : null}
+      </span>
       <span className="review-report__row-identity">
         {row.sourceLabel != null ? (
-          <span className="review-report__source-chip">{row.sourceLabel}</span>
+          openSource != null ? (
+            <button
+              type="button"
+              className="review-report__source-chip review-report__source-chip--link"
+              data-testid={`review-row-source-${row.id}`}
+              aria-label={row.openSourceLabel ?? `Open ${row.sourceLabel}`}
+              disabled={busy}
+              onClick={(event) => {
+                event.stopPropagation();
+                openSource();
+              }}
+            >
+              {row.sourceLabel}
+            </button>
+          ) : (
+            <span
+              className="review-report__source-chip review-report__source-chip--static"
+              data-testid={`review-row-source-${row.id}`}
+            >
+              {row.sourceLabel}
+            </span>
+          )
         ) : null}
         {row.referenceLabel != null ? (
           <span className="review-report__reference">{row.referenceLabel}</span>
@@ -407,11 +542,23 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
       <span className="review-report__row-evidence">
         <span className="review-report__evidence-item">{evidence[0]}</span>
       </span>
-      <button
-        type="button"
-        className={`review-report__row-conf review-report__row-detail-toggle review-report__row-conf--${row.confidence}`}
+      {/* D-001: confidence is NOT editable, so it must not look like a select.
+       *  It renders as a static indicator, and the row's one chevron belongs to
+       *  the disclosure button beside it — the only control that discloses. */}
+      <span
+        className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
         data-testid={`review-row-conf-${row.id}`}
         data-confidence={row.confidence}
+        title={`Papercup's confidence in this recommendation: ${confidenceLabel}`}
+      >
+        <span className="review-report__conf-dot" aria-hidden="true" />
+        <span className="review-report__conf-label">{confidenceLabel}</span>
+        <span className="pc-sr-only">confidence</span>
+      </span>
+      <button
+        type="button"
+        className="review-report__row-detail-toggle"
+        data-testid={`review-row-why-${row.id}`}
         aria-label={detailAction}
         aria-expanded={detailOpen}
         aria-controls={detailRegionId}
@@ -422,7 +569,7 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
         }}
       >
         <span className="review-report__row-detail-toggle-inner">
-          <span>{confidenceLabel}</span>
+          <span aria-hidden="true">Why</span>
           <ChevronDown
             size={11}
             className={`review-report__row-detail-chevron${detailOpen ? " review-report__row-detail-chevron--open" : ""}`}
@@ -484,6 +631,7 @@ export default function ReviewReportShell({
   collapseNonSelectableByDefault = false,
   applyLabel = "Apply selected",
   dismissLabel = "Dismiss",
+  runBar,
   busy = false,
   footer,
   onApply,
@@ -802,6 +950,8 @@ export default function ReviewReportShell({
         </div>
       </header>
 
+      {runBar}
+
       <section
         className="review-report__summary"
         data-testid="review-report-summary"
@@ -812,39 +962,32 @@ export default function ReviewReportShell({
         </h3>
         <dl className="review-report__metrics">
           <div className="review-report__metric review-report__metric--results">
-            <dt>Results</dt>
+            <dt>Findings</dt>
             <dd data-testid="review-report-results-count">
               {partition.results}
             </dd>
           </div>
-          <div className="review-report__metric review-report__metric--ready">
-            <dt>Ready</dt>
-            <dd data-testid="review-report-ready-count">{partition.ready}</dd>
-          </div>
-          <div className="review-report__metric review-report__metric--handled">
-            <dt>Handled</dt>
-            <dd data-testid="review-report-handled-count">
-              {partition.handled}
-            </dd>
-          </div>
-          <div className="review-report__metric review-report__metric--manual">
-            <dt>Manual</dt>
-            <dd data-testid="review-report-manual-count">{partition.manual}</dd>
-          </div>
-          <div className="review-report__metric review-report__metric--not-applied">
-            <dt>Not applied</dt>
-            <dd data-testid="review-report-not-applied-count">
-              {partition.notApplied}
-            </dd>
-          </div>
+          {REVIEW_PARTITION_TILES.map((tile) => (
+            <div
+              key={tile.id}
+              className={`review-report__metric review-report__metric--${tile.id}`}
+              title={tile.hint}
+            >
+              <dt>{tile.label}</dt>
+              <dd data-testid={`review-report-${tile.id}-count`}>
+                {tile.read(partition)}
+              </dd>
+            </div>
+          ))}
         </dl>
         <p
           className="pc-sr-only"
           data-testid="review-report-accounting-invariant"
         >
           {partition.results} results accounted for: {partition.ready} ready,{" "}
-          {partition.handled} handled, {partition.manual} manual, and{" "}
-          {partition.notApplied} not applied.
+          {partition.handled} handled, {partition.manual} manual,{" "}
+          {partition.notAssessed} not assessed, and {partition.notApplied} not
+          applied.
         </p>
       </section>
 

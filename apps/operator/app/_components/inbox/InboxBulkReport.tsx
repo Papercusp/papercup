@@ -19,6 +19,7 @@ import { KIND_LABEL } from "@/app/admin/plans/PlanOtherList";
 import ReviewReportShell, {
   type ReviewReportGroup,
   type ReviewReportRow,
+  type ReviewRowAction,
   type ReviewRowConfidence,
   type ReviewRowAccounting,
   type ReviewRowStatus,
@@ -151,6 +152,9 @@ function reviewAccounting(
 ): ReviewRowAccounting {
   if (status === "applied") return "handled";
   if (status === "dismissed") return "not-applied";
+  // Same distinction Plans draws: an item the resolver never reached is
+  // unstarted work waiting on a resume, not work waiting on the owner.
+  if (runItem.outcome === "pending") return "not-assessed";
   if (
     runItem.outcome !== "recommended" &&
     canonicalInboxDisposition(runItem) !== "recommended"
@@ -159,6 +163,53 @@ function reviewAccounting(
   }
   if (runItem.actionId === "answer" || !hasAction) return "manual";
   return "ready";
+}
+
+/**
+ * The verb this row commits (D-001), in Inbox's own nouns. Same contract as
+ * `planCleanupAction`: the label states what Apply does, and a row Apply cannot
+ * commit says who has to act instead.
+ */
+function inboxBulkAction(
+  runItem: BulkRunItem,
+  status: ReviewRowStatus,
+  accounting: ReviewRowAccounting,
+  actionText: string,
+): ReviewRowAction {
+  if (status === "applied") {
+    return { label: "Resolved", tone: "good", description: "Already applied." };
+  }
+  if (status === "dismissed") {
+    return { label: "Skipped", tone: "manual", description: "Left alone." };
+  }
+  if (accounting === "not-assessed") {
+    return {
+      label: "Assess",
+      tone: "warn",
+      description:
+        "The resolver did not reach this item before the run settled — resume to assess it.",
+    };
+  }
+  if (runItem.outcome === "failed") {
+    return {
+      label: "Retry",
+      tone: "warn",
+      description:
+        runItem.recommendation?.retryCondition ??
+        "The resolver failed on this item; retry it.",
+    };
+  }
+  if (accounting === "manual") {
+    return {
+      label: runItem.actionId === "answer" ? "You answer it" : "You handle it",
+      tone: "manual",
+      description:
+        runItem.actionId === "answer"
+          ? "Needs an answer written by you before it can be sent."
+          : "No safe automatic action — open the item and handle it.",
+    };
+  }
+  return { label: actionText, description: `Apply: ${actionText}.` };
 }
 
 function evidenceLines(runItem: BulkRunItem): string[] {
@@ -237,6 +288,7 @@ export function buildInboxBulkReviewGroups(
   localErrors: ReadonlyMap<string, string> = new Map(),
   locallyDismissed: ReadonlySet<string> = new Set(),
   detailFor?: (item: AttentionItem, runItem: BulkRunItem) => ReactNode,
+  openSource?: (item: AttentionItem) => void,
 ): ReviewReportGroup[] {
   const grouped = new Map<string, ReviewReportGroup>();
   const ordered = [...runItems].sort(
@@ -270,14 +322,26 @@ export function buildInboxBulkReviewGroups(
       (!isNavigateAction(runItem.actionId!) ||
         (runItem.actionId === "answer" &&
           Boolean(runItem.draftAnswer?.trim())));
+    const accounting = reviewAccounting(
+      runItem,
+      status,
+      hasAction && Boolean(item),
+    );
     const row: ReviewReportRow = {
       id: runItem.itemId,
       title: item?.title ?? runItem.title ?? runItem.itemId,
+      action: inboxBulkAction(runItem, status, accounting, action),
       sourceLabel: kindLabel(kind),
+      ...(openSource && item
+        ? {
+            onOpenSource: () => openSource(item),
+            openSourceLabel: `Open ${item.title ?? runItem.itemId}`,
+          }
+        : {}),
       referenceLabel: action,
       evidence: evidenceLines(runItem),
       confidence: inboxBulkReviewConfidence(runItem),
-      accounting: reviewAccounting(runItem, status, hasAction && Boolean(item)),
+      accounting,
       status,
       selectable:
         status === "pending" &&

@@ -17,6 +17,7 @@ import {
 import ReviewReportShell, {
   type ReviewReportGroup,
   type ReviewReportRow,
+  type ReviewRowAction,
   type ReviewRowConfidence,
   type ReviewRowAccounting,
   type ReviewRowStatus,
@@ -100,12 +101,87 @@ function reviewAccounting(
 ): ReviewRowAccounting {
   if (status === "applied") return "handled";
   if (status === "dismissed") return "not-applied";
+  // A `pending` outcome is a finding the resolver never reached — a stopped or
+  // died run, NOT owner work. It used to be counted as `manual`, which read as
+  // "go do this by hand" for something that just needs the run resumed.
+  if (finding.outcome === "pending") return "not-assessed";
   if (
     finding.outcome !== "recommended" &&
     canonicalPlanCleanupDisposition(finding) !== "recommended"
   )
     return "not-applied";
   return ACTIONABLE_KINDS.has(finding.kind) ? "ready" : "manual";
+}
+
+/**
+ * The verb this finding commits (D-001) — the vocabulary a person would use for
+ * the change, not the resolver's kind slug. Deliberately exhaustive over the
+ * kinds Plans actually emits, with an honest fallback for anything new: a kind
+ * with no registered hand-edit action is owner work, and says so.
+ */
+function planCleanupAction(
+  finding: PlanCleanupFinding,
+  status: ReviewRowStatus,
+): ReviewRowAction {
+  if (status === "applied") {
+    return { label: "Fixed", tone: "good", description: "Already applied." };
+  }
+  if (status === "dismissed") {
+    return { label: "Skipped", tone: "manual", description: "Left alone." };
+  }
+  if (finding.outcome === "pending") {
+    return {
+      label: "Assess",
+      tone: "warn",
+      description:
+        "Found by the scan but never judged — resume the run to assess it.",
+    };
+  }
+  switch (finding.kind) {
+    case "flip-to-done":
+      return {
+        label: "Mark done",
+        description: `Set ${finding.itemId ?? "this item"} to done in ${finding.planSlug}.`,
+      };
+    case "cleared-blocker":
+      return {
+        label: "Clear blocker",
+        description: `Move ${finding.itemId ?? "this item"} back to todo — its blocker already finished.`,
+      };
+    case "finish-plan":
+      return {
+        label: "Finish plan",
+        tone: "good",
+        description: `Mark ${finding.planSlug} shipped.`,
+      };
+    case "archive-candidate":
+      return {
+        label: "Archive plan",
+        tone: "warn",
+        description: `Archive ${finding.planSlug}.`,
+      };
+    case "stale-now":
+      return {
+        label: "You write it",
+        tone: "manual",
+        description:
+          "Papercup can spot the stale Now section but not author its replacement.",
+      };
+    case "orphaned-claim":
+      return {
+        label: "Reaper clears it",
+        tone: "manual",
+        description:
+          "Claim release is re-verified by the stale-claim reaper, not written blind from here.",
+      };
+    default:
+      return {
+        label: "You handle it",
+        tone: "manual",
+        description:
+          "This recommendation has no registered hand-edit action; open the plan.",
+      };
+  }
 }
 
 function manualReason(finding: PlanCleanupFinding): string | null {
@@ -159,13 +235,21 @@ function reportRow(
   locallyDismissed: ReadonlySet<string>,
   localErrors: ReadonlyMap<string, string>,
   detailFor?: (finding: PlanCleanupFinding) => ReactNode,
+  openSource?: (finding: PlanCleanupFinding) => void,
 ): ReviewReportRow {
   const status = reviewStatus(finding, locallyApplied, locallyDismissed);
   const localError = localErrors.get(finding.findingId);
   return {
     id: finding.findingId,
     title: finding.target,
+    action: planCleanupAction(finding, status),
     sourceLabel: finding.planSlug,
+    ...(openSource
+      ? {
+          onOpenSource: () => openSource(finding),
+          openSourceLabel: `Open plan ${finding.planSlug}`,
+        }
+      : {}),
     referenceLabel:
       finding.itemId ?? (finding.kind === "stale-now" ? "## Now" : "plan"),
     transition: { from: finding.from, to: finding.to },
@@ -193,35 +277,57 @@ export function buildPlanCleanupReviewGroups(
   localErrors: ReadonlyMap<string, string> = new Map(),
   locallyDismissed: ReadonlySet<string> = new Set(),
   detailFor?: (finding: PlanCleanupFinding) => ReactNode,
+  openSource?: (finding: PlanCleanupFinding) => void,
 ): ReviewReportGroup[] {
   const assigned = new Set<string>();
+  const row = (finding: PlanCleanupFinding) =>
+    reportRow(
+      finding,
+      locallyApplied,
+      locallyDismissed,
+      localErrors,
+      detailFor,
+      openSource,
+    );
+
+  // Findings the resolver never reached lead the report and are pulled out of
+  // their kind group FIRST: they are not a fix kind, they are unstarted work,
+  // and the only thing that clears them is resuming the run.
+  const unassessed = findings.filter(
+    (finding) =>
+      finding.outcome === "pending" &&
+      !locallyApplied.has(finding.findingId) &&
+      !locallyDismissed.has(finding.findingId),
+  );
+  for (const finding of unassessed) assigned.add(finding.findingId);
+
   const groups = GROUPS.map((group) => {
     const rows = findings
-      .filter((finding) => group.kinds.has(finding.kind))
+      .filter(
+        (finding) =>
+          group.kinds.has(finding.kind) && !assigned.has(finding.findingId),
+      )
       .map((finding) => {
         assigned.add(finding.findingId);
-        return reportRow(
-          finding,
-          locallyApplied,
-          locallyDismissed,
-          localErrors,
-          detailFor,
-        );
+        return row(finding);
       });
     return { ...group, rows };
   }).filter((group) => group.rows.length > 0);
 
+  if (unassessed.length > 0) {
+    groups.unshift({
+      id: "not-assessed",
+      title: "Not assessed yet",
+      description:
+        "Found by the scan, but the run stopped before Papercup could judge them. Resume the run to assess them.",
+      kinds: new Set(),
+      rows: unassessed.map(row),
+    });
+  }
+
   const other = findings
     .filter((finding) => !assigned.has(finding.findingId))
-    .map((finding) =>
-      reportRow(
-        finding,
-        locallyApplied,
-        locallyDismissed,
-        localErrors,
-        detailFor,
-      ),
-    );
+    .map(row);
   if (other.length > 0) {
     groups.push({
       id: "other",
@@ -555,6 +661,7 @@ export default function PlanCleanupReport({
             onDismiss={() => void onDismissFinding(finding)}
           />
         ),
+        onOpenFinding ? (finding) => onOpenFinding(finding) : undefined,
       ),
     [
       findings,
