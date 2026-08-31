@@ -70,6 +70,35 @@ describe('registerFileLockAuthorityOps', () => {
     expect(coord.queue).toHaveBeenCalledOnce();
   });
 
+  it('forwards native edit proof to the coordinator without inventing it on lock-only release', async () => {
+    const coord = fakeCoordinator();
+    registerFileLockAuthorityOps(coord);
+    const nativeEditProof = {
+      success: true as const,
+      source: 'claude' as const,
+      tool: 'Edit',
+      paths: ['apps/x.ts'],
+    };
+    await handleAuthorityRpc({
+      harnessSlug: 'h',
+      kind: FILE_LOCK_OP_KINDS.release,
+      payload: {
+        owner: 'A',
+        lockId: 'lk-1',
+        coordinationDomain: '/repo',
+        nativeEditProof,
+      },
+    });
+    expect(coord.release).toHaveBeenCalledWith({
+      owner: 'A',
+      lockId: 'lk-1',
+      paths: undefined,
+      allMine: undefined,
+      coordinationDomain: '/repo',
+      nativeEditProof,
+    });
+  });
+
   it('returns a busy result (ok:false) faithfully — the authority denied the lock', async () => {
     const coord = fakeCoordinator({ acquire: vi.fn(async () => ({ ok: false, busy: [{ path: 'apps/x.ts', owner: 'peer-B' }] })) });
     registerFileLockAuthorityOps(coord);

@@ -40,6 +40,16 @@ vi.mock('./resource-broadcast', () => ({ broadcastResourceBackUp: vi.fn() }));
 vi.mock('../../authority/file-lock-routing', () => ({ routeFileLockOp: vi.fn() }));
 vi.mock('../../authority/file-lock-authority-ops', () => ({
   FILE_LOCK_OP_KINDS: { release: 'release' },
+  isNativeEditProofForPaths: vi.fn((proof: unknown, released: string[]) => {
+    if (!proof || typeof proof !== 'object') return false;
+    const value = proof as { success?: unknown; source?: unknown; tool?: unknown; paths?: unknown };
+    return value.success === true
+      && value.source === 'claude'
+      && value.tool === 'Edit'
+      && Array.isArray(value.paths)
+      && value.paths.length === released.length
+      && value.paths.every((path) => released.includes(path as string));
+  }),
   // Real (not stubbed) fan-out so WI-1550 coverage below can assert on the
   // resulting recordLockEvent calls, not just that some mock fired.
   emitReleaseLockEvents: vi.fn((emit: (e: unknown) => void, p: { scope: string; owner: string; released: string[]; ts: number; publishedSha?: string | null }) => {
@@ -49,6 +59,7 @@ vi.mock('../../authority/file-lock-authority-ops', () => ({
   }),
 }));
 vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }));
+vi.mock('../../edit-attribution', () => ({ recordEditAttribution: vi.fn(async () => {}) }));
 
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
@@ -60,6 +71,7 @@ import {
   readQueue,
 } from './su-lock-store';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
+import { recordEditAttribution } from '../../edit-attribution';
 
 const routeM = vi.mocked(routeFileLockOp);
 const releaseGranularM = vi.mocked(releaseGranular);
@@ -69,6 +81,7 @@ const releaseResourcesM = vi.mocked(releaseAllResourcesForOwner);
 const readQueueM = vi.mocked(readQueue);
 const recordEventM = vi.mocked(recordLockEvent);
 const resolveDomainM = vi.mocked(resolveExplicitFileLockDomain);
+const recordAttributionM = vi.mocked(recordEditAttribution);
 const tool = (await import('./release')).default;
 
 type Out = { data?: any; content?: Array<{ text: string }> };
@@ -459,5 +472,43 @@ describe('locks:release — WI-1550 P-015 lock-event emission on a LOCALLY-decid
     routeM.mockResolvedValue({ value: { ok: true, released: ['a.ts'] }, via: 'local-authority', scope: 'harness-x' } as never);
     await call({ lock_id: '11111111-1111-1111-1111-111111111111', published_sha: 'a'.repeat(40) });
     expect(recordEventM).toHaveBeenCalledWith(expect.objectContaining({ publishedSha: 'a'.repeat(40) }));
+  });
+});
+
+describe('locks:release — native edit attribution requires positive proof', () => {
+  const LOCK = '77777777-7777-4777-8777-777777777777';
+
+  it('records attribution only when a successful recognized edit proof exactly matches released paths', async () => {
+    routeM.mockResolvedValue({
+      value: { ok: true, released: ['a.ts'] },
+      via: 'local-authority',
+    } as never);
+
+    await call({
+      lock_id: LOCK,
+      native_edit_proof: { success: true, source: 'claude', tool: 'Edit', paths: ['a.ts'] },
+    });
+
+    expect(recordAttributionM).toHaveBeenCalledWith(expect.objectContaining({
+      repoRoot: 'dom',
+      files: ['a.ts'],
+      agentId: 'me',
+    }));
+  });
+
+  it.each([
+    ['lock-only release', undefined],
+    ['failed native result', { success: false, source: 'claude', tool: 'Edit', paths: ['a.ts'] }],
+    ['unknown native tool', { success: true, source: 'claude', tool: 'Read', paths: ['a.ts'] }],
+    ['path mismatch', { success: true, source: 'claude', tool: 'Edit', paths: ['other.ts'] }],
+  ])('does not attribute %s', async (_label, nativeEditProof) => {
+    routeM.mockResolvedValue({
+      value: { ok: true, released: ['a.ts'] },
+      via: 'local-authority',
+    } as never);
+
+    await call({ lock_id: LOCK, native_edit_proof: nativeEditProof });
+
+    expect(recordAttributionM).not.toHaveBeenCalled();
   });
 });

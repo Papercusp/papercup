@@ -58,7 +58,6 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => (
 vi.mock('../../agent-state-stamp', () => ({
   readAgentStateStamp: vi.fn(() => ({ intentEventId: null, assumptionSetId: null, goalRef: 'WI-current' })),
 }));
-vi.mock('../../edit-attribution', () => ({ recordEditAttribution: vi.fn(async () => {}) }));
 vi.mock('../../authority/file-lock-routing', () => ({ routeFileLockOp: vi.fn() }));
 vi.mock('../../authority/file-lock-authority-ops', () => ({
   FILE_LOCK_OP_KINDS: { acquire: 'acquire' },
@@ -76,7 +75,6 @@ import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { readAgentStateStamp } from '../../agent-state-stamp';
-import { recordEditAttribution } from '../../edit-attribution';
 import { MAX_LOCK_TTL_SEC } from './lock-config';
 const normM = vi.mocked(normalizePaths);
 const insertM = vi.mocked(tryInsertWaiter);
@@ -88,7 +86,6 @@ const expireM = vi.mocked(expireWaiter);
 const tryAcquireM = vi.mocked(tryAcquire);
 const resolveDomainM = vi.mocked(resolveExplicitFileLockDomain);
 const readStampM = vi.mocked(readAgentStateStamp);
-const recordAttributionM = vi.mocked(recordEditAttribution);
 const tool = (await import('./acquire')).default;
 const warningRoot = mkdtempSync(join(tmpdir(), 'locks-acquire-warning-'));
 
@@ -187,11 +184,6 @@ describe('locks:acquire — outcome branches', () => {
       expires_ts: '2026-02-01T00:00:00.000Z', held: ['a.ts'],
     });
     expect(readStampM).toHaveBeenCalledWith('me');
-    expect(recordAttributionM).toHaveBeenCalledWith(expect.objectContaining({
-      agentId: 'me',
-      workspaceId: 'ws-1',
-      goalRef: 'WI-current',
-    }));
   });
 
   it('fast-path success keeps missing repo-relative paths acquirable and adds a precise advisory warning', async () => {
