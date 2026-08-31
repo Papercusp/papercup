@@ -119,7 +119,7 @@ export async function selectCanonicalRowsAfter(
 ): Promise<CanonicalRow[]> {
   const rows = cursor
     ? await sql<Record<string, unknown>[]>`
-        SELECT id, source, kind, external_id, occurred_at, title, text, metadata,
+        SELECT id, source, source_id::text, provider_account_id, kind, external_id, occurred_at, title, text, metadata,
                COALESCE(occurred_at, imported_at) AS cursor_at
           FROM harness_shared.personal_documents
          WHERE workspace_id = ${workspaceId}
@@ -130,7 +130,7 @@ export async function selectCanonicalRowsAfter(
          LIMIT ${limit}
       `
     : await sql<Record<string, unknown>[]>`
-        SELECT id, source, kind, external_id, occurred_at, title, text, metadata,
+        SELECT id, source, source_id::text, provider_account_id, kind, external_id, occurred_at, title, text, metadata,
                COALESCE(occurred_at, imported_at) AS cursor_at
           FROM harness_shared.personal_documents
          WHERE workspace_id = ${workspaceId}
@@ -143,6 +143,8 @@ export async function selectCanonicalRowsAfter(
   return rows.map((row) => ({
     id: String(row.id),
     source: String(row.source),
+    sourceId: row.source_id === null || row.source_id === undefined ? null : String(row.source_id),
+    providerAccountId: row.provider_account_id === null || row.provider_account_id === undefined ? null : String(row.provider_account_id),
     kind: String(row.kind),
     externalId: row.external_id === null || row.external_id === undefined ? null : String(row.external_id),
     occurredAt: (row.occurred_at as string | Date | null) ?? null,

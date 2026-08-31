@@ -90,7 +90,10 @@ import {
 } from './projections/register-all';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
 import { recordBootEvent, type BootHistoryKind } from './boot-history';
-import { resolveSeedLogKeys } from './seed-log-admission';
+import {
+  resolveSeedLogAdmissions,
+  validateSeedReplicaForAdmission,
+} from './seed-log-admission';
 import { SEED_EXCLUDED_TABLES } from './seed-excluded-tables';
 import type Corestore from 'corestore';
 import {
@@ -1520,16 +1523,35 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   try {
     const seedHiveHome = hiveHomeProjectionSlug ?? resolvedPotHomeSlug;
     if (seedHiveHome) {
-      const seedLogKeys = await resolveSeedLogKeys({ potHomeSlug: seedHiveHome });
-      for (const keyHex of seedLogKeys) {
+      const seedLogAdmissions = await resolveSeedLogAdmissions({ potHomeSlug: seedHiveHome });
+      for (const admission of seedLogAdmissions) {
+        const { keyHex } = admission;
         if (keyHex === ownLog.keyHex || admitted.has(keyHex)) continue;
         const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(store, keyHex);
+        const replicaVerdict = validateSeedReplicaForAdmission(remote, admission);
+        if (!replicaVerdict.ok) {
+          // A manifest is a provenance claim, not proof that this target has
+          // the corresponding bytes.  In particular, a stale sidecar can
+          // expose a valid manifest while opening a different/empty store
+          // (the observed 84f7 length=0/no-cursor episode).  Leave the key to
+          // normal signed announce admission, which can recover once the
+          // live peer is reachable; never put an unverifiable replica into
+          // the merge set or its liveness-repair ladder.
+          await remote.close?.().catch(() => {});
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'merge_error',
+            `seed log skipped ${keyHex.slice(0, 8)}…: ${replicaVerdict.reason}`,
+          );
+          continue;
+        }
         admitted.set(keyHex, remote);
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
           'seed_log_admitted' as BootHistoryKind,
-          `seed ${keyHex.slice(0, 8)}…`,
+          `seed ${keyHex.slice(0, 8)}… length=${admission.expectedLength} from=${admission.shippedFrom}`,
         );
       }
     }

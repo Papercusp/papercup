@@ -46,12 +46,61 @@ export interface ResolveSeedLogKeysOpts {
 }
 
 /**
- * The seed's author-log core keys (lowercased hex), or [] when there is no applicable
- * seed: no seed dir, seed disabled, unreadable/invalid manifest, hive mismatch, or a
- * manifest without a corestore entry. Malformed key entries are dropped individually
- * (a partial list still merges the well-formed logs).
+ * Provenance carried from the corestore seed manifest for one admitted log.
+ *
+ * `coreKeys` alone is not enough to establish that a log belongs to this boot:
+ * a stale/incorrect seed directory can name a perfectly well-formed key while
+ * the restored target core has no blocks at all.  The cutter already records
+ * the authenticated writer high-water (`coreLengths`) and, for sparse cuts,
+ * the first block actually shipped (`coreSparseFrom`).  Keep those values
+ * attached to the key so boot can validate the local replica before adding it
+ * to the read-merge.
  */
-export async function resolveSeedLogKeys(opts: ResolveSeedLogKeysOpts): Promise<string[]> {
+export interface SeedLogAdmission {
+  /** 64-character lowercase hypercore key. */
+  readonly keyHex: string;
+  /** Writer length recorded by the seed cutter. */
+  readonly expectedLength: number;
+  /** First block the payload promises to carry (0 for a full seed). */
+  readonly shippedFrom: number;
+  /** Seed directory selected for this manifest (diagnostic provenance). */
+  readonly seedDir: string;
+}
+
+/** Minimal local-replica view used by the boot admission guard. */
+export interface SeedReplicaForAdmission {
+  readonly keyHex: string;
+  readonly length: number;
+  readonly contiguousLength?: number;
+  has?(index: number): boolean;
+  close?(): Promise<void>;
+}
+
+interface CorestoreSeedMetaForAdmission {
+  readonly coreKeys?: unknown;
+  readonly coreLengths?: unknown;
+  readonly coreSparseFrom?: unknown;
+}
+
+function numberRecord(value: unknown): Record<string, number> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) return null;
+    out[key.toLowerCase()] = raw;
+  }
+  return out;
+}
+
+/**
+ * Resolve manifest log keys together with the length/range claims boot must
+ * verify against the restored local replica.  Invalid or incomplete metadata
+ * is rejected as a whole: admitting a key without a trustworthy high-water
+ * would recreate the stale seed-only admission bug this seam exists to stop.
+ */
+export async function resolveSeedLogAdmissions(
+  opts: ResolveSeedLogKeysOpts,
+): Promise<SeedLogAdmission[]> {
   try {
     const resolved = (opts.resolveSeedDirImpl ?? resolveSeedDir)();
     if (resolved.disabled || !resolved.seedDir) return [];
@@ -60,12 +109,101 @@ export async function resolveSeedLogKeys(opts: ResolveSeedLogKeysOpts): Promise<
     const manifest = decodeManifest(raw); // throws on structural invalidity → catch → []
     if (manifest.potId !== opts.potHomeSlug) return [];
     const entry = manifest.stores.find((s) => s.kind === 'corestore');
-    const keys = (entry?.meta as { coreKeys?: unknown } | undefined)?.coreKeys;
-    if (!Array.isArray(keys)) return [];
-    return keys
-      .filter((k): k is string => typeof k === 'string' && CORE_KEY_HEX.test(k))
-      .map((k) => k.toLowerCase());
+    const meta = (entry?.meta ?? undefined) as CorestoreSeedMetaForAdmission | undefined;
+    const keys = meta?.coreKeys;
+    const lengths = numberRecord(meta?.coreLengths);
+    if (!Array.isArray(keys) || !lengths) return [];
+    const sparseFrom = numberRecord(meta?.coreSparseFrom) ?? {};
+    const seen = new Set<string>();
+    const admissions: SeedLogAdmission[] = [];
+    for (const rawKey of keys) {
+      if (typeof rawKey !== 'string' || !CORE_KEY_HEX.test(rawKey)) continue;
+      const keyHex = rawKey.toLowerCase();
+      if (seen.has(keyHex)) continue;
+      seen.add(keyHex);
+      const expectedLength = lengths[keyHex];
+      const shippedFrom = sparseFrom[keyHex] ?? 0;
+      // A key without a cutter high-water, or a sparse range outside that
+      // high-water, is not provenance we can safely act on.  Cold/live swarm
+      // admission remains available for the key instead.
+      if (
+        expectedLength === undefined ||
+        !Number.isInteger(expectedLength) ||
+        expectedLength <= 0 ||
+        !Number.isInteger(shippedFrom) ||
+        shippedFrom < 0 ||
+        shippedFrom >= expectedLength
+      ) {
+        continue;
+      }
+      admissions.push({ keyHex, expectedLength, shippedFrom, seedDir: resolved.seedDir });
+    }
+    return admissions;
   } catch {
     return []; // no seed / bad seed ⇒ the cold path, never a boot failure
   }
+}
+
+/**
+ * Check that a seed-advertised log is actually present in the local target
+ * core before boot admits it.  Hypercore can expose a writer length from a
+ * copied header even when none of the data blocks were restored; checking only
+ * `length` therefore reproduces the 84f7 zero-byte admission failure.  The
+ * first and last shipped blocks are cheap O(1) bitfield checks and catch that
+ * stale/empty target while allowing sparse seeds whose prefix is intentionally
+ * absent.  A replica without either a block probe or a complete contiguous
+ * prefix is rejected rather than guessed usable.
+ */
+export function validateSeedReplicaForAdmission(
+  replica: SeedReplicaForAdmission,
+  admission: SeedLogAdmission,
+): { ok: true } | { ok: false; reason: string } {
+  if (replica.keyHex.toLowerCase() !== admission.keyHex) {
+    return { ok: false, reason: 'replica key does not match manifest key' };
+  }
+  if (!Number.isInteger(replica.length) || replica.length < admission.expectedLength) {
+    return {
+      ok: false,
+      reason: `local length ${String(replica.length)} is below manifest length ${admission.expectedLength}`,
+    };
+  }
+
+  const last = admission.expectedLength - 1;
+  try {
+    if (typeof replica.has === 'function') {
+      if (!replica.has(admission.shippedFrom)) {
+        return {
+          ok: false,
+          reason: `shipped start block ${admission.shippedFrom} is not present locally`,
+        };
+      }
+      if (!replica.has(last)) {
+        return { ok: false, reason: `shipped tail block ${last} is not present locally` };
+      }
+      return { ok: true };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `local block-presence probe failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  // A full seed can be proven by a contiguous local prefix.  Sparse seeds
+  // deliberately omit that prefix, so accepting one without `has()` would
+  // silently turn an unverified manifest claim into an admission.
+  if (admission.shippedFrom === 0 && (replica.contiguousLength ?? 0) >= admission.expectedLength) {
+    return { ok: true };
+  }
+  return { ok: false, reason: 'replica exposes no usable local block-presence proof' };
+}
+
+/**
+ * The seed's author-log core keys (lowercased hex), or [] when there is no applicable
+ * seed: no seed dir, seed disabled, unreadable/invalid manifest, hive mismatch, or a
+ * manifest without a corestore entry. Malformed key entries are dropped individually
+ * (a partial list still merges the well-formed logs).
+ */
+export async function resolveSeedLogKeys(opts: ResolveSeedLogKeysOpts): Promise<string[]> {
+  return (await resolveSeedLogAdmissions(opts)).map((admission) => admission.keyHex);
 }

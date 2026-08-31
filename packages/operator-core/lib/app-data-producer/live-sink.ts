@@ -123,6 +123,8 @@ export interface AppDeliveryExternalSink {
 }
 
 export interface AppDeliverySinkOptions extends AppDeliveryOptions {
+  /** Server-owned source/account identity carried into Gmail app rows. */
+  provenance?: { sourceId?: string | null; providerAccountId?: string | null };
   /** Delivery cursor to report to the app alongside the row. */
   cursor?: string | null;
   /**
@@ -188,7 +190,7 @@ export function createAppDeliveryExternalSink(
       // Reduce to the same record shape the reconcile path reads back, so both
       // produce an identical app row (app-rows.ts). Reusing the vault's mapper
       // is what makes that identity structural instead of coincidental.
-      const record = personalDocumentFromExternalEvent(event);
+      const record = personalDocumentFromExternalEvent(event, options.provenance ?? {});
       const mapped = appRowFromSourceRecord(record);
       // Not an app-backed source (e.g. facebook → vault only). Skipping is
       // correct and is reported as a delivered no-op, not an error.
@@ -216,7 +218,10 @@ export async function createAppDeliveryExternalSinkForSource(
 ): Promise<AppDeliveryExternalSink> {
   const source = await getExternalTriggerSource(sql, workspaceId, sourceId);
   if (!source?.ownerUserId) throw new Error(`external_trigger_source_owner_required:${sourceId}`);
-  const sink = createAppDeliveryExternalSink(sql, workspaceId, source.ownerUserId, options);
+  const sink = createAppDeliveryExternalSink(sql, workspaceId, source.ownerUserId, {
+    ...options,
+    provenance: { sourceId: source.id, providerAccountId: source.providerAccountId },
+  });
   return { ...sink, ref: `user:${source.ownerUserId}:source:${source.id}` };
 }
 

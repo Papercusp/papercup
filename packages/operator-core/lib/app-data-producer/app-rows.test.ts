@@ -66,6 +66,24 @@ describe('app row mapping (P-011)', () => {
     });
   });
 
+  it('carries server-owned Gmail source and provider account provenance into the mailbox contract', () => {
+    const mapped = appRowFromSourceRecord({
+      source: 'gmail', kind: 'message', externalId: 'm-account',
+      sourceId: '11111111-1111-4111-8111-111111111111',
+      providerAccountId: 'work@example.com',
+      metadata: { id: 'm-account', threadId: 'shared-thread' },
+    });
+    expect(mapped?.row).toMatchObject({
+      mailbox: {
+        key: 'source:11111111-1111-4111-8111-111111111111',
+        sourceId: '11111111-1111-4111-8111-111111111111',
+        providerAccountId: 'work@example.com',
+        address: 'work@example.com',
+        provenance: 'explicit',
+      },
+    });
+  });
+
   it('maps a gcal event to a calendar event row', () => {
     const mapped = appRowFromSourceRecord(personalDocumentFromExternalEvent(gcalEvent));
     expect(mapped?.app).toBe('calendar');

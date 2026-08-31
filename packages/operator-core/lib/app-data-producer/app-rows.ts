@@ -37,6 +37,9 @@ import type { ProducerApp } from './owner-mapping';
 export interface ProducerSourceRecord {
   source: string;
   kind: string;
+  /** Server-owned provider provenance, retained separately from payload metadata. */
+  sourceId?: string | null;
+  providerAccountId?: string | null;
   externalId?: string | null;
   occurredAt?: string | Date | null;
   title?: string | null;
@@ -97,6 +100,37 @@ export function appRowFromSourceRecord(
     // key. Everything else the provider normalized rides through untouched;
     // title/text only FILL IN when the payload lacks the field.
     const row: Record<string, unknown> = { ...metadata, id };
+    // Provider provenance is authoritative and arrives on the stored
+    // personal_documents columns as well as on live events. Preserve it in the
+    // app row as an explicit mailbox object so the email app never has to infer
+    // an account from recipients when a source row already names one.
+    // Only the normalized record columns are trusted for connection identity.
+    // A provider payload may contain similarly named fields, but those are
+    // content and must not be promoted into account provenance by this mapper.
+    const sourceId = record.sourceId?.trim() || undefined;
+    const providerAccountId = record.providerAccountId?.trim() || undefined;
+    const suppliedMailbox = metadata.mailbox && typeof metadata.mailbox === 'object' && !Array.isArray(metadata.mailbox)
+      ? metadata.mailbox as Record<string, unknown>
+      : null;
+    if (!suppliedMailbox && (sourceId || providerAccountId)) {
+      row.mailbox = {
+        key: sourceId ? `source:${sourceId}` : `provider:${providerAccountId}`,
+        ...(sourceId ? { sourceId } : {}),
+        ...(providerAccountId ? { providerAccountId } : {}),
+        ...(providerAccountId?.includes('@') ? { address: providerAccountId } : {}),
+        provenance: 'explicit',
+      };
+    } else if (suppliedMailbox && (sourceId || providerAccountId)) {
+      row.mailbox = {
+        ...suppliedMailbox,
+        ...(sourceId && suppliedMailbox.sourceId === undefined ? { sourceId } : {}),
+        ...(providerAccountId && suppliedMailbox.providerAccountId === undefined ? { providerAccountId } : {}),
+        ...(suppliedMailbox.key === undefined
+          ? { key: sourceId ? `source:${sourceId}` : `provider:${providerAccountId}` }
+          : {}),
+        provenance: suppliedMailbox.provenance ?? 'explicit',
+      };
+    }
     if (row.subject === undefined && record.title) row.subject = record.title;
     if (row.text === undefined && record.text) row.text = record.text;
     if (row.occurredAt === undefined && occurredAt) row.occurredAt = occurredAt;
