@@ -118,6 +118,11 @@ import {
   shouldRunAffectedCargoSuite,
 } from "./lib/cargo-result.mjs";
 import { listFilesIncludingUntracked, listTrackedFiles } from "./lib/tracked-files.mjs";
+import {
+  classifyRetryTreeProvenance,
+  formatRetryTreeProvenanceNotice,
+  snapshotRetryTree,
+} from "./lib/retry-tree-provenance.mjs";
 // D-021/P-002: summed task work, measured per-run. The helper/marker retain their legacy
 // "serial" names, but after budgeted scheduling the sum is serial-equivalent work rather than
 // elapsed wall time. See scripts/lib/serial-phase.mjs.
@@ -5595,6 +5600,11 @@ const admissionIntent = (() => {
 
 let initialPool;
 
+// WI-1734042: a passing fresh-process retry is only a FLAKE when the two attempts
+// observed the same candidate tree. Capture before the first child starts. The
+// helper is fail-closed, so a git/status/read race becomes provenance-unknown.
+const RUN_START_RETRY_TREE = snapshotRetryTree(ROOT);
+
 // This is the irreversible execution boundary: derivation, dry-run, and empty
 // task exits are all above it. Publish only now so an exclusive materializer
 // retains priority during setup but cannot destroy the once-only task run after
@@ -5807,6 +5817,36 @@ for (const scheduled of initialPool.results) {
   let absorptionRan = false;
   let load1AtRerun = null;
   let residualFiles = [];
+  let retryProvenance = null;
+  const runRetryWithProvenance = async (retryCall) => {
+    // Capture immediately before the child starts. This brackets the two
+    // attempts without treating files written by the retry itself as input
+    // drift, and makes the snapshot timing independent of the retry shape.
+    const retryStartTree = snapshotRetryTree(ROOT);
+    r = await retryCall();
+    retryProvenance = classifyRetryTreeProvenance(
+      RUN_START_RETRY_TREE,
+      retryStartTree,
+    );
+    if (r.status === 0 && retryProvenance.classification !== "flake") {
+      errSync(
+        `${formatRetryTreeProvenanceNotice({
+          workspace: t.ws.name,
+          ...retryProvenance,
+        })} — retry passed, retaining the initial failure rather than claiming FLAKE absorption.`,
+      );
+      // Keep the retry output for diagnostics, but restore a failing status so
+      // the first attempt remains gating when the tree was not comparable.
+      r = {
+        ...r,
+        status:
+          typeof scheduled.value.status === "number" && scheduled.value.status !== 0
+            ? scheduled.value.status
+            : 1,
+      };
+    }
+    return r;
+  };
   const watchdogTimedOut =
     r.__watchdogTimedOut === true ||
     (r.__watchdogTimedOut == null &&
@@ -5881,7 +5921,7 @@ for (const scheduled of initialPool.results) {
       errSync(
         `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(", ")}`,
       );
-      r = await runFreshRetry(failedFiles);
+      await runRetryWithProvenance(() => runFreshRetry(failedFiles));
       absorptionRan = true;
       // WI-38300: sampled AFTER the re-run, deliberately. loadavg()[0] is a TRAILING 1-minute
       // average, so a post-sample describes the load the RE-RUN itself experienced — the thing
@@ -5903,7 +5943,7 @@ for (const scheduled of initialPool.results) {
       );
       residualFiles =
         rerunFailedFiles.length > 0 ? rerunFailedFiles : failedFiles;
-      if (r.status === 0)
+      if (r.status === 0 && retryProvenance?.classification === "flake")
         errSync(
           `>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`,
         );
@@ -5911,11 +5951,11 @@ for (const scheduled of initialPool.results) {
       errSync(
         `\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`,
       );
-      r = await run();
+      await runRetryWithProvenance(() => run());
       absorptionRan = true;
       // Post-sample for the same reason as the scoped arm above.
       load1AtRerun = loadavg()[0];
-      if (r.status === 0)
+      if (r.status === 0 && retryProvenance?.classification === "flake")
         errSync(
           `>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`,
         );
