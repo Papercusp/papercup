@@ -36,7 +36,14 @@ describe('the REAL onboarding-tutor.md source (token-drift guard)', () => {
   // the .md would otherwise ship literally into a live tutor session.
   const source = join(__dirname, '../../../../apps/operator/prompts/onboarding-tutor.md');
 
-  it.skipIf(!existsSync(source))('renders with ZERO leftover {{TOKEN}}s', () => {
+  it('renders with ZERO leftover {{TOKEN}}s', () => {
+    // NOT skipIf(existsSync): onboarding-tutor.md is committed source, so absence
+    // means it MOVED — the drift this guard exists to catch. Skipping there would
+    // report green having measured nothing (EI-21850497063792053).
+    expect(
+      existsSync(source),
+      `onboarding-tutor.md not found at ${source} — this token-drift guard measured NOTHING. If the file moved, update this path; do not skip.`,
+    ).toBe(true);
     const rendered = renderTutorTemplate(readFileSync(source, 'utf8'), TOKENS);
     const leftovers = rendered.match(/{{[A-Z_]+}}/g) ?? [];
     expect(leftovers).toEqual([]);

@@ -262,6 +262,12 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
       potSamples: 2,
       potUnpricedSamples: 0,
       measured: true,
+      // The labels must survive the jsonb round-trip, not just exist in source:
+      // potCents + sessionCents = diagnosticTotalCents below (150 + 55 = 205) is
+      // exactly why they are ADDITIVE partitions rather than rival meters, and
+      // the scopes are what say so to anyone reading the persisted row.
+      potScope: 'inside-goal-pots:authoritative',
+      sessionScope: 'outside-goal-pots:diagnostic-only',
       sessionCents: 55,
       sessionSamples: 2,
       sessionUnpricedSamples: 0,

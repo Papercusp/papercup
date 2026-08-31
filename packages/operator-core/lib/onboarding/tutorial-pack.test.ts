@@ -112,7 +112,18 @@ const REPO_ROOT = join(__dirname, '../../../..');
 const PACK_ROOT = join(REPO_ROOT, 'apps/operator/prompts/tutorial');
 const DOCS_ROOT = join(REPO_ROOT, 'apps/operator-docs/src/content/docs');
 
-describe.skipIf(!existsSync(PACK_ROOT))('the REAL tutorial content pack', () => {
+describe('the REAL tutorial content pack', () => {
+  // NOT describe.skipIf(existsSync(PACK_ROOT)): the pack is committed source, not a
+  // build artifact, so absence means it MOVED — precisely the drift this suite
+  // guards. Skipping there retires the whole block into silent green
+  // (EI-21850497063792053), so assert the root instead.
+  it('the content pack root exists (this whole suite is vacuous without it)', () => {
+    expect(
+      existsSync(PACK_ROOT),
+      `tutorial pack not found at ${PACK_ROOT} — every assertion below measured NOTHING. If the pack moved, update this path; do not skip.`,
+    ).toBe(true);
+  });
+
   it('loads, sorted, with the seed sections present', () => {
     const pack = loadTutorialPack(PACK_ROOT);
     expect(pack.length).toBeGreaterThanOrEqual(3);
