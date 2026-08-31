@@ -2520,6 +2520,58 @@ export async function trackGateStall(
       ? 'red'
       : 'record-only'
     : classifyGateStallStatus(status, pinMoved, retriage);
+  // Compute all three ladder axes ONCE, before the noop split. `repair-in-progress` is
+  // intentionally not a red and must never move the count/whole-gate-age axes, but it is the
+  // primary producer of the fixer-succession axis. Keeping one decision call preserves
+  // WI-42116's "exactly one production call site" invariant while letting that third axis speak
+  // from the otherwise-noop branch.
+  const ladderTracksVerdict = gateClass === 'red' || gateClass === 'record-only';
+  const recordOnly = gateClass === 'record-only';
+  const alreadyCountedPending =
+    !promotionPending && !!options.runId && gh.pendingRunId === options.runId;
+  const carryStreak = recordOnly || alreadyCountedPending;
+  const consecutiveReds = ladderTracksVerdict
+    ? carryStreak
+      ? (gh.consecutiveReds ?? 0)
+      : (gh.consecutiveReds ?? 0) + 1
+    : 0;
+  const firstRedAt = ladderTracksVerdict
+    ? carryStreak
+      ? (gh.firstRedAt ?? null)
+      : (gh.firstRedAt ?? Date.now())
+    : (gh.firstRedAt ?? null);
+  const lastGreenAt = gh.lastGreenAt ?? null;
+  const stallAgeMs =
+    ladderTracksVerdict && lastGreenAt != null ? Date.now() - lastGreenAt : null;
+  const fixerAxisEligible =
+    fixerSuccession != null &&
+    (ladderTracksVerdict ||
+      status === 'repair-in-progress' ||
+      status === 'repair-staging-mismatch');
+  const currentFixerSuccession = fixerAxisEligible ? fixerSuccession : null;
+  const sameFixerSuccession =
+    currentFixerSuccession != null &&
+    gh.stallFixerSuccessionKey === currentFixerSuccession.key;
+  const ladder = decideStallNotification({
+    consecutiveReds,
+    stallAgeMs,
+    stallRedsThreshold: releaseCheckpointConfig().stallReds,
+    stallAgeThresholdMs: releaseCheckpointConfig().stallAgeMs,
+    fixerSuccessionAgeMs: currentFixerSuccession?.ageMs ?? null,
+    fixerSuccessionThresholdMs: FIXER_SUCCESSION_STALL_MS,
+    marks: {
+      stallAlertedAtReds: ladderTracksVerdict ? (gh.stallAlertedAtReds ?? null) : null,
+      stallAlertedAtAgeMs: ladderTracksVerdict ? (gh.stallAlertedAtAgeMs ?? null) : null,
+      stallAlertedAtFixerAgeMs: sameFixerSuccession
+        ? (gh.stallAlertedAtFixerAgeMs ?? null)
+        : null,
+      stallAlerted: ladderTracksVerdict ? (gh.stallAlerted ?? false) : false,
+    },
+  });
+  const stallAlertedAtReds = ladder.marks.stallAlertedAtReds;
+  const stallAlertedAtAgeMs = ladder.marks.stallAlertedAtAgeMs;
+  const stallAlertedAtFixerAgeMs = ladder.marks.stallAlertedAtFixerAgeMs;
+  const stallFixerSuccessionKey = currentFixerSuccession?.key ?? null;
   // EI-21462211894072863: 'no-verdict' shares this branch because it shares its ONE load-bearing
   // property — the tick rendered no verdict, so it must not touch `consecutiveReds`, `firstRedAt`
   // or the failing-test signature. It differs in exactly one way, handled after the shared record
@@ -2593,6 +2645,86 @@ export async function trackGateStall(
         // degrades to the pre-EI-19405864032365760 behaviour (invisible), never to a wrong verdict.
         console.warn(
           `${orchestratorStdoutTag()} inconclusive-verdict record failed: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+    // P-003: a serialized repair hold is intentionally a red-counter NOOP, but its targeted
+    // fixer can still be confirmed dead/absent. Let the third ladder axis notify without
+    // manufacturing a code verdict or touching the one-shot red-streak condition.
+    const repairHold =
+      status === 'repair-in-progress' || status === 'repair-staging-mismatch';
+    if (repairHold) {
+      if (ladder.shouldNotify && ladder.axis === 'fixer' && currentFixerSuccession) {
+        try {
+          const { notifyAttentionOnce } = await import('../../attention-notify');
+          const gapMins = Math.max(1, Math.round(currentFixerSuccession.ageMs / 60_000));
+          const dead = currentFixerSuccession.state === 'dead';
+          await notifyAttentionOnce({
+            kind: 'intervention',
+            title: dead
+              ? `Release repair fixer DEAD — successor stalled (attempt ${currentFixerSuccession.attempts})`
+              : `Release repair fixer ABSENT — dispatch stalled (attempt ${currentFixerSuccession.attempts + 1})`,
+            body:
+              `The frozen repair queue for candidate ${currentFixerSuccession.candidate.slice(0, 12)} ` +
+              `has remained \`awaiting-fixer\` for ~${gapMins}m at repair head ` +
+              `${currentFixerSuccession.repairHead.slice(0, 12)}, but its targeted fixer is ` +
+              (dead
+                ? `confirmed dead (${currentFixerSuccession.spawnId}).`
+                : 'absent after the dispatch reservation window.') +
+              ` This tick rendered NO code verdict and the queue remains serialized; the ` +
+              `action is to restore fixer succession (inspect spawn/provider/launcher evidence ` +
+              `and let the queue dispatch one replacement), not to start a parallel repair.`,
+            importance: 'urgent',
+            dedupeKey:
+              `gate-stall:${ctx.installSlug}:fixer:${currentFixerSuccession.key}:` +
+              `${ladder.rung ?? 0}`,
+            workspaceId: ctx.workspaceId,
+            data: {
+              stallAxis: 'fixer',
+              stallRung: ladder.rung,
+              stallRungIndex: ladder.rungIndex,
+              fixerSuccessionState: currentFixerSuccession.state,
+              fixerSuccessionAgeMs: currentFixerSuccession.ageMs,
+              fixerSuccessionKey: currentFixerSuccession.key,
+              fixerSpawnId: currentFixerSuccession.spawnId,
+              candidate: currentFixerSuccession.candidate.slice(0, 12),
+              repairHead: currentFixerSuccession.repairHead.slice(0, 12),
+              attempts: currentFixerSuccession.attempts,
+            },
+          });
+        } catch (e) {
+          console.warn(
+            `${orchestratorStdoutTag()} fixer-succession alert failed: ${e instanceof Error ? e.message : e}`,
+          );
+        }
+      }
+      try {
+        // Leaf-path writes preserve the exact noop safety invariant above: no read/modify/write
+        // of the red counters, and no whole gate_health replacement that could shadow a peer.
+        await sql.unsafe(
+          `UPDATE harness_shared.routines
+              SET metadata = jsonb_set(
+                    jsonb_set(
+                      COALESCE(metadata, '{}'::jsonb),
+                      '{gate_health,stallAlertedAtFixerAgeMs}',
+                      $2::jsonb,
+                      true
+                    ),
+                    '{gate_health,stallFixerSuccessionKey}',
+                    $3::jsonb,
+                    true
+                  ),
+                  updated_at = now()
+            WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+          [
+            ctx.installSlug,
+            JSON.stringify(stallAlertedAtFixerAgeMs),
+            JSON.stringify(stallFixerSuccessionKey),
+          ],
+        );
+      } catch (e) {
+        console.warn(
+          `${orchestratorStdoutTag()} fixer-succession mark write failed: ${e instanceof Error ? e.message : e}`,
         );
       }
     }
@@ -2776,6 +2908,8 @@ export async function trackGateStall(
           // instead of resuming halfway up a previous episode's ladder.
           stallAlertedAtReds: null,
           stallAlertedAtAgeMs: null,
+          stallAlertedAtFixerAgeMs: null,
+          stallFixerSuccessionKey: null,
           lastVerdict: 'green',
           lastFrom: fromPin ?? gh.lastFrom ?? null,
           lastFromFresh: fromPin != null,
@@ -2811,6 +2945,10 @@ export async function trackGateStall(
           // would re-announce a stall the fleet was already told about (EI-7472's shape).
           stallAlertedAtReds: gh.stallAlertedAtReds ?? null,
           stallAlertedAtAgeMs: gh.stallAlertedAtAgeMs ?? null,
+          stallAlertedAtFixerAgeMs: stallFixerSuccessionKey
+            ? stallAlertedAtFixerAgeMs
+            : null,
+          stallFixerSuccessionKey,
           lastVerdict: 'not-green',
           lastFrom: fromPin ?? gh.lastFrom ?? null,
           lastFromFresh: fromPin != null,
@@ -2934,8 +3072,6 @@ export async function trackGateStall(
     // `autoRefire` was false in 18 of 18 re-triaging runs sampled over 2026-08-15..17.
     // `firstRedAt` is left alone for the same reason — a non-verdict must not START a streak,
     // or a `stalledByAge` escalation could be dated from a tick that judged nothing current.
-    const recordOnly = gateClass === 'record-only';
-    const alreadyCountedPending = !promotionPending && !!options.runId && gh.pendingRunId === options.runId;
     if (recordOnly) {
       console.log(
         promotionPending
@@ -2959,11 +3095,6 @@ export async function trackGateStall(
         if (tornSweep) await emitTornSweepEvent(tornSweep);
       }
     }
-    const carryStreak = recordOnly || alreadyCountedPending;
-    const consecutiveReds = carryStreak ? (gh.consecutiveReds ?? 0) : (gh.consecutiveReds ?? 0) + 1;
-    const firstRedAt = carryStreak ? (gh.firstRedAt ?? null) : (gh.firstRedAt ?? Date.now());
-    const lastGreenAt = gh.lastGreenAt ?? null;
-    const stallAgeMs = lastGreenAt != null ? Date.now() - lastGreenAt : null;
     // WI-42116 (ruling green-main-fast-2026-08-25 D-022): the stall alarm is a BOUNDED,
     // SUPER-LINEAR LADDER, not a one-shot. The old edge was
     // `(stalledByCount || stalledByAge) && !stallAlerted`, and `stallAlerted` is carried on
@@ -2978,7 +3109,7 @@ export async function trackGateStall(
     // are geometric: alert count is O(log stall depth), ~3 alerts across the measured 43-red /
     // 122.9h stall against 1 today and ~120 under a per-tick repeat.
     //
-    // ⚠ TWO AXES, and the age axis is load-bearing rather than belt-and-braces: `carryStreak`
+    // ⚠ THREE AXES. The age axis is load-bearing rather than belt-and-braces: `carryStreak`
     // above holds `consecutiveReds` FIXED on withheld / record-only ticks, so a livelocked gate
     // (every red withheld as a stale candidate) can sit at a fixed red count indefinitely while
     // time runs on. papercusp was in precisely that state, so a count-only ladder would go
@@ -2991,34 +3122,28 @@ export async function trackGateStall(
     //     WI-6228's `oneShot: true` and D-011's open/close symmetry both depend on that flag
     //     staying one-per-episode: re-minting would hand one stall a second owning work-item,
     //     and re-opening a condition the staleness sweep already resolved would strand it.
-    const ladder = decideStallNotification({
-      consecutiveReds,
-      stallAgeMs,
-      stallRedsThreshold: releaseCheckpointConfig().stallReds,
-      stallAgeThresholdMs: releaseCheckpointConfig().stallAgeMs,
-      marks: {
-        stallAlertedAtReds: gh.stallAlertedAtReds ?? null,
-        stallAlertedAtAgeMs: gh.stallAlertedAtAgeMs ?? null,
-        stallAlerted: gh.stallAlerted ?? false,
-      },
-    });
     // Persisted UNCONDITIONALLY — including on a quiet tick — so the back-compat seeding of a
     // legacy `stallAlerted: true` blob (written before this shipped) lands exactly once and
     // cannot re-alert later for a stall that was already announced.
-    const stallAlertedAtReds = ladder.marks.stallAlertedAtReds;
-    const stallAlertedAtAgeMs = ladder.marks.stallAlertedAtAgeMs;
     let stallAlerted = gh.stallAlerted ?? false;
     // Read BEFORE the assignment below, so the one-shot legs see the PRE-tick value. Same trap
     // (and same fix) as the green path's `gh.stallAlerted` read at the resolve edge.
     const firstRungOfEpisode = !stallAlerted;
+    const fixerOnlyAlert = ladder.shouldNotify && ladder.axis === 'fixer';
     if (ladder.shouldNotify) {
-      stallAlerted = true;
+      // A fixer-succession alert is its OWN ladder axis. It must not open the generic
+      // red-streak condition or mutate that condition's one-shot flag: the queue hold is
+      // deliberately a no-verdict state, and opening a code-red work item would misroute
+      // the response back to the already-dead candidate.
+      if (!fixerOnlyAlert) stallAlerted = true;
       const heldHrs = lastGreenAt ? Math.round((Date.now() - lastGreenAt) / 3_600_000) : null;
       const ladderPosition = describeLadderPosition({
         consecutiveReds,
         stallAgeMs,
         stallRedsThreshold: releaseCheckpointConfig().stallReds,
         stallAgeThresholdMs: releaseCheckpointConfig().stallAgeMs,
+        fixerSuccessionAgeMs: currentFixerSuccession?.ageMs ?? null,
+        fixerSuccessionThresholdMs: FIXER_SUCCESSION_STALL_MS,
         marks: {},
       });
       console.log(
@@ -3034,26 +3159,30 @@ export async function trackGateStall(
       // below is a snapshot of THIS tick, so neither could say whether the failing set is one
       // unfixed break (fix that test) or churning (infrastructure — do not chase the names).
       // Computed only on an alerting tick, so a quiet red pays nothing for it.
-      const causeDigest = await readStreakCauseDigest(
-        sql,
-        ctx.installSlug,
-        ctx.workspaceId,
-        firstRedAt ?? lastGreenAt,
-      );
+      const causeDigest = fixerOnlyAlert
+        ? null
+        : await readStreakCauseDigest(
+            sql,
+            ctx.installSlug,
+            ctx.workspaceId,
+            firstRedAt ?? lastGreenAt,
+          );
       const currentSignature = gateFailureSignature(failingTests, candidate);
-      const ownership = describeGateRedOwnership({
-        ownerSignature: lastFixer?.signature ?? null,
-        currentSignature,
-        dispatchedAtMs: lastFixer?.at ?? null,
-        spawnId: lastFixer?.spawnId ?? null,
-        // Only meaningful for the fixer holding THIS signature; a mismatch short-circuits
-        // to 'stale-signature' anyway, so skip the liveness query in that case.
-        fixerAlive:
-          lastFixer?.signature && lastFixer.signature === currentSignature
-            ? await releaseFixerSpawnAlive(sql, lastFixer.spawnId).catch(() => null)
-            : null,
-        nowMs: Date.now(),
-      });
+      const ownership = fixerOnlyAlert
+        ? null
+        : describeGateRedOwnership({
+            ownerSignature: lastFixer?.signature ?? null,
+            currentSignature,
+            dispatchedAtMs: lastFixer?.at ?? null,
+            spawnId: lastFixer?.spawnId ?? null,
+            // Only meaningful for the fixer holding THIS signature; a mismatch short-circuits
+            // to 'stale-signature' anyway, so skip the liveness query in that case.
+            fixerAlive:
+              lastFixer?.signature && lastFixer.signature === currentSignature
+                ? await releaseFixerSpawnAlive(sql, lastFixer.spawnId).catch(() => null)
+                : null,
+            nowMs: Date.now(),
+          });
       try {
         // WI-42116: `notifyAttentionOnce`, not `notifyAttention` — the replay-safe variant is
         // what accepts `dedupeKey`, and a ladder whose whole contract is "at most one alert per
@@ -3065,36 +3194,46 @@ export async function trackGateStall(
           // day-one alert is indistinguishable from a duplicate, and a reader who files it as
           // one has learned nothing — the whole point of rung 2 is that it says "still, and
           // deeper". `rungIndex` is 0-based; humans count escalations from 1.
-          title: firstRungOfEpisode
-            ? 'Release pipeline STALLED — main frozen'
-            : `Release pipeline STILL STALLED — escalation ${(ladder.rungIndex ?? 0) + 1} (main frozen)`,
+          title: fixerOnlyAlert
+            ? currentFixerSuccession?.state === 'dead'
+              ? `Release repair fixer DEAD — succession escalation ${(ladder.rungIndex ?? 0) + 1}`
+              : `Release repair fixer ABSENT — succession escalation ${(ladder.rungIndex ?? 0) + 1}`
+            : firstRungOfEpisode
+              ? 'Release pipeline STALLED — main frozen'
+              : `Release pipeline STILL STALLED — escalation ${(ladder.rungIndex ?? 0) + 1} (main frozen)`,
           // EI-19329732364513693: name the candidate's distance behind tip IN the alert. This is
           // the surface a human actually reads, and a red whose candidate is far behind staging
           // is very often already fixed — saying so here is what stops the chase, rather than
           // leaving each reader to re-derive it (which, overwhelmingly, they do not).
-          body: `green-checkpoint has held \`main\` for ${consecutiveReds} consecutive checkpoint(s)${heldHrs != null ? ` (~${heldHrs}h since the last green)` : ''}. Staging changes are NOT reaching the release. ${ownership.label}${
-            staleness.commitsBehindTip != null && staleness.commitsBehindTip > 0
-              ? ` NOTE: the judged candidate is ${staleness.commitsBehindTip} commit(s) behind staging${staleness.candidateCommittedAt ? `, committed ${staleness.candidateCommittedAt}` : ''} — confirm a named failure still reproduces AT TIP before chasing it.`
-              : ''
-          }${
-            // WI-42118 (D-022(d)): until now this body named NO failing tests at all — the
-            // durable row carried the alerting tick's, the human surface carried none. This is
-            // the cross-streak answer instead of a snapshot: is it one unfixed break, or churn?
-            causeDigest ? ` ${causeDigest.line}` : ''
-          } [${ladderPosition}]`,
+          body: fixerOnlyAlert && currentFixerSuccession
+            ? `The frozen repair queue for candidate ${currentFixerSuccession.candidate.slice(0, 12)} ` +
+              `has remained \`awaiting-fixer\` for ~${Math.max(1, Math.round(currentFixerSuccession.ageMs / 60_000))}m ` +
+              `at repair head ${currentFixerSuccession.repairHead.slice(0, 12)}, but its targeted fixer is ` +
+              (currentFixerSuccession.state === 'dead'
+                ? `confirmed dead (${currentFixerSuccession.spawnId}).`
+                : 'absent after the dispatch reservation window.') +
+              ` Restore fixer succession (inspect the exact spawn/provider evidence and let the ` +
+              `serialized queue dispatch one replacement); do not start a parallel repair. [${ladderPosition}]`
+            : `green-checkpoint has held \`main\` for ${consecutiveReds} consecutive checkpoint(s)${heldHrs != null ? ` (~${heldHrs}h since the last green)` : ''}. Staging changes are NOT reaching the release. ${ownership?.label ?? ''}${
+                staleness.commitsBehindTip != null && staleness.commitsBehindTip > 0
+                  ? ` NOTE: the judged candidate is ${staleness.commitsBehindTip} commit(s) behind staging${staleness.candidateCommittedAt ? `, committed ${staleness.candidateCommittedAt}` : ''} — confirm a named failure still reproduces AT TIP before chasing it.`
+                  : ''
+              }${causeDigest ? ` ${causeDigest.line}` : ''} [${ladderPosition}]`,
           importance: 'urgent',
           // WI-42116: idempotent PER RUNG. The persisted marks already stop a second alert for
           // the same rung on a later tick; this closes the other window — two trackGateStall
           // calls racing the SAME tick (a retry, or a concurrent run) would otherwise each read
           // the pre-write marks and each notify. The key is the rung itself, so it is stable
           // across those callers and distinct at the next rung.
-          dedupeKey: `gate-stall:${ctx.installSlug}:${ladder.axis ?? 'count'}:${ladder.rung ?? 0}`,
+          dedupeKey: fixerOnlyAlert && currentFixerSuccession
+            ? `gate-stall:${ctx.installSlug}:fixer:${currentFixerSuccession.key}:${ladder.rung ?? 0}`
+            : `gate-stall:${ctx.installSlug}:${ladder.axis ?? 'count'}:${ladder.rung ?? 0}`,
           workspaceId: ctx.workspaceId,
           data: {
             consecutiveReds,
             candidate: candidate?.slice(0, 12) ?? null,
-            ownership: ownership.state,
-            ownerSpawnId: ownership.spawnId,
+            ownership: ownership?.state ?? null,
+            ownerSpawnId: ownership?.spawnId ?? null,
             candidateCommittedAt: staleness.candidateCommittedAt,
             commitsBehindTip: staleness.commitsBehindTip,
             // WI-42116: which rung this is, so a reader (and any consumer keying on `data`)
@@ -3103,6 +3242,10 @@ export async function trackGateStall(
             stallRung: ladder.rung,
             stallRungIndex: ladder.rungIndex,
             stallAgeMs,
+            fixerSuccessionState: currentFixerSuccession?.state ?? null,
+            fixerSuccessionAgeMs: currentFixerSuccession?.ageMs ?? null,
+            fixerSuccessionKey: currentFixerSuccession?.key ?? null,
+            fixerSpawnId: currentFixerSuccession?.spawnId ?? null,
             // WI-42118: structured alongside the prose, so a consumer can route on the cause
             // class (stable → one owner fixes one test; churning → infrastructure) without
             // parsing the sentence.
@@ -3123,7 +3266,7 @@ export async function trackGateStall(
       //     (WI-6228) and re-open a condition the staleness sweep may already have resolved.
       // `firstRungOfEpisode` is the PRE-tick `stallAlerted`, so this stays the same edge those
       // two legs have always fired on — only the human-notify leg above changed cadence.
-      if (firstRungOfEpisode) {
+      if (firstRungOfEpisode && !fixerOnlyAlert) {
         // P-003: ALSO write a durable harness_escalations row — the silent-stall
         // gap (every other pipeline failure escalates; this one only notified +
         // overwrote metadata). Its own phase, idempotent upsert; fail-safe.
