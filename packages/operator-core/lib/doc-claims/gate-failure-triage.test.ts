@@ -10,7 +10,11 @@ import { join } from 'node:path';
 import { readCorpus, ROOT } from './corpus-subject';
 // The production entrypoint deliberately stays executable by plain Node.
 // @ts-expect-error — .mjs script, no type declarations by design.
-import { collectionAttributionMarker, evaluateMatch } from '../../../../scripts/test-files.mjs';
+import {
+  collectionAttributionMarker,
+  evaluateMatch,
+  formatProvenanceBanner,
+} from '../../../../scripts/test-files.mjs';
 
 const HEADING = '## Gate failure triage — re-run named files individually';
 const ROUTER = join(ROOT, 'scripts/test-files.mjs');
@@ -31,6 +35,14 @@ function claimViolations(body: string): string[] {
     ['zero-match state', /`matched=0`/],
     ['zero-match disposition', /\*\*undetermined\*\*/],
     ['per-file recheck', /each path in its own invocation/],
+    // EI-19385411226259421 — the MIRROR direction. Every other clause above guards against
+    // over-claiming a RED; these three guard the far more expensive under-claim, where a green
+    // riding on a peer's uncommitted fix is recorded as "the verdict was stale" and the reader
+    // stops looking. The prose must keep naming the router marker that answers it, or the rule
+    // degrades into advice with no instrument behind it.
+    ['false-stale caveat', /PASS at tip is NOT proof/],
+    ['provenance banner marker', /`TEST_FILE_PROVENANCE/],
+    ['submodule gitlink blindness', /gitlink/],
   ];
   return required.filter(([, pattern]) => !pattern.test(body)).map(([label]) => label);
 }
@@ -46,11 +58,29 @@ describe('doc corpus gate-failure triage claim', () => {
       expect(claimViolations(incomplete)).toContain('zero-match disposition');
     });
 
+    it('fires when the rule covers only the over-claim direction', () => {
+      // The exact shape of the pre-EI-19385411226259421 section: complete, careful, and silent on
+      // the direction that makes a reader STOP looking. A control that only tested the missing
+      // zero-match clause would have passed on this body.
+      const oneDirectionOnly = [
+        '`GATE_HELD_BY` and `AFFECTED_TESTS_FAILING_FILES` name candidates.',
+        'Re-run each path in its own invocation.',
+        '`TEST_FILE_ROUTE_ERROR` with `matched=0` is **undetermined**.',
+      ].join('\n');
+      expect(claimViolations(oneDirectionOnly)).toEqual([
+        'false-stale caveat',
+        'provenance banner marker',
+        'submodule gitlink blindness',
+      ]);
+    });
+
     it('stays clean on the complete contract shape', () => {
       const complete = [
         '`GATE_HELD_BY` and `AFFECTED_TESTS_FAILING_FILES` name candidates.',
         'Re-run each path in its own invocation.',
         '`TEST_FILE_ROUTE_ERROR` with `matched=0` is **undetermined**.',
+        'A PASS at tip is NOT proof the verdict was stale — read `TEST_FILE_PROVENANCE`.',
+        'From the superproject a submodule path answers about the gitlink.',
       ].join('\n');
       expect(claimViolations(complete)).toEqual([]);
     });
@@ -78,6 +108,34 @@ describe('doc corpus gate-failure triage claim', () => {
       const verdict = evaluateMatch({ routes, matched: [], listStatus: 1 });
       expect(verdict).toMatchObject({ ok: false, requested: 2, matched: 0 });
       expect(verdict.unmatched).toEqual(routes);
+    });
+
+    it('the router really emits the banner the false-stale rule sends readers to', () => {
+      // The rule's whole weight rests on "the router stamps this for you". If the marker, the
+      // per-path DIRTY label, or the submodule probe form is ever renamed, the prose becomes a
+      // pointer to nothing — advice with no instrument — which is worse than no rule at all.
+      const banner = formatProvenanceBanner(
+        {
+          head: 'a452179fbf',
+          entries: [
+            {
+              absolute: '/repo/papercusp-desktop/test/x.test.js',
+              path: 'papercusp-desktop/test/x.test.js',
+              state: 'dirty',
+              added: 4,
+              deleted: 1,
+              repoPath: 'papercusp-desktop',
+              repoRelativePath: 'test/x.test.js',
+            },
+          ],
+        },
+        'post-run',
+      );
+      expect(banner).toContain('TEST_FILE_PROVENANCE');
+      expect(banner).toContain('uncommitted=1');
+      expect(banner).toContain('[DIRTY +4/-1');
+      expect(banner).toContain('git -C papercusp-desktop show');
+      expect(banner).toContain('gitlink');
     });
 
     it('the multi-file fallback re-lists individually and clears healthy files by name', () => {
