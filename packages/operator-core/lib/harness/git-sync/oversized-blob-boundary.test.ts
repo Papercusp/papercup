@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { findBulkDirtyExcess, findOversizedDirtyFiles, type RunGit } from './run-git-sync';
+import { dirname, join } from 'node:path';
+import {
+  declaresGeneratedBanner,
+  findBulkDirtyExcess,
+  findOversizedDirtyFiles,
+  type RunGit,
+} from './run-git-sync';
 
 // G22 (test-coverage-gap): existing oversized tests use sizes clearly over the
 // limit (e.g. 2048 vs 1024). None pin the EXACT boundary. The comparison is
@@ -163,5 +168,114 @@ describe('findBulkDirtyExcess — the cumulative cap the per-file cap cannot see
     );
     expect(out).toEqual([]);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * EI-21906459740652039 — the peel's ORDER, not its threshold.
+ *
+ * The guard above was correct and still starved this repo, because it peeled purely
+ * largest-first on the premise that "a bulk accident is dominated by a few big
+ * artifacts while genuine source edits are small". The largest dirty-file class here
+ * is not an accident: it is the generated docs mirror (measured 2026-08-30: 81 of 95
+ * dirty files, and all 20 of the largest). So every time the cap tripped, largest-
+ * first peeled essentially the whole mirror — a `npm run docs:rebuild` sat uncommitted
+ * for 13h while git-sync reported success and the served docs went stale under every
+ * agent that read them.
+ *
+ * These pin BOTH directions, because a fix that only stopped peeling generated output
+ * would have disarmed the guard: an unexpected artifact must still be peeled FIRST,
+ * and a generated projection must still be peeled when peeling every unexpected
+ * artifact leaves the set over the cap.
+ */
+describe('findBulkDirtyExcess — a declared generated projection is peeled LAST', () => {
+  const DOCS = 'apps/operator/public/internal/docs';
+  const runGitFor = (files: string[]): RunGit =>
+    (async (args: string[]) => {
+      if (args[0] === 'status') return { code: 0, stdout: files.map((f) => `?? ${f}`).join('\0') + '\0', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    }) as unknown as RunGit;
+
+  const put = (root: string, rel: string, bytes: number, head = ''): string => {
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    const banner = Buffer.from(head, 'utf8');
+    writeFileSync(join(root, rel), Buffer.concat([banner, Buffer.alloc(Math.max(0, bytes - banner.length))]));
+    return rel;
+  };
+
+  it('peels the UNEXPECTED artifacts and leaves the generated docs mirror committable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bulk-generated-'));
+    // The measured shape: the mirror files are the LARGEST, so largest-first takes
+    // them first. Peeling the three unexpected artifacts (600B) is enough on its own
+    // to bring 1820B under the 1400B cap, so the mirror must survive untouched.
+    const files = [
+      put(root, `${DOCS}/agent-insights-index.html`, 400),
+      put(root, `${DOCS}/performance.html`, 400),
+      put(root, `${DOCS}/pagefind/fragment/en_1a2b3c.pf_fragment`, 400),
+      put(root, 'artifact-a.bin', 200),
+      put(root, 'artifact-b.bin', 200),
+      put(root, 'artifact-c.bin', 200),
+      put(root, 'src.ts', 20),
+    ];
+    const out = await findBulkDirtyExcess(runGitFor(files), root, 1400);
+    const peeled = out.map((f) => f.path);
+    expect([...peeled].sort()).toEqual(['artifact-a.bin', 'artifact-b.bin', 'artifact-c.bin']);
+    expect(peeled.some((p) => p.startsWith(DOCS))).toBe(false);
+    expect(out.every((f) => f.exclusionReason === 'cumulative-limit')).toBe(true);
+    // The cap is still honoured — this reorders the peel, it does not shrink it.
+    expect(1820 - out.reduce((n, f) => n + f.sizeBytes, 0)).toBeLessThanOrEqual(1400);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('STILL peels a generated projection when peeling every unexpected artifact is not enough', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bulk-generated-insufficient-'));
+    // 1300B against a 500B cap with only 100B of unexpected artifact: the guard's real
+    // purpose (never bake an unpushable range) outranks the mirror's convenience.
+    const files = [
+      put(root, `${DOCS}/a.html`, 400),
+      put(root, `${DOCS}/b.html`, 400),
+      put(root, `${DOCS}/c.html`, 400),
+      put(root, 'artifact.bin', 100),
+    ];
+    const out = await findBulkDirtyExcess(runGitFor(files), root, 500);
+    const peeled = out.map((f) => f.path);
+    expect(peeled[0]).toBe('artifact.bin'); // unexpected first, always
+    expect(peeled.filter((p) => p.startsWith(DOCS)).length).toBe(2);
+    expect(1300 - out.reduce((n, f) => n + f.sizeBytes, 0)).toBeLessThanOrEqual(500);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('is SELF-ARMING: a file whose own header declares it generated is deprioritised too', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bulk-generated-banner-'));
+    const files = [
+      put(root, 'packages/x/tokens.css', 400, '/* GENERATED by style-dictionary — DO NOT EDIT. */\n'),
+      put(root, 'artifact.bin', 300),
+      put(root, 'hand-written.ts', 300),
+    ];
+    // 1000B, cap 500 → shed 500. The two hand-written files are exactly enough.
+    const out = await findBulkDirtyExcess(runGitFor(files), root, 500);
+    expect(out.map((f) => f.path).sort()).toEqual(['artifact.bin', 'hand-written.ts']);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('declaresGeneratedBanner', () => {
+  it('needs BOTH tokens on ONE line', () => {
+    expect(declaresGeneratedBanner('// GENERATED FILE — DO NOT EDIT\n')).toBe(true);
+    expect(declaresGeneratedBanner("# Generated by gen:borrowable. Don't edit.\n")).toBe(true);
+    // "do not edit" alone is prose about something else; "generated" alone is any file
+    // that merely discusses generation.
+    expect(declaresGeneratedBanner('// do not edit this test without reading the plan\n')).toBe(false);
+    expect(declaresGeneratedBanner('// this module is generated at runtime from the registry\n')).toBe(false);
+  });
+
+  it('ignores a banner buried inside a long minified line (the .js.map false positive)', () => {
+    const minified = `{"version":3,"sourcesContent":["${'x'.repeat(400)} GENERATED — DO NOT EDIT ${'y'.repeat(400)}"]}`;
+    expect(minified.length).toBeGreaterThan(300);
+    expect(declaresGeneratedBanner(minified)).toBe(false);
+  });
+
+  it('only looks at the HEAD of the file', () => {
+    expect(declaresGeneratedBanner(`${'\n'.repeat(40)}// GENERATED — DO NOT EDIT\n`)).toBe(false);
   });
 });

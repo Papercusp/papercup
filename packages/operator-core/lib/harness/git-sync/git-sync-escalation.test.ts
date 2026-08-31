@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { classifyGitSyncFailingLeg, decideGitSyncEscalation, oversizedKey, PUSH_FAILURE_ESCALATION_TICKS } from './git-sync-escalation';
+import {
+  CHRONIC_CUMULATIVE_PEEL_TICKS,
+  CHRONIC_CUMULATIVE_REBROADCAST_TICKS,
+  classifyGitSyncFailingLeg,
+  decideGitSyncEscalation,
+  oversizedKey,
+  PUSH_FAILURE_ESCALATION_TICKS,
+} from './git-sync-escalation';
 import {
   DEFAULT_MAX_BLOB_BYTES,
   DEFAULT_MAX_COMMIT_TOTAL_BYTES,
@@ -104,6 +111,74 @@ describe('decideGitSyncEscalation (EI-18)', () => {
     const d = decideGitSyncEscalation({ ...base, oversized: [big], prevOversizedKeys: [oversizedKey(big)] });
     expect(d.escalate).toBe(true);
     expect(d.broadcast).toBeNull();
+  });
+
+  /**
+   * EI-21906459740652039 — the edge trigger's blind spot.
+   *
+   * The `newOversized` filter is right for a one-off stray blob and structurally blind
+   * to the condition that actually occurred: the SAME set peeled every tick for 13h,
+   * silent after the first, because nothing about it was ever "new" again. So the
+   * absence of repeat broadcasts is not evidence the peel stopped — it is exactly what
+   * the edge trigger does, which is why nobody noticed for 13h.
+   */
+  describe('a CHRONIC cumulative-limit peel re-announces itself', () => {
+    const peeled = {
+      scope: 'superproject' as const,
+      path: 'apps/operator/public/internal/docs/agent-insights-index.html',
+      sizeBytes: 4 * 1048576,
+      exclusionReason: 'cumulative-limit' as const,
+    };
+    const persisting = {
+      ...base,
+      oversized: [peeled],
+      prevOversizedKeys: [oversizedKey(peeled)], // not "new" — the edge trigger is silent
+    };
+
+    it('stays silent below the threshold (a transient bulk import clears itself)', () => {
+      for (let t = 1; t < CHRONIC_CUMULATIVE_PEEL_TICKS; t++) {
+        expect(decideGitSyncEscalation({ ...persisting, chronicCumulativeTicks: t }).broadcast).toBeNull();
+      }
+    });
+
+    it('breaks the silence at the threshold, naming the tick count and the stale-on-disk consequence', () => {
+      const d = decideGitSyncEscalation({
+        ...persisting,
+        chronicCumulativeTicks: CHRONIC_CUMULATIVE_PEEL_TICKS,
+      });
+      expect(d.escalate).toBe(true);
+      expect(d.broadcast).toContain(`${CHRONIC_CUMULATIVE_PEEL_TICKS} CONSECUTIVE ticks`);
+      expect(d.broadcast).toContain('agent-insights-index.html');
+      expect(d.broadcast).toContain('every tick reported success');
+    });
+
+    it('then re-broadcasts on a bounded cadence, not every tick', () => {
+      const spoken: number[] = [];
+      for (let t = CHRONIC_CUMULATIVE_PEEL_TICKS; t <= CHRONIC_CUMULATIVE_PEEL_TICKS + 2 * CHRONIC_CUMULATIVE_REBROADCAST_TICKS; t++) {
+        if (decideGitSyncEscalation({ ...persisting, chronicCumulativeTicks: t }).broadcast) spoken.push(t);
+      }
+      expect(spoken).toEqual([
+        CHRONIC_CUMULATIVE_PEEL_TICKS,
+        CHRONIC_CUMULATIVE_PEEL_TICKS + CHRONIC_CUMULATIVE_REBROADCAST_TICKS,
+        CHRONIC_CUMULATIVE_PEEL_TICKS + 2 * CHRONIC_CUMULATIVE_REBROADCAST_TICKS,
+      ]);
+    });
+
+    it('is scoped to the CUMULATIVE guard — a chronic per-file oversized blob is a different condition', () => {
+      const d = decideGitSyncEscalation({
+        ...base,
+        oversized: [big], // no exclusionReason ⇒ the per-file cap, not the cumulative one
+        prevOversizedKeys: [oversizedKey(big)],
+        chronicCumulativeTicks: CHRONIC_CUMULATIVE_PEEL_TICKS,
+      });
+      expect(d.broadcast).toBeNull();
+    });
+
+    it('a tick that peels NOTHING cannot be chronic, whatever the carried counter says', () => {
+      const d = decideGitSyncEscalation({ ...base, chronicCumulativeTicks: 999 });
+      expect(d.broadcast).toBeNull();
+      expect(d.clear).toBe(true);
+    });
   });
 
   it('threshold + new oversized together → both reasons, one combined broadcast', () => {

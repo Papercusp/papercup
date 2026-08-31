@@ -1795,6 +1795,10 @@ async function recordOutcome(
     // EI-18 counters: ticks-of-uninterrupted-error + the oversized set (scope:path keys).
     consecutive_error_ticks: consecutiveErrorTicks,
     last_oversized: outcome.oversized.map(oversizedKey),
+    // EI-21906459740652039: the cumulative-limit guard's own consecutive-tick counter.
+    // `last_oversized` alone cannot answer "has this been peeled every tick for hours?",
+    // which is the condition that ran 13h unnoticed.
+    consecutive_cumulative_peel_ticks: consecutiveCumulativePeelTicks,
     last_publish_blocked_at: publishBlockedAtCommit,
     // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
     consecutive_content_error_ticks: consecutiveContentErrorTicks,
@@ -5474,6 +5478,7 @@ async function recordAndEscalateTick(a: {
     maxBlobBytes: a.maxBlobBytes,
     maxCommitTotalBytes: a.maxCommitTotalBytes,
     prevOversizedKeys: a.prevOversizedKeys,
+    chronicCumulativeTicks: a.cumulativePeelTicks,
     publishRefusal: a.publishRefusal,
     prevPublishBlockedAtCommit: a.prevPublishBlockedAtCommit,
   });
