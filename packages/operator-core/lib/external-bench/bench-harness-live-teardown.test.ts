@@ -58,7 +58,10 @@ beforeEach(() => {
       dropSchemaCalls.push(slug);
     },
   }));
-  vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+  vi.doMock('@papercusp/db-org', async () => ({
+    ...(await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org')),
+    getOrgPg: () => ({ sql: {} }),
+  }));
 });
 
 const runTeardown = async () => {
