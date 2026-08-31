@@ -525,6 +525,41 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
+  it('warns when SEVERAL recorded critics all resolve to one party — the advisory matches the widened refusal', async () => {
+    // EI-21974075442192005 / WI-905074. The refusal was widened from
+    // `critics.length === 1` to "no recorded critic is independent of the grader",
+    // and this advisory — the only thing that tells the author about that refusal
+    // BEFORE a reviewer burns a full grading pass — was left on the old narrow
+    // test. So a vetting record naming two critics of one lineage was refused at
+    // grading time having never been warned about at attestation time. An advisory
+    // narrower than its rail is worse than none: its silence reads as clearance.
+    lineageRelated.mockImplementation(
+      async (author: unknown, candidate: unknown) =>
+        author === candidate || (author === 'su-reviewer-rebound' && candidate === 'su-reviewer'),
+    );
+    readVettingConsultCritique.mockResolvedValue(
+      critique({ critiquePosts: 2, critics: ['su-reviewer', 'su-reviewer-rebound'] }),
+    );
+
+    const vetting = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(vetting).toMatchObject({ ok: true, created: true });
+    const warning = (vetting as { warning?: string }).warning;
+    expect(warning).toContain('2 vetting critics who all resolve to one party');
+    expect(warning).toContain("'su-reviewer'");
+    expect(warning).toContain('cannot later emit the independent acceptance grade');
+  });
+
+  it('CONTROL: two INDEPENDENT critics produce no advisory — it fires on collapse, not on critic count', async () => {
+    // Without this the widened predicate could be hard-wired true and every test
+    // above would still pass while the advisory became noise on valid vetting.
+    readVettingConsultCritique.mockResolvedValue(
+      critique({ critiquePosts: 2, critics: ['su-reviewer', 'su-other-reviewer'] }),
+    );
+    const vetting = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(vetting).toMatchObject({ ok: true, created: true });
+    expect((vetting as { warning?: string }).warning).toBeUndefined();
+  });
+
   it('warns the author when D-031 leaves one critic unable to grade, while preserving the later refusal', async () => {
     const vetting = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(vetting).toMatchObject({
