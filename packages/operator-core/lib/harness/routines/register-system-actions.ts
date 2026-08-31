@@ -578,6 +578,15 @@ import './task-reconcile-action';
 // cover `dropped` plan items too. Seeded ACTIVE (seed-plan-item-orphan-reconcile-routine.ts)
 // — pure data reconciliation, no owner-authority surface (mirrors gc-plan-runs).
 import './plan-item-orphan-reconcile-action';
+// P-005 of deterministic-plan-state-derivation-2026-08-31: `system:plan-drain-sweep`
+// — the same rule-for-immediacy + sweep-for-backstop pairing one level UP, on the
+// PLAN's own lifecycle status. P-004's `plan-drain:terminality-changed` reaction
+// reconciles a plan whose last item goes terminal from now on; the 205 plans that
+// drained BEFORE it shipped have no future event to fire on, so this 30-min tick
+// re-examines them. Bounded (cap per tick), idempotent, symmetric; never touches
+// `draft`, terminal statuses, archived plans or scheduled-plan instances, and never
+// advances a plan to `shipped`. Seeded ACTIVE (seed-plan-drain-sweep-routine.ts).
+import './plan-drain-sweep-action';
 // EI-18713141708830049: `system:plan-item-reflect-orphan-reconcile` — the MIRROR of
 // the sweep above, for the reflect direction (work_item terminal → plan item still
 // `todo`). That direction had a reaction rule (plan-items/reflect-rules.ts) and NO
