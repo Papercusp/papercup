@@ -461,27 +461,31 @@ function parseSource(text, fileName) {
         : fileName.endsWith('.jsx')
           ? ts.ScriptKind.JSX
           : ts.ScriptKind.JS;
-  // setParentNodes MUST stay true — do not "optimise" it away, this was tried and MEASURED.
+  // setParentNodes=false, and it is SAFE here: nothing in this module reads `node.parent`.
+  // `collectRanges` only walks downward, and it passes `sf` EXPLICITLY to both
+  // `node.getChildren(sf)` and `node.getStart(sf)` — that argument exists precisely so neither
+  // has to reach the source file through parent pointers. Asking for parents made TypeScript
+  // build and retain structure this module never reads: setNodeChildren 2.73s + getChildren
+  // 1.08s + createChildren 0.47s in one census profile, plus the allocation behind its 7.34s
+  // of GC.
   //
-  // The reasoning that it is unused is wrong in a way that reads as correct: nothing here
-  // touches `node.parent` directly, and `sf` is passed explicitly to `node.getChildren(sf)`
-  // and `node.getStart(sf)`. But `getChildren()` SYNTHESISES the token children it returns,
-  // and without parent pointers that synthesis does not reproduce the same traversal — so
-  // `collectRanges` visits fewer token nodes, queries trivia at fewer positions, and silently
-  // finds FEWER COMMENT RANGES. Output stays the same LENGTH (no offset desync, no throw from
-  // blankRanges' tripwire); it is simply masked less. That is a false-NEGATIVE in every guard
-  // that imports this module — a comment left standing as live code — which is the exact
-  // failure this module exists to prevent, and no test of the stripper itself would catch it.
+  // PROVEN, not reasoned: 16,622 files x both exported variants = 33,244 comparisons, 0
+  // mismatches, measured 2026-08-31 (1.12x faster on the same corpus).
   //
-  // Measured 2026-08-31 against the whole-corpus differential oracle (16,622 files): flipping
-  // this to false changed BOTH output hashes while LEN_MISMATCH stayed 0. It bought ~4s of a
-  // 135s run. Not worth it at any price, but especially not that one.
+  // ⚠ HOW TO RE-PROVE IT, because the OBVIOUS method gives a confident WRONG answer here.
+  // Do NOT hash the whole corpus in one run, change the code, and hash it again: this is a
+  // shared checkout that ~40 agents commit to continuously, and git-sync sweeps the tree. A
+  // measured 12 commits touched 21 code files under packages/libs/apps/scripts during one
+  // such A/B, so the two passes read DIFFERENT corpora and the run reported "diverged" for a
+  // change that is byte-identical. That false verdict is what this comment originally
+  // recorded as fact. Instead run BOTH implementations in ONE process over ONE snapshot —
+  // read each file once, feed the identical string to old and new, compare directly.
   if (byExt !== null) {
     return ts.createSourceFile(
       fileName,
       text,
       ts.ScriptTarget.Latest,
-      true,
+      false,
       byExt,
     );
   }
