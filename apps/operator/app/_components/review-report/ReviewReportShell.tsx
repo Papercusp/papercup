@@ -154,6 +154,14 @@ export interface ReviewReportShellProps {
    *  header. Owned by the consumer because only it can service the intents,
    *  but rendered here so both flows place it identically. */
   runBar?: ReactNode;
+  /**
+   * Imperative "show me those rows" request, servicing the run bar's `reveal`
+   * intent (D-001: a control that names rows must actually go to them). The
+   * shell expands the named group, scrolls it into view and focuses its toggle.
+   * `seq` must change on every request so repeat clicks re-trigger — a bare
+   * group id cannot, since the second click carries the identical value.
+   */
+  revealRequest?: { groupId: string; seq: number } | null;
   /** Disables all interaction while an apply is in flight. */
   busy?: boolean;
   /** Flow-specific guarantee / caveat below the grouped findings. */
@@ -632,6 +640,7 @@ export default function ReviewReportShell({
   applyLabel = "Apply selected",
   dismissLabel = "Dismiss",
   runBar,
+  revealRequest = null,
   busy = false,
   footer,
   onApply,
@@ -684,6 +693,27 @@ export default function ReviewReportShell({
   }, [groups]);
 
   const partition = useMemo(() => partitionReviewRows(groups), [groups]);
+
+  // Service the run bar's `reveal` intent. Keyed on `seq` alone: re-revealing
+  // the SAME group is the common case (click "Show only failures" twice after
+  // scrolling away), and a groupId-keyed effect would silently do nothing.
+  const revealSeq = revealRequest?.seq ?? null;
+  const revealGroupId = revealRequest?.groupId ?? null;
+  useLayoutEffect(() => {
+    if (revealSeq === null || revealGroupId === null) return;
+    setCollapsed((previous) => {
+      if (!previous.has(revealGroupId)) return previous;
+      const next = new Set(previous);
+      next.delete(revealGroupId);
+      return next;
+    });
+    const toggle = groupToggleNodes.current.get(revealGroupId);
+    if (!toggle) return;
+    toggle.scrollIntoView({ block: "start", behavior: "smooth" });
+    toggle.focus({ preventScroll: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `seq` is the
+    // request identity; re-running on groupId alone would drop repeat requests.
+  }, [revealSeq]);
 
   const presentRowIds = useMemo(
     () => new Set(groups.flatMap((group) => group.rows.map((row) => row.id))),

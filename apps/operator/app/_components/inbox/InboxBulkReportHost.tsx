@@ -1,17 +1,24 @@
 "use client";
 
-/** URL-owned app-pane host for the P-008 grouped Inbox bulk-resolve report. */
-import { Suspense, useCallback } from "react";
+/**
+ * URL-owned app-pane host for the grouped Inbox bulk-resolve report.
+ *
+ * The phase gate itself lives in the SHARED
+ * `review-report/ReviewReportHost` (bulk-review-report-legibility-and-lifecycle
+ * -2026-08-31 P-005): this file keeps only what is genuinely Inbox's — its
+ * flag, its run query, and how an item opens its thread.
+ */
+import { useCallback } from "react";
 import { parseAsString, useQueryState, useQueryStates } from "nuqs";
 import { FLAGS } from "@papercusp/flags";
 import { lazyWithRetry as lazy } from "@papercusp/operator-core/lib/lazy-with-retry";
 import { useFlag } from "@/lib/flag-hooks";
 import { encodeScopedRef } from "../chat/chat-ref-popup-params";
+import { useReportTakeoverParam } from "../review-report/ReportTakeover";
 import {
-  ReportTakeoverLayer,
-  useReleaseMissingReportTakeover,
-  useReportTakeoverParam,
-} from "../review-report/ReportTakeover";
+  ReviewReportSurface,
+  useReviewReportHost,
+} from "../review-report/ReviewReportHost";
 import { WORK_ITEM_DISCUSSION_PARAM } from "../work-items/WorkItemDiscussion";
 import { attentionWorkItemId } from "./attention-work-item-ref";
 import { INBOX_BULK_RUN_PARAM, useInboxBulkRun } from "./use-inbox-bulk-run";
@@ -25,16 +32,12 @@ export default function InboxBulkReportHost() {
   const bulk = useInboxBulkRun(report.value, {
     enabled: enabled && report.foreground,
   });
-  useReleaseMissingReportTakeover(report, {
+  const host = useReviewReportHost(report, {
     enabled,
     loading: bulk.loading,
     available: bulk.run !== null,
+    phase: bulk.run?.phase,
   });
-  const reviewing =
-    enabled &&
-    report.foreground &&
-    Boolean(report.value) &&
-    bulk.run?.phase === "review";
   const [, setInboxTarget] = useQueryStates({
     opci: parseAsString,
     opcis: parseAsString,
@@ -58,31 +61,23 @@ export default function InboxBulkReportHost() {
     [report, setDiscussionRef, setInboxTarget],
   );
 
-  // `?opcbr=` is the running-strip deep link first. It takes over only once the
-  // persisted run reaches review; pending/running remains visible in the strip.
-  if (!reviewing || !bulk.run) return null;
+  if (!host.presentation || !bulk.run) return null;
 
   return (
-    <ReportTakeoverLayer testId="inbox-bulk-report-takeover">
-      <Suspense
-        fallback={
-          <div
-            className="inbox-bulk-report__loading"
-            role="status"
-            aria-live="polite"
-          >
-            Loading Inbox report…
-          </div>
-        }
-      >
-        <InboxBulkReport
-          key={bulk.run.runId}
-          run={bulk.run}
-          runItems={bulk.items}
-          onOpenThread={openThread}
-          onClose={report.close}
-        />
-      </Suspense>
-    </ReportTakeoverLayer>
+    <ReviewReportSurface
+      testId="inbox-bulk-report-takeover"
+      presentation={host.presentation}
+      loadingLabel="Loading Inbox report…"
+    >
+      <InboxBulkReport
+        key={bulk.run.runId}
+        run={bulk.run}
+        runItems={bulk.items}
+        presentation={host.presentation}
+        readOnly={host.readOnly}
+        onOpenThread={openThread}
+        onClose={report.close}
+      />
+    </ReviewReportSurface>
   );
 }

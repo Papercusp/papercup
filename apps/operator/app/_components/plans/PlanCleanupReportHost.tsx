@@ -31,11 +31,11 @@ const PlanCleanupReport = lazy(() => import("./PlanCleanupReport"));
 
 export default function PlanCleanupReportHost() {
   const enabled = useFlag(FLAGS.PLAN_CLEANUP);
-  const report = useReportTakeoverParamForCleanup(enabled);
+  const report = useReportTakeoverParam(PLAN_CLEANUP_RUN_PARAM);
   const cleanup = usePlanCleanupRun(report.value, {
     enabled: enabled && report.foreground,
   });
-  const host = useReviewReportHost(PLAN_CLEANUP_RUN_PARAM, {
+  const host = useReviewReportHost(report, {
     enabled,
     loading: cleanup.loading,
     available: cleanup.run !== null,
@@ -48,13 +48,13 @@ export default function PlanCleanupReportHost() {
   const openFinding = useCallback(
     (finding: PlanCleanupFinding) => {
       void (async () => {
-        await host.report.close();
+        await report.close();
         await setDashboardPlan(
           encodeScopedRef(finding.harnessSlug, finding.planSlug),
         );
       })();
     },
-    [host.report, setDashboardPlan],
+    [report, setDashboardPlan],
   );
 
   if (!host.presentation || !cleanup.run) return null;
@@ -72,7 +72,7 @@ export default function PlanCleanupReportHost() {
         presentation={host.presentation}
         readOnly={host.readOnly}
         onOpenFinding={openFinding}
-        onClose={host.report.close}
+        onClose={report.close}
       />
     </ReviewReportSurface>
   );
