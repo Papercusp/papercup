@@ -1104,6 +1104,26 @@ export const CC_HOOK_FILES = [
   // lookahead is exactly what separates a banned `0.04em` from the REQUIRED `letter-spacing: 0`,
   // so a drifted copy would fire on every compliant declaration in the tree.
   'posttooluse-css-design-primitives-nudge.mjs',
+  // EI-20043039577586381: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an
+  // edit introduces a relative `.mjs` import from TS with no sibling `.d.mts` and no enrolment
+  // in tsconfig.declarations.json — i.e. arms TS7016 and the `check-unenrolled-mjs-imports`
+  // RATCHET, a green-checkpoint leg. Two shapes, and the second is why prose has not fixed it:
+  // (1) a brand-new `scripts/*.mjs` imported from a `.test.ts`, where BOTH `gen:declarations`
+  // and `gen:declarations:check` report SUCCESS about the unenrolled module
+  // (EI-20035436440627349), so the author's natural confirmation step actively reassures them;
+  // (2) a MULTI-LINE import whose `@ts-expect-error`/`@ts-ignore` sits above the `import`
+  // keyword instead of above the `} from '...'` line — tsc reports TS7016 at the module
+  // SPECIFIER, so a directive that LOOKS right suppresses nothing. Shape 2 has bitten 3x
+  // (EI-19389216343173748, EI-18817201237512691, WI-37657 — the last held `main` and burned a
+  // full gate suite), and that author HAD written a correct explanatory comment about the
+  // constraint, which is exactly why a mechanical edit-time check is warranted over more prose.
+  // Same TIMING gap as the siblings above: the detector is already correct but only runs inside
+  // vitest at the gate, hours later, and a diff-vs-HEAD run minutes after the edit is unreliable
+  // here because git-sync may already have committed the import as history with no informative
+  // "before". Reuses the detector's OWN `offendersIn`/`isSuppressed` rather than re-implementing
+  // them, so the nudge cannot drift from the ratchet's verdict — including on the
+  // specifier-line suppression anchor, which is the whole of shape 2.
+  'posttooluse-mjs-import-declaration-nudge.mjs',
   // frozen-candidate-compliance-enforcement-2026-08-30 P-004/P-005: PostToolUse (matcher
   // "Edit|Write|MultiEdit") ADVISORY nudge when the edited path is one the FROZEN gate
   // candidate is failing on. Under freeze-and-converge (D-007) every run RESUMES one frozen
