@@ -283,12 +283,23 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
       'Bounded work-items grid (limit 500). P-006 dropped the heavy per-row summary (detail on demand); P-028/D-022 then replaced that deny-list with an ALLOW-LIST of the 18 fields the panels actually render, measured 429KB -> 258KB (-40%) on the live papercusp harness. The residual IS the grid page x those light fields — row count, not per-row waste. Budget ratcheted 450K -> 300K so the win cannot silently drift back.',
     reviewBy: '2026-09-01',
   },
-  'coord.plans': {
-    maxBytes: 390_000,
-    reason:
-      "The whole-workspace plan list behind CoordDashboard's PlansPanel (973 rows, no args — unscoped by design: the panel offers every plan in the workspace). FIRST-TIME allowlist entry, not a raise: this read had none, and the 250,000 default is what it was breaching. ⚠ READ THE DIRECTION OF TRAVEL: WI-7246 made this payload very slightly BIGGER (394,269 -> 395,430 B, +1,161 B) and that was CORRECT. The read was reporting each plan's SELF-DECLARED markdown frontmatter slug/status instead of the canonical row, and a `<slug>@run-<epochms>` snapshot copies its parent's body verbatim — frontmatter included — so 51 distinct plans collapsed into ONE identity (973 rows but only 923 distinct slugs; `critical-severity-alert-2026-07-06` appeared 51x BYTE-IDENTICAL). That was a correctness bug wearing a byte bug's clothes: 51 duplicate React keys, all 51 rows fetching the PARENT's markdown on click, one click expanding all 51, and `superseded` snapshots rendering as `draft`. Identity + lifecycle now come from `p.row` (planSlug/status/updated), which costs 1,161 B more because a canonical slug is longer than the parent's — the right trade. Verified live: 973 rows, 973 distinct slugs, 973 distinct whole rows. NO PER-ROW WASTE REMAINS: all SEVEN surviving columns are rendered by the sole consumer, `now_state` is already stripped at the sync boundary (projectCoordPlansForUi) and `now_next` is already clipped to 280 (COORD_TEXT_PREVIEW_MAX). Clipping `now_next` harder is MEASURED AND REJECTED — at 140 it saves 58,268 B (~342 KB, still over), and even at 80 it saves only 97,070 B (~303 KB, STILL over) while truncating 724 of 953 rendered previews. So no per-row projection can answer this breach. THE BREACH IS PURE ROW GROWTH. WI-7256 then removed HALF of it — the SNAPSHOT half — and the ceiling is RATCHETED 450,000 -> 390,000 so that win cannot silently drift back. A scheduled plan mints a `<template>@run-<token>` instance row per fire and nothing prunes them; projectCoordPlansForUi now drops the FINISHED ones. Measured live on :3170, paired against a pre-restart capture: 395,690 -> 380,590 B (-15,100 B, -3.82%), 973 -> 923 rows, LOSSLESS on the surviving set (923 matched by slug, 0 value diffs, 0 non-null keys lost, 0 keys added, all 50 removed rows verified terminal instances, control falsified as old-shape by containing all 50). ⚠ ONLY THE TERMINAL ONES, AND THAT DISTINCTION IS LOAD-BEARING: an instance is minted `active` (plan-run-action.ts:254) and becomes `superseded` when the run ends, so dropping every `@run-` row would have silently hidden an IN-FLIGHT scheduled run from the panel. What survives is bounded by CONCURRENT runs instead of by all runs ever. Nothing became unreachable — the parent template keeps its own row and the unprojected /api/coord/plans HTTP route still serves full run history. ⚠⚠ THE OTHER HALF OF THE ROW GROWTH IS UNTOUCHED AND IS THE LARGER TERM: authored plans accrue at ~45-50/week (measured, papercusp, weeks of 2026-07-20 and 2026-07-27) = ~19 KB/week at ~412 B/row, so this read is expected back at the 390,000 ceiling within ~3-4 days of 2026-08-03. THAT RED IS THE WINDOWING TRIGGER — WI-7256's second half, still open — NOT ANOTHER RAISE. Unlike conversations.agentMessageList, PlansPanel has no filter predicate at all, so windowing here is safe rather than a silent search regression.",
-    reviewBy: '2026-09-01',
-  },
+  // 'coord.plans' HAS NO ENTRY BY DESIGN (WI-7256) — do not re-add one.
+  //
+  // It held maxBytes 450,000 -> 390,000 and breached again at 634,634 B / 1,486
+  // rows (measured 2026-08-31), exactly as its own final note predicted. The
+  // answer was the WINDOW that note called for, not a third raise:
+  // projectCoordPlansForUi now keeps the COORD_PLANS_UI_WINDOW (400)
+  // most-recently-updated rows = 182,946 B, inside the 250,000 DEFAULT.
+  //
+  // So the read is now held to the STRICTEST ceiling available, and re-adding an
+  // entry would be a regression: an allowlist entry must raise maxBytes ABOVE
+  // the default (asserted by sync-read-audit.test.ts), so any entry here would
+  // re-open ~67 KB of silent regrowth this window exists to prevent.
+  //
+  // If this read ever goes red again the cause is per-ROW size, since the row
+  // COUNT is now capped — and note that clipping `now_next` harder was measured
+  // and rejected under WI-7246 (at 140 it saved 58,268 B, at 80 only 97,070 B
+  // while truncating 724 of 953 rendered previews).
   'conversations.agentMessageList': {
     maxBytes: 300_000,
     reason:
