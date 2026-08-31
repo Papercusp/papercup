@@ -275,3 +275,48 @@ describe('continuity probe wake replay', () => {
     expect(batch.results[0].diagnostic?.code).toBe('result_too_large');
   });
 });
+
+describe('probeDiscriminatorMessage — the refusal must name the REMEDY, not just the shape (EI-21674755057848047)', () => {
+  // At least eight items filed this same refusal (EI-21674755057848047,
+  // EI-21929976122332931, EI-21926988610689807, EI-21669773488181735,
+  // EI-21724647966446631, EI-21681194471658869, EI-21691599989865588,
+  // EI-21579824588879610). Every reporter took the same costly workaround —
+  // dropping `probe`, and in one case the whole `checks` array — because the bare
+  // "Invalid discriminator value" named the missing SHAPE and never the remedy.
+  const E = { path: 'ok', op: 'eq' as const, value: true };
+  const messageFor = (probe: unknown) => {
+    const parsed = continuityProbeShapeSchema.safeParse(probe);
+    expect(parsed.success).toBe(false);
+    return parsed.success ? '' : parsed.error.issues[0]!.message;
+  };
+
+  it('a probe with NOTHING to execute is told to use `recheck` instead of dropping the row', () => {
+    const msg = messageFor({ expect: E });
+    expect(msg).toMatch(/neither `tool` nor `cell`/);
+    expect(msg).toMatch(/OMIT `probe`/);
+    expect(msg).toMatch(/`recheck`/);
+    // The specific harm this exists to prevent.
+    expect(msg).toMatch(/keep the check row rather than dropping it/);
+  });
+
+  it('an AMBIGUOUS probe is not misdescribed as an empty one', () => {
+    // A single shared message would tell this caller their probe "carries neither",
+    // which is false and sends them to fix something that is not wrong.
+    const msg = messageFor({ tool: 't', cell: 'c', schemaRevision: 'live', expect: E });
+    expect(msg).toMatch(/carries BOTH `tool` and `cell`/);
+    expect(msg).toMatch(/state `kind` explicitly/);
+    expect(msg).not.toMatch(/neither/);
+    expect(msg).not.toMatch(/OMIT `probe`/);
+  });
+
+  it('a probe missing only its discriminator names the exact kind to add', () => {
+    expect(messageFor({ tool: 't', schemaRevision: 'live', expect: E })).toMatch(/add kind:'tool'/);
+    expect(messageFor({ cell: 'c', schemaRevision: 'live', expect: E })).toMatch(/add kind:'state-cell'/);
+  });
+
+  it('every variant still identifies the failing field, so the message stays greppable', () => {
+    for (const probe of [{ expect: E }, { tool: 't', cell: 'c', schemaRevision: 'live', expect: E }]) {
+      expect(messageFor(probe)).toMatch(/probe\.kind is a required discriminator/);
+    }
+  });
+});

@@ -102,8 +102,53 @@ const stateCellProbeShape = z
   })
   .strict();
 
-/** Shape-only schema used to decode durable rows before current-contract checks. */
-export const continuityProbeShapeSchema = z.discriminatedUnion('kind', [toolProbeShape, stateCellProbeShape]);
+/**
+ * Shape-only schema used to decode durable rows before current-contract checks.
+ *
+ * EI-21674755057848047 / EI-21929976122332931 / EI-21926988610689807: the bare
+ * "Invalid discriminator value" this used to raise described the SHAPE that was
+ * missing without naming the REMEDY, and every reporter reacted the same costly
+ * way — dropping `probe`, and in one case the whole `checks` array, losing the
+ * evidence the carry-note exists to carry. By the time this fires the row has
+ * neither `tool` nor `cell` (normalizeFlattenedContinuityProbeRow infers `kind`
+ * whenever exactly one is present), so the honest reading is not "you specified
+ * the probe wrong" but "there is no probe here" — and that row wants `recheck`.
+ */
+const PROBE_DISCRIMINATOR_PREFIX = "probe.kind is a required discriminator ('tool' or 'state-cell').";
+
+/**
+ * The three ways a row reaches this error are NOT the same mistake, and a single
+ * message would be actively false for two of them — so each gets its own remedy.
+ * A message that misdescribes the input is worse than a terse one: it sends the
+ * reader to fix something that is not wrong.
+ */
+export function probeDiscriminatorMessage(input: unknown): string {
+  const probe = input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : null;
+  const hasTool = !!probe && Object.prototype.hasOwnProperty.call(probe, 'tool');
+  const hasCell = !!probe && Object.prototype.hasOwnProperty.call(probe, 'cell');
+
+  if (hasTool && hasCell) {
+    return (
+      `${PROBE_DISCRIMINATOR_PREFIX} This probe carries BOTH \`tool\` and \`cell\`, so the kind cannot be ` +
+      'inferred without guessing which one you meant — state `kind` explicitly, or drop the field you do not need.'
+    );
+  }
+  if (hasTool || hasCell) {
+    // Unreachable through the checkpoint tools (the normalizer infers `kind` for
+    // exactly this shape), but reachable when decoding a durable row written before
+    // that inference existed — so it still names the concrete repair.
+    return `${PROBE_DISCRIMINATOR_PREFIX} This probe carries \`${hasTool ? 'tool' : 'cell'}\`, so add kind:'${hasTool ? 'tool' : 'state-cell'}'.`;
+  }
+  return (
+    `${PROBE_DISCRIMINATOR_PREFIX} This probe carries neither \`tool\` nor \`cell\`, so there is nothing to ` +
+    'execute — it is a claim with no probe, not an under-specified one. OMIT `probe` and put the human ' +
+    're-check in `recheck`; keep the check row rather than dropping it.'
+  );
+}
+
+export const continuityProbeShapeSchema = z.discriminatedUnion('kind', [toolProbeShape, stateCellProbeShape], {
+  error: (issue) => (issue.code === 'invalid_union' ? probeDiscriminatorMessage(issue.input) : undefined),
+});
 export type ContinuityProbe = z.infer<typeof continuityProbeShapeSchema>;
 export type ContinuityPredicate = z.infer<typeof continuityPredicateSchema>;
 
