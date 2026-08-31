@@ -162,6 +162,15 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
       active: true,
       armedAt: '1970-01-01T00:00:00.000Z',
     })) as never,
+    // Hermetic by default: the production carry-note metadata reader opens a
+    // live PG connection. Tests that exercise delivery-time or cold-note
+    // metadata explicitly inject their fixture; every other wake must model
+    // an unavailable/empty note instead of reaching the real store.
+    getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note: null, updatedAtMs: null })) as never,
+    // Hermetic by default: the production evidence counter reads live tool
+    // invocation rows. `null` means evidence unavailable, preserving the
+    // strong-banner fallback without allowing host data to affect unit tests.
+    countAgentToolCallsFn: vi.fn(async () => null) as never,
     forceResume: vi.fn(async () => false),
     claimResume: vi.fn(async () => true),
     // Hermetic by default: the cold no-host limbo guard's real binding READS+WRITES
