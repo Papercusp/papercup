@@ -60,8 +60,13 @@ export const DEFAULT_SPAWN_PACING: SpawnPacingConfig = {
  * rather than as zero: a typo'd env var must not silently disable the guard.
  */
 function positiveInt(raw: string | undefined, fallback: number): number {
-  if (raw == null || raw === '') return fallback;
-  const parsed = Number(raw);
+  // Trim BEFORE the numeric read. `Number(' ')` is 0, not NaN, so an env var set to
+  // whitespace would otherwise parse as a deliberate `0` and silently DISABLE pacing on
+  // the host that typo'd it — reintroducing the dropped-brief bug in the one place
+  // nobody would look for it.
+  const trimmed = raw?.trim();
+  if (trimmed == null || trimmed === '') return fallback;
+  const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed < 0) return fallback;
   return Math.floor(parsed);
 }
@@ -94,6 +99,14 @@ interface PacingState {
   admittedCount: number;
   failOpenCount: number;
   maxObservedQueueDepth: number;
+  /**
+   * Release timers still pending. A slot is held for `bootSettleMs` AFTER its spawn
+   * returns, so a timer routinely outlives the call that scheduled it — and, in tests,
+   * the case that scheduled it. Tracking them is what makes the reset below total:
+   * clearing counters alone leaves a live timer that later decrements `active` and
+   * hands a slot to an unrelated waiter, which presents as an order-dependent flake.
+   */
+  pendingReleases: Set<ReturnType<typeof setTimeout>>;
 }
 
 /**
@@ -111,6 +124,7 @@ const state = pinModuleState(
     admittedCount: 0,
     failOpenCount: 0,
     maxObservedQueueDepth: 0,
+    pendingReleases: new Set(),
   }),
 );
 
@@ -133,6 +147,12 @@ export function agentSpawnPacingStats(): Readonly<{
 
 /** Drop all pacing state. Tests only — never call this from production paths. */
 export function resetAgentSpawnPacingForTests(): void {
+  // Cancel pending releases FIRST. Otherwise a timer scheduled by an earlier test fires
+  // during a later one, decrements `active` and admits that test's queued waiter
+  // normally — so an assertion about fail-open (or about the cap) silently measures the
+  // previous test's leftovers instead of its own subject.
+  for (const timer of state.pendingReleases) clearTimeout(timer);
+  state.pendingReleases.clear();
   // Release anyone still queued rather than stranding their promise forever: a test
   // that resets mid-burst must not leave a hung await behind for the next test file.
   const stranded = state.waiters.splice(0, state.waiters.length);
@@ -192,8 +212,12 @@ function scheduleRelease(config: SpawnPacingConfig): void {
     release();
     return;
   }
-  const timer = setTimeout(release, config.bootSettleMs);
+  const timer = setTimeout(() => {
+    state.pendingReleases.delete(timer);
+    release();
+  }, config.bootSettleMs);
   timer.unref?.();
+  state.pendingReleases.add(timer);
 }
 
 /**
