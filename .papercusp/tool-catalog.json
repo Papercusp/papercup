@@ -6651,7 +6651,7 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "Share context or ask. Include `to`, `summary`, `expects`; `body` for detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, none exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. Waiting on something? `blockedOn: { kind, ref }` on the section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.",
+        "when": "Share context or ask. Include `to`, `summary`, `expects`; `body` for detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, none exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. Waiting on something? `blockedOn: { kind, ref }` on the section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.",
         "notWhen": "Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff."
       }
     },

@@ -1882,6 +1882,30 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     expect(git(subOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
   });
 
+  it('WI-1871750: fast-forwards a dormant local branch to its descendant detached HEAD without losing dirty work', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    git(subRepo, 'branch', '-f', 'main', 'HEAD');
+
+    // Reproduce the SideStage failure: a submodule update/peer integration advanced
+    // detached HEAD while the dormant local branch stayed at its ancestor. The
+    // committed descendant and the still-dirty work must both survive attachment.
+    writeFileSync(join(subRepo, 'detached-descendant.txt'), 'committed while detached\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'detached descendant work');
+    writeFileSync(join(subRepo, 'dirty-after-descendant.txt'), 'must survive branch attachment\n');
+    expect(git(subRepo, 'branch', '--show-current')).toBe('');
+
+    const out = await runGitSync('test', { repoPath: repo });
+
+    expect(out.status).toBe('synced');
+    expect(git(subRepo, 'branch', '--show-current')).toBe('main');
+    expect(git(subOrigin, 'log', '--format=%B', 'main')).toMatch(/detached descendant work/);
+    expect(git(subOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
+    expect(git(subOrigin, 'show', 'main:detached-descendant.txt')).toBe('committed while detached');
+    expect(git(subOrigin, 'show', 'main:dirty-after-descendant.txt')).toBe('must survive branch attachment');
+    expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(git(subRepo, 'rev-parse', 'HEAD'));
+  });
+
   it('EI-20611320499473924: refuses a detached submodule whose local default branch diverges', async () => {
     const subRepo = join(repo, 'libs/sub');
     git(subRepo, 'branch', '-f', 'main', 'HEAD');

@@ -286,7 +286,12 @@ describe('pot-scoped seat-offer — two-peer federation (WI-5409/P-010)', () => 
         ]) as any,
         spawnMembers,
         emitReceipt,
+        getBuildInfo: () => ({ sha: 'integration-build', version: '0.0.13' }),
         probeAgentRuntime: async () => ({ resolved: true, detail: 'stubbed — no real desktop spawn in this test' }),
+        verifyLocalMemberBoot: async () => ({
+          observed: true,
+          detail: 'stubbed — tool-backed first turn proven in this integration test',
+        }),
         resolveHonorAccount: async (acc: string) => ({ ok: true as const, account: acc }),
         isTrustedUser,
         isPotMember: vi.fn(async () => true),
@@ -305,7 +310,14 @@ describe('pot-scoped seat-offer — two-peer federation (WI-5409/P-010)', () => 
       expect(outcome).toEqual({ outcome: 'honored', opened: 1, failed: 0 });
       expect(isTrustedUser).toHaveBeenCalledWith(WORKSPACE_ID, idA.userId);
       expect(spawnMembers).toHaveBeenCalledOnce();
-      expect(emitReceipt).not.toHaveBeenCalled();
+      expect(emitReceipt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'honored',
+          action: 'delegated-seat:spawn',
+          offerId: requestOfferId,
+          detail: expect.stringContaining('[responder-build sha=integration-build version=0.0.13]'),
+        }),
+      );
 
       // setDisposition was NOT stubbed — the REAL implementation ran against
       // B's real PG, so the honored disposition genuinely landed there.

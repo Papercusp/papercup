@@ -196,6 +196,31 @@ export function normalizeOmpModelSpec(model: any): any;
 /** Compatibility notices are reserved for non-semantic adjustments; WI-37890 now fails loud. */
 export function ompModelCompatibilityNotice(model: any): null;
 /**
+ * Reconcile the one legacy Claude effort name that Opus 5's subscription route
+ * no longer accepts when a saved launch profile is replayed on resume.
+ *
+ * `capability:launch-agent` deliberately restores a fleet member's canonical
+ * launch profile. A profile recorded while Opus exposed `xhigh` can therefore
+ * reach `psu --resume` as `claude-opus-5:xhigh`; once the account is switched
+ * to the inference gateway, Claude rejects the resumed agent's first request
+ * before it can checkpoint or repair itself. Opus 5 now calls its strongest
+ * supported level `max`, so this is a name reconciliation, not a silent effort
+ * reduction. Keep it native-resume + gateway + exact-family scoped: a default
+ * system route, another Claude family, OMP/Codex, and every supported effort
+ * remain byte-identical.
+ *
+ * Pure + exported so the scope and the diagnostic are regression-testable.
+ */
+export function reconcileResumeModelForAccountRoute({ agent, model, accountRoute, }?: {}): {
+    model: any;
+    notice: null;
+    reconciled: boolean;
+} | {
+    model: string;
+    reconciled: boolean;
+    notice: string;
+};
+/**
  * Disable OMP's provider-backed automatic title request for every managed psu
  * session.
  *
@@ -1182,7 +1207,7 @@ export function gatewayPinEnv(account: any, provider?: string, ownerId?: undefin
  * account. So never emit '' / null / `default` on a path whose intent is "the machine's own login":
  * emit `system`. (That is why the picker's default row carries `system`.)
  */
-export function accountRoutingMode(value: any): "default" | "pin" | "auto";
+export function accountRoutingMode(value: any): "default" | "auto" | "pin";
 /**
  * Return whether raw Codex auth.json content contains a usable ChatGPT access
  * token. Pure and secret-free: this only parses the shape needed by the Codex

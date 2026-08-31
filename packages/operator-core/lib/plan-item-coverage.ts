@@ -456,9 +456,16 @@ function normalizeCoverageActivity(
  * multi-plan readers hoist it out of their plan loop (the issue-blocks-merge
  * pattern). Pure read; never throws on empty.
  */
-export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCoverage>> {
+export async function getAllPlanItemCoverage(opts: {
+  /** Restrict the coverage scan when a caller has already filtered its items. */
+  planItemRefs?: readonly string[];
+} = {}): Promise<Map<string, PlanItemCoverage>> {
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
+  const requestedRefs = opts.planItemRefs;
+  // Do not let an intentionally empty filtered set widen back into the
+  // fleet-wide read used by health/coordination callers.
+  if (requestedRefs !== undefined && requestedRefs.length === 0) return new Map();
 
   // 1. work→plan_item edges + the linked work-item's terminal state. NOTE: unlike the
   //    issue-BLOCK edge (issues:link → coord DEFAULT workspace), work_items:link writes
@@ -490,10 +497,24 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
        AND f.workspace_id = ${ws}
      WHERE l.rel IN ('fixes', 'relates', 'duplicates')
        AND l.dst_kind = ${PLAN_ITEM_KIND}
+       ${requestedRefs !== undefined ? sql`AND l.dst_ref = ANY(${requestedRefs}::text[])` : sql``}
      ORDER BY l.dst_ref, l.src_ref`;
 
   // 2. live claims (work-item AND plan-item) from the canonical view — one read.
-  const fleet = await listFleetAssignments({ workspaceId: null, activeOnly: true });
+  const linkedWorkItemIds = [
+    ...new Set(
+      linkRows.map((row) =>
+        row.src_kind === 'issue' ? row.src_ref : (row.feature_id ?? row.src_ref),
+      ),
+    ),
+  ];
+  const fleet = await listFleetAssignments({
+    workspaceId: null,
+    activeOnly: true,
+    ...(requestedRefs !== undefined
+      ? { planItemRefs: requestedRefs, workItemIds: linkedWorkItemIds }
+      : {}),
+  });
   const sessionStates = await coverageSessionStates(fleet);
   const wiActivity = new Map<string, { activity: ItemActivity; holder: string | null }>();
   // P-029/D-060: keep the claim's DECLARED GOAL alongside its activity. On a
@@ -598,7 +619,10 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
       FROM harness_shared.work_items
      WHERE payload->'plan_item' IS NOT NULL
        AND payload->'plan_item'->>'plan_slug' IS NOT NULL
-       AND payload->'plan_item'->>'item_id'  IS NOT NULL`;
+       AND payload->'plan_item'->>'item_id'  IS NOT NULL
+       ${requestedRefs !== undefined
+         ? sql`AND ((payload->'plan_item'->>'plan_slug') || '#' || (payload->'plan_item'->>'item_id')) = ANY(${requestedRefs}::text[])`
+         : sql``}`;
   for (const row of stampRows) {
     const ref = planItemRef(row.plan_slug, row.item_id);
     const arr = byRef.get(ref) ?? [];
