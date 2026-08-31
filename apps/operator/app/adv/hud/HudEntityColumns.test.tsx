@@ -617,7 +617,10 @@ describe('the H2 weighted Plans board (plan-visibility-revamp-2026-08-23 P-006)'
   it('renders a focused rail column as a full column — the rail is gone', () => {
     weightedCols({ focusColumn: 'done' });
     expect(screen.getByRole('region', { name: 'Done' })).toBeTruthy();
-    expect(document.body.textContent).toContain('done-plan');
+    // The slug is no longer painted as text (hud-plan-card-density D-001 moved
+    // it to the title attribute + aria-label), so assert the CARD is there by
+    // its accessible name rather than by hunting its slug in body text.
+    expect(document.querySelector('[aria-label="done-plan — A plan"]')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Show Done (1)' })).toBeNull();
   });
 
@@ -696,17 +699,71 @@ describe('the enriched plan card (plan-visibility-revamp-2026-08-23 P-007)', () 
     );
   }
 
-  it('renders the meta row: ✎/⚒ ages, items progress, avatars and the live pill', () => {
+  // ── the compact card: hud-plan-card-density-2026-08-31, D-001 variant B ──
+  // The owner's ask was "the title and the now item, the top 2 lines" with the
+  // icons "on the right side of the first line". These four tests pin the parts
+  // that can regress SILENTLY — a row creeping back, the rail growing until the
+  // title has no width left, or the slug reappearing as painted text.
+
+  it('floats the activity rail onto the title line — ⚒ age and the live pill', () => {
     renderPlanBoard([metaPlan()]);
-    const meta = document.querySelector('.hud__cardmeta');
-    expect(meta).toBeTruthy();
-    expect(meta!.textContent).toContain('✎ 2m');
-    expect(meta!.textContent).toContain('⚒ 41s');
-    expect(meta!.textContent).toContain('3/9 items');
-    // Avatar initials come from the id segment; the pill counts POSITIVE lives.
-    const initials = [...document.querySelectorAll('.hud__av')].map((el) => el.textContent);
-    expect(initials).toEqual(['76', '6e']);
+    const rail = document.querySelector('.hud__cardright');
+    expect(rail).toBeTruthy();
+    expect(rail!.textContent).toContain('⚒ 41s');
     expect(document.querySelector('.hud__liven')!.textContent).toBe('1');
+    // ON line 1, not below it. This is the whole ask, so it is asserted
+    // structurally rather than trusted to the stylesheet.
+    expect(rail!.closest('.hud__card-h')).toBeTruthy();
+  });
+
+  it('drops every row that restated something the card already says', () => {
+    renderPlanBoard([metaPlan()]);
+    expect(document.querySelector('.hud__cardmeta')).toBeNull(); // the old meta row
+    expect(document.querySelector('.hud__chips')).toBeNull(); // the chips row
+    expect(document.querySelector('.hud__plan')).toBeNull(); // the harness line
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('✎'); // edit age — the rail has no room for both
+    expect(text).not.toContain('items'); // n/m items — .hud__track draws it
+  });
+
+  it('keeps the RAIL off the title: no avatar stack competing for line 1', () => {
+    // Variant B spends the rail on activity, not presence (D-001). Measured:
+    // the full former strip is 128px and leaves the title 69px at a 244px card.
+    renderPlanBoard([metaPlan()]);
+    expect(document.querySelector('.hud__av')).toBeNull();
+    expect(document.querySelector('.hud__avs')).toBeNull();
+  });
+
+  it('promotes the title to line 1 and keeps the slug as hover + accessible name', () => {
+    renderPlanBoard([metaPlan()]);
+    const title = document.querySelector('.hud__cardtitle');
+    expect(title).toBeTruthy();
+    expect(title!.textContent).toBe('A rich plan');
+    // The slug is not lost — it is the hover title and the accessible name.
+    expect(title!.getAttribute('title')).toBe('rich-plan');
+    expect(document.querySelector('.hud__handle')).toBeNull();
+    expect(document.querySelector('[aria-label="rich-plan — A rich plan"]')).toBeTruthy();
+  });
+
+  it('renders exception pips from itemCounts — and none when there are none', () => {
+    // D-003: the numbers come from the counts, never from parsing "2 blocked"
+    // back out of a badge label. needs-you leads, blocked follows.
+    renderPlanBoard([metaPlan({ itemCounts: { 'needs-human': 2, blocked: 3, todo: 4 } })]);
+    expect([...document.querySelectorAll('.hud__pip')].map((el) => el.textContent)).toEqual([
+      '2',
+      '3',
+    ]);
+    cleanup();
+    renderPlanBoard([metaPlan()]);
+    expect(document.querySelectorAll('.hud__pip')).toHaveLength(0);
+  });
+
+  it('drops the now line in the settled columns — a Ready plan has no next action', () => {
+    // D-002 / variant D, implemented as a TSX branch: the node is absent, not
+    // painted invisible, so a screen reader is not offered a line nobody sees.
+    renderPlanBoard([metaPlan({ itemCounts: { todo: 3 }, agents: null, nextAction: 'Later' })]);
+    expect(document.querySelector('.hud__cardtitle')).toBeTruthy();
+    expect(document.querySelector('.hud__entity-why')).toBeNull();
   });
 
   it('marks fresh ⚒ hot and leaves stale ⚒ quiet, at PlansPane’s shared 1h line', () => {

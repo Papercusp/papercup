@@ -81,57 +81,99 @@ const CHIP_TONE_CLASS: Record<HudBadge['tone'], string> = {
 const MAX_CHIPS = 4;
 
 /**
- * The plan card's meta row + progress track (plan-visibility-revamp-2026-08-23
- * P-007, per the HudH2 mockup): ✎ last edit, ⚒ last work (hot when fresher
- * than PlansPane's shared 1h threshold), items progress, and the agent avatar
- * stack with its live-count pill.
+ * Plan columns where the card does NOT render a "now" line
+ * (hud-plan-card-density-2026-08-31 D-002, variant D).
  *
- * All spans — this subtree renders inside a card that is a <button> whenever
- * the board supplies a destination (see the Tag note in EntityCardBody), so
- * phrasing content is a structural requirement, not a style choice. The flex
- * rows live on the spans themselves, never the button (WebKitGTK).
- *
- * Native `title`s, not <Tooltip>, matching PlansPane's V1 header pair — the
- * two surfaces show the SAME timestamps and should explain them identically.
+ * A plan sitting in Ready has not started and one in Done has finished, so
+ * neither has a next action worth a whole row — and these are usually the two
+ * fullest columns on the board. Suppressing the row here rather than with a
+ * `display:none` rule keeps the accessible name honest (a screen reader is not
+ * offered a line the sighted reader cannot see) and avoids a CSS rule that
+ * would have to be double-scoped to spare the work-item cards sharing these
+ * columns.
  */
-function PlanCardMetaRow({ meta }: { meta: HudPlanCardMeta }) {
+const SETTLED_PLAN_COLUMNS: ReadonlySet<HudEntityColumnId> = new Set<HudEntityColumnId>([
+  'ready',
+  'done',
+]);
+
+/**
+ * The COMPACT plan card — hud-plan-card-density-2026-08-31, D-001 variant B.
+ *
+ * Two rows, measured at 52px against the 155px this card used to cost, which is
+ * 8 plans per column instead of 3:
+ *
+ *   ● Restore Papercusp main green…      ●1  ⚒ 9m  ●2     <- title + activity rail
+ *     su-60f: P-002 SSE boundary regression test…         <- the "now" item
+ *   ▔▔▔▔▔▔▔▔▔▔▔▔░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░       <- .hud__track, 0px tall
+ *
+ * WHY THE RAIL IS TRIAGED RATHER THAN RELOCATED. The owner asked for the icons
+ * to "float on the right side of the first line". Rendered with real data at a
+ * 244px card, the full former meta strip — pips + ✎ + ⚒ + four avatars + the
+ * live pill — measures 128px and leaves the title 69px, about eight characters;
+ * `.hud__cols` is `repeat(5, minmax(190px, 1fr))`, so at the grid floor the
+ * text box is only 146px wide. Moving the whole strip is therefore not buildable
+ * at any width this grid produces. The rail carries ONE signal — ⚒ last work
+ * plus the live pill, "is anything happening here", 62px — plus the two
+ * exception counts, and the title keeps 121px.
+ *
+ * WHAT THE PLAN CARD DELIBERATELY NO LONGER SHOWS, and where it went (D-001):
+ *   - the slug row      → the `title` attribute; it was the title in kebab-case
+ *                         plus a date, so the card was printing its own name twice
+ *   - `card.context`    → nothing; it reads `papercusp` on every card here
+ *   - the chips row     → the two exception counts survive as pips; `wip`/`todo`
+ *                         restate the track and the column the card sits in
+ *   - `n/m items`       → nothing; `.hud__track` below already draws it
+ *   - ✎ last edit and the avatar stack → nothing. This is the accepted cost of
+ *     variant B over variant C, which spent the same rail on presence instead.
+ *
+ * All spans: this subtree renders inside a card that is a <button> whenever the
+ * board supplies a destination (see the Tag note in EntityCardBody), so phrasing
+ * content is a structural requirement, not a style choice, and the flex rows
+ * live on the spans themselves rather than on the button (WebKitGTK).
+ *
+ * Native `title`s, not <Tooltip>, matching PlansPane's V1 header pair — the two
+ * surfaces show the SAME timestamps and should explain them identically.
+ */
+function PlanCardCompact({ card, meta }: { card: HudEntityCard; meta: HudPlanCardMeta }) {
   const workHot = meta.workedSec != null && meta.workedSec < HUD_PLAN_WORK_HOT_SEC;
-  const showAvatars = meta.avatars.length > 0 || meta.liveCount > 0;
+  // P-007's rule, unchanged: what agents DECLARED outranks the stored next
+  // action, because it is what is actually happening. D-002 then drops the row
+  // entirely in the settled columns.
+  const now = SETTLED_PLAN_COLUMNS.has(card.column) ? null : (meta.who ?? card.reason);
   return (
-    <span className="hud__cardmeta">
-      <span
-        className="hud__mt"
-        title={meta.editedSec != null ? '✎ Last plan edit' : '✎ Plan edit time unknown'}
-      >
-        ✎ {formatAge(meta.editedSec)}
-      </span>
-      <span
-        className={`hud__mt${workHot ? ' hud__mt--hot' : ''}`}
-        title={meta.workedSec != null ? '⚒ Last work-item activity' : '⚒ No work-item activity yet'}
-      >
-        ⚒ {formatAge(meta.workedSec)}
-      </span>
-      {meta.itemsTotal != null ? (
-        <span className="hud__mt" title={`${meta.itemsDone} of ${meta.itemsTotal} items settled`}>
-          {meta.itemsDone}/{meta.itemsTotal} items
+    <>
+      <span className="hud__card-h">
+        <span className={`hud__dot hud__dot--${card.column}`} aria-hidden="true" />
+        {/* The slug is the accessible name (see EntityCardBody's aria-label) and
+            the hover title; the TITLE is what a reader scans for, so it takes
+            the line. */}
+        <span className="hud__cardtitle" title={card.ref}>
+          {card.title}
         </span>
-      ) : null}
-      {showAvatars ? (
-        <span className="hud__avs">
-          {meta.avatars.map((a) => (
+        <span className="hud__cardright">
+          {meta.needsHumanCount > 0 ? (
             <span
-              key={a.ownerId}
-              className={`hud__av hud__av--c${a.colorIndex}${a.live === false ? ' hud__av--gone' : ''}`}
-              title={`${a.handle}${a.live === true ? ' — live' : a.live === false ? ' — not running' : ''}`}
+              className="hud__pip hud__pip--warn"
+              title={`${meta.needsHumanCount} item${meta.needsHumanCount === 1 ? '' : 's'} on this plan need a human decision`}
             >
-              {a.initials}
-            </span>
-          ))}
-          {meta.avatarsOverflow > 0 ? (
-            <span className="hud__av hud__av--more" title={`${meta.avatarsOverflow} more agents on this plan`}>
-              +{meta.avatarsOverflow}
+              {meta.needsHumanCount}
             </span>
           ) : null}
+          {meta.blockedCount > 0 ? (
+            <span
+              className="hud__pip hud__pip--bad"
+              title={`${meta.blockedCount} item${meta.blockedCount === 1 ? '' : 's'} blocked`}
+            >
+              {meta.blockedCount}
+            </span>
+          ) : null}
+          <span
+            className={`hud__mt${workHot ? ' hud__mt--hot' : ''}`}
+            title={meta.workedSec != null ? '⚒ Last work-item activity' : '⚒ No work-item activity yet'}
+          >
+            ⚒ {formatAge(meta.workedSec)}
+          </span>
           {meta.liveCount > 0 ? (
             <span
               className="hud__liven"
@@ -142,8 +184,31 @@ function PlanCardMetaRow({ meta }: { meta: HudPlanCardMeta }) {
             </span>
           ) : null}
         </span>
+      </span>
+
+      {now ? (
+        <span
+          className={`hud__entity-why${meta.who ? ' hud__entity-why--who' : ''}`}
+          /* When the live who-line DISPLACES the stored next-action, the
+             next-action survives as the hover title — it is a fact the card
+             still knows, not one it threw away (the P-007 rule, kept). When
+             there is no who-line the row already IS the next-action, so the
+             title reveals whatever the single-line clamp cut off instead. */
+          title={meta.who ? (card.reason ?? undefined) : now}
+        >
+          {now}
+        </span>
       ) : null}
-    </span>
+
+      {meta.itemsTotal != null && meta.itemsDone != null ? (
+        <span className="hud__track" aria-hidden="true">
+          <span
+            className="hud__track-fill"
+            style={{ width: `${Math.round((100 * meta.itemsDone) / meta.itemsTotal)}%` }}
+          />
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -208,64 +273,54 @@ function EntityCardBody({
       <span className="hud__card-row">
         <span className="hud__rail" aria-hidden="true" />
         <span className="hud__card-b">
-          <span className="hud__card-h">
-            <span className={`hud__dot hud__dot--${card.column}`} aria-hidden="true" />
-            <span className="hud__handle">{card.ref}</span>
-            {/* A plan card carries ✎/⚒ in its meta row (P-007), so the header
-                age — the same ✎ number — would say it twice on one card. */}
-            {card.plan ? null : <span className="hud__age">{formatAge(card.sinceSec)}</span>}
-          </span>
+          {/* hud-plan-card-density-2026-08-31 D-004: the compact two-line form is
+              for PLAN cards ONLY. `card.plan` is written by `toPlanCard` and by
+              nothing else, so it is the discriminator — session, goal and
+              work-item cards render exactly the tree they always have.
 
-          <span className="hud__reason">{card.title}</span>
+              Inside the else-branch `card.plan` is known falsy, so the three
+              ternaries that used to test it here are gone rather than left as
+              dead branches: the header age always renders, and the "why" line
+              reduces to the stored reason (the live who-line moved into
+              PlanCardCompact, which is the only card that ever had one). */}
+          {card.plan ? (
+            <PlanCardCompact card={card} meta={card.plan} />
+          ) : (
+            <>
+              <span className="hud__card-h">
+                <span className={`hud__dot hud__dot--${card.column}`} aria-hidden="true" />
+                <span className="hud__handle">{card.ref}</span>
+                <span className="hud__age">{formatAge(card.sinceSec)}</span>
+              </span>
 
-          {/* The "why" line sits BELOW the title here, inverting the session
-              card (where the reason IS the content and there is no separate
-              title). A plan's title is the thing you scan for; its next-action
-              is the detail you read once you have found it.
+              <span className="hud__reason">{card.title}</span>
 
-              P-007: when the roster knows WHO is on the plan and what they
-              declared, that live line outranks the stored next-action — it is
-              what is ACTUALLY happening, per the HudH2 mockup's working cards.
-              The next-action survives as the title so neither line is lost. */}
-          {card.plan?.who ? (
-            <span className="hud__entity-why hud__entity-why--who" title={card.reason ?? undefined}>
-              {card.plan.who}
-            </span>
-          ) : card.reason ? (
-            <span className="hud__entity-why">{card.reason}</span>
-          ) : null}
+              {/* The "why" line sits BELOW the title here, inverting the session
+                  card (where the reason IS the content and there is no separate
+                  title). A card's title is the thing you scan for; its reason is
+                  the detail you read once you have found it. */}
+              {card.reason ? <span className="hud__entity-why">{card.reason}</span> : null}
 
-          {card.context ? <span className="hud__plan">{card.context}</span> : null}
+              {card.context ? <span className="hud__plan">{card.context}</span> : null}
 
-          {chips.length > 0 ? (
-            <span className="hud__chips">
-              {chips.map((b) =>
-                b.title ? (
-                  <Tooltip key={b.id} label={b.title}>
-                    <span className={`hud__chip ${CHIP_TONE_CLASS[b.tone]}`}>{b.label}</span>
-                  </Tooltip>
-                ) : (
-                  <span key={b.id} className={`hud__chip ${CHIP_TONE_CLASS[b.tone]}`}>
-                    {b.label}
-                  </span>
-                ),
-              )}
-              {overflow > 0 ? <span className="hud__chip">+{overflow}</span> : null}
-            </span>
-          ) : null}
-
-          {/* P-007: ✎/⚒ + items + avatars, and the bottom progress track. */}
-          {card.plan ? <PlanCardMetaRow meta={card.plan} /> : null}
-          {card.plan && card.plan.itemsTotal != null && card.plan.itemsDone != null ? (
-            <span className="hud__track" aria-hidden="true">
-              <span
-                className="hud__track-fill"
-                style={{
-                  width: `${Math.round((100 * card.plan.itemsDone) / card.plan.itemsTotal)}%`,
-                }}
-              />
-            </span>
-          ) : null}
+              {chips.length > 0 ? (
+                <span className="hud__chips">
+                  {chips.map((b) =>
+                    b.title ? (
+                      <Tooltip key={b.id} label={b.title}>
+                        <span className={`hud__chip ${CHIP_TONE_CLASS[b.tone]}`}>{b.label}</span>
+                      </Tooltip>
+                    ) : (
+                      <span key={b.id} className={`hud__chip ${CHIP_TONE_CLASS[b.tone]}`}>
+                        {b.label}
+                      </span>
+                    ),
+                  )}
+                  {overflow > 0 ? <span className="hud__chip">+{overflow}</span> : null}
+                </span>
+              ) : null}
+            </>
+          )}
 
           {/* SUBDIRECTIVES (P-017, D-006 Q4 option A). Nested inside the parent
               because a child steers this goal's agent rather than owning one, so
