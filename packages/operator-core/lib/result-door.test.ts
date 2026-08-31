@@ -449,7 +449,10 @@ describe('applyResultDoor', () => {
       schemaVersion: 'papercusp.output-envelope/v1',
       summaryProvenance: 'authored',
       state: 'incomplete',
-      incomplete: { reason: 'non-text-result-budget-exceeded', omittedItems: 3 },
+      // The three blocks were RELOCATED into the spill, not dropped, so they are
+      // reported as `spilledItems`; `omittedItems` is reserved for bytes that
+      // were never serialized and must be absent here (EI-21954450841272611).
+      incomplete: { reason: 'non-text-result-budget-exceeded', spilledItems: 3, recoverable: true },
       content: [
         {
           kind: 'reference',
@@ -696,6 +699,57 @@ describe('applyResultDoor', () => {
       });
       expect(JSON.stringify(aggregate)).not.toContain('turn-7');
       expect(readSpill('ws-1', 'plans:get', RUN_ID)).toContain('m'.repeat(100));
+    });
+
+    // EI-21954450841272611, and independently EI-21733745031882912 /
+    // EI-21573289806322713 against two other tools: all three read
+    // `omittedItems: N` on an aggregate spill and concluded N rows had been
+    // LOST — one of them reported the underlying field as unavailable when it
+    // was sitting intact in the spill. The bytes are relocated, never dropped,
+    // so the envelope must not describe them with the unrecoverable word, and
+    // must say what to do instead.
+    it('describes an aggregate spill as recoverable and never claims omitted items', () => {
+      const opts = { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID };
+      const scopeFor = (id: string) => beginResultDoorAggregate({ sessionKey: 'owner-recoverable', outputGroupId: id });
+      applyResultDoor(medium(), { ...opts, aggregateScope: scopeFor('turn-r') });
+      applyResultDoor(medium(), { ...opts, aggregateScope: scopeFor('turn-r') });
+      const overflowed = applyResultDoor(medium(), { ...opts, aggregateScope: scopeFor('turn-r') });
+
+      const envelope = JSON.parse((overflowed.content[0] as { text: string }).text);
+      expect(envelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
+      // The load-bearing assertion: the unrecoverable field must be ABSENT.
+      expect(envelope.incomplete).not.toHaveProperty('omittedItems');
+      expect(envelope.incomplete.recoverable).toBe(true);
+      expect(envelope.incomplete.spilledItems).toBe(1);
+      // The note must name the CAUSE (sibling calls), because that is the only
+      // fact that makes the next move — re-issue this call alone — derivable.
+      expect(envelope.incomplete.note).toMatch(/sibling/i);
+      expect(envelope.incomplete.note).toMatch(/nothing was lost/i);
+      // ...and it must not be too large on its own, which the caller cannot
+      // otherwise tell apart from a genuinely oversized result.
+      expect(envelope.incomplete.note).toMatch(/not too large on its own/i);
+    });
+
+    // The sibling reason reaches the same route but has the OPPOSITE retry
+    // advice: re-running alone spills again, so the note must not tell the
+    // caller to retry.
+    it('gives a non-text spill its own recovery advice rather than the aggregate one', () => {
+      const doored = applyResultDoor(
+        {
+          content: [
+            { type: 'image' as const, data: 'x'.repeat(9_000), mimeType: 'image/png' },
+            { type: 'text' as const, text: 'caption' },
+          ],
+        } as unknown as DoorableResult,
+        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope.incomplete.reason).toBe('non-text-result-budget-exceeded');
+      expect(envelope.incomplete).not.toHaveProperty('omittedItems');
+      expect(envelope.incomplete.recoverable).toBe(true);
+      expect(envelope.incomplete.note).toMatch(/nothing was lost/i);
+      expect(envelope.incomplete.note).toMatch(/cannot be\s+sliced|cannot be sliced/i);
+      expect(envelope.incomplete.note).not.toMatch(/sibling/i);
     });
 
     it('bounds a 35K fan-out cohort and writes every aggregate overflow as a distinct spill', () => {

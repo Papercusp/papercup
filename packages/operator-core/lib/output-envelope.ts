@@ -81,9 +81,36 @@ export interface OutputEnvelopeError {
   retryable?: boolean;
 }
 
+/**
+ * Why a result is not the whole answer — and, separately, WHETHER THE MISSING
+ * BYTES STILL EXIST. Those are two different facts, and a caller acts on them
+ * in opposite ways, so they get two different fields:
+ *
+ *  - `omittedItems` — items that were NEVER SERIALIZED. Unrecoverable: nothing
+ *    downstream can page them back, and their absence here is not evidence
+ *    they do not exist. The exit is a narrower re-call / `payloadTier:'full'`.
+ *  - `spilledItems` — items RELOCATED WHOLE to the reference in `content`.
+ *    Nothing was lost; the exit is to page that reference.
+ *
+ * Keeping one word for both is not a naming quibble — it is a measured defect
+ * source. The result-door spill path reported its relocated blocks under
+ * `omittedItems`, and readers reasonably concluded data had been lost:
+ * EI-21954450841272611 (reported the underlying field as "not safely
+ * available" when it was sitting in the spill), plus EI-21733745031882912 and
+ * EI-21573289806322713 — three tools, three sessions, one vocabulary. Each was
+ * closed at its own call site while the shared wording kept generating the
+ * next one. Never describe a recoverable spill with `omittedItems`.
+ */
 export interface OutputEnvelopeIncomplete {
   reason: string;
+  /** Items never serialized — UNRECOVERABLE. Omit it when nothing was truly dropped. */
   omittedItems?: number;
+  /** Items relocated intact into the reference in `content` — recoverable by paging it. */
+  spilledItems?: number;
+  /** True when every byte of the original result is recoverable from `content`. */
+  recoverable?: boolean;
+  /** What the caller should actually do about it. */
+  note?: string;
 }
 
 export type OutputEnvelopeState = 'complete' | 'incomplete' | 'error';

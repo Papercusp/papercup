@@ -499,10 +499,46 @@ export function detectResultEvidence(content: readonly unknown[]): Array<{
 }
 
 /**
+ * The one actionable fact each spill reason implies, stated where the MODEL
+ * reads it — the envelope in `content` — rather than only in
+ * `_meta.resultDoor.aggregate`. The aggregate reservation was already recorded
+ * there while every reporter below read the envelope, saw the word "omitted",
+ * and concluded the bytes were gone (EI-21954450841272611 and friends).
+ *
+ * The aggregate advice is derived, not guessed: the cohort budget is
+ * `resultEach * resultSlots` chars, a single result is charged at most
+ * `resultEach` (`reserveAggregateBytes`' `chargedBytes` is
+ * `min(sourceBytes, budgetChars)`), and `resultSlots` is a positive integer —
+ * so a call that is FIRST in its cohort can never exceed the budget. Reaching
+ * this reason therefore PROVES sibling calls in the same turn had already
+ * consumed it, and that this result was not oversized on its own.
+ */
+function spillRecoveryNote(reason: 'aggregate-output-budget-exceeded' | 'non-text-result-budget-exceeded'): string {
+  const recoverable =
+    'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ';
+  return reason === 'aggregate-output-budget-exceeded'
+    ? `${recoverable}This result was NOT too large on its own; the shared per-turn fan-out budget had ` +
+        'already been consumed by SIBLING tool calls in the same turn. Re-issuing this one call by ' +
+        'itself returns it inline.'
+    : `${recoverable}It took this route because a non-text block (image/audio/resource) cannot be ` +
+        'sliced, so re-running the same call alone will spill again — page the reference rather than retrying.';
+}
+
+/**
  * Hard overflow route for aggregate exhaustion and non-text results. The
  * existing text projector cannot safely slice an image/audio/resource block,
  * so the full MCP content array is serialized once to the existing scratch
  * store and replaced by the shared typed reference envelope.
+ *
+ * ⚠ Everything this route touches is RELOCATED, never dropped: the whole
+ * content array is serialized into the spill above, and the `incomplete`
+ * descriptor must say so. It previously reported `omittedItems: content.length`
+ * — a field reserved for bytes that were never serialized (see
+ * `OutputEnvelopeIncomplete`) — which stated the exact opposite of the truth
+ * AND counted MCP content blocks, which readers took for domain rows ("omitted
+ * three items"). Note the spill-failure branch below returns state:'error'
+ * instead, so on this `incomplete` branch the spill always succeeded and
+ * `recoverable: true` is unconditional.
  */
 function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   result: T;
@@ -581,7 +617,12 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
           summary: '',
           content: evidenceReferences.length > 0 ? evidenceReferences : [reference],
           state: 'incomplete',
-          incomplete: { reason: input.reason, omittedItems: input.result.content.length },
+          incomplete: {
+            reason: input.reason,
+            spilledItems: input.result.content.length,
+            recoverable: true,
+            note: spillRecoveryNote(input.reason),
+          },
         },
         { summaryBudgetChars: 0 },
       )
