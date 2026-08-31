@@ -45,6 +45,7 @@ import { recordSpawn, finishSpawn } from './spawn-tree';
 import { assembleSpawnHydration } from './spawn-hydration';
 import { productionSpawnHydrationDeps } from './spawn-hydration-deps';
 import type { Db } from './pg-stores';
+import { recordSpawnGovernorObservation } from '../resource-governor/spawn-observation-writer';
 import {
   heartbeatSpawns,
   isSpawnProcessAlive,
@@ -1216,6 +1217,31 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   await Promise.all(
     reclaimed.workspaces.map((ws) => announceSpawnSlotFreed(ws, `${reclaimed.count} orphaned spawn slot(s) reclaimed`)),
   );
+
+  // P-003 (plan spawn-door-governor-migration-2026-08-31): OBSERVE-ONLY governor
+  // receipt — record the admission decision the governor WOULD have made for this
+  // spawn. Placed HERE, after the admission transaction has committed and BEFORE the
+  // duplicate/over_cap early returns, so a refusal is still observed (D-010 explains
+  // why only `admitted` gets a persisted row and the other two are logged).
+  // `void`-ed and never awaited: this is evidence, and a defect in it must not be able
+  // to fail a spawn (D-009) — same contract as the WI-390 shadow probe above.
+  void recordSpawnGovernorObservation({
+    sql,
+    workspaceId: input.workspaceId,
+    spawnId,
+    doorOutcome:
+      admission.kind === 'admitted'
+        ? 'admitted'
+        : admission.kind === 'duplicate'
+          ? 'duplicate'
+          : 'over_cap',
+    doorCap: spawnConcurrencyCeiling(),
+    doorRoleCap: ownerBeeCeiling,
+    parentRole: input.parentRole ?? 'operator',
+    childRole: role,
+    fleetSlug: input.fleet?.slug ?? null,
+    planSlug: input.planSlug ?? null,
+  });
 
   if (admission.kind === 'duplicate') {
     console.log(
