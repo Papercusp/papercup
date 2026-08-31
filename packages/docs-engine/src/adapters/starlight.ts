@@ -237,6 +237,18 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
         throw error;
       }
     },
+    // WI-1511581: the file exactly as it sits on disk — frontmatter included, MDX
+    // unrendered. Not cached alongside `renderedBody`: this is the authoring read,
+    // so a stale hit would hand back bytes the file no longer has and the write
+    // would silently revert someone. `readSafe` returning null (missing, not a
+    // file, over the size cap) is reported as "no source" so the caller refuses,
+    // rather than throwing or falling back to the lossy `getContent` projection.
+    async getSource(page: DocPage): Promise<string | null> {
+      const cache = await buildPages();
+      const sp = cache.get(page.slug);
+      if (!sp) return null;
+      return await readSafe(sp.absolutePath);
+    },
     async getSectionMeta(sectionSlug: string): Promise<SectionMeta> {
       // Try `<section>/index.mdx` frontmatter (Starlight section-intro convention).
       const candidates = [

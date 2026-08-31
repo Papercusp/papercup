@@ -202,6 +202,16 @@ export function harnessFsAdapter(projectPath: string, opts: HarnessFsAdapterOpti
       }
       return content;
     },
+    // WI-1511581: the file exactly as it sits on disk — frontmatter included, MDX
+    // unrendered. `readSafe` returning null (missing, not a file, over the size
+    // cap) is reported as "no source" so the caller refuses, rather than throwing
+    // or falling back to the lossy `getContent` projection.
+    async getSource(page: DocPage): Promise<string | null> {
+      const cache = await buildPages();
+      const fp = cache.get(page.slug);
+      if (!fp) return null;
+      return await readSafe(fp.absolutePath);
+    },
     async getSectionMeta(sectionSlug: string): Promise<SectionMeta> {
       if (sectionSlug === 'harness-state') {
         return {

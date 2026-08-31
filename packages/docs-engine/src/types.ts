@@ -77,6 +77,22 @@ export interface DocSource {
   getPage(slug: string): Promise<DocPage | null>;
   /** Render the page's MDX/markdown body to clean markdown (no JSX). */
   getContent(page: DocPage): Promise<string>;
+  /**
+   * The page's CANONICAL SOURCE — the exact bytes an author edits, frontmatter
+   * included: no JSX flattening, no frontmatter strip, no read preamble. This is
+   * what a read→edit→write round trip needs; `getContent` is a lossy projection
+   * of it (WI-1511581).
+   *
+   * ⚠ OPTIONAL ON PURPOSE, and a source that cannot produce one must OMIT it
+   * rather than alias `getContent`. `getDocs({ source: true })` REFUSES when this
+   * method is absent, which is a visible answer; a rendered body served as
+   * "source" is the silent corruption the whole mode exists to prevent — 195 of
+   * this corpus's 990 docs carry `import … from` that rendering flattens.
+   *
+   * Return `null` when this particular page has no retrievable source (unreadable
+   * file, oversize, no canonical row) — again a refusal, never a fallback.
+   */
+  getSource?(page: DocPage): Promise<string | null>;
   /** Optional per-section metadata (e.g. from meta.json). */
   getSectionMeta?(sectionSlug: string): Promise<SectionMeta>;
 }
@@ -145,6 +161,18 @@ export interface GetArgs {
    * docs surface for raw SQL. Pair with the `nextOffset` a clipped entry returns.
    */
   offset?: number;
+  /**
+   * Return each page's CANONICAL SOURCE (see {@link DocSource.getSource}) instead
+   * of the rendered read projection — the mode a read→edit→write round trip needs.
+   *
+   * Mutually exclusive with `heading`: a section slice is by definition not the
+   * document, so serving one under this flag would hand a caller a partial body
+   * that looks whole. Refused rather than silently narrowed.
+   *
+   * `offset`/`nextOffset` paging composes normally, and a clipped source window
+   * still carries the truncation tail — which is what lets `docs:author` refuse it.
+   */
+  source?: boolean;
 }
 
 export type GetEntry =
@@ -155,6 +183,13 @@ export type GetEntry =
       bytes: number;
       truncated?: true;
       sliced?: true;
+      /**
+       * `content` is the CANONICAL SOURCE, not the rendered projection — present
+       * exactly when the entry was served under `source: true`. Its ABSENCE on a
+       * found entry means the body was rendered, so a caller about to write the
+       * body back can tell the two apart without tracking what it asked for.
+       */
+      source?: true;
       /**
        * Where `content` starts in the page — present only on a paged read
        * (`offset > 0`), so a plain read's shape is unchanged.
@@ -178,8 +213,20 @@ export type GetEntry =
   | {
       slug: string;
       found: false;
-      error: 'not_found' | 'heading_not_found';
+      /**
+       * `source_unavailable` — `source: true` was asked for and this source cannot
+       * answer it. It is deliberately an ERROR entry and never a quiet fallback to
+       * the rendered body: a lossy projection returned under a source read is the
+       * corruption this mode prevents.
+       *
+       * `heading_unsupported_with_source` — `heading` + `source` together. A slice
+       * is not the document; narrowing silently would hand back a partial body that
+       * reads as complete.
+       */
+      error: 'not_found' | 'heading_not_found' | 'source_unavailable' | 'heading_unsupported_with_source';
       suggestions?: string[];
+      /** Human-readable explanation + the repair, on errors that have one. */
+      detail?: string;
     };
 
 export interface GetResult {

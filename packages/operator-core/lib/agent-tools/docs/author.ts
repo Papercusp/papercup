@@ -371,27 +371,34 @@ export interface OverwriteGuardVerdict {
 }
 
 /**
- * Where to read the CANONICAL source before a full-body overwrite — and why it is
- * not `docs:get`.
+ * Where to read the CANONICAL source before a full-body overwrite.
  *
- * Measured 2026-08-31 on `agent-insights/index`: docs:get returned 1,712 chars for
- * a 1,812-char row, having stripped the frontmatter and PREPENDED a
- * `# <title>` + `URL: …` + description preamble (`withPreamble`). So even an
- * UNTRUNCATED docs:get body injects that header into the doc on write. Worse, the
+ * Measured 2026-08-31 on `agent-insights/index`: a DEFAULT `docs:get` returned
+ * 1,712 chars for a 1,812-char row, having stripped the frontmatter and PREPENDED
+ * a `# <title>` + `URL: …` + description preamble (`withPreamble`). So even an
+ * UNTRUNCATED default read injects that header into the doc on write. Worse, the
  * engineering adapter serves `renderMdxToMarkdown(body)` for a `.mdx` doc — and
  * 195 of 990 authored docs carry `import … from` statements, 218 carry JSX — so
- * round-tripping those through docs:get would silently flatten them.
+ * round-tripping those through it silently flattens them.
  *
- * The `.mdx` projection is the faithful copy: it is written from
- * harness_shared.harness_docs.content verbatim, has no size cap, and its
- * frontmatter (projection banner included) is regenerated on write anyway.
+ * `docs:get { source: true }` (WI-1511581) is the read that does NOT do any of
+ * that: it serves `harness_shared.harness_docs.content` verbatim for an authored
+ * doc, and refuses rather than downgrading when it cannot. It is named FIRST here
+ * because an error message is a durable instruction — the exit it points at has to
+ * be one that actually round-trips, not merely one that returns something.
+ *
+ * `capability:read` on the `.mdx` stays as the fallback for a doc with no canonical
+ * row. It is faithful to the row EXCEPT for the generated projection banner inside
+ * its frontmatter — harmless here only because frontmatter is regenerated on write.
  */
-export function canonicalSourceHint(absPath: string | null): string {
-  const read = absPath ? `capability:read { file_path: "${absPath}" }` : 'capability:read on the doc\'s .mdx projection';
+export function canonicalSourceHint(absPath: string | null, ref?: string): string {
+  const slug = ref ? `"${ref}"` : '"<section>/<slug>"';
+  const fallback = absPath ? ` (or capability:read { file_path: "${absPath}" })` : '';
   return (
-    `Read the CANONICAL source first: ${read} — the .mdx projection is byte-faithful to ` +
-    'harness_shared.harness_docs.content, has no size cap, and its frontmatter is regenerated on write. ' +
-    `Do NOT source an overwrite body from docs:get: it caps a page at ${MAX_PAYLOAD_BYTES} bytes AND serves a ` +
+    `Read the CANONICAL source first: docs:get { slugs: [${slug}], source: true }${fallback} — ` +
+    'that mode serves the doc bytes verbatim (frontmatter included, MDX unrendered, no read preamble) and pages ' +
+    'a large doc whole via `offset`/`nextOffset`. ' +
+    `Do NOT source an overwrite body from a DEFAULT docs:get: it caps a page at ${MAX_PAYLOAD_BYTES} bytes AND serves a ` +
     'RENDERED, preamble-prefixed projection rather than the source, so even a complete read corrupts the doc.'
   );
 }
@@ -544,9 +551,9 @@ export default defineTool({
     notWhen:
       'For a quick personal fact use memory:remember (not a doc). To EDIT an existing doc call this tool again with overwrite:true — do NOT hand-edit the .mdx: Postgres is canonical and the file is a projection, so a hand-edit is refused by the next projection and never lands. To only declare a subject_ref use harness_docs:anchor.',
     chaining:
-      'docs:author { slug, title, description, body, documents } → (later, on a drift nudge) harness_docs:verify { docId }.',
+      'docs:author { slug, title, description, body, documents } → (later, on a drift nudge) harness_docs:verify { docId }. To REWRITE one: docs:get { slugs:[ref], source:true } → edit → overwrite:true.',
     seeAlso: [
-      'docs:get (read a page — NOT an overwrite source: rendered + clipped)',
+      'docs:get { source:true } (the ONLY read whose body can be written back — `body` is a FULL replacement, and a DEFAULT docs:get read is rendered, clipped and preamble-prefixed, so this tool refuses it. Page to the end with offset/nextOffset before rewriting)',
       'docs:outline (find where the page belongs)',
       'harness_docs:list (per-harness PROJECT docs live in a different surface)',
     ],
@@ -685,14 +692,14 @@ export default defineTool({
     // baseline is `existingContent`, which the frontmatter-inheritance step above
     // has already loaded, so this costs no extra read.
     const truncated = truncatedBodyVerdict(args.body);
-    if (truncated) return err(`${truncated.code} — ${docId}: ${truncated.detail} ${canonicalSourceHint(abs)}`);
+    if (truncated) return err(`${truncated.code} — ${docId}: ${truncated.detail} ${canonicalSourceHint(abs, ref)}`);
     if (args.overwrite && !args.confirmShrink) {
       const shrink = overwriteShrinkVerdict({
         existingLength: existingContent?.length,
         bodyLength: args.body.length,
         contentLength: content.length,
       });
-      if (shrink) return err(`${shrink.code} — ${docId}: ${shrink.detail} ${canonicalSourceHint(abs)}`);
+      if (shrink) return err(`${shrink.code} — ${docId}: ${shrink.detail} ${canonicalSourceHint(abs, ref)}`);
     }
 
     // Validate the complete projected document before the canonical write. The downstream

@@ -18,6 +18,15 @@ import {
 } from '../_harness-scope';
 import { coerceDocsGetSlugs, normalizeDocsGetRef } from './get-coerce';
 
+/**
+ * Prefix every rendered body with the agent-readable `# title` + `URL:` header.
+ *
+ * The spread is load-bearing: it carries `getSource` through untouched, so a
+ * `source: true` read gets the canonical bytes WITHOUT this header (the header is
+ * a read-surface annotation — writing it back injects it into the document). If a
+ * future refactor drops it, `getDocs` answers `source_unavailable`, which is a
+ * visible refusal rather than a silently preamble-prefixed "source".
+ */
 function wrapWithPreamble(base: DocSource): DocSource {
   return {
     ...base,
@@ -114,7 +123,13 @@ const argsSchema = z.preprocess(
         .min(0)
         .optional()
         .describe(
-          'Resume a clipped read here. A page over the 50KB cap comes back TRUNCATED with found:true and a `nextOffset` — pass it back to read the next window, and repeat until no nextOffset is returned. Only honored when slugs.length === 1. For READING a long page; never as the source for a docs:author overwrite (this surface serves a rendered, preamble-prefixed projection, not the doc source — read the .mdx projection for that).',
+          'Resume a clipped read here. A page over the 50KB cap comes back TRUNCATED with found:true and a `nextOffset` — pass it back to read the next window, and repeat until no nextOffset is returned. Only honored when slugs.length === 1. Composes with `source`, which is what a docs:author overwrite body must be sourced from.',
+        ),
+      source: z
+        .boolean()
+        .optional()
+        .describe(
+          'Return the doc CANONICAL SOURCE — the exact bytes an author edits, frontmatter included, MDX unrendered, no `# title` / `URL:` preamble. This is the ONLY read that survives a round trip back through docs:author { overwrite:true }; the default read is a lossy projection (it flattens the `import`/JSX that 195 of 990 docs carry, strips frontmatter, and prepends a header). Composes with `offset`/`nextOffset`, so page a large doc to its end before rewriting it. Refused with `heading` (a slice is not the document) and refused with `source_unavailable` when the docs source has no canonical text — never quietly downgraded to the rendered body.',
         ),
       harness: z
         .string()
@@ -136,6 +151,14 @@ const argsSchema = z.preprocess(
     .refine((v) => !v.offset || v.slugs.length === 1, {
       message: 'offset addresses ONE document — it is only valid when slugs has exactly one entry',
       path: ['offset'],
+    })
+    // A section slice IS NOT THE DOCUMENT. Serving one under `source` would hand
+    // back a partial body that reads as whole — the exact shape of the bug this
+    // mode closes — so the combination is refused rather than silently narrowed.
+    .refine((v) => !(v.source && v.heading), {
+      message:
+        'source and heading are mutually exclusive — a heading slice is not the document. Drop `heading` to read the whole source, or drop `source` to read that section rendered.',
+      path: ['source'],
     }),
 );
 
@@ -149,8 +172,12 @@ export default defineTool({
     notWhen:
       "You do not yet know the slug — call docs:outline first. To fetch another harness's docs from outside, use cross_harness:docs_get.",
     chaining:
-      "docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads. A result carrying `trust` (OKF v0.2) reports the page's reliability: `stale:true` means it is past its author-set stale_after and its content is prefixed with a ⚠ STALE banner — re-check those claims against the code before acting on them. No `trust` field = unverified and not stale, which is nearly every doc today.",
-    seeAlso: ['docs:outline (find slugs to read)', 'docs:search (locate the right page by term first)'],
+      "docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads. ABOUT TO REWRITE the page? Read it with { source: true } instead — the default body is a rendered, preamble-prefixed projection, so writing it back through docs:author flattens JSX/imports and injects the header; page to the end with `offset`/`nextOffset` first. A result carrying `trust` (OKF v0.2) reports the page's reliability: `stale:true` means it is past its author-set stale_after and (on a rendered read only) its content is prefixed with a ⚠ STALE banner — re-check those claims against the code before acting on them. No `trust` field = unverified and not stale, which is nearly every doc today.",
+    seeAlso: [
+      'docs:outline (find slugs to read)',
+      'docs:search (locate the right page by term first)',
+      'docs:author { overwrite:true } (rewrite a doc — source its body from { source:true }, never from a default read)',
+    ],
   },
   capability: 'docs:read',
   requirePrincipal: false,
@@ -200,6 +227,7 @@ export default defineTool({
       slugs: args.slugs.map(normalizeDocsGetRef),
       ...(args.heading ? { heading: args.heading } : {}),
       ...(args.offset ? { offset: args.offset } : {}),
+      ...(args.source ? { source: true as const } : {}),
     };
     const effectiveSlug = scope.kind === 'all' ? '*' : scope.slug;
     const resolved = await resolveAdapter(effectiveSlug, {

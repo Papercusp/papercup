@@ -158,6 +158,27 @@ export function overlayCanonicalDocs(
       }
       return entry.rendered;
     },
+    /**
+     * WI-1511581 — the CANONICAL source, which for an authored doc is the
+     * `harness_shared.harness_docs.content` row, not the file.
+     *
+     * `entry.raw` is that row verbatim; the filesystem projection of the same doc
+     * carries a generated banner inside its frontmatter and can lag the row (a
+     * different checkout, or a failed projection write). So the overlay must answer
+     * this itself rather than delegating: falling through to the file would hand an
+     * author bytes that are close enough to look right and wrong enough to revert a
+     * peer's write.
+     *
+     * Pages with no canonical row delegate to the base source, whose file IS their
+     * source; a base with no `getSource` yields null, which `getDocs` reports as
+     * `source_unavailable` rather than serving the rendered body.
+     */
+    async getSource(page: DocPage): Promise<string | null> {
+      const canonical = await loadCanonical();
+      const entry = canonical.get(page.slug);
+      if (entry) return entry.raw;
+      return (await base.getSource?.(page)) ?? null;
+    },
     ...(base.getSectionMeta ? { getSectionMeta: (sectionSlug: string) => base.getSectionMeta!(sectionSlug) } : {}),
     invalidate(): void {
       canonicalCache = null;
