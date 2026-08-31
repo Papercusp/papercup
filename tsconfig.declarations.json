@@ -294,6 +294,15 @@
     // `any` then cascaded into two TS7006 implicit-any callback params, regressing
     // operator-core lint:tsc by +3 against a baseline of 0 — one missing declaration
     // surfacing as three errors, which is exactly the absorption this list prevents.
-    "scripts/check-partial-install.mjs"
+    "scripts/check-partial-install.mjs",
+    // EI-19313879938405219 — the sidecar externals-boundary verifier. Registered for
+    // this list's FIRST reason: it is imported directly by
+    // verify-sidecar-host-compat.test.ts, which is what makes the checker's fail-OPEN
+    // mode falsifiable (a degraded specifier probe returns [], and every bundle then
+    // reports ok:true — the checker declaring an incompatible artifact safe to ship).
+    // Unregistered that import is a TS7016: measured here as operator-core lint:tsc
+    // 0 -> 1 against a baseline of 0 on the test file, which is precisely the
+    // absorption this list exists to prevent.
+    "scripts/verify-sidecar-host-compat.mjs"
   ]
 }

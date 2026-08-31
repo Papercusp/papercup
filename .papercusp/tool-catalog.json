@@ -11147,7 +11147,7 @@
       "guidance": {
         "when": "Standing up a NEW named fleet — e.g. routing option (3), a new desktop fleet: fleet:create then capability:terminal { terminals: [...] } to launch the member windows.",
         "notWhen": "Joining a fleet that already has members → fleet:join. Taking over an existing fleet to drive a plan → fleet:take-leadership (create does NOT seize an existing fleet from its leader).",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\"). Donate/spend/debug prose set (D-004): the fleet must EXIST before it can receive seats — 'launch on remote seats' with no fleet yet → fleet:create first, then resource:delegate (donate seats to it) or fleet:request_remote_spawn (spend a seat-offer already made to it)."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches). Donate/spend/debug prose set (D-004): the fleet must EXIST before it can receive seats — 'launch on remote seats' with no fleet yet → fleet:create first, then resource:delegate (donate seats to it) or fleet:request_remote_spawn (spend a seat-offer already made to it)."
       }
     },
     {
@@ -11390,7 +11390,7 @@
       "guidance": {
         "when": "Becoming a member of an existing fleet (as:'member'), or taking it over as leader in one call (as:'leader').",
         "notWhen": "Creating a brand-new fleet → fleet:create.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -11526,7 +11526,7 @@
       "guidance": {
         "when": "Stepping out of a fleet you are a member or leader of.",
         "notWhen": "Switching to a different fleet → just fleet:join the other one (it re-labels you).",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -11557,7 +11557,7 @@
       "guidance": {
         "when": "Choosing a fleet — to join (fleet:join), inspect (fleet:status), or hand a plan to (fleet:take-leadership). `available` fleets have a live desktop MEMBER (driver) right now — beeCount is background autonomous-loop workers, not a driver.",
         "notWhen": "For who is IN one fleet and what each is doing, use fleet:status { fleet }.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -11618,7 +11618,7 @@
       "guidance": {
         "when": "You'd say 'pause the fleet' — same semantics as fleet:wind-down.",
         "notWhen": "To pause the Mug/pot — pot:pause. To pause one plan — plans:pause.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -11682,7 +11682,7 @@
       "guidance": {
         "when": "Changing a fleet's color — updates both its persisted identity and all of its currently-open windows.",
         "notWhen": "A brand-new fleet already gets a scheme at fleet:create, and joiners recolor at fleet:join — only use recolor to OVERRIDE an existing binding.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -11712,7 +11712,7 @@
       "guidance": {
         "when": "Adjust a member you lead in place — retune its compaction window, re-steer its claim lane, or stage a next-wake brief — without the cost of a respawn. Pass just the fields you want to change.",
         "notWhen": "To change boot-baked settings (model/effort/account/carry/contextSize/agent) — those need fleet:respawn-member. To steer with the write-time pool-collapse guard — scheduler:set_claim_spec directly. To stand the whole fleet down — fleet:wind-down.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -11742,7 +11742,7 @@
       "guidance": {
         "when": "Your fleet holds a REMOTE seat-offer (another machine ran resource:delegate kind:'agent_slot' for your fleet) and you want those seats actually running members. Pick the target from the fleet's open seat-offers (auto-picked when there is exactly one).",
         "notWhen": "Spawning from seats delegated on THIS machine → fleet:launch-on-plan (it consumes local seats directly). Spreading members across SEVERAL machines' seat-offers in one call → fleet:launch-on-plan placement:'remote' (it composes this request per target). Delegating seats in the first place → resource:delegate on the contributing machine.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -11809,7 +11809,7 @@
       "guidance": {
         "when": "Move a member to a different model/effort/account/context-size/agent/role — anything fixed at launch. It kills the old session and relaunches a replacement in the same fleet.",
         "notWhen": "For a RUNTIME tweak with no respawn (compaction limit, claim lane, a next-wake brief) — fleet:reconfigure-member. To change carry or seed claimKinds — fleet:launch-on-plan. To stand the whole fleet down — fleet:wind-down. To just kill (no replacement) — fleet:kill.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -11839,7 +11839,7 @@
       "guidance": {
         "when": "Lifting a stand-down: the risky change landed, the incident cleared, the mission is back on.",
         "notWhen": "The fleet was never wound down — a no-op resume just refreshes reason/by/ts (reported alreadyInState).",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -11933,7 +11933,7 @@
       "guidance": {
         "when": "Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.",
         "notWhen": "For the catalog of ALL fleets with availability, use fleet:list.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -12001,7 +12001,7 @@
       "guidance": {
         "when": "Routing option (2): handing a plan to an existing named fleet. Taking the leader role makes you its driver (D-002). Also the FIRST act when the owner designates you a fleet's leader — claim it (this is identity-establishing, not a confirm-gated write).",
         "notWhen": "Just becoming a worker in a fleet → fleet:join. Creating a fresh fleet → fleet:create (you are already its leader). Joining-as-leader in one call → fleet:join { as:'leader' }.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {
@@ -12067,7 +12067,7 @@
       "guidance": {
         "when": "Standing a fleet down at end-of-mission, before a risky shared-tree change, or on the owner's stand-down order — anywhere 'stop pulling work' must bind members who haven't read chat.",
         "notWhen": "To stop ONE member — coord:send them a yield / turn:interrupt. To pause a plan — plans:pause. To evict nursery cups — fleet:drain (the cup-fleet surface). A free-text \"please pause\" stays advisory by definition; this verb is the binding form.",
-        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } (it creates the fleet, opens the member windows AND auto-starts them on the plan; capability:terminal is command-only and refuses an agent launch with \"Wrong door\")."
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },
     {

@@ -65,7 +65,10 @@ import PlanCleanupReport, {
   buildPlanCleanupReviewGroups,
   planCleanupReviewConfidence,
 } from "./PlanCleanupReport";
-import { partitionReviewRows } from "../review-report/ReviewReportShell";
+import {
+  partitionReviewRows,
+  reviewRowVerb,
+} from "../review-report/ReviewReportShell";
 import type {
   PlanCleanupFinding,
   PlanCleanupRun,
@@ -272,9 +275,12 @@ describe("buildPlanCleanupReviewGroups", () => {
       // resolver simply never got to (P-004).
       accounting: "not-assessed",
     });
-    expect(rows.find((row) => row.id === "claim")?.action).toMatchObject({
-      label: "Assess",
-    });
+    // The verb is now a KEY into the shared vocabulary rather than a literal
+    // label, so the row and the commit button cannot word the same action
+    // differently. Assert the key, and that it still resolves to "Assess".
+    const claimAction = rows.find((row) => row.id === "claim")?.action;
+    expect(claimAction).toMatchObject({ key: "assess" });
+    expect(claimAction && reviewRowVerb(claimAction)).toBe("Assess");
   });
 
   it("matches the observed 24-row Plan partition and exposes every manual row", () => {
