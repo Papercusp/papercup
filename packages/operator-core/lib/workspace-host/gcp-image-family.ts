@@ -100,9 +100,20 @@ export interface GcpImageScanEvidence {
    * the npm findings under the bundle are ours and every one is fixable. Two populations with
    * opposite remediations, indistinguishable in this document until these fields.
    *
-   * EVIDENCE ONLY — no policy reads them yet, deliberately. D-202 section 4 sequences the npm
-   * remediation BEFORE the gate changes what it accepts, and D-196 set the precedent that the
-   * carry half is inert while the enforcement half is not.
+   * NO LONGER EVIDENCE ONLY — `GCP_IMAGE_SCAN_POLICY` is `providerImageScanPolicy('papercusp-bundled')`,
+   * so `evaluateImageScanPolicy` READS these fields and the GCP release verdict is scoped to the
+   * bundled bucket. D-202 section 4 sequenced the npm remediation BEFORE that flip; the flip has
+   * since landed, so a reader planning against "the gate measures the whole mount" is planning
+   * against a gate that no longer exists.
+   *
+   * The scoped verdict is earned, never assumed: image-scan-policy.ts requires the threshold to be
+   * exactly 'high' (the bucket measures only critical+high, so any other threshold is refused as
+   * `scope-attribution-mismatch`), requires all four of `vulnerabilityByScope`,
+   * `vulnerabilityCriticalHighByScope`, `secretsByScope` and `bundleCatalogedArtifacts` to be
+   * present (`scope-attribution-missing`), and requires `bundleCatalogedArtifacts >= 1`
+   * (`scope-attribution-invalid`) — because the failure mode of scoping is a false GREEN: get the
+   * bundle path wrong and everything attributes to 'inherited-base-image' while the bundled bucket
+   * reads a vacuous 0.
    */
   vulnerabilityByScope?: Readonly<Record<string, number>>;
   vulnerabilityCriticalHighByScope?: Readonly<Record<string, number>>;
