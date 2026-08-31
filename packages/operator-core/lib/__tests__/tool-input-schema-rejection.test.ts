@@ -86,6 +86,43 @@ describe('projected tool inputSchemas (invalid_args class — structural)', () =
     expect(projected.length).toBeGreaterThan(150);
   });
 
+  it('role-gated tools converted AT REGISTRATION are actually present (EI-21930203761949555)', () => {
+    // The representability check in the built-in suite above walks getCatalog(),
+    // which holds only the ~28 LEGACY built-ins. Role-gated `defineTool` tools —
+    // work_items:complete among them — never enter that registry: their args are
+    // converted by toArgsJsonSchema INSIDE registerRoleGatedAsProjected, and an
+    // unrepresentable schema (a trailing .transform()/effects anywhere in the
+    // imported schema graph, not just in the tool's own file) throws there, at
+    // module load.
+    //
+    // On 2026-08-31 that threw for work_items:complete and took the operator
+    // host down at boot: :3170 crash-looped (nRestarts=6, exit 7) and the same
+    // bundle would have killed :3070 on promotion, since the conversion runs
+    // again — unguarded — when tools/list is served. The only signal was a boot
+    // stack trace; no test NAMED the tool that had dropped out of the catalog.
+    //
+    // Anti-vacuity: a registration regression must fail HERE, by name, rather
+    // than at operator boot. (If the conversion throws again this file fails to
+    // collect at all — that is the same guard firing one stage earlier.)
+    const named = new Set(
+      projected.map((t) => t.expose?.mcp?.name).filter((n): n is string => !!n),
+    );
+    // Calibration control: a permanently-absent name must read as MISSING, or
+    // this whole assertion is vacuously true (e.g. if `named` were ever built
+    // from a field that does not exist and silently collapsed to every-key).
+    expect(
+      named.has('work_items:__not_a_real_tool__'),
+      'calibration failed: the membership check cannot report a missing tool, so the guard below proves nothing',
+    ).toBe(false);
+    for (const mustCover of ['work_items:complete', 'work_items:checkpoint']) {
+      expect(
+        named.has(mustCover),
+        `${mustCover} is missing from the projected MCP surface — its registration, and the ` +
+          `toArgsJsonSchema conversion inside it, did not complete (see EI-21930203761949555)`,
+      ).toBe(true);
+    }
+  });
+
   it('every projected tool exposes a well-formed object inputSchema', () => {
     const bad = projected.filter(
       (t) => !t.inputSchema || (t.inputSchema as { type?: string }).type !== 'object',
