@@ -1323,6 +1323,21 @@ export async function rehydrateLoopWakeText(
           ownerId: d.subscriberId,
           workspaceId: d.workspaceId,
         });
+    // EI-21969383091076581: WHEN this read ran, stated on every branch below.
+    //
+    // Filed as "the delivery-time lookup false-negatives — the header says NO checkpoint
+    // while loop:status returns the note". Measured, both reads were correct and 56s apart:
+    // the delivery read ran at 11:51:34Z and found nothing, the banner told the agent to
+    // "write the FIRST one before this turn ends", the agent did so at 11:52:30Z, and the
+    // loop:status call that "contradicted" the banner was reading the note the banner had
+    // just caused to exist.
+    //
+    // The absence branch stated no time at all while the success branch reported writtenAt,
+    // so there was no way to ORDER the two observations — which makes a correct banner and a
+    // correct status read look like a contradiction, and turns following the instruction into
+    // apparent proof the instruction was wrong. A reader that can see both timestamps sees a
+    // sequence instead of a conflict.
+    const deliveryReadAtIso = new Date().toISOString();
     const carryNoteReadFailed = meta.readFailed === true;
     // A failed read must not be rendered as an empty note. In particular, the
     // "none open" wall text would turn an unavailable store into a false
@@ -1371,13 +1386,18 @@ export async function rehydrateLoopWakeText(
           `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`
       : checkpointProvenCurrent
         ? `Current verified loop:checkpoint (resolved at delivery for owner ${d.subscriberId}, harness ${marker.harness}; ` +
-          `contentHash=${checkpointHash}; writtenAt=${new Date(meta.updatedAtMs!).toISOString()}):\n${liveNote}`
+          `contentHash=${checkpointHash}; writtenAt=${new Date(meta.updatedAtMs!).toISOString()}; readAt=${deliveryReadAtIso}):\n${liveNote}`
         : liveNote
-          ? `⚠ UNPROVEN delivery-time loop:checkpoint for owner ${d.subscriberId}, harness ${marker.harness}. ` +
+          ? `⚠ UNPROVEN delivery-time loop:checkpoint for owner ${d.subscriberId}, harness ${marker.harness} ` +
+            `(readAt=${deliveryReadAtIso}). ` +
             `The latest committed checkpoint could not be established (contentHash or write timestamp is unavailable); ` +
             `treat this note as a stale snapshot and do not trust or re-execute it. Reconcile the carry-note store ` +
             `identity and write loop:checkpoint before ending this turn:\n${liveNote}`
-          : `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness}. ` +
+          : `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness} ` +
+            `as of readAt=${deliveryReadAtIso} — this is a statement about that instant, NOT about the whole turn. ` +
+            `If you write a checkpoint after it (including the one this line is about to ask you for), a later ` +
+            `loop:status WILL return a note; that is the two reads being ordered, not a contradiction, so do not ` +
+            `file it as a false negative (EI-21969383091076581). ` +
             `If the wake text below contains a checkpoint, it is a stale fire-time snapshot; do not trust or re-execute it. ` +
             `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`;
 

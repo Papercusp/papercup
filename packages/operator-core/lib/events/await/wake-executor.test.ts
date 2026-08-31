@@ -1156,6 +1156,47 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     expect(out).toContain(STALE_TEXT);
   });
 
+  // EI-21969383091076581: the absence banner was filed as a false negative because it
+  // stated no read time. Measured, both reads were correct and 56s apart — the delivery
+  // read found nothing, the banner told the agent to write the first checkpoint, the agent
+  // did, and the later loop:status returned the note the banner had just caused to exist.
+  // Without a readAt there is no way to ORDER the two observations, so a correct banner and
+  // a correct status read look like a contradiction.
+  it('stamps the absence banner with the delivery READ time so a later loop:status cannot read as a contradiction', async () => {
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({ note: null, updatedAtMs: null }));
+    const before = Date.now();
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-loop-absent-readat' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, { getLoopCarryNoteWithMetaFn });
+
+    expect(out).toContain('NO delivery-time loop:checkpoint was found');
+
+    // The timestamp must be real and current, not a placeholder.
+    const stamped = out.match(/as of readAt=(\S+?)\s/)?.[1];
+    expect(stamped).toBeTruthy();
+    const stampedMs = Date.parse(stamped!);
+    expect(Number.isFinite(stampedMs)).toBe(true);
+    expect(stampedMs).toBeGreaterThanOrEqual(before - 1_000);
+    expect(stampedMs).toBeLessThanOrEqual(Date.now() + 1_000);
+
+    // And it must scope the claim to that instant rather than to the whole turn — the
+    // sentence that stops the next agent re-filing this.
+    expect(out).toContain('NOT about the whole turn');
+  });
+
+  it('stamps a PROVEN checkpoint with both writtenAt and readAt, so the two are orderable', async () => {
+    const writtenAtMs = Date.now() - 5_000;
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({
+      note: '## Did\nA real note.\n\n## Next action\nCarry on.',
+      updatedAtMs: writtenAtMs,
+    }));
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 4 }, subscriberId: 'su-loop-proven-readat' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, { getLoopCarryNoteWithMetaFn });
+
+    expect(out).toContain('Current verified loop:checkpoint');
+    expect(out).toContain(`writtenAt=${new Date(writtenAtMs).toISOString()}`);
+    expect(out).toMatch(/readAt=\S+/);
+  });
+
   it('keeps the delivery-time narrative checkpoint ahead of the injection-door spill (EI-20230529647745311)', async () => {
     const d = work({
       id: 990_002,
