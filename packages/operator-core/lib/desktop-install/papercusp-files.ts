@@ -3019,12 +3019,24 @@ async function installClaudeHooks(
   }
 
   const installed: string[] = [];
+  const refused: string[] = [];
   for (const name of CC_HOOK_FILES) {
     try {
       const data = await fs.readFile(path.join(srcDir, name));
       const dst = path.join(destDir, name);
       // Libraries are imported, not exec'd — 0644. Hooks stay 0755.
       const mode = CC_HOOK_LIB_FILES.has(name) ? 0o644 : 0o755;
+
+      // EI-21974793277035753: identical bytes mean there is nothing to publish. Skipping
+      // holds the steady-state launch at zero validation cost (the overwhelmingly common
+      // case is "no hook changed"), and avoids a pointless rename under live readers.
+      // Still reported as installed, because it IS installed — the settings merge below
+      // is gated on that, and a no-op pass must not silently un-gate it.
+      const current = await fs.readFile(dst).catch(() => null);
+      if (current && current.equals(data)) {
+        installed.push(name);
+        continue;
+      }
       // EI-18755593630003816: write to a same-directory temp file then rename() into
       // place, NOT a direct in-place fs.writeFile. This path is shared across every
       // agent session on the box (one `home`/HOME dir), and installClaudeHooks re-runs
@@ -3038,6 +3050,21 @@ async function installClaudeHooks(
       const tmp = `${dst}.psu-install.${process.pid}.tmp`;
       await fs.writeFile(tmp, data, { mode });
       await fs.chmod(tmp, mode);
+      // EI-21974793277035753: parse-check the staged copy BEFORE it becomes visible.
+      // rename(2) below guarantees readers see a whole file; this is what makes it a
+      // valid one. Refusing leaves the previously installed copy in place, which is the
+      // safe direction: a stale working hook beats a live broken one, and for the
+      // fail-open gate a broken copy would silently stop gating rather than error.
+      const syntax = await checkHookSyntax(tmp, name);
+      if (!syntax.ok) {
+        await fs.unlink(tmp).catch(() => {});
+        refused.push(name);
+        console.error(
+          `[desktop-install] cc hooks: REFUSING ${name} — it does not parse ` +
+            `(${syntax.detail}). Keeping the previously installed copy.`,
+        );
+        continue;
+      }
       await fs.rename(tmp, dst);
       installed.push(name);
     } catch (e) {
@@ -3047,6 +3074,26 @@ async function installClaudeHooks(
   // WI-37405 #3 — record WHERE these came from, so "which build are my hooks?" is one
   // read instead of hashing every file against four checkouts (what EI-19956921121874213
   // actually cost). Written after the copies so it always describes what is on disk.
+  // EI-21974793277035753: does `sourceSha` actually DESCRIBE what we just installed?
+  // resolveSourceGitProvenance answers "last commit touching these paths", which is not
+  // the same question, so without this the stamp can name a sha whose blob differs from
+  // the bytes on disk — and it looks authoritative while doing it. Resolved after the
+  // loop so the downgrade-refusal path never pays for it. Tri-state: `undefined` means
+  // "could not tell" (no git), NOT "clean".
+  const uncommitted = await resolveUncommittedSources(srcDir, CC_HOOK_FILES);
+  if (uncommitted && uncommitted.length > 0) {
+    console.warn(
+      `[desktop-install] cc hooks: ${uncommitted.length} file(s) UNCOMMITTED in ${srcDir} — ` +
+        `now live for every agent on this box, and NOT contained in ` +
+        `sha=${incomingProvenance.sourceSha ?? 'unknown'}: ${uncommitted.join(', ')}`,
+    );
+  }
+  if (refused.length > 0) {
+    console.error(
+      `[desktop-install] cc hooks: ${refused.length} file(s) refused as unparseable: ${refused.join(', ')}`,
+    );
+  }
+
   if (installed.length > 0) {
     await writeInstallStamp(destDir, {
       sourceDir: srcDir,
@@ -3056,10 +3103,12 @@ async function installClaudeHooks(
       unit: desktopInstallUnit(),
       installedBy: process.argv[1] ? path.basename(process.argv[1]) : undefined,
       files: installed,
+      uncommittedFiles: uncommitted,
     });
     console.log(
       `[desktop-install] hooks/cc <- ${srcDir} ` +
-        `(unit=${desktopInstallUnit()}, sha=${incomingProvenance.sourceSha ?? 'unknown'})`,
+        `(unit=${desktopInstallUnit()}, sha=${incomingProvenance.sourceSha ?? 'unknown'}` +
+        `${uncommitted && uncommitted.length > 0 ? `, ${uncommitted.length} uncommitted` : ''})`,
     );
   }
 
