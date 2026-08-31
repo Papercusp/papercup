@@ -2599,6 +2599,8 @@ describe('computeStages: position x health', () => {
             reason: 'hold while the repaired staging checkout is verified',
             pausedBy: 'su-release-owner',
             pausedAtMs: 1_786_780_000_000,
+            // P-004: null = no auto-resume scheduled (this fixture's pause predates TTL stamping).
+            expiresAtMs: null,
           },
           inconclusive: {
             status: 'repair-staging-mismatch',
@@ -4266,6 +4268,8 @@ describe('changeInCandidate (P-004)', () => {
               reason: 'hold while the repaired staging checkout is verified',
               pausedBy: 'su-release-owner',
               pausedAtMs: 1_786_780_000_000,
+              // P-004: null = no auto-resume scheduled (this fixture's pause predates TTL stamping).
+              expiresAtMs: null,
             },
             inconclusive: {
               status: 'repair-staging-mismatch',
