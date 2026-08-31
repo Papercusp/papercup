@@ -109,4 +109,80 @@ describe('recordSpawnGovernorObservation (best-effort contract)', () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  /**
+   * RECURRENCE GUARD. `duplicate` is an idempotent retry: it launches nothing and
+   * the ORIGINAL spawn already carries its own receipt, so having no row of our
+   * own is the CORRECT outcome, not an anomaly. Warning on it fired on every
+   * dedupe — production log-noise, a false anomaly signal, and an unexpected-
+   * console failure under vitest-fail-on-console that turned a previously-green
+   * operator-spawn idempotency test red.
+   *
+   * The `unknown` case below is the CALIBRATION: without it, a snapshot read that
+   * threw would make the duplicate assertion pass while measuring nothing at all.
+   */
+  it('does NOT log for a duplicate — an idempotent retry is an expected skip, not an anomaly', async () => {
+    // The snapshot read sits INSIDE the writer's try/catch and ahead of the log
+    // path, so without this mock it throws (no live pg) and the catch swallows —
+    // making a "did not log" assertion pass while measuring nothing. The
+    // CALIBRATION test below is what proved that, and this mock is the repair.
+    vi.doMock('./state-snapshot', () => ({
+      readGovernorStateSnapshot: async () => null,
+    }));
+    const { recordSpawnGovernorObservation } = await import('./spawn-observation-writer');
+    const logFn = vi.fn();
+    const sql = (() => {
+      throw new Error('sql must not be touched for a duplicate');
+    }) as never;
+
+    await recordSpawnGovernorObservation(
+      {
+        sql,
+        workspaceId: 'ws',
+        spawnId: 'spawn-dup',
+        doorOutcome: 'duplicate',
+        doorCap: 8,
+        doorRoleCap: null,
+        parentRole: 'operator',
+        childRole: 'su',
+        fleetSlug: null,
+        planSlug: null,
+        caller: 'test/writer-contract',
+      },
+      logFn,
+    );
+
+    expect(logFn).not.toHaveBeenCalled();
+  });
+
+  it('CALIBRATION: still logs an unknown outcome, so the duplicate assertion is not vacuous', async () => {
+    vi.doMock('./state-snapshot', () => ({
+      readGovernorStateSnapshot: async () => null,
+    }));
+    const { recordSpawnGovernorObservation } = await import('./spawn-observation-writer');
+    const logFn = vi.fn();
+    const sql = (() => {
+      throw new Error('sql must not be touched for an unknown outcome');
+    }) as never;
+
+    await recordSpawnGovernorObservation(
+      {
+        sql,
+        workspaceId: 'ws',
+        spawnId: 'spawn-unknown',
+        doorOutcome: 'unknown',
+        doorCap: 8,
+        doorRoleCap: null,
+        parentRole: 'operator',
+        childRole: 'su',
+        fleetSlug: null,
+        planSlug: null,
+        caller: 'test/writer-contract',
+      },
+      logFn,
+    );
+
+    expect(logFn).toHaveBeenCalledTimes(1);
+    expect(logFn.mock.calls[0]?.[0]).toContain('[spawn-governor-observation]');
+  });
 });

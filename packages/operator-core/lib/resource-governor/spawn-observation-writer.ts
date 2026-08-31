@@ -123,7 +123,14 @@ export async function recordSpawnGovernorObservation(
       failedAttemptSpawnId: input.failedAttemptSpawnId,
     });
     if (!targetSpawnId) {
-      logUnpersistable(input, observation, logFn);
+      // `duplicate` is EXPECTED to have no row of its own: the retry launched
+      // nothing, and the ORIGINAL spawn already carries its own receipt (see
+      // resolveObservationTarget). Skipping is the correct outcome, not an
+      // anomaly — so it must not warn. A warn here fires on EVERY idempotent
+      // retry, which is production log-noise, a false anomaly signal, and (the
+      // way this was actually caught) an unexpected-console failure in any test
+      // that exercises the dedupe path under vitest-fail-on-console.
+      if (input.doorOutcome !== 'duplicate') logUnpersistable(input, observation, logFn);
       return;
     }
 
