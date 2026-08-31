@@ -111,7 +111,7 @@ export async function setCompactionLimitForOwner(
       message:
         `Setting ${targetOwnerId}'s compaction limit is restricted to the leader of its fleet ` +
         `(${fleet?.leaderOwnerId ?? (fleetSlug ? 'none recorded' : 'target is in no fleet')}), the ` +
-        `queen, or the owner (an su session) — you are ${paneKind} (${callerId}). Ask that fleet's ` +
+        `Overwatch (system-authority) pane, or the owner (an su session) — you are ${paneKind} (${callerId}). Ask that fleet's ` +
         `leader, or have the member run config:set-compaction-limit itself.`,
     };
   }

@@ -55,7 +55,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('capability_envelope:set_role requires operator, architect, or mug role');
+      throw new Error('capability_envelope:set_role requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role)');
     }
     const role = args.role;
     const nextEnv: RoleEnvelope | null =

@@ -36,10 +36,10 @@ export default defineTool({
   name: 'improvements:triage',
   profile: 'engineer',
   description:
-    'Mug-turn triage: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier\'s lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.',
+    'Triage turn: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier\'s lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.',
   guidance: {
     when:
-      'To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item\'s rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Mug\'s judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the open-idea WINDOW after a taxonomy/policy change — every mode returns `coverage`; retriage-all adds `complete`, and complete:false means ideas beyond the window KEPT their old routing.',
+      'To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item\'s rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record your judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the open-idea WINDOW after a taxonomy/policy change — every mode returns `coverage`; retriage-all adds `complete`, and complete:false means ideas beyond the window KEPT their old routing.',
     notWhen: 'You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.',
     chaining: "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas. A rank breakdown showing a 'calibration' contribution → calibration:summary { predictor } to weigh the bettor's claim before deciding.",
     seeAlso: [
@@ -71,7 +71,7 @@ export default defineTool({
     decision: z
       .enum(['place', 'gate', 'gym', 'reject'])
       .optional()
-      .describe('For triage-one, the Mug\'s decision'),
+      .describe('For triage-one, the triaging agent\'s decision'),
     reason: z.string().optional().describe('Reason for the decision (required if decision is set)'),
     harnessSlug: z.string().min(1).max(80).optional().describe('(P-010) restrict to a specific Pot\'s ideas (default: all)'),
   }),
@@ -266,7 +266,7 @@ export default defineTool({
               coverage,
               decisions,
               note:
-                'Mug, review the decisions above. Use triage-one to record each decision you choose to apply. ' +
+                'Review the decisions above. Use triage-one to record each decision you choose to apply. ' +
                 'PREVIEW ONLY — this mode persists nothing. `decisions` covers the first ' +
                 `${coverage.examined} open idea(s)` +
                 (coverage.windowed ? ` of ${coverage.corpusTotal ?? 'an unknown number of'} in the corpus.` : '.'),

@@ -40,7 +40,7 @@ export default defineTool({
   description:
     'Confirm a pending promotion — merges the `from` worktree phase into `to` (e.g. staging → testing/production), optionally smoke-building, and records the promotion. Wraps POST /harness/:slug/promote/:id/confirm. Reversible via the phase rollback route.',
   guidance: {
-    when: 'A `kind:"promotion"` pending review (harness:pending_reviews) is ready — its review was approved (review:approve, if it also gated on one) and criteria are met — and you (Queen/operator) want to actually run the merge.',
+    when: 'A `kind:"promotion"` pending review (harness:pending_reviews) is ready — its review was approved (review:approve, if it also gated on one) and criteria are met — and you (operator / the owner) want to actually run the merge.',
     notWhen: 'The item is a plain (non-promotion) pending review — use review:approve; there is no merge to confirm.',
     chaining: 'harness:pending_reviews (find the promotion id) → [review:approve, if gated] → merge:approve { slug, id }.',
     seeAlso: [

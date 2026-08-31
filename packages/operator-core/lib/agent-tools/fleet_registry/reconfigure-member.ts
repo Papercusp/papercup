@@ -12,7 +12,9 @@
  *     wake/orient (no forced wake).
  *
  * Boot-baked settings (model/effort/account/carry/contextSize/agent) need a respawn — that is
- * fleet:respawn-member (P-008), not this. Member resolution + leader/queen/owner auth live in the
+ * fleet:respawn-member (P-008), not this. Member resolution + the leader / Overwatch-pane / owner auth
+ * grades (classifyFleetControlInvoker — its `'queen'` grade is reached by a LIVE Overwatch session,
+ * whose presence role IS the string `kettle`, so do not read that literal as tier residue) live in the
  * shared resolveFleetMemberTarget (member-target.ts), shared with fleet:respawn-member.
  */
 import { z } from 'zod';
@@ -27,7 +29,7 @@ import { json, ROUTING_LADDER } from './_shared';
 export default defineTool({
   name: 'fleet:reconfigure-member',
   description:
-    "Reconfigure ONE live fleet member's RUNTIME settings WITHOUT a respawn (as its leader/queen/owner): `compactionLimit` (rejected above the member's own spec+role ceiling; no clamped write), `claimSpec` (its versioned claim spec — validated, applied on its next scheduler:get_next), and/or `brief` (a next-wake message it reads on its next orient). `fleet` defaults to the one fleet you lead. For BOOT-BAKED settings (model/effort/account/carry/contextSize/agent) use fleet:respawn-member instead.",
+    "Reconfigure ONE live fleet member's RUNTIME settings WITHOUT a respawn (as its leader, an Overwatch pane, or the owner): `compactionLimit` (rejected above the member's own spec+role ceiling; no clamped write), `claimSpec` (its versioned claim spec — validated, applied on its next scheduler:get_next), and/or `brief` (a next-wake message it reads on its next orient). `fleet` defaults to the one fleet you lead. For BOOT-BAKED settings (model/effort/account/carry/contextSize/agent) use fleet:respawn-member instead.",
   guidance: {
     when: 'Adjust a member you lead in place — retune its compaction window, re-steer its claim lane, or stage a next-wake brief — without the cost of a respawn. Pass just the fields you want to change.',
     notWhen:
@@ -54,7 +56,7 @@ export default defineTool({
         .min(1)
         .max(120)
         .optional()
-        .describe('Fleet slug (or name — slugified). Defaults to the single fleet you lead; required if you lead several / act as queen/owner over another fleet.'),
+        .describe('Fleet slug (or name — slugified). Defaults to the single fleet you lead; required if you lead several, or if you are acting over another fleet as an Overwatch pane or the owner.'),
       compactionLimit: z
         .number()
         .int()

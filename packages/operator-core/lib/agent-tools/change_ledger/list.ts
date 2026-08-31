@@ -22,7 +22,7 @@ export default defineTool({
     chaining: 'change_ledger:calendar (which classes are live) → change_ledger:list { mutationClass } for the rows → the diff_ref (gym proposal id / git sha) for the change content.',
     seeAlso: [
       'change_ledger:calendar (per-class liveness / overlap advisory)',
-      'decision_ledger:list (Mug auto-decide vs gate rows)',
+      'decision_ledger:list (auto-decide vs gate rows)',
     ],
   },
   capability: 'intel:read',

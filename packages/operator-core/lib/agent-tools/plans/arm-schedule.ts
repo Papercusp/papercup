@@ -6,7 +6,7 @@
  * Authoring (plans:set-schedule) does NOT arm; this does — it materializes the plan's
  * routine (which fires system:plan-run on the computed next_fire_at) and sets
  * schedule_active. Autonomy-gated: the capability→category map classifies this as the
- * `schedule-arm` category (D-017, seeded never-auto), so the Queen's dispatch gate
+ * `schedule-arm` category (D-017, seeded never-auto), so the autonomy dispatch gate
  * escalates an autonomous arm to the owner until that category graduates; the owner arms
  * directly.
  */
@@ -32,7 +32,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:arm-schedule',
   description:
-    'Arm a scheduled plan so it starts firing runs on its cadence (materializes its routine + sets schedule_active). Authoring (plans:set-schedule) does not arm; this does. Autonomy-gated (schedule-arm category): the Mug escalates unless graduated; the owner arms directly.',
+    'Arm a scheduled plan so it starts firing runs on its cadence (materializes its routine + sets schedule_active). Authoring (plans:set-schedule) does not arm; this does. Autonomy-gated (schedule-arm category): an autonomous arm is escalated to the owner until that category graduates; the owner arms directly.',
   guidance: {
     when: 'Activating a plan you already scheduled (plans:set-schedule) so it begins firing runs.',
     notWhen: 'Authoring/editing the cadence (plans:set-schedule). Firing one run by hand (plans:run-now).',

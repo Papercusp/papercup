@@ -31,7 +31,7 @@ export default defineTool({
     'recipes at any age/run-count (still active + non-promoted only), reporting misses in `skipped`.',
   guidance: {
     when:
-      'Periodic hygiene (a Mug idle-turn task) to clear the long tail of one-off recipes that were ' +
+      'Periodic hygiene (an idle-turn task) to clear the long tail of one-off recipes that were ' +
       'authored on a single run and never reused. ALWAYS run it once with the default dryRun:true to ' +
       'review the candidates, then dryRun:false to retire them.',
     notWhen:

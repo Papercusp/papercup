@@ -109,6 +109,102 @@ describe('retired-tier current-guidance detector', () => {
   });
 });
 
+/**
+ * WI-1726926 — a role name inside a ROLE-ALLOWLIST ARRAY is an access-control
+ * VALUE, not guidance. `kettle` is the LIVE wire id of Overwatch
+ * (`overwatch/liveness.ts` pins `OVERWATCH_ROLE = 'kettle'`), so
+ * `agentRoles: [...SU_ROLES, 'kettle']` GRANTS a running executor access. Flagging
+ * it makes the ~93s gate leg red for correct code and pressures the next engineer
+ * to DELETE a live grant to get green — the guard becoming the defect.
+ *
+ * Measured 2026-08-31: all 6 offenders in `agent-tools/dev` and 3 of 4 in
+ * `agent-tools/plans` were this shape, every one correct.
+ *
+ * The narrowing must not become a hole, so all three directions are pinned here:
+ * silenced INSIDE the brackets, still flagged OUTSIDE them, and a calibration case
+ * proving the detector fires at all (without it, a detector broken to always-return-
+ * empty would pass the first two).
+ */
+describe('role-ALLOWLIST arrays are access-control data, not guidance', () => {
+  const offenders = (file: string, source: string) =>
+    findRetiredGuidanceOffenders(file, guidanceTextFor(file, source));
+
+  it('does not flag a live role grant inside an agentRoles allowlist', () => {
+    expect(
+      offenders('t.ts', `defineTool({ agentRoles: [...SU_ROLES, 'kettle'], description: 'reads a plan schema' });`),
+    ).toEqual([]);
+    // Multi-line, and an identifier that merely ENDS in ROLES.
+    expect(
+      offenders(
+        't.ts',
+        `const ALL_ROLES = [\n  'operator', 'mug', 'architect',\n  'worker', 'kettle',\n] as const;\nrunAll(ALL_ROLES);`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('STILL flags a retired-executor prescription outside the brackets', () => {
+    // The whole point: one character past `]` is not exempt.
+    expect(
+      offenders('t.ts', `defineTool({ agentRoles: ['mug'], description: 'The Mug dispatches work to a bee.' });`).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('calibration — the detector still fires on ordinary prose (proves the two above are not vacuous)', () => {
+    expect(offenders('t.ts', `const t = 'The Mug reviews this proposal and promotes it.';`).length).toBeGreaterThan(0);
+    // A .md file has no code to parse, so the narrowing must not reach it.
+    expect(offenders('t.md', `agentRoles: ['mug'] — the Mug dispatches work.`).length).toBeGreaterThan(0);
+  });
+
+  it('fails OPEN on an unterminated array rather than exempting the rest of the file', () => {
+    expect(offenders('t.ts', `const AGENT_ROLES = ['mug', 'The Mug dispatches work to a bee.`).length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it('is length-preserving, so reported line numbers stay exact', () => {
+    // split('') not [...text]: an astral char (this file family really does contain
+    // a 📣) would desync UTF-16 indices from code-point ones and blank the wrong span.
+    const source = `const x = 1;\ndefineTool({ agentRoles: ['operator','mug'] });\n// 📣\nconst y = 2;\n`;
+    const normalized = guidanceTextFor('t.ts', source);
+    expect(normalized).toHaveLength(source.length);
+    expect(normalized.split('\n')).toHaveLength(source.split('\n').length);
+  });
+});
+
+/**
+ * WI-1726926 — `red-queen` is a DOMAIN TERM (the arms-race hypothesis the gym's
+ * adversarial drills and the learning governor are named after), and `\bqueen\b`
+ * matches inside it because the hyphen is a word boundary. Measured 2026-08-31:
+ * **256 occurrences** across agent-tools/gym, agent-tools/learning,
+ * agent-tools/plans, git-pipeline-position.ts and their tests — not one about the
+ * retired role. A collision that common cannot be carried as per-file exemptions;
+ * the exemption list would become the corpus.
+ */
+describe('red-queen is the arms-race term, not the retired role', () => {
+  const offenders = (file: string, source: string) =>
+    findRetiredGuidanceOffenders(file, guidanceTextFor(file, source));
+
+  it('does not flag red-queen drills, in code OR prose', () => {
+    expect(offenders('t.ts', `const d = 'Red-queen drill outcomes — the optimizer runs them.';`)).toEqual([]);
+    expect(offenders('t.md', 'Red-queen drills are scheduled and run by the gym.')).toEqual([]);
+    expect(offenders('t.md', 'The red queen sandbox workspace dispatches drills.')).toEqual([]);
+  });
+
+  it('STILL flags the real role, including right after the word "red"', () => {
+    // Calibration + the adjacency case: only `red` IMMEDIATELY before `queen` is the term.
+    expect(offenders('t.md', 'The Queen dispatches work to a bee.').length).toBeGreaterThan(0);
+    expect(offenders('t.md', 'Mark it red. The Queen dispatches work to a bee.').length).toBeGreaterThan(0);
+  });
+
+  it('preserves length and casing so line numbers and neighbouring text survive', () => {
+    const source = 'Red-queen and red queen and RED-QUEEN.\n';
+    const out = guidanceTextFor('t.md', source);
+    expect(out).toHaveLength(source.length);
+    expect(out.startsWith('Red-')).toBe(true);
+    expect(out).toContain('RED-');
+  });
+});
+
 describe('retired-tier current-guidance live verdict', () => {
   it('scans every canonical active root and the canonical su prompt with zero exemptions-by-baseline', () => {
     const result = collectActiveRetiredGuidance(REPO_ROOT);

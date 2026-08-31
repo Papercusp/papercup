@@ -266,14 +266,14 @@ export function toToolResult(out: RouteIdeaResult): {
 export default defineTool({
   name: 'blender:route-idea',
   description:
-    "Route an su idea onto the PLAN rail: create a DRAFT plan (Queen/owner greenlights it) and record it in the routed-idea ledger (origin='su-ideate') so grade→outcome→feedback learning attributes back to it. Pass `draft {title, framing, mechanism, bet?, cheapExperiment?, lens?}` for a fresh idea, OR `featureId` to re-route an already-filed su feature — that path links the wi to the plan and leaves the wi OPEN for triage. Only rail:'plan' is supported (gym/instance land later).",
+    "Route an su idea onto the PLAN rail: create a DRAFT plan (the owner greenlights it) and record it in the routed-idea ledger (origin='su-ideate') so grade→outcome→feedback learning attributes back to it. Pass `draft {title, framing, mechanism, bet?, cheapExperiment?, lens?}` for a fresh idea, OR `featureId` to re-route an already-filed su feature — that path links the wi to the plan and leaves the wi OPEN for triage. Only rail:'plan' is supported (gym/instance land later).",
   capability: 'harness:write',
   guidance: {
-    when: "You have an su IDEATE-pass idea worth a real plan (not just a backlog item). Route a fresh idea with `draft`, or promote an already-filed feature with `featureId`. The draft lands in the Create tab as `status: draft` for Mug/owner review.",
+    when: "You have an su IDEATE-pass idea worth a real plan (not just a backlog item). Route a fresh idea with `draft`, or promote an already-filed feature with `featureId`. The draft lands in the Create tab as `status: draft` for owner review.",
     notWhen:
       'A small fix or friction — that is improvements:capture (kind bug/change). Grading a routed idea — blender:grade-idea. gym/instance rails — not wired here yet.',
     chaining:
-      'blender:route-idea → the draft plan appears for Mug/owner triage; greenlighting it (promoting the draft) starts the normal plan lifecycle, and classifyIdeaOutcome follows the plan:<slug> terminal state so the idea earns won/lost credit automatically.',
+      'blender:route-idea → the draft plan appears for owner triage; greenlighting it (promoting the draft) starts the normal plan lifecycle, and classifyIdeaOutcome follows the plan:<slug> terminal state so the idea earns won/lost credit automatically.',
     seeAlso: [
       'improvements:capture (file a smaller improvement instead of a plan)',
       'blender:grade-idea (grade a routed idea 1–5)',

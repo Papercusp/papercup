@@ -576,7 +576,7 @@ export default defineTool({
           ok: false,
           op: 'prepare-tag',
           refused: true,
-          reason: `role_forbidden — release:cut{op:prepare-tag,confirm:true} requires operator, mug, or architect role (you are role:${ctx.role ?? 'unknown'}).`,
+          reason: `role_forbidden — release:cut{op:prepare-tag,confirm:true} requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role) (you are role:${ctx.role ?? 'unknown'}).`,
         });
       }
 
@@ -771,7 +771,7 @@ export default defineTool({
           ok: false,
           op: 'abort-leg',
           refused: true,
-          reason: `role_forbidden — release:cut{op:abort-leg} requires operator, mug, or architect role (you are role:${ctx.role ?? 'unknown'}).`,
+          reason: `role_forbidden — release:cut{op:abort-leg} requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role) (you are role:${ctx.role ?? 'unknown'}).`,
         });
       }
       const platform = args.platform as Platform;
@@ -796,7 +796,7 @@ export default defineTool({
           ok: false,
           op: 'run-leg',
           refused: true,
-          reason: `role_forbidden — release:cut{op:run-leg} requires operator, mug, or architect role (you are role:${ctx.role ?? 'unknown'}). Cutting a real build is heavy + owner-walled. preflight/status/handoff/gate-status are open.`,
+          reason: `role_forbidden — release:cut{op:run-leg} requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role) (you are role:${ctx.role ?? 'unknown'}). Cutting a real build is heavy + owner-walled. preflight/status/handoff/gate-status are open.`,
         });
       }
       if (!isValidVersion(args.version)) {
@@ -920,7 +920,7 @@ export default defineTool({
         ok: false,
         op: 'run',
         refused: true,
-        reason: `role_forbidden — release:cut{op:run} requires operator, mug, or architect role (you are role:${ctx.role ?? 'unknown'}). Cutting a real build is heavy + owner-walled. preflight/status/handoff are open.`,
+        reason: `role_forbidden — release:cut{op:run} requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role) (you are role:${ctx.role ?? 'unknown'}). Cutting a real build is heavy + owner-walled. preflight/status/handoff are open.`,
       });
     }
     if (!isValidVersion(args.version)) {

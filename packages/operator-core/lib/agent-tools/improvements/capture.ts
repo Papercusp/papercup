@@ -543,7 +543,7 @@ export default defineTool({
               .max(120)
               .optional()
               .describe(
-                'the pot the observation came FROM — AUTO-DERIVED from ctx (the agent harness/pot) when omitted; explicit callers (Kettle/Blender) may set it',
+                'the pot the observation came FROM — AUTO-DERIVED from ctx (the agent harness/pot) when omitted; explicit callers (Overwatch/Blender) may set it',
               ),
             targetHive: z
               .string()

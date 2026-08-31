@@ -25,13 +25,13 @@ export default defineTool({
   name: 'work_items:amend',
   profile: 'engineer',
   description:
-    'Record a structural decision on a plan-run node (split | drop | reapproach | expand | note) durably, in one call. The Mug/operator disposes; a bee proposes. A disruptive amend on an in-flight node is flagged NEEDS-COMPENSATION (coordinate, never silently yank). The record is the commit-before-dispatch truth — amend BEFORE dispatching the dependent work.',
+    'Record a structural decision on a plan-run node (split | drop | reapproach | expand | note) durably, in one call. The steerer (operator / su / the fleet leader) disposes; the agent executing the node proposes. A disruptive amend on an in-flight node is flagged NEEDS-COMPENSATION (coordinate, never silently yank). The record is the commit-before-dispatch truth — amend BEFORE dispatching the dependent work.',
   guidance: {
     when: 'You are making (or, as a cup, PROPOSING) a non-re-derivable structural change to a plan-run node — split it, drop/re-approach the approach, expand a deferred region. Record it here in ONE call before dispatching the dependent work; the durable record is the resumable truth.',
     notWhen:
       'A routine progress update / finding → work_items:comment. Re-prioritizing the frontier (re-derivable, costs nothing to lose) → no amend needed. Finishing a node → work_items:complete / set_state.',
     chaining:
-      'work_items:get → work_items:amend { id, kind, rationale }. A bee PROPOSES (disposition=proposed); the Mug DISPOSES. requiresCompensation=true ⇒ a worker is mid-execution on the node — coordinate (coord:send) before/with the change.',
+      'work_items:get → work_items:amend { id, kind, rationale }. The executing agent PROPOSES (disposition=proposed); a steerer DISPOSES. requiresCompensation=true ⇒ a worker is mid-execution on the node — coordinate (coord:send) before/with the change.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

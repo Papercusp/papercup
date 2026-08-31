@@ -43,15 +43,107 @@ const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs"]);
  */
 export function guidanceTextFor(relativeFile, source) {
   if (!CODE_EXTENSIONS.has(path.extname(relativeFile).toLowerCase()))
-    return source;
+    return blankDomainTermCollisions(source);
+  let text;
   try {
-    return stripCommentsOnly(source, relativeFile);
+    text = stripCommentsOnly(source, relativeFile);
   } catch {
     // Fail OPEN, deliberately: an unparseable file is scanned raw rather than
     // skipped. A guard that silently drops a file it could not parse reports a
     // clean bill for text it never inspected.
-    return source;
+    text = source;
   }
+  return blankDomainTermCollisions(blankRoleAllowlistArrays(text));
+}
+
+/**
+ * `red-queen` is a DOMAIN TERM, not the retired role.
+ *
+ * The gym's adversarial drills (planted known answers, the `red-queen sandbox`
+ * workspace) and the learning governor take their name from the Red Queen
+ * arms-race hypothesis. `\bqueen\b` matches inside `red-queen` because the hyphen
+ * is a word boundary, so every one of these reads as a live prescription naming a
+ * retired executor. Measured 2026-08-31: **256 occurrences** across
+ * `agent-tools/gym`, `agent-tools/learning`, `agent-tools/plans`,
+ * `git-pipeline-position.ts` and their tests — not one of them about the role.
+ *
+ * A term this common cannot be carried as per-file exemptions: the exemption list
+ * would become the corpus. Blanking is length-preserving and matches only the
+ * `queen` token immediately preceded by `red` + one hyphen/space, so a real
+ * sentence ("the Queen places work") is untouched — as is the neighbouring word
+ * `red`, which nothing else keys on.
+ *
+ * Applied to PROSE files too (unlike the allowlist pass): the term appears in
+ * `.md` guidance, and a guard that flags a doc for saying "red-queen drill" is
+ * training its readers to ignore it.
+ */
+function blankDomainTermCollisions(text) {
+  // The callback re-emits the MATCHED prefix (not a lowercase literal) so casing is
+  // untouched, and 5 spaces replace the 5-char token — length in, length out.
+  return text.replace(/\b(red[-\s])queen\b/gi, (_m, prefix) => `${prefix}     `);
+}
+
+/**
+ * A role-name inside a ROLE-ALLOWLIST ARRAY is an ACCESS-CONTROL VALUE, not a
+ * sentence telling anyone to route work through that role — and treating the two
+ * alike makes this guard actively harmful.
+ *
+ * `kettle` is not a dead word: `overwatch/liveness.ts` pins
+ * `OVERWATCH_ROLE = "kettle"`, so it is the LIVE wire id of a running executor.
+ * `defineTool({ agentRoles: [...SU_ROLES, 'kettle'] })` therefore GRANTS Overwatch
+ * access, and flagging it means the next engineer who gives Overwatch a tool reds
+ * the ~93s gate leg for doing the correct thing. That is a booby trap, not a guard:
+ * the pressure it creates is to REMOVE a live grant to make the lint pass.
+ * (Measured 2026-08-31: 7 of the 70 remaining corpus offenders were this shape,
+ * across `agent-tools/dev` and `agent-tools/plans`, every one of them correct code.)
+ *
+ * Scope is deliberately narrow — the bracket range of an array literal assigned to
+ * an identifier that ENDS in `roles`/`Roles`/`ROLES` — and the blanking is
+ * LENGTH-PRESERVING, so reported line numbers stay exact and a role word one
+ * character OUTSIDE the closing bracket is still flagged. Prose cannot reach this
+ * exemption: `agentRoles: ['mug'], description: 'The Mug dispatches work'` still
+ * fires on the description. `retired-tier-guidance-guard.test.ts` pins all three
+ * behaviours (silenced-inside, flagged-outside, and a calibration case that proves
+ * the detector still fires at all).
+ */
+function blankRoleAllowlistArrays(text) {
+  const OPENER_RE = /\b[A-Za-z_$][A-Za-z0-9_$]*[Rr][Oo][Ll][Ee][Ss]\s*[:=]\s*\[/g;
+  /** A single allowlist that runs longer than this is not an allowlist. */
+  const MAX_ARRAY_CHARS = 4000;
+  // split(""), NOT [...text]: the spread iterates CODE POINTS while every index
+  // below (match.index, matchAll) is a UTF-16 offset. One emoji earlier in the
+  // file (allhive-broadcast-sweep.ts has a 📣) would shift the two apart and blank
+  // the wrong characters — silently, and only in files that contain one.
+  const chars = text.split("");
+  let match;
+  OPENER_RE.lastIndex = 0;
+  while ((match = OPENER_RE.exec(text)) !== null) {
+    const open = match.index + match[0].length - 1; // index of '['
+    let depth = 0;
+    let close = -1;
+    for (let i = open; i < text.length && i - open <= MAX_ARRAY_CHARS; i += 1) {
+      const ch = text[i];
+      if (ch === "[") depth += 1;
+      else if (ch === "]") {
+        depth -= 1;
+        if (depth === 0) {
+          close = i;
+          break;
+        }
+      }
+    }
+    // Unterminated / oversized ⇒ leave it alone. Failing OPEN keeps a malformed
+    // literal SCANNED rather than silently exempt.
+    if (close < 0) continue;
+    const body = text.slice(open + 1, close);
+    ROLE_RE_GLOBAL.lastIndex = 0;
+    for (const role of body.matchAll(ROLE_RE_GLOBAL)) {
+      const start = open + 1 + (role.index ?? 0);
+      for (let i = start; i < start + role[0].length; i += 1) chars[i] = " ";
+    }
+    OPENER_RE.lastIndex = close;
+  }
+  return chars.join("");
 }
 
 export const ACTIVE_RETIRED_GUIDANCE_ROOTS = [
@@ -163,13 +255,13 @@ export const ACTIVE_RETIRED_GUIDANCE_EXEMPTIONS = [
     file: "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
     anchor: "ControlAnchorState['route']",
     reason:
-      "`{ kind: 'mug' }` is a typed union MEMBER of the control-anchor route, consumed by instruction-lint.ts (mission-constraint rendering), cue-authority.ts and scout/nudge-recipient.ts. It is derived from the launch brief's own `source` string, so it is data about how a session was started. Whether that arm should be retired outright is a D-060 rewrite-vs-retire product call spanning four files — tracked separately; it is not stale guidance prose.",
+      "`{ kind: 'mug' }` is a typed union MEMBER of the control-anchor route, consumed by instruction-lint.ts (mission-constraint rendering), cue-authority.ts and scout/nudge-recipient.ts. It is derived from the launch brief's own `source` string, so it is data about how a session was started. Whether that arm should be retired outright is a D-060 rewrite-vs-retire product call spanning four files — tracked as WI-1822169; it is not stale guidance prose.",
   },
   {
     file: "packages/operator-core/lib/agent-tools/coordination/glance-tips.ts",
     anchor: "'wake-mode-manual'",
     reason:
-      "`audiences: [...]` is a GlanceAudience ENUM (GLANCE_AUDIENCES = user|mug|su|cup), exposed as coord:glance's caller-supplied `audience` zod enum — role-arrives-as-DATA, the blind spot this guard documents. The tip's reader-facing TEXT was corrected ('the queen won't self-drive' → 'agents won't self-drive'); the anchor is the tip ID rather than the audience literal so a NEWLY added tip is never silently exempt.",
+      "`audiences: [...]` is a GlanceAudience ENUM (GLANCE_AUDIENCES = user|mug|su|cup), exposed as coord:glance's caller-supplied `audience` zod enum — role-arrives-as-DATA, the blind spot this guard documents. The tip's reader-facing TEXT was corrected ('the queen won't self-drive' → 'agents won't self-drive'); the anchor is the tip ID rather than the audience literal so a NEWLY added tip is never silently exempt. Whether 'mug'/'cup' should be dropped from the enum outright is tracked as WI-1822169.",
   },
   {
     file: "packages/operator-core/lib/agent-tools/coordination/glance-tips.ts",
@@ -415,31 +507,8 @@ export function findRetiredGuidanceOffenders(file, source) {
  */
 export const ACTIVE_RETIRED_GUIDANCE_PENDING = [
   { path: "packages/operator-core/lib/agent-tools/pot", offenders: 20 },
-  { path: "packages/operator-core/lib/agent-tools/dev", offenders: 6 },
   { path: "packages/operator-core/lib/agent-tools/fleet", offenders: 5 },
-  { path: "packages/operator-core/lib/agent-tools/fleet_registry", offenders: 5 },
-  { path: "packages/operator-core/lib/agent-tools/improvements", offenders: 4 },
-  { path: "packages/operator-core/lib/agent-tools/plans", offenders: 4 },
-  { path: "packages/operator-core/lib/agent-tools/release", offenders: 4 },
-  { path: "packages/operator-core/lib/agent-tools/work_items", offenders: 4 },
-  { path: "packages/operator-core/lib/agent-tools/config", offenders: 2 },
   { path: "packages/operator-core/lib/agent-tools/deploy", offenders: 2 },
-  { path: "packages/operator-core/lib/agent-tools/gym", offenders: 2 },
-  { path: "packages/operator-core/lib/agent-tools/scout", offenders: 2 },
-  { path: "packages/operator-core/lib/agent-tools/capability", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/change_ledger", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/db", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/knowledge_packs", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/learning", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/loop", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/merge", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/recipes", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/review", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/routines", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/rubrics", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/scheduler", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/scorecards", offenders: 1 },
-  { path: "packages/operator-core/lib/agent-tools/slash", offenders: 1 },
 ];
 
 const PENDING_PATHS = new Set(

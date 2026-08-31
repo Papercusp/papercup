@@ -780,7 +780,7 @@ export default defineTool({
   description:
     "Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a declared plan and without a spec uses warned default ordering, while a plan-bound caller fails closed. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller's WI-/EI- intent; specId and revision are result provenance, not request arguments.",
   guidance: {
-    when: 'A self-pulling cup or su fleet member pulls from the Mug/leader spec instead of scanning. Pass { harness, heldPaths?, states?, rigAvailable? }; do NOT pass specId, revision, fleet, workspace, or claimSpec; claimedUnder reports it. This call returns at most one claim and has no `limit` argument.',
+    when: 'A self-pulling su fleet member pulls from the leader claim spec instead of scanning. Pass { harness, heldPaths?, states?, rigAvailable? }; do NOT pass specId, revision, fleet, workspace, or claimSpec; claimedUnder reports it. This call returns at most one claim and has no `limit` argument.',
     notWhen:
       'Coding-factory roles are pushed a FEATURE_ID and do not self-pull. For a specific id use work_items:claim; for plain non-fleet oldest-first use work_items:claim_next.',
     chaining:
@@ -789,7 +789,7 @@ export default defineTool({
       'work_items:claimable (how many / which items are claimable, WITHOUT claiming — same oracle, no side-effect)',
       'work_items:claim_next (plain oldest-first self-select, no spec)',
       'work_items:claim (claim a SPECIFIC item by id)',
-      'scheduler:set_claim_spec (the spec your queen or fleet leader steers you with)',
+      'scheduler:set_claim_spec (the spec your fleet leader steers you with)',
     ],
   },
   capability: 'work_items:write',

@@ -52,7 +52,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('governor:arm requires operator, architect, or mug role');
+      throw new Error('governor:arm requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role)');
     }
     if (args.enabled === undefined && args.budgetUsd === undefined) {
       throw new Error('governor:arm requires enabled and/or budgetUsd — a call with neither changes nothing');

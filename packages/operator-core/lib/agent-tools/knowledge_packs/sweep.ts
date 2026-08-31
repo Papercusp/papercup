@@ -15,7 +15,7 @@ export default defineTool({
     "Re-run the conflict judge across a hive's whole shared memory pool and report contradiction pairs — catches conflicts that emerged AFTER install (pack learnings vs what the hive organically learned later). Read-only; capped at 200 rows per sweep.",
   guidance: {
     when:
-      'Periodic hygiene (a Mug idle-turn task), after installing a pack into a hive with many organic learnings, or when agents seem to be following contradictory guidance.',
+      'Periodic hygiene (an idle-turn task), after installing a pack into a hive with many organic learnings, or when agents seem to be following contradictory guidance.',
     notWhen: 'At install time — knowledge_packs:install runs its own per-item review.',
     chaining: 'Resolve a reported pair deliberately: memory:forget the wrong side, or memory:update it to reconcile.',
     seeAlso: [

@@ -81,10 +81,12 @@ export function json(payload: Record<string, unknown>, isError = false) {
  */
 export const ROUTING_LADDER =
   'Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. ' +
-  '(1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to ' +
+  '(1) BACKLOG — work_items:create → the pot intake, for work nobody is driving yet. ' +
+  '(2) FLEET — hand the plan to ' +
   'an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then ' +
-  'drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } ' +
-  'to launch the member windows.';
+  'drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count } ' +
+  '(it creates the fleet, opens the member windows AND auto-starts them on the plan; ' +
+  'capability:terminal is command-only and refuses an agent launch with "Wrong door").';
 
 /**
  * Best-effort: recolor the CALLER's live terminal to a fleet's bound scheme right

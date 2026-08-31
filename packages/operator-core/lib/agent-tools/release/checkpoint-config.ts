@@ -114,7 +114,7 @@ export default defineTool({
 
     if (args.op === 'hold' || args.op === 'unhold') {
       if (!isOperatorConfigWriteRole(ctx.role)) {
-        throw new Error(`release:checkpoint-config ${args.op} requires operator, architect, or mug role`);
+        throw new Error(`release:checkpoint-config ${args.op} requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role)`);
       }
       const next: QualificationHold | null =
         args.op === 'hold'
@@ -157,7 +157,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('release:checkpoint-config set requires operator, architect, or mug role');
+      throw new Error('release:checkpoint-config set requires an operator-config write role (the isOperatorConfigWriteRole set — operator-equivalent write authority, NOT any su/worker role)');
     }
     const patch: Partial<ReleaseCheckpointConfig> = {};
     if (args.stallReds !== undefined) patch.stallReds = args.stallReds;
