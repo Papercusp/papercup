@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -839,5 +839,82 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
     expect(publish).toContain('VERSION="${1:-${PAPERCUSP_RELEASE_VERSION:-}}"');
     expect(publish).toContain('historyVersion !== expectedVersion || indexVersion !== expectedVersion');
     expect(publish).toContain('papercusp-page-mode" content="holding"');
+  });
+
+  it('public publish verification rejects stale history.json even when index/detail are current (EI-22012030186241177)', () => {
+    const publish = path.resolve(desktopDir, 'bin', 'publish-release-history.sh');
+    const runFixture = (historyMode: 'match' | 'stale') => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-history-publish-'));
+      const site = path.join(root, 'site');
+      const home = path.join(root, 'home');
+      const bin = path.join(root, 'bin');
+      fs.mkdirSync(path.join(site, 'plans'), { recursive: true });
+      fs.mkdirSync(path.join(site, 'work-items'), { recursive: true });
+      fs.mkdirSync(path.join(home, '.papercusp'), { recursive: true });
+      fs.mkdirSync(bin, { recursive: true });
+
+      const index = '<html><body><h2>1.2.3</h2><a href="work-items/WI-1.html">item</a></body></html>\n';
+      const history = '{"releases":[{"version":"1.2.3"}]}\n';
+      const detail = '<html>detail</html>\n';
+      fs.writeFileSync(path.join(site, 'index.html'), index);
+      fs.writeFileSync(path.join(site, 'history.json'), history);
+      fs.writeFileSync(path.join(site, 'work-items', 'WI-1.html'), detail);
+      fs.writeFileSync(
+        path.join(home, '.papercusp', 'release-host.env'),
+        'PAPERCUSP_UPDATE_BASE_URL=https://release.example/secret-path\n',
+      );
+      fs.writeFileSync(
+        path.join(home, '.papercusp', 'r2.env'),
+        'R2_ACCOUNT_ID=acct\nR2_BUCKET=bucket\nAWS_ACCESS_KEY_ID=key\nAWS_SECRET_ACCESS_KEY=secret\n',
+      );
+
+      // The publisher's identity gate and authenticated upload are stubbed so this
+      // test isolates the public-read proof. The curl stub serves current index/detail
+      // bytes but can deliberately return stale history bytes.
+      fs.writeFileSync(path.join(bin, 'npx'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(bin, 'aws'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      fs.writeFileSync(
+        path.join(bin, 'curl'),
+        `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const out = args[args.indexOf('-o') + 1];
+const url = args[args.length - 1] || '';
+if (url.endsWith('/index.html')) fs.copyFileSync(process.env.PROBE_SITE + '/index.html', out);
+else if (url.endsWith('/work-items/WI-1.html')) fs.copyFileSync(process.env.PROBE_SITE + '/work-items/WI-1.html', out);
+else if (url.endsWith('/history.json')) fs.writeFileSync(out, ${JSON.stringify(historyMode === 'match' ? history : '{"releases":[{"version":"0.0.1"}]}\\n')});
+else fs.writeFileSync(out, 'unexpected');
+process.stdout.write('200');
+`,
+        { mode: 0o755 },
+      );
+
+      const result = spawnSync('bash', [publish, '1.2.3'], {
+        cwd: path.resolve(__dirname, '../../../../'),
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          HOME: home,
+          PAPERCUSP_RELEASE_SITE_DIR: site,
+          PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner',
+          PROBE_SITE: site,
+          DRY_RUN: '0',
+        },
+        encoding: 'utf8',
+      });
+      fs.rmSync(root, { recursive: true, force: true });
+      return result;
+    };
+
+    // Positive control: matching public bytes still complete the publisher.
+    const matching = runFixture('match');
+    expect(matching.status).toBe(0);
+    expect(matching.stdout).toContain('history.json served and byte-identical');
+
+    // Falsifier: before the fix this stale feed was never fetched and the same
+    // publisher exited 0 after checking only index/detail. It must now refuse.
+    const stale = runFixture('stale');
+    expect(stale.status).not.toBe(0);
+    expect(`${stale.stdout}\n${stale.stderr}`).toContain('served history.json does NOT match');
   });
 });
