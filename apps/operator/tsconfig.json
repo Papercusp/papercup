@@ -55,7 +55,15 @@
     "**/*.ts",
     "**/*.tsx"
   ],
+  // EI-19467338750785149 (residual gap, MEASURED 2026-08-31): the comment above closed the
+  // `.next/types/**` route, but NOT this one. `next-env.d.ts` is gitignored and sits at the app
+  // root, so `include: ["**/*.ts"]` above swallows it the moment anything regenerates it — and
+  // it carries the same `/// <reference types="next" />`. Measured both ways at HEAD: without it
+  // 613 error blocks and ZERO ProcessEnv/NODE_ENV errors; with it restored, 872 blocks and 190
+  // ProcessEnv/NODE_ENV errors. Excluding it makes the program immune to the regenerated
+  // artifact instead of relying on nobody ever producing one.
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "next-env.d.ts"
   ]
 }
