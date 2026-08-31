@@ -16,14 +16,18 @@ import {
   base64ToUtf8,
   buildHostedWorkspaceSocketUrl,
   bytesToBase64,
+  formatUploadBytes,
   parseHostedWorkspaceProtocolMessage,
   readHostedWorkspaceId,
   readHostedWorkspaceTicket,
   utf8ToBase64,
+  HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES,
   type HostedWorkspaceFileEntry,
   type HostedWorkspaceSessionStatus,
   type HostedWorkspaceTabRole,
+  type HostedWorkspaceUploadLimits,
 } from "./hosted-workspace-session-protocol";
+import { planChunks } from "@papercusp/sync";
 import {
   parseHostedDesktopProtocolMessage,
   type HostedDesktopRosterEntry,
@@ -31,6 +35,17 @@ import {
 } from "./hosted-desktop-viewer-protocol";
 
 export type HostedDesktopQueryState = "idle" | "loading" | "ready" | "error";
+
+/**
+ * How long one chunk waits for its `file.progress` ack before the upload is
+ * abandoned.
+ *
+ * A bounded wait is what keeps a failed upload from becoming a hung one: the
+ * host answers a rejected chunk with `operation.error`, never a progress ack,
+ * so without a deadline the send loop would wait on an ack that is never
+ * coming and the UI would sit on "Uploading…" forever.
+ */
+const UPLOAD_CHUNK_ACK_TIMEOUT_MS = 30_000;
 
 /**
  * The PTY/control channel is the authenticated discovery plane for desktops.
@@ -162,6 +177,14 @@ export function HostedWorkspaceSession({
   );
   const connectEpochRef = useRef(0);
   const uploadRef = useRef<HTMLInputElement | null>(null);
+  /**
+   * Upload capability the CURRENT host advertised, or null when it advertised
+   * none. Null is a real state meaning "whole-file only", not "not yet known":
+   * an older host never sends it, so waiting for it would hang forever.
+   */
+  const uploadLimitsRef = useRef<HostedWorkspaceUploadLimits | null>(null);
+  /** Resolvers for in-flight chunk acks, keyed by uploadId. */
+  const uploadAckRef = useRef(new Map<string, () => void>());
   const callbackRefs = useRef({
     onWorkspaceIdChange,
     onDesktopBridgeChange,
@@ -430,8 +453,13 @@ export function HostedWorkspaceSession({
         );
         return;
       }
+      if (event.kind === "upload-progress") {
+        uploadAckRef.current.get(event.uploadId)?.();
+        return;
+      }
       if (event.kind === "ready") {
         setRole(event.role);
+        uploadLimitsRef.current = event.limits ?? null;
         setMeta((current) => ({ ...current, resumed: event.resumed }));
         setStatus("live");
         callbackRefs.current.onDesktopBridgeChange?.(desktopBridge);
@@ -702,19 +730,104 @@ export function HostedWorkspaceSession({
     async (file: File) => {
       if (role !== "controller") return;
       const target = joinPath(path === "." ? "" : path, file.name);
+      const limits = uploadLimitsRef.current;
+      const requestIdValue = requestId("upload");
       try {
-        const data = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
-        if (
-          !send({
-            type: "file.upload",
-            requestId: requestId("upload"),
-            path: target,
-            encoding: "base64",
-            data,
-          })
-        ) {
-          setNotice("Workspace relay unavailable; reconnect before uploading.");
+        const bytes = new Uint8Array(await file.arrayBuffer());
+
+        /* WHOLE-FILE PATH — the only shape a host that advertised no `limits`
+         * can assemble, so chunking here would corrupt rather than help.
+         *
+         * The size refusal is the substance of this branch. Above the envelope
+         * cap the relay closes the socket instead of answering, taking the
+         * terminal down with the upload, so the client must decline BEFORE
+         * sending. Declining converts a destroyed session into a sentence the
+         * user can act on. */
+        if (!limits) {
+          if (bytes.byteLength > HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES) {
+            setNotice(
+              `${file.name} is ${formatUploadBytes(bytes.byteLength)}; this workspace host accepts at most ${formatUploadBytes(HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES)} per upload. Reconnect once the host is updated to send larger files.`,
+            );
+            return;
+          }
+          if (
+            !send({
+              type: "file.upload",
+              requestId: requestIdValue,
+              path: target,
+              encoding: "base64",
+              data: bytesToBase64(bytes),
+            })
+          ) {
+            setNotice("Workspace relay unavailable; reconnect before uploading.");
+            return;
+          }
+          setNotice(`Uploading ${target}…`);
           return;
+        }
+
+        if (bytes.byteLength > limits.maxFileBytes) {
+          setNotice(
+            `${file.name} is ${formatUploadBytes(bytes.byteLength)}; this workspace accepts at most ${formatUploadBytes(limits.maxFileBytes)}.`,
+          );
+          return;
+        }
+
+        /* CHUNKED PATH. `planChunks` is the shared transfer-plane splitter from
+         * @papercusp/sync, reused rather than re-derived so the chunk maths has
+         * exactly one home. */
+        const uploadId = requestId("upload-id");
+        const chunks = planChunks(bytes.byteLength, limits.maxUploadChunkBytes);
+        try {
+          for (const chunk of chunks) {
+            const final = chunk.index === chunks.length - 1;
+            /* Registered BEFORE the send: an ack can arrive before the await
+             * is reached, and a resolver installed afterwards would miss it and
+             * stall the upload until the timeout. */
+            const acked = final
+              ? null
+              : new Promise<void>((resolve, reject) => {
+                  const timer = setTimeout(() => {
+                    uploadAckRef.current.delete(uploadId);
+                    reject(
+                      new Error(
+                        `the workspace host stopped acknowledging chunks after ${chunk.index}/${chunks.length}`,
+                      ),
+                    );
+                  }, UPLOAD_CHUNK_ACK_TIMEOUT_MS);
+                  uploadAckRef.current.set(uploadId, () => {
+                    clearTimeout(timer);
+                    resolve();
+                  });
+                });
+            if (
+              !send({
+                type: "file.upload",
+                requestId: requestIdValue,
+                path: target,
+                encoding: "base64",
+                data: bytesToBase64(bytes.subarray(chunk.start, chunk.end)),
+                chunk: { uploadId, index: chunk.index, count: chunks.length },
+              })
+            ) {
+              /* Settle the ack we just armed before bailing. Returning straight
+               * out would leave its timeout live to reject a promise nobody is
+               * awaiting — an unhandled rejection raised 30s after a failure the
+               * user was already told about. */
+              uploadAckRef.current.get(uploadId)?.();
+              setNotice("Workspace relay unavailable; reconnect before uploading.");
+              return;
+            }
+            /* The final chunk is answered by `file.result`, not `file.progress`
+             * — awaiting an ack for it would hang on a SUCCEEDED upload. */
+            if (!acked) break;
+            await acked;
+            setNotice(
+              `Uploading ${target}… ${chunk.index + 1}/${chunks.length}`,
+            );
+          }
+        } finally {
+          uploadAckRef.current.delete(uploadId);
         }
         setNotice(`Uploading ${target}…`);
       } catch (cause) {
