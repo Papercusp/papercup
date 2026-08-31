@@ -30,7 +30,7 @@
   width: min(1120px, calc(100% - 40px));
   margin: 24px auto;
   padding: 18px 20px;
-  color: var(--fg-muted, var(--fg));
+  color: var(--fg-mute, var(--fg));
   font-size: 13px;
 }
 
@@ -704,6 +704,10 @@
   justify-content: center;
   width: 22px;
   height: 20px;
+  /* globals.css `:where(button, .pc-btn) { min-height: 26px }` silently wins over
+     a declared height < 26px (EI-18690913356156250), so the 20px above would have
+     rendered as 26px. State it explicitly to keep the declared height honest. */
+  min-height: 20px;
   padding: 0;
   border-radius: 6px;
   border: 1px solid transparent;
@@ -738,7 +742,7 @@
   padding: 4px;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: var(--bg-elevated, var(--bg));
+  background: var(--bg-2, var(--bg));
   box-shadow: 0 8px 24px rgb(0 0 0 / 22%);
 }
 
