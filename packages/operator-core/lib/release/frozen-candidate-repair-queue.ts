@@ -446,6 +446,68 @@ export function shouldConvergeRepairHead(input: {
   return { converge: false, newRepairHead: null };
 }
 
+/**
+ * WI-1634331: whether an ALREADY-BUILT repair worktree may be fast-forwarded onto the
+ * queue's current `repairHead`.
+ *
+ * `shouldConvergeRepairHead` (above) advances the MOVABLE `repairHead`. Nothing moves the
+ * WORKTREE with it: `prepareFrozenRepairWorktree` builds that worktree exactly once and
+ * returns early forever after (its `.git`-exists guard — the very early return the
+ * converge contract doc already cites as this bug's evidence). So the converge fix repairs
+ * only the FIRST-build case; from the second dispatch onward `repairHead` walks forward
+ * while the worktree stays pinned where it was built.
+ *
+ * That gap is self-worsening rather than merely sticky. A fixer working in the stale
+ * worktree commits a descendant of the OLD head, so `finalizeFrozenRepairWorktree`'s
+ * `isAncestor(repairHead, head)` check fails, it throws, and the throw is swallowed into
+ * the same `null` the call site reads as "the fixer ran and correctly changed nothing" —
+ * burning an attempt on a state that can NEVER reach ready-to-verify. Every subsequent
+ * hourly converge widens the gap, so each remaining attempt burns faster than the last.
+ *
+ * This is deliberately the NARROWEST safe rule, because a repair worktree is the one place
+ * a dead fixer's unpushed work can still exist and there is no second copy of it:
+ *  - `dirty` — uncommitted work is present. NEVER move it. That work is unrecoverable once
+ *    clobbered, and `finalizeFrozenRepairWorktree` is precisely the path that commits it.
+ *  - `worktreeHeadIsAncestorOfRepairHead === true` — every commit reachable from the
+ *    worktree is ALREADY contained in `repairHead`, so a checkout can lose nothing by
+ *    construction. This is the wedge, and the only case that moves.
+ *  - `false` — the worktree holds commits `repairHead` does not (a real fixer commit, or a
+ *    genuine divergence). Leave it and let finalize adjudicate; that is its job.
+ *  - `null` — the ancestry check itself failed (a git error, an unreachable ref). Fails
+ *    closed exactly as `shouldConvergeRepairHead` does: no move.
+ *
+ * Returning the `reason` for a REFUSAL as well as for the move keeps the log at the call
+ * site able to say WHICH of those four states it observed. "The worktree was not re-synced"
+ * is otherwise indistinguishable across a lossless no-op, protected fixer work, and a
+ * broken git — the same conflation, one level up, that made the original defect silent.
+ */
+export function shouldResyncRepairWorktree(input: {
+  worktreeHead: string;
+  repairHead: string;
+  dirty: boolean;
+  worktreeHeadIsAncestorOfRepairHead: boolean | null;
+}): {
+  resync: boolean;
+  reason:
+    | "already-current"
+    | "dirty"
+    | "not-behind"
+    | "ancestry-unknown"
+    | "behind";
+} {
+  if (input.worktreeHead === input.repairHead) {
+    return { resync: false, reason: "already-current" };
+  }
+  if (input.dirty) return { resync: false, reason: "dirty" };
+  if (input.worktreeHeadIsAncestorOfRepairHead === null) {
+    return { resync: false, reason: "ancestry-unknown" };
+  }
+  if (!input.worktreeHeadIsAncestorOfRepairHead) {
+    return { resync: false, reason: "not-behind" };
+  }
+  return { resync: true, reason: "behind" };
+}
+
 function nonBlank(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }

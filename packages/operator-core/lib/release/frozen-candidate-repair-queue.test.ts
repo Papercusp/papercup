@@ -25,6 +25,7 @@ import {
   buildFrozenRepairConvergenceGateHealth,
   parseFrozenRepairConvergence,
   shouldConvergeRepairHead,
+  shouldResyncRepairWorktree,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 
@@ -1314,5 +1315,118 @@ describe('EI-21036544613774607 — shouldConvergeRepairHead (repairHead converge
     expect(result.newRepairHead).toBe(C2);
     // Never the immutable `candidate` field, and never any sha not passed in as stagingTip.
     expect(result.newRepairHead).not.toBe(C);
+  });
+});
+
+describe('WI-1634331 — shouldResyncRepairWorktree (stale repair-worktree predicate)', () => {
+  const OLD = 'a'.repeat(40);
+  const NEW = 'b'.repeat(40);
+
+  it('re-syncs a CLEAN worktree whose head is strictly contained in repairHead', () => {
+    // The wedge: converge advanced repairHead, the worktree stayed where it was built,
+    // and every commit it holds is already reachable from repairHead — so moving it
+    // cannot lose anything.
+    expect(
+      shouldResyncRepairWorktree({
+        worktreeHead: OLD,
+        repairHead: NEW,
+        dirty: false,
+        worktreeHeadIsAncestorOfRepairHead: true,
+      }),
+    ).toEqual({ resync: true, reason: 'behind' });
+  });
+
+  it('NEVER moves a dirty worktree — uncommitted fixer work has no second copy', () => {
+    // finalizeFrozenRepairWorktree is the path that commits this work. A checkout here
+    // would destroy it irrecoverably, so `dirty` outranks being behind.
+    expect(
+      shouldResyncRepairWorktree({
+        worktreeHead: OLD,
+        repairHead: NEW,
+        dirty: true,
+        worktreeHeadIsAncestorOfRepairHead: true,
+      }),
+    ).toEqual({ resync: false, reason: 'dirty' });
+  });
+
+  it('NEVER moves a worktree holding commits repairHead does not have', () => {
+    // A real fixer commit already exists on this worktree; finalize adjudicates it.
+    expect(
+      shouldResyncRepairWorktree({
+        worktreeHead: OLD,
+        repairHead: NEW,
+        dirty: false,
+        worktreeHeadIsAncestorOfRepairHead: false,
+      }),
+    ).toEqual({ resync: false, reason: 'not-behind' });
+  });
+
+  it('FAILS CLOSED when the ancestry check itself was inconclusive', () => {
+    // Same discipline as shouldConvergeRepairHead: a null ancestry verdict is UNKNOWN,
+    // never "safe to move".
+    expect(
+      shouldResyncRepairWorktree({
+        worktreeHead: OLD,
+        repairHead: NEW,
+        dirty: false,
+        worktreeHeadIsAncestorOfRepairHead: null,
+      }),
+    ).toEqual({ resync: false, reason: 'ancestry-unknown' });
+  });
+
+  it('is a no-op when the worktree is already at repairHead', () => {
+    expect(
+      shouldResyncRepairWorktree({
+        worktreeHead: NEW,
+        repairHead: NEW,
+        dirty: false,
+        worktreeHeadIsAncestorOfRepairHead: true,
+      }),
+    ).toEqual({ resync: false, reason: 'already-current' });
+  });
+
+  it('reports already-current even when the tree is dirty at the right head', () => {
+    // Head equality is checked FIRST, so an in-flight fixer working at the correct head
+    // is reported as needing nothing rather than as a protected-dirty refusal.
+    expect(
+      shouldResyncRepairWorktree({
+        worktreeHead: NEW,
+        repairHead: NEW,
+        dirty: true,
+        worktreeHeadIsAncestorOfRepairHead: null,
+      }),
+    ).toEqual({ resync: false, reason: 'already-current' });
+  });
+
+  it('gives every REFUSAL a distinct reason, so a no-op is never confused with a wedge', () => {
+    // The original defect was a conflation (a throw read as "changed nothing"). The
+    // predicate must not reintroduce one: the four non-moving states are distinguishable.
+    const reasons = [
+      shouldResyncRepairWorktree({
+        worktreeHead: NEW,
+        repairHead: NEW,
+        dirty: false,
+        worktreeHeadIsAncestorOfRepairHead: true,
+      }).reason,
+      shouldResyncRepairWorktree({
+        worktreeHead: OLD,
+        repairHead: NEW,
+        dirty: true,
+        worktreeHeadIsAncestorOfRepairHead: true,
+      }).reason,
+      shouldResyncRepairWorktree({
+        worktreeHead: OLD,
+        repairHead: NEW,
+        dirty: false,
+        worktreeHeadIsAncestorOfRepairHead: false,
+      }).reason,
+      shouldResyncRepairWorktree({
+        worktreeHead: OLD,
+        repairHead: NEW,
+        dirty: false,
+        worktreeHeadIsAncestorOfRepairHead: null,
+      }).reason,
+    ];
+    expect(new Set(reasons).size).toBe(4);
   });
 });

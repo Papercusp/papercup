@@ -115,6 +115,7 @@ import {
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   shouldConvergeRepairHead,
+  shouldResyncRepairWorktree,
   type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
@@ -8351,14 +8352,37 @@ async function runGreenCheckpointInner(
 
     if (decision.kind === "recover-dead-fixer") {
       const deadSpawnId = decision.fixerSpawnId;
+      // WI-1634331: `finalizeFrozenRepairWorktree` returns null for "the fixer ran and
+      // correctly changed nothing", and THROWS for "this worktree can never reach
+      // ready-to-verify" (its non-forward guard). Collapsing the throw into the same null
+      // made those two indistinguishable, so a structurally-unreachable queue burned its
+      // attempts one hourly tick at a time while the log said only "finalize failed" — the
+      // reader had no way to tell a spent attempt from an impossible one. Track the
+      // failure separately so the outcome below can NAME which of the two it observed.
+      let finalizeFailed = false;
       const finishedHead = await deps
         .finalizeFrozenRepairWorktree?.(repairQueue)
         .catch((e) => {
+          finalizeFailed = true;
           deps.log(
             `frozen repair finalize failed for ${repairQueue!.repairHead.slice(0, 8)}: ${e instanceof Error ? e.message : e}`,
           );
           return null;
         });
+      if (finalizeFailed) {
+        // Deliberately still burns the attempt: that is what makes the queue TERMINATE
+        // (attempts -> hold-exhausted -> blocked) instead of spinning forever, and this
+        // change is not the place to alter termination. What changes is that the state is
+        // no longer silent or mislabelled.
+        deps.log(
+          `frozen repair attempt for ${repairQueue.repairHead.slice(0, 8)} is being spent on an ` +
+            `UNREACHABLE finalize, not on a fixer that made no change — the repair worktree ` +
+            `${repairQueue.worktreePath} cannot produce a descendant of repairHead. Since ` +
+            `WI-1634331 prepareFrozenRepairWorktree re-syncs a clean, strictly-behind worktree ` +
+            `before each dispatch, a queue still reaching here has a worktree holding commits ` +
+            `repairHead does not (or a failing git), which no re-sync may safely discard.`,
+        );
+      }
       if (finishedHead && finishedHead !== repairQueue.repairHead) {
         repairQueue = markFrozenRepairFixerFinished(repairQueue, {
           spawnId: deadSpawnId,
@@ -13941,7 +13965,108 @@ export function realCheckpointDeps(
             return converged;
           },
           async prepareFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
-            if (existsSync(path.join(queue.worktreePath, ".git"))) return;
+            if (existsSync(path.join(queue.worktreePath, ".git"))) {
+              // WI-1634331: the worktree already exists, so the build below is skipped —
+              // but `repairHead` may have been converged FORWARD since it was built, and
+              // nothing else in the system ever moves this tree. Left alone, the fixer
+              // dispatched next works from a stale head, its commit is not a descendant of
+              // `repairHead`, and finalize burns an attempt on an unreachable state.
+              // Re-sync here, and ONLY when `shouldResyncRepairWorktree` proves it lossless.
+              try {
+                const worktreeHead = await revParse(queue.worktreePath, "HEAD");
+                const status = await exec(
+                  "git",
+                  ["-C", queue.worktreePath, "status", "--porcelain=v1"],
+                  { timeoutMs: SETUP_TREE_TIMEOUT_MS },
+                );
+                const dirty = Boolean(status.stdout.trim());
+                // Skip the ancestry probe entirely when dirty: the decision is already
+                // settled by `dirty`, and this saves a git call on the protected path.
+                const worktreeHeadIsAncestorOfRepairHead =
+                  dirty || worktreeHead === queue.repairHead
+                    ? null
+                    : await isAncestor(
+                        queue.worktreePath,
+                        worktreeHead,
+                        queue.repairHead,
+                      );
+                const decision = shouldResyncRepairWorktree({
+                  worktreeHead,
+                  repairHead: queue.repairHead,
+                  dirty,
+                  worktreeHeadIsAncestorOfRepairHead,
+                });
+                if (decision.resync) {
+                  await exec(
+                    "git",
+                    [
+                      "-C",
+                      queue.worktreePath,
+                      "checkout",
+                      "--detach",
+                      queue.repairHead,
+                    ],
+                    { timeoutMs: SETUP_TREE_TIMEOUT_MS },
+                  );
+                  // WI-40231 again: the gitlink can MOVE between the old head and
+                  // `repairHead`, so a checkout alone leaves the submodule working tree at
+                  // the wrong commit (or absent). Same non-fatal, loudly-logged contract as
+                  // the first-build path below — an unfetchable submodule must not wedge
+                  // the freeze, but the reader must be handed the cause, not a TS2307.
+                  const resyncSubmodules = await exec(
+                    "git",
+                    [
+                      "-C",
+                      queue.worktreePath,
+                      "submodule",
+                      "update",
+                      "--init",
+                      "--recursive",
+                    ],
+                    {
+                      timeoutMs: SETUP_TREE_TIMEOUT_MS,
+                      allowNonZero: true,
+                      killProcessGroupOnTimeout: true,
+                      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+                    },
+                  );
+                  if (resyncSubmodules.code !== 0) {
+                    log(
+                      `warn: re-synced frozen repair worktree ${queue.worktreePath} has ` +
+                        `INCOMPLETE submodules (git submodule update --init exited ` +
+                        `${resyncSubmodules.code}) — a relative-path import into a submodule ` +
+                        `will fail TS2307 in that tree regardless of the fix: ` +
+                        `${(resyncSubmodules.stderr || resyncSubmodules.stdout || "").trim().slice(0, 500)}`,
+                    );
+                  }
+                  log(
+                    `frozen repair worktree re-synced ${worktreeHead.slice(0, 12)} -> ` +
+                      `${queue.repairHead.slice(0, 12)} (clean, and every worktree commit was ` +
+                      `already contained in repairHead, so nothing could be lost)`,
+                  );
+                } else if (decision.reason !== "already-current") {
+                  log(
+                    `frozen repair worktree NOT re-synced (${decision.reason}): worktree at ` +
+                      `${worktreeHead.slice(0, 12)}, repairHead ${queue.repairHead.slice(0, 12)} — ` +
+                      `${
+                        decision.reason === "dirty"
+                          ? "uncommitted fixer work is present and must be preserved for finalize"
+                          : decision.reason === "not-behind"
+                            ? "the worktree holds commits repairHead does not; finalize adjudicates"
+                            : "the ancestry check failed, so failing closed"
+                      }`,
+                  );
+                }
+              } catch (error) {
+                // Fail closed to today's behaviour: an unchanged worktree is exactly the
+                // pre-fix state, never worse than it.
+                log(
+                  `frozen repair worktree re-sync check failed — leaving ${queue.worktreePath} ` +
+                    `unchanged: ${error instanceof Error ? error.message : error}`,
+                );
+              }
+              return;
+            }
             mkdirSync(path.dirname(queue.worktreePath), { recursive: true });
             await exec(
               "git",
