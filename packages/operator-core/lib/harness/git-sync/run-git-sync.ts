@@ -1309,9 +1309,11 @@ type BranchAttachmentResult = { branch: string } | { error: string };
  * Attach a detached repo before its first auto-commit. A submodule freshly checked
  * out by `git submodule update` is normally detached, but committing there without a
  * branch leaves the new commit reachable only through the worktree's detached HEAD.
- * Create the repo's own default branch when it is absent, or attach it only when an
- * existing local branch already points at the exact same HEAD. Never move or overwrite
- * a divergent local branch: that is evidence of work git-sync must not destroy.
+ * Create the repo's own default branch when it is absent. When an existing local
+ * branch is a strict ancestor of detached HEAD, atomically fast-forward that ref and
+ * attach it: `git submodule update` can legitimately advance the detached checkout
+ * without moving the dormant local branch. Never move a branch backward or across
+ * divergent history: that is evidence of work git-sync must not destroy.
  */
 const ensureBranchAttachedForCommit = async (
   runGit: RunGit,
@@ -1344,11 +1346,40 @@ const ensureBranchAttachedForCommit = async (
       return { error: `${repo}: cannot resolve existing local branch '${branch}' before attaching` };
     }
     if (localSha !== headSha) {
-      return {
-        error:
-          `${repo}: refusing to attach detached HEAD to divergent local branch '${branch}' ` +
-          `(local ${localSha.slice(0, 12)} != HEAD ${headSha.slice(0, 12)})`,
-      };
+      const ancestry = await runGit(['merge-base', '--is-ancestor', localSha, headSha], repo);
+      if (ancestry.code === 0) {
+        // Compare-and-swap the dormant branch ref. The expected-old argument is
+        // load-bearing: if a peer moves the branch after our ancestry read, git
+        // refuses instead of overwriting their new tip.
+        const fastForward = await runGit(
+          ['update-ref', `refs/heads/${branch}`, headSha, localSha],
+          repo,
+        );
+        if (fastForward.code !== 0) {
+          return {
+            error:
+              `${repo}: failed to fast-forward existing local branch '${branch}' from ` +
+              `${localSha.slice(0, 12)} to detached HEAD ${headSha.slice(0, 12)}: ` +
+              `${(fastForward.stderr || fastForward.stdout).trim()}`,
+          };
+        }
+        log(
+          `[git-sync] ${repo}: fast-forwarded dormant '${branch}' from ` +
+          `${localSha.slice(0, 12)} to detached HEAD ${headSha.slice(0, 12)}`,
+        );
+      } else if (ancestry.code === 1) {
+        return {
+          error:
+            `${repo}: refusing to attach detached HEAD to divergent local branch '${branch}' ` +
+            `(local ${localSha.slice(0, 12)} cannot fast-forward to HEAD ${headSha.slice(0, 12)})`,
+        };
+      } else {
+        return {
+          error:
+            `${repo}: cannot compare existing local branch '${branch}' with detached HEAD before attaching: ` +
+            `${(ancestry.stderr || ancestry.stdout).trim()}`,
+        };
+      }
     }
     const attach = await recoverIndexLockContention(
       await runGit(['switch', branch], repo),
