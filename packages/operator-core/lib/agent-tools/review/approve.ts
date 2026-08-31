@@ -40,7 +40,7 @@ export default defineTool({
   description:
     'Approve (or reject-with-response) a pending review — e.g. a code-review-shaped blocking question the pipeline raised, listed via harness:pending_reviews — recording the decision and unblocking the review\'s feature. Wraps POST /harness/:slug/reviews/:id/resolve. Single call, one review.',
   guidance: {
-    when: 'harness:pending_reviews lists an unresolved review you (Queen/operator) want to accept or answer, unblocking the feature it gated.',
+    when: 'harness:pending_reviews lists an unresolved review you (operator / the owner) want to accept or answer, unblocking the feature it gated.',
     notWhen:
       'The review is `kind:"promotion"` (a phase-merge gate) and you also want the merge itself to run — approve here, then call merge:approve with the same id to actually merge the phase forward.',
     chaining: 'harness:pending_reviews (find the review id) → review:approve { slug, id }.',
