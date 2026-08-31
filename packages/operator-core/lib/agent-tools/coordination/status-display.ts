@@ -49,7 +49,13 @@ const SLASH_TOOL_PREFIX = '/mcp__papercusp-su__tool:';
 
 export interface StatusDisplayGlance {
   wake?: { default?: string | null; stagedTotal?: number | null; stagedOwners?: number | null } | null;
-  bees?: { running?: number | null } | null;
+  /**
+   * `running` = host-process alive (what the ☕ chip counts). `working` is the
+   * confirmed-active subset glance also ships (EI-3226); declared here because
+   * glance assigns it, and an undeclared field is an excess-property error at
+   * that call site rather than an honest optional.
+   */
+  bees?: { running?: number | null; working?: number | null } | null;
   governor?: { anyPaused?: boolean | null; paused?: Array<{ key?: string | null }> | null } | null;
   activity?: Array<{ owner_id?: string | null; summary?: string | null }> | null;
   tips?: Array<{ id?: string | null; text?: string | null; command?: string | null }> | null;
@@ -138,6 +144,52 @@ export function sessionDisplayName(input: SessionDisplayNameInput = {}): Session
   const handle = selfShort(input.ownerId);
   if (handle) return { name: handle, source: 'handle' };
   return { name: '', source: 'none' };
+}
+
+/**
+ * Coerce a candidate objective/name string to a non-empty trimmed value, or null.
+ *
+ * The fallback chains below MUST treat a blank as absent: `coord_presence.intent`
+ * is a NOT-NULL text column defaulting to '', so an undeclared intent reads back
+ * as '' — falsy but NOT nullish — and a bare `?? null` would render an empty
+ * `🔭  · ` segment in every client status line.
+ */
+export function normalizeObjective(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Where a session's objective came from — the in-flight work-item, or the declared intent. */
+export type SessionObjectiveSource = 'work-item' | 'intent' | 'none';
+
+export interface SessionObjective {
+  objective: string | null;
+  source: SessionObjectiveSource;
+}
+
+/**
+ * THE objective chain — in-flight work-item title ?? declared coord intent
+ * (session-objective-display-2026-06-22).
+ *
+ * Lives here beside `sessionDisplayName` for the same reason D-003 gives for
+ * that one: `coord:glance` (OS terminal title) and `adv-roster` (HUD cards)
+ * both resolve it, and R1 requires them to agree — the roster's objective must
+ * be "the SAME chain and the SAME source the terminal title bar's objective
+ * segment uses today". Two `title ?? intent` expressions in two files is
+ * exactly how that guarantee rots.
+ *
+ * `source` is what lets the HUD decide whether it has a work-item ref worth
+ * printing on the card's secondary row, without re-deriving which branch won.
+ */
+export function sessionObjective(
+  input: { workItemTitle?: string | null; intent?: string | null } = {},
+): SessionObjective {
+  const title = normalizeObjective(input.workItemTitle);
+  if (title) return { objective: title, source: 'work-item' };
+  const intent = normalizeObjective(input.intent);
+  if (intent) return { objective: intent, source: 'intent' };
+  return { objective: null, source: 'none' };
 }
 
 /** Compact interval label: 120→'2m', 30→'30s', 3600→'1h', 5400→'1h30m'. */

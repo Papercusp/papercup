@@ -28,6 +28,11 @@ import { advSessionsByCoordOwner, isFailedTerminalLaunch, type AdvSessionRow } f
 import { readPsuHeadlessLaunchBlockHint, readPsuLaunchLogTail } from './psu-launch-log.mjs';
 import { heartbeatAgeTone, LIVE_MS, type Liveness } from './liveness';
 import { resolveSessionStates } from './agent-tools/coordination/liveness-oracle';
+import { getOrgPg } from '@papercusp/db-org';
+// The SHARED display-name / objective resolvers (D-003, R8). The HUD must not
+// grow its own copy of either fallback chain — the terminal title reads the same
+// two functions, and that is what keeps the two surfaces from disagreeing.
+import { sessionObjective } from './agent-tools/coordination/status-display';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
 import {
   claimsByAgent,
@@ -200,6 +205,30 @@ export interface RosterEntry {
    *  GUI mode chips (EI-7626). Distinct from `mode` below, which is the psu LAUNCH-time
    *  flag on the adv_sessions row. Empty when none set. */
   modes: AdvRosterMode[];
+  /**
+   * The owner-keyed MANUAL name a human gave this session
+   * (harness_shared.agent_display_names), or null when it has none — absence,
+   * never '' (plan hud-session-display-names-2026-08-31, D-003).
+   *
+   * This is the RAW manual layer, not the resolved headline: a card resolves
+   * `manualName ?? objective ?? shortHandle` through the shared
+   * `sessionDisplayName`, so the roster must hand over the layers rather than a
+   * pre-flattened string the board cannot un-flatten.
+   */
+  displayName: string | null;
+  /**
+   * What this session is working on — its in-flight work-item title falling back
+   * to its declared coord intent, resolved through the SAME shared
+   * `sessionObjective` chain the OS terminal title uses, so the card and the tab
+   * bar cannot disagree (R1/R8). null when neither is set.
+   */
+  objective: string | null;
+  /**
+   * The work-item id (WI-…) the objective came from, or null when the objective
+   * fell back to the declared intent (or is absent). The card's dim secondary
+   * row prints it beside the short agent id and the plan slug (R2).
+   */
+  objectiveWorkItemRef: string | null;
   /** The machine this agent runs on. For a LOCAL agent: this machine's fingerprint;
    *  for a FEDERATED (cross-machine, shared-hive) agent: its announced machine_label.
    *  The key the roster groups/tabs by. */
@@ -622,6 +651,94 @@ function launchHintFromArgv(argv: string[] | null | undefined): 'brain' | 'plann
  * Pure merge: presence rows (primary) LEFT-joined to adv_sessions by owner id.
  * Order is preserved (listPresence already returns newest-heartbeat-first).
  */
+/** Owners grouped by their workspace — every harness_shared batch read is workspace-scoped. */
+function ownersByWorkspace(
+  presence: Array<{ ownerId: string; workspaceId: string }>,
+): Map<string, string[]> {
+  const byWs = new Map<string, string[]>();
+  for (const p of presence) {
+    if (!p.workspaceId || !p.ownerId) continue;
+    const arr = byWs.get(p.workspaceId) ?? [];
+    arr.push(p.ownerId);
+    byWs.set(p.workspaceId, arr);
+  }
+  return byWs;
+}
+
+/**
+ * The manual display name for every roster owner — ONE query per workspace, not
+ * one per card (R10), batched beside the other joins for the same reason the
+ * modes/await/verdict reads are: a serial hop lands on the roster-merge baseline
+ * every caller pays.
+ *
+ * FAIL-OPEN (R9): a failed read yields an empty map, and an owner absent from
+ * the map is simply unnamed — the card then falls back to its objective, exactly
+ * as it rendered before this feature existed. It never throws a card.
+ */
+async function displayNamesByOwner(
+  presence: Array<{ ownerId: string; workspaceId: string }>,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    const { getAgentDisplayNames } = await import('./display-names/store');
+    await Promise.all(
+      [...ownersByWorkspace(presence).entries()].map(async ([ws, owners]) => {
+        for (const [owner, name] of await getAgentDisplayNames(ws, owners)) out.set(owner, name);
+      }),
+    );
+  } catch {
+    return new Map();
+  }
+  return out;
+}
+
+/** One owner's in-flight work item — the work-item half of the objective chain. */
+export interface RosterWipItem {
+  title: string | null;
+  workItemRef: string | null;
+}
+
+/**
+ * The in-flight work item for every roster owner — ONE query per workspace
+ * (R10), using `DISTINCT ON (taken_by)` with the same ordering coord:glance's
+ * single-owner read uses, so the two surfaces select the SAME row and therefore
+ * resolve the same objective (R1).
+ *
+ * Only the work-item HALF is read here. The intent fallback is applied at the
+ * entry-build site through the shared `sessionObjective`, where the presence
+ * row's intent is in hand — keeping this function a pure read and the chain in
+ * exactly one place (R8).
+ *
+ * FAIL-OPEN (R9): an empty map degrades every card to its declared intent.
+ */
+async function wipItemsByOwner(
+  presence: Array<{ ownerId: string; workspaceId: string }>,
+): Promise<Map<string, RosterWipItem>> {
+  const out = new Map<string, RosterWipItem>();
+  try {
+    const sql = getOrgPg().sql;
+    await Promise.all(
+      [...ownersByWorkspace(presence).entries()].map(async ([ws, owners]) => {
+        const ids = [...new Set(owners)];
+        if (!ids.length) return;
+        const rows = await sql<Array<{ taken_by: string; title: string | null; feature_id: string }>>`
+          SELECT DISTINCT ON (taken_by) taken_by, title, feature_id
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${ws}
+             AND taken_by IN ${sql(ids)}
+             AND status IN ('wip', 'building', 'failing')
+           ORDER BY taken_by, taken_at DESC NULLS LAST`;
+        for (const r of rows) {
+          out.set(r.taken_by, { title: r.title ?? null, workItemRef: r.feature_id ?? null });
+        }
+      }),
+    );
+  } catch {
+    return new Map();
+  }
+  return out;
+}
+
 export function mergeRosterEntries(
   presence: PresenceRecord[],
   advByOwner: Map<string, AdvSessionRow>,
@@ -662,6 +779,14 @@ export function mergeRosterEntries(
      *  degrades every entry to `accountPin: null` — "no dynamic pin", which is
      *  what an unpinned agent reads as anyway. */
     accountPinByOwner?: Map<string, { account: string; hard: boolean }>;
+    /** hud-session-display-names P-004: the owner-keyed manual names, batched.
+     *  Absent map ⇒ every entry reads displayName:null, which is what an unnamed
+     *  agent reads anyway — so a degraded read is indistinguishable from "nobody
+     *  has named anything", never a broken card (R9). */
+    displayNameByOwner?: Map<string, string>;
+    /** hud-session-display-names P-004: each owner's in-flight work item, batched.
+     *  Absent map ⇒ every objective falls back to the declared intent. */
+    wipByOwner?: Map<string, RosterWipItem>;
   } = {},
 ): RosterEntry[] {
   return presence.map((p) => {
@@ -674,6 +799,11 @@ export function mergeRosterEntries(
     const pane = classifyAgentPane({ role: adv?.role ?? p.agentRole ?? null, ownerId: p.ownerId });
     const claims = claimsByOwner.get(p.ownerId) ?? [];
     const currentPlanSlug = p.currentPlanSlug ?? adv?.planSlug ?? null;
+    // The objective chain resolved ONCE per entry, through the same shared
+    // function the OS terminal title calls (R1/R8), with the presence intent in
+    // hand as the fallback layer.
+    const wip = extra.wipByOwner?.get(p.ownerId);
+    const objective = sessionObjective({ workItemTitle: wip?.title, intent: p.intent });
     // EI-348 (P-013): for a spawned bee, the RUNNING nursery row is a first-
     // class liveness leg — presence is tool-call-coupled and goes stale during
     // heads-down local work while the supervisor keeps beating (and pid-alive
@@ -730,6 +860,12 @@ export function mergeRosterEntries(
       stale: p.stale,
       loopArmed: loopArmedOwners.has(p.ownerId),
       modes: modesByOwner.get(p.ownerId) ?? [],
+      displayName: extra.displayNameByOwner?.get(p.ownerId) ?? null,
+      objective: objective.objective,
+      // Only meaningful when the objective actually came from a work item — an
+      // intent-derived objective has no ref, and printing one anyway would put a
+      // work-item id on the card's secondary row that the headline is not about.
+      objectiveWorkItemRef: objective.source === 'work-item' ? (wip?.workItemRef ?? null) : null,
       // Federated (cross-machine) rows carry federated:true + machineLabel; local
       // rows get their machine label stamped in mergeRosterWithAssignments.
       machineLabel: (p as { federated?: boolean }).federated
@@ -859,6 +995,13 @@ export function pendingLaunchesToRosterEntries(
       stale: false,
       loopArmed: false,
       modes: [],
+      // A pending launch has no presence row yet, so there is no intent to fall
+      // back to and no claimed work item — and the manual-name batch is keyed off
+      // presence, so it holds nothing for this owner either. The card resolves to
+      // the short handle until the session actually comes up.
+      displayName: null,
+      objective: null,
+      objectiveWorkItemRef: null,
       machineLabel: null,
       isLocal: true,
       workspaceId: r.workspaceId,
@@ -995,6 +1138,13 @@ export function startingLaunchesToRosterEntries(
       stale: false,
       loopArmed: false,
       modes: [],
+      // A pending launch has no presence row yet, so there is no intent to fall
+      // back to and no claimed work item — and the manual-name batch is keyed off
+      // presence, so it holds nothing for this owner either. The card resolves to
+      // the short handle until the session actually comes up.
+      displayName: null,
+      objective: null,
+      objectiveWorkItemRef: null,
       machineLabel: null,
       isLocal: true,
       workspaceId: r.workspaceId,
@@ -1515,7 +1665,15 @@ export async function mergeRosterWithAssignments(
   }
   // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping —
   // and the official standing-modes read (EI-7626), both batched, in parallel.
-  const [fleetInfoByOwner, modesByOwner, awaitByOwner, verdictByOwner, accountPinByOwner] = await Promise.all([
+  const [
+    fleetInfoByOwner,
+    modesByOwner,
+    awaitByOwner,
+    verdictByOwner,
+    accountPinByOwner,
+    displayNameByOwner,
+    wipByOwner,
+  ] = await Promise.all([
     resolveFleetInfoByOwner(presence),
     agentModesByOwner(presence),
     // adv-hud P-001: the open-await join (HUD's Blocked column). Batched here
@@ -1556,6 +1714,13 @@ export async function mergeRosterWithAssignments(
     // every entry reads `accountPin: null`, which is what an unpinned agent
     // reads anyway.
     getOwnerPinsMap(workspaceId ?? activeWorkspaceId()).catch(() => new Map<string, OwnerPin>()),
+    // hud-session-display-names P-004: the card headline's two data layers —
+    // the owner-keyed manual name and each owner's in-flight work item. ONE
+    // query per workspace each (R10), batched HERE beside the other joins for
+    // the same reason they are: a serial hop lands on the roster-merge baseline
+    // every caller pays. Both are fail-open internally (R9).
+    displayNamesByOwner(presence),
+    wipItemsByOwner(presence),
   ]);
   const entries = mergeRosterEntries(
     presence,
@@ -1571,7 +1736,7 @@ export async function mergeRosterWithAssignments(
     runInfoByOwner,
     loopArmedOwners,
     modesByOwner,
-    { awaitByOwner, sessionBriefHarness, verdictByOwner, accountPinByOwner },
+    { awaitByOwner, sessionBriefHarness, verdictByOwner, accountPinByOwner, displayNameByOwner, wipByOwner },
   );
   const active = enrichPidLiveness(entries, os.hostname());
   // Stamp local agents with this machine's label (federated rows already carry their

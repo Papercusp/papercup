@@ -35,7 +35,13 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { getFleet, listFleetsLedBy, resolveFleetScheme } from '../../../agent-fleets-store';
 import { nearestColorSquareEmoji } from '../../../console-color-schemes';
 import { getModes } from '../../../modes/store';
-import { renderStatusDisplay, type StatusDisplayGlance } from '../status-display';
+import { getAgentDisplayName } from '../../../display-names/store';
+import {
+  normalizeObjective,
+  renderStatusDisplay,
+  sessionObjective,
+  type StatusDisplayGlance,
+} from '../status-display';
 
 const DEFAULT_ACTIVITY_LIMIT = 12;
 
@@ -146,16 +152,25 @@ export async function getBeeCounts(
 }
 
 /**
- * Coerce a candidate objective string to a non-empty trimmed value, or null.
- * The fallback chain (wip-title → presence intent → null) MUST treat a blank
- * value as "absent": `coord_presence.intent` is a NOT-NULL text column defaulting
- * to '', so an undeclared intent reads back as '' (falsy but not nullish) and a
- * bare `?? null` would render an empty `🔭  · ` segment in every client status line.
+ * Re-exported from the shared render module, where it now lives beside the
+ * display-name and objective resolvers it serves (plan
+ * hud-session-display-names-2026-08-31, D-003). Kept exported here so existing
+ * importers of this path keep working.
  */
-export function normalizeObjective(value: string | null | undefined): string | null {
-  if (value == null) return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+export { normalizeObjective } from '../status-display';
+
+/**
+ * The caller's concrete workspace — the ctx scope unless it is absent or the
+ * all-workspaces wildcard, in which case the active registry workspace.
+ *
+ * Kept as a helper rather than inlined because each `self.*` segment below
+ * resolves it inside its OWN try block: that isolation is deliberate (a
+ * workspace-resolution hiccup must wipe only the segment that needed it, never
+ * the objective already resolved above), so the expression genuinely recurs.
+ */
+function resolveWorkspaceId(ctx: unknown): string {
+  const scoped = (ctx as { workspaceId?: string } | null | undefined)?.workspaceId;
+  return scoped && scoped !== '*' ? scoped : activeWorkspaceId();
 }
 
 export default defineTool({
@@ -303,14 +318,30 @@ export default defineTool({
     // ['auto','ideate']), so the statusline/GUI can render mode chips every tick with
     // NO extra call (EI-7626). Empty when none set. FAIL-OPEN like its siblings.
     let selfModes: string[] = [];
+    // self.displayName — the caller's owner-keyed MANUAL name
+    // (harness_shared.agent_display_names), read HERE so the OS terminal title
+    // can lead with it on the very next status tick after a rename, with no
+    // extra call and no client-side rule (plan hud-session-display-names,
+    // D-001/D-003 — `renderStatusDisplay` resolves the fallback chain, this just
+    // supplies the manual layer). null when the agent has no manual name, which
+    // is also what a read hiccup degrades to: the title then falls back to the
+    // objective exactly as it did before this feature existed (R9).
+    let selfDisplayName: string | null = null;
     // selfOwnerId is already resolved above (hoisted for the tips engine,
     // EI-7696) — reused here rather than re-resolved.
     try {
       const ownerId = selfOwnerId;
       if (ownerId) {
+        // workspace-scoped like every other harness_shared read: a bare owner_id
+        // filter must never reach across workspaces, and the HUD roster resolves
+        // this same objective per-workspace — an unscoped read here could pick a
+        // different row and break the parity R1 requires. Measured before adding
+        // the predicate: all 219 in-flight claimed rows carry a non-null
+        // workspace_id, so nothing that resolved before stops resolving.
         const wipRows = await sql<Array<{ title: string }>>`
           SELECT title FROM harness_shared.work_items
-          WHERE taken_by = ${ownerId} AND status IN ('wip', 'building', 'failing')
+          WHERE workspace_id = ${resolveWorkspaceId(ctx)}
+            AND taken_by = ${ownerId} AND status IN ('wip', 'building', 'failing')
           ORDER BY taken_at DESC NULLS LAST LIMIT 1`;
         // Fetch presence ONCE here — reused for the objective-intent fallback AND the
         // context gauge (avoids a second PK read on the statusline hot path).
@@ -319,8 +350,11 @@ export default defineTool({
         // undeclared intent reads back as '' (falsy, not nullish), so a bare `?? null`
         // would leak '' through and render an empty `🔭  · ` segment. Normalize blank
         // titles/intents to null so the fallback chain is honestly wip → intent → null.
-        const title = normalizeObjective(wipRows[0]?.title);
-        selfObjective = title ?? normalizeObjective(pres?.intent);
+        // ONE chain, shared with the HUD roster (R1/R8) — see sessionObjective.
+        selfObjective = sessionObjective({
+          workItemTitle: wipRows[0]?.title,
+          intent: pres?.intent,
+        }).objective;
         const ctxPct = contextUsagePct(pres?.contextTokens, pres?.compactionLimit);
         if (ctxPct != null && pres?.contextTokens != null && pres?.compactionLimit != null) {
           selfContext = { tokens: pres.contextTokens, limit: pres.compactionLimit, pct: ctxPct };
@@ -342,11 +376,7 @@ export default defineTool({
         // Fleets this agent leads + its member fleet → color squares + names for the
         // OS title. Own try so a fleet-read hiccup never wipes objective/loop above.
         try {
-          const wsId =
-            (ctx as { workspaceId?: string }).workspaceId &&
-            (ctx as { workspaceId?: string }).workspaceId !== '*'
-              ? (ctx as { workspaceId?: string }).workspaceId!
-              : activeWorkspaceId();
+          const wsId = resolveWorkspaceId(ctx);
           const seen = new Set<string>();
           for (const f of (await listFleetsLedBy(wsId, ownerId)).slice(0, 12)) {
             seen.add(f.fleetSlug);
@@ -373,14 +403,20 @@ export default defineTool({
         }
         // Official modes — own try so a modes-read hiccup never wipes the segments above.
         try {
-          const wsId =
-            (ctx as { workspaceId?: string }).workspaceId &&
-            (ctx as { workspaceId?: string }).workspaceId !== '*'
-              ? (ctx as { workspaceId?: string }).workspaceId!
-              : activeWorkspaceId();
+          const wsId = resolveWorkspaceId(ctx);
           selfModes = (await getModes(wsId, ownerId)).map((m) => m.mode);
         } catch {
           selfModes = [];
+        }
+        // Manual display name — own try, same discipline: a name is decoration,
+        // so a read hiccup drops to the objective fallback rather than costing
+        // the caller its whole status render (R9).
+        try {
+          selfDisplayName = normalizeObjective(
+            await getAgentDisplayName(resolveWorkspaceId(ctx), ownerId),
+          );
+        } catch {
+          selfDisplayName = null;
         }
       }
     } catch {
@@ -404,7 +440,14 @@ export default defineTool({
       governor: { anyPaused: governorPaused.length > 0, paused: governorPaused },
       activity,
       tips,
-      self: { objective: selfObjective, loop: selfLoop, fleets: selfFleets, context: selfContext, modes: selfModes },
+      self: {
+        objective: selfObjective,
+        displayName: selfDisplayName,
+        loop: selfLoop,
+        fleets: selfFleets,
+        context: selfContext,
+        modes: selfModes,
+      },
       // Loud tier marker (D-004): a non-full session sees the smaller
       // activity window is tier-derived (widen via activity_limit /
       // payloadTier:"full").
