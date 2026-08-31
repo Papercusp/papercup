@@ -942,3 +942,24 @@ describe('HudBoard — session card headline (D-001)', () => {
     expect(cssDeclarations('.hud__name--id')).toMatch(/font-family:/);
   });
 });
+
+describe('HUD responsive column cascade', () => {
+  it('keeps the narrow fallback off the weighted Plans grid', () => {
+    // Both selectors previously matched `.hud__cols hud__cols--weighted` at
+    // equal specificity, so this later media rule erased the H2 weighting and
+    // its 46px Ready/Done rails. Keep the exclusion source-backed: jsdom does
+    // not compute stylesheet layout, while the Tauri acceptance drive verifies
+    // the rendered geometry.
+    const narrowGridRule = HUD_CSS.match(
+      /@media\s*\(\s*max-width:\s*900px\s*\)\s*\{\s*([^{}]+)\{\s*([^{}]+)\}\s*\}/,
+    );
+    expect(narrowGridRule, 'the 900px HUD grid fallback must remain present').toBeTruthy();
+    expect(narrowGridRule?.[1].trim()).toBe('.hud__cols:not(.hud__cols--weighted)');
+    expect(narrowGridRule?.[2]).toContain(
+      'grid-template-columns: repeat(5, minmax(170px, 1fr));',
+    );
+    expect(cssDeclarations('.hud__cols--weighted')).toContain(
+      'minmax(220px, 1.35fr) minmax(260px, 2fr) minmax(180px, 1fr) 46px 46px',
+    );
+  });
+});

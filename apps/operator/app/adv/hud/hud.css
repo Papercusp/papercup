@@ -1502,7 +1502,9 @@
 }
 
 @media (max-width: 900px) {
-  .hud__cols { grid-template-columns: repeat(5, minmax(170px, 1fr)); }
+  .hud__cols:not(.hud__cols--weighted) {
+    grid-template-columns: repeat(5, minmax(170px, 1fr));
+  }
 }
 
 /* ── P-009: the goal-packages rail (work-on-everything-goal-2026-08-23) ─────
