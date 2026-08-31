@@ -7,6 +7,7 @@ import {
   projectCoordInboxForUi,
   projectCoordPlansForUi,
   COORD_TEXT_PREVIEW_MAX,
+  COORD_PLANS_UI_WINDOW,
 } from './coord-ui-projection';
 
 describe('projectCoordInboxForUi', () => {
@@ -125,6 +126,105 @@ describe('projectCoordPlansForUi', () => {
       expect(out).toHaveLength(1);
       expect(out[0]).not.toHaveProperty('now_state');
       expect((out[0].now_next as string).length).toBe(COORD_TEXT_PREVIEW_MAX);
+    });
+  });
+
+  // WI-7256 second half — the LARGER growth term. Dropping terminal run
+  // snapshots (above) bounded one population; ordinary authored plans accrue at
+  // ~45-50/week and were never bounded at all. Measured 2026-08-31: 1,486 rows
+  // / 634,634 B, past even the raised 390,000 ceiling.
+  describe('recency window (WI-7256)', () => {
+    const rows = (n: number, updated?: (i: number) => string | null) =>
+      Array.from({ length: n }, (_, i) => ({
+        slug: `plan-${String(i).padStart(5, '0')}`,
+        status: 'active',
+        updated: updated ? updated(i) : `2026-01-01`,
+      }));
+
+    it('does not window a corpus at or under the limit, and preserves its order', () => {
+      const input = rows(COORD_PLANS_UI_WINDOW, (i) => `2026-01-${String((i % 28) + 1).padStart(2, '0')}`);
+      const out = projectCoordPlansForUi(input) as Array<Record<string, unknown>>;
+      expect(out).toHaveLength(COORD_PLANS_UI_WINDOW);
+      expect(out.map((r) => r.slug)).toEqual(input.map((r) => r.slug));
+    });
+
+    it('caps an over-limit corpus at the window', () => {
+      const out = projectCoordPlansForUi(rows(COORD_PLANS_UI_WINDOW + 500)) as unknown[];
+      expect(out).toHaveLength(COORD_PLANS_UI_WINDOW);
+    });
+
+    it('keeps the most-recently-updated rows and drops the oldest', () => {
+      // Oldest first on input, so an unwindowed/unsorted implementation would
+      // keep exactly the wrong end — this is the assertion that fails if the
+      // window is removed or the sort direction is flipped.
+      const input = rows(COORD_PLANS_UI_WINDOW + 3, (i) => `2026-01-01`).map((r, i) => ({
+        ...r,
+        updated: `2026-${String(Math.floor(i / 400) + 1).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')}`,
+      }));
+      const newest = [...input].sort((a, b) => b.updated.localeCompare(a.updated))[0];
+      const out = projectCoordPlansForUi(input) as Array<Record<string, unknown>>;
+      expect(out[0].slug).toBe(newest.slug);
+      expect(out.map((r) => r.updated).every((u) => u === out[0].updated || u! <= out[0].updated!)).toBe(true);
+    });
+
+    it('sorts rows with no `updated` last, so they are dropped first', () => {
+      const dated = rows(COORD_PLANS_UI_WINDOW, () => '2026-06-01');
+      const undated = rows(5, () => null).map((r) => ({ ...r, slug: `undated-${r.slug}` }));
+      const out = projectCoordPlansForUi([...undated, ...dated]) as Array<Record<string, unknown>>;
+      expect(out).toHaveLength(COORD_PLANS_UI_WINDOW);
+      expect(out.some((r) => String(r.slug).startsWith('undated-'))).toBe(false);
+    });
+
+    it('is DETERMINISTIC when `updated` ties — input order cannot change the window', () => {
+      // Load-bearing, not cosmetic: `updated` is DATE-granularity, so the
+      // cutoff sits inside a tie, and coord.plans is delta-encoded. A window
+      // whose membership depended on input order would emit spurious
+      // add/remove deltas between two polls of unchanged data.
+      const input = rows(COORD_PLANS_UI_WINDOW + 50, () => '2026-06-01');
+      const shuffled = [...input].reverse();
+      const a = projectCoordPlansForUi(input) as Array<Record<string, unknown>>;
+      const b = projectCoordPlansForUi(shuffled) as Array<Record<string, unknown>>;
+      expect(b.map((r) => r.slug)).toEqual(a.map((r) => r.slug));
+    });
+
+    it('CONTROL: these assertions FAIL against the pre-WI-7256 unwindowed projection', () => {
+      // Falsifiability control (CLAUDE.md § "Proving a guard is falsifiable",
+      // MODULE tier: a deliberately-wrong implementation kept permanently in
+      // the test file, rather than mutating the shared tree). Without this,
+      // "the window test passes" says nothing about whether it CAN fail.
+      //
+      // This is the exact pre-fix body: project each row, never window.
+      const unwindowed = (input: Array<Record<string, unknown>>) =>
+        input.map(({ now_state: _drop, ...rest }) => rest);
+
+      const input = rows(COORD_PLANS_UI_WINDOW + 500, (i) =>
+        // oldest LAST, so ordering is also discriminated
+        `2026-${String(12 - (i % 12)).padStart(2, '0')}-01`,
+      );
+
+      // The control violates BOTH properties the window guarantees...
+      expect(unwindowed(input).length).toBeGreaterThan(COORD_PLANS_UI_WINDOW);
+      const controlNewest = unwindowed(input)[0].updated;
+      const trueNewest = [...input].sort((a, b) => String(b.updated).localeCompare(String(a.updated)))[0].updated;
+
+      // ...and the REAL subject satisfies them (the calibration half — without
+      // it, a broken subject would let the control pass vacuously too).
+      const real = projectCoordPlansForUi(input) as Array<Record<string, unknown>>;
+      expect(real).toHaveLength(COORD_PLANS_UI_WINDOW);
+      expect(real[0].updated).toBe(trueNewest);
+      expect(real[0].updated).not.toBe(controlNewest);
+    });
+
+    it('windows AFTER dropping terminal snapshots, so they cost no window slot', () => {
+      const snapshots = Array.from({ length: 50 }, (_, i) => ({
+        slug: `nightly@run-17842419636${String(i).padStart(2, '0')}`,
+        status: 'superseded',
+        updated: '2026-12-31', // newest, so an ordering bug would rank them first
+      }));
+      const real = rows(COORD_PLANS_UI_WINDOW, () => '2026-06-01');
+      const out = projectCoordPlansForUi([...snapshots, ...real]) as Array<Record<string, unknown>>;
+      expect(out).toHaveLength(COORD_PLANS_UI_WINDOW);
+      expect(out.some((r) => String(r.slug).includes('@run-'))).toBe(false);
     });
   });
 });

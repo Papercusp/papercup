@@ -17,6 +17,7 @@
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { useCallback, useEffect, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { COORD_PLANS_UI_WINDOW } from '@papercusp/operator-core/lib/sync-resolver/coord-ui-projection';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import CoordHistory from './CoordHistory';
 import styles from './coord.module.css';
@@ -408,6 +409,20 @@ function PlansPanel() {
       )}
       {plans.length === 0 && (
         <p className={styles.emptyCopy}>No structured plans found.</p>
+      )}
+      {/*
+        WI-7256: coord.plans is WINDOWED at the sync boundary. Say so — a
+        silently-truncated list is the one real cost of windowing, and the user
+        must be able to tell "this plan does not exist" from "it is older than
+        the window". Older plans stay reachable via plans:list / the
+        /api/coord/plans HTTP route, which are not windowed.
+      */}
+      {plans.length >= COORD_PLANS_UI_WINDOW && (
+        <p className={styles.emptyCopy}>
+          Showing the {COORD_PLANS_UI_WINDOW} most recently updated plans. Older
+          plans are not listed here — reach them by slug via{' '}
+          <code>plans:list</code> or <code>/api/coord/plans</code>.
+        </p>
       )}
       <ul className={styles.listCompact}>
         {plans.map((p) => (
