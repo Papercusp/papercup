@@ -50,6 +50,13 @@ import {
   type AdvanceResult,
   type RangeChangeSet,
 } from "./git-ops";
+import {
+  resolveSelectionBase,
+  selectionBaseGitFor,
+  selectionBaseLine,
+  type SelectionBaseInput,
+  type SelectionBaseResult,
+} from "./selection-base";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
 import { parseTscDiagnostics } from "@papercusp/operator-core/lib/tsc-diagnostics";
@@ -549,6 +556,8 @@ export interface CheckpointDeps {
     /** EI-18685042025868279: every test/workspace this run had to RE-RUN before calling the
      *  tree green (or red), with a measured per-item attempt count. See {@link RetriedTest}. */
     retriedTests?: RetriedTest[];
+    /** EI-19971472409393390: measured failure-shape aggregate from final isolation attempts. */
+    failureShape?: GateFailureShapeSummary;
     /** EI-18685042025868279: true ⇒ green with NOTHING absorbed — every test passed on its
      *  first run. false ⇒ green, but only after re-runs (a real flake, or a real
      *  intermittent bug, is live and would otherwise be invisible). ABSENT ⇒ unknown, which
@@ -584,6 +593,17 @@ export interface CheckpointDeps {
   /** WI-42350 — stamp `sha` as the last RED-judged candidate. Fail-open: a throw costs one
    *  redundant run and must never influence a verdict. */
   recordJudgedRed?(repo: string, sha: string): Promise<void>;
+  /** P-011 / D-009: resolve the affected-test SELECTION base for the candidate/repair
+   *  suite — the last COMPLETED verdict's candidate (the frozen queue's candidate on a
+   *  repair-verification run, else the P-047 test-certified watermark), guarded so it can
+   *  only ever SHRINK the radius relative to `lastReady`, falling back to `lastReady` on
+   *  every unverifiable branch. OPTIONAL on purpose: every existing fake dep predates it;
+   *  a dep that omits it gets the module default over a real git runner in the suite
+   *  tree, which in a fixture with no watermark ref and no frozen queue resolves to
+   *  `lastReady` (the historical pin) by construction. */
+  resolveSelectionBase?(
+    input: SelectionBaseInput & { repo: string },
+  ): Promise<SelectionBaseResult>;
   /** Publish a green candidate to `ref` on origin. `baseSha` (WI-7013) is the sha
    *  `ref` will advance FROM and is threaded through to the CI dispatch as the
    *  affected-test diff base. `candidateSha` is pushed directly before the local green
@@ -1280,6 +1300,8 @@ export interface CheckpointResult {
    *  verdict, with a measured attempt count — see {@link RetriedTest}. Absent ⇒ no absorber
    *  ran (or a dep that does not report it). */
   retriedTests?: RetriedTest[];
+  /** EI-19971472409393390: measured failure-shape aggregate from final isolation attempts. */
+  failureShape?: GateFailureShapeSummary;
   /** EI-18685042025868279: THE FIX. A green verdict used to report `failingTests: []`
    *  whether every test passed first time or whether failures were absorbed by re-runs —
    *  the two rendered identically, so a retry-absorbed green (a live flake, or a live
@@ -5676,6 +5698,43 @@ export interface RetriedTest {
   via: "load-flake-isolation" | "worker-crash-rerun";
 }
 
+/** EI-19971472409393390: compact, measured shape of the files whose FINAL isolated
+ *  attempt still failed. This is deliberately file-level rather than attempt-level: the
+ *  verdict's `failingTests` is file-level too, and a file that later passes must disappear
+ *  instead of leaving historical retry noise in the held-gate summary.
+ *
+ * `deterministic` wins over `timeout` when an output carries both signatures, matching the
+ * retry attribution's existing precedence. `unclassified` makes missing evidence explicit;
+ * it must never be inferred as either load-shaped or deterministic. */
+export interface GateFailureShapeSummary {
+  count: number;
+  deterministic: number;
+  timeout: number;
+  unclassified: number;
+  /** Maximum 1-minute loadavg per available core sampled immediately after those final
+   *  failed attempts. null means the sampler returned no finite value. */
+  maxLoadavgPerCore: number | null;
+}
+
+/** EI-19971472409393390: the machine-greppable aggregate for failure evidence that used to
+ *  live only in individual isolation-retry prose lines. Keep this flat token stable: triage
+ *  tooling can `grep -o 'GATE_FAILURE_SHAPE .*'` without parsing the surrounding summary. */
+export function formatGateFailureShapeNote(
+  shape: GateFailureShapeSummary,
+): string {
+  const maxLoad =
+    shape.maxLoadavgPerCore === null
+      ? "unknown"
+      : shape.maxLoadavgPerCore.toFixed(2);
+  return (
+    `GATE_FAILURE_SHAPE count=${shape.count} ` +
+    `deterministic=${shape.deterministic} ` +
+    `timeout=${shape.timeout} ` +
+    `maxLoadavgPerCore=${maxLoad} ` +
+    `unclassified=${shape.unclassified}`
+  );
+}
+
 /** The outcome of the whole flake-absorption attempt — what {@link runGreenCheckpoint}
  *  needs to (maybe) flip the verdict, plus the suspects to surface. */
 export interface FlakeAbsorptionOutcome {
@@ -5689,6 +5748,9 @@ export interface FlakeAbsorptionOutcome {
    *  actually re-ran anything — including when it declined to absorb. A red verdict's
    *  failingTests already names what broke, but only this says how hard the gate tried. */
   retriedTests: RetriedTest[];
+  /** EI-19971472409393390: structured source for the canonical GATE_FAILURE_SHAPE line.
+   *  Absent when no isolated file ended in a measured failure. */
+  failureShape?: GateFailureShapeSummary;
 }
 
 /**
@@ -5771,12 +5833,41 @@ export async function attemptFlakeAbsorption(
   // sites, most of them before any re-run has happened, and threading it through each one
   // would be 15 chances to forget.
   let retriedSoFar: RetriedTest[] = [];
-  const keep = (note: string): FlakeAbsorptionOutcome => ({
-    absorbedToGreen: false,
-    flakeSuspects: [],
-    note,
-    retriedTests: retriedSoFar,
-  });
+  type FailureShapeObservation = {
+    classification: "deterministic" | "timeout" | "unclassified";
+    loadavgPerCore: number | null;
+  };
+  // Latest result wins per file. A later pass deletes the entry, so the aggregate describes
+  // the FINAL isolation verdict rather than every transient retry on the way there.
+  const failureShapeByFile = new Map<string, FailureShapeObservation>();
+  const currentFailureShape = (): GateFailureShapeSummary | undefined => {
+    if (failureShapeByFile.size === 0) return undefined;
+    const rows = [...failureShapeByFile.values()];
+    const loads = rows
+      .map((row) => row.loadavgPerCore)
+      .filter((value): value is number => value !== null);
+    return {
+      count: rows.length,
+      deterministic: rows.filter(
+        (row) => row.classification === "deterministic",
+      ).length,
+      timeout: rows.filter((row) => row.classification === "timeout").length,
+      unclassified: rows.filter(
+        (row) => row.classification === "unclassified",
+      ).length,
+      maxLoadavgPerCore: loads.length ? Math.max(...loads) : null,
+    };
+  };
+  const keep = (note: string): FlakeAbsorptionOutcome => {
+    const failureShape = currentFailureShape();
+    return {
+      absorbedToGreen: false,
+      flakeSuspects: [],
+      note,
+      retriedTests: retriedSoFar,
+      ...(failureShape ? { failureShape } : {}),
+    };
+  };
   const retryMax = opts.retryMax ?? ISOLATION_RETRY_MAX;
   const retryDelayMs = opts.retryDelayMs ?? ISOLATION_RETRY_DELAY_MS;
   const retryBudgetMs = opts.retryBudgetMs ?? ISOLATION_RETRY_BUDGET_MS;
@@ -5802,6 +5893,34 @@ export async function attemptFlakeAbsorption(
     // cases that failed, instead of sending the reader to the separate full-suite log.
     const casesByFile = extractFailingCasesByFile(fullOutput);
     const originalFailing = parseFailingFilesByWorkspace(fullOutput);
+    const observeFailureShape = (
+      f: FailingFile,
+      result: IsolationResult,
+    ): FailureShapeObservation | null => {
+      const key = `${f.workspace}::${f.file}`;
+      if (result.passed) {
+        failureShapeByFile.delete(key);
+        return null;
+      }
+      const deterministic =
+        result.hasAssertionSignature === true ||
+        result.hasDeterministicFailureSignature === true ||
+        isDeterministicFailureShape({
+          originalCases: casesByFile.get(f.file),
+          attempt: result,
+        });
+      const sampledLoad = loadPerCore();
+      const observation: FailureShapeObservation = {
+        classification: deterministic
+          ? "deterministic"
+          : result.hasTimingSignature
+            ? "timeout"
+            : "unclassified",
+        loadavgPerCore: Number.isFinite(sampledLoad) ? sampledLoad : null,
+      };
+      failureShapeByFile.set(key, observation);
+      return observation;
+    };
     if (originalFailing.length === 0) {
       return keep(
         "isolation: no parseable failing test files (build break / non-vitest red) — gate stays red",
@@ -5853,6 +5972,7 @@ export async function attemptFlakeAbsorption(
         continue;
       }
       let result = await runOnce(f);
+      let failureShapeObservation = observeFailureShape(f, result);
       let attempt = 1;
       while (
         !result.passed &&
@@ -5895,7 +6015,11 @@ export async function attemptFlakeAbsorption(
         // was actually measured. This selects LOG WORDING ONLY: it must never feed the
         // absorption verdict (decideFlakeAbsorption), because "the box looked busy" is
         // exactly the false-green rationalisation WI-6956 exists to refuse.
-        const load = loadPerCore();
+        // The observation is captured immediately after the attempt, including the FINAL
+        // attempt for which no retry line is printed. Reuse its sample here so the detailed
+        // line and the aggregate summary can never disagree about the same attempt.
+        const load =
+          failureShapeObservation?.loadavgPerCore ?? loadPerCore();
         const loadNote = `loadavg/core ${load.toFixed(2)}`;
         // EI-19369790810564409: an AssertionError signature is DIRECT, POSITIVE evidence
         // of a deterministic failure — checked FIRST and unconditionally (independent of
@@ -5923,6 +6047,7 @@ export async function attemptFlakeAbsorption(
         );
         await sleep(retryDelayMs);
         result = await runOnce(f);
+        failureShapeObservation = observeFailureShape(f, result);
         attempt++;
       }
       isolationResults.push(result);
@@ -7880,7 +8005,10 @@ export function formatGatePromotionTrailer(v: {
  */
 export function formatGateHeldByNote(
   failingTests: readonly string[] | undefined,
-  opts: { postSuiteMeasured?: boolean } = {},
+  opts: {
+    postSuiteMeasured?: boolean;
+    failureShape?: GateFailureShapeSummary;
+  } = {},
 ): string {
   const maxEntries = 40;
   const entries = failingTests ?? [];
@@ -7898,6 +8026,9 @@ export function formatGateHeldByNote(
     `truncated=${entries.length > maxEntries} ` +
     (postSuiteSkipped ? `postSuite=not-measured ` : ``) +
     `entries=${JSON.stringify(entries.slice(0, maxEntries))}` +
+    (opts.failureShape
+      ? `\n${formatGateFailureShapeNote(opts.failureShape)}`
+      : "") +
     (postSuiteSkipped
       ? `\n(⚠ FLOOR, NOT THE FULL LIST — failing TEST files ONLY. The post-suite legs (typecheck · lint · SPA build) were SKIPPED because the suite failed first, so NO leg signature could be collected and none appears above. A post-suite blocker may still be holding the release and is simply UNMEASURED here: this list becoming empty does NOT mean the gate would go green. Re-read after the suite passes, or run the legs directly.)`
       : entries.length
@@ -7921,12 +8052,16 @@ function appendGateHeldByIfMissing(
   failingTests: readonly string[] | undefined,
   log?: (s: string) => void,
   postSuiteMeasured?: boolean,
+  failureShape?: GateFailureShapeSummary,
 ): void {
   if (!logPath || hasGateHeldByLine(logPath)) return;
   try {
     appendFileSync(
       logPath,
-      formatGateHeldByNote(failingTests, { postSuiteMeasured }),
+      formatGateHeldByNote(failingTests, {
+        postSuiteMeasured,
+        failureShape,
+      }),
     );
   } catch (e) {
     log?.(
@@ -9942,10 +10077,24 @@ async function runGreenCheckpointInner(
       deps.log(line);
     }
   }
+  // P-011 / D-009: advance the selection base to the last COMPLETED verdict's candidate
+  // (frozen-queue candidate on repair runs, else the P-047 watermark). Promotion stays
+  // full-candidate — coverage of lastReady..anchor is inherited from the completed
+  // verdict chain; every unverifiable branch and every resolver FAULT degrades to the
+  // historical last-green pin (fail-safe, never narrower). Extracted helper so the
+  // wiring is directly testable (the P-009 augmentWithRepairTickLegs pattern).
+  const suiteSelectionBase: string | null = earlyPreflightFailure
+    ? lastReady
+    : await resolveSuiteSelectionBaseForRun(deps, cfg.checkpointRoot, {
+        lastReady,
+        judgedHead: candidate,
+        frozenCandidate:
+          repairVerification && repairQueue ? repairQueue.candidate : null,
+      });
   const candidateSuiteStartedAtMs = Date.now();
   const candidateSuiteResult =
     earlyPreflightFailure ??
-    (await deps.runGreen(cfg.checkpointRoot, lastReady, {
+    (await deps.runGreen(cfg.checkpointRoot, suiteSelectionBase, {
       candidate,
       headAtStart: candidate,
       ...(setupIdentity ? { setup: setupIdentity } : {}),
@@ -9984,6 +10133,7 @@ async function runGreenCheckpointInner(
     typecheckPreflight,
     isolationNote,
     retriedTests,
+    failureShape,
     cleanGreen,
     postSuiteMeasured,
     postSuiteLegs,
@@ -10000,7 +10150,11 @@ async function runGreenCheckpointInner(
           .join(", ") +
         ". Verify both halves at tip before fixing or quarantining the reported test."
       : "";
-  let verdictSummary = `${summary}${splitPairNote}`;
+  // EI-19971472409393390: promote the measured failure shape to the same summary surface
+  // triagers already grep for GATE_HELD_BY. Do not reconstruct this from prose or the raw
+  // suite output: the aggregate comes from the exact isolated attempts that informed the
+  // red/flake decision, and absent evidence stays absent.
+  let verdictSummary = `${summary}${failureShape && !summary.includes("GATE_FAILURE_SHAPE") ? `\n\n${formatGateFailureShapeNote(failureShape)}` : ""}${splitPairNote}`;
   const checkpointEvidence = checkpointEvidenceFor(cfg.integrationRoot, {
     logPath,
     runId: deps.runId,
@@ -10151,6 +10305,7 @@ async function runGreenCheckpointInner(
         ...(checkpointEvidence ? { checkpointEvidence } : {}),
         ...(typecheckPreflight ? { typecheckPreflight } : {}),
         ...(isolationNote ? { isolationNote } : {}),
+        ...(failureShape ? { failureShape } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
       };
     }
@@ -10191,6 +10346,7 @@ async function runGreenCheckpointInner(
       ...(checkpointEvidence ? { checkpointEvidence } : {}),
       ...(typecheckPreflight ? { typecheckPreflight } : {}),
       ...(isolationNote ? { isolationNote } : {}),
+      ...(failureShape ? { failureShape } : {}),
       ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
     };
   }
@@ -10337,6 +10493,7 @@ async function runGreenCheckpointInner(
         ...(deps.runId ? { runId: deps.runId } : {}),
         ...(logPath ? { logPath } : {}),
         ...(isolationNote ? { isolationNote } : {}),
+        ...(failureShape ? { failureShape } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
       };
     }
@@ -10470,6 +10627,7 @@ async function runGreenCheckpointInner(
               ...(deps.runId ? { runId: deps.runId } : {}),
               ...(logPath ? { logPath } : {}),
               ...(isolationNote ? { isolationNote } : {}),
+              ...(failureShape ? { failureShape } : {}),
               ...(retriedTests ? { retriedTests } : {}),
               ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
               ...(checkpointEvidence ? { checkpointEvidence } : {}),
@@ -10613,6 +10771,7 @@ async function runGreenCheckpointInner(
         ...(checkpointEvidence ? { checkpointEvidence } : {}),
         ...(typecheckPreflight ? { typecheckPreflight } : {}),
         ...(isolationNote ? { isolationNote } : {}),
+        ...(failureShape ? { failureShape } : {}),
         ...(lineage ? { lineage } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
       });
@@ -11372,6 +11531,7 @@ async function runGreenCheckpointInner(
       ...(checkpointEvidence ? { checkpointEvidence } : {}),
       ...(typecheckPreflight ? { typecheckPreflight } : {}),
       ...(isolationNote ? { isolationNote } : {}),
+      ...(failureShape ? { failureShape } : {}),
       ...(lineage ? { lineage } : {}),
     };
   }
@@ -11924,8 +12084,52 @@ export async function runGreenCheckpoint(
   return augmentWithRepairTickLegs(finalResult, deps);
 }
 
+/**
+ * P-011 / D-009 — the candidate-suite selection-base wiring, extracted for direct
+ * testing (the P-009 `augmentWithRepairTickLegs` pattern). Resolves via the injected
+ * `deps.resolveSelectionBase` seam when present, else the module resolver over a real
+ * git runner in `repo`; logs the provenance line for EVERY resolution so a transcript
+ * always answers "which base did this run select against"; a resolver FAULT degrades to
+ * `lastReady` — fail-safe, never narrower than the historical last-green pin.
+ */
+export async function resolveSuiteSelectionBaseForRun(
+  deps: Pick<CheckpointDeps, "resolveSelectionBase" | "log">,
+  repo: string,
+  input: {
+    lastReady: string | null;
+    judgedHead: string | null;
+    frozenCandidate?: string | null;
+  },
+): Promise<string | null> {
+  try {
+    const selectionInput = {
+      repo,
+      lastReady: input.lastReady,
+      judgedHead: input.judgedHead,
+      frozenCandidate: input.frozenCandidate ?? null,
+      env: process.env as Record<string, string | undefined>,
+    };
+    const resolved = deps.resolveSelectionBase
+      ? await deps.resolveSelectionBase(selectionInput)
+      : await resolveSelectionBase({
+          ...selectionInput,
+          git: selectionBaseGitFor(repo),
+        });
+    deps.log(selectionBaseLine(resolved, input.lastReady));
+    return resolved.base;
+  } catch (e) {
+    deps.log(
+      `SELECTION_BASE resolver errored (${e instanceof Error ? e.message : e}) — ` +
+        `using last-ready ${input.lastReady ? input.lastReady.slice(0, 12) : "null"} ` +
+        `(fail-safe, P-011/D-009)`,
+    );
+    return input.lastReady;
+  }
+}
+
 /** Real effect wiring. The heavy bit — runGreen — runs the configured suite in
- *  the isolated checkpoint tree with AFFECTED_BASE pinned to the last green. */
+ *  the isolated checkpoint tree with AFFECTED_BASE pinned to the last COMPLETED
+ *  verdict's candidate when a sound anchor exists, else the last green (P-011/D-009). */
 /** The shell-exec seam realCheckpointDeps shells the heavy ops through. Defaults
  *  to the module's spawn-backed runCmd; injected as a fake so the real-path
  *  WIRING (env-strip, SPA-build-folds-into-green per P-005, the push guard, the
@@ -15834,6 +16038,7 @@ export function realCheckpointDeps(
       // isolationNote doc for why (a not-absorbed verdict's reasoning was previously
       // undiagnosable after the fact).
       let isolationNote: string | undefined;
+      let failureShape: GateFailureShapeSummary | undefined;
       // EI-18685042025868279: what the gate had to re-run to reach its verdict. Stays
       // undefined when no absorber ran at all — which is exactly the "clean pass" case, and
       // is why an EMPTY array here would be the wrong default (it would be indistinguishable
@@ -15888,6 +16093,7 @@ export function realCheckpointDeps(
           },
         );
         isolationNote = outcome.note;
+        failureShape = outcome.failureShape;
         // EI-18685042025868279: record what was re-run REGARDLESS of the absorb verdict —
         // the same reasoning as isolationNote above. A red that cost N re-runs per file is
         // diagnostically different from one that failed fast.
@@ -16171,12 +16377,21 @@ export function realCheckpointDeps(
             { signal: r.signal },
           );
       if (infraFault) log(infraFault.note);
+      if (failureShape && !summary.includes("GATE_FAILURE_SHAPE")) {
+        summary = `${summary}\n\n${formatGateFailureShapeNote(failureShape)}`;
+      }
       // Publish the gate's canonical red attribution while we are still inside the real-deps
       // runner. The orchestration caller appends richer notes later, but a self-watchdog,
       // supervisor loss, or other interruption between this return and that append must not
       // erase the only structured answer to "what held the gate?" (EI-19995300915348764).
       if (!green)
-        appendGateHeldByIfMissing(logPath, failingTests, log, legs.ran);
+        appendGateHeldByIfMissing(
+          logPath,
+          failingTests,
+          log,
+          legs.ran,
+          failureShape,
+        );
       return {
         green,
         summary,
@@ -16194,6 +16409,7 @@ export function realCheckpointDeps(
         ...(logPath ? { logPath } : {}),
         ...(isolationNote ? { isolationNote } : {}),
         ...(retriedTests?.length ? { retriedTests } : {}),
+        ...(failureShape ? { failureShape } : {}),
         // EI-18685042025868279: `cleanGreen` is only MEANINGFUL on a green verdict — on a
         // red one there is nothing being passed off as clean — so it is emitted only when
         // green, and stays absent (UNKNOWN) otherwise rather than asserting a false.
