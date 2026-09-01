@@ -2581,3 +2581,84 @@ describe('captureImprovement — derived-identity fold for agent filings (P-013 
     });
   });
 });
+
+describe('P-001 dedupCandidates payload stamp (silent-intake-central-resolution-2026-09-01)', () => {
+  // D-001/D-003: file-time detection is persisted FOR THE RESOLVER on the created row
+  // (payload.dedupCandidates: id + similarity + method), never surfaced to the filer.
+  // Previously possibleDuplicates was computed, returned, and discarded (observed live
+  // on EI-22068807981214694: 5 twins in the response, none on the row).
+
+  it('a force-created capture persists its lexical twins as payload.dedupCandidates', async () => {
+    const twin = existing({ id: 'EI-twin', title: 'exact same friction title' });
+    const d = deps({ found: [twin] });
+    const res = await captureImprovement(
+      { title: 'exact same friction title', kind: 'bug', force: true },
+      d,
+    );
+    expect(res).toMatchObject({ ok: true, created: true });
+    const payload = d.created[0].payload as Record<string, unknown>;
+    expect(payload.dedupCandidates).toEqual([{ id: 'EI-twin', similarity: 1, method: 'lexical' }]);
+    // The coverage verdict (EI-20275452450016416) still rides beside the candidates.
+    expect(payload.dedupCoverage).toBeDefined();
+  });
+
+  it('an advisory containment hit is stamped method containment — no force needed', async () => {
+    // titleContainment returns 0 below CONTAINMENT_MIN_TOKENS, so the short side
+    // carries enough distinctive tokens to clear the floor.
+    const shortTitle = 'alpha beta gamma delta epsilon zeta';
+    const longTitle =
+      'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega';
+    // Preconditions: below the lexical blocking net, inside the containment net.
+    expect(titleSimilarity(shortTitle, longTitle)).toBeLessThan(DUP_THRESHOLD);
+    expect(titleContainment(shortTitle, longTitle)).toBeGreaterThanOrEqual(CONTAINMENT_THRESHOLD);
+    const d = deps({ found: [existing({ id: 'EI-broad', title: longTitle })] });
+    const res = await captureImprovement({ title: shortTitle, kind: 'bug' }, d);
+    expect(res).toMatchObject({ ok: true, created: true });
+    const payload = d.created[0].payload as Record<string, unknown>;
+    expect(payload.dedupCandidates).toEqual([
+      {
+        id: 'EI-broad',
+        similarity: Math.round(titleContainment(shortTitle, longTitle) * 100) / 100,
+        method: 'containment',
+      },
+    ]);
+  });
+
+  it('a net-new semantic soft hit is stamped semantic-soft with its cosine', async () => {
+    const prior = existing({
+      id: 'EI-sem',
+      title: 'completely different wording of the same underlying friction',
+    });
+    const d = deps({ found: [prior] });
+    d.findSemanticDupes = async () => ({
+      hard: [],
+      soft: [{ id: prior.id, title: prior.title, state: prior.state, harness: null, similarity: 0.87 }],
+      thresholds: { hard: 0.93, soft: 0.8 },
+    });
+    const res = await captureImprovement(
+      { title: 'my freshly worded filing about a recurring thing', kind: 'bug' },
+      d,
+    );
+    expect(res).toMatchObject({ ok: true, created: true });
+    const payload = d.created[0].payload as Record<string, unknown>;
+    expect(payload.dedupCandidates).toEqual([
+      { id: 'EI-sem', similarity: 0.87, method: 'semantic-soft' },
+    ]);
+  });
+
+  it('no candidates ⇒ no dedupCandidates key — dedupCoverage alone says "checked clean"', async () => {
+    const d = deps();
+    const res = await captureImprovement({ title: 'entirely novel friction nobody filed', kind: 'bug' }, d);
+    expect(res).toMatchObject({ ok: true, created: true });
+    const payload = d.created[0].payload as Record<string, unknown>;
+    expect(payload.dedupCoverage).toBeDefined();
+    expect(payload.dedupCandidates).toBeUndefined();
+  });
+
+  it('observations never carry the stamp — they skip dedup entirely (D-005)', async () => {
+    const d = deps({ found: [existing({ id: 'EI-x', title: 'plain observation' })] });
+    await captureImprovement({ title: 'plain observation', kind: 'change', lane: 'observation' }, d);
+    const payload = d.created[0].payload as Record<string, unknown> | undefined;
+    expect(payload?.dedupCandidates).toBeUndefined();
+  });
+});

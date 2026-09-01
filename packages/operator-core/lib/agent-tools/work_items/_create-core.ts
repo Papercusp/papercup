@@ -630,6 +630,19 @@ export async function createOneWorkItem(
         burstCandidates = dupes.soft;
         similarOpen = dupes.soft;
       }
+      // P-001 (silent-intake-central-resolution-2026-09-01): under force the hard
+      // band's REFUSAL above is bypassed, but the detection still happened — these are
+      // the strongest twins this filing has, and dropping them here was the one branch
+      // where file-time detection evaporated entirely (no payload stamp, no
+      // dedup_edges). Merge them into the advisory set so they ride the same
+      // persistence rails (payload.dedupCandidates + persistDedupEdges + occurrence
+      // evidence); the burst circuit deliberately still reads dupes.soft only.
+      if (dupes && dupes.hard.length > 0 && args.force) {
+        hardSemanticIds = new Set(dupes.hard.map((c) => c.id));
+        const seen = new Set((similarOpen ?? []).map((c) => c.id));
+        const fresh = dupes.hard.filter((c) => !seen.has(c.id));
+        if (fresh.length > 0) similarOpen = [...(similarOpen ?? []), ...fresh];
+      }
     }
     // EI-9940 recent-lexical dupe prescreen: catches a near-duplicate title created
     // moments ago, BEFORE the async embed-backfill sweep has indexed it — exactly the
@@ -864,13 +877,43 @@ export async function createOneWorkItem(
       ownerIntent: args.routing_intent,
       cadence: args.cadence,
     });
+    // P-001 (silent-intake-central-resolution-2026-09-01, D-003): persist the file-time
+    // candidates on the row beside the coverage verdict — the central resolver's input,
+    // never the filer's business. Non-empty only; payload.dedupCoverage separates
+    // "checked clean" from "could not check". Same stamping policy as dedupCoverage:
+    // issue admission always, goal-gated feature-family too.
+    const dedupCandidateStamps: DedupCandidateStamp[] | undefined =
+      similarOpen && similarOpen.length > 0
+        ? similarOpen.map(
+            (c): DedupCandidateStamp => ({
+              id: c.id,
+              similarity: c.similarity,
+              method: hardSemanticIds.has(c.id)
+                ? 'semantic-hard'
+                : c.source === 'lexical-recent'
+                  ? 'lexical-recent'
+                  : c.source === 'lexical-fulltext'
+                    ? 'lexical-fulltext'
+                    : 'semantic-soft',
+            }),
+          )
+        : undefined;
     const payloadWithAdmission = issueAdmission
-      ? { ...(args.payload ?? {}), admissionIdentity: identity, dedupCoverage }
+      ? {
+          ...(args.payload ?? {}),
+          admissionIdentity: identity,
+          dedupCoverage,
+          ...(dedupCandidateStamps ? { dedupCandidates: dedupCandidateStamps } : {}),
+        }
       : // P-004: a goal-gated feature-family create records its coverage verdict on
         // the row too (admissionIdentity stays issue-only — it keys the occurrence
         // ledger, which has no feature rows).
         args.goalDedupGate && dedupCoverage
-        ? { ...(args.payload ?? {}), dedupCoverage }
+        ? {
+            ...(args.payload ?? {}),
+            dedupCoverage,
+            ...(dedupCandidateStamps ? { dedupCandidates: dedupCandidateStamps } : {}),
+          }
         : args.payload;
     const payloadWithHint =
       routingHint && !(payloadWithAdmission && 'routingHint' in payloadWithAdmission)
