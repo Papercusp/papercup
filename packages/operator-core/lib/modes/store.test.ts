@@ -91,7 +91,7 @@ function mockSql() {
           ? null
           : typeof impliedBy === 'string'
             ? (JSON.parse(impliedBy) as { mode: string; subject: string | null })
-            : (impliedBy as { mode: string; subject: string | null });
+            : (impliedBy as unknown as { mode: string; subject: string | null });
       const prior = isGoalElection
         ? [...modes.values()]
             .filter(
@@ -230,8 +230,17 @@ const ME = 'su-me';
 const PEER = 'su-peer';
 
 describe('mode registry', () => {
-  it('covers the seven official modes with correct axes (owner correction: ideate/drain are stackable overlays)', () => {
-    expect(MODES.map((m) => m.id).sort()).toEqual(['auto', 'cold-auto', 'drain', 'goal', 'grade', 'ideate', 'test']);
+  it('covers the eight official modes with correct axes (owner correction: ideate/drain are stackable overlays)', () => {
+    expect(MODES.map((m) => m.id).sort()).toEqual([
+      'audit',
+      'auto',
+      'cold-auto',
+      'drain',
+      'goal',
+      'grade',
+      'ideate',
+      'test',
+    ]);
     expect(modeById('auto')?.axis).toBe('autonomy');
     expect(modeById('cold-auto')?.axis).toBe('autonomy');
     expect(modeById('ideate')?.axis).toBe('overlay');
@@ -241,6 +250,7 @@ describe('mode registry', () => {
     // TEST (goal-mode-hardening-2026-08-10 P-006): an overlay that deliberately
     // implies nothing — testing is not an autonomy posture.
     expect(modeById('test')?.axis).toBe('overlay');
+    expect(modeById('audit')?.axis).toBe('overlay');
   });
 
   it('axis keys: the autonomy family shares a key; each overlay gets its own', () => {

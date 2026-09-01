@@ -1,11 +1,16 @@
 /**
  * Cupboard D1 helpers — typed row shapes + insert/update/select primitives.
  *
- * Row types mirror the migration 001_init.sql columns 1:1. Helpers are
- * thin wrappers around prepared statements; no ORM, no abstraction layer.
+ * Table row types are generated from the fully applied migration set. Helpers
+ * are thin wrappers around prepared statements; no ORM, no runtime abstraction.
  */
 
 import type { Env } from './env.ts';
+import type {
+  BannedPublisherPubkeysRow,
+  HarnessesRow,
+  ReportsRow,
+} from './db-row-types.generated.ts';
 
 /** The storefront listing kinds (migrations 004 + 006 + 008 / D-005). The
  *  `snapshot` kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005);
@@ -125,79 +130,13 @@ export const REVIEW_POLICY_KINDS: readonly ListingKind[] = [
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
-export interface HarnessRow {
-  id: string;
+export type HarnessRow = Omit<
+  HarnessesRow,
+  'listing_kind' | 'claim_status' | 'review_status' | 'delivery_type'
+> & {
   /** Storefront kind (migration 004). Default 'harness' for pre-004 rows. */
   listing_kind: ListingKind;
-  /** For a listing_kind='blueprint' row: the blueprint.yaml `kind` — 'hive' (a hive
-   *  template) | 'harness' (a harness blueprint). NULL for every other kind + pre-009
-   *  rows (migration 009 / hive-blueprint-generalization P-018). Drives the Hives tab. */
-  blueprint_kind: string | null;
-  /** Papercupai project remote id this listing belongs to (D-008). null = legacy/standalone. */
-  project_ref: string | null;
-  /** Within-project discriminator (blueprint stream / snapshot id / plugin slug). null for the canonical harness listing. */
-  listing_ref: string | null;
-  github_repository_id: number;
-  github_owner: string;
-  github_name: string;
-  github_url: string;
-  title: string;
-  description: string | null;
-  topic_hex: string | null;              // join topic; required only for kind='harness' (migration 004 made it nullable)
-  publisher_github_user_id: number;
-  publisher_github_login: string;
-  publisher_permission: string | null;   // GitHub perm at publish: admin|maintain|write|triage|read|none; null = legacy/unknown
-  publisher_device_pubkey: string | null;        // channel-2 device Ed25519 pubkey (base64); null = none provided
-  publisher_attestation_gist_id: string | null;  // gist binding device_pubkey ↔ login; verified/revoked by the indexer
-  // Pack model (migration 006): JSON-encoded string[] of the MCP tool names the
-  // unit registers when installed (e.g. ["repomix.pack"]). Kinds plugin|pack
-  // only; NULL elsewhere and for pre-006 listings. The operator's tool→provider
-  // resolver reads it to answer "which Cupboard unit provides tool X?".
-  provides_tools: string | null;
-  // Event axis (migration 012 / D-003): JSON-encoded array of the awaitable
-  // event-key FAMILIES the unit registers when installed, each
-  // { family, keyTemplate, describe? }. Kinds plugin|pack only; NULL elsewhere
-  // and for every pre-012 listing. The operator's event→provider resolver
-  // (`resolveEventProvider`) reads it to answer "which Cupboard unit provides
-  // event family X?" — the `installable` rung of the event ladder.
-  provides_events: string | null;
-  // Event axis, consumer half (migration 013 / D-003): JSON-encoded array of the
-  // event-key FAMILIES this unit REQUIRES, each { family, optional? }. Kinds
-  // plugin|pack only; NULL elsewhere and for every pre-013 listing. Published so
-  // a requirement travels WITH the listing — the P-007 install gate HARD-FAILS a
-  // required family nothing provides, so the detail page must be able to show it
-  // before the user clicks Install rather than after.
-  requires_events: string | null;
-  // Rubric axis, consumer half (migration 015 / cupboard-plan-rubric-recipe-sharing
-  // D-001): JSON-encoded array of the rubrics this unit REQUIRES, each
-  // { rubricRef, optional? }. Primarily `plan` rows; kind-agnostic by design so a
-  // future kind can declare rubric deps without another table rebuild. NULL for a
-  // unit declaring none and for every pre-015 listing. Published for the same reason
-  // requires_events is: the requirement must travel WITH the listing so the detail
-  // page can show it BEFORE the user clicks Install. There is deliberately no
-  // provides_rubrics counterpart — a kind='rubric' row provides exactly the one
-  // rubric named by its own listing_ref (D-002).
-  requires_rubrics: string | null;
-  // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
-  // the owning Hive's raw-32-byte-base64 Ed25519 pubkey (same encoding as the
-  // hive directory announce) + a denormalized display title. One row per
-  // member repo of a public hive, all carrying the same hive_pubkey. NULL =
-  // pre-hive listing or a plain shared-harness binding.
-  hive_pubkey: string | null;
-  hive_title: string | null;
   claim_status: 'unclaimed' | 'claimed' | 'stale' | 'superseded';
-  claimant_github_user_id: number | null;
-  claimant_github_login: string | null;
-  superseded_by: string | null;
-  stars: number;
-  contributor_count: number;
-  last_activity_at: number | null;
-  languages: string | null;            // JSON-encoded {language: byte_count}
-  stats_refreshed_at: number | null;
-  created_at: number;
-  updated_at: number;
-  unlisted_at: number | null;
-  unlisted_reason: string | null;
   // Pre-publication review (migration 008 / knowledge-packs D-007). Policy
   // kinds publish 'pending'; everything else (and every pre-008 row) is
   // 'approved'. reviewed_at/review_reason carry the operator decision.
@@ -210,33 +149,11 @@ export interface HarnessRow {
   // downloadable product — "install" is a download-link handoff) | 'bundle' (a
   // papercusp-native composition, Phase 2). NULL ⇒ treated as 'standalone'.
   delivery_type: 'standalone' | 'bundle' | null;
-  // STANDALONE: URL of the app's signed `latest.json` updater manifest
-  // (@papercusp/tauri-release-kit output) the download flow reads to resolve the
-  // platform-specific installer URL.
-  latest_json_url: string | null;
-  // STANDALONE: `<owner>/<repo>` whose GitHub Releases host the installers, when
-  // distinct from the source repo. NULL ⇒ fall back to github_owner/github_name.
-  release_repo: string | null;
-  // App icon URL for the storefront card/detail (an app is a whole product).
-  icon_url: string | null;
-  // Denormalized JSON string[] of OS keys present in latest.json (e.g.
-  // ["darwin-aarch64","linux-x86_64","windows-x86_64"]) so the card can show
-  // availability without fetching the manifest. NULL ⇒ unknown until fetched.
-  platforms: string | null;
-}
+};
 
-export interface ReportRow {
-  id: string;
-  harness_id: string;
-  reporter_github_user_id: number;
-  reporter_github_login: string;
-  reason: string;
-  ip_hash: string | null;
+export type ReportRow = Omit<ReportsRow, 'status'> & {
   status: 'pending' | 'resolved_unlist' | 'resolved_dismiss';
-  resolved_at: number | null;
-  resolved_by_operator_note: string | null;
-  created_at: number;
-}
+};
 
 export interface NewHarnessInput {
   id: string;
@@ -873,13 +790,7 @@ export async function audit(
 
 // ── Channel-2 publisher ban-list (item 1) ───────────────────────
 
-export interface BannedPubkeyRow {
-  pubkey: string;
-  reason: string;
-  added_at: number;
-  added_by_operator_user_id: number | null;
-  updated_at: number;
-}
+export type BannedPubkeyRow = BannedPublisherPubkeysRow;
 
 /** Set of banned publisher device pubkeys, for filtering public listings. */
 export async function listBannedPubkeySet(db: D1Database): Promise<Set<string>> {
