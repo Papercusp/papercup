@@ -2865,6 +2865,11 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         draw_card(f, app, ca);
     }
 
+    // Computed once up front (pure over `app`) so the read-only branch below
+    // doesn't call `su_dispatch_decision()` a second time to get the reason.
+    let chat_dispatch = app.su_dispatch_decision();
+    let chat_dispatch_readonly = app.chat_composing
+        && chat_dispatch.target == crate::su_session::SuDispatchTarget::ReadOnly;
     let (ctitle, ctext, cstyle) = if app.card_state.has_card() {
         // A blocking card is open — the composer is suspended; the card owns the
         // keys (arrows/number/space/Enter). Tell the user where to act.
@@ -2910,6 +2915,24 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         (
             " Running — input locked ",
             "Running · Ctrl+X cancel".to_string(),
+            Theme::notify(),
+        )
+    } else if chat_dispatch_readonly {
+        // EI-22067863854642076: a legacy/unclassified conversation dispatches
+        // nowhere (`on_key`'s Enter arm is a no-op there), and the composer
+        // deliberately leaves the draft editable so the owner can still copy
+        // it out (see `enter_on_a_pre_cutover_conversation_keeps_read_only_
+        // history_intact`) — so typing is unchanged, but the bar must say so
+        // up front. Without this the box still reads "Enter send" right up
+        // until Enter silently does nothing, which is indistinguishable from
+        // a dead key.
+        (
+            " Read-only — Esc close ",
+            format!(
+                "{} · nothing typed here can be sent · > {}",
+                chat_dispatch.reason.note(),
+                app.chat_input.replace('\n', "⏎")
+            ),
             Theme::notify(),
         )
     } else if app.chat_composing {
@@ -3167,6 +3190,13 @@ fn draw_card(f: &mut Frame, app: &App, area: Rect) {
 /// bottom strip) and this fills it with the SAME transcript + composer the
 /// Operator tab shows — one conversation rendered at multiple sites. The focus
 /// marker in the title is driven by `app.operator_dock_focused` (see draw_chat).
+/// The persistent Agent Chat pane of the owner-approved Surface B cockpit
+/// (pui-psu-exact-launch-and-task-latency-2026-09-01 D-005: canonical mockup
+/// `docs/mockups/pui-agent-cockpit.html`, SHA-256
+/// dc9026de20d3f2b28dfd8fc260de8f79b4ab70149bcd8a9df2e04bd9a0599009, selected
+/// by `pui-agent-context-cockpit-2026-08-26#D-001`). It renders the same
+/// transcript + composer as the full Agent Chat tab, carved beside the active
+/// destination's content on wide terminals — a fixed layout, not a toggle.
 pub fn draw_operator_dock(f: &mut Frame, app: &App, area: Rect) {
     draw_chat(f, app, area);
 }
@@ -3800,7 +3830,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             // optional dock cannot render: one key always lands in the composer.
             "o:Agent Chat · ?:help".to_string()
         } else {
-            "s:Sessions · l/m/e/a/u:select · i:compose · ?:help".to_string()
+            "l/m/e/a/u:select · i:compose · ?:help".to_string()
         }
     });
     let w = (right.chars().count() as u16 + 1).min(area.width);
@@ -3818,7 +3848,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / s m c a n  switch the 14 destinations (Agent Chat · Inbox · Plans · Fleet · Sessions · Pots · Docs · Testing · Config · Memory · Cupboard · Voice · Network)\n  o           open Agent Chat + focus its composer from any destination\n  i / Enter   compose/send a message · Esc cancels\n  l/m/e/a/u   choose conversation · model · effort · account route · launch mode\n  n           Sessions: new SU session through the real psu picker (psu --role=su --tui=pui)\n  /           search (Memory · Cupboard)\n  < / >       cycle the 14 destinations · Tab changes the focused subview\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot · P pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: kind filter · arm · confirm (join/fork/install)\n  n / Enter   Network board refresh/drill-in · Fleet scheduling/inspector panes\n  g           launch git (lazygit)\n  r           relaunch the last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any destination)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / s m c a n  switch the 14 destinations (Agent Chat · Inbox · Plans · Fleet · Sessions · Pots · Docs · Testing · Config · Memory · Cupboard · Voice · Network)\n  o           open Agent Chat + focus its composer from any destination\n  i / Enter   compose/send a message · Esc cancels\n  l/m/e/a/u   conversation · model · effort · account · mode · Sessions n new SU (psu)\n  /           search (Memory · Cupboard)\n  < / >       cycle the 14 destinations · Tab changes the focused subview\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot · P pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: kind filter · arm · confirm (join/fork/install)\n  n / Enter   Network board refresh/drill-in · Fleet scheduling/inspector panes\n  g           launch git (lazygit)\n  r           relaunch the last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any destination)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)
@@ -7157,6 +7187,28 @@ mod tests {
         assert!(typing.contains("> hello"));
     }
 
+    /// EI-22067863854642076: a legacy/unclassified conversation's composer
+    /// must say it is read-only up front — not keep the "Enter send"
+    /// affordance while `on_key`'s Enter arm silently no-ops (see
+    /// `enter_on_a_pre_cutover_conversation_keeps_read_only_history_intact`
+    /// in app.rs, which pins that the draft itself stays editable).
+    #[test]
+    fn chat_view_marks_a_read_only_conversation_composer_instead_of_enter_send() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.agent_chat_id = Some("chat-legacy".into());
+        app.pui_runtime_class = Some(crate::su_session::PuiRuntimeClass::LegacyOwnedLoop);
+        app.chat_composing = true;
+        app.chat_input = "hello".into();
+        let text = render(&app, 100, 20);
+        assert!(text.contains("Read-only"), "{text}");
+        assert!(text.contains("read-only history"), "{text}");
+        assert!(!text.contains("Enter send"), "{text}");
+        // The draft stays visible/editable — matches the app.rs Enter-key
+        // contract that a refused turn is never silently discarded.
+        assert!(text.contains("> hello"), "{text}");
+    }
+
     #[test]
     fn chat_view_renders_semantic_tool_rows_and_generic_fallback() {
         use crate::models::{ChatMessage, ChatToolCall};
@@ -7404,7 +7456,7 @@ mod tests {
         app.tab = Tab::Operator;
         let text = render(&app, 100, 12);
         assert!(text.contains("?:help"), "help hint missing from status bar");
-        assert!(text.contains("s:Sessions · l/m/e/a/u:select"));
+        assert!(text.contains("l/m/e/a/u:select"));
     }
 
     #[test]
@@ -7454,6 +7506,44 @@ mod tests {
             text.contains("docked reply here"),
             "the dock shows the transcript"
         );
+    }
+
+    /// P-004 / D-005 (pui-psu-exact-launch-and-task-latency-2026-09-01): the
+    /// Surface B cockpit is a FIXED layout — the Agent Chat transcript AND
+    /// composer stay beside the Sessions and Fleet task surfaces on a wide
+    /// terminal with no opt-in toggle, and each destination's own content
+    /// still renders next to them.
+    #[test]
+    fn surface_b_agent_chat_pane_coexists_with_sessions_and_fleet_content() {
+        for (tab, own_content) in [(Tab::Sessions, "STATE all"), (Tab::Fleet, " Fleet ")] {
+            let mut app = App::new();
+            app.tab = tab;
+            app.set_chat_history(
+                "c1".into(),
+                vec![crate::models::ChatMessage::assistant("cockpit reply")],
+                false,
+                None,
+            );
+            app.chat_input = "half typed".into();
+            app.chat_composing = true;
+            let text = render(&app, 280, 24);
+            assert!(
+                text.contains("Agent Chat"),
+                "{tab:?}: the Agent Chat pane is present without a toggle"
+            );
+            assert!(
+                text.contains("cockpit reply"),
+                "{tab:?}: the transcript is visible beside the surface"
+            );
+            assert!(
+                text.contains("> half typed"),
+                "{tab:?}: the composer sits in the pane with its draft: {text:?}"
+            );
+            assert!(
+                text.contains(own_content),
+                "{tab:?}: the destination's own content renders beside the pane: {text:?}"
+            );
+        }
     }
 
     #[test]
