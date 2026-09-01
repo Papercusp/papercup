@@ -508,13 +508,29 @@ manual re-run off an inferred candidate. Raw `harness_shared.routines` SQL is th
 ⚠⚠ **THE PREMISE UNDER EVERY RECIPE BELOW: the candidate is cut from your LOCAL `staging`,
 NOT from `origin/staging`. The gate never fetches — so PUSHING IS NOT A GATE PRECONDITION.**
 
-`green-checkpoint.ts:3466-3468` resolves it as `revParse(cfg.integrationRoot,
-cfg.integrationBranch)`, and `integrationBranch` defaults to the literal `'staging'`
-(`release-config.ts:131-132`). There is no `git fetch` anywhere in that file's 6,950 lines, and
-its only three `origin/` mentions are prose about GitHub Actions' `origin/main` base-ref default
-(two comments and one log string) — none resolves a candidate. The CLI path (`:6792`, `:6802`) cuts the same way. So the
-hop that matters for containment is **COMMIT** (git-sync's local commit); the push to origin is
-a separate, later concern that no containment test below depends on.
+green-checkpoint resolves it as `opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch`, and `integrationBranch` defaults to the literal `'staging'` (`overrides.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging'`, in `release-config.ts`). Grep those expressions rather than a line number — the numbers this box used to carry had rotted to unrelated code by 2026-08-31 while the claim itself stayed true, which is the whole failure mode the derived-truth ladder warns about. There is no `git fetch` invocation anywhere in `green-checkpoint.ts`, and every `origin/` mention is either the post-green promotion push or prose about GitHub Actions' `origin/main` base-ref default — none resolves a candidate. Its submodule resync is `submodule update --init --recursive`, never `--remote`, so it materialises the gitlink the candidate already PINS instead of advancing it to a remote tip. The CLI path cuts the same way. So the hop that matters for containment is **COMMIT** (git-sync's local commit); the push to origin is a separate, later concern that no containment test below depends on.
+
+
+⚠ **A path inside a SUBMODULE needs its own containment check — every blob recipe here answers about the wrong object.** The superproject tracks a submodule as ONE gitlink, so `git rev-parse <candidate>:<sub>/<path>` is ABSENT and `git log -S… -- <sub>/<path>` is empty regardless of what the submodule actually holds. Both read exactly like *"my fix is not in the candidate"*. Not a corner case: there are ~37 submodules here and **every DB migration lives in `libs/papercusp/libs/db/sql/`**, so the whole recurring class of migration gate-reds lands on it. (The *committed-vs-untracked* question has its own in-submodule answer above; this is the *containment* one.)
+
+Resolve the gitlink first, then ask the submodule:
+
+```bash
+CAND=<the judged candidate sha>; SUB=libs/papercusp; P=<path RELATIVE TO THE SUBMODULE>
+PIN=$(git rev-parse "$CAND:$SUB")                        # the submodule commit the candidate PINS
+A=$(git -C "$SUB" rev-parse --verify --quiet "$PIN:$P")  # blob the gate will judge
+B=$(git -C "$SUB" rev-parse --verify --quiet "HEAD:$P")  # blob you committed
+[ -n "$A" ] && [ "$A" = "$B" ] && echo IN-CANDIDATE || echo NOT-IN-CANDIDATE
+```
+
+`$P` is relative to the SUBMODULE (`libs/db/sql/727-….sql`), **not** the superproject (`libs/papercusp/libs/db/sql/727-….sql`) — the superproject form resolves to nothing and reads as absent. `PIN` is the `<pin>` the gate-triage note below otherwise leaves undefined. Keep the `-n "$A"` guard: with `--verify --quiet` an absent path yields empty on BOTH sides, so `"" = ""` would otherwise report a match.
+
+A `NOT-IN-CANDIDATE` whose `PIN` is older than your submodule HEAD means the **superproject gitlink bump** is not in the candidate — the submodule commit exists, but nothing points the candidate at it. The hop that matters is git-sync's superproject COMMIT.
+
+⛔ **Do NOT reach for `git ls-remote origin refs/heads/staging` to answer this.** It is the natural next thought — *"the gate must see it on the remote"* — and it is wrong under the premise above: the candidate is cut from LOCAL `staging` and the gate never fetches, so a gitlink that is committed-but-unpushed is ALREADY in the candidate. Asking the remote returns NOT-IN-CANDIDATE for a fix the gate can see, sending you to wait on a push that was never blocking.
+
+`dev:pipeline_position { path }` is submodule-aware and resolves the gitlink for you (its summary tags `[submodule <sub>]`) — prefer it, and use the recipe above when you need the blob-level answer against a specific candidate.
+
 
 Get this wrong and every recipe below still *runs*, but answers about the wrong object: an
 unpushed commit reads as "not in the candidate", the push leg looks like the thing blocking you,
