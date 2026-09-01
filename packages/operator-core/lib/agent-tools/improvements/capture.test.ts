@@ -428,6 +428,9 @@ describe('improvements:capture tool envelope', () => {
       source: 'su',
       reviewRequired: true,
       reviewHarness: 'foo',
+      // The agent-facing door always arms the poor-rating disposition gate
+      // (scorecard-poor-rating-disposition, owner-directed 2026-08-31).
+      enforcePoorRatingDisposition: true,
     });
   });
 

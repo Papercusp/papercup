@@ -54,6 +54,16 @@ export interface ObservationRatingEntry {
    *  adopt/adapt it (the owner's "graders also have more specific context"
    *  ruling — the Blender chooses, the grader seeds). */
   suggestion?: string;
+  /** scorecard-poor-rating-disposition (owner-directed 2026-08-31): the WI-/EI-/F-
+   *  work-item (optionally with a short note) this POOR rating's remediation is
+   *  tracked by. A fail/severe/broken/degraded/partial rating on a standard rubric
+   *  must carry `remediation` or `disregard` — a poor grade with neither is the
+   *  skipped step the gate exists to stop. See
+   *  `validateScorecardPoorRatingDisposition`. */
+  remediation?: string;
+  /** The explicit alternative to `remediation`: a reasoned, OWNED decision not to
+   *  act on this poor rating (≥10 chars — "n/a" is not a decision). */
+  disregard?: string;
 }
 
 /**
@@ -614,6 +624,75 @@ export function validateScorecardRatingValues(
   }
 }
 
+/** Rating values that demand a disposition (lower-cased compare). Scale-agnostic
+ *  on purpose: it spans the default observation scale (degraded/broken) and the
+ *  graded-rubric scales (partial/fail/severe); a rubric with an exotic scale whose
+ *  poor values match none of these is simply not gated (fail-open, like the
+ *  sibling gates' unknown-rubric convention). */
+export const POOR_SCORECARD_RATINGS = ['fail', 'severe', 'broken', 'degraded', 'partial'] as const;
+
+/**
+ * Enforce the poor-rating DISPOSITION mandate (scorecard-poor-rating-disposition,
+ * owner-directed 2026-08-31): every poor rating on a standard rubric must terminate
+ * in one of exactly two dispositions — `remediation` (the WI-/EI-/F- work-item the
+ * fix/investigation is tracked by) or `disregard` (an explicit, reasoned decision
+ * not to act). The failure this kills: a grader files 5 fails and 7 partials, the
+ * card looks diligent, and NOTHING routes anywhere — the remediation step is
+ * skipped silently and the next agent re-derives the whole fix map from scratch.
+ *
+ * Fourth sibling of `validateObservationRatings` / `validateScorecardCompleteness`
+ * / `validateScorecardRatingValues`, shaped the same way: the CALLER loads the
+ * rubric; `null` rubric ⇒ can't judge ⇒ skip. Scoped to `kind:'standard'` rubrics
+ * (a missing kind IS standard — the default): acceptance rubrics carry their own
+ * disposition ceremony (the implementer's accept/reject verdict) and are exempt.
+ * Enforcement is opt-in per WRITE PATH (the agent-facing tools set it; system
+ * floor emitters — pulse/backstop/watchdogs — stay exempt so the monitoring floor
+ * cannot be broken by the gate). Throws `ObservationEvidenceError` naming the
+ * offending key and the exact fields to add.
+ */
+export function validateScorecardPoorRatingDisposition(
+  obs: StructuredObservation | undefined | null,
+  rubric: { kind?: string | null } | null,
+): void {
+  if (!obs || typeof obs !== 'object' || !obs.ratings) return;
+  if (!rubric) return; // unknown/unloaded rubric → the sibling gates' fail-open convention
+  if ((rubric.kind ?? 'standard') !== 'standard') return; // acceptance flow owns its own disposition
+  // grading-integrity audits are exempt: a failing audit rating SETTLES the target
+  // card's gradingAudit.state as failed (emit's P-013 path), which itself forces the
+  // re-grade — the disposition is structural, not a rating-level field. (Mirrors
+  // GRADING_INTEGRITY_RUBRIC_REF; hardcoded so this leaf stays rubrics-import-free.)
+  if ((obs.rubricRef ?? '').trim() === 'grading-integrity') return;
+  const poor = new Set<string>(POOR_SCORECARD_RATINGS);
+  for (const [criterion, entry] of Object.entries(obs.ratings)) {
+    if (!entry || typeof entry !== 'object' || !entry.rating) continue; // evidence gate owns malformed entries
+    if (!poor.has(String(entry.rating).trim().toLowerCase())) continue;
+    const remediation = typeof entry.remediation === 'string' ? entry.remediation.trim() : '';
+    const disregard = typeof entry.disregard === 'string' ? entry.disregard.trim() : '';
+    if (!remediation && !disregard) {
+      throw new ObservationEvidenceError(
+        `observation.ratings['${criterion}'] is rated '${entry.rating}' but carries NO disposition — ` +
+          `a poor rating must route somewhere: pass remediation:'<WI-/EI-/F- ref (+ optional note)>' naming ` +
+          `the fix/investigation item it feeds (file one first if none exists), or disregard:'<reason>' as an ` +
+          `explicit, owned decision not to act. A poor grade nobody routes is a skipped remediation step, ` +
+          `and skipping it silently is exactly what this gate rejects.`,
+      );
+    }
+    if (remediation && !/(?:WI|EI|F)-\d+/.test(remediation)) {
+      throw new ObservationEvidenceError(
+        `observation.ratings['${criterion}'].remediation ('${entry.remediation}') names no work-item — ` +
+          `it must cite the WI-/EI-/F- item the remediation is tracked by (create/claim one first, then ` +
+          `cite it; a free-prose intention does not survive the session).`,
+      );
+    }
+    if (!remediation && disregard.length < 10) {
+      throw new ObservationEvidenceError(
+        `observation.ratings['${criterion}'].disregard ('${entry.disregard}') is too thin — an explicit ` +
+          `disregard is an owned decision and needs a real reason (≥10 chars).`,
+      );
+    }
+  }
+}
+
 /** The minimal rubric shape needed to canonicalize scorecard rating values. */
 export interface ScorecardRatingRubric {
   ratingScale?: readonly string[];
@@ -698,6 +777,8 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           rating: e.rating,
           evidence: e.evidence,
           ...(typeof e.suggestion === 'string' && e.suggestion.trim() ? { suggestion: e.suggestion } : {}),
+          ...(typeof e.remediation === 'string' && e.remediation.trim() ? { remediation: e.remediation } : {}),
+          ...(typeof e.disregard === 'string' && e.disregard.trim() ? { disregard: e.disregard } : {}),
         };
       }
     }

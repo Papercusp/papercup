@@ -21,6 +21,7 @@ import {
   validateObservationRatings,
   validateScorecardCompleteness,
   validateScorecardRatingValues,
+  validateScorecardPoorRatingDisposition,
   ObservationEvidenceError,
   type ObservationRatings,
   type ScorecardVetting,
@@ -622,6 +623,10 @@ export async function emitScorecard(
       rubric.criteria.map((criterion) => criterion.key),
     );
     validateScorecardRatingValues(observationForValidation, rubric);
+    // scorecard-poor-rating-disposition (owner-directed 2026-08-31): a poor rating
+    // on a standard rubric must carry `remediation` (WI-/EI-/F- ref) or an explicit
+    // `disregard` — the agent-facing emit door enforces what the schema teaches.
+    validateScorecardPoorRatingDisposition(observationForValidation, rubric);
     const instrumentSnapshots = args.instrumentSnapshots as Record<string, ScorecardInstrumentSnapshot> | undefined;
     const evidenceFingerprint = scorecardEvidenceFingerprint({
       rubricRef: args.rubricRef,

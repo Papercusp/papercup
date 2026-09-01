@@ -9,6 +9,7 @@ import {
   validateObservationRatings,
   validateScorecardCompleteness,
   validateScorecardRatingValues,
+  validateScorecardPoorRatingDisposition,
   ObservationEvidenceError,
   type ObservationRatings,
 } from '../../harness/improvements/observation-types';
@@ -26,6 +27,11 @@ export const scorecardRatingEntrySchema = z
     rating: z.string().min(1),
     evidence: z.string().min(1),
     suggestion: z.string().min(1).max(2000).optional(),
+    /** Poor-rating disposition (owner-directed 2026-08-31): the WI-/EI-/F- item a
+     *  fail/severe/broken/degraded/partial rating's remediation is tracked by. */
+    remediation: z.string().min(2).max(300).optional(),
+    /** The explicit alternative: a reasoned decision NOT to act (≥10 chars). */
+    disregard: z.string().min(10).max(600).optional(),
   })
   .strict();
 
@@ -191,6 +197,9 @@ export async function evaluateScorecard(
     validateObservationRatings(observation);
     validateScorecardCompleteness(observation, rubric.criteria.map((criterion) => criterion.key));
     validateScorecardRatingValues(observation, rubric);
+    // Poor-rating disposition preflight (owner-directed 2026-08-31): teach the
+    // grader BEFORE the terminal emit that a poor rating must route somewhere.
+    validateScorecardPoorRatingDisposition(observation, rubric);
     const instrumentSnapshots = args.instrumentSnapshots as
       | Record<string, ScorecardInstrumentSnapshot>
       | undefined;

@@ -54,6 +54,7 @@ import {
   validateObservationRatings,
   validateScorecardCompleteness,
   validateScorecardRatingValues,
+  validateScorecardPoorRatingDisposition,
   normalizeScorecardRatings,
   type StructuredObservation,
 } from './observation-types';
@@ -116,6 +117,13 @@ export interface CaptureImprovementInput {
   foundDuring?: string;
   /** Repo-relative paths the improvement touches — feeds the protected-path gate. */
   paths?: string[];
+  /** scorecard-poor-rating-disposition (owner-directed 2026-08-31): when true, a
+   *  fail/severe/broken/degraded/partial rating on a standard rubric must carry
+   *  `remediation` (a WI-/EI-/F- ref) or `disregard` (a reasoned opt-out) — see
+   *  validateScorecardPoorRatingDisposition. Set by the AGENT-facing capture tool;
+   *  system floor emitters (pulse/backstop/watchdogs) leave it unset so the
+   *  monitoring floor can never be broken by the gate. */
+  enforcePoorRatingDisposition?: boolean;
   /** File even if a likely duplicate exists (default false → search-first declines). */
   force?: boolean;
   /**
@@ -488,6 +496,9 @@ export interface CaptureDeps {
   loadRubric?: (rubricId: string) => Promise<{
     criteria: { key: string; ratingScale?: readonly string[] }[];
     ratingScale?: readonly string[];
+    /** Rubric kind ('standard' | 'acceptance'); the poor-rating disposition gate
+     *  is scoped to standard rubrics. getRubric supplies it; a stub may omit it. */
+    kind?: string | null;
   } | null>;
   /** P-011 semantic-widening seams. OPTIONAL — default to the real P-008 work-item
    *  dupe guard (itself vitest-inert + fail-open) and the real getIssue; injectable
@@ -1204,6 +1215,12 @@ export async function captureImprovement(
     // rating ("pas", "helthy") would file fine and be silently excluded from
     // trends/staleness — reject it here with the allowed values instead.
     validateScorecardRatingValues(observationForGate, rubric);
+    // scorecard-poor-rating-disposition (owner-directed 2026-08-31): an AGENT-filed
+    // poor rating must route somewhere — a remediation work-item or an explicit
+    // disregard. Flag-scoped to the agent tool so floor emitters stay exempt.
+    if (input.enforcePoorRatingDisposition) {
+      validateScorecardPoorRatingDisposition(observationForGate, rubric);
+    }
   }
   const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
 

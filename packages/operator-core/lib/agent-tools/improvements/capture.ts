@@ -74,6 +74,22 @@ const observationRatingsSchema = z.record(
       .max(2000)
       .optional()
       .describe('OPTIONAL: your concrete improvement idea for this criterion — the Blender ideators see it as a seed'),
+    remediation: z
+      .string()
+      .min(2)
+      .max(300)
+      .optional()
+      .describe(
+        "REQUIRED (or `disregard`) on a POOR rating (fail/severe/broken/degraded/partial) of a standard rubric: the WI-/EI-/F- work-item this criterion's fix/investigation is tracked by, optionally with a short note (e.g. 'WI-1234 — watchdog class'). File/claim the item FIRST, then cite it — a poor grade that routes nowhere is rejected.",
+      ),
+    disregard: z
+      .string()
+      .min(10)
+      .max(600)
+      .optional()
+      .describe(
+        "the explicit alternative to `remediation` on a POOR rating: a reasoned, owned decision NOT to act (≥10 chars). Silence is rejected; 'n/a' is not a decision.",
+      ),
   }),
 );
 
@@ -978,6 +994,9 @@ export default defineTool({
         captureImprovement({
           title: captureText.title,
           kind: effectiveKind,
+          // Agent-facing door: poor scorecard ratings must carry a disposition
+          // (remediation ref or explicit disregard) — owner-directed 2026-08-31.
+          enforcePoorRatingDisposition: true,
           body: bodyWithStaleness,
           severity: args.severity as IssueSeverity | undefined,
           subTopic: args.subTopic,

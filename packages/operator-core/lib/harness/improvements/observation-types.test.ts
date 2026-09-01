@@ -9,6 +9,7 @@ import {
   validateObservationRatings,
   validateScorecardCompleteness,
   validateScorecardRatingValues,
+  validateScorecardPoorRatingDisposition,
   canonicalScorecardRating,
   normalizeScorecardRatings,
   asStructuredObservation,
@@ -567,5 +568,128 @@ describe('validateScorecardRatingValues — the P-002 rating-VALUE gate (rubric-
   it('passes free-text / no-ratings observations unconditionally', () => {
     expect(() => validateScorecardRatingValues({ kind: 'friction' }, rubric)).not.toThrow();
     expect(() => validateScorecardRatingValues(undefined, rubric)).not.toThrow();
+  });
+});
+
+describe('validateScorecardPoorRatingDisposition (scorecard-poor-rating-disposition, owner-directed 2026-08-31)', () => {
+  const standard = { kind: 'standard' };
+  const obs = (ratings: Record<string, unknown>): StructuredObservation =>
+    ({ rubricRef: 'r', ratings }) as StructuredObservation;
+
+  it('rejects a fail rating with neither remediation nor disregard', () => {
+    expect(() =>
+      validateScorecardPoorRatingDisposition(obs({ a: { rating: 'fail', evidence: 'e' } }), standard),
+    ).toThrow(/NO disposition/);
+  });
+
+  it.each(['fail', 'severe', 'broken', 'degraded', 'partial', 'FAIL', ' Partial '])(
+    'treats %s as a poor rating that needs a disposition',
+    (rating) => {
+      expect(() =>
+        validateScorecardPoorRatingDisposition(obs({ a: { rating, evidence: 'e' } }), standard),
+      ).toThrow(ObservationEvidenceError);
+    },
+  );
+
+  it('accepts a poor rating routed to a work-item ref, bare or inside a note', () => {
+    expect(() =>
+      validateScorecardPoorRatingDisposition(
+        obs({
+          a: { rating: 'fail', evidence: 'e', remediation: 'WI-1234' },
+          b: { rating: 'partial', evidence: 'e', remediation: 'tracked as EI-21830980285885156 (watchdog class)' },
+          c: { rating: 'degraded', evidence: 'e', remediation: 'F-77 — follow-up feature' },
+        }),
+        standard,
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects a remediation that names no WI-/EI-/F- work-item', () => {
+    expect(() =>
+      validateScorecardPoorRatingDisposition(
+        obs({ a: { rating: 'fail', evidence: 'e', remediation: 'we will fix this later' } }),
+        standard,
+      ),
+    ).toThrow(/names no work-item/);
+  });
+
+  it('accepts an explicit reasoned disregard and rejects a thin one', () => {
+    expect(() =>
+      validateScorecardPoorRatingDisposition(
+        obs({
+          a: {
+            rating: 'degraded',
+            evidence: 'e',
+            disregard: 'known cold-start artifact; accepted until the Q4 window matures',
+          },
+        }),
+        standard,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateScorecardPoorRatingDisposition(
+        obs({ a: { rating: 'degraded', evidence: 'e', disregard: 'n/a' } }),
+        standard,
+      ),
+    ).toThrow(/too thin/);
+  });
+
+  it('needs nothing on pass/healthy/exemplary/unknown ratings', () => {
+    expect(() =>
+      validateScorecardPoorRatingDisposition(
+        obs({
+          a: { rating: 'pass', evidence: 'e' },
+          b: { rating: 'healthy', evidence: 'e' },
+          c: { rating: 'exemplary', evidence: 'e' },
+          d: { rating: 'unknown', evidence: 'idle: no signal this wake' },
+        }),
+        standard,
+      ),
+    ).not.toThrow();
+  });
+
+  it('skips acceptance-kind rubrics and unknown rubrics — their flows own disposition', () => {
+    const failNoDisposition = obs({ a: { rating: 'fail', evidence: 'e' } });
+    expect(() => validateScorecardPoorRatingDisposition(failNoDisposition, { kind: 'acceptance' })).not.toThrow();
+    expect(() => validateScorecardPoorRatingDisposition(failNoDisposition, null)).not.toThrow();
+  });
+
+  it('skips grading-integrity audit cards — a failing audit settles the subject, which IS the disposition', () => {
+    expect(() =>
+      validateScorecardPoorRatingDisposition(
+        { rubricRef: 'grading-integrity', ratings: { a: { rating: 'fail', evidence: 'e' } } } as StructuredObservation,
+        standard,
+      ),
+    ).not.toThrow();
+  });
+
+  it('treats a kind-less rubric as standard (the default kind) and enforces', () => {
+    expect(() =>
+      validateScorecardPoorRatingDisposition(obs({ a: { rating: 'fail', evidence: 'e' } }), {}),
+    ).toThrow(ObservationEvidenceError);
+  });
+
+  it('passes free-text / no-ratings observations unconditionally', () => {
+    expect(() =>
+      validateScorecardPoorRatingDisposition({ kind: 'friction' } as StructuredObservation, standard),
+    ).not.toThrow();
+    expect(() => validateScorecardPoorRatingDisposition(undefined, standard)).not.toThrow();
+    expect(() => validateScorecardPoorRatingDisposition(null, standard)).not.toThrow();
+  });
+
+  it('carries remediation/disregard through the read-side narrowing (asStructuredObservation)', () => {
+    const narrowed = asStructuredObservation({
+      rubricRef: 'r',
+      ratings: {
+        a: { rating: 'fail', evidence: 'e', remediation: 'WI-9', disregard: '' },
+        b: { rating: 'partial', evidence: 'e', disregard: 'accepted: bounded historical artifact' },
+      },
+    });
+    expect(narrowed?.ratings?.a).toEqual({ rating: 'fail', evidence: 'e', remediation: 'WI-9' });
+    expect(narrowed?.ratings?.b).toEqual({
+      rating: 'partial',
+      evidence: 'e',
+      disregard: 'accepted: bounded historical artifact',
+    });
   });
 });
