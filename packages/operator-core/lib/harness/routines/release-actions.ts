@@ -63,6 +63,7 @@ import {
   parseFrozenCandidateRepairQueue,
   markFrozenRepairFixerDispatched,
   buildFrozenRepairConvergenceGateHealth,
+  buildFrozenRepairStatusIdentity,
   type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
 } from '../../release/frozen-candidate-repair-queue';
@@ -752,6 +753,19 @@ export interface CheckpointVerdict {
   repairQueue?: FrozenCandidateRepairQueue;
   /** EI-21763163890991789: durable evidence for a cleared fossilized repair pin. */
   fossilAbandonment?: FrozenCandidateFossilAbandonment;
+  /** P-009 (gate-verdict-liveness-and-repair-reliability-2026-08-31): structural mirror of
+   *  CheckpointResult.repairTickLegs — present ONLY on an `awaiting-fixer` repair hold, where
+   *  the CLI re-measured the cheap NON_TEST_GATE_SCRIPTS legs at the queue's repairHead.
+   *  `legs[].id` is the registry KEY (the same vocabulary leg-shaped `failingTests` entries
+   *  use), which is what lets trackGateStall refresh exactly the measured entries without
+   *  operator-core ever importing the registry (the measured set rides the verdict). */
+  repairTickLegs?: {
+    head: string;
+    atMs: number;
+    ok: boolean;
+    failingSignatures: string[];
+    legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored'; durationMs: number; outputTail?: string }>;
+  };
 }
 
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
@@ -765,6 +779,22 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   if (v.promotionPending === true) detail.promotionPending = true;
   if (v.candidate) detail.candidate = v.candidate.slice(0, 12);
   if (v.from) detail.from = v.from.slice(0, 12);
+  if (v.repairQueue) {
+    // P-003 / D-002: `candidate` historically carried the mutable repair head on no-suite
+    // outcomes. Persist the immutable pin and the head separately, then use the canonical queue
+    // helper's provenance to make the distinction durable for readers that never see gate_health.
+    const identity = buildFrozenRepairStatusIdentity(v.repairQueue);
+    detail.frozenCandidate = identity.frozenCandidate.slice(0, 12);
+    detail.repairHead = identity.repairHead.slice(0, 12);
+    detail.verdictProvenance = {
+      ...identity.verdictProvenance,
+      frozenCandidate: identity.verdictProvenance.frozenCandidate.slice(0, 12),
+      repairHead: identity.verdictProvenance.repairHead.slice(0, 12),
+    };
+    if (identity.verdictProvenance.currentStatus === 'no-suite') {
+      detail.candidate = identity.frozenCandidate.slice(0, 12);
+    }
+  }
   // P-016: on a partial advance, record the prefix sha `main` was FF'd to (the red tip stays in
   // `candidate`) so /admin/git shows WHERE main landed vs the held tip.
   if (v.advancedTo) detail.advancedTo = v.advancedTo.slice(0, 12);
@@ -846,6 +876,24 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
           }
         : {}),
     }));
+  }
+  // P-009: persist the awaiting-fixer hold tick's cheap-legs measurement WITH ITS LEG NAMES —
+  // this row IS the per-fire ledger entry that makes non-test legs SQL-visible during repair
+  // (test_runs is structurally test-file-only, so without this the legs vanish for the whole
+  // hold). Bounded like every sibling block; rides the EXISTING kind/status, no new kind.
+  if (v.repairTickLegs) {
+    detail.repairTickLegs = {
+      head: v.repairTickLegs.head.slice(0, 12),
+      atMs: v.repairTickLegs.atMs,
+      ok: v.repairTickLegs.ok,
+      failingSignatures: v.repairTickLegs.failingSignatures.slice(0, 20).map((s) => s.slice(0, 128)),
+      legs: v.repairTickLegs.legs.slice(0, 32).map((leg) => ({
+        id: leg.id.slice(0, 128),
+        status: leg.status,
+        durationMs: Math.max(0, Math.floor(leg.durationMs)),
+        ...(leg.outputTail ? { outputTail: leg.outputTail.slice(-500) } : {}),
+      })),
+    };
   }
   // isolation-retry-resilience-2026-07-19 (EI-15849): persist the absorption verdict note
   // even on a red (not absorbed) — see CheckpointVerdict.isolationNote for why this closes
@@ -1093,7 +1141,9 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
     verdict.retriage,
     verdict.summary ?? null,
     undefined,
-    { runId: verdict.runId },
+    // P-009: thread the hold tick's cheap-legs measurement so gate_health stays MEASURED
+    // during an awaiting-fixer hold instead of stamping failingTestsMeasured:false.
+    { runId: verdict.runId, repairTickLegs: verdict.repairTickLegs },
   );
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
@@ -1415,6 +1465,10 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       parsed?.from ?? null,
       parsed?.retriage,
       parsed?.summary ?? null,
+      undefined,
+      // P-009: same threading as the producer-side path — the version-skew fallback must
+      // not lose the measurement a modern CLI took.
+      { repairTickLegs: parsed?.repairTickLegs },
     ).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} stall tracking failed: ${e instanceof Error ? e.message : e}`),
     );
@@ -2386,6 +2440,10 @@ export async function trackGateStall(
     runId?: string;
     candidateSource?: 'pinned' | 'tip';
     diagnostic?: 'candidate-pinned';
+    /** P-009: the awaiting-fixer hold tick's cheap-legs measurement (CheckpointVerdict.repairTickLegs).
+     *  Present ⇒ this "no-verdict" tick DID measure the non-test legs at repairHead, so the
+     *  inconclusive path refreshes instead of stamping failingTestsMeasured:false. */
+    repairTickLegs?: NonNullable<CheckpointVerdict['repairTickLegs']>;
   } = {},
 ): Promise<void> {
   if (isPinnedCheckpointVerdict(options)) return;
@@ -2598,27 +2656,74 @@ export async function trackGateStall(
     // a literal chain here and a second, subtly different one in the advice path. Adding a
     // status here without classifying it there is what the guard test catches.
     if (isRecordedInconclusiveStatus(status)) {
+      const inconclusivePayload = JSON.stringify({
+        status,
+        candidate: candidate?.slice(0, 12) ?? null,
+        detail: summary ?? null,
+        observedAtMs: Date.now(),
+      });
+      const tickLegs = options.repairTickLegs;
       try {
-        await sql.unsafe(
-          `UPDATE harness_shared.routines
-              SET metadata = jsonb_set(
-                    jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
-                    '{gate_health,failingTestsMeasured}',
-                    'false'::jsonb,
-                    true
-                  ),
-                  updated_at = now()
-            WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-          [
-            ctx.installSlug,
-            JSON.stringify({
-              status,
-              candidate: candidate?.slice(0, 12) ?? null,
-              detail: summary ?? null,
-              observedAtMs: Date.now(),
-            }),
-          ],
-        );
+        if (tickLegs) {
+          // P-009 (gate-verdict-liveness-and-repair-reliability-2026-08-31): this hold tick
+          // DID measure — the CLI re-ran the cheap non-test legs at the queue's repairHead
+          // (CheckpointVerdict.repairTickLegs). Stamping failingTestsMeasured:false here is
+          // what left the flag false for HOURS during repair and sent agents chasing stale
+          // names (D-001 loss class 4), so instead:
+          //   · refresh exactly the MEASURED leg-shaped failingTests entries against the
+          //     row's LIVE value at UPDATE time (filter measured ids out, append the fresh
+          //     failing set) — the same at-UPDATE-time merge convention this function's
+          //     final write uses, so a concurrent writer cannot be shadowed (EI-7472);
+          //   · leave test-file entries untouched: they were measured by the suite red that
+          //     froze the candidate, and this tick re-measured only the legs;
+          //   · record provenance under gate_health.repairTickLegs (head + atMs + result)
+          //     so a reader can see WHEN and AGAINST WHAT the leg half was refreshed.
+          // The next REAL verdict still replaces the whole gate_health key, clearing all of
+          // this exactly like `inconclusive` itself. Fresh failing ids are all in the
+          // measured set, so the filter+append cannot duplicate an entry.
+          const measuredIds = tickLegs.legs.map((leg) => leg.id);
+          await sql.unsafe(
+            `UPDATE harness_shared.routines
+                SET metadata = jsonb_set(
+                      jsonb_set(
+                        jsonb_set(
+                          jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
+                          '{gate_health,failingTestsMeasured}', 'true'::jsonb, true),
+                        '{gate_health,repairTickLegs}', $3::jsonb, true),
+                      '{gate_health,failingTests}',
+                      (SELECT COALESCE(jsonb_agg(e.value), '[]'::jsonb)
+                         FROM jsonb_array_elements_text(COALESCE(metadata->'gate_health'->'failingTests', '[]'::jsonb)) AS e
+                        WHERE NOT (e.value = ANY($4::text[]))) || $5::jsonb,
+                      true),
+                    updated_at = now()
+              WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+            [
+              ctx.installSlug,
+              inconclusivePayload,
+              JSON.stringify({
+                head: tickLegs.head.slice(0, 12),
+                atMs: tickLegs.atMs,
+                ok: tickLegs.ok,
+                failingSignatures: tickLegs.failingSignatures.slice(0, 20),
+              }),
+              measuredIds,
+              JSON.stringify(tickLegs.failingSignatures.slice(0, 20)),
+            ],
+          );
+        } else {
+          await sql.unsafe(
+            `UPDATE harness_shared.routines
+                SET metadata = jsonb_set(
+                      jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
+                      '{gate_health,failingTestsMeasured}',
+                      'false'::jsonb,
+                      true
+                    ),
+                    updated_at = now()
+              WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+            [ctx.installSlug, inconclusivePayload],
+          );
+        }
       } catch (e) {
         // Fail-safe, exactly like every other write in this function: an unrecorded abort
         // degrades to the pre-EI-19405864032365760 behaviour (invisible), never to a wrong verdict.
@@ -3908,49 +4013,143 @@ export async function writeFrozenCandidateRepairQueue(
 export async function retireFrozenCandidateRepairQueue(
   target: GateVerdictTarget,
   expectedQueue: FrozenCandidateRepairQueue,
-): Promise<{ retired: boolean; current: FrozenCandidateRepairQueue | null }> {
+): Promise<{
+  retired: boolean;
+  current: FrozenCandidateRepairQueue | null;
+  fixerAlive?: boolean | null;
+  refusal?:
+    | 'identity-mismatch'
+    | 'live-fixer'
+    | 'liveness-unknown'
+    | 'active-dispatch-reservation'
+    | 'unsafe-phase';
+}> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
-  const rows = (await sql.unsafe(
-    // P-013: retiring the queue also clears `gate_health.convergence` — same reason as the
-    // null-queue branch of writeFrozenCandidateRepairQueue. Both cycle-teardown paths must
-    // clear it or one of them leaves shrink figures for a candidate that no longer exists.
-    `UPDATE harness_shared.routines
-        SET metadata = (CASE
-              WHEN metadata #>> '{gate_health,inconclusive,status}'
-                     IN ('repair-in-progress', 'repair-staging-mismatch')
-                THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
-                     #- '{gate_health,inconclusive}'
-              ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
-            END) #- '{gate_health,convergence}',
-            updated_at = now()
-      WHERE workspace_id = $1
-        AND install_slug = $2
-        AND target_role = 'system:green-checkpoint'
-        -- Match only the stable queue identity. Comparing the whole JSONB object makes an
-        -- additive field written by a newer checkpoint build a retroactive breaking change
-        -- for an older release tool that parsed the same row and then attempted retirement.
-        AND metadata->'repair_queue'->>'candidate' = $3::text
-        AND metadata->'repair_queue'->>'repairHead' = $4::text
-        AND metadata->'repair_queue'->'updatedAtMs' = to_jsonb($5::bigint)
-      RETURNING true AS retired`,
-    [
-      target.workspaceId,
-      target.installSlug,
-      expectedQueue.candidate,
-      expectedQueue.repairHead,
-      expectedQueue.updatedAtMs,
-    ],
-  )) as Array<{ retired: boolean }>;
-  if (rows[0]?.retired === true) {
+  // EI-22026318885195355: lock the existing routine metadata row before taking the liveness
+  // sample. The old path sampled liveness, released the queue read, then issued a separate CAS;
+  // a concurrent queue writer could advance updatedAtMs in between, and the post-CAS diagnostic
+  // could independently return null. The transaction makes identity, reservation, liveness, and
+  // the clear one serialized lifecycle cut while retaining the shared liveness definition.
+  const result = await sql.begin(async (tx) => {
+    const currentRows = (await tx.unsafe(
+      `SELECT metadata
+         FROM harness_shared.routines
+        WHERE workspace_id = $1
+          AND install_slug = $2
+          AND target_role = 'system:green-checkpoint'
+        FOR UPDATE`,
+      [target.workspaceId, target.installSlug],
+    )) as Array<{ metadata?: Record<string, unknown> | string | null }>;
+    // EI-22026318885195355 (folded on su-40d60b0c's request while this file's lock was held
+    // for P-008): some pg client paths hand `routines.metadata` back as a JSON STRING rather
+    // than a decoded object. Without normalization this locked read parses null and BOTH
+    // sides of a concurrent retire refuse as identity-mismatch — a liveness bug wearing a
+    // CAS-miss costume. Deliberately NARROW: normalize only this locked read; the queue
+    // parser and the reserve/renew/finalize CAS paths are unchanged.
+    const rawLockedMetadata = currentRows[0]?.metadata;
+    let lockedMetadata: Record<string, unknown> | null | undefined;
+    if (typeof rawLockedMetadata === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(rawLockedMetadata);
+        lockedMetadata =
+          parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : null;
+      } catch {
+        lockedMetadata = null;
+      }
+    } else {
+      lockedMetadata = rawLockedMetadata;
+    }
+    const current = parseFrozenCandidateRepairQueue(lockedMetadata?.repair_queue);
+    if (!current) return { retired: false, current: null, refusal: 'identity-mismatch' as const };
+
+    const identityMatches =
+      current.candidate === expectedQueue.candidate &&
+      current.repairHead === expectedQueue.repairHead &&
+      current.updatedAtMs === expectedQueue.updatedAtMs &&
+      current.fixerSpawnId === expectedQueue.fixerSpawnId;
+    if (!identityMatches) return { retired: false, current, refusal: 'identity-mismatch' as const };
+    if (current.phase !== 'awaiting-fixer' && current.phase !== 'blocked') {
+      return { retired: false, current, refusal: 'unsafe-phase' as const };
+    }
+    if (current.dispatchReservation && current.dispatchReservation.expiresAtMs > Date.now()) {
+      return { retired: false, current, refusal: 'active-dispatch-reservation' as const };
+    }
+
+    // This is deliberately sampled through the ONE liveness definition. Because the queue row is
+    // locked for the duration, the answer is coupled to the exact identity being retired; a
+    // false -> null oscillation cannot turn this operation into a misleading CAS miss.
+    const fixerAlive = current.fixerSpawnId
+      ? await releaseFixerSpawnAlive(tx, current.fixerSpawnId)
+      : null;
+    if (current.fixerSpawnId && fixerAlive !== false) {
+      return {
+        retired: false,
+        current,
+        fixerAlive,
+        refusal: fixerAlive === true ? ('live-fixer' as const) : ('liveness-unknown' as const),
+      };
+    }
+
+    const rows = (await tx.unsafe(
+      // P-013: retiring the queue also clears `gate_health.convergence` — same reason as the
+      // null-queue branch of writeFrozenCandidateRepairQueue. Both cycle-teardown paths must
+      // clear it or one of them leaves shrink figures for a candidate that no longer exists.
+      `UPDATE harness_shared.routines
+          SET metadata = (CASE
+                WHEN metadata #>> '{gate_health,inconclusive,status}'
+                       IN ('repair-in-progress', 'repair-staging-mismatch')
+                  THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
+                       #- '{gate_health,inconclusive}'
+                ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
+              END) #- '{gate_health,convergence}',
+              updated_at = now()
+        WHERE workspace_id = $1
+          AND install_slug = $2
+          AND target_role = 'system:green-checkpoint'
+          -- Match only the stable queue identity. Comparing the whole JSONB object makes an
+          -- additive field written by a newer checkpoint build a retroactive breaking change
+          -- for an older release tool that parsed the same row and then attempted retirement.
+          AND metadata->'repair_queue'->>'candidate' = $3::text
+          AND metadata->'repair_queue'->>'repairHead' = $4::text
+          AND metadata->'repair_queue'->'updatedAtMs' = to_jsonb($5::bigint)
+          -- The fixer id is semantic identity, not an additive display field. Null-safe equality
+          -- prevents a stale request from clearing a replacement fixer under the same queue tuple.
+          AND metadata->'repair_queue'->>'fixerSpawnId' IS NOT DISTINCT FROM $6::text
+        RETURNING true AS retired`,
+      [
+        target.workspaceId,
+        target.installSlug,
+        expectedQueue.candidate,
+        expectedQueue.repairHead,
+        expectedQueue.updatedAtMs,
+        expectedQueue.fixerSpawnId,
+      ],
+    )) as Array<{ retired: boolean }>;
+    if (rows[0]?.retired === true) return { retired: true, current: null };
+    return {
+      retired: false,
+      current,
+      fixerAlive,
+      refusal: 'identity-mismatch' as const,
+    };
+  });
+  if (result.retired) {
     // P-004: the queue is gone, so the edit-time marker must go with it. A stale marker would
     // warn agents off editing paths for a candidate that no longer exists — a false positive
     // that teaches them to ignore the signal, which is worse than no signal.
     const { projectFrozenRepairMarker } = await import('../../release/frozen-repair-edit-marker');
     projectFrozenRepairMarker(null);
-    return { retired: true, current: null };
+    return result;
   }
-  return { retired: false, current: await readFrozenCandidateRepairQueue(target) };
+  // `result.current` was read while the routine row was locked. Avoid a second liveness query
+  // here; the caller can render the transaction's stable fixerAlive snapshot instead. An
+  // identity miss is the one exception: the transaction saw a different queue, so refresh the
+  // queue object for the caller's CAS diagnostic without re-running liveness against it.
+  if (result.refusal !== 'identity-mismatch') return result;
+  return { ...result, current: await readFrozenCandidateRepairQueue(target) };
 }
 
 export interface FrozenRepairFixerDispatchResult {
@@ -4000,9 +4199,21 @@ export async function reserveFrozenCandidateRepairFixer(
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const allowCreate = options.allowCreateIfAbsent === true;
+  // P-008 / EI-21813295393334986: the CAS matches IDENTITY (candidate + repairHead +
+  // updatedAtMs — bumped on every transition, so together they ARE the row version) rather
+  // than whole-row jsonb equality, and the write MERGES over the stored row. A build-skewed
+  // peer's unknown fields (the `freeRetries` class) neither break the match nor get dropped;
+  // whole-row equality wedged every exit path the moment writer/reader builds skewed.
+  // `updatedAtMs` is compared as TEXT: integer-ms digits are exact on both sides, and a
+  // corrupt non-numeric stored value then fails the match instead of throwing the UPDATE.
   const rows = (await sql.unsafe(
     `UPDATE harness_shared.routines
-        SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{repair_queue}', $3::jsonb, true),
+        SET metadata = jsonb_set(
+              COALESCE(metadata, '{}'::jsonb),
+              '{repair_queue}',
+              COALESCE(NULLIF(metadata->'repair_queue', 'null'::jsonb), '{}'::jsonb) || $3::jsonb,
+              true
+            ),
             updated_at = now()
       WHERE workspace_id = $1
         AND install_slug = $2
@@ -4010,7 +4221,9 @@ export async function reserveFrozenCandidateRepairFixer(
         AND (
           ${allowCreate ? "metadata->'repair_queue' IS NULL OR metadata->'repair_queue' = 'null'::jsonb OR" : ''}
           (
-            (metadata->'repair_queue') - 'dispatchReservation' = $4::jsonb
+            metadata->'repair_queue'->>'candidate' = $4
+            AND metadata->'repair_queue'->>'repairHead' = $5
+            AND metadata->'repair_queue'->>'updatedAtMs' = $6
             AND (
               metadata->'repair_queue'->'dispatchReservation' IS NULL
               OR COALESCE(
@@ -4020,12 +4233,20 @@ export async function reserveFrozenCandidateRepairFixer(
                   ELSE 0
                 END,
                 0
-              ) <= $5::bigint
+              ) <= $7::bigint
             )
           )
         )
       RETURNING metadata->'repair_queue' AS repair_queue`,
-    [target.workspaceId, target.installSlug, JSON.stringify(reservedQueue), JSON.stringify(expectedQueue), nowMs],
+    [
+      target.workspaceId,
+      target.installSlug,
+      JSON.stringify(reservedQueue),
+      queue.candidate,
+      queue.repairHead,
+      String(queue.updatedAtMs),
+      nowMs,
+    ],
   )) as Array<{ repair_queue: unknown }>;
   return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
 }
@@ -4050,16 +4271,34 @@ export async function renewFrozenCandidateRepairFixerReservation(
   };
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
+  // P-008: identity + reservation-token CAS (version-tolerant — see reserve above). The token
+  // remains the lease authority; identity fields pin the queue generation the lease was taken on.
   const rows = (await sql.unsafe(
     `UPDATE harness_shared.routines
-        SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{repair_queue}', $3::jsonb, true),
+        SET metadata = jsonb_set(
+              COALESCE(metadata, '{}'::jsonb),
+              '{repair_queue}',
+              COALESCE(NULLIF(metadata->'repair_queue', 'null'::jsonb), '{}'::jsonb) || $3::jsonb,
+              true
+            ),
             updated_at = now()
       WHERE workspace_id = $1
         AND install_slug = $2
         AND target_role = 'system:green-checkpoint'
-        AND metadata->'repair_queue' = $4::jsonb
+        AND metadata->'repair_queue'->>'candidate' = $4
+        AND metadata->'repair_queue'->>'repairHead' = $5
+        AND metadata->'repair_queue'->>'updatedAtMs' = $6
+        AND metadata->'repair_queue'->'dispatchReservation'->>'token' = $7
       RETURNING metadata->'repair_queue' AS repair_queue`,
-    [target.workspaceId, target.installSlug, JSON.stringify(renewedQueue), JSON.stringify(queue)],
+    [
+      target.workspaceId,
+      target.installSlug,
+      JSON.stringify(renewedQueue),
+      queue.candidate,
+      queue.repairHead,
+      String(queue.updatedAtMs),
+      queue.dispatchReservation.token,
+    ],
   )) as Array<{ repair_queue: unknown }>;
   return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
 }
@@ -4076,7 +4315,6 @@ export async function finalizeFrozenCandidateRepairFixer(
   nowMs = Date.now(),
 ): Promise<FrozenCandidateRepairQueue | null> {
   if (!queue.dispatchReservation || queue.phase !== 'awaiting-fixer') return null;
-  const expectedQueue = queue;
   let finalizedQueue: FrozenCandidateRepairQueue;
   if (fired?.spawnId) {
     const withoutReservation = queueWithoutDispatchReservation(queue);
@@ -4089,19 +4327,34 @@ export async function finalizeFrozenCandidateRepairFixer(
 
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
+  // P-008: identity + token CAS with a merge-write (version-tolerant — see reserve above).
+  // `finalizedQueue` is serialized WITHOUT the reservation key, and a jsonb merge cannot
+  // delete a key, so the reservation is removed explicitly after the merge.
   const rows = (await sql.unsafe(
     `UPDATE harness_shared.routines
-        SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at = now()
+        SET metadata = jsonb_set(
+              COALESCE(metadata, '{}'::jsonb),
+              '{repair_queue}',
+              (COALESCE(NULLIF(metadata->'repair_queue', 'null'::jsonb), '{}'::jsonb) || $3::jsonb) - 'dispatchReservation',
+              true
+            ),
+            updated_at = now()
       WHERE workspace_id = $1
         AND install_slug = $2
         AND target_role = 'system:green-checkpoint'
-        AND metadata->'repair_queue' = $4::jsonb
+        AND metadata->'repair_queue'->>'candidate' = $4
+        AND metadata->'repair_queue'->>'repairHead' = $5
+        AND metadata->'repair_queue'->>'updatedAtMs' = $6
+        AND metadata->'repair_queue'->'dispatchReservation'->>'token' = $7
       RETURNING metadata->'repair_queue' AS repair_queue`,
     [
       target.workspaceId,
       target.installSlug,
-      JSON.stringify({ repair_queue: finalizedQueue }),
-      JSON.stringify(expectedQueue),
+      JSON.stringify(finalizedQueue),
+      queue.candidate,
+      queue.repairHead,
+      String(queue.updatedAtMs),
+      queue.dispatchReservation.token,
     ],
   )) as Array<{ repair_queue: unknown }>;
   return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
