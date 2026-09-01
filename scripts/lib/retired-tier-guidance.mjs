@@ -54,10 +54,41 @@ export function guidanceTextFor(relativeFile, source) {
     text = source;
   }
   return blankDomainTermCollisions(
-    blankImportSpecifiers(
-      blankRoleAuthorizationLists(blankRoleConfigKeys(blankRoleAllowlistArrays(text))),
+    blankAuthorizationBasisPhrases(
+      blankImportSpecifiers(
+        blankRoleAuthorizationLists(blankRoleConfigKeys(blankRoleAllowlistArrays(text))),
+      ),
     ),
   );
+}
+
+/**
+ * A role name in an authorization-basis phrase is not an instruction to execute
+ * work through that role. `release-force-guard` accurately tells callers that
+ * `queen authority` is one live basis for a force transition, while the
+ * retirement detector previously treated the noun phrase as a retired executor
+ * recommendation because the same segment also contains the force guidance.
+ *
+ * Blank only the bare role token in this exact basis enumeration. In particular,
+ * do not match a standalone `queen authority` prescription or `hive-queen
+ * authority`: the latter is a persisted authority-stamp value, not the live
+ * force-authority basis described here. Blanking is length-preserving, so line
+ * numbers and surrounding guidance remain intact and a second, real role
+ * prescription in the same segment remains visible.
+ */
+function blankAuthorizationBasisPhrases(text) {
+  const AUTHORIZATION_BASIS_RE =
+    /\bsystem-authority\s+as\s+an?\s+overwatch\s+pane,\s*(queen)\s+authority(?=\s*,\s*or\b)/gi;
+  const chars = text.split("");
+  AUTHORIZATION_BASIS_RE.lastIndex = 0;
+  for (const match of text.matchAll(AUTHORIZATION_BASIS_RE)) {
+    const roleOffset = match[0].toLowerCase().lastIndexOf(match[1].toLowerCase());
+    if (roleOffset < 0) continue;
+    const roleStart = (match.index ?? 0) + roleOffset;
+    for (let i = roleStart; i < roleStart + match[1].length; i += 1)
+      chars[i] = " ";
+  }
+  return chars.join("");
 }
 
 /**

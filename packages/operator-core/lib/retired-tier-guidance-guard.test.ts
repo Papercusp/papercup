@@ -252,6 +252,51 @@ describe('authorization role lists are access-control data, not guidance', () =>
   });
 });
 
+describe('live Queen authorization basis is not retired executor guidance', () => {
+  const offenders = (file: string, source: string) =>
+    findRetiredGuidanceOffenders(file, guidanceTextFor(file, source));
+
+  it('does not flag the live bare "queen authority" basis phrase', () => {
+    expect(
+      offenders(
+        'release-force-guard.ts',
+        `const hint = 'holding system-authority as an Overwatch pane, queen authority, or leading the holder fleet';`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps the current force-refusal hint clean', () => {
+    const file = 'packages/operator-core/lib/agent-tools/work_items/release-force-guard.ts';
+    const source = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+    expect(offenders(file, source)).toEqual([]);
+  });
+
+  it('still flags a real Queen executor prescription in the same guidance segment', () => {
+    expect(
+      offenders(
+        'release-force-guard.ts',
+        `const hint = 'system-authority as an Overwatch pane, queen authority, or leading the holder fleet; the Queen dispatches work to a bee';`,
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('does not broaden the exemption to a standalone Queen authority prescription', () => {
+    expect(
+      offenders(
+        'release-force-guard.ts',
+        `const hint = 'queen authority dispatches work to a bee';`,
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('preserves length and keeps hyphenated authority stamps visible', () => {
+    const source = `const hint = 'queen authority';\nconst stamp = 'hive-queen authority';\n`;
+    const normalized = guidanceTextFor('release-force-guard.ts', source);
+    expect(normalized).toHaveLength(source.length);
+    expect(normalized).toContain('hive-queen authority');
+  });
+});
+
 /**
  * WI-1726926 — `red-queen` is a DOMAIN TERM (the arms-race hypothesis the gym's
  * adversarial drills and the learning governor are named after), and `\bqueen\b`
