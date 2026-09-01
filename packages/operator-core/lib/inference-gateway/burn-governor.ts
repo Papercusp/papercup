@@ -358,15 +358,76 @@ export function evaluateAccountBurn(
   );
 }
 
-/** Pool-level rollup of per-account burn actions (WI-41147 leg b — the concurrency lever's input). */
+/**
+ * One account's contribution to the pool verdict. Deliberately the action AND what it RESTS ON,
+ * never the bare action (P-005): a rollup that takes `BurnAction[]` drops the disposition at its
+ * INPUT boundary, so no amount of care downstream can restate it — the pool verdict then reads
+ * `SHED` with no way to tell a provider wall from this system pacing itself.
+ */
+export type PoolBurnRow = Pick<BurnVerdict, 'action' | 'disposition'>;
+
+/** Pool-level rollup of per-account burn verdicts (WI-41147 leg b — the concurrency lever's input). */
 export interface PoolBurnAggregate {
   action: BurnAction;
   /** Accounts aggregated (the input length). */
   total: number;
   /** Per-action tally over the input. */
   counts: Record<BurnAction, number>;
+  /**
+   * What the POOL `action` rests on — the STRONGEST disposition among the accounts contributing
+   * to it (`measured-wall` > `pacing-projection` > `no-verdict`), never a majority vote. Strongest
+   * because the remedies do not average: one measured wall means part of the pool genuinely cannot
+   * serve until its window resets, and softening that to `pacing-projection` because siblings are
+   * projections would tell a reader to keep sending traffic at an exhausted account. `no-verdict`
+   * whenever `action` is `none` — nothing is being asserted, so nothing rests on anything.
+   *
+   * This is the CONFIDENCE half of the answer and `action` is the REMEDY half — the two questions
+   * P-004 learned not to gate on each other. The mix that produced it is never destroyed: read
+   * `dispositionCounts` for how many of each.
+   */
+  disposition: BurnDisposition;
+  /**
+   * Per-disposition tally over the CONTRIBUTING accounts (those whose own action is not `none`),
+   * so a mixed pool — 2 measured walls beside 4 pacing projections — stays legible after the
+   * strongest-wins collapse above. All zero when `action` is `none` (no contributors).
+   */
+  dispositionCounts: Record<BurnDisposition, number>;
   /** Always populated — the WHY behind the pool verdict (never silent shedding). */
   reason: string;
+  /**
+   * The ONE canonical rendering of this pool verdict for any human- or agent-facing surface —
+   * {@link renderPoolBurnLabel}. The pool-level sibling of `BurnVerdict`'s
+   * `renderBurnVerdictLabel`: every writer interpolates this instead of composing its own
+   * `pool burn 'shed'` string, so the disposition cannot be present on one surface and missing
+   * on another (P-005).
+   */
+  label: string;
+}
+
+/** Strongest-first, so the collapse in {@link aggregatePoolBurn} is stated once and reused. */
+const DISPOSITION_STRENGTH: readonly BurnDisposition[] = [
+  'measured-wall',
+  'pacing-projection',
+  'no-verdict',
+];
+
+/**
+ * The ONE rendering of a POOL burn verdict, leading with the disposition for the same reason
+ * {@link renderBurnVerdictLabel} does: a `shed` derived entirely from projections is this system
+ * pacing itself, and a reader who takes it for a provider wall reports the fleet as "at capacity"
+ * when every account is still serving.
+ */
+export function renderPoolBurnLabel(agg: Pick<PoolBurnAggregate, 'action' | 'disposition' | 'dispositionCounts'>): string {
+  const head = agg.action.toUpperCase();
+  const c = agg.dispositionCounts;
+  if (agg.disposition === 'measured-wall') {
+    const rest = c['pacing-projection'] > 0 ? `, ${c['pacing-projection']} pacing projection(s)` : '';
+    return `${head} (measured wall; ${c['measured-wall']} account(s) measured-walled${rest})`;
+  }
+  if (agg.disposition === 'pacing-projection') {
+    return `${head} (pacing projection, not a measured wall; ${c['pacing-projection']} account(s) projected, 0 measured)`;
+  }
+  return `${head} (no wall asserted)`;
 }
 
 /**
@@ -382,36 +443,59 @@ export interface PoolBurnAggregate {
  *                  `none`) — selection can route around the burn; the concurrency lever stands
  *                  down. Empty pool ⇒ `none` (never act on missing data).
  * Pure; deliberately conservative — a single unknown/healthy account stands the lever down.
+ *
+ * Takes VERDICT ROWS, not bare actions (P-005). The bare-action signature it replaced could not
+ * state what the pool verdict rested on, so `pool burn 'shed'` reached the fleet-concurrency lever
+ * and the operator log with the measured-vs-projected distinction already destroyed.
  */
-export function aggregatePoolBurn(actions: readonly BurnAction[]): PoolBurnAggregate {
+export function aggregatePoolBurn(rows: readonly PoolBurnRow[]): PoolBurnAggregate {
   const counts: Record<BurnAction, number> = { none: 0, throttle: 0, shed: 0 };
-  for (const a of actions) counts[a] += 1;
-  const total = actions.length;
+  for (const r of rows) counts[r.action] += 1;
+  const total = rows.length;
+
+  // Only the accounts actually asserting a burn get a vote on what the pool verdict rests on: a
+  // healthy account's 'no-verdict' is the ABSENCE of an assertion, and counting it would dilute a
+  // real measured wall toward "nothing is measured".
+  const dispositionCounts: Record<BurnDisposition, number> = {
+    'measured-wall': 0,
+    'pacing-projection': 0,
+    'no-verdict': 0,
+  };
+  for (const r of rows) if (r.action !== 'none') dispositionCounts[r.disposition] += 1;
+
+  const finish = (action: BurnAction, reason: string): PoolBurnAggregate => {
+    const disposition: BurnDisposition =
+      action === 'none'
+        ? 'no-verdict'
+        : (DISPOSITION_STRENGTH.find((d) => dispositionCounts[d] > 0) ?? 'no-verdict');
+    const base = {
+      action,
+      total,
+      counts,
+      disposition,
+      // Nothing is being asserted, so nothing contributed to it — never report a stale tally
+      // beside a `none` verdict.
+      dispositionCounts: action === 'none' ? { 'measured-wall': 0, 'pacing-projection': 0, 'no-verdict': 0 } : dispositionCounts,
+    };
+    return { ...base, reason, label: renderPoolBurnLabel(base) };
+  };
+
   if (total === 0) {
-    return { action: 'none', total, counts, reason: 'no accounts in pool — governor stands down (never act on missing data)' };
+    return finish('none', 'no accounts in pool — governor stands down (never act on missing data)');
   }
   if (counts.shed === total) {
-    return {
-      action: 'shed',
-      total,
-      counts,
-      reason: `all ${total} account(s) shed — nowhere to route; cut fleet concurrency`,
-    };
+    return finish('shed', `all ${total} account(s) shed — nowhere to route; cut fleet concurrency`);
   }
   if (counts.none === 0) {
-    return {
-      action: 'throttle',
-      total,
-      counts,
-      reason: `every account is burning (${counts.throttle} throttle, ${counts.shed} shed of ${total}) — spreading cannot relieve the pool; slow the fleet`,
-    };
+    return finish(
+      'throttle',
+      `every account is burning (${counts.throttle} throttle, ${counts.shed} shed of ${total}) — spreading cannot relieve the pool; slow the fleet`,
+    );
   }
-  return {
-    action: 'none',
-    total,
-    counts,
-    reason: `${counts.none} of ${total} account(s) have headroom or no verdict — selection can route around the burn`,
-  };
+  return finish(
+    'none',
+    `${counts.none} of ${total} account(s) have headroom or no verdict — selection can route around the burn`,
+  );
 }
 
 function fmtRate(rate: number): string {
