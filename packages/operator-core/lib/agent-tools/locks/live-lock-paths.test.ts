@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const ensureBootstrap = vi.fn(async () => {});
 const getTxPool = vi.fn(() => ({}) as never);
 const readQueue = vi.fn(async (_sql: unknown, _params: unknown) => ({
-  active_locks: [] as Array<{ path: string; owner: string; intent: string }>,
+  active_locks: [] as Array<{ path: string; owner: string; intent: string; goal_ref?: string | null }>,
   waiting: [] as Array<{ path: string; owner: string }>,
 }));
 
@@ -41,6 +41,17 @@ describe('liveLockHoldings', () => {
     expect(await liveLockHoldings()).toEqual([
       { path: 'a.ts', owner: 'su-1', intent: 'edit a.ts' },
       { path: 'b.ts', owner: 'su-2', intent: 'edit b.ts' },
+    ]);
+  });
+
+  it('preserves the live goal_ref so git-sync can keep an edit cohort atomic', async () => {
+    readQueue.mockResolvedValue({
+      active_locks: [{ ...holding('source.ts', 'su-1'), goal_ref: ' WI-atomic ' }, holding('test.ts', 'su-1')],
+      waiting: [],
+    });
+    expect(await liveLockHoldingsStrict()).toEqual([
+      { path: 'source.ts', owner: 'su-1', intent: 'edit source.ts', goalRef: 'WI-atomic' },
+      { path: 'test.ts', owner: 'su-1', intent: 'edit test.ts' },
     ]);
   });
 

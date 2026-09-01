@@ -31,6 +31,8 @@ export interface LiveLockHolding {
   owner: string;
   /** The holder's declared edit intent, preserved for actionable git-sync diagnostics. */
   intent: string;
+  /** The active work-item/goal associated with the lock, when the caller stamped one. */
+  goalRef?: string;
 }
 
 /**
@@ -47,7 +49,12 @@ export async function liveLockHoldingsStrict(): Promise<LiveLockHolding[]> {
   // readQueue already filters holders to expires_ts > clock_timestamp(), so the set is
   // live by construction. No `paths`/`owner` filter ⇒ the whole active set.
   const queue = await readQueue(getTxPool(), { coordinationDomain: null });
-  return queue.active_locks.map((l) => ({ path: l.path, owner: l.owner, intent: l.intent }));
+  return queue.active_locks.map((l) => ({
+    path: l.path,
+    owner: l.owner,
+    intent: l.intent,
+    ...(l.goal_ref?.trim() ? { goalRef: l.goal_ref.trim() } : {}),
+  }));
 }
 
 /**

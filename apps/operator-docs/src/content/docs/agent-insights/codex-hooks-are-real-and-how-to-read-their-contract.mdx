@@ -4,12 +4,14 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Codex hooks are real — how to read their contract, and how to test them
-description: codex-cli 0.146.0 ships a complete, self-describing hook system. The 2026-06-21 "codex hooks are inert" verdict is refuted. How to extract the wire contract from the binary, how to test hooks when the ChatGPT quota is exhausted, and the two probes that look decisive and are not.
-discovered: 2026-08-09
-tags: [codex, hooks, provenance, wire-contract, testing, verification]
-status: active
+title: "Codex hooks are real — how to read their contract, and how to test them"
+description: "codex-cli 0.146.0 ships a complete, self-describing hook system. The 2026-06-21 \"codex hooks are inert\" verdict is refuted. How to extract the wire contract from the binary, how to test hooks when the ChatGPT quota is exhausted, and the two probes that look decisive and are not."
 type: Insight
+discovered: 2026-08-09
+tags: ["codex", "hooks", "provenance", "wire-contract", "testing", "verification"]
+status: active
+documents:
+  - "apps/operator/scripts/hooks/inject/adapters/codex.mjs"
 ---
 
 **If you are about to route around codex hooks because a prior plan said they are
@@ -33,7 +35,7 @@ The binary is at:
 node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex
 ```
 
-311MB, resolved by the npm shim's `findCodexExecutable()` in `bin/codex.js`.
+311MB at the time of measurement. The launcher is the installed `@openai/codex` npm package; locate its environment-specific shim with `readlink -f "$(command -v codex)"`, then inspect that shim's `findCodexExecutable()`.
 (A prior plan asserted this binary was *not* in the linuxbrew tree and therefore
 could not be string-scanned. It is, and it can.)
 

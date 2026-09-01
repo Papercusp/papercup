@@ -1316,7 +1316,7 @@ _pc_heavy_internal_preempt_run() {
       return 143
     fi
     if ! _preempt_caller_alive; then
-      _preempt_notify "[pc-heavy] original caller exited — reaping its orphaned heavy workload"
+      _preempt_notify "[pc-heavy] original caller exited — reaping its orphaned heavy workload (if you meant to background this, use the harness's run_in_background rather than nohup/&; pc-heavy kills orphans by design)"
       _preempt_reap_group
       _preempt_emit_result undetermined caller-exited 143
       trap - EXIT TERM INT HUP
