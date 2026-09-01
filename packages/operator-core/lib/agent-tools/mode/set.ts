@@ -288,6 +288,7 @@ export default defineTool({
       noop: z.unknown().optional(),
       switchedFrom: z.unknown().optional(),
       stickyConflict: z.unknown().optional(),
+      status: z.unknown().optional(),
       contract: z.unknown().optional(),
       implied: z.unknown().optional(),
       impliedNote: z.unknown().optional(),
