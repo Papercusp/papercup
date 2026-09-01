@@ -135,11 +135,15 @@ import agentChatTools from './index';
 const messagesRoute = (agentChatTools as Array<{ path: string; method: string; handler: (req: Request, ctx: unknown) => Promise<Response> }>)
   .find((t) => t.method === 'POST' && t.path.endsWith('/messages'))!;
 
-function postMessage(slug = 'chat-owning-harness', context?: unknown) {
+function postMessage(slug = 'chat-owning-harness', context?: unknown, surface?: unknown) {
   const req = new Request(`http://localhost/api/harness/${slug}/agent-chats/chat-1/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content: 'what is this item about?', ...(context !== undefined ? { context } : {}) }),
+    body: JSON.stringify({
+      content: 'what is this item about?',
+      ...(context !== undefined ? { context } : {}),
+      ...(surface !== undefined ? { surface } : {}),
+    }),
   });
   return messagesRoute.handler(req, { params: { slug, chatId: 'chat-1' } });
 }
@@ -190,6 +194,27 @@ async function runAndCapture(slug = 'chat-owning-harness', context?: unknown) {
   const [, , streamOpts] = dispatchMock.mock.calls[0] as [unknown, unknown, { promptText: string; harness?: string }];
   return streamOpts;
 }
+
+describe('agent-chats messagesRoute — explicit agent-config surface (P-005/D-008)', () => {
+  it('threads the portal server selector into the existing chat tool', async () => {
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'portal' } as never);
+    computeCupWakeDossierMock.mockResolvedValue('PORTAL DOSSIER');
+    getWorkItemCheckpointMock.mockResolvedValue(null);
+
+    const res = await postMessage('portal', undefined, 'portal');
+    expect(res.status).toBe(200);
+    await drainToClose(res.body);
+    const [, , streamOpts] = dispatchMock.mock.calls[0] as [unknown, unknown, { surface?: string }];
+    expect(streamOpts.surface).toBe('portal');
+  });
+
+  it('rejects an unregistered selector before dispatch', async () => {
+    const res = await postMessage('portal', undefined, 'not-a-surface');
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ error: 'surface is not registered' });
+    expect(dispatchMock).not.toHaveBeenCalled();
+  });
+});
 
 describe('agent-chats messagesRoute — bounded UI context (WI-41425)', () => {
   it('injects the hosting-surface context as explicitly untrusted data without changing authority scope', async () => {

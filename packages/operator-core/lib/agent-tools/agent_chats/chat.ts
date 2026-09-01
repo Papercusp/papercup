@@ -38,11 +38,23 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '../../agent-chat-stream';
 import { surfaceBackend, surfaceModel } from '../../agent-config';
+import {
+  PUBLIC_PORTAL_AGENT_BASELINE,
+  SURFACE_KEYS,
+  type AgentBackend,
+  type SurfaceKey,
+} from '../../agent-config-constants';
 import { AGENT_CHATS_ALLOWED_TOOLS, agentChatsToolEventFilter, buildAgentChatsMcpConfig } from './mcp-config';
 
 const ArgsSchema = z.object({
   promptText: z.string().min(1),
   cwd: z.string().optional(),
+  /**
+   * Which existing agent-config surface owns this turn's model/backend pair.
+   * Omitted keeps every pre-portal caller on the shared `agent_chats` key.
+   * The public portal server supplies `portal`; the browser never does.
+   */
+  surface: z.enum(SURFACE_KEYS).optional(),
   /**
    * The harness this chat belongs to (P-004). When set AND the loopback
    * superuser token is provisioned, scopes + attaches the read-mostly
@@ -80,9 +92,29 @@ async function agentChatsHandler(input: Args, ctx: ChatCtx) {
   let lastErrorMessage: string | null = null;
   let lastErrorStderr: string | undefined;
 
-  // per-surface backend override (/settings/agent); undefined → global
-  const agentChatsBackend = await surfaceBackend('agent_chats');
-  const agentChatsModel = await surfaceModel('agent_chats'); // OQ3: undefined → backend default
+  const surface: SurfaceKey = input.surface ?? 'agent_chats';
+  const [configuredBackend, configuredModel] = await Promise.all([
+    surfaceBackend(surface),
+    surfaceModel(surface),
+  ]);
+
+  let agentChatsBackend: AgentBackend | undefined = configuredBackend;
+  let agentChatsModel: string | undefined = configuredModel;
+  if (surface === 'portal') {
+    // D-004: a portal model and backend are one compatibility unit. A single
+    // configured half is more dangerous than no override (for example a Luna
+    // model with the inherited Claude CLI), so refuse it before spawning.
+    if (Boolean(configuredBackend) !== Boolean(configuredModel)) {
+      throw new Error(
+        'portal agent config is incomplete: surfaceModels.portal and backends.portal must be set together',
+      );
+    }
+    // A fresh hosted instance still gets a deterministic public model. The
+    // deployment writes this same pair explicitly; this committed fallback is
+    // the recurrence guard against a missing/stale settings row.
+    agentChatsBackend = configuredBackend ?? PUBLIC_PORTAL_AGENT_BASELINE.backend;
+    agentChatsModel = configuredModel ?? PUBLIC_PORTAL_AGENT_BASELINE.model;
+  }
 
   // P-004: attach the read-mostly agentmcp surface when a harness is known
   // and the loopback superuser token is provisioned. `null` (unprovisioned

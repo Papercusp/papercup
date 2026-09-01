@@ -28,10 +28,12 @@ async function* streamOf(events: ChatEvent[]): AsyncGenerator<ChatEvent> {
 }
 
 const runAgentChatMock = vi.fn<(opts: unknown) => AsyncGenerator<ChatEvent>>();
+const surfaceBackendMock = vi.fn();
+const surfaceModelMock = vi.fn();
 
 let tool: {
   handler: (
-    a: { promptText: string; cwd?: string },
+    a: { promptText: string; cwd?: string; surface?: 'agent_chats' | 'portal' },
     c: { emit: (n: string, d: unknown) => void; signal?: AbortSignal },
   ) => Promise<{ content: Array<{ text: string }> }>;
 };
@@ -41,8 +43,8 @@ beforeAll(async () => {
     runAgentChat: runAgentChatMock,
   }));
   vi.doMock('../../../agent-config', () => ({
-    surfaceBackend: vi.fn(async () => undefined),
-    surfaceModel: vi.fn(async () => undefined),
+    surfaceBackend: surfaceBackendMock,
+    surfaceModel: surfaceModelMock,
   }));
   tool = (await import('../chat')).default as never;
 });
@@ -54,6 +56,8 @@ afterAll(() => {
 
 beforeEach(() => {
   runAgentChatMock.mockReset();
+  surfaceBackendMock.mockReset().mockResolvedValue(undefined);
+  surfaceModelMock.mockReset().mockResolvedValue(undefined);
 });
 
 /** Captures emitted (name, data) pairs + parses the returned rollup. */
@@ -127,6 +131,55 @@ describe('agent_chats:chat — delta accumulation + finalText reconciliation', (
     const { ctx } = makeCtx();
     const r = await tool.handler({ promptText: 'hi' }, ctx);
     expect(rollup(r).finalText).toBe('abcd');
+  });
+});
+
+describe('agent_chats:chat — public portal model/backend pin (P-005, D-004/D-008)', () => {
+  it('keeps legacy callers on the shared agent_chats surface', async () => {
+    runAgentChatMock.mockReturnValueOnce(streamOf([resultEv()]));
+    const { ctx } = makeCtx();
+    await tool.handler({ promptText: 'hi' }, ctx);
+
+    expect(surfaceBackendMock).toHaveBeenCalledWith('agent_chats');
+    expect(surfaceModelMock).toHaveBeenCalledWith('agent_chats');
+  });
+
+  it('uses the committed public pair when a fresh instance has no stored portal overrides', async () => {
+    runAgentChatMock.mockReturnValueOnce(streamOf([resultEv()]));
+    const { ctx } = makeCtx();
+    await tool.handler({ promptText: 'hi', surface: 'portal' }, ctx);
+
+    expect(surfaceBackendMock).toHaveBeenCalledWith('portal');
+    expect(surfaceModelMock).toHaveBeenCalledWith('portal');
+    expect(runAgentChatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ backend: 'claude-code', model: 'sonnet[1m]:high' }),
+    );
+  });
+
+  it('runs a stored portal override only when model and backend are configured together', async () => {
+    surfaceBackendMock.mockResolvedValueOnce('codex');
+    surfaceModelMock.mockResolvedValueOnce('gpt-5.6-luna:high');
+    runAgentChatMock.mockReturnValueOnce(streamOf([resultEv()]));
+    const { ctx } = makeCtx();
+    await tool.handler({ promptText: 'hi', surface: 'portal' }, ctx);
+
+    expect(runAgentChatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ backend: 'codex', model: 'gpt-5.6-luna:high' }),
+    );
+  });
+
+  it.each([
+    ['model only', undefined, 'gpt-5.6-luna:high'],
+    ['backend only', 'codex', undefined],
+  ])('refuses a half-configured portal pair (%s)', async (_label, backend, model) => {
+    surfaceBackendMock.mockResolvedValueOnce(backend);
+    surfaceModelMock.mockResolvedValueOnce(model);
+    const { ctx } = makeCtx();
+
+    await expect(tool.handler({ promptText: 'hi', surface: 'portal' }, ctx)).rejects.toThrow(
+      /surfaceModels\.portal and backends\.portal must be set together/,
+    );
+    expect(runAgentChatMock).not.toHaveBeenCalled();
   });
 });
 

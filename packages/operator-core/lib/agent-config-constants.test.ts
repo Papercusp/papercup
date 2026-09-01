@@ -17,6 +17,7 @@ import {
   defaultBulkResolverLaunchProfiles,
   launchAgentBackendForModel,
   resolveBulkResolverLaunch,
+  PUBLIC_PORTAL_AGENT_BASELINE,
 } from './agent-config-constants';
 import { ROLE_MODEL_DEFAULTS } from '@papercusp/orchestrator/role-models';
 
@@ -426,5 +427,15 @@ describe('ROLE_MODEL_DEFAULTS — every committed spec is a launcher-valid model
       const r = validateCloudModelSpec(spec);
       expect(r.ok, `${role} → "${spec}": ${r.message ?? ''}`).toBe(true);
     }
+  });
+});
+
+describe('PUBLIC_PORTAL_AGENT_BASELINE (papercup-chat public release P-005)', () => {
+  it('pins the public surface to the Papercup role floor and its compatible backend', () => {
+    expect(PUBLIC_PORTAL_AGENT_BASELINE).toEqual({
+      model: ROLE_MODEL_DEFAULTS.papercup,
+      backend: 'claude-code',
+    });
+    expect(validateCloudModelSpec(PUBLIC_PORTAL_AGENT_BASELINE.model).ok).toBe(true);
   });
 });
