@@ -322,7 +322,7 @@ describe("workspace-host sealed agent-home bundle", () => {
 
   it("refuses a valid-looking active state for a different explicit home before revoke", async () => {
     const filesystem = new MemoryAgentHomeFilesystem();
-    const otherHome = "/home/another-workspace";
+    const otherHome = join(tmpdir(), "another-workspace");
     filesystem.files.set(
       workspaceHostAgentHomeStatePath(ROOT),
       encodeWorkspaceHostAgentHomeState(
