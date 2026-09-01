@@ -153,16 +153,102 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * The pattern ONE identity literal is hunted with — byte-for-byte the release gate's rule
+ * (`audit-release-bundle.py` `lit_ere()` + `needs_word_boundary()` + `case_fold_ere()`):
+ * a short alphanumeric literal matches on a word boundary, everything matches
+ * CASE-INSENSITIVELY. The projection and the gate must not disagree about what counts as a
+ * hit: build #5 (EI-22086776666843792) shipped `Avraham` ×25 and `Aviynw` ×8 in prose that
+ * this scrub had already "cleaned" — it matched with `split(literal)`, case-sensitively,
+ * while the gate case-folds every literal.
+ */
+export function seedLiteralPattern(literal: string, flags: 'g' | '' = ''): RegExp {
+  const body = escapeRegExp(literal);
+  return new RegExp(needsWordBoundary(literal) ? `\\b${body}\\b` : body, `${flags}i`);
+}
+
+/** True iff `value` carries any hunted identity literal under the gate's own matching rule. */
+export function stringCarriesSeedIdentity(value: string, literals: readonly string[]): boolean {
+  return literals.some((literal) => seedLiteralPattern(literal).test(value));
+}
+
 function redactString(value: string, literals: readonly string[]): string {
   let redacted = value.replace(SEED_EMAIL_PATTERN, '[email]');
   for (const literal of literals) {
-    if (needsWordBoundary(literal)) {
-      redacted = redacted.replace(new RegExp(`\\b${escapeRegExp(literal)}\\b`, 'g'), '[build-identity]');
-    } else {
-      redacted = redacted.split(literal).join('[build-identity]');
-    }
+    redacted = redacted.replace(seedLiteralPattern(literal, 'g'), '[build-identity]');
   }
   return redacted;
+}
+
+function decodeEncodedJson(value: Uint8Array | ArrayBuffer): { text: string; json?: unknown } | undefined {
+  const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
+  try {
+    return { text, json: JSON.parse(text) as unknown };
+  } catch {
+    return { text };
+  }
+}
+
+/**
+ * Deep scan of a row VALUE for any hunted identity literal — strings, object KEYS, arrays,
+ * and encoded-JSON bytes. Keys are scanned on purpose: build #5's five raw `aviynw` survivors
+ * were account-pool ids used as JSON object keys (`{"accounts":{"aviynw":…,"aviynw3":…}}`),
+ * which the value-only redaction below walked straight past.
+ */
+export function valueCarriesSeedIdentity(value: unknown, literals: readonly string[]): boolean {
+  if (literals.length === 0) return false;
+  if (typeof value === 'string') return stringCarriesSeedIdentity(value, literals);
+  if (value === null || typeof value !== 'object') return false;
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
+    const decoded = decodeEncodedJson(value);
+    // Opaque binary (ciphertext, non-UTF-8) is untouched by the redaction too; a UTF-8 text
+    // that is not JSON is still text and is judged as such.
+    return decoded ? stringCarriesSeedIdentity(decoded.text, literals) : false;
+  }
+  if (Array.isArray(value)) return value.some((item) => valueCarriesSeedIdentity(item, literals));
+  for (const [key, child] of Object.entries(value)) {
+    if (stringCarriesSeedIdentity(key, literals) || valueCarriesSeedIdentity(child, literals)) return true;
+  }
+  return false;
+}
+
+/**
+ * An external-integration event envelope — the shape `external-triggers/*` writes when it
+ * ingests the OWNER'S connected account (Gmail today; any `ext:<source>:<event>` adapter):
+ * `{ key:'ext:gmail:message.received', source:'gmail', event:'message.received', payload:{…} }`,
+ * or the canonical ingest record `{ source, event, dedupeKey, payload|adapterPayload }`.
+ * The payload is the owner's private inbox — sender, recipients, subject, full HTML body —
+ * and it reaches the hive INSIDE work-item payloads (a plan run's `inputs.trigger`,
+ * features-by-id PR-974 in the 2026-09-01 seed), not in a table of its own, so the public
+ * seed must drop the whole row wherever the envelope appears in a value.
+ */
+export function isExternalTriggerEnvelope(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  const hasSourceEvent = typeof v.source === 'string' && typeof v.event === 'string';
+  if (!hasSourceEvent) return false;
+  const hasPayload =
+    (typeof v.payload === 'object' && v.payload !== null) || (typeof v.adapterPayload === 'object' && v.adapterPayload !== null);
+  if (!hasPayload) return false;
+  return (typeof v.key === 'string' && v.key.startsWith('ext:')) || typeof v.dedupeKey === 'string';
+}
+
+/** Deep scan of a row VALUE for an {@link isExternalTriggerEnvelope} anywhere inside it. */
+export function valueCarriesExternalIngest(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
+    const decoded = decodeEncodedJson(value);
+    return decoded?.json !== undefined ? valueCarriesExternalIngest(decoded.json) : false;
+  }
+  if (Array.isArray(value)) return value.some(valueCarriesExternalIngest);
+  if (isExternalTriggerEnvelope(value)) return true;
+  return Object.values(value).some(valueCarriesExternalIngest);
 }
 
 function redactEncodedJson(value: Uint8Array | ArrayBuffer, literals: readonly string[]): unknown {
@@ -206,9 +292,13 @@ export function redactSeedValue(value: unknown, literals: readonly string[] = SE
   const out: Record<string, unknown> = {};
   let changed = false;
   for (const [key, child] of Object.entries(value)) {
+    // Keys too: an identity literal used as a map key (an account-pool id, a handle-keyed
+    // roster) ships exactly like a value. Two keys folding onto one marker collide — the
+    // later wins — which is acceptable for a public projection and far better than the leak.
+    const redactedKey = redactString(key, literals);
     const redacted = redactSeedValue(child, literals);
-    changed ||= redacted !== child;
-    out[key] = redacted;
+    changed ||= redacted !== child || redactedKey !== key;
+    out[redactedKey] = redacted;
   }
   return changed ? out : value;
 }

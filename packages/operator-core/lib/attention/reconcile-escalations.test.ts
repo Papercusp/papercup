@@ -30,6 +30,8 @@ import {
   selectUnanswerableEscalations,
   unanswerableCandidateAuthors,
   reconcileUnanswerableEscalationsOnce,
+  UNANSWERABLE_ESCALATION_TTL_MS,
+  UNANSWERABLE_CHOICE_ESCALATION_TTL_MS,
   selectEscalationSlaReroutes,
   rerouteUnackedEscalationsOnce,
   type StaleEscalationInput,
@@ -287,12 +289,44 @@ describe('selectUnanswerableEscalations (EI-19411323991062966)', () => {
     expect(r).toEqual([]);
   });
 
-  it('NEVER selects a row carrying options (a real choice), even from a dead author', () => {
+  // WI-2140594: an option-carrying row is a REAL CHOICE, so the bar is higher on
+  // BOTH legs — the longer choice TTL, and gone-ness by EXPLICIT verdict only
+  // (presence-absence, which suffices for an option-less row, never does here).
+  it('NEVER selects a row carrying options when the caller supplies no verdict leg, however ancient', () => {
     const r = selectUnanswerableEscalations(
       [humanRow({ msg_id: 'choice', options: [{ id: 'a' }], ts: iso(999 * DAY) })],
       { nowMs: NOW, ttlMs: ttl, isAuthorGone: GONE },
     );
     expect(r).toEqual([]);
+  });
+
+  it('NEVER selects a row carrying options inside the choice TTL, even from an explicitly-ended author', () => {
+    const r = selectUnanswerableEscalations(
+      [humanRow({ msg_id: 'choice', options: [{ id: 'a' }], ts: iso(5 * DAY) })],
+      { nowMs: NOW, ttlMs: ttl, choiceTtlMs: 6 * DAY, isAuthorGone: GONE, isAuthorGoneByVerdict: GONE },
+    );
+    expect(r).toEqual([]);
+  });
+
+  it('NEVER selects a row carrying options on presence-absence alone (no explicit verdict)', () => {
+    const r = selectUnanswerableEscalations(
+      [humanRow({ msg_id: 'choice', options: [{ id: 'a' }], ts: iso(999 * DAY) })],
+      { nowMs: NOW, ttlMs: ttl, choiceTtlMs: 6 * DAY, isAuthorGone: GONE, isAuthorGoneByVerdict: ALIVE },
+    );
+    expect(r).toEqual([]);
+  });
+
+  it('selects a row carrying options past the choice TTL when the author is gone by EXPLICIT verdict', () => {
+    const r = selectUnanswerableEscalations(
+      [humanRow({ msg_id: 'choice', options: [{ id: 'a' }], ts: iso(7 * DAY) })],
+      { nowMs: NOW, ttlMs: ttl, choiceTtlMs: 6 * DAY, isAuthorGone: ALIVE, isAuthorGoneByVerdict: GONE },
+    );
+    expect(r.map((x) => x.msg_id)).toEqual(['choice']);
+    expect(r[0].hasOptions).toBe(true);
+  });
+
+  it('the default choice window is longer than the option-less window (a choice is never the cheaper reap)', () => {
+    expect(UNANSWERABLE_CHOICE_ESCALATION_TTL_MS).toBeGreaterThan(UNANSWERABLE_ESCALATION_TTL_MS);
   });
 
   it('does not select inside the TTL even when the author is gone', () => {
@@ -385,6 +419,58 @@ describe('reconcileUnanswerableEscalationsOnce (EI-19411323991062966)', () => {
 
     const r = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
     expect(r).toMatchObject({ stale: 1, resolved: 1 });
+  });
+
+  // WI-2140594: the oracle is TOTAL (EI-18771777750306094) — an owner it has no
+  // signal for gets an in-band `sessionState: null`, never a missing entry. That
+  // null is UNKNOWN, so it must fall through to the presence leg rather than read
+  // as "not gone" (which is what silently retired the presence leg).
+  it('a null (unknown) verdict falls through to the presence leg — absent row ⇒ gone', async () => {
+    listMock.mockResolvedValue([humanRow({ msg_id: 'unknown-absent' })]);
+    resolveStatesMock.mockResolvedValue(new Map([['su-dead-1', { sessionState: null, signalMissing: true }]]));
+    getPresenceMock.mockResolvedValue(null);
+    batchMock.mockResolvedValue({ resolved: 1, notFound: 0, alreadyResolved: 0, requiresSpawnApprove: 0 });
+
+    const r = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
+    expect(r).toMatchObject({ stale: 1, resolved: 1 });
+  });
+
+  it('a null (unknown) verdict with a presence row PRESENT ⇒ NOT gone', async () => {
+    listMock.mockResolvedValue([humanRow({ msg_id: 'unknown-known' })]);
+    resolveStatesMock.mockResolvedValue(new Map([['su-dead-1', { sessionState: null, signalMissing: true }]]));
+    getPresenceMock.mockResolvedValue({ ownerId: 'su-dead-1' });
+
+    const r = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
+    expect(r).toMatchObject({ stale: 0, resolved: 0 });
+    expect(batchMock).not.toHaveBeenCalled();
+  });
+
+  // WI-2140594: an option-carrying row is a real choice, so it needs BOTH the
+  // longer window AND an explicit verdict — presence-absence alone never does it.
+  it('reaps an option-carrying row past the choice TTL ONLY on an explicit ended verdict', async () => {
+    const choiceTtl = 2 * ttl;
+    const choiceRow = humanRow({ msg_id: 'choice', options: [{ id: 'a' }], ts: iso(choiceTtl + DAY) });
+
+    listMock.mockResolvedValue([choiceRow]);
+    resolveStatesMock.mockResolvedValue(new Map());
+    getPresenceMock.mockResolvedValue(null);
+    let r = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl, choiceTtlMs: choiceTtl });
+    expect(r).toMatchObject({ stale: 0, resolved: 0, outcome: 'swept' });
+    expect(batchMock).not.toHaveBeenCalled();
+
+    resolveStatesMock.mockResolvedValue(new Map([['su-dead-1', { sessionState: 'ended' }]]));
+    batchMock.mockResolvedValue({ resolved: 1, notFound: 0, alreadyResolved: 0, requiresSpawnApprove: 0 });
+    r = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl, choiceTtlMs: choiceTtl });
+    expect(r).toMatchObject({ stale: 1, resolved: 1 });
+    expect(batchMock.mock.calls[0][0][0]).toMatchObject({ msg_id: 'choice', choice: 'unanswerable' });
+    expect(batchMock.mock.calls[0][0][0].note).toMatch(/options were never chosen/);
+  });
+
+  it('an option-carrying row inside the choice TTL is not even a probe candidate', async () => {
+    listMock.mockResolvedValue([humanRow({ msg_id: 'choice-young', options: [{ id: 'a' }], ts: iso(ttl + DAY) })]);
+    const r = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl, choiceTtlMs: 4 * ttl });
+    expect(r).toMatchObject({ stale: 0, resolved: 0, outcome: 'no-candidates' });
+    expect(resolveStatesMock).not.toHaveBeenCalled();
   });
 
   // FAIL-SAFE. Without this, one transient outage mass-closes every real ask.

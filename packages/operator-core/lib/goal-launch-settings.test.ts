@@ -64,6 +64,7 @@ import {
   isGoalLaunchRole,
   readGoalPortfolioBrief,
   compileGoalPlanPlacement,
+  parseGoalLaunchSettings,
   readGoalLaunchSettings,
   readGoalLaunchSettingsForLauncher,
   renderGoalPortfolioBrief,
@@ -620,6 +621,8 @@ describe('readGoalLaunchSettings', () => {
       // it to pick a slot family, and a second round-trip per launch to read one
       // jsonb key would be pure overhead.
       drainFleetSlug: null,
+      // WI-2140573: nothing was stripped from a NULL document.
+      unknownKeys: [],
     });
   });
 
@@ -668,6 +671,77 @@ describe('readGoalLaunchSettings', () => {
     const r = await readGoalLaunchSettings('g1', mockSql({ failOn: /goals/ }));
     expect(r.settings).toBeNull();
     expect(r.error).toBe('boom');
+  });
+
+  it('threads the lenient read’s stripped keys through the row read (WI-2140573)', async () => {
+    const r = await readGoalLaunchSettings(
+      'g1',
+      mockSql({ settings: { g1: { holder: { onLoss: 'respawn' }, notAKey: 1 } } }),
+    );
+    expect(r.error).toBeNull();
+    expect(r.settings?.holder?.onLoss).toBe('respawn');
+    expect(r.unknownKeys).toEqual(['notAKey']);
+  });
+});
+
+describe('parseGoalLaunchSettings — READ-lenient on unknown keys, STRICT on values (WI-2140573)', () => {
+  // The measured safety-net kill: a key written by a NEWER schema than the
+  // reading host runs (bg-host's bundle predated `roles.goal.compactionLimit`)
+  // made the WHOLE document parse to null, so `holder.onLoss='respawn'` silently
+  // stopped being in force on the one goal it protected. Deliberately-fake key
+  // names below, so the test cannot go stale when a real key is added.
+  const doc = {
+    maxAgents: 12,
+    holder: { onLoss: 'respawn', requireLive: true },
+    roles: { goal: { model: 'opus', notYetAProfileKey: 'steward' } },
+    notYetATopLevelKey: { seed: 'intermediate' },
+  };
+
+  it('keeps every KNOWN key in force and reports the stripped paths — nested AND top-level', () => {
+    const r = parseGoalLaunchSettings(doc, 'goal g1 launch_settings');
+    expect(r.error).toBeNull();
+    expect(r.settings?.holder?.onLoss).toBe('respawn');
+    expect(r.settings?.maxAgents).toBe(12);
+    expect(r.settings?.roles?.goal?.model).toBe('opus');
+    expect([...r.unknownKeys].sort()).toEqual(['notYetATopLevelKey', 'roles.goal.notYetAProfileKey']);
+  });
+
+  it('never mutates the caller’s document — it is usually a row still in use', () => {
+    const before = JSON.stringify(doc);
+    parseGoalLaunchSettings(doc);
+    expect(JSON.stringify(doc)).toBe(before);
+  });
+
+  it('stays STRICT on a bad VALUE: the document is invalid, and the stripped keys are still named', () => {
+    const r = parseGoalLaunchSettings({ ...doc, maxAgents: -5 }, 'goal g1 launch_settings');
+    expect(r.settings).toBeNull();
+    expect(r.error).toMatch(/invalid/i);
+    expect([...r.unknownKeys].sort()).toEqual(['notYetATopLevelKey', 'roles.goal.notYetAProfileKey']);
+  });
+
+  it('reports NO unknown keys on a clean document, on none-declared, and on unreadable JSON', () => {
+    expect(parseGoalLaunchSettings({ maxAgents: 3 })).toEqual({
+      settings: { maxAgents: 3 },
+      error: null,
+      unknownKeys: [],
+    });
+    expect(parseGoalLaunchSettings(null)).toEqual({ settings: null, error: null, unknownKeys: [] });
+    const unreadable = parseGoalLaunchSettings('{not json');
+    expect(unreadable.settings).toBeNull();
+    expect(unreadable.error).toMatch(/unreadable/i);
+    expect(unreadable.unknownKeys).toEqual([]);
+  });
+
+  it('reads a jsonb STRING the same way', () => {
+    const r = parseGoalLaunchSettings(JSON.stringify(doc));
+    expect(r.settings?.holder?.onLoss).toBe('respawn');
+    expect(r.unknownKeys).toContain('roles.goal.notYetAProfileKey');
+  });
+
+  it('the WRITE boundary is untouched — the same document is still refused by the strict schema', () => {
+    expect(goalLaunchSettingsSchema.safeParse(doc).success).toBe(false);
+    // And the lenient read is not a licence for a strict-valued typo to land.
+    expect(goalLaunchSettingsSchema.safeParse({ maxAgent: 5 }).success).toBe(false);
   });
 });
 

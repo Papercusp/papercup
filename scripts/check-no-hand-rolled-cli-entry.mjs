@@ -46,8 +46,13 @@ const SKIP_DIRS = new Set([
  * Measured pre-existing population. This is deliberately empty until the
  * first `node scripts/check-no-hand-rolled-cli-entry.mjs --list` run seeds it.
  * Entries are `${repo-relative-path}|${guard-kind}` -> count.
+ *
+ * Exported so the edit-time nudge
+ * (apps/operator/scripts/hooks/cc/posttooluse-cli-entry-nudge.mjs) reaches the
+ * SAME table this gate judges by, rather than carrying a second copy that would
+ * drift (derived-truth ladder: DERIVE, never hand-maintain a duplicate).
  */
-const ALLOW_COUNTS = new Map([
+export const ALLOW_COUNTS = new Map([
   ['apps/operator/bin/serve.ts|path-to-file-url', 2],
   ['apps/operator/bin/spawner-sidecar.ts|path-to-file-url', 2],
   ['apps/operator/bin/substrate-sidecar.ts|path-to-file-url', 2],
@@ -163,8 +168,10 @@ const ALLOW_COUNTS = new Map([
  * that file. Keep these separate from the shrink-only debt baseline so the
  * exception carries its reason and cannot silently bless additional guards in
  * the same file.
+ *
+ * Exported alongside ALLOW_COUNTS for the edit-time nudge, for the same reason.
  */
-const STANDALONE_ENTRY_EXEMPTIONS = new Map();
+export const STANDALONE_ENTRY_EXEMPTIONS = new Map();
 
 function* walk(dir) {
   let entries;

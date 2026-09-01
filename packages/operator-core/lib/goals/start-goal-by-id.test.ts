@@ -66,6 +66,7 @@ function holder(overrides: Partial<ResolvedGoalHolder> = {}): ResolvedGoalHolder
     setBy: null,
     sessionState: null,
     selfWake: null,
+    heartbeatFresh: null,
     live: null,
     ...overrides,
   };

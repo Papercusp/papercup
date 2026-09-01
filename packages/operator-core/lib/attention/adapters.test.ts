@@ -1108,6 +1108,38 @@ describe('isOperationalEscalation — operational status vs a genuine owner ask 
     expect(isOperationalEscalation('some-bee', false)).toBe(false);
   });
 
+  // WI-2140594: the named set is now RESIDUE — classification derives from the
+  // sender's SHAPE (machine-authored.ts isMachineEscalationEmitter), so a
+  // watchdog nobody remembered to list is still operational. These six are the
+  // emitters measured OUTSIDE the set on 2026-09-01 (783-row live backlog), each
+  // tiered as an owner decision and waiting the 7d dead-author TTL instead of 48h.
+  it('WI-2140594: an option-less escalation from an UNLISTED watchdog/detector emitter is operational (derived from shape)', () => {
+    for (const from of [
+      'wall-lapse-watchdog',
+      'unservable-critical-watchdog',
+      'goal-owner-report-watchdog',
+      'intent-divergence-detector',
+      'goal-liveness-watchdog',
+      'embed-latency-watchdog',
+    ]) {
+      expect(isOperationalEscalation(from, false), `${from} must be operational`).toBe(true);
+      expect(isOperationalEscalation(from, true), `${from} WITH options must stay a genuine ask`).toBe(false);
+    }
+  });
+
+  it('WI-2140594: the shape can never reach an agent session, the owner GUI, or a human — even with a machine-ish suffix', () => {
+    for (const from of [
+      'su-1a0a0a1a-4c71-4ce5-abcf-58897784edf1',
+      'role-fleet-watchdog', // an AGENT role whose name ends in -watchdog: still a bee, its ask may be genuine
+      '01d3ae25-c833-4270-bd07-132fa669da8a',
+      'pc-admin-coord-ui',
+      'human',
+      'watchdog', // bare word, no `-` separator
+    ]) {
+      expect(isOperationalEscalation(from, false), `${from} must NOT be operational`).toBe(false);
+    }
+  });
+
   it('a null/undefined/non-string sender is not operational (never throws)', () => {
     expect(isOperationalEscalation(null, false)).toBe(false);
     expect(isOperationalEscalation(undefined, false)).toBe(false);

@@ -134,6 +134,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // (EI-19459260956682226) + mock-cast-escape nudge (WI-37497) + css-design-primitives
     // nudge (EI-20023819609804890) + frozen-candidate-edit nudge (WI-40081) +
     // registry-census-drift nudge (EI-19401978567233485) +
+    // cli-entry nudge (EI-22085994981415983) +
     // ask-gate-mirror (in install order). The separate
     // coord-inbox entry is retired — merged into activity.
     expect(commandsFor(cfg, 'PostToolUse')).toEqual([
@@ -152,6 +153,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-css-design-primitives-nudge.mjs`,
       `${DEST}/posttooluse-frozen-candidate-edit-nudge.mjs`,
       `${DEST}/posttooluse-registry-census-drift-nudge.mjs`,
+      `${DEST}/posttooluse-cli-entry-nudge.mjs`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
@@ -182,6 +184,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(postMatcherOf('posttooluse-mock-cast-escape-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-css-design-primitives-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-registry-census-drift-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-cli-entry-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     // EI-21844056581395228: the ledger half of the artifact-URL delivery guard. It is
     // scoped to the Artifact tool because it only harvests ids from that tool's own
     // responses; the blocking half is matcher-less on Stop (assistant prose is not a

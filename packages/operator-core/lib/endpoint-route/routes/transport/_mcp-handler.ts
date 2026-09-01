@@ -683,6 +683,329 @@ export interface BuiltSpawnContext {
   requestOrigin?: RequestOriginMetadata;
 }
 
+type TransportClampTool = {
+  name?: string;
+  crossWorkspace?: boolean;
+  profile?: string;
+};
+
+type ScopedSuperuserTransportClampResult =
+  | {
+      ok: true;
+      args: Record<string, unknown>;
+      effectiveHarnessSlug: string;
+      scopedSuperuserClamp: boolean;
+    }
+  | { ok: false; result: McpCallResult };
+
+/**
+ * Apply the request-level profile, workspace, and hive clamps before a projected
+ * tool runs. This is deliberately shared by direct `tools/call` and the nested
+ * `ctx.dispatchTool` path behind `tools:invoke`: nested dispatch is still the
+ * same caller's transport request and must not become a privilege bridge.
+ */
+async function applyScopedSuperuserTransportClamp(
+  tool: TransportClampTool,
+  spawnCtx: BuiltSpawnContext,
+  inputArgs: Record<string, unknown>,
+): Promise<ScopedSuperuserTransportClampResult> {
+  const toolName = tool.name ?? '<unnamed tool>';
+  let args = inputArgs;
+  let effectiveHarnessSlug = spawnCtx.harnessSlug;
+  const scopedSuperuserClamp =
+    spawnCtx.isSuperuser === true &&
+    spawnCtx.workspaceId !== '*' &&
+    (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
+
+  if (spawnCtx.profile === 'power' && tool.profile === 'engineer') {
+    return {
+      ok: false,
+      result: {
+        isError: true,
+        content: [
+          {
+            type: 'text' as const,
+            text: `tool_not_available_for_profile: "${toolName}" is not available in the power-engineer profile`,
+          },
+        ],
+      },
+    };
+  }
+
+  if (
+    scopedSuperuserClamp &&
+    tool.crossWorkspace === true &&
+    !isScopedSafeCrossWorkspaceTool(toolName) &&
+    !isSuperuserGlobalFlagAdmin(toolName)
+  ) {
+    return {
+      ok: false,
+      result: {
+        isError: true,
+        content: [
+          {
+            type: 'text' as const,
+            text: `workspace_forbidden: "${toolName}" spans workspaces, but this session is scoped to workspace "${spawnCtx.workspaceId}". Use an unscoped (--all-workspaces) superuser session to span workspaces.`,
+          },
+        ],
+      },
+    };
+  }
+
+  if (scopedSuperuserClamp) {
+    const requestedHarness = typeof args.harness === 'string' ? args.harness.trim() : '';
+    if (requestedHarness === 'all' || requestedHarness === '*') {
+      if (
+        (toolName === 'plans:list' || toolName === 'loop:arm') &&
+        spawnCtx.harnessSlug === '*'
+      ) {
+        const rest = { ...args };
+        delete rest.harness;
+        args = toolName === 'plans:list' ? { ...rest, workspaceWide: true } : rest;
+      } else {
+        return {
+          ok: false,
+          result: {
+            isError: true,
+            content: [
+              {
+                type: 'text' as const,
+                text: `harness_forbidden: harness:'${requestedHarness}' is the unscoped global escape; this session is scoped to workspace "${spawnCtx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.`,
+              },
+            ],
+          },
+        };
+      }
+    }
+  }
+
+  if (scopedSuperuserClamp) {
+    const requestedHarness = typeof args.harness === 'string' ? args.harness.trim() : '';
+    if (requestedHarness && requestedHarness !== 'all' && requestedHarness !== '*') {
+      const { resolveWorkspaceForHarnessSlugIn } = await import('../../../harness-core');
+      let harnessWorkspace: string | null = null;
+      try {
+        harnessWorkspace = await resolveWorkspaceForHarnessSlugIn(spawnCtx.workspaceId, requestedHarness);
+      } catch {
+        // Ambiguous collisions and infrastructure failures fail open; the target
+        // tool remains responsible for reporting an unresolved harness.
+        harnessWorkspace = null;
+      }
+      if (harnessWorkspace && harnessWorkspace !== spawnCtx.workspaceId) {
+        return {
+          ok: false,
+          result: {
+            isError: true,
+            content: [
+              {
+                type: 'text' as const,
+                text: `harness_forbidden: harness "${requestedHarness}" belongs to workspace "${harnessWorkspace}", but this session is scoped to workspace "${spawnCtx.workspaceId}". Name a harness in scope, or use an unscoped (--all-workspaces) superuser session.`,
+              },
+            ],
+          },
+        };
+      }
+    }
+  }
+
+  if (scopedSuperuserClamp && spawnCtx.harnessSlug !== '*') {
+    const { potHomeSlugForHarness } = await import('../../../hive-federation');
+    const { collectHarnessSlugArgs } = await import('../../hive-harness-arg-coverage');
+    const scopeHive = await potHomeSlugForHarness(spawnCtx.workspaceId, spawnCtx.harnessSlug);
+    if (scopeHive) {
+      if (toolName.startsWith('cross_harness:')) {
+        return {
+          ok: false,
+          result: {
+            isError: true,
+            content: [
+              {
+                type: 'text' as const,
+                text: `harness_forbidden: "${toolName}" reads other harnesses, but this session is confined to hive "${scopeHive}".`,
+              },
+            ],
+          },
+        };
+      }
+
+      const requestedHarness = typeof args.harness === 'string' ? args.harness.trim() : '';
+      if (requestedHarness) {
+        const isEngineeringDocsSurface =
+          isEngineeringDocsSentinel(requestedHarness) &&
+          (toolName === 'docs:get' ||
+            toolName === 'docs:search' ||
+            toolName === 'docs:outline' ||
+            toolName === 'docs:author');
+        const escapesHive =
+          !isEngineeringDocsSurface &&
+          (requestedHarness === 'all' ||
+            requestedHarness === '*' ||
+            (await potHomeSlugForHarness(spawnCtx.workspaceId, requestedHarness)) !== scopeHive);
+        const verifiedExactPlanRebind =
+          escapesHive &&
+          (toolName === 'plans:get' || toolName === 'plans:add-decision') &&
+          (await verifyExplicitPlanHarness(spawnCtx, requestedHarness, args));
+        if (verifiedExactPlanRebind) {
+          effectiveHarnessSlug = requestedHarness;
+        } else if (escapesHive) {
+          const crossHiveClaimHint =
+            toolName === 'work_items:claim'
+              ? ' For cross-Pot work, use discovery:pots → pot:request_work with an outbound work-request grant; direct work_items:claim is per-Hive.'
+              : '';
+          const requestedIds: unknown[] = [];
+          if (typeof args.id === 'string') requestedIds.push(args.id);
+          if (Array.isArray(args.ids)) requestedIds.push(...args.ids);
+          const allRequestedIdsAreIssueFamily =
+            requestedIds.length > 0 &&
+            requestedIds.every((id) => typeof id === 'string' && id.startsWith('EI-'));
+          const crossHiveWorkItemReadHint =
+            toolName === 'work_items:get'
+              ? allRequestedIdsAreIssueFamily
+                ? ` For an ID-based work_items:get read, retry with the caller's harness "${spawnCtx.harnessSlug}" (or omit \`harness\` entirely); do not copy a returned row's canonical harness into this argument. An EI-prefixed id resolves WORKSPACE-wide — the \`harness\` argument is not applied to that lookup at all — so this retry WILL find the row.`
+                : ` For an ID-based work_items:get read, retry with the caller's harness "${spawnCtx.harnessSlug}"; do not copy a returned row's canonical harness into this argument. Note: a WI-/F- (feature-family) id genuinely IS scoped to its owning harness, so this retry will NOT resolve a row that belongs to a different one — there is currently no cross-hive escape for a feature-family id from a hive-confined session.`
+              : '';
+          return {
+            ok: false,
+            result: {
+              isError: true,
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `harness_forbidden: harness "${requestedHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}`,
+                },
+              ],
+            },
+          };
+        }
+      }
+
+      const requestedHarnessSlug = typeof args.harness_slug === 'string' ? args.harness_slug.trim() : '';
+      if (requestedHarnessSlug) {
+        const escapesHive =
+          requestedHarnessSlug === 'all' ||
+          requestedHarnessSlug === '*' ||
+          (await potHomeSlugForHarness(spawnCtx.workspaceId, requestedHarnessSlug)) !== scopeHive;
+        if (escapesHive) {
+          return {
+            ok: false,
+            result: {
+              isError: true,
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `harness_forbidden: harness_slug "${requestedHarnessSlug}" is outside this session's hive "${scopeHive}".`,
+                },
+              ],
+            },
+          };
+        }
+      }
+
+      const scopeArgRaw = typeof args.scope === 'string' ? args.scope.trim() : '';
+      if (scopeArgRaw) {
+        let scopeRefRaw = '';
+        for (const key of ['scopeRef', 'scope_ref', 'ref']) {
+          if (typeof args[key] === 'string' && (args[key] as string).trim()) {
+            scopeRefRaw = (args[key] as string).trim();
+            break;
+          }
+        }
+        const scopeNamedHarness = scopeArgRaw.startsWith('harness:')
+          ? scopeArgRaw.slice('harness:'.length).trim()
+          : scopeArgRaw === 'harness'
+            ? scopeRefRaw
+            : '';
+        if (scopeNamedHarness) {
+          const escapesHive =
+            scopeNamedHarness === 'all' ||
+            scopeNamedHarness === '*' ||
+            (await potHomeSlugForHarness(spawnCtx.workspaceId, scopeNamedHarness)) !== scopeHive;
+          if (escapesHive) {
+            return {
+              ok: false,
+              result: {
+                isError: true,
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `harness_forbidden: scope "${scopeArgRaw}" names harness "${scopeNamedHarness}", which is outside this session's hive "${scopeHive}". A cross-hive item filed this way could not later be claimed, commented on, or closed by this session.`,
+                  },
+                ],
+              },
+            };
+          }
+        }
+      }
+
+      const requestedHive = typeof args.hive === 'string' ? args.hive.trim() : '';
+      if (requestedHive && requestedHive !== scopeHive) {
+        return {
+          ok: false,
+          result: {
+            isError: true,
+            content: [
+              {
+                type: 'text' as const,
+                text: `hive_forbidden: hive "${requestedHive}" is outside this session's hive "${scopeHive}".`,
+              },
+            ],
+          },
+        };
+      }
+
+      for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
+        const escapesHive =
+          slug === 'all' ||
+          slug === '*' ||
+          (await potHomeSlugForHarness(spawnCtx.workspaceId, slug)) !== scopeHive;
+        if (escapesHive) {
+          return {
+            ok: false,
+            result: {
+              isError: true,
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `harness_forbidden: ${arg} "${slug}" names a harness outside this session's hive "${scopeHive}". A cross-hive call made this way could not later be claimed, commented on, or closed by this session.`,
+                },
+              ],
+            },
+          };
+        }
+      }
+
+      const targetedPresenceOwner =
+        toolName === 'coord:presence' && typeof args.owner === 'string' && args.owner.trim().length > 0;
+      const forbiddenPresenceScope =
+        toolName === 'coord:presence' &&
+        (args.scope === 'all' || (args.scope === 'workspace' && !targetedPresenceOwner));
+      if (forbiddenPresenceScope) {
+        return {
+          ok: false,
+          result: {
+            isError: true,
+            content: [
+              {
+                type: 'text' as const,
+                text: `hive_forbidden: coord:presence scope:'${String(args.scope)}' spans past this session's hive "${scopeHive}" — browse your hive by default, or use a targeted { owner } lookup for one workspace peer.`,
+              },
+            ],
+          },
+        };
+      }
+    }
+  }
+
+  if ((spawnCtx.isPowerUser || scopedSuperuserClamp) && Object.keys(args).length > 0) {
+    const workspaceTargetArgs = ['workspace', 'workspaceId'] as const;
+    for (const key of workspaceTargetArgs) {
+      if (key in args) args = { ...args, [key]: spawnCtx.workspaceId };
+    }
+  }
+
+  return { ok: true, args, effectiveHarnessSlug, scopedSuperuserClamp };
+}
+
 /**
  * Outcome of building a spawn ctx from an inbound MCP request:
  *   - `none` — no URL params at all; legacy bearer dispatch may apply.

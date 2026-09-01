@@ -1019,7 +1019,31 @@ export function planPromoterDispositions(
   return { dispositions, adjudications, relatedPairs };
 }
 
-async function readPendingBatch(
+/**
+ * P-006 (silent-intake-central-resolution-2026-09-01): resolver input priority.
+ *
+ * File-time detection (P-001) already stamps `payload.dedupCandidates` (candidate
+ * twins found at creation) and `payload.dedupCoverage.degraded` (detection could
+ * not fully check — see dedup-candidates-stamp.ts, whose doc comment names THIS
+ * consumer by plan item) on the row itself, but a plain FIFO `created_ts` order
+ * treats a row carrying a live merge signal identically to one that carries none.
+ * Under D-001 (silent intake — the filer never sees the candidates) the promoter
+ * tick is the ONLY reader of that signal, so it is the ONLY place a delay in
+ * surfacing it can be repaid: every tick this batch skips a candidate-stamped row
+ * to process older plain ones is a tick where a live duplicate sits unresolved for
+ * no reason the candidate stamp didn't already predict.
+ *
+ * Two-tier boost, both ties broken by the original FIFO order so the ordering
+ * stays deterministic and this cannot starve a plain row indefinitely (the boosted
+ * rows are the ones ALREADY known to need attention, not a growing privileged
+ * class — once judged they leave 'pending' and stop competing):
+ *   1. `dedupCandidates IS NOT NULL` — file-time detection found twin(s); the
+ *      resolver has real merge work waiting.
+ *   2. `dedupCoverage.degraded = true` — detection could not fully check this row
+ *      (e.g. the embedding leg was down), so its true duplicate status is UNKNOWN
+ *      and resolving it sooner shrinks that blind window.
+ */
+export async function readPendingBatch(
   sql: OrgSql,
   workspaceId: string,
   harnessSlug: string,
@@ -1032,7 +1056,10 @@ async function readPendingBatch(
        AND harness_slug = ${harnessSlug}
        AND admission IN ('pending', 'unreviewed')
        AND lane IS DISTINCT FROM 'observation'
-     ORDER BY created_ts ASC NULLS FIRST, feature_id ASC
+     ORDER BY
+       (payload -> 'dedupCandidates') IS NOT NULL DESC,
+       COALESCE((payload -> 'dedupCoverage' ->> 'degraded')::boolean, false) DESC,
+       created_ts ASC NULLS FIRST, feature_id ASC
      LIMIT ${batchSize}`;
   return rows.map(itemFromRow);
 }

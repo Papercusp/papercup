@@ -1025,7 +1025,11 @@ export async function resolveGoalDetail(args: {
 
        HOISTED above `goal` (P-004) because the activity fold below needs it and
        `goal` carries the fold's result. */
-    const { settings: launchSettings, error: launchSettingsInvalid } = parseGoalLaunchSettings(
+    const {
+      settings: launchSettings,
+      error: launchSettingsInvalid,
+      unknownKeys: launchSettingsUnknownKeys,
+    } = parseGoalLaunchSettings(
       (goalRow as unknown as { launch_settings?: unknown }).launch_settings,
       `goal ${goalId} launch settings`,
     );
@@ -1118,6 +1122,11 @@ export async function resolveGoalDetail(args: {
       /** Non-null when the stored document could not be read — the ceilings are
        *  therefore NOT being enforced, which the panel must say out loud. */
       launchSettingsInvalid,
+      /** WI-2140573: keys the lenient read STRIPPED (dotted paths). Every other
+       *  key is in force; these bind nothing on this host — usually a key from a
+       *  newer schema than the reader runs, else a typo. Never render them as
+       *  configured. */
+      launchSettingsUnknownKeys,
       /** What an UNPINNED ceiling actually resolves to (D-015). Shipped for the
        *  same reason as the option lists below: the editor must be able to say
        *  "default 12" without hand-spelling a number the resolver owns and can

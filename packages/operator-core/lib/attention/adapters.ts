@@ -29,6 +29,7 @@ import {
   untriaged,
 } from './types';
 import { classifyReadActionability, type ReadActionability } from '../agent-tools/coordination/liveness-oracle';
+import { isMachineEscalationEmitter } from '../agent-tools/coordination/machine-authored';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 
 const CHAT: AttentionAction = { id: 'chat', label: 'Chat' };
@@ -200,9 +201,28 @@ const AUTOMATED_INFRA_EMITTERS = new Set<string>([
   'scorecard-emission-pulse',
 ]);
 
+/**
+ * WI-2140594: the named set above is RESIDUE, not the source of truth. Every
+ * member is also matched by `isMachineEscalationEmitter` (machine-authored.ts),
+ * which DERIVES "process emitter" from the sender's shape — `…-watchdog`,
+ * `…-sweep`, `…-pulse`, `…-lease`, `…-alarm`, `…-gateway`, `…-detector`, … — and
+ * can never reach an agent-session identity (`su-…`, `s-…`, `cup-…`, `role-…`, a
+ * bare uuid), the owner GUI, or `human`. The hand list had already drifted six
+ * emitters behind the tree (measured 2026-09-01: wall-lapse-watchdog 74 rows,
+ * unservable-critical-watchdog 24, goal-owner-report-watchdog 23,
+ * intent-divergence-detector 19, goal-liveness-watchdog 7, embed-latency-watchdog
+ * 6 — each tiered as an owner decision and reaped only by the 7d dead-author
+ * sweep). Add a name here ONLY for an emitter whose name falls outside that
+ * shape; a new `…-watchdog` needs nothing.
+ */
 export function isOperationalEscalation(from: string | null | undefined, hasOptions: boolean): boolean {
   if (hasOptions || typeof from !== 'string') return false;
-  return from === 'system' || from.startsWith('system:') || AUTOMATED_INFRA_EMITTERS.has(from);
+  return (
+    from === 'system' ||
+    from.startsWith('system:') ||
+    AUTOMATED_INFRA_EMITTERS.has(from) ||
+    isMachineEscalationEmitter(from)
+  );
 }
 
 export function coordEscalationToAttention(e: CoordEscalationInput): AttentionItem {

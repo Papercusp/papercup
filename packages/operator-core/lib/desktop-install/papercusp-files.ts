@@ -1126,6 +1126,26 @@ export const CC_HOOK_FILES = [
   // them, so the nudge cannot drift from the ratchet's verdict — including on the
   // specifier-line suppression anchor, which is the whole of shape 2.
   'posttooluse-mjs-import-declaration-nudge.mjs',
+  // EI-22085994981415983: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an
+  // edit introduces a hand-rolled ESM CLI-entry guard — `import.meta.url ===
+  // pathToFileURL(process.argv[1]).href` and its `file://${process.argv[1]}` /
+  // `fileURLToPath(import.meta.url) === process.argv[1]` spellings. Correct unbundled and a
+  // BOOT-TIME LANDMINE once esbuild inlines the module into the desktop sidecar: every inlined
+  // module inherits the bundle entry's import.meta.url, so the comparison is true for every
+  // imported CLI and runs its main()/process.exit() during host boot (EI-650 — the sidecar
+  // exited before serving and took embedded PG with it). It is the most natural thing to type
+  // when adding a `.mjs`, so it keeps returning: it reddened the repo-wide gate 3x in 3 days
+  // (WI-1398269 08-30, EI-21985446777087608 08-31, EI-22085994981415983 09-01 with four sites
+  // in one day), each time blocking EVERY agent's affected run rather than only the author's.
+  // Same TIMING gap as the siblings above — check-no-hand-rolled-cli-entry.mjs already detects
+  // all three spellings correctly, but only as a repo-wide guard at the ~55min gate, so the
+  // one-line fix surfaces at the most expensive possible moment and to the wrong person.
+  // Reuses the detector's OWN `findGuards` + `ALLOW_COUNTS` + `STANDALONE_ENTRY_EXEMPTIONS`
+  // rather than re-implementing the patterns, so the nudge cannot drift from the gate's
+  // verdict, and fires only when an edit BOTH introduces an occurrence and leaves the file over
+  // its allowance — i.e. exactly when the gate would fail. Nearly free on unrelated edits: the
+  // detector's own `import.meta.url` substring short-circuit runs before any git work.
+  'posttooluse-cli-entry-nudge.mjs',
   // frozen-candidate-compliance-enforcement-2026-08-30 P-004/P-005: PostToolUse (matcher
   // "Edit|Write|MultiEdit") ADVISORY nudge when the edited path is one the FROZEN gate
   // candidate is failing on. Under freeze-and-converge (D-007) every run RESUMES one frozen
@@ -2750,6 +2770,18 @@ export function mergeClaudeHookSettings(
         hooks: cmd('posttooluse-registry-census-drift-nudge.mjs'),
       },
     );
+  // merge_cli_entry_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-22085994981415983). Advisory only, and it MUST stay advisory: PostToolUse cannot block,
+  // and check-no-hand-rolled-cli-entry.mjs remains the authority — this only moves the SIGNAL
+  // from the ~55min-later fleet gate to the edit that caused it. Fires only when an edit
+  // introduces a hand-rolled ESM entry guard AND leaves that file over its allowance, so a
+  // baselined occurrence, a reasoned standalone exemption, or an unrelated edit is silent by
+  // construction.
+  if (has('posttooluse-cli-entry-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-cli-entry-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-cli-entry-nudge.mjs'),
+    });
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {
     const sl = p('statusline-fleet.sh');

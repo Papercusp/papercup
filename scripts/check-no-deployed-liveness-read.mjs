@@ -19,7 +19,7 @@
  *   node scripts/check-no-deployed-liveness-read.mjs --list
  */
 import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
@@ -146,4 +146,4 @@ function main() {
   process.exit(1);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (isCliEntry(import.meta.url)) main();

@@ -248,6 +248,8 @@ export interface GoalDetailInput {
    *  unreadable ceiling and an absent one look identical and mean opposite
    *  things about whether the owner's limit is holding. */
   launchSettingsInvalid?: string | null;
+  /** WI-2140573: keys the reader stripped as unknown (dotted paths) — in force NOWHERE on that host. */
+  launchSettingsUnknownKeys?: string[];
   launchSettingsOptions?: GoalDetailLaunchOptions | null;
   /** Absent = a payload from before D-015; the editor then says nothing about
    *  defaults rather than inventing numbers it would have to keep in step. */

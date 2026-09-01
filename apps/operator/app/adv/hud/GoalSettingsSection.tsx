@@ -248,6 +248,7 @@ export default function GoalSettingsSection({
   goalId,
   settings,
   settingsInvalid,
+  settingsUnknownKeys,
   options,
   defaults,
 }: {
@@ -257,6 +258,9 @@ export default function GoalSettingsSection({
   settings: GoalDetailLaunchSettings | null | undefined;
   /** Non-null = the stored document is unreadable, so NO ceiling is in force. */
   settingsInvalid?: string | null;
+  /** WI-2140573: dotted paths the server STRIPPED as unknown on read. Every
+   *  other key is in force; these bind nothing on that server. */
+  settingsUnknownKeys?: string[] | null;
   options?: GoalDetailLaunchOptions | null;
   /** What an unpinned ceiling resolves to, from the server (D-015). Absent on a
    *  payload that predates it — the editor then says nothing about defaults
@@ -379,6 +383,19 @@ export default function GoalSettingsSection({
         <p className="hud-goal__set-alarm" data-testid="goal-settings-invalid">
           ⚠ The stored launch settings could not be read, so <strong>no ceiling is in force</strong>.
           Saving below replaces the unreadable document. ({settingsInvalid})
+        </p>
+      ) : null}
+
+      {settingsUnknownKeys && settingsUnknownKeys.length > 0 ? (
+        /* WI-2140573: the server read the document leniently — every KNOWN key
+           is in force and these were stripped. They must never render as
+           configured: a key that binds nothing is exactly the state the strict
+           schema exists to prevent. */
+        <p className="hud-goal__set-alarm" data-testid="goal-settings-unknown-keys">
+          ⚠ Not recognised by the server, so <strong>not in force</strong>:{' '}
+          {settingsUnknownKeys.join(', ')}. Every other setting applies. Usually the server is older
+          than the schema that wrote the key (a deploy or restart clears this); otherwise it is a typo.
+          Saving below writes the settings shown here and drops the unrecognised keys.
         </p>
       ) : null}
 

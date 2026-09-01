@@ -53,7 +53,6 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
 const MARKER_REL = join('.papercusp', 'scratch', 'lint-tsc-last-run.json');
@@ -69,8 +68,24 @@ const TS_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts'];
  */
 const VERDICT_LIVE_WINDOW_MS = 12 * 60 * 60 * 1000;
 
-const invokedDirectly =
-  process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+/**
+ * Bundle-safe entry check: compare the PROCESS ENTRY basename, never
+ * `resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))`. Once
+ * inlined into a bundle every module inherits the bundle entry's
+ * `import.meta.url`, so the familiar comparison runs every imported CLI's main()
+ * during host boot — the class `isCliEntry(import.meta.url)` exists to close for
+ * TS CLIs. This hook is executed by bare node on every PostToolUse, so it pins
+ * its own basename rather than paying an operator-core import on that hot path
+ * (scripts/check-no-hand-rolled-cli-entry.mjs).
+ */
+function isDirectCliInvocation(entryPath = process.argv[1]) {
+  return (
+    typeof entryPath === 'string' &&
+    /(?:^|[\\/])posttooluse-tsc-verdict-stale-nudge\.mjs$/.test(entryPath)
+  );
+}
+
+const invokedDirectly = isDirectCliInvocation();
 
 function readStdin(timeoutMs) {
   return new Promise((resolveStdin) => {

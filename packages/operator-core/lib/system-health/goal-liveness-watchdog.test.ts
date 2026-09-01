@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DARK_FLAGS, FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
@@ -872,6 +872,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       attachUnresolved: 0,
       neutralizeFailed: 0,
       gaveUp: 0,
+      rekicked: 0,
       skipped: false,
     });
   });
@@ -1734,5 +1735,176 @@ describe('runGoalLivenessSweepOnce — the portfolio-idle leg', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/**
+ * WI-2140573 (measured 2026-09-01): seven consecutive codex goal holders whose
+ * kickoff turn died at the model layer ("We're currently experiencing high
+ * demand", 5/5 retries, no output) sat parked with live processes, and the
+ * respawner paid a full launch + a rate-cap slot for each — into the same
+ * outage — until the hourly cap paused the goal. The verdict was right (the
+ * session WAS lost); the remedy was wrong. A live process is woken, not
+ * relaunched.
+ */
+describe('runGoalHolderRespawnOnce — re-kick a live-but-idle holder before launching (WI-2140573)', () => {
+  const sql = {} as never;
+  // Every re-kick (and every re-kick failure) is announced on console.warn, the
+  // file's one log channel; the assertions below are on the deps, not the log.
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+  /** The measured shape: parked (inbox-wake armed), nothing to self-wake, wrapper still heartbeating. */
+  const liveButIdle = (ownerId: string): LivenessVerdict => ({
+    ...verdict(ownerId, 'parked', 'none'),
+    heartbeatFresh: true,
+  });
+
+  it('wakes the elected holder with a retry brief and pays NO launch', async () => {
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const rekick = vi.fn(async (_goal: GoalRowLike, _ownerId: string, _attempt: number) => ({ woken: 1, staged: 0 }));
+    const states = new Map();
+    const result = await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        resolveLiveness: async () => vmap(liveButIdle('su-2c130be1')),
+        launch,
+        rekick,
+        rekickStates: new Map(),
+        states,
+      }),
+    );
+    expect(rekick).toHaveBeenCalledTimes(1);
+    expect(rekick.mock.calls[0]?.[1]).toBe('su-2c130be1');
+    expect(rekick.mock.calls[0]?.[2]).toBe(1);
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.rekicked).toBe(1);
+    expect(result.attempted).toBe(0);
+    // Re-kicks never touch the flap-damping ledger: they cannot consume the give-up budget.
+    expect(states.size).toBe(0);
+  });
+
+  it('spaces re-kicks by the interval, caps them, and only then falls through to a launch', async () => {
+    let now = NOW;
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const rekick = vi.fn(async (_goal: GoalRowLike, _ownerId: string, _attempt: number) => ({ woken: 1, staged: 0 }));
+    const rekickStates = new Map();
+    const states = new Map();
+    const tick = () =>
+      runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          resolveLiveness: async () => vmap(liveButIdle('su-2c130be1')),
+          launch,
+          rekick,
+          rekickStates,
+          states,
+          now: () => now,
+        }),
+      );
+
+    await tick(); // attempt 1
+    now += 60_000;
+    await tick(); // inside the interval: nothing
+    expect(rekick).toHaveBeenCalledTimes(1);
+    expect(launch).not.toHaveBeenCalled();
+
+    for (let attempt = 2; attempt <= GOAL_HOLDER_REKICK_MAX; attempt += 1) {
+      now += GOAL_HOLDER_REKICK_INTERVAL_MS;
+      const r = await tick();
+      expect(r.rekicked).toBe(1);
+      expect(rekick).toHaveBeenCalledTimes(attempt);
+      expect(rekick.mock.calls[attempt - 1]?.[2]).toBe(attempt);
+    }
+    expect(launch).not.toHaveBeenCalled();
+
+    // Budget spent, holder still idle: the damped launch path takes over.
+    now += GOAL_HOLDER_REKICK_INTERVAL_MS;
+    const spent = await tick();
+    expect(rekick).toHaveBeenCalledTimes(GOAL_HOLDER_REKICK_MAX);
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(spent.rekicked).toBe(0);
+    expect(spent.attempted).toBe(1);
+  });
+
+  it('launches immediately when the process is actually gone (ended, or parked with a cold heartbeat)', async () => {
+    for (const dead of [verdict('su-2c130be1', 'ended'), verdict('su-2c130be1', 'parked', 'none')]) {
+      const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+      const rekick = vi.fn(async (_goal: GoalRowLike, _ownerId: string, _attempt: number) => ({ woken: 1, staged: 0 }));
+      const result = await runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({ resolveLiveness: async () => vmap(dead), launch, rekick, rekickStates: new Map() }),
+      );
+      expect(rekick).not.toHaveBeenCalled();
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(result.rekicked).toBe(0);
+      expect(result.attempted).toBe(1);
+    }
+  });
+
+  it('a holder that comes back alive earns a fresh re-kick budget; a NEW elected holder starts fresh too', async () => {
+    let now = NOW;
+    const rekick = vi.fn(async (_goal: GoalRowLike, _ownerId: string, _attempt: number) => ({ woken: 1, staged: 0 }));
+    const rekickStates = new Map();
+    let verdicts = vmap(liveButIdle('su-2c130be1'));
+    let holders = [holder()];
+    const tick = () =>
+      runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          readGoals: async () => ({ goals: [respawnGoal()], holders }),
+          resolveLiveness: async () => verdicts,
+          rekick,
+          rekickStates,
+          now: () => now,
+        }),
+      );
+    await tick();
+    expect(rekick).toHaveBeenCalledTimes(1);
+
+    // The re-kick took: the holder is alive. The ledger is cleared.
+    verdicts = vmap(verdict('su-2c130be1', 'live', 'loop'));
+    await tick();
+    expect(rekickStates.size).toBe(0);
+
+    // Idle again much later: attempt numbering restarts at 1.
+    now += 6 * 60 * 60_000;
+    verdicts = vmap(liveButIdle('su-2c130be1'));
+    await tick();
+    expect(rekick).toHaveBeenCalledTimes(2);
+    expect(rekick.mock.calls[1]?.[2]).toBe(1);
+
+    // A different elected holder (higher epoch) is a different budget.
+    holders = [holder(), holder({ ownerId: 'su-next', goalLeaseEpoch: 99, setAtMs: JUST_NOW })];
+    verdicts = vmap(liveButIdle('su-2c130be1'), liveButIdle('su-next'));
+    await tick();
+    expect(rekick).toHaveBeenCalledTimes(3);
+    expect(rekick.mock.calls[2]?.[1]).toBe('su-next');
+    expect(rekick.mock.calls[2]?.[2]).toBe(1);
+  });
+
+  it('a failing re-kick is non-fatal and still consumes that attempt', async () => {
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const rekickStates = new Map();
+    const result = await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        resolveLiveness: async () => vmap(liveButIdle('su-2c130be1')),
+        launch,
+        rekick: async () => {
+          throw new Error('wake channel unavailable');
+        },
+        rekickStates,
+      }),
+    );
+    expect(result.rekicked).toBe(0);
+    expect(result.attempted).toBe(0);
+    expect(launch).not.toHaveBeenCalled();
+    expect([...rekickStates.values()][0]?.attemptsAtMs.length).toBe(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('re-kick 1/3 failed'));
   });
 });

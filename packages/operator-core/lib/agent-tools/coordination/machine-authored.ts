@@ -193,6 +193,58 @@ export function isAgentSessionSender(from: string | null | undefined): boolean {
 }
 
 /**
+ * ESCALATION-ONLY machine emitters — a name-keyed signal consumed by the attention
+ * tiering + reconcile sweeps (`attention/adapters.ts` `isOperationalEscalation`)
+ * and by nothing else. WI-2140594 (the corrected fix for WI-2140576).
+ *
+ * ── WHY A DERIVED PREDICATE REPLACED A HAND LIST ────────────────────────────
+ *
+ * An option-less escalation was classified OPERATIONAL (system status: alert tier,
+ * 48h auto-reconcile) only when its sender was `system[:…]` or a member of a
+ * hand-maintained `AUTOMATED_INFRA_EMITTERS` set. Every watchdog added after that
+ * set was written landed OUTSIDE it, and each one's escalations then read as a
+ * human-shaped ask: tiered as an owner decision and reaped only by the 7d
+ * dead-author sweep. Measured 2026-09-01 on the live papercusp-workspace backlog
+ * (783 open rows): wall-lapse-watchdog 74, unservable-critical-watchdog 24,
+ * goal-owner-report-watchdog 23, intent-divergence-detector 19,
+ * goal-liveness-watchdog 7, embed-latency-watchdog 6 — none in the set. A name
+ * list restating what the sender's own shape already says is the
+ * derived-truth-ladder failure; this is the DERIVE rung for it.
+ *
+ * ── WHAT THE SHAPE IS, AND WHAT IT CAN NEVER REACH ───────────────────────────
+ *
+ * A process emitter is named for what it DOES (`…-watchdog`, `…-sweep`, `…-pulse`,
+ * `…-lease`, `…-alarm`, `…-gateway`, plus the two patterns above); a correspondent
+ * is named for WHO it is (`human`, `pc-admin-coord-ui`, `su-…`, `s-…`, `cup-…`,
+ * `role-…`, a bare uuid). The agent-session test is applied FIRST and wins, so an
+ * agent whose role name happens to end in `-watchdog` (`role-x-watchdog`) stays a
+ * real correspondent — adapters.ts's rule that a bee's escalation can be a genuine
+ * ask holds by construction, not by anyone remembering it.
+ *
+ * ⚠ Widens ONLY escalation classification. Deliberately NOT folded into
+ * {@link MACHINE_SENDER_PATTERN} (embedded in five SQL sites with historical-row
+ * semantics — see the stamp pattern's rationale) nor into
+ * {@link MACHINE_EMITTER_STAMP_PATTERN} (which holds itself to a per-suffix
+ * message-volume bar this escalation data does not speak to).
+ */
+export const MACHINE_ESCALATION_EMITTER_PATTERN = '-(watchdog|sweep|pulse|lease|alarm|gateway)$';
+
+const MACHINE_ESCALATION_EMITTER_RE = new RegExp(MACHINE_ESCALATION_EMITTER_PATTERN);
+
+/**
+ * Is `from` a process emitter for ESCALATION purposes — something that OPENS an
+ * escalation but can never consume its resolution? The union of every name-keyed
+ * machine signal in this module plus the escalation-only shape above, gated so an
+ * agent-session identity (and the human / owner-GUI identities) can never match.
+ */
+export function isMachineEscalationEmitter(from: string | null | undefined): boolean {
+  if (!from) return false;
+  const s = from.trim().toLowerCase();
+  if (!s || AGENT_SESSION_SENDER_RE.test(s)) return false;
+  return MACHINE_SENDER_RE.test(s) || MACHINE_EMITTER_STAMP_RE.test(s) || MACHINE_ESCALATION_EMITTER_RE.test(s);
+}
+
+/**
  * The FOURTH signal, and the only one keyed on the ENVELOPE rather than the name:
  * system code emitting under a BORROWED AGENT IDENTITY (D-095).
  *

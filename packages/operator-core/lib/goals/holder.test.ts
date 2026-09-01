@@ -23,6 +23,7 @@ import { describe, it, expect } from 'vitest';
 import {
   goalHolderKey,
   holderCountsAsAlive,
+  holderIsRekickable,
   resolveGoalHoldersBatchFromRows,
   resolveGoalHoldersFromRows,
   type GoalHolderRow,
@@ -51,6 +52,47 @@ function verdict(over: Partial<LivenessVerdict> & { ownerId: string }): Liveness
 function verdicts(...vs: LivenessVerdict[]): Map<string, LivenessVerdict> {
   return new Map(vs.map((v) => [v.ownerId, v]));
 }
+
+/**
+ * WI-2140573 (measured 2026-09-01): the fold must carry the RAW heartbeat so
+ * a supervisor can tell a dead PROCESS from a live process whose SESSION is
+ * idle — the seven codex holders whose kickoff died at the model layer were
+ * exactly `parked` + `selfWake:'none'` + heartbeat fresh, for hours.
+ */
+describe('holderIsRekickable — a lost holder whose process is still up', () => {
+  const fold = (v: LivenessVerdict) =>
+    resolveGoalHoldersFromRows(G, WS, [row(v.ownerId)], verdicts(v), NOW).elected!;
+
+  it('carries heartbeatFresh from the verdict (null when no verdict)', () => {
+    expect(fold(verdict({ ownerId: 'a', heartbeatFresh: true })).heartbeatFresh).toBe(true);
+    expect(fold(verdict({ ownerId: 'a', heartbeatFresh: false })).heartbeatFresh).toBe(false);
+    expect(resolveGoalHoldersFromRows(G, WS, [row('a')], verdicts(), NOW).elected!.heartbeatFresh).toBeNull();
+  });
+
+  it('is true ONLY for lost + parked + selfWake none + fresh heartbeat', () => {
+    const idle = fold(verdict({ ownerId: 'a', sessionState: 'parked', selfWake: 'none', heartbeatFresh: true }));
+    expect(idle.live).toBe(false);
+    expect(holderIsRekickable(idle)).toBe(true);
+  });
+
+  it('is false for every shape a wake cannot fix', () => {
+    // Process gone: a cold heartbeat, or an ended session.
+    expect(
+      holderIsRekickable(fold(verdict({ ownerId: 'a', sessionState: 'parked', selfWake: 'none', heartbeatFresh: false }))),
+    ).toBe(false);
+    expect(holderIsRekickable(fold(verdict({ ownerId: 'a', sessionState: 'ended', heartbeatFresh: true })))).toBe(false);
+    // Not lost at all: parked with a loop armed is a healthy steward between wakes.
+    expect(
+      holderIsRekickable(fold(verdict({ ownerId: 'a', sessionState: 'parked', selfWake: 'loop', heartbeatFresh: true }))),
+    ).toBe(false);
+    // Self-wake UNKNOWN (leg not fetched) is not 'none': never re-kick on a guess.
+    expect(holderIsRekickable(fold(verdict({ ownerId: 'a', sessionState: 'parked', heartbeatFresh: true })))).toBe(false);
+    // No verdict at all: unresolvable, not re-kickable.
+    expect(
+      holderIsRekickable(resolveGoalHoldersFromRows(G, WS, [row('a')], verdicts(), NOW).elected!),
+    ).toBe(false);
+  });
+});
 
 describe('holderCountsAsAlive — D-005 pins every session state', () => {
   it('live counts as holding', () => {

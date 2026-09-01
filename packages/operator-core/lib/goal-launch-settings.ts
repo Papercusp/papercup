@@ -1394,6 +1394,56 @@ export interface GoalLaunchResolution {
   degradedReasons: string[];
 }
 
+export interface ParsedGoalLaunchSettings {
+  /** The document with every KNOWN key in force; null only when it is truly invalid or absent. */
+  settings: GoalLaunchSettings | null;
+  /** Non-null ⇒ `settings` is null and NOTHING the owner declared is in force. */
+  error: string | null;
+  /**
+   * WI-2140573: dotted paths of keys the strict schema did not recognise, which
+   * the lenient READ stripped before re-parsing (`roles.goal.contextSize`).
+   * Non-empty with `settings` non-null means every OTHER key IS in force and the
+   * caller must surface these LOUDLY (the watchdog escalates, the panel shows
+   * them) — never silently, which is the state `.strict()` exists to prevent.
+   */
+  unknownKeys: string[];
+}
+
+/**
+ * How many strip-and-re-parse passes the lenient read may take. One pass strips
+ * every key zod reported unrecognised at every level it reported; a second is
+ * needed only when stripping exposes a strict object underneath, so 3 is
+ * generous. A document still failing after that is invalid, not merely newer.
+ */
+const UNKNOWN_KEY_STRIP_PASSES = 3;
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Delete, in place, every key zod reported as `unrecognized_keys`, at the path
+ * it reported it. Returns the dotted paths removed. Only ever called on a CLONE
+ * of the caller's document — a row's jsonb value is never mutated under it.
+ */
+function stripUnrecognizedKeys(doc: Record<string, unknown>, issues: readonly z.ZodIssue[]): string[] {
+  const stripped: string[] = [];
+  for (const issue of issues) {
+    if (issue.code !== 'unrecognized_keys') continue;
+    let target: unknown = doc;
+    for (const seg of issue.path) {
+      target = isPlainObject(target) ? target[String(seg)] : undefined;
+    }
+    if (!isPlainObject(target)) continue;
+    for (const key of issue.keys) {
+      if (!Object.hasOwn(target, key)) continue;
+      delete target[key];
+      stripped.push([...issue.path.map(String), key].join('.'));
+    }
+  }
+  return stripped;
+}
+
 /**
  * Validate one stored `launch_settings` value, however it was fetched.
  *
@@ -1405,19 +1455,45 @@ export interface GoalLaunchResolution {
  *
  * `null` in, `null` out and NO error: "none declared" is the common case and the
  * correct launch default, not a fault.
+ *
+ * READ-LENIENT on unknown keys, STRICT on everything else (WI-2140573). The
+ * schema's `.strict()` is the WRITE boundary (`writeGoalLaunchSettings`), where
+ * refusing a typo is right. On READ the same refusal was a safety-net kill:
+ * a key written by a NEWER schema than the reading host runs — measured live
+ * when `roles.goal.compactionLimit` landed before bg-host's bundle knew it —
+ * made the whole document parse to null, so `holder.onLoss='respawn'` silently
+ * stopped being in force on the one goal it protected. So: on failure, strip
+ * exactly the keys zod reported unrecognised, re-parse, and REPORT the stripped
+ * paths in `unknownKeys`. A document that still fails after stripping (a bad
+ * VALUE, not merely a new key) is invalid as before.
  */
-export function parseGoalLaunchSettings(
-  raw: unknown,
-  label = 'launch_settings',
-): { settings: GoalLaunchSettings | null; error: string | null } {
-  if (raw == null) return { settings: null, error: null };
+export function parseGoalLaunchSettings(raw: unknown, label = 'launch_settings'): ParsedGoalLaunchSettings {
+  if (raw == null) return { settings: null, error: null, unknownKeys: [] };
+  let doc: unknown;
   try {
-    const parsed = goalLaunchSettingsSchema.safeParse(typeof raw === 'string' ? JSON.parse(raw) : raw);
-    if (!parsed.success) return { settings: null, error: `${label} is invalid: ${parsed.error.message}` };
-    return { settings: parsed.data, error: null };
+    doc = typeof raw === 'string' ? JSON.parse(raw) : raw;
   } catch (e) {
     // A string that is not JSON at all lands here rather than in safeParse.
-    return { settings: null, error: `${label} is unreadable: ${e instanceof Error ? e.message : String(e)}` };
+    return {
+      settings: null,
+      error: `${label} is unreadable: ${e instanceof Error ? e.message : String(e)}`,
+      unknownKeys: [],
+    };
+  }
+  const unknownKeys: string[] = [];
+  let working: unknown = doc;
+  for (let pass = 0; ; pass++) {
+    const parsed = goalLaunchSettingsSchema.safeParse(working);
+    if (parsed.success) return { settings: parsed.data, error: null, unknownKeys };
+    const invalid = `${label} is invalid: ${parsed.error.message}`;
+    if (pass >= UNKNOWN_KEY_STRIP_PASSES || !isPlainObject(working)) {
+      return { settings: null, error: invalid, unknownKeys };
+    }
+    // Never mutate the caller's value: it is usually a row still in use.
+    if (pass === 0) working = structuredClone(working);
+    const stripped = stripUnrecognizedKeys(working as Record<string, unknown>, parsed.error.issues);
+    if (!stripped.length) return { settings: null, error: invalid, unknownKeys };
+    unknownKeys.push(...stripped);
   }
 }
 
@@ -1446,8 +1522,10 @@ export async function readGoalLaunchSettings(
    */
   drainFleetSlug: string | null;
   error: string | null;
+  /** WI-2140573: keys the lenient read stripped — see {@link ParsedGoalLaunchSettings.unknownKeys}. */
+  unknownKeys: string[];
 }> {
-  if (!goalId) return { settings: null, budget: null, brief: null, drainFleetSlug: null, error: null };
+  if (!goalId) return { settings: null, budget: null, brief: null, drainFleetSlug: null, error: null, unknownKeys: [] };
   try {
     const rows = await pg(sql)`
       SELECT title, body, kill_criterion, standing,
@@ -1457,7 +1535,7 @@ export async function readGoalLaunchSettings(
              metadata->>'drainFleet' AS drain_fleet
         FROM harness_shared.goals WHERE id = ${goalId} LIMIT 1`;
     if (!rows.length) {
-      return { settings: null, budget: null, brief: null, drainFleetSlug: null, error: null };
+      return { settings: null, budget: null, brief: null, drainFleetSlug: null, error: null, unknownKeys: [] };
     }
     const row = rows[0] as {
       title?: unknown;
@@ -1493,6 +1571,7 @@ export async function readGoalLaunchSettings(
         : null,
       drainFleetSlug: typeof row.drain_fleet === 'string' ? row.drain_fleet : null,
       error: [parsed.error, briefError].filter(Boolean).join('; ') || null,
+      unknownKeys: parsed.unknownKeys,
     };
   } catch (e) {
     return {
@@ -1501,6 +1580,7 @@ export async function readGoalLaunchSettings(
       brief: null,
       drainFleetSlug: null,
       error: e instanceof Error ? e.message : String(e),
+      unknownKeys: [],
     };
   }
 }

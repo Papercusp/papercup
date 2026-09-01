@@ -716,8 +716,23 @@ export const TARGETS: BackfillTarget[] = [
     // from now on, which is the exact defect P-026 exists to remove.
     recipeVersion: 2,
     keyCols: ['harness_slug', 'feature_id'],
+    // P-006 (silent-intake-central-resolution-2026-09-01): the whole-corpus resolver
+    // (work-items-admission-census.ts readCorpus) needs an embedding on every OPEN-LANE
+    // row to compute its cosine edges — a row with no vector cannot be linked to any
+    // twin by that leg at all, only by the lexical/condition-key nets. Missing coverage
+    // there was measured at ~57% of open lane bugs at audit time, and a pure
+    // `updated_ts DESC` order means an old, untouched-but-still-open item is starved
+    // behind every recently-edited row in the 36k+ table-wide backlog — including rows
+    // that are terminal/observation and irrelevant to dedup entirely.
+    //
+    // Boost exactly `corpusWhere`'s population (lane != observation AND not terminal —
+    // the SAME predicate the census itself filters on, so this cannot drift from what
+    // the resolver actually reads) ahead of the general recency order; ties (and every
+    // row outside that population) fall back to the prior `updated_ts DESC` unchanged.
     // Backed by hfc_updated_idx (updated_ts DESC). bigint epoch-ms, not a timestamp.
-    orderBySql: 'updated_ts DESC',
+    orderBySql:
+      `(lane IS DISTINCT FROM 'observation' AND NOT harness_shared.work_item_status_is_terminal(status)) DESC,` +
+      ` updated_ts DESC`,
     // NOT `updated_ts` — see recencyCol's doc. Ordering wants the cheapest index scan;
     // the 24h signal wants creation, or edit churn on old items masks a real regression.
     recencyCol: 'created_ts',

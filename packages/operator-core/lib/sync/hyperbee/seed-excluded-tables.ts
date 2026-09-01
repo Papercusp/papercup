@@ -52,3 +52,28 @@
  * the item — do not "finish" this fix by widening this list.
  */
 export const SEED_EXCLUDED_TABLES: readonly string[] = ['presence'];
+
+/**
+ * Tables whose rows are STRUCTURAL to the hive — the roster, the owner's signed policy
+ * and settings, the epoch keys a joiner decrypts with, and the contributor ledgers. A row
+ * dropped from one of these breaks the joiner outright (no owner in the roster, no epoch
+ * key for the ciphertext it seeded), so an identity literal found inside such a row is
+ * REDACTED IN PLACE (`[build-identity]` / `[email]`) and the row is kept.
+ *
+ * Every table NOT listed here is pot CONTENT (issues, features, plans, coordination…).
+ * A content row whose VALUE carries a hunted owner-identity literal is dropped from the
+ * public seed whole rather than redacted (p2p-public-release-endgame-2026-09-01 D-002,
+ * EI-22086776666843792): the seed is an untrusted cache, and a dropped row replicates
+ * normally after admission, whereas a redacted value is what the seeded joiner keeps.
+ *
+ * ⚠ Do NOT add a content table here to "keep more rows": that reintroduces the redact
+ * path whose two blind spots (case, object keys) shipped the owner's name in build #5.
+ */
+export const SEED_REDACT_IN_PLACE_TABLES: ReadonlySet<string> = new Set([
+  'hive-members',
+  'hive-policy',
+  'hive-settings-by-key',
+  'hive-epoch-keys',
+  'contributors',
+  'usage',
+]);

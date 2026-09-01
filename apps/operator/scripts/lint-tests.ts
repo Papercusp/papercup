@@ -45,6 +45,7 @@ import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findUnrunnableTests } from '@papercusp/operator-core/lib/test-executor-runnability';
 import { ADMIN_TEST_SUITE_IDS } from '@papercusp/operator-core/lib/admin-test-suites-shared';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveRepoRoot(__dirname);
@@ -502,4 +503,4 @@ async function main(): Promise<void> {
   process.stdout.write('  every registry-visible canonical test resolves to an executing runner\n');
 }
 
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) void main();
+if (isCliEntry(import.meta.url)) void main();

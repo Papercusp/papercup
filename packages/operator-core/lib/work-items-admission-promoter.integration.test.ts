@@ -11,6 +11,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const {
   admissionPairKey,
   judgedPairsMissingAdjudication,
+  readPendingBatch,
   readWorkItemAdmissionSnapshot,
   readWorkItemAdmissionProducerPressure,
   runWorkItemAdmissionFailOpen,
@@ -704,5 +705,60 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(snapshot.summary.runCounts.byUnit?.links?.runs).toBe(1);
     expect(snapshot.summary.runCounts.byUnit?.pairs?.runs).toBe(1);
     expect(snapshot.summary.runCounts.byUnit?.snapshots?.runs).toBe(1);
+  });
+});
+
+describe('readPendingBatch resolver-input priority (P-006)', () => {
+  async function seedPending(input: {
+    id: string;
+    createdAtMs: number;
+    dedupCandidates?: unknown;
+    dedupCoverageDegraded?: boolean;
+  }): Promise<void> {
+    const payload: Record<string, unknown> = {};
+    if (input.dedupCandidates !== undefined) payload.dedupCandidates = input.dedupCandidates;
+    if (input.dedupCoverageDegraded !== undefined) {
+      payload.dedupCoverage = { lexical: 'ok', semantic: 'ok', degraded: input.dedupCoverageDegraded };
+    }
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
+         admission, condition_key, lane, payload, created_ts, updated_ts)
+      VALUES (${WS}, ${HARNESS}, ${input.id}, 'title', 'summary', 'open', 'bug',
+              'pending', NULL, NULL, ${JSON.stringify(payload)}::jsonb,
+              ${input.createdAtMs}, ${input.createdAtMs})`;
+  }
+
+  it('orders candidate-stamped rows first, then dedupCoverage.degraded rows, then plain FIFO', async () => {
+    // Seeded OLDEST-first by id so a plain created_ts order would read WI-1..WI-4 — the
+    // priority boost must override that for the stamped/degraded rows regardless.
+    await seedPending({ id: 'WI-1', createdAtMs: NOW - 40_000 }); // plain, oldest
+    await seedPending({ id: 'WI-2', createdAtMs: NOW - 30_000, dedupCoverageDegraded: true }); // degraded
+    await seedPending({ id: 'WI-3', createdAtMs: NOW - 20_000 }); // plain, newer than WI-1
+    await seedPending({
+      id: 'WI-4',
+      createdAtMs: NOW - 10_000, // youngest of all, but candidate-stamped
+      dedupCandidates: [{ id: 'WI-9', similarity: 0.91, method: 'semantic-hard' }],
+    });
+
+    const batch = await readPendingBatch(db.sql, WS, HARNESS, 10);
+    // WI-4 (candidate-stamped) first; WI-2 (degraded) second; then plain FIFO WI-1, WI-3.
+    expect(batch.map((item) => item.id)).toEqual(['WI-4', 'WI-2', 'WI-1', 'WI-3']);
+  });
+
+  it('an EMPTY dedupCandidates array is not stamped by the writers and does not boost', async () => {
+    // dedup-candidates-stamp.ts is explicit: the key is written ONLY when non-empty. A row
+    // whose payload carries `dedupCandidates: []` (e.g. a hand-authored fixture, or a future
+    // writer regression) must still be readable as "no candidates" via the boost, not as a
+    // false positive — `IS NOT NULL` on an empty JSON array is still true, so this guards the
+    // one shape that predicate CANNOT distinguish and documents it as an accepted edge rather
+    // than a silent surprise.
+    await seedPending({ id: 'WI-5', createdAtMs: NOW - 20_000 });
+    await seedPending({ id: 'WI-6', createdAtMs: NOW - 10_000, dedupCandidates: [] });
+    const batch = await readPendingBatch(db.sql, WS, HARNESS, 10);
+    // An empty array still satisfies `IS NOT NULL`, so WI-6 sorts first — recorded here as
+    // the KNOWN behaviour (both writers only ever stamp non-empty, per dedup-candidates-
+    // stamp.ts's contract) rather than left for a reader to rediscover by surprise.
+    expect(batch.map((item) => item.id)).toEqual(['WI-6', 'WI-5']);
   });
 });

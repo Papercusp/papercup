@@ -1141,6 +1141,7 @@ export default function GoalDetailPanel({
                 goalId={goalId}
                 settings={data?.launchSettings}
                 settingsInvalid={data?.launchSettingsInvalid}
+                settingsUnknownKeys={data?.launchSettingsUnknownKeys}
                 options={data?.launchSettingsOptions}
                 defaults={data?.launchSettingsDefaults}
               />

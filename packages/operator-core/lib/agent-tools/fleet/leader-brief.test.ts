@@ -2365,14 +2365,17 @@ describe('computeBenchSuggestion — idle beside a NONEMPTY queue (EI-1868125956
     expect(s?.reason).toMatch(/fleet:bench/);
   });
 
-  it('an UNREADABLE queue (null) is reported as unknown — never silently folded into "drained"', () => {
-    for (const unknown of [null, undefined]) {
-      const s = computeBenchSuggestion(idle, unknown);
-      expect(s?.kind).toBe('laneless-idle');
-      expect(s?.reason).toMatch(/could NOT be read/);
-      expect(s?.reason).toMatch(/an unread queue is not an empty one/);
-      expect(s?.reason).not.toMatch(/VERIFIED drained/);
-    }
+  it('does not emit a bench suggestion when the queue read is UNKNOWN (EI-22063840424661947)', () => {
+    // The brief's lane read can time out while fleet:bench's later member-scoped
+    // recheck sees real work (the live incident saw 1,490 claimable rows). Unknown
+    // is not evidence that this member can safely be benched.
+    expect(computeBenchSuggestion(idle, null)).toBeUndefined();
+  });
+
+  it('keeps a member-scoped nonempty lane out of the laneless-idle branch', () => {
+    const s = computeBenchSuggestion(idle, 1_490);
+    expect(s?.kind).toBe('idle-with-claimable');
+    expect(s?.kind).not.toBe('laneless-idle');
   });
 
   it('tags the stalled branch with its own kind so a leader can tell the two remedies apart', () => {

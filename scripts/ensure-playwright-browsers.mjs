@@ -12,6 +12,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const require = createRequire(import.meta.url);
 
@@ -93,7 +94,7 @@ export function ensurePlaywrightBrowsers({ env = process.env, run = spawnSync } 
   return { installed: true, cacheDir, missing: [], ranInstall: true };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   try {
     if (process.argv.includes('--check')) {
       const missing = missingPlaywrightBrowsers();

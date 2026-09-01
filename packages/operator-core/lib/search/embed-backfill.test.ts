@@ -617,6 +617,25 @@ describe('text-recipe discriminator (P-026 / D-087)', () => {
     expect(wi.bodySql).toContain('w2.harness_slug = work_items.harness_slug');
   });
 
+  it('P-006: work_items orderBySql boosts the open-lane (dedup-corpus) population ahead of plain recency', () => {
+    // silent-intake-central-resolution-2026-09-01 P-006: the whole-corpus resolver needs
+    // embeddings on open-lane rows to compute cosine edges at all; a pure updated_ts order
+    // starves an old-but-still-open row behind every recently-touched terminal/observation
+    // row in the 36k+ table. The boost predicate must be the SAME population the resolver
+    // itself reads (work-items-admission-census.ts corpusWhere) or the two can silently
+    // diverge on what "open lane" means.
+    const wi = TARGETS.find((t) => t.table === 'harness_shared.work_items')!;
+    expect(wi.orderBySql).toBeDefined();
+    expect(wi.orderBySql).toContain("lane IS DISTINCT FROM 'observation'");
+    expect(wi.orderBySql).toContain('NOT harness_shared.work_item_status_is_terminal(status)');
+    // The boost is a PREFIX ahead of the prior recency order, not a replacement for it —
+    // every row outside the boosted population (and ties within it) must still fall back
+    // to updated_ts DESC, so this does not silently reorder the rest of the table.
+    const order = wi.orderBySql!;
+    expect(order.indexOf('work_item_status_is_terminal')).toBeLessThan(order.indexOf('updated_ts DESC'));
+    expect(order).toMatch(/\)\s*DESC,\s*updated_ts DESC$/);
+  });
+
   it("the UPDATE guard accepts every row the SELECT calls stale — the sweep's convergence invariant", async () => {
     // THE failure this feature could introduce, and it is invisible: if the write guard is
     // narrower than the selector, the row is selected as stale, the UPDATE matches nothing,

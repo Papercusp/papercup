@@ -1036,7 +1036,8 @@ export function computeBenchSuggestion(
    *   null  → UNKNOWN (read failed / no harness to scope by). Deliberately NOT
    *           folded into 0: doing so would silently restore the exact bug this
    *           parameter fixes — an unchecked "drained or scoped-out" assertion —
-   *           and it would do so invisibly, forever. Unknown says so out loud.
+   *           and it would do so invisibly, forever. Unknown is surfaced by the
+   *           aggregate, but it is not enough evidence for a bench suggestion.
    */
   claimableCount?: number | null,
   /**
@@ -1194,6 +1195,17 @@ export function computeBenchSuggestion(
     // burns a turn re-discovering a refusal it cannot act on). Defer to the one oracle
     // instead of re-deriving capacity from a field that cannot see it.
     if (concurrency?.blocked) return undefined;
+    // EI-22063840424661947: a laneless-idle suggestion is actionable as a bench target
+    // only when this fleet's lane read positively established an empty post-floor queue.
+    // An unread/timeout result is not an empty queue: fleet:bench rechecks the member's
+    // exact lane and can correctly refuse with `bench_refused_queue_nonempty` (the live
+    // incident found 1,490 claimable rows there). Keep the unknown state visible through
+    // `claimable_now`, but never turn it into a bench suggestion that could park capacity
+    // beside work.
+    // `null` is the explicit live-read failure sentinel. An omitted value remains
+    // the legacy pure-caller shape used by older projections, which do not claim to
+    // have performed the fleet-lane read.
+    if (claimableCount === null) return undefined;
     // EI-18681259560385029: the ORIGINAL text asserted "likely idle-cycling a drained or
     // scoped-out lane" UNCONDITIONALLY — a confident diagnosis of a fact it never checked.
     // When the queue is actually nonempty that sentence points a leader AWAY from the truth
@@ -1319,8 +1331,7 @@ export function computeBenchSuggestion(
     //              Only here is the historical bench advice correct.
     //   unknown-gating — claimable 0 but no gating read on this call (a direct unit-test
     //              caller, or a partial read). We know the queue is empty; we do NOT know
-    //              whether that is drainage or gating, so we must not claim either.
-    //   unknown  — claimable itself unreadable.
+    //              whether that is drainage or gating, so the reason stays explicit.
     const drainedVerified = claimableCount === 0 && laneGating != null;
     return {
       kind: 'laneless-idle',

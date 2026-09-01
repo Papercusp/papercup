@@ -93,6 +93,7 @@ import type { GoalHolders } from '../goals/holder';
 import {
   parseGoalLaunchSettings,
   type GoalLaunchSettings,
+  type ParsedGoalLaunchSettings,
 } from '../goal-launch-settings';
 import { resolveGoalHolderPolicy } from '../goal-launch-settings-shared';
 import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
@@ -774,30 +775,113 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
     // join would silently drop the `unheld` case, which is one of the two
     // conditions this watchdog exists to report).
     const holders = await readGoalHolderRows(sql);
-    return {
-      goals: goalRows.map((r) => {
-        const parsed = parseGoalLaunchSettings(
-          r.launch_settings,
-          `goal ${r.id} launch_settings`,
-        );
-        if (parsed.error) {
-          console.warn(`[goal-liveness-watchdog] ${parsed.error}; holder respawn stays disabled`);
-        }
-        return {
-          goalId: r.id,
-          workspaceId: r.workspace_id,
-          title: r.title,
-          status: r.status,
-          installSlug: r.install_slug,
-          launchSettings: parsed.settings,
-          startedHolderOwnerId: r.started_holder_owner_id,
-          standing: r.standing,
-          updatedAtMs: Number(r.updated_ms),
-        };
-      }),
-      holders,
-    };
+    const problems: LaunchSettingsProblem[] = [];
+    const goals = goalRows.map((r) => {
+      const parsed = parseGoalLaunchSettings(r.launch_settings, `goal ${r.id} launch_settings`);
+      if (parsed.error != null || parsed.unknownKeys.length > 0) {
+        problems.push({ goalId: r.id, workspaceId: r.workspace_id, title: r.title, parsed });
+      }
+      return {
+        goalId: r.id,
+        workspaceId: r.workspace_id,
+        title: r.title,
+        status: r.status,
+        installSlug: r.install_slug,
+        launchSettings: parsed.settings,
+        startedHolderOwnerId: r.started_holder_owner_id,
+        standing: r.standing,
+        updatedAtMs: Number(r.updated_ms),
+      };
+    });
+    // AFTER the map, and never thrown: a refused escalation must not cost the
+    // sweep its read — the sweep is what keeps the holder alive.
+    await Promise.all(
+      problems.map((p) =>
+        escalateLaunchSettingsProblem(p).catch((e: unknown) => {
+          console.warn(
+            `[goal-liveness-watchdog] could not escalate launch_settings problem on '${p.goalId}': ` +
+              `${e instanceof Error ? e.message : String(e)} — ${p.parsed.error ?? `unknown keys ${p.parsed.unknownKeys.join(', ')}`}`,
+          );
+        }),
+      ),
+    );
+    return { goals, holders };
   };
+}
+
+interface LaunchSettingsProblem {
+  goalId: string;
+  workspaceId: string;
+  title: string;
+  parsed: ParsedGoalLaunchSettings;
+}
+
+/**
+ * WI-2140573 finding 2. A launch_settings document the reader could not honour
+ * used to be one `console.warn` — "holder respawn stays disabled" — on a host
+ * nobody tails, while the goal's safety net was silently OFF. It is now an
+ * escalation, in two shapes:
+ *
+ *  - INVALID (a bad value): nothing the owner declared is in force; the goal
+ *    resolves to the DEFAULT holder policy. A blocker — on the one goal that
+ *    opted into `holder.onLoss='respawn'`, this is the respawner disarmed.
+ *  - UNKNOWN KEYS ONLY: the lenient read put every known key in force and
+ *    stripped the rest. Usually a key written by a NEWER schema than this
+ *    host's bundle runs (deploy / restart the reader — measured live when
+ *    `roles.goal.compactionLimit` landed before bg-host knew it), else a typo.
+ *    Advisory, but loud: a key that binds nothing must never read as set.
+ *
+ * Dedup is openEscalation's (dedupKind, subjectSignature); the unknown-key
+ * signature carries the SORTED key set, so a new unknown key re-escalates
+ * while the same set stays one open item.
+ */
+async function escalateLaunchSettingsProblem(p: LaunchSettingsProblem): Promise<void> {
+  const keys = [...p.parsed.unknownKeys].sort();
+  if (p.parsed.error != null) {
+    await openEscalation(WATCHDOG_IDENTITY, {
+      severity: 'blocker',
+      summary:
+        `Goal '${p.goalId}' launch_settings is INVALID — nothing it declares is in force ` +
+        `(holder respawn safety net OFF)`,
+      body:
+        `"${p.title}": ${p.parsed.error}\n\n` +
+        (keys.length ? `Unknown keys stripped before the re-parse (NOT the cause): ${keys.join(', ')}\n\n` : '') +
+        `Until the document parses, this goal resolves to the DEFAULT holder policy — its declared ` +
+        `holder.onLoss, ceilings and launch profiles bind nothing. Repair it with ` +
+        `goals:update { launchSettings } (the write boundary validates), or clear it back to "none declared".`,
+      meta: {
+        dedupKind: 'goal-launch-settings-invalid',
+        subjectSignature: `${p.workspaceId}:${p.goalId}:launch-settings-invalid`,
+        goalId: p.goalId,
+        goalWorkspaceId: p.workspaceId,
+        error: p.parsed.error,
+        unknownKeys: keys,
+      },
+    });
+    return;
+  }
+  await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary:
+      `Goal '${p.goalId}' launch_settings carries ${keys.length} key(s) this host does not recognise ` +
+      `and IGNORES: ${keys.join(', ')}`,
+    body:
+      `"${p.title}": every KNOWN key is in force (lenient read); the keys above bind NOTHING on this host.\n\n` +
+      `Most likely one of:\n` +
+      `  • the key was written by a NEWER launch-settings schema than this host's bundle runs — ` +
+      `deploy / restart the reader (dev:pipeline_position { path: 'packages/operator-core/lib/goal-launch-settings.ts' }) ` +
+      `and this clears on its own;\n` +
+      `  • a typo — repair it with goals:update { launchSettings } (the write boundary refuses unknown keys).\n\n` +
+      `Do NOT treat the setting as configured until this escalation closes: that is exactly the ` +
+      `"reads as set while doing nothing" state the strict schema exists to prevent.`,
+    meta: {
+      dedupKind: 'goal-launch-settings-unknown-keys',
+      subjectSignature: `${p.workspaceId}:${p.goalId}:unknown-keys:${keys.join(',')}`,
+      goalId: p.goalId,
+      goalWorkspaceId: p.workspaceId,
+      unknownKeys: keys,
+    },
+  });
 }
 
 /**

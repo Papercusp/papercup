@@ -145,6 +145,8 @@ export function isEmitterOwnedRow(
 export interface StaleEscalation {
   msg_id: string;
   ageDays: number;
+  /** WI-2140594: set by the unanswerable selector — the row carried options (a real choice) that went unmade. */
+  hasOptions?: boolean;
 }
 
 /**
@@ -281,54 +283,105 @@ export const UNANSWERABLE_ESCALATION_TTL_MS = (() => {
 })();
 
 /**
- * Structural pre-filter: could this row EVER be reaped as unanswerable? Excludes
- * operational rows (the TTL sweep above owns those), anything carrying options
- * (a real choice — never auto-close), a blank sender, and anything inside the
- * TTL. Author liveness is NOT consulted here — this is the cheap filter that
- * decides whom we bother probing.
+ * TTL for OPTION-CARRYING escalations from a requester with an EXPLICIT
+ * ended/recorded verdict (WI-2140594). Longer than the option-less window on
+ * purpose: a row with options is a real choice, so it is reaped only when BOTH
+ * legs are beyond doubt — the requester is PROVEN gone (never merely absent from
+ * presence) and the choice has sat unmade for twice the option-less window.
+ * Measured 2026-09-01: 114 such rows from 104 ended agent sessions, 9–79 days
+ * old, were the only permanently-stuck class in the 783-row backlog — every
+ * reaper excluded them by design, so nothing could ever close them, while the
+ * requester that would have consumed the choice no longer existed.
  */
-function isUnanswerableCandidate(e: StaleEscalationInput, nowMs: number, ttlMs: number): boolean {
-  const hasOptions = (e.options?.length ?? 0) > 0;
-  if (hasOptions) return false;
-  if (isOperationalEscalation(e.from, hasOptions)) return false;
+export const UNANSWERABLE_CHOICE_ESCALATION_TTL_MS = (() => {
+  const env = Number(process.env.PAPERCUSP_UNANSWERABLE_CHOICE_ESCALATION_TTL_MS);
+  return Number.isFinite(env) && env > 0 ? env : 14 * 24 * 60 * 60 * 1000;
+})();
+
+interface UnanswerableWindow {
+  nowMs: number;
+  /** Window for option-less rows. */
+  ttlMs: number;
+  /** Window for option-carrying rows — longer, and only ever paired with an explicit verdict. */
+  choiceTtlMs: number;
+}
+
+function hasChoice(e: Pick<StaleEscalationInput, 'options'>): boolean {
+  return (e.options?.length ?? 0) > 0;
+}
+
+/**
+ * Structural pre-filter: could this row EVER be reaped as unanswerable? Excludes
+ * operational rows (the TTL sweep above owns those), a blank sender, and anything
+ * inside its window — `ttlMs` for an option-less row, the longer `choiceTtlMs`
+ * for one carrying options. Author liveness is NOT consulted here — this is the
+ * cheap filter that decides whom we bother probing.
+ */
+function isUnanswerableCandidate(e: StaleEscalationInput, w: UnanswerableWindow): boolean {
+  const choice = hasChoice(e);
+  if (isOperationalEscalation(e.from, choice)) return false;
   const from = typeof e.from === 'string' ? e.from.trim() : '';
   if (!from) return false;
   const openedMs = Date.parse(e.ts);
   if (!Number.isFinite(openedMs)) return false;
-  return nowMs - openedMs >= ttlMs;
+  return w.nowMs - openedMs >= (choice ? w.choiceTtlMs : w.ttlMs);
+}
+
+function unanswerableWindow(ctx: { nowMs: number; ttlMs?: number; choiceTtlMs?: number }): UnanswerableWindow {
+  return {
+    nowMs: ctx.nowMs,
+    ttlMs: ctx.ttlMs ?? UNANSWERABLE_ESCALATION_TTL_MS,
+    choiceTtlMs: ctx.choiceTtlMs ?? UNANSWERABLE_CHOICE_ESCALATION_TTL_MS,
+  };
 }
 
 /** The distinct senders worth probing for liveness this tick. */
 export function unanswerableCandidateAuthors(
   opens: readonly StaleEscalationInput[],
-  ctx: { nowMs: number; ttlMs?: number },
+  ctx: { nowMs: number; ttlMs?: number; choiceTtlMs?: number },
 ): string[] {
-  const ttl = ctx.ttlMs ?? UNANSWERABLE_ESCALATION_TTL_MS;
+  const w = unanswerableWindow(ctx);
   const out = new Set<string>();
   for (const e of opens) {
-    if (isUnanswerableCandidate(e, ctx.nowMs, ttl)) out.add((e.from as string).trim());
+    if (isUnanswerableCandidate(e, w)) out.add((e.from as string).trim());
   }
   return [...out];
 }
 
 /**
- * PURE: which OPEN escalations are UNANSWERABLE — non-operational, option-less,
- * past `ttlMs`, AND authored by someone `isAuthorGone` reports as gone.
+ * PURE: which OPEN escalations are UNANSWERABLE — non-operational, past their
+ * window, AND authored by someone proven gone:
  *
- * `isAuthorGone` must return true ONLY for a PROVEN-absent author. Unknown must
+ *   - an OPTION-LESS row is gone when `isAuthorGone` says so (an explicit verdict
+ *     OR presence-absence — see reconcileUnanswerableEscalationsOnce);
+ *   - an OPTION-CARRYING row (a real choice) is gone ONLY when
+ *     `isAuthorGoneByVerdict` says so — an explicit ended/recorded verdict.
+ *     Presence-absence never suffices for a choice, and a caller that supplies no
+ *     verdict leg can never reap one (WI-2140594).
+ *
+ * Both predicates must return true ONLY for a PROVEN-absent author. Unknown must
  * map to false: this selector resolves rows that look like human decisions, so
  * every ambiguous signal has to fail closed.
  */
 export function selectUnanswerableEscalations(
   opens: readonly StaleEscalationInput[],
-  ctx: { nowMs: number; ttlMs?: number; isAuthorGone: (from: string) => boolean },
+  ctx: {
+    nowMs: number;
+    ttlMs?: number;
+    choiceTtlMs?: number;
+    isAuthorGone: (from: string) => boolean;
+    isAuthorGoneByVerdict?: (from: string) => boolean;
+  },
 ): StaleEscalation[] {
-  const ttl = ctx.ttlMs ?? UNANSWERABLE_ESCALATION_TTL_MS;
+  const w = unanswerableWindow(ctx);
   const out: StaleEscalation[] = [];
   for (const e of opens) {
-    if (!isUnanswerableCandidate(e, ctx.nowMs, ttl)) continue;
-    if (!ctx.isAuthorGone((e.from as string).trim())) continue;
-    out.push({ msg_id: e.msg_id, ageDays: (ctx.nowMs - Date.parse(e.ts)) / 86_400_000 });
+    if (!isUnanswerableCandidate(e, w)) continue;
+    const from = (e.from as string).trim();
+    const choice = hasChoice(e);
+    const gone = choice ? ctx.isAuthorGoneByVerdict?.(from) === true : ctx.isAuthorGone(from);
+    if (!gone) continue;
+    out.push({ msg_id: e.msg_id, ageDays: (ctx.nowMs - Date.parse(e.ts)) / 86_400_000, hasOptions: choice });
   }
   out.sort((a, b) => b.ageDays - a.ageDays);
   return out;
@@ -342,29 +395,43 @@ export interface UnanswerableReconcileDeps {
 /**
  * One dead-author reconciliation pass.
  *
- * Liveness is read in TWO legs because the oracle's "no entry" is ambiguous by
- * design — `resolveSessionStates` returns no entry BOTH for a degraded fetch and
- * for an owner it has never heard of, and its doc is explicit that the caller
- * keeps its own "state unknown" behavior. Treating no-entry as dead would
- * mass-resolve real asks on one transient fetch failure. So:
+ * Liveness is read in TWO legs because the oracle's UNKNOWN is ambiguous by
+ * design. `resolveSessionStates` is TOTAL (EI-18771777750306094): every subject
+ * gets an entry, and one it has no signal for gets an IN-BAND unknown —
+ * `sessionState: null` + `signalMissing` — which means "never heard of" OR
+ * "signal degraded", and its doc is explicit that the caller keeps its own
+ * "state unknown" behavior. Treating unknown as dead would mass-resolve real
+ * asks on one degraded fetch. So:
  *
  *   - an EXPLICIT verdict is authoritative in both directions — gone iff the
  *     session state is 'ended' or 'recorded' ('suspect'/'parked'/'draining' are
  *     ambiguous and deliberately count as NOT gone);
- *   - with NO verdict, presence-row absence disambiguates: we treat the author
- *     as gone only when the presence store ANSWERED and held no row for them.
+ *   - with an UNKNOWN verdict (`sessionState: null`, or no entry from an injected
+ *     partial map), presence-row absence disambiguates: we treat the author as
+ *     gone only when the presence store ANSWERED and held no row for them.
  *
- * MEASURED: 226 of the 229 distinct authors behind the current backlog have no
- * presence row at all, so the presence leg — not the verdict leg — is what
- * actually drains this. Any throw from either leg aborts the whole pass and
- * resolves NOTHING; a degraded read must never read as "everyone is gone".
+ * WI-2140594: before the oracle became total, "no entry" was the unknown and the
+ * presence leg drained most of the backlog (measured 226 of 229 authors had no
+ * presence row). Once every subject carried an entry, `goneByVerdict.has(from)`
+ * was true for all of them and the presence leg went dead — a null verdict read
+ * as "not gone". It still drained, only because the ended-session log leg of the
+ * oracle proved most dead authors `ended`; the doc above was simply no longer
+ * describing the code. A null verdict now falls through to the presence leg
+ * again, which is the documented contract.
+ *
+ * Option-carrying rows (a real choice) are held to the explicit-verdict leg
+ * ONLY, past the longer UNANSWERABLE_CHOICE_ESCALATION_TTL_MS window.
+ *
+ * Any throw from either leg aborts the whole pass and resolves NOTHING; a
+ * degraded read must never read as "everyone is gone".
  */
 export async function reconcileUnanswerableEscalationsOnce(
-  opts: { nowMs?: number; ttlMs?: number; limit?: number } & UnanswerableReconcileDeps = {},
+  opts: { nowMs?: number; ttlMs?: number; choiceTtlMs?: number; limit?: number } & UnanswerableReconcileDeps = {},
 ): Promise<ReconcileResult> {
   const opens = (await listEscalations({ status: 'open' })) as unknown as StaleEscalationInput[];
   const nowMs = opts.nowMs ?? Date.now();
   const ttl = opts.ttlMs ?? UNANSWERABLE_ESCALATION_TTL_MS;
+  const choiceTtl = opts.choiceTtlMs ?? UNANSWERABLE_CHOICE_ESCALATION_TTL_MS;
   // WI-7397: the two zero-result branches below are semantically OPPOSITE (one
   // healthy, one a degraded-read abort) and must never again be the same value.
   const zero = (outcome: ReconcileResult['outcome']): ReconcileResult => ({
@@ -375,12 +442,15 @@ export async function reconcileUnanswerableEscalationsOnce(
     outcome,
   });
 
-  const candidates = unanswerableCandidateAuthors(opens, { nowMs, ttlMs: ttl });
+  const candidates = unanswerableCandidateAuthors(opens, { nowMs, ttlMs: ttl, choiceTtlMs: choiceTtl });
   if (candidates.length === 0) return zero('no-candidates');
 
   const resolveFn = opts.resolveSessionStatesFn ?? resolveSessionStates;
   const getPresenceFn = opts.getPresenceFn ?? getPresence;
 
+  // EXPLICIT verdicts only. A null `sessionState` is the oracle's in-band
+  // unknown and is deliberately NOT entered here, so it falls through to the
+  // presence leg below instead of reading as "not gone" (WI-2140594).
   let goneByVerdict: Map<string, boolean>;
   let presenceKnown: Set<string>;
   try {
@@ -389,10 +459,9 @@ export async function reconcileUnanswerableEscalationsOnce(
       Promise.all(candidates.map(async (id) => [id, await getPresenceFn(id)] as const)),
     ]);
     goneByVerdict = new Map(
-      [...verdicts.entries()].map(([id, v]) => [
-        id,
-        v.sessionState === 'ended' || v.sessionState === 'recorded',
-      ]),
+      [...verdicts.entries()]
+        .filter(([, v]) => v.sessionState != null)
+        .map(([id, v]) => [id, v.sessionState === 'ended' || v.sessionState === 'recorded']),
     );
     presenceKnown = new Set(presenceRows.filter(([, row]) => row != null).map(([id]) => id));
   } catch {
@@ -405,8 +474,15 @@ export async function reconcileUnanswerableEscalationsOnce(
 
   const isAuthorGone = (from: string): boolean =>
     goneByVerdict.has(from) ? goneByVerdict.get(from)! : !presenceKnown.has(from);
+  const isAuthorGoneByVerdict = (from: string): boolean => goneByVerdict.get(from) === true;
 
-  const stale = selectUnanswerableEscalations(opens, { nowMs, ttlMs: ttl, isAuthorGone });
+  const stale = selectUnanswerableEscalations(opens, {
+    nowMs,
+    ttlMs: ttl,
+    choiceTtlMs: choiceTtl,
+    isAuthorGone,
+    isAuthorGoneByVerdict,
+  });
   const limit = opts.limit ?? RECONCILE_BATCH_LIMIT;
   const batch = stale.slice(0, limit);
 
@@ -420,8 +496,11 @@ export async function reconcileUnanswerableEscalationsOnce(
               choice: 'unanswerable',
               resolver: RECONCILE_OWNER,
               // Distinct from the operational note on purpose: an auto-closed row
-              // must never read as an ask that was actually answered.
-              note: `auto-resolved: author no longer exists — escalation open ${Math.round(s.ageDays)}d and unanswerable (EI-19411323991062966)`,
+              // must never read as an ask that was actually answered — and a
+              // choice row must say its options were never chosen (WI-2140594).
+              note: s.hasOptions
+                ? `auto-resolved: requester session ended (explicit verdict) — its options were never chosen; escalation open ${Math.round(s.ageDays)}d and unanswerable (WI-2140594)`
+                : `auto-resolved: author no longer exists — escalation open ${Math.round(s.ageDays)}d and unanswerable (EI-19411323991062966)`,
             })),
           )
         ).resolved;

@@ -11,8 +11,10 @@ import { describe, expect, it } from 'vitest';
 import {
   isMachineAuthoredSender,
   isMachineEmitterForStamping,
+  isMachineEscalationEmitter,
   isSystemEmissionUnderAgentIdentity,
   MACHINE_EMITTER_STAMP_PATTERN,
+  MACHINE_ESCALATION_EMITTER_PATTERN,
   MACHINE_SENDER_PATTERN,
 } from './machine-authored';
 
@@ -96,6 +98,80 @@ describe('WI-4537 — isMachineAuthoredSender', () => {
     expect(() => new RegExp(MACHINE_SENDER_PATTERN)).not.toThrow();
     expect(MACHINE_SENDER_PATTERN).not.toMatch(/\(\?[=!:<]/); // no lookaround / non-capturing groups
     expect(MACHINE_SENDER_PATTERN).not.toMatch(/\\[bBdDwWsS]/); // no JS-only character classes
+  });
+});
+
+describe('WI-2140594 — isMachineEscalationEmitter (escalation-only, derived from sender shape)', () => {
+  // The six emitters measured OUTSIDE attention/adapters.ts's hand-maintained
+  // AUTOMATED_INFRA_EMITTERS set on 2026-09-01 (783-row live backlog). Each was
+  // tiered as an owner decision and reaped only by the 7d dead-author sweep.
+  it('classifies every emitter that the hand-maintained named set had drifted behind', () => {
+    for (const s of [
+      'wall-lapse-watchdog',
+      'unservable-critical-watchdog',
+      'goal-owner-report-watchdog',
+      'intent-divergence-detector',
+      'goal-liveness-watchdog',
+      'embed-latency-watchdog',
+    ]) {
+      expect(isMachineEscalationEmitter(s), `${s} must be a machine escalation emitter`).toBe(true);
+    }
+  });
+
+  it('is a SUPERSET of both earlier name-keyed signals (never a replacement)', () => {
+    for (const s of [
+      'system:delivery-ladder',
+      'claim-discipline-watch',
+      'git-sync-ref-announce',
+      'green-checkpoint',
+      'service-health',
+    ]) {
+      expect(isMachineAuthoredSender(s) || isMachineEmitterForStamping(s), `${s} precondition`).toBe(true);
+      expect(isMachineEscalationEmitter(s), `${s} must remain a machine emitter here`).toBe(true);
+    }
+  });
+
+  it('covers every member of the historical named set, so that set is residue rather than the source of truth', () => {
+    for (const s of [
+      'green-checkpoint',
+      'steering-lease',
+      'compaction-watchdog',
+      'inference-gateway',
+      'scout-outcome-refresh-sweep',
+      'rubric-staleness-watchdog',
+      'scorecard-emission-pulse',
+    ]) {
+      expect(isMachineEscalationEmitter(s), `${s} must be covered by the derived shape`).toBe(true);
+    }
+  });
+
+  it('NEVER matches an agent session, the owner GUI, or a human — the agent-session test wins over any suffix', () => {
+    for (const s of [
+      'pc-admin-coord-ui',
+      'human',
+      'su-1a0a0a1a-4c71-4ce5-abcf-58897784edf1',
+      's-lease', // an agent-session prefix beats the -lease suffix
+      'role-fleet-watchdog', // an AGENT role name ending in -watchdog is still a correspondent
+      'cup-alarm',
+      '01d3ae25-c833-4270-bd07-132fa669da8a',
+      'watchdog', // bare word, no `-` separator
+      'gateways', // trailing s — the anchored suffix must not slip
+      'my-pulsed', // does not END in -pulse
+    ]) {
+      expect(isMachineEscalationEmitter(s), `${s} must NOT match`).toBe(false);
+    }
+  });
+
+  it('handles empty / absent senders without throwing, and is case/whitespace-insensitive', () => {
+    expect(isMachineEscalationEmitter('')).toBe(false);
+    expect(isMachineEscalationEmitter(null)).toBe(false);
+    expect(isMachineEscalationEmitter(undefined)).toBe(false);
+    expect(isMachineEscalationEmitter('  Wall-Lapse-Watchdog  ')).toBe(true);
+  });
+
+  it('exposes a pattern valid in BOTH JS and POSIX ERE, like its siblings', () => {
+    expect(() => new RegExp(MACHINE_ESCALATION_EMITTER_PATTERN)).not.toThrow();
+    expect(MACHINE_ESCALATION_EMITTER_PATTERN).not.toMatch(/\\[dswDSW]|\(\?/);
   });
 });
 
