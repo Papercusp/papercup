@@ -48,7 +48,12 @@ import {
   type GoalPortfolioVerdict,
 } from './activity';
 import { resolveGoalHolders, type GoalHolderLiveness, type GoalHolders } from './holder';
-import { PORTFOLIO_ACT_TOOLS, portfolioActFacet, type PortfolioActFacet } from './portfolio-acts';
+import {
+  PORTFOLIO_ACT_TOOLS,
+  PORTFOLIO_CONDITIONAL_ACTS,
+  portfolioActFacet,
+  type PortfolioActFacet,
+} from './portfolio-acts';
 
 /** The rate window. "Acts per hour" is the unit P-002 asks for, so an hour it is. */
 export const GOAL_PORTFOLIO_WINDOW_MS = 60 * 60_000;
@@ -155,6 +160,36 @@ function minutes(ms: number | null): number | null {
   return ms == null ? null : Math.max(0, Math.round(ms / 60_000));
 }
 
+/**
+ * The ledger predicate for "this row is a portfolio act" — `isPortfolioAct`
+ * stated once for SQL, derived from the same two constants so the TS and the
+ * scan cannot disagree about membership.
+ *
+ * By NAME for the canonical set. By ARGUMENTS for a conditional act: the row's
+ * `args_json` carries the act's key at the top level, or — batch form — any
+ * element of its `batchKey` array does. `?` is jsonb key-existence, so a
+ * deliberate `null` (a release) still counts, matching `argsCarryConditionalKey`.
+ * The `jsonb_typeof` guard keeps `jsonb_array_elements` off a scalar, which would
+ * otherwise raise and turn the whole read into `ledger-unreadable`.
+ *
+ * EXPORTED for the pin in `portfolio-acts.test.ts`, which renders it through a
+ * recording tag and asserts both legs are present with the right parameters.
+ */
+export function portfolioActLedgerPredicate(sql: Sql) {
+  const byName = sql`ti.tool_name = ANY(${PORTFOLIO_ACT_TOOLS as string[]}::text[])`;
+  const byArgs = PORTFOLIO_CONDITIONAL_ACTS.map((act) =>
+    act.batchKey == null
+      ? sql`(ti.tool_name = ${act.tool} AND ti.args_json ? ${act.argKey}::text)`
+      : sql`(ti.tool_name = ${act.tool} AND (
+            ti.args_json ? ${act.argKey}::text
+            OR (jsonb_typeof(ti.args_json -> ${act.batchKey}::text) = 'array'
+                AND EXISTS (SELECT 1 FROM jsonb_array_elements(ti.args_json -> ${act.batchKey}::text) el
+                             WHERE el ? ${act.argKey}::text))
+          ))`,
+  );
+  return [byName, ...byArgs].reduce((acc, p) => sql`(${acc} OR ${p})`);
+}
+
 function build(
   base: Pick<GoalPortfolioThroughputRead, 'goalId' | 'workspaceId'>,
   fields: Partial<GoalPortfolioThroughputRead>,
@@ -253,26 +288,34 @@ export async function readGoalPortfolioThroughput(
   let actsInWindow = 0;
   let lastActAtMs: number | null = null;
   let lastActTool: string | null = null;
+  let lastActArgs: unknown = null;
   try {
     const rows = await sql<
-      { acts_in_window: string; last_act_ms: string | null; last_act_tool: string | null }[]
+      {
+        acts_in_window: string;
+        last_act_ms: string | null;
+        last_act_tool: string | null;
+        last_act_args: unknown;
+      }[]
     >`
       SELECT count(*) FILTER (
                WHERE ti.invoked_at >= to_timestamp(${windowStartMs}::bigint / 1000.0)
              ) AS acts_in_window,
              (extract(epoch FROM max(ti.invoked_at)) * 1000)::bigint AS last_act_ms,
-             (array_agg(ti.tool_name ORDER BY ti.invoked_at DESC))[1] AS last_act_tool
+             (array_agg(ti.tool_name ORDER BY ti.invoked_at DESC))[1] AS last_act_tool,
+             (array_agg(ti.args_json ORDER BY ti.invoked_at DESC))[1] AS last_act_args
         FROM harness_shared.tool_invocations ti
        WHERE ti.workspace_id = ${opts.workspaceId}
          AND ti.coord_owner_id = ANY(${ownerIds}::text[])
          AND ti.status = 'ok'
-         AND ti.tool_name = ANY(${PORTFOLIO_ACT_TOOLS as string[]}::text[])
+         AND ${portfolioActLedgerPredicate(sql)}
          AND ti.invoked_at >= to_timestamp(${lookbackStartMs}::bigint / 1000.0)
     `;
     const row = rows[0];
     actsInWindow = Number(row?.acts_in_window ?? 0);
     lastActAtMs = row?.last_act_ms == null ? null : Number(row.last_act_ms);
     lastActTool = row?.last_act_tool ?? null;
+    lastActArgs = row?.last_act_args ?? null;
   } catch (err) {
     const verdict = resolveGoalPortfolioIdle({
       liveness: holders.liveness,
@@ -316,7 +359,9 @@ export async function readGoalPortfolioThroughput(
     actsPerHour: Math.round((actsInWindow / (windowMinutes / 60)) * 100) / 100,
     lastActAtMs,
     lastActTool,
-    lastActFacet: portfolioActFacet(lastActTool),
+    // The args ride along so a conditional act (`work_items:update { goal }`)
+    // resolves to its facet; by name alone it would read as a non-act.
+    lastActFacet: portfolioActFacet(lastActTool, lastActArgs),
     idleMinutes: minutes(idleMs),
     idleAfterMinutes: Math.round(idleAfterMs / 60_000),
     measuredOwnerIds: ownerIds.length,

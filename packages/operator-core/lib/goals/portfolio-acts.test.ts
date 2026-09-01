@@ -24,15 +24,24 @@ import { fileURLToPath } from 'node:url';
 import { validateCellSpec } from '../cell-registry';
 import { GOAL_PORTFOLIO_THROUGHPUT_CELL } from '../cell-registrations';
 import { GOAL_KICKOFF_GUARDED_TOOLS } from './kickoff-evidence';
+import type { Sql } from 'postgres';
+
+import type { GoalHolders } from './holder';
 import {
   PORTFOLIO_ACT_TOOLS,
+  PORTFOLIO_CONDITIONAL_ACTS,
   PORTFOLIO_CREATE_TOOLS,
   PORTFOLIO_PLACE_TOOLS,
   PORTFOLIO_STEER_TOOLS,
+  argsCarryConditionalKey,
   isPortfolioAct,
   portfolioActFacet,
 } from './portfolio-acts';
-import { portfolioAssessmentFor } from './portfolio-throughput';
+import {
+  portfolioActLedgerPredicate,
+  portfolioAssessmentFor,
+  readGoalPortfolioThroughput,
+} from './portfolio-throughput';
 
 // lib/goals → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -81,16 +90,39 @@ function walk(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
-/** Every tool name declared anywhere under TOOL_ROOTS. Computed once. */
-const DECLARED: Set<string> = (() => {
-  const all = new Set<string>();
+/**
+ * Every tool name declared anywhere under TOOL_ROOTS → the source text that
+ * declares it. Computed once. The SOURCE is kept (not just the name) so a
+ * conditional act's argument key can be pinned against the tool's real schema
+ * rather than against a name somebody remembered.
+ */
+const DECLARED_SOURCE: Map<string, string> = (() => {
+  const all = new Map<string, string>();
   for (const root of TOOL_ROOTS) {
     for (const file of walk(join(ROOT, root))) {
-      for (const name of declaredToolNames(readFileSync(file, 'utf8'))) all.add(name);
+      const source = readFileSync(file, 'utf8');
+      for (const name of declaredToolNames(source)) all.set(name, source);
     }
   }
   return all;
 })();
+
+const DECLARED: Set<string> = new Set(DECLARED_SOURCE.keys());
+
+/**
+ * PURE: does a tool's source declare `<key>` as a zod input field?
+ *
+ * Matches `<key>: z` at a property position — the shape every `defineTool`
+ * input schema in this tree uses. Deliberately NOT a bare-word search: a key
+ * mentioned only in a `describe(...)` string or a doc comment is not a field the
+ * tool accepts, and counting it would let the pin pass for an argument the ledger
+ * can never carry.
+ */
+export function declaresZodField(source: string, key: string): boolean {
+  // Comments are prose: a `key: z` quoted in a docblock is not a field.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return new RegExp(`(^|[\\s{,])${key}:\\s*z\\b`, 'm').test(code);
+}
 
 describe('declaredToolNames — fixture controls (the detector must be able to FAIL)', () => {
   it('finds a real declaration', () => {
@@ -116,6 +148,24 @@ describe('declaredToolNames — fixture controls (the detector must be able to F
 
   it('does not match a bare identifier with no colon', () => {
     expect(declaredToolNames(`name: 'handler',`).size).toBe(0);
+  });
+});
+
+describe('declaresZodField — fixture controls', () => {
+  it('finds a real zod input field, at any indentation and as a first property', () => {
+    expect(declaresZodField(`const schema = z.object({\n  goal: z\n    .string()\n});`, 'goal')).toBe(
+      true,
+    );
+    expect(declaresZodField(`z.object({goal: z.string()})`, 'goal')).toBe(true);
+    expect(declaresZodField(`z.object({ id: z.string(), goal: z.string() })`, 'goal')).toBe(true);
+  });
+
+  it('does NOT count a key that is only mentioned in prose, a describe string, or as a suffix', () => {
+    expect(declaresZodField(`.describe('goal id to adopt this work-item into')`, 'goal')).toBe(false);
+    expect(declaresZodField(`// pass goal: z to adopt`, 'goal')).toBe(false);
+    expect(declaresZodField(`/**\n * goal: z.string() is what the caller passes\n */\nid: z.string()`, 'goal')).toBe(false);
+    expect(declaresZodField(`subgoal: z.string()`, 'goal')).toBe(false);
+    expect(declaresZodField(`goalId: z.string()`, 'goal')).toBe(false);
   });
 });
 
@@ -237,6 +287,244 @@ describe('PORTFOLIO_ACT_TOOLS', () => {
       missing,
       'these doors are gated before a goal holder may place work, but are not counted as placing it. A kickoff-guarded door IS a portfolio act; add each to the matching facet in portfolio-acts.ts.',
     ).toEqual([]);
+  });
+});
+
+describe('PORTFOLIO_CONDITIONAL_ACTS — the name says nothing, the arguments decide', () => {
+  /**
+   * The motivating entry (WI-2140701): goal placement of EXISTING backlog goes
+   * through `work_items:update { goal }`, and a steward whose whole contribution
+   * was adopting items into its goal graded as measurably idle because the set
+   * above had no verb for it. Pinned as a positive control so the list can never
+   * silently lose it.
+   */
+  it('names goal placement via work_items:update { goal } as a PLACE act', () => {
+    expect(PORTFOLIO_CONDITIONAL_ACTS).toContainEqual({
+      tool: 'work_items:update',
+      argKey: 'goal',
+      batchKey: 'items',
+      facet: 'place',
+    });
+  });
+
+  it('names only tools that actually exist', () => {
+    const phantom = PORTFOLIO_CONDITIONAL_ACTS.map((a) => a.tool).filter((t) => !DECLARED.has(t));
+    expect(phantom).toEqual([]);
+  });
+
+  /**
+   * The argument-level analogue of the phantom-verb pin. A key the tool's input
+   * schema does not declare can never reach `tool_invocations.args_json`, so the
+   * SQL leg would match nothing and the TS leg would only ever see it in a test —
+   * the `goals:amend` defect one level down.
+   */
+  it('names only argument keys the tool really declares in its zod input schema', () => {
+    for (const act of PORTFOLIO_CONDITIONAL_ACTS) {
+      const source = DECLARED_SOURCE.get(act.tool);
+      expect(source, `${act.tool} has no declaring source under ${TOOL_ROOTS.join(', ')}`).toBeDefined();
+      expect(
+        declaresZodField(source!, act.argKey),
+        `${act.tool} does not declare \`${act.argKey}: z…\` — a key the schema refuses never reaches args_json`,
+      ).toBe(true);
+      if (act.batchKey != null) {
+        expect(
+          declaresZodField(source!, act.batchKey),
+          `${act.tool} does not declare a \`${act.batchKey}: z…\` batch form`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  /**
+   * The false-BUSY guard. A conditional tool in the unconditional set would count
+   * every retitle as placement — the direction that lets a reading-and-reporting
+   * steward pass — so the two sets must be disjoint.
+   */
+  it('is DISJOINT from PORTFOLIO_ACT_TOOLS — a conditional tool never counts by name', () => {
+    const leaked = PORTFOLIO_CONDITIONAL_ACTS.map((a) => a.tool).filter((t) =>
+      PORTFOLIO_ACT_TOOLS.includes(t),
+    );
+    expect(leaked).toEqual([]);
+    for (const act of PORTFOLIO_CONDITIONAL_ACTS) {
+      expect(isPortfolioAct(act.tool)).toBe(false);
+      expect(portfolioActFacet(act.tool)).toBeNull();
+    }
+  });
+
+  it('argsCarryConditionalKey: presence at the top level or in any batch element, never truthiness', () => {
+    const act = { argKey: 'goal', batchKey: 'items' };
+    expect(argsCarryConditionalKey({ id: 'WI-1', goal: 'work-on-everything-070565' }, act)).toBe(true);
+    // A clear is a release, and releasing changes who is on the work.
+    expect(argsCarryConditionalKey({ id: 'WI-1', goal: null }, act)).toBe(true);
+    expect(argsCarryConditionalKey({ items: [{ id: 'WI-1', title: 't' }, { id: 'WI-2', goal: 'g' }] }, act)).toBe(
+      true,
+    );
+    expect(argsCarryConditionalKey({ id: 'WI-1', title: 'retitled' }, act)).toBe(false);
+    expect(argsCarryConditionalKey({ items: [{ id: 'WI-1', severity: 'major' }] }, act)).toBe(false);
+    // Malformed shapes are non-acts, not errors.
+    expect(argsCarryConditionalKey({ items: 'WI-1' }, act)).toBe(false);
+    expect(argsCarryConditionalKey({ items: [null, 'x', 3] }, act)).toBe(false);
+    expect(argsCarryConditionalKey(null, act)).toBe(false);
+    expect(argsCarryConditionalKey(undefined, act)).toBe(false);
+    expect(argsCarryConditionalKey('goal', act)).toBe(false);
+    expect(argsCarryConditionalKey(['goal'], act)).toBe(false);
+    // A tool with no batch form ignores an `items` array entirely.
+    expect(argsCarryConditionalKey({ items: [{ goal: 'g' }] }, { argKey: 'goal', batchKey: null })).toBe(
+      false,
+    );
+  });
+
+  it('isPortfolioAct / portfolioActFacet resolve a conditional act from its arguments', () => {
+    expect(isPortfolioAct('work_items:update', { id: 'WI-1', goal: 'g' })).toBe(true);
+    expect(portfolioActFacet('work_items:update', { id: 'WI-1', goal: 'g' })).toBe('place');
+    expect(isPortfolioAct('work_items:update', { items: [{ id: 'WI-1', goal: null }] })).toBe(true);
+    expect(portfolioActFacet('work_items:update', { items: [{ id: 'WI-1', goal: null }] })).toBe('place');
+    // The same tool, retitling: a measured non-act.
+    expect(isPortfolioAct('work_items:update', { id: 'WI-1', title: 'x' })).toBe(false);
+    expect(portfolioActFacet('work_items:update', { id: 'WI-1', title: 'x' })).toBeNull();
+    // Arguments never PROMOTE a non-act name.
+    expect(isPortfolioAct('work_items:get', { id: 'WI-1', goal: 'g' })).toBe(false);
+    // ...and never DEMOTE an unconditional act.
+    expect(isPortfolioAct('goals:start', { anything: 1 })).toBe(true);
+    expect(portfolioActFacet('goals:start', { anything: 1 })).toBe('place');
+  });
+});
+
+/**
+ * A recording tag with postgres.js's composition semantics: a nested fragment
+ * splices its text and parameters in place, so the rendered query is what the
+ * driver would send. `then` makes the top-level query awaitable, which is how
+ * `readGoalPortfolioThroughput` consumes it.
+ */
+interface RenderedQuery {
+  text: string;
+  params: unknown[];
+}
+const FRAGMENT = Symbol('fragment');
+interface Fragment {
+  [FRAGMENT]: true;
+  strings: TemplateStringsArray;
+  values: unknown[];
+}
+function isFragment(v: unknown): v is Fragment {
+  return typeof v === 'object' && v !== null && FRAGMENT in v;
+}
+function render(frag: Fragment, out: RenderedQuery): void {
+  frag.strings.forEach((s, i) => {
+    out.text += s;
+    if (i >= frag.values.length) return;
+    const v = frag.values[i];
+    if (isFragment(v)) render(v, out);
+    else {
+      out.params.push(v);
+      out.text += `$${out.params.length}`;
+    }
+  });
+}
+function recordingSql(onQuery: (q: RenderedQuery) => unknown[]): { sql: Sql; queries: RenderedQuery[] } {
+  const queries: RenderedQuery[] = [];
+  const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const frag: Fragment & { then: (res: (rows: unknown[]) => void, rej: (e: unknown) => void) => void } = {
+      [FRAGMENT]: true,
+      strings,
+      values,
+      then(resolve, reject) {
+        try {
+          const q: RenderedQuery = { text: '', params: [] };
+          render(frag, q);
+          queries.push(q);
+          resolve(onQuery(q));
+        } catch (e) {
+          reject(e);
+        }
+      },
+    };
+    return frag;
+  };
+  return { sql: tag as unknown as Sql, queries };
+}
+
+const HELD_HOLDERS = {
+  goalId: 'goal-1',
+  workspaceId: 'ws',
+  holders: [{ ownerId: 'su-holder', setAtMs: 1_000 }],
+  liveness: 'held',
+} as unknown as GoalHolders;
+
+describe('portfolioActLedgerPredicate — the SQL leg is derived from the same constants', () => {
+  it('renders both legs: by name over PORTFOLIO_ACT_TOOLS, by args for every conditional act', () => {
+    const { sql } = recordingSql(() => []);
+    const q: RenderedQuery = { text: '', params: [] };
+    render(portfolioActLedgerPredicate(sql) as unknown as Fragment, q);
+
+    expect(q.text).toContain('ti.tool_name = ANY(');
+    expect(q.params).toContainEqual([...PORTFOLIO_ACT_TOOLS]);
+
+    for (const act of PORTFOLIO_CONDITIONAL_ACTS) {
+      expect(q.params).toContain(act.tool);
+      expect(q.params).toContain(act.argKey);
+      if (act.batchKey != null) expect(q.params).toContain(act.batchKey);
+    }
+    // jsonb key-EXISTENCE, so a deliberate null (a release) still matches.
+    expect(q.text).toMatch(/ti\.args_json \? \$\d+::text/);
+    // The batch leg guards the array type before unnesting it.
+    expect(q.text).toMatch(/jsonb_typeof\(ti\.args_json -> \$\d+::text\) = 'array'/);
+    expect(q.text).toMatch(/jsonb_array_elements\(ti\.args_json -> \$\d+::text\) el/);
+    expect(q.text).toMatch(/WHERE el \? \$\d+::text/);
+    // The legs are OR-ed: a name match OR an args match — never AND.
+    const byArgsLegs = PORTFOLIO_CONDITIONAL_ACTS.length;
+    expect((q.text.match(/ OR /g) ?? []).length).toBeGreaterThanOrEqual(byArgsLegs);
+  });
+
+  it('readGoalPortfolioThroughput scans the ledger through it and reads the last act args for the facet', async () => {
+    const { sql, queries } = recordingSql(() => [
+      {
+        acts_in_window: '2',
+        last_act_ms: '90000',
+        last_act_tool: 'work_items:update',
+        last_act_args: { id: 'WI-1', goal: 'goal-1' },
+      },
+    ]);
+    const read = await readGoalPortfolioThroughput(sql, {
+      workspaceId: 'ws',
+      goalId: 'goal-1',
+      nowMs: 100_000,
+      holders: HELD_HOLDERS,
+    });
+
+    expect(queries).toHaveLength(1);
+    const q = queries[0]!;
+    expect(q.text).toContain('FROM harness_shared.tool_invocations ti');
+    expect(q.text).toContain("ti.status = 'ok'");
+    expect(q.text).toContain('AS last_act_args');
+    expect(q.params).toContainEqual([...PORTFOLIO_ACT_TOOLS]);
+    expect(q.params).toContain('work_items:update');
+    expect(q.params).toContain('goal');
+    expect(q.params).toContain('items');
+
+    expect(read.actsInWindow).toBe(2);
+    expect(read.lastActTool).toBe('work_items:update');
+    // By name alone this would be null; the args resolve it.
+    expect(read.lastActFacet).toBe('place');
+    expect(read.reason).toBe('placing');
+  });
+
+  it('a last act whose args do NOT carry the key stays a facet-less row (the SQL should never return one)', async () => {
+    const { sql } = recordingSql(() => [
+      {
+        acts_in_window: '1',
+        last_act_ms: '90000',
+        last_act_tool: 'work_items:update',
+        last_act_args: { id: 'WI-1', title: 'retitled' },
+      },
+    ]);
+    const read = await readGoalPortfolioThroughput(sql, {
+      workspaceId: 'ws',
+      goalId: 'goal-1',
+      nowMs: 100_000,
+      holders: HELD_HOLDERS,
+    });
+    expect(read.lastActFacet).toBeNull();
   });
 });
 

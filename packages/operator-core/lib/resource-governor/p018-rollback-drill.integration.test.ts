@@ -14,15 +14,24 @@
  * the pre-governor path in which a start is simply allowed. The point of the
  * drill is that swapping to it does NOT destroy the durable substrate, and
  * swapping back resumes from it.
+ *
+ * The durable substrate is the dedicated admission ledger
+ * (`harness_shared.resource_governor_admissions`, P-006 of
+ * `resource-governor-admission-ledger-2026-09-01`): the drill runs on a fixture
+ * with NO work-item allocator, so a rollback that regressed to writing
+ * work-items would throw rather than pass.
  */
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+import {
+  allSessionsLiveResolver,
+  applyAdmissionLedgerFixture,
+  truncateAdmissionLedgerFixture,
+  workItemRowCount,
+} from '../../test/_admission-ledger-fixture';
 import { AdmitImmediatelyDriver, Governor } from './admission';
-import { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver } from './queue';
+import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
+import { WorkItemAdmissionQueueDriver } from './queue';
 import {
   CaplessAdaptiveController,
   CAPLESS_CONTROLLER_STATE_SCHEMA_VERSION,
@@ -36,22 +45,16 @@ import {
   GOVERNOR_RESOURCES_CELL,
 } from '../cell-registrations';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const QUEUE_MIGRATION = readFileSync(
-  resolve(__dirname, '../../../../libs/papercusp/libs/db/sql/986-resource-governor-work-item-queue-identity.sql'),
-  'utf8',
-);
-
 const START = 1_700_000_000_000;
 const NAMESPACE = 'p018-rollback-drill';
+const WORKSPACE_ID = 'ws-p018';
 const LOAD = 40;
 
 let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('p018-rollback-drill');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL).simple();
-  await db.sql.unsafe(QUEUE_MIGRATION).simple();
+  await applyAdmissionLedgerFixture(db.sql);
 }, 120_000);
 
 afterAll(async () => {
@@ -59,14 +62,17 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items`;
-  await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
+  await truncateAdmissionLedgerFixture(db.sql);
 });
 
 function governedStack(label: string) {
   let requestNo = 0;
   let leaseNo = 0;
-  const store = new PgWorkItemAdmissionQueueStore({ sql: db.sql, workspaceId: 'ws-p018' });
+  const store = new PgAdmissionLedgerQueueStore({
+    sql: db.sql,
+    workspaceId: WORKSPACE_ID,
+    resolveSessionStatesFn: allSessionsLiveResolver,
+  });
   const driver = new WorkItemAdmissionQueueDriver(store, {
     namespace: NAMESPACE,
     now: () => START,
@@ -80,14 +86,13 @@ function governedStack(label: string) {
 }
 
 async function queueRows(): Promise<{ receiptId: string; state: string; idempotencyKey: string }[]> {
-  const rows = await db.sql<{ feature_id: string; state: string; key: string }[]>`
-    SELECT feature_id,
-           payload->'resource_governor'->>'state' AS state,
-           payload->'resource_governor'->>'idempotencyKey' AS key
-      FROM harness_shared.work_items
-     WHERE payload->'resource_governor'->>'namespace' = ${NAMESPACE}
-     ORDER BY feature_id`;
-  return rows.map((row) => ({ receiptId: row.feature_id, state: row.state, idempotencyKey: row.key }));
+  const rows = await db.sql<{ receipt_id: string; state: string; idempotency_key: string }[]>`
+    SELECT receipt_id, state, idempotency_key
+      FROM harness_shared.resource_governor_admissions
+     WHERE workspace_id = ${WORKSPACE_ID}
+       AND namespace = ${NAMESPACE}
+     ORDER BY receipt_id`;
+  return rows.map((row) => ({ receiptId: row.receipt_id, state: row.state, idempotencyKey: row.idempotency_key }));
 }
 
 async function enqueueBaseline(label: string): Promise<string[]> {
@@ -144,6 +149,10 @@ describe('P-018 rollback drill', () => {
     const after = await enqueueBaseline('post-rollback-replay');
     expect(after).toEqual(before);
     expect(await queueRows()).toHaveLength(LOAD);
+    // Clause 1, ledger form: every receipt lives in the dedicated ledger and
+    // none of them — before, during, or after the rollback — became a work-item.
+    expect(before.every((receiptId) => receiptId.startsWith('RG-'))).toBe(true);
+    expect(await workItemRowCount(db.sql, WORKSPACE_ID)).toBe(0);
   }, 120_000);
 
   it('preserves controller state history across the rollback and restores it without a ceiling', () => {

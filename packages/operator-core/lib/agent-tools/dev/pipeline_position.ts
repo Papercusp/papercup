@@ -106,30 +106,78 @@ function compactPipelineOwnership(
   );
 }
 
+/**
+ * The gate fields this door projects, as a NAMED EXPORT so the pin test below can
+ * compare it against the resolver's own struct (WI-2140908).
+ *
+ * ⚠ This list is code-describing metadata — a second copy of a truth
+ * `GitPipelinePosition['gate']` already owns — and it has now drifted TWICE:
+ * EI-20687018966071866 (the sibling `gate.greenCheckpoint.candidate` cell) and
+ * WI-2140908 (`candidateFailures`). Both presented identically and misleadingly: the
+ * field is absent from the projection, so `readCell` finds the declared path missing
+ * and reports "the cell's declared path and its resolver's shape have drifted apart"
+ * — blaming the RESOLVER, which is correct, for a defect in THIS list.
+ *
+ * `gate-projection-pin.test.ts` now fails when a gate field is neither projected here
+ * nor listed in `PIPELINE_GATE_FIELDS_NOT_PROJECTED`, so the next added field forces
+ * an explicit decision instead of vanishing silently.
+ */
+export const PIPELINE_GATE_PROJECTED_FIELDS = [
+  'stalled',
+  'consecutiveReds',
+  'lastGreenAtMs',
+  'fireStale',
+  'fireStaleReason',
+  'pause',
+  'verdictStale',
+  'verdictStaleReason',
+  'verdictStaleReasonCode',
+  'candidateAgeMs',
+  'commitsBehindTip',
+  'observedCandidate',
+  'inconclusive',
+  'repairQueue',
+  // WI-2140908. The frozen-candidate failure set. `pickPipelineFields` emits a field
+  // whose value is `null` (it skips only `undefined`), so the no-repair-queue case
+  // reaches the caller as an explicit `null` rather than a missing key.
+  'candidateFailures',
+] as const;
+
+/** Projected by their own bounded helpers below, not by the flat pick. */
+export const PIPELINE_GATE_SEPARATELY_PROJECTED = ['ownership', 'checkpointRunInFlight'] as const;
+
+/**
+ * Gate fields DELIBERATELY not projected, each with the reason. Being on this list is a
+ * decision; being on neither list is the drift the pin test catches.
+ *
+ * The budget is real, not notional — `PIPELINE_POSITION_RESPONSE_BUDGET_CHARS` is 5000
+ * and this door has already overflowed twice in the field (EI-20245527109472763,
+ * EI-20241802258714011), which is why the remedy here is "classify every field",
+ * not "project them all".
+ */
+export const PIPELINE_GATE_FIELDS_NOT_PROJECTED = [
+  // Prose advisory, unbounded in practice — the same overflow shape as `ownership.thread`,
+  // which is excluded just above for exactly this reason.
+  'ownerBrief',
+  // The full failing-test list is the largest single field on the struct and the one most
+  // likely to blow the door; `repairQueue` + `candidateFailures` carry the counts a caller
+  // needs. ⚠ `failingTestsMeasured` is omitted WITH it deliberately: emitting the
+  // "was this measured" qualifier without the list it qualifies invites reading an absent
+  // list as "nothing is failing", which is the vacuous-green error this door must not create.
+  'failingTests',
+  'failingTestsMeasured',
+  // Checkpoint qualification state — a nested struct whose verdict is already implied by
+  // `verdictStale` / `inconclusive` for this door's "where is my change" question.
+  'qualification',
+  // Raw observation timestamp; `candidateAgeMs` + `verdictStale` express the same staleness
+  // in the terms a caller acts on.
+  'verdictObservedAtMs',
+] as const;
+
 function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const source = value as JsonRecord;
-  const gate =
-    pickPipelineFields(
-      source,
-      [
-        'stalled',
-        'consecutiveReds',
-        'lastGreenAtMs',
-        'fireStale',
-        'fireStaleReason',
-        'pause',
-        'verdictStale',
-        'verdictStaleReason',
-        'verdictStaleReasonCode',
-        'candidateAgeMs',
-        'commitsBehindTip',
-        'observedCandidate',
-        'inconclusive',
-        'repairQueue',
-      ],
-      opts,
-    ) ?? {};
+  const gate = pickPipelineFields(source, PIPELINE_GATE_PROJECTED_FIELDS, opts) ?? {};
   const ownership = compactPipelineOwnership(source.ownership, opts);
   if (ownership) gate.ownership = ownership;
   const inFlight = pickPipelineFields(

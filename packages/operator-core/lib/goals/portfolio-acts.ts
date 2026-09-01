@@ -158,6 +158,58 @@ export const PORTFOLIO_ACT_TOOLS: readonly string[] = Object.freeze(
 /** The facet each act belongs to — for evidence that says WHICH kind of act landed. */
 export type PortfolioActFacet = 'create' | 'place' | 'steer';
 
+/**
+ * ── CONDITIONAL ACTS — the name says nothing, the ARGUMENTS decide ──────────
+ *
+ * Every verb above is an act by NAME: there is no way to invoke `goals:start`
+ * without starting a goal. A conditional act is a tool whose bare name is NOT a
+ * portfolio act — most of its calls change how a thing is described (rule 2) —
+ * but whose arguments can make ONE invocation change WHO IS ON the work.
+ *
+ * `work_items:update` is the case (WI-2140701, found grading card 4). Nearly all
+ * of its calls retitle, re-rate or re-kind an item. But `work_items:update
+ * { goal }` ADOPTS an already-filed item into a goal's drain lane — "work that
+ * existed is now somebody's", the PLACE facet verbatim — and it is the ONE door a
+ * goal steward has for placing existing backlog under its goal without re-filing
+ * it through `work_items:create`. Measured 2026-09-01 over 7 days of the live
+ * ledger: 323 `work_items:update` calls, of which 35 carried a goal key (29
+ * top-level, 6 inside a batch `items[]`), from 10 distinct writers. A steward
+ * whose whole contribution was adopting the backlog into its goal graded as
+ * measurably idle — the false-IDLE direction the docblock above names as the one
+ * that hurts.
+ *
+ * The rule: an invocation of `tool` is an act iff its args carry `argKey` at the
+ * top level, or (batch form) any element of the `batchKey` array carries it. Key
+ * PRESENCE is the test, not the value: `goal: null` RELEASES the item from its
+ * goal, and releasing work changes who is on it exactly as adopting does (rule 3
+ * — a judgement to stop is management, not its absence).
+ *
+ * ⚠ Deliberately NOT spelled into PORTFOLIO_ACT_TOOLS. Putting the bare name there
+ * would count every retitle as placement — the false-BUSY direction, which is the
+ * one that lets a reading-and-reporting steward pass. The test pins that no
+ * conditional tool also appears in the unconditional set.
+ *
+ * The ledger stores every call's arguments as `tool_invocations.args_json`
+ * (verified populated on 323/323 rows in the sample above), so the same rule is
+ * expressible in SQL; `portfolio-throughput.ts` derives its predicate from THIS
+ * list so a conditional act added here reaches the ledger scan without a second
+ * hand-copy.
+ */
+export interface PortfolioConditionalAct {
+  /** Canonical tool name, exactly as the ledger stores it. */
+  readonly tool: string;
+  /** Top-level argument whose PRESENCE (any value, null included) makes the call an act. */
+  readonly argKey: string;
+  /** Batch-form array argument whose elements may carry `argKey` instead; null when the tool has no batch form. */
+  readonly batchKey: string | null;
+  /** The facet such an invocation lands in. */
+  readonly facet: PortfolioActFacet;
+}
+
+export const PORTFOLIO_CONDITIONAL_ACTS: readonly PortfolioConditionalAct[] = Object.freeze([
+  { tool: 'work_items:update', argKey: 'goal', batchKey: 'items', facet: 'place' },
+]);
+
 const FACET_BY_TOOL: ReadonlyMap<string, PortfolioActFacet> = new Map<string, PortfolioActFacet>([
   ...PORTFOLIO_CREATE_TOOLS.map((t) => [t, 'create'] as const),
   ...PORTFOLIO_PLACE_TOOLS.map((t) => [t, 'place'] as const),
@@ -166,17 +218,63 @@ const FACET_BY_TOOL: ReadonlyMap<string, PortfolioActFacet> = new Map<string, Po
 
 const ACTS = new Set<string>(PORTFOLIO_ACT_TOOLS);
 
-/** Is this tool name a portfolio act? Exact match — the ledger stores canonical names. */
-export function isPortfolioAct(toolName: string | null | undefined): boolean {
-  return toolName != null && ACTS.has(toolName);
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * PURE: do these arguments satisfy a conditional act's key rule?
+ *
+ * Mirrors the SQL form in `portfolio-throughput.ts` (`args_json ? key`, else any
+ * element of `args_json -> batchKey` carries it). Presence, not truthiness — a
+ * `null` value is a deliberate clear and still a placement decision.
+ */
+export function argsCarryConditionalKey(
+  args: unknown,
+  act: Pick<PortfolioConditionalAct, 'argKey' | 'batchKey'>,
+): boolean {
+  if (!isRecord(args)) return false;
+  if (Object.prototype.hasOwnProperty.call(args, act.argKey)) return true;
+  if (act.batchKey == null) return false;
+  const batch = args[act.batchKey];
+  return (
+    Array.isArray(batch) &&
+    batch.some((el) => isRecord(el) && Object.prototype.hasOwnProperty.call(el, act.argKey))
+  );
+}
+
+function conditionalActFor(toolName: string, args: unknown): PortfolioConditionalAct | null {
+  for (const act of PORTFOLIO_CONDITIONAL_ACTS) {
+    if (act.tool === toolName && argsCarryConditionalKey(args, act)) return act;
+  }
+  return null;
+}
+
+/**
+ * Is this invocation a portfolio act?
+ *
+ * By NAME for the canonical set (exact match — the ledger stores canonical
+ * names); by ARGUMENTS for a conditional act. A conditional tool with no `args`
+ * supplied is a measured non-act: the name alone never counts, so a caller that
+ * only has the name gets the conservative answer rather than a false BUSY.
+ */
+export function isPortfolioAct(toolName: string | null | undefined, args?: unknown): boolean {
+  if (toolName == null) return false;
+  if (ACTS.has(toolName)) return true;
+  return conditionalActFor(toolName, args) != null;
 }
 
 /**
  * Which facet, or null for a non-act.
  *
  * Returns null rather than throwing so a caller folding a ledger row never has
- * to pre-filter: an unrecognised name is a measured non-act, not an error.
+ * to pre-filter: an unrecognised name is a measured non-act, not an error. Pass
+ * the row's `args_json` so a conditional act resolves to its facet.
  */
-export function portfolioActFacet(toolName: string | null | undefined): PortfolioActFacet | null {
-  return toolName == null ? null : (FACET_BY_TOOL.get(toolName) ?? null);
+export function portfolioActFacet(
+  toolName: string | null | undefined,
+  args?: unknown,
+): PortfolioActFacet | null {
+  if (toolName == null) return null;
+  return FACET_BY_TOOL.get(toolName) ?? conditionalActFor(toolName, args)?.facet ?? null;
 }

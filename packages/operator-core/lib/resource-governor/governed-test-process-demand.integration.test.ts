@@ -24,34 +24,37 @@
  * governor and a REAL Postgres receipt. Only the database CONNECTION is
  * substituted (a throwaway test database instead of the ambient runtime), which
  * is the single seam an integration test must own.
+ *
+ * The durable receipt is a row of the dedicated admission ledger
+ * (`harness_shared.resource_governor_admissions`, P-006 of
+ * `resource-governor-admission-ledger-2026-09-01`); the fixture carries no
+ * work-item allocator, so a release that regressed to a work-item projection
+ * would throw here rather than pass.
  */
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+import {
+  allSessionsLiveResolver,
+  applyAdmissionLedgerFixture,
+  truncateAdmissionLedgerFixture,
+  workItemRowCount,
+} from '../../test/_admission-ledger-fixture';
 import type { AdmissionContext, ResourceDemand } from './admission';
 import { Governor } from './admission';
+import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
 import {
   admissionContextFromEnvironment,
   governedExecutionLeaseTtlForTimeout,
   withGovernedExecution,
   type GovernedExecutionDeps,
 } from './execution';
-import { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver } from './queue';
+import { WorkItemAdmissionQueueDriver } from './queue';
 import {
   classifyGovernedTestProcessOutcome,
   createGovernedProcessDemandSampler,
   runGovernedTestProcess,
 } from '../../../../scripts/lib/governed-test-process.mjs';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migration = readFileSync(
-  resolve(__dirname, '../../../../libs/papercusp/libs/db/sql/986-resource-governor-work-item-queue-identity.sql'),
-  'utf8',
-);
 
 const WORKSPACE_ID = 'ws-governed-process';
 
@@ -110,8 +113,7 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('governed-test-process-demand');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL).simple();
-  await db.sql.unsafe(migration).simple();
+  await applyAdmissionLedgerFixture(db.sql);
 }, 60_000);
 
 afterAll(async () => {
@@ -119,13 +121,16 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items`;
-  await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
+  await truncateAdmissionLedgerFixture(db.sql);
 });
 
 function governedDeps(): GovernedExecutionDeps {
   let leaseNo = 0;
-  const store = new PgWorkItemAdmissionQueueStore({ sql: db.sql, workspaceId: WORKSPACE_ID });
+  const store = new PgAdmissionLedgerQueueStore({
+    sql: db.sql,
+    workspaceId: WORKSPACE_ID,
+    resolveSessionStatesFn: allSessionsLiveResolver,
+  });
   const driver = new WorkItemAdmissionQueueDriver(store, {
     namespace: 'integration-test-process',
     leaseIdFactory: () => `governed-lease-${++leaseNo}`,
@@ -257,9 +262,10 @@ async function runGovernedChild(options: {
 
 async function receiptRecord(receiptId: string): Promise<Record<string, unknown> | undefined> {
   const rows = await db.sql<Array<{ record: Record<string, unknown> }>>`
-    SELECT payload->'resource_governor' AS record
-      FROM harness_shared.work_items
-     WHERE feature_id = ${receiptId}`;
+    SELECT record
+      FROM harness_shared.resource_governor_admissions
+     WHERE workspace_id = ${WORKSPACE_ID}
+       AND receipt_id = ${receiptId}`;
   return rows[0]?.record;
 }
 
@@ -307,6 +313,11 @@ describe('P-007 measured actual-demand release', () => {
     expect((record as { demand?: ResourceDemand }).demand).toMatchObject({
       memoryBytes: PLANNED_MEMORY_BYTES,
     });
+
+    // The receipt is a ledger row, not a work-item: the whole
+    // admit -> lease -> run -> release chain allocated nothing in work_items.
+    expect(run.receiptId).toMatch(/^RG-/);
+    expect(await workItemRowCount(db.sql, WORKSPACE_ID)).toBe(0);
   }, 60_000);
 
   it('discards a measurement from an untrustworthy exit instead of teaching the governor a false demand', async () => {

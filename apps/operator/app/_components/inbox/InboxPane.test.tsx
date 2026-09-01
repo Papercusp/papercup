@@ -277,13 +277,16 @@ function seedAttention(items: AttentionItem[]) {
   };
 }
 
-function renderPane(searchParams = "", opts: { hasMemory?: boolean } = {}) {
+function renderPane(
+  searchParams = "",
+  opts: { hasMemory?: boolean; layout?: "stack" | "split" } = {},
+) {
   const onUrlUpdate = vi.fn();
   // `hasMemory` makes the adapter APPLY its own writes instead of only
   // reporting them, which is what lets a test observe the pane react to its
   // own setSel/setDiscussionRef. Off by default so the existing url-assertion
   // tests keep their fixed starting state.
-  const view = render(<InboxPane />, {
+  const view = render(<InboxPane layout={opts.layout} />, {
     wrapper: ({ children }) => (
       <NuqsTestingAdapter
         searchParams={searchParams}
@@ -301,7 +304,7 @@ function renderPane(searchParams = "", opts: { hasMemory?: boolean } = {}) {
   // Re-render the SAME tree after re-seeding the feed: the pane sees a live
   // `plans.attention` update with no user action, which is the only way to
   // exercise a PASSIVE row removal.
-  const refeed = () => view.rerender(<InboxPane />);
+  const refeed = () => view.rerender(<InboxPane layout={opts.layout} />);
   return { onUrlUpdate, lastQuery, refeed };
 }
 
@@ -569,6 +572,79 @@ describe("<InboxPane>", () => {
     expect(selectedRow.getAttribute("aria-expanded")).toBe("true");
     fireEvent.keyDown(selectedRow, { key: " " });
     await waitFor(() => expect(rerendered.lastQuery()).not.toContain("opcis="));
+  });
+
+  /* ── layout="split" (portal-work-two-pane-2026-09-01 P-001 / D-001) ─────
+     The portal's /inbox full-page route asks for list + detail. The sidebar
+     keeps the stack default, whose DOM must stay exactly as it was. */
+
+  it("stack (the default) renders no aside and keeps the detail inline under its row", () => {
+    seedAttention([mkItem("d1"), mkItem("d2")]);
+    renderPane("?opcis=d2");
+    const root = screen.getByTestId("inbox-tab");
+    expect(root.className).toBe("op-inbox");
+    expect(root.getAttribute("data-layout")).toBe("stack");
+    expect(root.hasAttribute("data-has-selection")).toBe(false);
+    expect(screen.queryByTestId("inbox-aside")).toBeNull();
+    // The column wrapper (display:contents in CSS) holds the master section.
+    const column = root.querySelector(".op-inbox__column");
+    expect(column?.contains(screen.getByTestId("inbox-master"))).toBe(true);
+    const row = screen.getByTestId("inbox-row-d2");
+    const expanded = screen.getByTestId("inbox-expanded-d2");
+    expect(row.closest(".op-inbox__row")?.contains(expanded)).toBe(true);
+  });
+
+  it("split with no selection renders the empty aside and no detail anywhere", () => {
+    seedAttention([mkItem("d1")]);
+    renderPane("", { layout: "split" });
+    const root = screen.getByTestId("inbox-tab");
+    expect(root.className).toBe("op-inbox op-inbox--split");
+    expect(root.getAttribute("data-layout")).toBe("split");
+    expect(root.hasAttribute("data-has-selection")).toBe(false);
+    const aside = screen.getByTestId("inbox-aside");
+    // A focus landmark, never tab-reachable (mirrors the master section).
+    expect(aside.getAttribute("tabindex")).toBe("-1");
+    expect(aside.contains(screen.getByTestId("inbox-aside-empty"))).toBe(true);
+    expect(screen.queryByTestId("other-detail")).toBeNull();
+    expect(screen.queryByTestId("inbox-aside-back")).toBeNull();
+    // The list column still holds the master section and its rows.
+    const column = root.querySelector(".op-inbox__column");
+    expect(column?.contains(screen.getByTestId("inbox-row-d1"))).toBe(true);
+    expect(column?.contains(aside)).toBe(false);
+  });
+
+  it("split moves the selected item's detail into the aside — never inline under the row", () => {
+    seedAttention([mkItem("d1"), mkItem("d2")]);
+    renderPane("?opcis=d2", { layout: "split" });
+    const root = screen.getByTestId("inbox-tab");
+    expect(root.hasAttribute("data-has-selection")).toBe(true);
+    const aside = screen.getByTestId("inbox-aside");
+    const expanded = screen.getByTestId("inbox-expanded-d2");
+    const detail = screen.getByTestId("other-detail");
+    expect(detail.getAttribute("data-item")).toBe("d2");
+    expect(screen.getAllByTestId("other-detail")).toHaveLength(1);
+    expect(aside.contains(expanded)).toBe(true);
+    expect(expanded.contains(detail)).toBe(true);
+    expect(detail.getAttribute("data-actions-placement")).toBe("after-body");
+    expect(screen.queryByTestId("inbox-aside-empty")).toBeNull();
+    expect(aside.contains(screen.getByTestId("inbox-aside-back"))).toBe(true);
+    // The row stays the disclosure control; its target now lives in the aside.
+    const row = screen.getByTestId("inbox-row-d2");
+    expect(row.closest(".op-inbox__row")?.contains(expanded)).toBe(false);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(row.getAttribute("aria-controls")).toBe("inbox-expanded-d2");
+    expect(document.getElementById("inbox-expanded-d2")).toBe(expanded);
+    // The unselected row renders nothing extra.
+    expect(screen.queryByTestId("inbox-expanded-d1")).toBeNull();
+  });
+
+  it("split: clicking a row still writes ?opcis, and Back to list clears it", async () => {
+    seedAttention([mkItem("d1"), mkItem("d2")]);
+    const { lastQuery } = renderPane("?opcis=d2", { layout: "split" });
+    fireEvent.click(screen.getByTestId("inbox-row-d1"));
+    await waitFor(() => expect(lastQuery()).toContain("opcis=d1"));
+    fireEvent.click(screen.getByTestId("inbox-aside-back"));
+    await waitFor(() => expect(lastQuery()).not.toContain("opcis="));
   });
 
   it("a row with an ownerAgentId shows a chat-launch button that opens SessionChatModal without also selecting the row", async () => {

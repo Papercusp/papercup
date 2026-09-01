@@ -11,20 +11,26 @@
  * procuring separate physical machines. Every profile still owes evidence for
  * every P-017 acceptance property, which is what each `it` below asserts.
  *
- * The stack under test is real, not mocked: `PgWorkItemAdmissionQueueStore` on a
- * real Postgres, `WorkItemAdmissionQueueDriver`, `Governor`,
- * `RollingHealthAnalyzer`, `CaplessAdaptiveController` and
- * `PacedDurableQueueDrainer`. Only the *host measurements* are emulated — that
- * is the axis D-024 rules is emulable.
+ * The stack under test is real, not mocked: `PgAdmissionLedgerQueueStore` (the
+ * dedicated admission ledger, P-006 of
+ * `resource-governor-admission-ledger-2026-09-01`) on a real Postgres,
+ * `WorkItemAdmissionQueueDriver`, `Governor`, `RollingHealthAnalyzer`,
+ * `CaplessAdaptiveController` and `PacedDurableQueueDrainer`. Only the *host
+ * measurements* are emulated — that is the axis D-024 rules is emulable. The
+ * fixture carries no work-item allocator, so every load level here also proves
+ * that admission never allocates a work-item.
  */
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+import {
+  allSessionsLiveResolver,
+  applyAdmissionLedgerFixture,
+  truncateAdmissionLedgerFixture,
+  workItemRowCount,
+} from '../../test/_admission-ledger-fixture';
 import { Governor } from './admission';
-import { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver } from './queue';
+import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
+import { WorkItemAdmissionQueueDriver } from './queue';
 import {
   LIVE_HEALTH_SCHEMA_VERSION,
   LIVE_HEALTH_SIGNAL_SPECS,
@@ -47,14 +53,9 @@ import {
 import { CaplessAdaptiveController, CAPLESS_CONTROLLER_STATE_SCHEMA_VERSION } from './controller';
 import { PacedDurableQueueDrainer, type QueueDrainLeaseSource } from './queue-drainer';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const QUEUE_MIGRATION = readFileSync(
-  resolve(__dirname, '../../../../libs/papercusp/libs/db/sql/986-resource-governor-work-item-queue-identity.sql'),
-  'utf8',
-);
-
 const START = 1_700_000_000_000;
 const STEP = 5_000;
+const WORKSPACE_ID = 'ws-p017';
 
 /**
  * The former hard ceilings this plan deleted. P-017 requires load "beyond former
@@ -374,8 +375,7 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('p017-profile-matrix');
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL).simple();
-  await db.sql.unsafe(QUEUE_MIGRATION).simple();
+  await applyAdmissionLedgerFixture(db.sql);
 }, 120_000);
 
 afterAll(async () => {
@@ -386,12 +386,11 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items`;
-  await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
+  await truncateAdmissionLedgerFixture(db.sql);
 });
 
 interface Stack {
-  readonly store: PgWorkItemAdmissionQueueStore;
+  readonly store: PgAdmissionLedgerQueueStore;
   readonly driver: WorkItemAdmissionQueueDriver;
   readonly governor: Governor;
 }
@@ -399,7 +398,11 @@ interface Stack {
 function stack(namespace: string, label: string, now: () => number = () => START): Stack {
   let requestNo = 0;
   let leaseNo = 0;
-  const store = new PgWorkItemAdmissionQueueStore({ sql: db.sql, workspaceId: 'ws-p017' });
+  const store = new PgAdmissionLedgerQueueStore({
+    sql: db.sql,
+    workspaceId: WORKSPACE_ID,
+    resolveSessionStatesFn: allSessionsLiveResolver,
+  });
   const driver = new WorkItemAdmissionQueueDriver(store, {
     namespace,
     now,
@@ -410,8 +413,9 @@ function stack(namespace: string, label: string, now: () => number = () => START
 
 async function queuedRowCount(): Promise<number> {
   const rows = await db.sql<{ count: string }[]>`
-    SELECT count(*)::text AS count FROM harness_shared.work_items
-     WHERE payload->'resource_governor'->>'state' = 'queued'`;
+    SELECT count(*)::text AS count FROM harness_shared.resource_governor_admissions
+     WHERE workspace_id = ${WORKSPACE_ID}
+       AND state = 'queued'`;
   return Number(rows[0]?.count ?? '0');
 }
 
@@ -524,7 +528,7 @@ describe.each(PROFILES)('P-017 profile $id', (entry) => {
     const { governor } = stack(`p017-load-${entry.id}`, entry.id);
     const perLevel: Record<string, { queued: number; unique: number }> = {};
     for (const level of LOAD_LADDER) {
-      await db.sql`TRUNCATE harness_shared.work_items`;
+      await db.sql`TRUNCATE harness_shared.resource_governor_admissions`;
       const outcomes = await Promise.all(
         Array.from({ length: level }, (_, i) =>
           governor.admit({
@@ -544,7 +548,9 @@ describe.each(PROFILES)('P-017 profile $id', (entry) => {
     }
     // The ladder deliberately runs past every ceiling this plan deleted.
     expect(LOAD_LADDER[LOAD_LADDER.length - 1]!).toBeGreaterThan(FORMER_CEILINGS.highest);
-    record(entry, 'capacity-pressure-always-queues', { perLevel, rejections: 0 });
+    // And at no level did a queued admission become a work-item (P-006).
+    expect(await workItemRowCount(db.sql, WORKSPACE_ID)).toBe(0);
+    record(entry, 'capacity-pressure-always-queues', { perLevel, rejections: 0, workItemsAllocated: 0 });
   }, 180_000);
 
   it('loses and duplicates no work across a restart, and a restored window is not a ceiling', async () => {
