@@ -864,16 +864,15 @@ export function newCollisionResistantIssueTail(): string {
  *   - Still ordered close to chronologically (useful for the rare human eyeballing an
  *     id), and every id minted this way sorts numerically after every legacy
  *     sequential id (small integers), so existing numeric-sort assumptions hold.
- *   - Locally exact (the advisory lock + EXISTS-check retry loop below still
- *     hard-guarantees no two SAME-process racers can walk away with the same id,
- *     which the entropy alone only makes astronomically unlikely).
+ *   - Locally collision-resistant (the EXISTS-check retry loop avoids reusing an
+ *     already-present id, while the base table's composite key remains the final
+ *     uniqueness guard). The entropy-backed allocator needs no process-wide lock.
  *
  * Defense-in-depth for a colliding id that federates in anyway (e.g. from a peer
  * still running pre-fix code) lives in the projection's writeToPg — see
  * engineer-issues.ts.
  */
 async function nextIssueId(sql = getOrgPg().sql): Promise<string> {
-  await sql`SELECT pg_advisory_xact_lock(hashtext('papercusp:engineer_issues:next-id'))`;
   for (let attempt = 0; attempt < 10; attempt++) {
     const candidate = `EI-${newCollisionResistantIssueTail()}`;
     const rows = await sql<{ taken: boolean }[]>`
