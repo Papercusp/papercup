@@ -775,6 +775,8 @@ import './coordination/tools/await-inbox';
 // (inbox-tiering-and-message-agent-2026-06-05, D-006).
 import './inbox/triage';
 import './inbox/bulk-run';
+// autonomous-inbox-resolution-2026-08-31 P-006 — standing authority ladder + confidence floor:
+import './inbox/automation-policy';
 // Lifecycle auto-emission target (coord-lifecycle-automation-2026-06-04)
 import './coordination/tools/emit';
 import './coordination/tools/inbox';
