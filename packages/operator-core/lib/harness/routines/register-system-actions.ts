@@ -540,6 +540,16 @@ import './frozen-candidate-drift-sweep-action';
 // interface. A bespoke ephemeral (tier:'ephemeral', 600s) operator-HOME cadence (one sweep
 // serves every workspace's plans). Seeded ACTIVE by seed-acceptance-grading-sweep-routine.ts.
 import './acceptance-grading-sweep-action';
+// autonomous-inbox-resolution-2026-08-31 P-002: `system:bulk-run-watchdog` — the clock the bulk-run
+// lifecycle never had. Every recovery path was pull-triggered (an owner pressing Restart), so a
+// resolver that died mid-run left the run in `running` with its remaining items on `pending`
+// indefinitely. Explicitly FAILS a stale executing run and marks its undecided items — recoverable,
+// since restartRun accepts phase:'failed' and never touches decided outcomes — and reconciles run
+// counters that disagree with their own rows (measured: bulk-7d35ee41 claims 5 auto + 19 recommended
+// against ZERO finding rows). A bespoke ephemeral (tier:'ephemeral', 300s) operator-HOME cadence,
+// same deviation reasoning as acceptance-grading-sweep-action. Seeded by
+// seed-bulk-run-watchdog-routine.ts.
+import './bulk-run-watchdog-action';
 // deterministic-coverage-census-2026-08-17 P-002: `system:coverage-census` — projects the
 // testable-surface census (harness_shared.testing_surfaces) from the same code registries that
 // serve production traffic, then upserts/retires the diff. A bespoke ephemeral
