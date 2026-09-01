@@ -32,6 +32,7 @@ import {
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
+  PTOOL_DEV_RESTART_TIMEOUT_MS,
   PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   timeoutForTool,
@@ -814,6 +815,27 @@ describe('ptool timeoutForTool — capability:launch-agent resumes outlive the d
       name: 'capability:launch-agent',
       args: { resume: { agentId: 'su-example' }, headless: true },
     })).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — dev:restart outlives the coordinated drain budget (EI-22063784282522464)', () => {
+  it('gives direct dev:restart calls a client deadline beyond the 330s server budget', () => {
+    const timeout = timeoutForTool('dev:restart', {
+      confirm: true,
+      target: 'bg-host',
+      git_sync_drain_sec: 45,
+    });
+    expect(timeout).toBe(PTOOL_DEV_RESTART_TIMEOUT_MS);
+    // dev:restart declares MAX_DRAIN_SEC + 30 = 330s; ptool adds settlement margin.
+    expect(timeout).toBeGreaterThan(335_000);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('applies the same budget through the deferred tools:invoke path', () => {
+    expect(timeoutForTool('tools:invoke', {
+      name: 'dev:restart',
+      args: { confirm: true, target: 'bg-host', git_sync_drain_sec: 45 },
+    })).toBe(PTOOL_DEV_RESTART_TIMEOUT_MS);
   });
 });
 

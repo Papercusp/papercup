@@ -945,6 +945,15 @@ export const PTOOL_RESPAWN_MEMBER_TIMEOUT_MS = 675_000;
 // structured safe/unsafe verdict always wins the race.
 export const PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS = 345_000;
 
+// EI-22063784282522464: `dev:restart` declares a 330s server-side dispatch
+// budget (`MAX_DRAIN_SEC + 30`) because its coordinated drain can wait up to
+// 300s before returning a typed result. The ordinary 30s ptool client cutoff
+// otherwise reports MCP -32001/outcome-unknown while the restart is still
+// draining, including when reached through `tools:invoke`. Keep the client
+// beyond the server budget plus the MCP transport settlement buffer so the
+// restart's structured refusal/success is observed before the client gives up.
+export const PTOOL_DEV_RESTART_TIMEOUT_MS = 345_000;
+
 // `git-sync:run` is an acknowledged long-running call: its server handler
 // bounds the sync fire at 45s and may spend up to 5s each reading HEAD before
 // and after that fire. Keep the normal ptool liveness ceiling for ordinary
@@ -1080,6 +1089,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],
   ['fleet:require-checkpoint', PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS],
+  ['dev:restart', PTOOL_DEV_RESTART_TIMEOUT_MS],
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
