@@ -316,6 +316,15 @@ export const isExcluded = (f) =>
   // reachable once the enumerator recurses into submodules (papercusp-desktop). Sibling
   // guards (check-no-raw-setinterval, check-no-control-bytes) already carry this exclusion.
   f.includes('/env-sidecars/') ||
+  // WI-212675: `apps/operator/dist-sidecar/` is the esbuild-bundled embed-sidecar output —
+  // the SAME class of wholesale-regenerated build artifact as env-sidecars/ above, and
+  // already excluded by at least 8 sibling content guards (check-no-raw-setinterval,
+  // check-no-control-bytes [as of this same fix], check-no-eager-execfile-promisify,
+  // check-no-module-scope-flag-subscribe, check-no-deployed-liveness-read,
+  // check-no-hand-rolled-module-pin, check-no-unthreaded-apply,
+  // check-no-unhosted-remote-core). A minified bundle cannot carry a D-004 classification
+  // comment and is not hand-authored source to classify.
+  f.includes('/dist-sidecar/') ||
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||

@@ -235,6 +235,30 @@ describe('assertStagedSeedCarriesNoIdentity', () => {
     ).rejects.toThrow(/re-cut it fresh/);
   });
 
+  it('hunts the RELEASE literal set too, case-insensitively — reds at the cut where build #5 red-ed at the gate', async () => {
+    // EI-22086776666843792: cut #3 passed this guard on the five build-box literals while the
+    // seed carried the owner's handle in a different case. The cut now hands the same list the
+    // build gate hunts in as extraLiterals; a machine-literal duplicate is folded, not double-hunted.
+    const handle = 'zqxhandle';
+    const dirty = await stageDir({ 'corestore/db/000009.log': `row ${handle.toUpperCase()} row` });
+    await expect(
+      assertStagedSeedCarriesNoIdentity({ dir: dirty, neutralHostname: NEUTRAL, env: {}, probe, extraLiterals: [handle, FAKE_USER] }),
+    ).rejects.toThrow(/release-literal:0@/);
+    // control: the same call on the same bytes without the release set is CLEAN — the exact
+    // false-clean cut #3 produced — and with the set but clean bytes is clean too.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(assertStagedSeedCarriesNoIdentity({ dir: dirty, neutralHostname: NEUTRAL, env: {}, probe })).resolves.toMatchObject({ ok: true });
+      const clean = await stageDir({ 'corestore/db/000009.log': 'row plain row' });
+      const v = await assertStagedSeedCarriesNoIdentity({ dir: clean, neutralHostname: NEUTRAL, env: {}, probe, extraLiterals: [handle, FAKE_USER] });
+      expect(v.ok).toBe(true);
+      expect(v.literalKeys).toContain('release-literal:0');
+      expect(v.literalKeys).not.toContain('release-literal:1'); // FAKE_USER is already build-user-name
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('passes a neutralized seed AND says on stderr what it measured', async () => {
     const dir = await stageDir({
       'corestore/db/000009.sst': binaryBody(`host.identity${NEUTRAL}`),

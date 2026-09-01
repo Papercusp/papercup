@@ -62,6 +62,17 @@ export const ALLOW_PREFIXES = [
   // produced it. Keep the two prefixes adjacent — if the mirror target moves again, this
   // is the list that has to move with it.
   'apps/operator/public/docs/pagefind/',
+  // WI-212675: `apps/operator/dist-sidecar/` is the esbuild-bundled embed-sidecar output
+  // (a 50MB+ `embed-sidecar.mjs`, wholesale-regenerated and re-committed by git-sync on
+  // every build) — the same class of build artifact as the two prefixes above, and already
+  // excluded by name in at least 8 sibling content guards (check-no-raw-setinterval,
+  // check-no-eager-execfile-promisify, check-no-module-scope-flag-subscribe,
+  // check-no-deployed-liveness-read, check-no-hand-rolled-module-pin,
+  // check-no-unthreaded-apply, check-no-unhosted-remote-core,
+  // check-no-hand-rolled-cli-entry). This guard was the one omission: the bundler's
+  // ascii-escape pass legitimately emits raw \x01-\x1f inside minified string tables, and
+  // hand-editing a regenerated bundle is pointless — it is not hand-authored source.
+  'apps/operator/dist-sidecar/',
 ];
 
 /**

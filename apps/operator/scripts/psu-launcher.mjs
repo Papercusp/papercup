@@ -4834,12 +4834,26 @@ export function gatewayAutoEnv(provider = "claude", ownerId = undefined) {
   return env;
 }
 
-export function stripCodexGatewayConfig(configText) {
+/**
+ * Strip ONLY the managed ROOT block (`model_provider = "papercusp-codex-gateway"`),
+ * leaving the `[model_providers.papercusp-codex-gateway]` TABLE in place. With no
+ * root key codex falls back to its built-in `openai` provider — the same state a
+ * fresh default-route home is in — while a rollout that names the gateway
+ * provider still resolves it (WI-38706). Pure; exported for tests.
+ *
+ * @param {string} configText
+ */
+export function stripCodexGatewayRoot(configText) {
   return String(configText || "")
     .replace(
       /# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT\n[\s\S]*?# END PAPERCUSP_CODEX_GATEWAY_ROOT\n?/g,
       "",
     )
+    .replace(/^\n+/, "");
+}
+
+export function stripCodexGatewayConfig(configText) {
+  return stripCodexGatewayRoot(configText)
     .replace(
       /# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER\n[\s\S]*?# END PAPERCUSP_CODEX_GATEWAY_PROVIDER\n?/g,
       "",
@@ -4857,26 +4871,33 @@ export function stripCodexGatewayConfig(configText) {
  *
  * @param {string} configText  the existing config.toml text ('' when absent)
  * @param {string | null} [account]  the account id to PIN to, or null for the unpinned/default route
- * @param {{ gatewayOn?: boolean, ownerId?: string | null, priority?: string | null, keepExistingWhenUnrouted?: boolean }} [opts]
+ * @param {{ gatewayOn?: boolean, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean }} [opts]
  * @returns {string}
  */
 export function codexGatewayConfigPatch(
   configText,
   account = null,
-  { gatewayOn = false, ownerId = null, priority = null, keepExistingWhenUnrouted = false } = {},
+  { gatewayOn = false, ownerId = null, priority = null, keepProviderTableWhenUnrouted = false } = {},
 ) {
   const stripped = stripCodexGatewayConfig(configText).trimEnd();
   const patch = codexGatewayConfigToml(account, { gatewayOn, ownerId, priority });
   if (!patch.root.length && !patch.tables.length) {
     // WI-38706: "no gateway route for THIS launch" must not mean "delete the
-    // provider table this thread is already bound to". codex stamps the
-    // provider id into every rollout's `session_meta`, then resolves it against
-    // the CURRENT config at `thread/resume` — so stripping the table out from
+    // provider table this thread's rollout names". codex stamps the provider
+    // id into every rollout's `session_meta`, then resolves it against the
+    // CURRENT config at `thread/resume` — so stripping the table out from
     // under a gateway-born thread fails the resume outright ("Model provider
-    // `papercusp-codex-gateway` not found", -32600). A default-route RESUME of
-    // such a thread therefore keeps the config as-is; only a launch whose
-    // thread never referenced the provider gets the strip.
-    if (keepExistingWhenUnrouted) return configText;
+    // `papercusp-codex-gateway` not found", -32600).
+    //
+    // EI-22086713788860638: the ROOT key is a different thing. It is what
+    // SELECTS the provider for the resumed session — codex resumes with the
+    // current config's `model_provider`, never the stamped one — so keeping the
+    // whole file byte-identical (the pre-fix behaviour) is how a "default"
+    // resume of a gateway-born thread silently stayed on :8788 (EI-22039). An
+    // unrouted resume therefore keeps the TABLE and drops only the ROOT block;
+    // with no root key codex falls back to its built-in `openai` provider,
+    // exactly the state of a fresh default-route home.
+    if (keepProviderTableWhenUnrouted) return stripCodexGatewayRoot(configText);
     return stripped ? `${stripped}\n` : "";
   }
   return `${patch.root.join("\n")}${stripped ? `${stripped}\n\n` : ""}${patch.tables.join("\n")}`;
@@ -4902,25 +4923,34 @@ export function codexRolloutModelProvider(rolloutPath) {
 }
 
 /**
- * Codex stamps `session_meta.model_provider` into a thread's rollout and requires
- * that SAME provider when the thread is resumed or forked. Rewriting config.toml
- * can restore the stamped provider's table, but it cannot move the thread between
- * the direct system provider and Papercusp's gateway provider.
+ * Codex does NOT bind a thread to the provider stamped in its rollout. At
+ * resume/fork it uses the CURRENT config's `model_provider` and sends that in
+ * the thread/resume request (codex exec/src/lib.rs: `model_provider:
+ * Some(config.model_provider_id.clone())`); the stamped
+ * `session_meta.model_provider` is never compared. Measured on Codex 0.152.0
+ * (EI-22086713788860638): a thread born on direct `openai` resumed under a
+ * `papercusp-codex-gateway` config reported `provider: papercusp-codex-gateway`
+ * and sent its turn to the gateway URL — via both `codex exec resume` and the
+ * TUI `codex resume` psu spawns; a gateway-born thread resumed with the provider
+ * TABLE kept and the root key dropped reported `provider: openai`. The only real
+ * constraint is WI-38706's: the provider id the rollout names must still
+ * RESOLVE in the config — which `keepProviderTableWhenUnrouted` guarantees.
  *
- * Until EI-22039056757537981, the interactive account picker still offered that
- * impossible switch. A gateway-born thread + "default" was especially deceptive:
- * `keepExistingWhenUnrouted` correctly preserved the table Codex needed, then the
- * launcher announced "default system account" even though the thread remained on
- * :8788. Return the refusal text before spawning so the selected route can never be
- * silently substituted. A missing binding stays permissive for legacy rollouts
- * whose provider cannot be established.
+ * Until EI-22086713788860638 this function REFUSED any cross-family switch,
+ * asserting that Codex "does not permit changing model providers on
+ * resume/fork" — an inference EI-22039056757537981 drew from WI-38706's
+ * missing-table failure and enforced as fact. It stranded a system-login thread
+ * on an account at its usage wall when the owner asked to move it to the pool.
+ * What remains is the DISCLOSURE half of EI-22039: the route the owner picked is
+ * applied, and when it differs from the family the thread was born on, say so
+ * before spawning. A missing binding (legacy rollout) says nothing.
  *
  * @param {string | null} boundProvider
- * @param {{ mode?: string } | null} accountRoute
+ * @param {{ mode?: string, id?: string | null } | null} accountRoute
  * @param {{ fork?: boolean, sessionId?: string | null }} [opts]
  * @returns {string | null}
  */
-export function codexResumeAccountRouteError(
+export function codexResumeRouteNotice(
   boundProvider,
   accountRoute,
   { fork = false, sessionId = null } = {},
@@ -4933,23 +4963,23 @@ export function codexResumeAccountRouteError(
   if (!requestedDefault && !requestedGateway) return null;
   if (boundToGateway === requestedGateway) return null;
 
-  const operation = fork ? "fork" : "resume";
+  const operation = fork ? "forking" : "resuming";
   const thread = sessionId ? ` ${sessionId}` : "";
+  const tail =
+    "Codex resumes with the current config's model_provider (verified 0.152.0), so the switch is applied.";
   if (boundToGateway) {
     return (
-      `psu: cannot ${operation} Codex thread${thread} on the default system account: ` +
-      `Codex bound this thread to '${CODEX_GATEWAY_PROVIDER_ID}' in its rollout and does not permit ` +
-      "changing model providers on resume/fork. Your account choice was NOT applied; no agent process was spawned. " +
-      "Resume this thread with --account=auto, or start a NEW system-account session with " +
-      "`psu --agent=codex --account=system`."
+      `psu: ${operation} Codex thread${thread} on the default system account (inference gateway skipped) — ` +
+      `it was born on '${CODEX_GATEWAY_PROVIDER_ID}'; the provider table stays so the rollout still resolves. ${tail}`
     );
   }
+  const route =
+    accountRoute.mode === "pin" && accountRoute.id
+      ? `pinned to account '${accountRoute.id}'`
+      : "auto-routed across the pool";
   return (
-    `psu: cannot ${operation} Codex thread${thread} through the inference gateway: ` +
-    `Codex bound this thread to direct provider '${boundProvider}' in its rollout and does not permit ` +
-    "changing model providers on resume/fork. Your account choice was NOT applied; no agent process was spawned. " +
-    "Resume this thread with --account=system, or start a NEW gateway-routed session with " +
-    "`psu --agent=codex --account=auto`."
+    `psu: ${operation} Codex thread${thread} through the inference gateway (${route}) — ` +
+    `it was born on direct provider '${boundProvider}'. ${tail}`
   );
 }
 
@@ -5039,7 +5069,7 @@ function applyCodexGatewayRoute(
     id = null,
     ownerId = null,
     priority = null,
-    keepExistingWhenUnrouted = false,
+    keepProviderTableWhenUnrouted = false,
   } = {},
 ) {
   const configPath = join(codexHome, "config.toml");
@@ -5052,7 +5082,7 @@ function applyCodexGatewayRoute(
       gatewayOn: mode === "auto",
       ownerId,
       priority,
-      keepExistingWhenUnrouted,
+      keepProviderTableWhenUnrouted,
     }),
     { mode: 0o600 },
   );
@@ -9961,22 +9991,25 @@ async function launchResume(
       // config.toml had been deleted (or reduced to codex's trust-only stub) went
       // straight into the patch below, which happily wrote a gateway-less config
       // into the hole and left `codex resume` to fail on the missing provider.
-      // The provider THIS thread is bound to decides both halves below: the rebuild
-      // must re-emit that provider's table, and the patch must not then remove it.
-      // A resume with no explicit --account resolves to mode 'default'
+      // The provider THIS thread's rollout names decides both halves below: the
+      // rebuild must re-emit that provider's table, and the patch must not then
+      // remove it. A resume with no explicit --account resolves to mode 'default'
       // (chooseResumeAccount does not inherit the session's original pin), so an
-      // unguarded patch strips the very `[model_providers.…]` table the rollout names.
+      // unguarded patch strips the very `[model_providers.…]` table the rollout
+      // names. The ROOT `model_provider` key, by contrast, follows the route the
+      // owner picked THIS launch — codex resumes with the current config's
+      // provider, in either direction (EI-22086713788860638) — so a cross-family
+      // switch is applied and disclosed, never refused.
       const rollout = findCodexRollout(
         join(env.CODEX_HOME, "sessions"),
         session.sessionId ?? "",
       );
       const boundProvider = rollout ? codexRolloutModelProvider(rollout) : null;
-      const routeError = codexResumeAccountRouteError(
-        boundProvider,
-        accountEnv,
-        { fork, sessionId: session.sessionId ?? null },
-      );
-      if (routeError) throw new Error(routeError);
+      const routeNotice = codexResumeRouteNotice(boundProvider, accountEnv, {
+        fork,
+        sessionId: session.sessionId ?? null,
+      });
+      if (routeNotice) console.error(routeNotice);
       if (accountEnv?.mode === "default") {
         const authSync = reconcileCodexSystemAuth();
         if (authSync.promoted)
@@ -10003,7 +10036,7 @@ async function launchResume(
         id: accountEnv?.id ?? null,
         ownerId: session.coordOwnerId ?? null,
         priority: session.role || "su",
-        keepExistingWhenUnrouted: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
+        keepProviderTableWhenUnrouted: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
       });
       // AFTER the gateway patch, which re-orders the file around its own markers —
       // see codexContextWindowConfigPatch for why these root keys must land first.

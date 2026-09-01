@@ -1599,6 +1599,19 @@ export async function peekBody(
 
 export function createInferenceGateway(deps: GatewayDeps) {
   const processStartedAt = Date.now();
+  // EI-22038414992051268: the FALLBACK admission idempotency keys below are derived from
+  // process-local sequence counters (`legacyAdmissionRequestSeq`, `gatewayAdmissionRequestSeq`,
+  // and telemetry's own `span.requestId`) that all reset to 0 on every process start. Across a
+  // gateway RESTART, a fresh process's first few requests can therefore compute the exact same
+  // fallback key (e.g. `gateway:openai-responses:5`) as a DIFFERENT, unrelated request the prior
+  // process admitted — and if that old durable admission record hasn't been reconciled away yet,
+  // the new request's fingerprint mismatches the stored one and the durable queue rejects it with
+  // AdmissionIdempotencyConflictError (surfaced to the caller as a proxy-handler 500). This
+  // per-process instance id is folded into every FALLBACK key (never into an explicit
+  // caller-supplied `x-papercusp-request-id`, which stays caller-owned) so two different process
+  // incarnations can never coin the same fallback key, while the sequence counters still keep
+  // keys unique WITHIN one process's lifetime exactly as before.
+  const gatewayProcessInstanceId = randomUUID();
   const requestStageTelemetry = new GatewayRequestTelemetry();
   interface RequestTelemetryState {
     span: GatewayRequestSpan;

@@ -1488,9 +1488,13 @@ async function main(): Promise<void> {
     // host.identity SST property) arrived by unrelated routes and each fix is blind to the
     // other, so this asks the bytes rather than trusting any one filter. See
     // ./seed-identity-guard.ts for why it does NOT shell out to audit-release-bundle.py.
+    // EI-22086776666843792: ALSO hunt the release literal set the projection scrubbed with —
+    // the same list audit-release-bundle.py will hunt at the build gate — so an owner handle /
+    // name / email that survived the projection reds HERE, not 3h40m later at the build.
     await assertStagedSeedCarriesNoIdentity({
       dir: outDir,
       neutralHostname: process.env.PAPERCUSP_SEED_BUILD_HOSTNAME || DEFAULT_NEUTRAL_BUILD_HOSTNAME,
+      extraLiterals: corestore?.redactValues ?? [],
     });
 
     // WI-3232 --emit-epoch-key: write the bundled key so the pot decrypts OFFLINE.

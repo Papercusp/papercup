@@ -962,6 +962,19 @@ export default defineTool({
       await gitSyncBarrier.release().catch(() => {});
     };
 
+    // EI-22040822883429888: guardResource's exclusive drain wait supports an
+    // onTick heartbeat (resource-acquire-wait.ts fires it every ~5s while
+    // draining), but this call never wired one up — a genuinely-still-draining
+    // restart looked indistinguishable from a wedge to an MCP client watching
+    // for "response or progress", so a long drain could exceed the transport's
+    // idle timeout and come back outcome=unknown even though the server side
+    // was still working. Same defensive capture + forwarding shape as
+    // db:migrate's onTick->ctx.progress wiring (EI-18769559897594065): ctx.progress
+    // refreshes the transport's own idle-timeout deadline (tooldef D2).
+    const restartMaxDrainSec = args.max_drain_sec ?? DEFAULT_DRAIN_SEC;
+    const emitRestartProgress =
+      (ctx as { progress?: (pct: number | undefined, msg?: string) => void }).progress ?? (() => undefined);
+
     const outcome = await guardResource(
       {
         // coordinationDomain is the resourceLockDomain(cfg.resource) computed
@@ -973,8 +986,20 @@ export default defineTool({
         coordIdentity,
         resource: cfg.resource,
         mode: 'exclusive',
-        maxDrainSec: args.max_drain_sec ?? DEFAULT_DRAIN_SEC,
+        maxDrainSec: restartMaxDrainSec,
         reason: `${cfg.resource} restart`,
+        onTick: ({ waited_sec, holders }) => {
+          emitRestartProgress(
+            undefined,
+            JSON.stringify({
+              phase: 'draining',
+              elapsed_sec: waited_sec,
+              max_drain_sec: restartMaxDrainSec,
+              remaining_sec: Math.max(0, restartMaxDrainSec - waited_sec),
+              holders: holders.map(holderJson),
+            }),
+          );
+        },
       },
       async (fence) => {
         // NOTE: the `!enabled` refusal happens BEFORE this guard is ever entered

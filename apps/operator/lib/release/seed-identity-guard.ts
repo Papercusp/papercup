@@ -62,13 +62,22 @@ import { join, relative } from 'node:path';
  */
 export const SEED_REAL_HOSTNAME_ENV = 'PAPERCUSP_SEED_REAL_HOSTNAME';
 
-/** Identity keys, named exactly as `audit-release-bundle.py` names them. */
+/**
+ * Identity keys, named exactly as `audit-release-bundle.py` names them — plus the RELEASE
+ * literal set (`release-literal:<n>`): the owner name / handle / email / cross-box aliases
+ * that `audit-release-bundle.py --identity-literals` resolves and the final build gate hunts.
+ * EI-22086776666843792: the cut #3 guard hunted only the five build-box literals, reported
+ * CLEAN, and the build gate red'd 3h40m later on the owner's handle in the same bytes. The
+ * cut passes that set in ({@link assertStagedSeedCarriesNoIdentity} `extraLiterals`) so the
+ * two gates hunt ONE list and the cut fails closed first.
+ */
 export type IdentityKey =
   | 'build-user-name'
   | 'build-home-path'
   | 'build-hostname'
   | 'build-git-name'
-  | 'build-git-email';
+  | 'build-git-email'
+  | `release-literal:${number}`;
 
 export type IdentityLiterals = ReadonlyMap<IdentityKey, string>;
 
@@ -221,10 +230,14 @@ export async function scanFileForIdentity(path: string, literals: IdentityLitera
       if (n <= 0) break;
       const window = Buffer.concat([carry, buf.subarray(0, n)]);
       const windowStart = position - carry.length;
-      const text = window.toString('latin1');
+      // CASE-INSENSITIVE, like the python gate's `lit_ere()` (which case-folds every literal —
+      // EI-20589264759185712: a lowercase first name reached a published deb while the gate
+      // hunted the capitalised form). Folding both sides here keeps the two gates in step.
+      const text = window.toString('latin1').toLowerCase();
       for (const [key, lit] of applicable) {
         if (seen.has(key)) continue;
-        const idx = needsWordBoundary(lit) ? wordBoundaryIndex(text, lit) : text.indexOf(lit);
+        const needle = lit.toLowerCase();
+        const idx = needsWordBoundary(lit) ? wordBoundaryIndex(text, needle) : text.indexOf(needle);
         if (idx >= 0) {
           seen.add(key);
           findings.push({ file: path, key, offset: windowStart + idx, binary });
@@ -240,7 +253,7 @@ export async function scanFileForIdentity(path: string, literals: IdentityLitera
   return findings;
 }
 
-/** Case-sensitive `\blit\b`, matching the python gate's `lit_ere()`. */
+/** `\blit\b` over an already case-folded haystack + literal — the python gate's `lit_ere()` shape. */
 function wordBoundaryIndex(haystack: string, lit: string): number {
   const re = new RegExp(`\\b${lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
   const m = re.exec(haystack);
@@ -332,12 +345,28 @@ export async function assertStagedSeedCarriesNoIdentity(inp: {
   readonly neutralHostname: string;
   readonly env?: Record<string, string | undefined>;
   readonly probe?: ResolveIdentityInput['probe'];
+  /**
+   * The RELEASE literal set — what the final build gate will hunt (the cut already resolves
+   * it for the projection scrub). Hunted here too, so the staged bytes are judged against the
+   * same list the gate uses and a leak reds at the cut, not after the build.
+   */
+  readonly extraLiterals?: readonly string[];
 }): Promise<SeedIdentityVerdict> {
-  const { literals, unknownHostname } = resolveIdentityLiterals({
+  const { literals: machine, unknownHostname } = resolveIdentityLiterals({
     env: inp.env,
     neutralHostname: inp.neutralHostname,
     probe: inp.probe,
   });
+  const merged = new Map<IdentityKey, string>(machine);
+  const known = new Set([...machine.values()].map((v) => v.toLowerCase()));
+  let n = 0;
+  for (const lit of inp.extraLiterals ?? []) {
+    const v = lit.trim();
+    if (v.length < 3 || known.has(v.toLowerCase())) continue;
+    known.add(v.toLowerCase());
+    merged.set(`release-literal:${n++}`, v);
+  }
+  const literals: IdentityLiterals = merged;
   if (unknownHostname) {
     throw new Error(
       `[seed-identity] ⛔ cannot prove the staged seed is clean: gethostname() reports the neutral ` +

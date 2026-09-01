@@ -50,8 +50,28 @@ const CAP_PROSE_PATTERNS: readonly RegExp[] = [
  * to name a superseded number, but must SAY so on the same line. Without this
  * escape the guard would be unfalsifiable-by-annoyance: the next author would
  * delete the guard rather than the sentence.
+ *
+ * EI-20802334255504868: "the same line" means the same PHYSICAL line, and that
+ * is ambiguous exactly where this guard fires most — inside a wrapped doc
+ * comment, where one prose SENTENCE spans several lines. An author who put the
+ * marker on the line the explanation read best on, rather than the line
+ * carrying the digits, got back the identical "you did not add the marker"
+ * text — so the obvious next move was to re-read the marker SPELLING, not to
+ * re-count physical lines. The scope stays per-line (that is what makes it
+ * cheap and unambiguous to evaluate); what changed is that a misplaced marker
+ * is now DETECTED and reported as misplaced. An escape that appears not to
+ * work is the same unfalsifiable-by-annoyance hazard, one step later.
  */
 const HISTORICAL_MARKER = 'cap-drift-ok';
+
+/**
+ * How far from an offending line to look for a marker the author plainly meant
+ * for it. Two lines covers the wrapped-sentence case that motivated this
+ * without reaching a marker that belongs to a neighbouring statement — the
+ * message claims the author meant THAT marker for THIS line, so the radius is
+ * the bound on that claim.
+ */
+const MARKER_NEAR_MISS_RADIUS = 2;
 
 const FACTS_DIRS = [
   join(__dirname),
@@ -70,16 +90,43 @@ function sourceFiles(): { path: string; text: string }[] {
   return out;
 }
 
+interface CapHit {
+  line: number;
+  literal: string;
+  stated: string;
+  /** 1-based line of a marker that is CLOSE BY but not on `line` — see MARKER_NEAR_MISS_RADIUS. */
+  misplacedMarkerLine?: number;
+}
+
+/** The nearest marker within the near-miss radius, preferring the closer line
+ *  and, at equal distance, the one above. Returns a 1-based line, or null. */
+function misplacedMarkerNear(lines: readonly string[], index: number): number | null {
+  for (let distance = 1; distance <= MARKER_NEAR_MISS_RADIUS; distance += 1) {
+    for (const candidate of [index - distance, index + distance]) {
+      if (candidate < 0 || candidate >= lines.length) continue;
+      if (lines[candidate].includes(HISTORICAL_MARKER)) return candidate + 1;
+    }
+  }
+  return null;
+}
+
 /** The predicate under test, isolated so the falsifiability control below can
  *  drive it with the real pre-fix strings instead of a synthetic mock. */
-function hardcodedCapsIn(text: string): { line: number; literal: string; stated: string }[] {
-  const hits: { line: number; literal: string; stated: string }[] = [];
-  text.split('\n').forEach((line, i) => {
+function hardcodedCapsIn(text: string): CapHit[] {
+  const lines = text.split('\n');
+  const hits: CapHit[] = [];
+  lines.forEach((line, i) => {
     if (line.includes(HISTORICAL_MARKER)) return;
     for (const re of CAP_PROSE_PATTERNS) {
       const m = re.exec(line);
       if (m) {
-        hits.push({ line: i + 1, literal: m[0], stated: m[1] });
+        const misplaced = misplacedMarkerNear(lines, i);
+        hits.push({
+          line: i + 1,
+          literal: m[0],
+          stated: m[1],
+          ...(misplaced === null ? {} : { misplacedMarkerLine: misplaced }),
+        });
         break;
       }
     }
@@ -87,18 +134,37 @@ function hardcodedCapsIn(text: string): { line: number; literal: string; stated:
   return hits;
 }
 
+/**
+ * The violation text, extracted from the assertion so the regression below can
+ * assert on the MESSAGE. The defect being fixed was entirely in this string:
+ * it could not distinguish "no marker anywhere" from "marker present, wrong
+ * line", and reported both as though the author had never added one.
+ */
+function capViolationMessage(path: string, hit: CapHit): string {
+  const head =
+    `${path}:${hit.line} says "${hit.literal}" (states ${hit.stated}; ` +
+    `the enforced cap is ${FACTS_PER_SCOPE_CAP}).`;
+  if (hit.misplacedMarkerLine !== undefined) {
+    return (
+      `${head} A ${HISTORICAL_MARKER} marker IS present on line ` +
+      `${hit.misplacedMarkerLine}, but this guard matches PER PHYSICAL LINE and ` +
+      `a wrapped comment sentence spans several. Move the marker onto line ` +
+      `${hit.line} itself — the line carrying the digits.`
+    );
+  }
+  return (
+    `${head} Interpolate \${FACTS_PER_SCOPE_CAP} instead, or put ` +
+    `${HISTORICAL_MARKER} on line ${hit.line} itself (this guard matches per ` +
+    `physical line, not per sentence) if it is deliberately describing a ` +
+    `superseded cap.`
+  );
+}
+
 describe('facts per-scope cap — agent-facing prose must derive the number, not type it', () => {
   it('no source file in the facts subsystem states the cap as a literal', () => {
     const violations: string[] = [];
     for (const { path, text } of sourceFiles()) {
-      for (const hit of hardcodedCapsIn(text)) {
-        violations.push(
-          `${path}:${hit.line} says "${hit.literal}" (states ${hit.stated}; ` +
-            `the enforced cap is ${FACTS_PER_SCOPE_CAP}). Interpolate ` +
-            `\${FACTS_PER_SCOPE_CAP} instead, or mark the line ${HISTORICAL_MARKER} ` +
-            `if it is deliberately describing a superseded cap.`,
-        );
-      }
+      for (const hit of hardcodedCapsIn(text)) violations.push(capViolationMessage(path, hit));
     }
     expect(violations).toEqual([]);
   });
@@ -139,6 +205,64 @@ describe('facts per-scope cap — agent-facing prose must derive the number, not
     expect(
       hardcodedCapsIn(`* EI-19931982603802383: raised from the 50-per-scope cap. ${HISTORICAL_MARKER}`),
     ).toEqual([]);
+  });
+
+  /**
+   * EI-20802334255504868 regression. A marker one or two lines off is the case
+   * the guard used to report as "you did not add the marker" — which sends the
+   * author to re-read the marker's SPELLING rather than re-count physical
+   * lines, and the guard re-fails identically on the next run.
+   */
+  it('a marker on a NEARBY line is reported as misplaced, naming both lines', () => {
+    const wrapped = [
+      '/**',
+      ' * EI-19931982603802383 measured both busy scopes pinned at the old',
+      ' * per-scope cap of 50 before the raise landed.',
+      ` * (quoted verbatim from the filing — ${HISTORICAL_MARKER})`,
+      ' */',
+    ].join('\n');
+
+    const hits = hardcodedCapsIn(wrapped);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].line).toBe(3);
+    expect(hits[0].misplacedMarkerLine).toBe(4);
+
+    const message = capViolationMessage('store.ts', hits[0]);
+    expect(message).toContain('store.ts:3');
+    expect(message).toContain('marker IS present on line 4');
+    expect(message).toContain('Move the marker onto line 3');
+    // It must NOT read as "add a marker" — that instruction is precisely what
+    // sent the author to re-check spelling instead of position.
+    expect(message).not.toContain('Interpolate');
+  });
+
+  it('CONTROL: with NO marker anywhere the message still says to interpolate or mark that line', () => {
+    // Calibration for the leg above — without it, a predicate that labelled
+    // every violation "misplaced" would pass that test too.
+    const hits = hardcodedCapsIn(' * measured at the per-scope cap of 50 before the raise.');
+    expect(hits).toHaveLength(1);
+    expect(hits[0].misplacedMarkerLine).toBeUndefined();
+
+    const message = capViolationMessage('store.ts', hits[0]);
+    expect(message).toContain('Interpolate');
+    expect(message).toContain('per physical line');
+    expect(message).not.toContain('IS present on line');
+  });
+
+  it('CONTROL: a marker BEYOND the near-miss radius is not claimed as misplaced', () => {
+    // Bounds the claim the message makes. Saying "move THAT marker onto THIS
+    // line" about a marker belonging to an unrelated statement would be a
+    // confidently wrong instruction — worse than the vague message it replaces.
+    const distant = [
+      ' * per-scope cap of 50 stated here.',
+      ' * filler',
+      ' * filler',
+      ` * an unrelated historical note. ${HISTORICAL_MARKER}`,
+    ].join('\n');
+
+    const hits = hardcodedCapsIn(distant);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].misplacedMarkerLine).toBeUndefined();
   });
 });
 
