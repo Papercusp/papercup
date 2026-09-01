@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path';
@@ -270,6 +270,48 @@ describe('dependency-closure hashing and persistence', () => {
         ok: false,
         reason: 'provenance-incomplete:unscanned-submodule:libs/unavailable',
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // WI-595883 recurrence guard (P-010, gate-verdict-liveness-and-repair-reliability-2026-08-31):
+  // the original defect was the closure hash DIFFERING between consecutive runs whose closure
+  // files were byte- and mode-identical, which made every cross-run cache lookup miss. This pins
+  // the property directly: over an UNTOUCHED tree, the hash is a pure function of (path set,
+  // kinds/modes, bytes) — input ORDER, input DUPLICATES, a fresh digest cache, and file MTIMES
+  // must all be invisible. The sibling test above ('binds paths, bytes, ...') is the calibration
+  // control proving the instrument detects a real byte change, so an accidentally-constant hash
+  // cannot pass this suite.
+  it('WI-595883 recurrence: consecutive hashes over an untouched tree are identical', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-verdict-determinism-'));
+    try {
+      mkdirSync(join(root, 'pkg', 'nested'), { recursive: true });
+      writeFileSync(join(root, 'pkg', 'a.ts'), 'alpha');
+      writeFileSync(join(root, 'pkg', 'nested', 'b.ts'), 'beta');
+      writeFileSync(join(root, 'run.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      symlinkSync('a.ts', join(root, 'pkg', 'link.ts'));
+      const files = ['pkg/a.ts', 'pkg/nested/b.ts', 'run.sh', 'pkg/link.ts'];
+      const first = hashDependencyFileSet({ root, files, digestCache: new Map() });
+      // Reversed order + a duplicated entry + a fresh digest cache: none of these is a tree
+      // change, so the whole identity — content hash, membership hash, and the persisted
+      // closure listing — must not move.
+      const second = hashDependencyFileSet({
+        root,
+        files: [...files].reverse().concat('pkg/a.ts'),
+        digestCache: new Map(),
+      });
+      if (!first.ok || !second.ok) throw new Error('test fixture should be hashable');
+      expect(second.hash).toBe(first.hash);
+      expect(second.listHash).toBe(first.listHash);
+      expect(second.files).toEqual(first.files);
+      // Mtime independence: rewind every fixture file to the epoch. Bytes are untouched, so a
+      // hash that moves here is reading filesystem metadata the identity must not depend on.
+      for (const f of files) utimesSync(join(root, f), 0, 0);
+      const third = hashDependencyFileSet({ root, files, digestCache: new Map() });
+      if (!third.ok) throw new Error('test fixture should be hashable');
+      expect(third.hash).toBe(first.hash);
+      expect(third.listHash).toBe(first.listHash);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
