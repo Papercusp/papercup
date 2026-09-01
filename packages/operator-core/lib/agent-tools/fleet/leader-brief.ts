@@ -79,7 +79,6 @@ import { fleetEverMembers } from '../../fleet-membership-store';
 import { COORD_ROLES } from '../coordination/roles';
 import { listFleetRosterDiagnosed, liveFleetMemberIds, type ListFleetRosterResult } from '../../fleet/fleet-roster';
 import {
-  agentOriginToolCallOwnersSince,
   executingOwnersSince,
   shouldRecoverClaimFromHealth,
   type AgentAssignment,
@@ -3505,7 +3504,7 @@ export async function buildLeaderBrief(
   // remains UNKNOWN; an empty Set is a measured zero only when the query
   // completed successfully.
   const agentOriginRead = await withBoundedTimeout(
-    agentOriginToolCallOwnersSince(rosterEntries.map((entry) => entry.agentId)),
+    executingOwnersSince(rosterEntries.map((entry) => entry.agentId)),
     {
       fallback: null,
       timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
