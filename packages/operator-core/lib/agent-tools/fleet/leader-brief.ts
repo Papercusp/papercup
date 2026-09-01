@@ -3221,6 +3221,57 @@ export default defineTool({
         'P-022: measure `delta` from this ISO timestamp instead of your last wake. The snapshot-only axes (pool factor, prior spec revision) have no history to re-read at an arbitrary time and stay unavailable — they are never back-filled from a boundary they did not observe.',
       ),
   }),
+  // Keep the rich supervision envelope available as structured content while
+  // publishing the stable roots used by callers and guidance. The passthrough
+  // is intentional: leader-brief grows diagnostic fields over time, and a
+  // second hand-maintained exhaustive schema would recreate the drift this
+  // contract is meant to prevent.
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      error: z.string().optional(),
+      self: z.unknown().optional(),
+      notLeader: z.unknown().optional(),
+      leadershipClaimed: z.unknown().optional(),
+      leaderControl: z.unknown().optional(),
+      monitoringBlindAdvisory: z.unknown().optional(),
+      blockedAt: z.unknown().optional(),
+      summary: z.unknown().optional(),
+      launchWorkerAttestation: z.unknown().optional(),
+      dependencyBottlenecks: z.unknown().optional(),
+      leaderBlockerStall: z.unknown().optional(),
+      delta: z.unknown().optional(),
+      deltaSummary: z.string().optional(),
+      campaign: z.unknown().optional(),
+      fleetMetrics: z.unknown().optional(),
+      announcedGates: z.unknown().optional(),
+      idleCauses: z.unknown().optional(),
+      reservation: z.unknown().optional(),
+      memberVerdicts: z.unknown().optional(),
+      benchSuggestions: z.unknown().optional(),
+      intentAttention: z.unknown().optional(),
+      members: z.array(z.unknown()).optional(),
+      membersTruncated: z.boolean().optional(),
+      membersReturned: z.number().int().nonnegative().optional(),
+      membersHint: z.string().optional(),
+      unownedCriticals: z.array(z.unknown()).optional(),
+      unownedCriticalsFederated: z.array(z.unknown()).optional(),
+      unownedCriticalsFederatedNote: z.string().optional(),
+      abandonedUnclaimed: z.array(z.unknown()).optional(),
+      abandonedUnclaimedAction: z.string().optional(),
+      admissionBlocked: z.array(z.unknown()).optional(),
+      admissionBlockedAction: z.string().optional(),
+      customInvariants: z.unknown().optional(),
+      customInvariantAlertReason: z.string().optional(),
+      fleetPausedReason: z.string().optional(),
+      specFilter: z.unknown().optional(),
+      specRevision: z.unknown().optional(),
+      specUpdatedBy: z.string().nullable().optional(),
+      specUpdatedAt: z.unknown().optional(),
+      harnessWidePool: z.unknown().optional(),
+      specMatched: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     let actorWorkspace: string | null = null;
     let ownerId: string | undefined;
