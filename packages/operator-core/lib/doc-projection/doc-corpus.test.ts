@@ -238,6 +238,21 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the freeze-and-converge red-candidate standard post-load (new CLAUDE.md section)',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-08-31',
+      plan: 'none — part authored directly into harness_doc_parts (EI-19408377748635848)',
+      // Same shape as the four entries above, and measured the same way rather than assumed:
+      // the generated corpus banner reads 297 corpus-parts at HEAD and 298 in the working tree
+      // (corpus-blocks 258 -> 259). The added block is
+      // `commit-discipline-git-sync-o-a-path-inside-a-sub` (doc_id claude-md, kind invariant,
+      // ordinal 69): the submodule candidate-containment recipe — resolve the gitlink with
+      // `git rev-parse <candidate>:<sub>`, then compare blobs INSIDE the submodule. A standalone
+      // new part. The same change also edited `…-green-checkpointts3` in place to replace rotted
+      // line-number citations with greppable expressions; that edit is block-neutral and is not
+      // part of this delta.
+      why: 'added the submodule candidate-containment recipe post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {
