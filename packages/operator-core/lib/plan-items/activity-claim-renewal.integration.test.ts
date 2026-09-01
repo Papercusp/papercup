@@ -149,6 +149,34 @@ describe('renewOwnerActivityClaims (D-003 per-turn renewal)', () => {
     expect(await secsLeft('P-013', 'sess-ended')).toBeLessThan(120);
   });
 
+  it('does NOT renew a stale open session from lifecycle-only activity', async () => {
+    // A crashed process can leave its adv_sessions row open even when its
+    // SessionEnd activity report landed. An old open row must not be enough to
+    // keep renewing the dead owner's claim.
+    await seedSession('sess-stale-open', { startedAgoSec: 20 * 60 });
+    await claims.acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-014', owner: 'sess-stale-open', livenessMode: 'activity' });
+    await db.sql`UPDATE harness_shared.plan_item_claims SET expires_ts = clock_timestamp() + interval '30 seconds' WHERE item_id = 'P-014'`;
+
+    await seedActivity('sess-stale-open', 'lifecycle', SESSION_END_MARKER, 1_000);
+    await seedActivity('sess-stale-open', 'lifecycle', 'wake delivered');
+
+    expect(await claims.renewOwnerActivityClaims(WS, 'sess-stale-open')).toEqual([]);
+    expect(await secsLeft('P-014', 'sess-stale-open')).toBeLessThan(120);
+  });
+
+  it('renews a long-lived open session when recent native activity follows its start', async () => {
+    // Long-lived sessions still renew normally; age alone must not be treated as
+    // death when the owner has produced a genuine recent native turn.
+    await seedSession('sess-long-open', { startedAgoSec: 20 * 60 });
+    await claims.acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-015', owner: 'sess-long-open', livenessMode: 'activity' });
+    await db.sql`UPDATE harness_shared.plan_item_claims SET expires_ts = clock_timestamp() + interval '30 seconds' WHERE item_id = 'P-015'`;
+
+    await seedActivity('sess-long-open', 'tool', 'Read claims.ts');
+
+    expect(await claims.renewOwnerActivityClaims(WS, 'sess-long-open')).toEqual(['P-015']);
+    expect(await secsLeft('P-015', 'sess-long-open')).toBeGreaterThan(1000);
+  });
+
   it.each(['tool', 'todos'] as const)('renews an ended owner only after a genuine post-end %s event', async (kind) => {
     await seedSession('sess-resumed', { endedAgoSec: 30 });
     await claims.acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: `P-${kind}`, owner: 'sess-resumed', livenessMode: 'activity' });

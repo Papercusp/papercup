@@ -8,6 +8,7 @@
 # The API secret is never printed, never logged, and never written into the tree.
 #
 #   deploy.sh                  deploy / converge
+#   deploy.sh --hosted         require + persist a public wss:// browser URL
 #   deploy.sh --rotate-secret  mint a fresh secret and restart both units
 #   deploy.sh --status         report only, change nothing
 set -euo pipefail
@@ -41,11 +42,18 @@ SIDECAR_DIR="${PHONE_SIDECAR_DIR:-$HOME/.papercusp-workspaces/papercusp-workspac
 # it, but the portal DOES need this one.
 PORTAL_ENV_FILE="$CONF_DIR/portal.env"
 
-ROTATE=0; STATUS_ONLY=0
+# Capture caller overrides BEFORE sourcing the persisted file. `source` quite
+# correctly restores the last deployment, but without this snapshot it also
+# erases an explicit URL supplied for THIS convergence.
+REQUESTED_LIVEKIT_URL="${PHONE_LIVEKIT_URL:-}"
+REQUESTED_LIVEKIT_PUBLIC_URL="${PHONE_LIVEKIT_PUBLIC_URL:-}"
+
+ROTATE=0; STATUS_ONLY=0; HOSTED=0
 for a in "$@"; do
   case "$a" in
     --rotate-secret) ROTATE=1 ;;
     --status) STATUS_ONLY=1 ;;
+    --hosted) HOSTED=1 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
@@ -54,6 +62,21 @@ done
 say() { printf '  %s\n' "$*"; }
 step() { printf '\n▸ %s\n' "$*"; }
 die() { printf '\n✗ %s\n' "$*" >&2; exit 1; }
+
+upsert_env_var() {
+  local key="$1" value="$2" tmp
+  [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "invalid env key: $key"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$key contains a newline"
+  tmp="$(mktemp "$CONF_DIR/.livekit.env.XXXXXX")"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { found = 0 }
+    $0 ~ ("^" key "=") { if (!found) print key "=" value; found = 1; next }
+    { print }
+    END { if (!found) print key "=" value }
+  ' "$ENV_FILE" > "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$ENV_FILE"
+}
 
 report_status() {
   step "Status"
@@ -129,7 +152,7 @@ if [[ ! -f "$ENV_FILE" || $ROTATE == 1 ]]; then
   unset gen
   [[ -n "$KEY" && -n "$SECRET" ]] || die "could not parse a key pair out of 'livekit-server generate-keys'"
   umask 077
-  printf 'PHONE_LIVEKIT_API_KEY=%s\nPHONE_LIVEKIT_API_SECRET=%s\nPHONE_LIVEKIT_URL=ws://127.0.0.1:7890\n' \
+  printf 'PHONE_LIVEKIT_API_KEY=%s\nPHONE_LIVEKIT_API_SECRET=%s\n' \
     "$KEY" "$SECRET" > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
   say "wrote $ENV_FILE (0600) — secret not printed"
@@ -142,6 +165,31 @@ set -a; source "$ENV_FILE"; set +a
 [[ -n "${PHONE_LIVEKIT_API_KEY:-}" && -n "${PHONE_LIVEKIT_API_SECRET:-}" ]] \
   || die "$ENV_FILE is missing PHONE_LIVEKIT_API_KEY / PHONE_LIVEKIT_API_SECRET"
 say "api key ${PHONE_LIVEKIT_API_KEY:0:6}… (secret withheld)"
+
+# Internal control and browser signalling are two views of the same media
+# plane. Local installs use loopback for both. Hosted installs keep the worker
+# and RoomService client on the internal URL while returning public WSS to the
+# browser; conflating them either leaks loopback to visitors or hairpins the
+# sidecar through its own public edge.
+PHONE_LIVEKIT_URL="${REQUESTED_LIVEKIT_URL:-${PHONE_LIVEKIT_URL:-ws://127.0.0.1:7890}}"
+PHONE_LIVEKIT_PUBLIC_URL="${REQUESTED_LIVEKIT_PUBLIC_URL:-${PHONE_LIVEKIT_PUBLIC_URL:-}}"
+[[ "$PHONE_LIVEKIT_URL" =~ ^wss?://[^[:space:]]+$ ]] \
+  || die "PHONE_LIVEKIT_URL must be a ws:// or wss:// URL"
+if [[ -n "$PHONE_LIVEKIT_PUBLIC_URL" && ! "$PHONE_LIVEKIT_PUBLIC_URL" =~ ^wss?://[^[:space:]]+$ ]]; then
+  die "PHONE_LIVEKIT_PUBLIC_URL must be a ws:// or wss:// URL"
+fi
+if [[ $HOSTED == 1 && ! "$PHONE_LIVEKIT_PUBLIC_URL" =~ ^wss://[^[:space:]]+$ ]]; then
+  die "hosted deployment requires PHONE_LIVEKIT_PUBLIC_URL=wss://...; refusing to publish loopback or mixed-content signalling"
+fi
+upsert_env_var "PHONE_LIVEKIT_URL" "$PHONE_LIVEKIT_URL"
+if [[ -n "$PHONE_LIVEKIT_PUBLIC_URL" ]]; then
+  upsert_env_var "PHONE_LIVEKIT_PUBLIC_URL" "$PHONE_LIVEKIT_PUBLIC_URL"
+fi
+export PHONE_LIVEKIT_URL PHONE_LIVEKIT_PUBLIC_URL
+say "internal LiveKit URL: $PHONE_LIVEKIT_URL"
+if [[ -n "$PHONE_LIVEKIT_PUBLIC_URL" ]]; then
+  say "browser LiveKit URL: $PHONE_LIVEKIT_PUBLIC_URL"
+fi
 
 # ---------------------------------------------------------------- render
 # Pure-bash substitution: no sed escaping hazards with base64 secrets.

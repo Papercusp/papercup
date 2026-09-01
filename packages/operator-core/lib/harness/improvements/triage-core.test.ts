@@ -4,7 +4,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { applyTriageDecision, evidenceStalenessCheck, selectUntriaged, type TriageCoreDeps } from './triage-core';
+import {
+  applyTriageDecision,
+  evidenceStalenessCheck,
+  reopenRejectedTriageForCompensation,
+  selectUntriaged,
+  type TriageCoreDeps,
+} from './triage-core';
 import type { EngineerIssue } from '../../issues-engineer';
 import type { ScoredItem } from './digest';
 
@@ -21,6 +27,58 @@ function issueOf(p: Partial<EngineerIssue> & { id: string }): EngineerIssue {
     terminalCompletionRef: p.terminalCompletionRef ?? null,
   } as EngineerIssue;
 }
+
+describe('reopenRejectedTriageForCompensation', () => {
+  it('reopens the exact bulk reject and restores absent prior payload fields', async () => {
+    const rejected = issueOf({
+      id: 'undo-reject',
+      state: 'closed',
+      payload: {
+        ideaLifecycle: { state: 'triaged', triageDecision: 'reject' },
+        decidedReason: 'bulk rationale',
+        needsHuman: true,
+      },
+    });
+    const deps = depsOf(rejected);
+    const result = await reopenRejectedTriageForCompensation(
+      {
+        id: rejected.id,
+        expectedReason: 'bulk rationale',
+        priorIdeaLifecycle: null,
+        priorDecidedReason: null,
+      },
+      deps,
+    );
+    expect(result).toBe('reopened');
+    expect(deps.states).toEqual(['open']);
+    expect(deps.mergeIssuePayload).toHaveBeenCalledWith(rejected.id, {}, { unset: ['ideaLifecycle', 'decidedReason'] });
+  });
+
+  it('refuses to overwrite a different terminal decision', async () => {
+    const rejected = issueOf({
+      id: 'changed-reject',
+      state: 'closed',
+      payload: {
+        ideaLifecycle: { state: 'triaged', triageDecision: 'reject' },
+        decidedReason: 'newer reason',
+      },
+    });
+    const deps = depsOf(rejected);
+    expect(
+      await reopenRejectedTriageForCompensation(
+        {
+          id: rejected.id,
+          expectedReason: 'bulk rationale',
+          priorIdeaLifecycle: null,
+          priorDecidedReason: null,
+        },
+        deps,
+      ),
+    ).toBe('source_changed');
+    expect(deps.states).toEqual([]);
+    expect(deps.merged).toEqual([]);
+  });
+});
 
 function depsOf(
   issue: EngineerIssue | null,
@@ -120,7 +178,10 @@ describe('applyTriageDecision — the decision PERSISTS (the G1 fix)', () => {
         },
       }),
     );
-    const res = await applyTriageDecision({ id: 'i3', decision: 'gym', reason: 'verify by A/B first', by: 'Queen' }, deps);
+    const res = await applyTriageDecision(
+      { id: 'i3', decision: 'gym', reason: 'verify by A/B first', by: 'Queen' },
+      deps,
+    );
     expect(res.ok).toBe(true);
     expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageDecision).toBe('gym');
   });
@@ -202,14 +263,20 @@ describe('evidence-staleness guard (EI-18696839552593260) — place downgrades t
     const res = await applyTriageDecision({ id: 'i12', decision: 'place', reason: 'x' }, deps);
     expect(res.decision).toBe('gate');
     expect(res.evidenceDowngrade?.unresolvedIds).toEqual(['EI-999999']);
-    expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageReason).toContain('EVIDENCE-INTEGRITY GUARD');
+    expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageReason).toContain(
+      'EVIDENCE-INTEGRITY GUARD',
+    );
     expect(deps.merged[0].needsHuman).toBeUndefined();
     expect(deps.reviews).toEqual(['i12']);
   });
 
   it('downgrades same-role Scout citations because ideas are not incident evidence', async () => {
     const cited = issueOf({ id: 'EI-105', payload: { sourceRole: 'Scout' } });
-    const idea = issueOf({ id: 'i-circular', body: 'Known false-fire incident: EI-105.', payload: { sourceRole: 'Scout' } });
+    const idea = issueOf({
+      id: 'i-circular',
+      body: 'Known false-fire incident: EI-105.',
+      payload: { sourceRole: 'Scout' },
+    });
     const deps = depsOf(idea, { 'EI-105': cited });
     const res = await applyTriageDecision({ id: 'i-circular', decision: 'place', reason: 'Scout proposal' }, deps);
     expect(res.decision).toBe('gate');

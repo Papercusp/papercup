@@ -9,6 +9,8 @@ import {
   runWatchdogTick,
   isImprovementLoopTool,
   toolErrorSignalsFromRows,
+  softFailureSignalsFromRows,
+  softFailureSignalKey,
   classifyToolError,
   isEphemeralBenchmarkHarnessSlug,
   isEphemeralBenchmarkSignal,
@@ -291,6 +293,57 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
       { tool_name: 'docs:get', class: 'structural' as const, n: 7, total: 7, sample: 'boom' },
     ]);
     expect(signals.map((s) => s.key)).toEqual(['docs:get:structural']);
+  });
+});
+
+describe('soft-failure outcome sweep (EI-20219227925547855)', () => {
+  it('wires the collector to a newest-first tool+owner run partition and only selects run zero', () => {
+    const source = readFileSync(new URL('./watchdog.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/PARTITION BY tool_name, coord_owner_id ORDER BY invoked_at DESC, id DESC/);
+    expect(source).toMatch(/WHERE run_id = 0\s+AND result_outcome = 'soft-failure'/);
+    expect(source).toContain('softFailureSignalsFromRunRows(softRows, opts)');
+  });
+
+  it('fires only for the current consecutive identical-reason run per tool + owner', () => {
+    const rows = [
+      { tool_name: 'journal:record-turn', coord_owner_id: 'owner-a', invoked_at: '2026-09-01T12:04:00Z', result_outcome: 'soft-failure', soft_failure_reason: 'transcript_not_found' },
+      { tool_name: 'journal:record-turn', coord_owner_id: 'owner-a', invoked_at: '2026-09-01T12:03:00Z', result_outcome: 'soft-failure', soft_failure_reason: 'transcript_not_found' },
+      { tool_name: 'journal:record-turn', coord_owner_id: 'owner-a', invoked_at: '2026-09-01T12:02:00Z', result_outcome: 'soft-failure', soft_failure_reason: 'transcript_not_found' },
+      { tool_name: 'journal:record-turn', coord_owner_id: 'owner-a', invoked_at: '2026-09-01T12:01:00Z', result_outcome: 'ok', soft_failure_reason: null },
+      { tool_name: 'journal:record-turn', coord_owner_id: 'owner-a', invoked_at: '2026-09-01T12:00:00Z', result_outcome: 'soft-failure', soft_failure_reason: 'transcript_not_found' },
+      { tool_name: 'journal:record-turn', coord_owner_id: 'owner-b', invoked_at: '2026-09-01T12:04:00Z', result_outcome: 'soft-failure', soft_failure_reason: 'no_note' },
+      { tool_name: 'journal:record-turn', coord_owner_id: 'owner-b', invoked_at: '2026-09-01T12:03:00Z', result_outcome: 'soft-failure', soft_failure_reason: 'no_note' },
+      { tool_name: 'journal:record-turn', coord_owner_id: 'owner-b', invoked_at: '2026-09-01T12:02:00Z', result_outcome: 'soft-failure', soft_failure_reason: 'no_note' },
+    ];
+    const signals = softFailureSignalsFromRows(rows, { softFailureMinRun: 3 });
+    expect(signals).toHaveLength(2);
+    expect(signals.map((s) => s.key)).toEqual([
+      softFailureSignalKey('journal:record-turn', 'transcript_not_found'),
+      softFailureSignalKey('journal:record-turn', 'no_note'),
+    ]);
+    expect(signals[0].body).toContain('owner-a×3');
+    expect(signals[0].body).not.toContain('×4');
+  });
+
+  it('collapses multiple owners with the same reason into one stable tool+reason signal', () => {
+    const rows = [
+      ...Array.from({ length: 3 }, (_, i) => ({ tool_name: 'x:y', coord_owner_id: 'a', invoked_at: `2026-09-01T12:0${i}:00Z`, result_outcome: 'soft-failure', soft_failure_reason: 'same-reason' })),
+      ...Array.from({ length: 4 }, (_, i) => ({ tool_name: 'x:y', coord_owner_id: 'b', invoked_at: `2026-09-01T11:0${i}:00Z`, result_outcome: 'soft-failure', soft_failure_reason: 'same-reason' })),
+    ];
+    const signals = softFailureSignalsFromRows(rows, { softFailureMinRun: 3 });
+    expect(signals).toHaveLength(1);
+    expect(signals[0].key).toBe(softFailureSignalKey('x:y', 'same-reason'));
+    expect(signals[0].body).toMatch(/a×3/);
+    expect(signals[0].body).toMatch(/b×4/);
+    expect(signals[0].severity).toBe('minor');
+  });
+
+  it('does not create signals for loop-owned tools, blank reasons, or non-soft outcomes', () => {
+    expect(softFailureSignalsFromRows([
+      { tool_name: 'improvements:capture', coord_owner_id: 'a', result_outcome: 'soft-failure', soft_failure_reason: 'boom' },
+      { tool_name: 'x:y', coord_owner_id: 'a', result_outcome: 'ok', soft_failure_reason: 'boom' },
+      { tool_name: 'z:q', coord_owner_id: 'a', result_outcome: 'soft-failure', soft_failure_reason: '  ' },
+    ], { softFailureMinRun: 1 })).toEqual([]);
   });
 });
 

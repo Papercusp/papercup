@@ -20,13 +20,7 @@
  * resolve-core pattern).
  */
 
-import {
-  getIssue,
-  setIssueState,
-  commentIssue,
-  mergeIssuePayload,
-  type EngineerIssue,
-} from '../../issues-engineer';
+import { getIssue, setIssueState, commentIssue, mergeIssuePayload, type EngineerIssue } from '../../issues-engineer';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import type { ScoredItem } from './digest';
 import type { TriageDecision } from './triage';
@@ -84,7 +78,11 @@ export interface TriageCoreDeps {
     opts?: { skipCompletionGate?: boolean },
   ) => Promise<EngineerIssue | null>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<ThreadPostRow | null>;
-  mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
+  mergeIssuePayload: (
+    id: string,
+    patch: Record<string, unknown>,
+    opts?: { unset?: readonly string[] },
+  ) => Promise<EngineerIssue | null>;
   enterAgentReview: typeof enterAgentReview;
 }
 
@@ -95,6 +93,61 @@ const defaultDeps: TriageCoreDeps = {
   mergeIssuePayload,
   enterAgentReview,
 };
+
+export type ReopenRejectedTriageResult = 'reopened' | 'already_open' | 'not_found' | 'source_changed';
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+/** Restore the exact open improvement state that preceded a bulk reject. */
+export async function reopenRejectedTriageForCompensation(
+  input: {
+    id: string;
+    expectedReason: string;
+    priorIdeaLifecycle: unknown | null;
+    priorDecidedReason: string | null;
+  },
+  deps: TriageCoreDeps = defaultDeps,
+): Promise<ReopenRejectedTriageResult> {
+  const issue = await deps.getIssue(input.id);
+  if (!issue) return 'not_found';
+  const payload = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
+  const currentLifecycle = payload.ideaLifecycle ?? null;
+  const currentReason = typeof payload.decidedReason === 'string' ? payload.decidedReason : null;
+  const priorAlreadyRestored =
+    issue.state === 'open' &&
+    sameJson(currentLifecycle, input.priorIdeaLifecycle) &&
+    currentReason === input.priorDecidedReason;
+  if (priorAlreadyRestored) return 'already_open';
+
+  const isBulkReject =
+    (issue.state === 'closed' || issue.state === 'open') &&
+    currentReason === input.expectedReason &&
+    currentLifecycle !== null &&
+    typeof currentLifecycle === 'object' &&
+    (currentLifecycle as { triageDecision?: unknown }).triageDecision === 'reject';
+  if (!isBulkReject) return 'source_changed';
+
+  // State first: if the payload restore fails, a retry sees the still-stamped
+  // reject on an open row and finishes it. The opposite order would remove the
+  // compare-and-set evidence while leaving the row closed and unretryable.
+  if (issue.state !== 'open') {
+    const reopened = await deps.setIssueState(input.id, 'open', 'autonomy-revert', undefined, {
+      skipCompletionGate: true,
+    });
+    if (!reopened) return 'source_changed';
+  }
+
+  const patch: Record<string, unknown> = {};
+  const unset: string[] = [];
+  if (input.priorIdeaLifecycle === null) unset.push('ideaLifecycle');
+  else patch.ideaLifecycle = input.priorIdeaLifecycle;
+  if (input.priorDecidedReason === null) unset.push('decidedReason');
+  else patch.decidedReason = input.priorDecidedReason;
+  const restored = await deps.mergeIssuePayload(input.id, patch, { unset });
+  return restored ? 'reopened' : 'source_changed';
+}
 
 const TERMINAL_ISSUE_STATES = new Set(['resolved', 'closed']);
 
@@ -304,10 +357,12 @@ export async function applyTriageDecision(
   // Push the Learning tab's improvements feed (lazy + fire-and-forget — the
   // capture-core pattern; a missing SSE bus is a no-op).
   void trackDetached(import('../../sync-sse'))
-    .then((m) => Promise.all([
-      m.notifySyncInvalidate('learning.improvements'),
-      m.notifySyncInvalidate('learning.improvements.summary'),
-    ]))
+    .then((m) =>
+      Promise.all([
+        m.notifySyncInvalidate('learning.improvements'),
+        m.notifySyncInvalidate('learning.improvements.summary'),
+      ]),
+    )
     .catch(() => {});
   // Push-on-write for the Health tab's improvements panel
   // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —

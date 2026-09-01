@@ -29,6 +29,7 @@
  */
 
 import postgres from 'postgres';
+import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
@@ -815,6 +816,8 @@ export interface CollectOptions extends LearningSloOptions, EngagementCollectorO
   transientMinCount?: number;
   /** Caller/DX tool-error (invalid_args / role-denied) sustained-pattern bar. Default 10. */
   callerMinCount?: number;
+  /** Soft-failure outcome current consecutive-run bar. Default 10. */
+  softFailureMinRun?: number;
   /** External-rate-limit tool-error (provider 429 / TPM) volume bar. Default 8 — sustained, not a one-off spike (P-002). */
   rateLimitMinCount?: number;
   /** External-rate-limit fires MAJOR (vs minor) at this many occurrences in the window. Default 30. */
@@ -1693,6 +1696,134 @@ interface ClassifiedToolErrorRow {
   latest_at?: string | Date | null;
 }
 
+/** One complete call row used to detect a CURRENT consecutive soft-failure run. */
+export interface SoftFailureTelemetryRow {
+  tool_name: string;
+  coord_owner_id?: string | null;
+  invoked_at?: string | Date | null;
+  result_outcome?: string | null;
+  soft_failure_reason?: string | null;
+}
+
+/** One current run, aggregated in SQL after the tool+owner partition walk. */
+export interface SoftFailureRunRow {
+  tool_name: string;
+  coord_owner_id?: string | null;
+  reason: string;
+  run_length: number;
+  latest_at?: string | Date | null;
+}
+
+/** Compact, deterministic identity for a bounded soft-failure reason. */
+export function softFailureSignalKey(toolName: string, reason: string): string {
+  const normalized = reason.trim().slice(0, 512);
+  const digest = createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+  return `${toolName}:soft-failure:${digest}`;
+}
+
+/**
+ * Pure detector for effect-level failures. Rows must include every call in the
+ * lookback (not only soft failures): the first non-soft/non-identical call ends
+ * the current run. Runs are partitioned by tool + coordination owner and then
+ * collapsed by tool + reason so one broken effect creates one actionable signal.
+ */
+export function softFailureSignalsFromRows(
+  rows: SoftFailureTelemetryRow[],
+  opts: CollectOptions = {},
+): WatchdogSignal[] {
+  const minRun = opts.softFailureMinRun ?? 10;
+  if (!(minRun > 0)) return [];
+  const groups = new Map<string, SoftFailureTelemetryRow[]>();
+  for (const row of rows) {
+    if (isImprovementLoopTool(row.tool_name)) continue;
+    const owner = row.coord_owner_id ?? '<unattributed>';
+    const key = `${row.tool_name}\u0000${owner}`;
+    const group = groups.get(key);
+    if (group) group.push(row);
+    else groups.set(key, [row]);
+  }
+  const currentRuns: SoftFailureRunRow[] = [];
+  for (const group of groups.values()) {
+    const ordered = [...group].sort((a, b) => {
+      const am = a.invoked_at ? new Date(a.invoked_at).getTime() : Number.NEGATIVE_INFINITY;
+      const bm = b.invoked_at ? new Date(b.invoked_at).getTime() : Number.NEGATIVE_INFINITY;
+      return bm - am;
+    });
+    const first = ordered[0];
+    if (!first || first.result_outcome !== 'soft-failure' || typeof first.soft_failure_reason !== 'string') continue;
+    const reason = first.soft_failure_reason.trim().slice(0, 512);
+    if (!reason) continue;
+    let count = 0;
+    let latestAt: string | undefined;
+    for (const row of ordered) {
+      const rowReason = typeof row.soft_failure_reason === 'string' ? row.soft_failure_reason.trim().slice(0, 512) : '';
+      if (row.result_outcome !== 'soft-failure' || rowReason !== reason) break;
+      count += 1;
+      if (!latestAt && row.invoked_at) latestAt = toIsoOrUndefined(row.invoked_at);
+    }
+    if (count < minRun) continue;
+    currentRuns.push({
+      tool_name: first.tool_name,
+      coord_owner_id: first.coord_owner_id,
+      reason,
+      run_length: count,
+      latest_at: latestAt,
+    });
+  }
+  return softFailureSignalsFromRunRows(currentRuns, opts);
+}
+
+/** Pure signal shaping + tool/reason dedupe for SQL-aggregated current runs. */
+export function softFailureSignalsFromRunRows(
+  rows: SoftFailureRunRow[],
+  opts: CollectOptions = {},
+): WatchdogSignal[] {
+  const minRun = opts.softFailureMinRun ?? 10;
+  if (!(minRun > 0)) return [];
+  const byReason = new Map<string, {
+    toolName: string;
+    reason: string;
+    runs: Array<{ owner: string; count: number; latestAt?: string }>;
+    latestAt?: string;
+    maxRun: number;
+  }>();
+  for (const row of rows) {
+    if (isImprovementLoopTool(row.tool_name) || row.run_length < minRun) continue;
+    const reason = row.reason.trim().slice(0, 512);
+    if (!reason) continue;
+    const owner = row.coord_owner_id ?? '<unattributed>';
+    const latestAt = toIsoOrUndefined(row.latest_at);
+    const key = `${row.tool_name}\u0000${reason}`;
+    const existing = byReason.get(key);
+    const run = { owner, count: row.run_length, ...(latestAt ? { latestAt } : {}) };
+    if (existing) {
+      existing.runs.push(run);
+      existing.maxRun = Math.max(existing.maxRun, row.run_length);
+      if (latestAt && (!existing.latestAt || latestAt > existing.latestAt)) existing.latestAt = latestAt;
+    } else {
+      byReason.set(key, {
+        toolName: row.tool_name,
+        reason,
+        runs: [run],
+        latestAt,
+        maxRun: row.run_length,
+      });
+    }
+  }
+  return [...byReason.values()].map((entry) => ({
+    source: 'repeated-tool-error',
+    key: softFailureSignalKey(entry.toolName, entry.reason),
+    title: `Tool ${entry.toolName} repeatedly reports an unsuccessful effect`,
+    body:
+      `Watchdog signal (soft-failure outcome): ${entry.toolName} returned ok:false with reason ` +
+      `"${entry.reason}" in a current consecutive run (threshold ${minRun}). ` +
+      `Runs by owner: ${entry.runs.map((run) => `${run.owner}×${run.count}`).join(', ')}.`,
+    severity: entry.maxRun >= minRun * 2 ? 'major' : 'minor',
+    kind: 'change',
+    ...(entry.latestAt ? { latestAt: entry.latestAt } : {}),
+  }));
+}
+
 /**
  * Pure (watchdog-robustness P-006 / D-006): a tool name belonging to the
  * self-improvement loop ITSELF — the watchdog must never file a tool-error
@@ -1867,7 +1998,53 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
      GROUP BY tagged.tool_name, tagged.class, tagged.fingerprint, tot.total
      ORDER BY count(*) DESC
      LIMIT 30`;
-  return toolErrorSignalsFromRows(rows, opts);
+  const softMinRun = opts.softFailureMinRun ?? 10;
+  const softRows = await sql<SoftFailureRunRow[]>`
+    WITH ordered AS (
+      SELECT id, tool_name, coord_owner_id, invoked_at,
+             metadata_json->>'resultOutcome' AS result_outcome,
+             metadata_json->>'softFailureReason' AS soft_failure_reason,
+             row_number() OVER (
+               PARTITION BY tool_name, coord_owner_id ORDER BY invoked_at DESC, id DESC
+             ) AS rn,
+             lag(metadata_json->>'resultOutcome') OVER (
+               PARTITION BY tool_name, coord_owner_id ORDER BY invoked_at DESC, id DESC
+             ) AS previous_outcome,
+             lag(metadata_json->>'softFailureReason') OVER (
+               PARTITION BY tool_name, coord_owner_id ORDER BY invoked_at DESC, id DESC
+             ) AS previous_reason
+        FROM harness_shared.tool_invocations
+       WHERE invoked_at > now() - make_interval(hours => ${windowHours})
+         AND ${scopes ? sql`workspace_id = ANY(${scopes}::text[])` : sql`TRUE`}
+         AND coord_owner_id IS NOT NULL
+         AND tool_name NOT LIKE 'improvements:%'
+         AND tool_name NOT LIKE 'system:improvement-%'
+    ), grouped AS (
+      SELECT *,
+             sum(CASE
+               WHEN rn = 1 THEN 0
+               WHEN result_outcome IS DISTINCT FROM previous_outcome
+                 OR soft_failure_reason IS DISTINCT FROM previous_reason THEN 1
+               ELSE 0
+             END) OVER (
+               PARTITION BY tool_name, coord_owner_id
+               ORDER BY invoked_at DESC, id DESC ROWS UNBOUNDED PRECEDING
+             ) AS run_id
+        FROM ordered
+    )
+    SELECT tool_name, coord_owner_id,
+           max(soft_failure_reason) AS reason,
+           count(*)::int AS run_length,
+           max(invoked_at) AS latest_at
+      FROM grouped
+     WHERE run_id = 0
+       AND result_outcome = 'soft-failure'
+       AND nullif(btrim(soft_failure_reason), '') IS NOT NULL
+     GROUP BY tool_name, coord_owner_id
+    HAVING count(*) >= ${softMinRun}
+     ORDER BY count(*) DESC
+     LIMIT 100`;
+  return [...toolErrorSignalsFromRows(rows, opts), ...softFailureSignalsFromRunRows(softRows, opts)];
 }
 
 /** service-down: a watched dev endpoint currently DOWN per the service-health monitor. */
@@ -4996,6 +5173,7 @@ export const PAYLOAD_TUNABLE_KEYS = [
   // collector bars (CollectOptions)
   'redTestWindowHours', 'redTestMinFails', 'toolErrorWindowHours', 'structuralMinCount',
   'structuralMinRate', 'structuralMinCallsForRate', 'transientMinCount', 'callerMinCount',
+  'softFailureMinRun',
   'serviceHealthMaxStaleMs', 'smokeFailRecentHours', 'expiredLeaseWindowDays',
   'expiredLeaseMinCount', 'failedSpawnWindowHours', 'failedSpawnMinCount',
   // dispatcher-staleness (EI-2150): hours the auto-implement dispatcher may go silent

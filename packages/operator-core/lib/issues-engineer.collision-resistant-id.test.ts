@@ -15,6 +15,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/issues-engineer.collision-resistant-id.test.ts
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { newCollisionResistantIssueTail } from './issues-engineer';
 
 describe('newCollisionResistantIssueTail (EI-13285 collision-resistant EI id allocator)', () => {
@@ -74,5 +75,15 @@ describe('newCollisionResistantIssueTail (EI-13285 collision-resistant EI id all
     const PG_BIGINT_MAX = 9_223_372_036_854_775_807n;
     expect(tail).toBeGreaterThan(0n);
     expect(tail).toBeLessThan(PG_BIGINT_MAX);
+  });
+
+  it('does not reintroduce the obsolete process-wide allocator advisory lock (EI-22022609340079560)', () => {
+    const source = readFileSync(new URL('./issues-engineer.ts', import.meta.url), 'utf8');
+    const allocatorStart = source.indexOf('async function nextIssueId');
+    const allocatorEnd = source.indexOf('\n/**', allocatorStart);
+
+    expect(allocatorStart).toBeGreaterThanOrEqual(0);
+    expect(allocatorEnd).toBeGreaterThan(allocatorStart);
+    expect(source.slice(allocatorStart, allocatorEnd)).not.toContain('pg_advisory_xact_lock');
   });
 });

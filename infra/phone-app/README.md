@@ -68,6 +68,18 @@ journalctl --user -u papercusp-phone-livekit -f
 
 `deploy.sh --rotate-secret` mints a fresh API secret (restarts both units).
 
+For a hosted browser, keep server-to-server control on the internal URL and
+provide a separately reachable WSS origin for the browser:
+
+```bash
+PHONE_LIVEKIT_PUBLIC_URL=wss://voice.example.com infra/phone-app/deploy.sh --hosted
+```
+
+`--hosted` fails closed unless the public URL is `wss://`; it persists that URL
+beside the internal `PHONE_LIVEKIT_URL` without rewriting the API credentials.
+It does not provision DNS, a TLS reverse proxy, firewall/NAT, or TURN/TLS: those
+remain deployment prerequisites and must pass the real remote-browser check.
+
 ## Credentials
 
 The API key/secret pair lives in `~/.config/papercusp-phone/livekit.env` (0600) and

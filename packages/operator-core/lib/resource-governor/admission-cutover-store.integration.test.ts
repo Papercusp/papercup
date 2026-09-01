@@ -14,7 +14,7 @@ const MIGRATION = readFileSync(
   'utf8',
 );
 const OVERLAP_GUARD_MIGRATION = readFileSync(
-  resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1067-resource-governor-cutover-collision-guard.sql.DRAFT'),
+  resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1067-resource-governor-cutover-collision-guard.sql'),
   'utf8',
 );
 
