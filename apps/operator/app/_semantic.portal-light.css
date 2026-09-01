@@ -16,7 +16,7 @@
   --bg-raised-high: #f8f5ef;
   --fg: #20201e; /** Portal ink */
   --fg-dim: #4d4a45;
-  --fg-mute: #77736b;
+  --fg-mute: #56534c; /** AA-safe muted copy on layered portal surfaces */
   --border-muted: rgba(77, 74, 69, 0.1);
   --border: rgba(77, 74, 69, 0.2);
   --border-strong: rgba(77, 74, 69, 0.34);
@@ -31,7 +31,7 @@
   --accent-deeper: #163d36;
   --accent-ink: #fffefa;
   --good: #34755f;
-  --warn: #94671b;
+  --warn: #80560f; /** AA-safe warning copy on portal paper */
   --bad: #9c3b36;
   --warn-bg: rgba(148, 103, 27, 0.1);
   --warn-border: rgba(148, 103, 27, 0.34);
