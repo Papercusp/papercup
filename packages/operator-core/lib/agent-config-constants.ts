@@ -61,6 +61,23 @@ export const SURFACE_KEYS = [
 ] as const;
 export type SurfaceKey = (typeof SURFACE_KEYS)[number];
 
+/**
+ * The committed public-portal baseline. The portal is browser-reachable and
+ * must never inherit whichever model/backend the operator process happens to
+ * boot with: that would make quality, cost, and even model compatibility drift
+ * across CLI upgrades. A stored `surfaceModels.portal` + `backends.portal`
+ * pair may override this baseline, but the runtime uses these two values
+ * together when neither override exists and refuses a half-configured pair.
+ *
+ * `sonnet[1m]:high` matches the committed Papercup role floor in
+ * orchestrator/role-models.ts. Keep the model and backend in one object so a
+ * caller cannot import or update one without making the pairing visible.
+ */
+export const PUBLIC_PORTAL_AGENT_BASELINE = {
+  model: 'sonnet[1m]:high',
+  backend: 'claude-code',
+} as const satisfies { model: string; backend: AgentBackend };
+
 // ── Model tiers (queen-model-tier-selection-2026-06-11) ──────────────────────
 
 /** Reasoning-effort levels a model spec's `:<effort>` suffix may carry —
