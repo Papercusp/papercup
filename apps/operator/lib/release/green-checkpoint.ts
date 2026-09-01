@@ -81,7 +81,16 @@ import {
 } from "@papercusp/operator-core/lib/release/dependency-generation-prebuild";
 import { stagingContainsFrozenRepairPatch } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
-import { reapAbandonedCandidateWorktrees } from "@papercusp/operator-core/lib/release/green-candidate-worktree-reaper";
+import {
+  reapAbandonedCandidateWorktrees,
+  newestDirtyPathMtimeMs,
+  REAPER_DIRTY_STALE_MS,
+} from "@papercusp/operator-core/lib/release/green-candidate-worktree-reaper";
+import {
+  commitRepairWorktreeProgress as commitRepairWorktreeProgressImpl,
+  repairProgressRefName,
+  REPAIR_PROGRESS_REF_PREFIX,
+} from "@papercusp/operator-core/lib/release/repair-worktree-progress";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 // P-005 / D-008: the hygiene-vs-product classifier. Pure and fail-closed — it decides,
 // it never files and never promotes. Actuation (the condition flip below, and filing the
@@ -984,6 +993,13 @@ export interface CheckpointDeps {
     queue: FrozenCandidateRepairQueue,
   ): Promise<string | null>;
   frozenRepairFixerAlive?(spawnId: string): Promise<boolean | null>;
+  /**
+   * P-005: classify a DEAD fixer for attempt-refund purposes (infrastructure death with
+   * zero tool invocations = free retry). Absent or null result = no refund (fail-closed).
+   */
+  classifyDeadFrozenRepairFixer?(
+    spawnId: string,
+  ): Promise<{ infrastructure: boolean; reason: string } | null>;
   dispatchFrozenRepairFixer?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<{ spawnId: string | null; runId: string | null } | null>;
@@ -1021,6 +1037,21 @@ export interface CheckpointDeps {
   ): Promise<string | null>;
   cleanupFrozenRepairWorktree?(
     queue: FrozenCandidateRepairQueue,
+  ): Promise<void>;
+  /**
+   * P-006 (gate-verdict-liveness-and-repair-reliability-2026-08-31): snapshot any
+   * UNCOMMITTED fixer progress in the repair worktree as a WIP commit pinned to a
+   * survivor ref (`refs/papercusp/repair-progress/*`), so a killed fixer's edits
+   * survive worktree deletion and remain ancestry-visible to converge/resync/finalize.
+   * Called (a) on the dispatch path BEFORE `convergeRepairHeadWithStaging` — a committed
+   * snapshot turns "dirty" into "ahead", so converge correctly HOLDS `repairHead`
+   * instead of moving it past unpushed work — and (b) inside the production
+   * `cleanupFrozenRepairWorktree` immediately before `worktree remove --force`.
+   * MUST be fail-soft: absence or failure leaves exactly today's behaviour.
+   */
+  commitRepairWorktreeProgress?(
+    queue: FrozenCandidateRepairQueue,
+    label: string,
   ): Promise<void>;
   /** WI-488635: reclaim candidate worktrees left behind by runs that DIED before reaching
    *  a `cleanupFrozenRepairWorktree` path (crash, kill, timeout, host restart). Those are
@@ -8220,6 +8251,20 @@ async function runGreenCheckpointInner(
     let fired: FrozenRepairDispatchResult | null = null;
     let dispatchError: unknown = null;
     try {
+      // P-006: snapshot any uncommitted predecessor-fixer progress BEFORE the converge
+      // decision reads ancestry. A committed snapshot turns "dirty" into "ahead": converge
+      // then correctly HOLDS repairHead (instead of moving it past unpushed work, which
+      // stranded the dirty tree on a stale head and burned the next attempt on an
+      // UNREACHABLE finalize), and the fixer dispatched below resumes FROM the progress.
+      // Fail-soft both ways: the production impl never throws, and even a throwing
+      // injected impl must degrade to today's behaviour, never fail the dispatch.
+      try {
+        await deps.commitRepairWorktreeProgress?.(dispatchQueue, "pre-dispatch");
+      } catch (error) {
+        deps.log(
+          `warn: pre-dispatch repair-progress snapshot failed (proceeding): ${error instanceof Error ? error.message : error}`,
+        );
+      }
       // EI-21036544613774607: converge the MOVABLE repairHead onto current staging
       // BEFORE the worktree is built, so a first-time worktree build (the common case —
       // prepareFrozenRepairWorktree is a no-op once the worktree already exists) never
@@ -8631,10 +8676,34 @@ async function runGreenCheckpointInner(
           nowMs: Date.now(),
         });
       } else {
+        // P-005: a dead fixer that advanced nothing may deserve an attempt REFUND — but
+        // only on evidence (zero tool invocations = infrastructure death), never when the
+        // finalize itself failed (that branch deliberately burns to guarantee termination,
+        // see WI-1634331 above), and never without a classifier (fail-closed).
+        const deathClass = finalizeFailed
+          ? null
+          : await deps.classifyDeadFrozenRepairFixer?.(deadSpawnId).catch(() => null);
+        const attemptsBefore = repairQueue.attempts;
         repairQueue = markFrozenRepairFixerDead(repairQueue, {
           spawnId: deadSpawnId,
           nowMs: Date.now(),
+          ...(deathClass?.infrastructure
+            ? { unproductiveInfrastructureDeath: { reason: deathClass.reason } }
+            : {}),
         });
+        if (repairQueue.attempts < attemptsBefore) {
+          deps.log(
+            `FIXER_ATTEMPT_REFUNDED: fixer ${deadSpawnId} died of infrastructure without doing ` +
+              `any repair work (${deathClass?.reason ?? 'unclassified'}); attempt refunded ` +
+              `(${repairQueue.attempts} spent, free retry ${repairQueue.freeRetries ?? 0} of the ` +
+              `refund budget). The retry is free — the spawn plane, not the repair, failed here.`,
+          );
+        } else if (deathClass && !deathClass.infrastructure) {
+          deps.log(
+            `fixer ${deadSpawnId} died AFTER doing real repair work (${deathClass.reason}); ` +
+              `attempt stays spent`,
+          );
+        }
       }
       await deps.writeFrozenRepairQueue?.(repairQueue);
       decision = decideFrozenCandidateRepairQueue(repairQueue, {
@@ -14004,6 +14073,38 @@ export function realCheckpointDeps(
     );
   };
   const repairTarget = gateVerdictTargetFromEnv();
+  // P-006: shared salvage path — the `commitRepairWorktreeProgress` dep (dispatch path,
+  // pre-converge) and `cleanupFrozenRepairWorktree` (pre-deletion) both route here so the
+  // two sites can never disagree. Fail-soft by contract: any failure is logged, never thrown.
+  const salvageRepairWorktreeProgress = async (
+    queue: FrozenCandidateRepairQueue,
+    label: string,
+  ): Promise<void> => {
+    const result = await commitRepairWorktreeProgressImpl({
+      worktreePath: queue.worktreePath,
+      refName: repairProgressRefName(
+        pipelineName(cfg.integrationRoot),
+        queue.candidate,
+      ),
+      label,
+      deps: {
+        exec: async (cmd, args, o) => {
+          const r = await exec(cmd, args, {
+            timeoutMs: o.timeoutMs,
+            allowNonZero: true,
+          });
+          return { code: r.code, stdout: r.stdout, stderr: r.stderr };
+        },
+        log,
+      },
+      timeoutMs: SETUP_TREE_TIMEOUT_MS,
+    });
+    if (result.outcome === "failed") {
+      log(
+        `warn: repair-progress auto-commit failed (${label}, ${queue.worktreePath}): ${result.detail}`,
+      );
+    }
+  };
   return {
     isolationRun,
     concurrentRun,
@@ -14232,6 +14333,14 @@ export function realCheckpointDeps(
               );
             }
             return converged;
+          },
+          async commitRepairWorktreeProgress(
+            queue: FrozenCandidateRepairQueue,
+            label: string,
+          ) {
+            // P-006: fail-soft snapshot of uncommitted fixer progress. See the module
+            // header of repair-worktree-progress.ts for the full mechanism and limits.
+            await salvageRepairWorktreeProgress(queue, label);
           },
           async prepareFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
             if (existsSync(path.join(queue.worktreePath, ".git"))) {
@@ -14518,6 +14627,12 @@ export function realCheckpointDeps(
               await import("@papercusp/operator-core/lib/release/fixer-liveness");
             return releaseFixerSpawnAlive(getOrgPg().sql, spawnId);
           },
+          async classifyDeadFrozenRepairFixer(spawnId: string) {
+            const { getOrgPg } = await import("@papercusp/db-org");
+            const { classifyDeadReleaseFixerSpawn } =
+              await import("@papercusp/operator-core/lib/release/fixer-liveness");
+            return classifyDeadReleaseFixerSpawn(getOrgPg().sql, spawnId);
+          },
           async dispatchFrozenRepairFixer(queue: FrozenCandidateRepairQueue) {
             const { dispatchReleaseFixer } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
@@ -14583,6 +14698,10 @@ export function realCheckpointDeps(
           },
           async cleanupFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
             if (!existsSync(queue.worktreePath)) return;
+            // P-006: a deletion is the LAST moment any uncommitted fixer progress exists —
+            // salvage-commit it to the survivor ref before `worktree remove --force`.
+            // Fail-soft: salvageRepairWorktreeProgress never throws.
+            await salvageRepairWorktreeProgress(queue, "pre-cleanup");
             await exec(
               "git",
               [
@@ -14669,6 +14788,14 @@ export function realCheckpointDeps(
           // gate worktree went dirtyTracked 0 -> 14 in four minutes when a repair agent
           // started editing inside it; the age floor cannot see that, because editing files
           // deep in a tree never touches the top-level directory mtime.
+          //
+          // P-006 refinement: dirty ≠ live. FRESH dirt (a peer editing now) still preserves
+          // the tree untouched, but STALE dirt is a dead run's stranded work — the exact
+          // state that left 23 uncommitted files sitting in
+          // green-candidate-papercusp-5738f8817eb6 forever (preserved every sweep, ~13 GiB,
+          // edits inert). Admitting a stale-dirty tree is safe because the executor runs
+          // `salvageDirtyTree` (below) immediately before removal, committing the dirt to a
+          // survivor ref first.
           async confirmStillAbandoned(worktreePath: string) {
             if (!existsSync(path.join(worktreePath, ".git"))) return true;
             const status = await exec(
@@ -14678,7 +14805,40 @@ export function realCheckpointDeps(
             );
             // Fail CLOSED: an unreadable tree is one we cannot prove is abandoned.
             if (status.code !== 0) return false;
-            return status.stdout.trim().length === 0;
+            if (status.stdout.trim().length === 0) return true;
+            const newest = newestDirtyPathMtimeMs(worktreePath, status.stdout);
+            // Null = no dirty path could be statted — not evidence of abandonment.
+            if (newest === null) return false;
+            return Date.now() - newest >= REAPER_DIRTY_STALE_MS;
+          },
+          // P-006: last-chance salvage before the removal that confirmStillAbandoned
+          // admitted — commits stale stranded dirt and pins it to a survivor ref so the
+          // reap frees the disk WITHOUT destroying a dead run's work.
+          async salvageDirtyTree(worktreePath: string) {
+            const base = path
+              .basename(worktreePath)
+              .replace(/[^A-Za-z0-9._-]+/g, "-");
+            const result = await commitRepairWorktreeProgressImpl({
+              worktreePath,
+              refName: `${REPAIR_PROGRESS_REF_PREFIX}${base}`,
+              label: "reaper-salvage",
+              deps: {
+                exec: async (cmd, args, o) => {
+                  const r = await exec(cmd, args, {
+                    timeoutMs: o.timeoutMs,
+                    allowNonZero: true,
+                  });
+                  return { code: r.code, stdout: r.stdout, stderr: r.stderr };
+                },
+                log,
+              },
+              timeoutMs: SETUP_TREE_TIMEOUT_MS,
+            });
+            if (result.outcome === "failed") {
+              log(
+                `warn: reaper dirty-tree salvage failed for ${worktreePath} (reap proceeds): ${result.detail}`,
+              );
+            }
           },
           log,
         },

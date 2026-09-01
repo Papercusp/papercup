@@ -17,6 +17,7 @@ import {
   effectiveCandidateWorktreeMinAgeMs,
   executeCandidateWorktreeReap,
   isCandidateWorktreeName,
+  newestDirtyPathMtimeMs,
   planCandidateWorktreeReap,
   summarizeCandidateWorktreePreservations,
   type CandidateWorktreeEntry,
