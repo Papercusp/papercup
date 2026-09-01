@@ -2609,7 +2609,13 @@ training cutoffs; don't guess from memory.
    instead of silently wedging the green gate (EI-7284).
 
    > It is a ROOT entrypoint that queues behind `scripts/pc-heavy.sh`, which is
-   > what makes it runnable when you actually need it. A bare
+   > what makes it runnable when you actually need it. To measure ONE tool
+   > instead — seconds, no pc-heavy queue — **`npm run tool-weight -- <tool>`**
+   > (`--json`; `--all` for the catalog). It prints the total AND the per-field
+   > split (`description · when · notWhen · chaining · byRole`), so you cut the
+   > field that is actually heavy instead of eyeballing it — the heavy one is
+   > routinely `chaining`, not `description`.
+A bare
    > `npx vitest run tools-md-sync` is REFUSED by the heavy-command admission
    > gate under fleet load — i.e. this mandated check used to be un-runnable as
    > written during exactly the hours the fleet is busiest, so the gate got
