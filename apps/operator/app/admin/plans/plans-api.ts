@@ -1076,6 +1076,11 @@ export function postConversation(conversationId: string, body: string) {
 export function resolveConversationAnswer(args: {
   conversation_id: string;
   accepted_answer: string;
+  /** P-003: `none` for a bare CLOSE. A close note is not an answer, and the
+   *  default (mem0) would hand the next `coord:ask` a synthesized non-answer as
+   *  if it were the settled one. Omitted ⇒ the tool's own default (mem0), which
+   *  is right for a real owner answer. */
+  capture?: "mem0" | "none";
 }) {
   return postCoordination<{ ok?: boolean; state?: string; error?: string }>(
     "conversations",
@@ -1083,6 +1088,7 @@ export function resolveConversationAnswer(args: {
     {
       conversation_id: args.conversation_id,
       accepted_answer: args.accepted_answer,
+      ...(args.capture ? { capture: args.capture } : {}),
     },
   );
 }
@@ -1128,6 +1134,90 @@ export async function decideStandingApproval(args: {
   } catch {
     return {};
   }
+}
+
+/**
+ * Run one agent tool by name (P-003). The admin coordination routes only cover
+ * the `coord`/`conversations`/`improvements` groups; the owner-gate terminals
+ * added by P-003 write `work_items` and `sessions`, so they go through the same
+ * generic MCP route the card's `pot:wake` nudge already uses. `confirmed: true`
+ * matches that call — an owner click IS the confirmation.
+ */
+async function runAgentTool(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ ok?: boolean; error?: string }> {
+  const r = await fetch("/api/agent-mcp/run-tool", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, args, confirmed: true }),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`${name} → ${r.status}: ${text.slice(0, 200)}`);
+  try {
+    return JSON.parse(text) as { ok?: boolean; error?: string };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Clear the OWNER-ACTION gate on a work-item so it returns to the agents (P-003).
+ * `needsHuman:false` unsets BOTH the strict `payload.needsOwnerAction` and the
+ * legacy `payload.needsHuman` key — unsetting one and not the other is exactly
+ * how EI-21675115869134466 leaked rows back into the inbox indefinitely. The
+ * status leg runs only when the row's own status is the gate, so an item sitting
+ * in wip/blocked for its own reasons is never yanked back to open.
+ */
+export async function clearWorkItemOwnerGate(args: {
+  workItemId: string;
+  harnessSlug?: string | null;
+  statusGated: boolean;
+}): Promise<{ ok?: boolean; error?: string }> {
+  const harness = args.harnessSlug ? { harness: args.harnessSlug } : {};
+  const cleared = await runAgentTool("work_items:update", {
+    id: args.workItemId,
+    needsHuman: false,
+    ...harness,
+  });
+  if (cleared?.error) return cleared;
+  if (!args.statusGated) return cleared;
+  return await runAgentTool("work_items:set_state", {
+    id: args.workItemId,
+    state: "open",
+    ...harness,
+  });
+}
+
+/** Close a work-item as won't-do from the Queue (P-003). A terminal state
+ *  requires completion evidence, so the owner's rationale carries it. */
+export function closeWorkItem(args: {
+  workItemId: string;
+  harnessSlug?: string | null;
+  rationale: string;
+}): Promise<{ ok?: boolean; error?: string }> {
+  return runAgentTool("work_items:set_state", {
+    id: args.workItemId,
+    state: "dropped",
+    completionRef: args.rationale,
+    assumptions: "none",
+    ...(args.harnessSlug ? { harness: args.harnessSlug } : {}),
+  });
+}
+
+/** Close an open client-session gate from the Queue (P-003) — the same
+ *  `cleared` event a per-CLI hook emits when the ask resolves on its own. */
+export function clearSessionGate(args: {
+  sessionId: string;
+  client: string;
+  refId: string;
+}): Promise<{ ok?: boolean; error?: string }> {
+  return runAgentTool("sessions:ingest-gate-event", {
+    sessionId: args.sessionId,
+    client: args.client || "claude",
+    kind: "cleared",
+    refId: args.refId,
+  });
 }
 
 /* ── Hooks ─────────────────────────────────────────────────────────── */
