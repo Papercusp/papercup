@@ -761,6 +761,7 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
         LOGNAME: this.workspaceUser,
         PATH: this.agentProbePath,
       },
+      runAsUser: this.workspaceUser,
     });
   }
 

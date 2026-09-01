@@ -129,6 +129,8 @@ export interface WorkspaceHostAgentProbeInvocation {
   readonly timeoutMs: number;
   /** When supplied, this is the COMPLETE child environment, not an overlay on the parent. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Execute the probe as this real non-root account, not merely with identity-shaped env vars. */
+  readonly runAsUser?: string;
 }
 
 export interface WorkspaceHostAgentProbeOutcome {
@@ -139,6 +141,70 @@ export interface WorkspaceHostAgentProbeOutcome {
 
 export interface WorkspaceHostAgentProbeRunner {
   run(invocation: WorkspaceHostAgentProbeInvocation): Promise<WorkspaceHostAgentProbeOutcome>;
+}
+
+export interface WorkspaceHostAgentProbeProcess {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+const WORKSPACE_HOST_PROBE_RUNUSER = "/usr/sbin/runuser";
+const WORKSPACE_HOST_PROBE_ENV = "/usr/bin/env";
+const WORKSPACE_HOST_PROBE_LAUNCH_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
+const WORKSPACE_HOST_PROBE_ACCOUNT = /^[a-z_][a-z0-9_-]{0,30}$/;
+const WORKSPACE_HOST_PROBE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Build the exact process boundary for a probe.
+ *
+ * `HOME`/`USER` alone do not change a Unix identity. Production probes enter through a root-owned
+ * initializer, so the runner must drop to the workspace account before the CLI reads its 0600
+ * files. `env -i` then gives that account the caller's complete allowlisted environment and makes
+ * ambient controller/service credentials unavailable even if PAM or runuser would preserve them.
+ */
+export function buildWorkspaceHostAgentProbeProcess(
+  invocation: WorkspaceHostAgentProbeInvocation,
+): WorkspaceHostAgentProbeProcess {
+  if (!invocation.runAsUser) {
+    return {
+      command: invocation.command,
+      args: invocation.args,
+      ...(invocation.env ? { env: invocation.env } : {}),
+    };
+  }
+  if (
+    !WORKSPACE_HOST_PROBE_ACCOUNT.test(invocation.runAsUser) ||
+    invocation.runAsUser === "root"
+  ) {
+    throw new Error("agent authentication probe runAsUser must be a non-root Linux account");
+  }
+  if (!invocation.env) {
+    throw new Error("agent authentication probe runAsUser requires a complete environment");
+  }
+  const environment = Object.entries(invocation.env).map(([key, value]) => {
+    if (!WORKSPACE_HOST_PROBE_ENV_NAME.test(key) || /\0/.test(value)) {
+      throw new Error("agent authentication probe environment is not safe for env -i");
+    }
+    return `${key}=${value}`;
+  });
+  return {
+    command: WORKSPACE_HOST_PROBE_RUNUSER,
+    args: [
+      "--user",
+      invocation.runAsUser,
+      "--",
+      WORKSPACE_HOST_PROBE_ENV,
+      "-i",
+      "--",
+      ...environment,
+      invocation.command,
+      ...invocation.args,
+    ],
+    // This environment belongs only to the trusted runuser launcher. The target receives the
+    // exact allowlist above after env -i; nothing from the initializer process is inherited.
+    env: { PATH: WORKSPACE_HOST_PROBE_LAUNCH_PATH },
+  };
 }
 
 /** Public, secret-isolated evidence for one agent. */
@@ -180,9 +246,16 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
 
   run(invocation: WorkspaceHostAgentProbeInvocation): Promise<WorkspaceHostAgentProbeOutcome> {
     return new Promise((resolve, reject) => {
-      const child = this.spawnImpl(invocation.command, [...invocation.args], {
+      let processInput: WorkspaceHostAgentProbeProcess;
+      try {
+        processInput = buildWorkspaceHostAgentProbeProcess(invocation);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      const child = this.spawnImpl(processInput.command, [...processInput.args], {
         stdio: ["ignore", "pipe", "pipe"],
-        ...(invocation.env ? { env: { ...invocation.env } } : {}),
+        ...(processInput.env ? { env: { ...processInput.env } } : {}),
       });
       let stdout = '';
       let bytes = 0;
@@ -230,6 +303,7 @@ export interface ProbeWorkspaceHostAgentInput {
   readonly runner: WorkspaceHostAgentProbeRunner;
   readonly now: () => Date;
   readonly env?: Readonly<Record<string, string>>;
+  readonly runAsUser?: string;
 }
 
 /** Run one probe and reduce it to publishable evidence. */
@@ -251,6 +325,7 @@ export async function probeWorkspaceHostAgentAuthentication(
       args: spec.args,
       timeoutMs: spec.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
       ...(input.env ? { env: input.env } : {}),
+      ...(input.runAsUser ? { runAsUser: input.runAsUser } : {}),
     });
   } catch {
     // The thrown error may carry a command line or CLI text, so it is reduced to a code here and
@@ -319,6 +394,8 @@ export interface ProbeWorkspaceHostAgentsInput {
   readonly now?: () => Date;
   /** Exact environment shared by all three sequential probes. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Real Unix account shared by all three sequential probes. */
+  readonly runAsUser?: string;
 }
 
 /**
@@ -346,6 +423,7 @@ export async function probeWorkspaceHostAgents(
       runner: input.runner,
       now,
       ...(input.env ? { env: input.env } : {}),
+      ...(input.runAsUser ? { runAsUser: input.runAsUser } : {}),
     });
   }
   const complete = agents as Record<

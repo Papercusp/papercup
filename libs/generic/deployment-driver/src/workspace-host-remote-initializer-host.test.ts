@@ -377,6 +377,7 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
       });
       expect(invocation.env).not.toHaveProperty("ANTHROPIC_API_KEY");
       expect(invocation.env).not.toHaveProperty("OPENAI_API_KEY");
+      expect(invocation.runAsUser).toBe("papercusp-workspace");
     }
   });
 });

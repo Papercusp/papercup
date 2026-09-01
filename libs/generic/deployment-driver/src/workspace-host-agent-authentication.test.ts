@@ -6,6 +6,7 @@ import {
   DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES,
   NodeWorkspaceHostAgentProbeRunner,
   WORKSPACE_HOST_CANARY_AGENTS,
+  buildWorkspaceHostAgentProbeProcess,
   probeWorkspaceHostAgentAuthentication,
   probeWorkspaceHostAgents,
   workspaceHostAgentSubjectDigest,
@@ -209,6 +210,49 @@ describe('workspace-host agent authentication probes', () => {
     expect(outcome.stdout).not.toContain("OPENAI_API_KEY=");
     expect(outcome.stdout).not.toContain("ANTHROPIC_API_KEY=");
     expect(outcome.stdout).not.toContain("PATH=");
+  });
+
+  it("drops to the real workspace account through runuser and then scrubs the target environment", () => {
+    const processInput = buildWorkspaceHostAgentProbeProcess({
+      command: "claude",
+      args: ["auth", "status"],
+      timeoutMs: 5_000,
+      runAsUser: "papercusp-workspace",
+      env: {
+        HOME: "/home/papercusp-workspace",
+        USER: "papercusp-workspace",
+        LOGNAME: "papercusp-workspace",
+        PATH: "/opt/papercusp/current/bin:/usr/bin:/bin",
+      },
+    });
+    expect(processInput).toEqual({
+      command: "/usr/sbin/runuser",
+      args: [
+        "--user",
+        "papercusp-workspace",
+        "--",
+        "/usr/bin/env",
+        "-i",
+        "--",
+        "HOME=/home/papercusp-workspace",
+        "USER=papercusp-workspace",
+        "LOGNAME=papercusp-workspace",
+        "PATH=/opt/papercusp/current/bin:/usr/bin:/bin",
+        "claude",
+        "auth",
+        "status",
+      ],
+      env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+    });
+    expect(() =>
+      buildWorkspaceHostAgentProbeProcess({
+        command: "claude",
+        args: [],
+        timeoutMs: 5_000,
+        runAsUser: "root",
+        env: { PATH: "/usr/bin" },
+      }),
+    ).toThrow(/non-root Linux account/);
   });
 
   it('gives the same account a stable digest and different accounts different digests', () => {
