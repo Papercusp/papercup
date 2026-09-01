@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 300
-  corpus-blocks: 260
+  corpus-parts: 301
+  corpus-blocks: 261
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -1737,6 +1737,11 @@ Then for each path, `git rev-parse <candidate>:<path>` vs `git rev-parse <repair
   deploy re-runs it; a lock-contending re-run trips the deploy's 15s
   `lock_timeout` and rolls back (wedged all deploys ~1h on 2026-06-09). If you
   must `psql -f`, INSERT the schema_migrations row in the same transaction.
+
+⚠ **A hand-written population query over `harness_shared.work_items` is mostly OBSERVATION LANE — the tools exclude it by default and raw SQL does not.** `work_items:list` / `:search` / `:claimable` all default `includeObservations:false`, because a `lane='observation'` row is an agent's turn-end reflection: never claimable, never triaged, and correctly carrying no assignee and no plan link. Raw SQL has no such default, so `SELECT … FROM work_items WHERE <predicate>` answers about a different population than every tool you would compare it against — and the gap is widening fast (measured 2026-09-01: of open items whose title matches `P-[0-9]{3}`, 2,194 of 2,340 were observations; four weeks earlier the same query was 417 of 472). Add `AND lane IS DISTINCT FROM 'observation'` whenever you mean WORK, and say which population a count describes.
+
+A title or prose regex compounds it, because it cannot distinguish an item that EXECUTES a reference from one that merely CITES it — observations cite constantly ("…defeats P-006", "another agent owns P-018", "do not claim P-008"). So "N items reference X" is never "N items are doing X", and a remediation sized from the first number can be an order of magnitude too large.
+
 
 Full guide (acceptable file uses, two-axes model, topology):
 `/internal/docs/system/storage-policy` +
