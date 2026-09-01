@@ -58,6 +58,7 @@ import {
   produceFilteredSnapshotIntoLog,
   type SnapshotFoldProgressCallback,
   type SnapshotFoldStall,
+  type SnapshotValueTransform,
 } from './log-snapshot';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import {
@@ -76,8 +77,8 @@ export const CORESTORE_SEED_KIND = 'corestore';
  * and must not take a runtime dependency on this module to get it. Read that file for
  * the policy and its ⛔ caveats before changing what is excluded.
  */
-export { SEED_EXCLUDED_TABLES } from './seed-excluded-tables';
-import { SEED_EXCLUDED_TABLES } from './seed-excluded-tables';
+export { SEED_EXCLUDED_TABLES, SEED_REDACT_IN_PLACE_TABLES } from './seed-excluded-tables';
+import { SEED_EXCLUDED_TABLES, SEED_REDACT_IN_PLACE_TABLES } from './seed-excluded-tables';
 
 /** What {@link mintFilteredSeedContentCore} produced, for the manifest. */
 export interface MintedSeedCore {
@@ -87,6 +88,8 @@ export interface MintedSeedCore {
   readonly length: number;
   /** Rows carried by the filtered snapshot (diagnostic). */
   readonly rowCount: number;
+  /** What the projection left out and why (diagnostic; logged by the cut). */
+  readonly projection: SeedProjectionStats;
 }
 
 /**
@@ -315,6 +318,78 @@ function seedKeyCarriesBuildIdentity(
   return redactString(hbKey, literals) !== hbKey;
 }
 
+/** Why a row was left out of the public seed — counted per cut so the number is reported. */
+export interface SeedProjectionStats {
+  /** Rows whose hbKey (address) carried an identity literal — cannot be rewritten, dropped. */
+  droppedIdentityKey: number;
+  /** Rows carrying an external-integration ingest envelope (the owner's inbox) — any table. */
+  droppedPrivateIngest: number;
+  /** Content-table rows whose VALUE carried an identity literal (D-002 row-drop). */
+  droppedIdentityContent: number;
+  /** Structural-table rows (roster/policy/keys) whose value was redacted in place and kept. */
+  redactedInPlace: number;
+  /** Rows carried unchanged. */
+  carried: number;
+}
+
+/** The per-cut projection report — the numbers the cut log prints so a drop count is never invisible. */
+export interface SeedProjectionReport extends SeedProjectionStats {
+  /** Rows the filtered snapshot carries (after every drop). */
+  readonly rows: number;
+  /** Size of the literal set the projection hunted with. */
+  readonly literals: number;
+  readonly ownerKeyHex: string;
+}
+
+function logProjectionReport(r: SeedProjectionReport): void {
+  console.warn(
+    `[seed:corestore] projection for owner=${r.ownerKeyHex.slice(0, 12)}…: rows=${r.rows} carried=${r.carried} ` +
+      `redactedInPlace=${r.redactedInPlace} dropped(identityKey=${r.droppedIdentityKey} ` +
+      `privateIngest=${r.droppedPrivateIngest} identityContent=${r.droppedIdentityContent}) literals=${r.literals}`,
+  );
+}
+
+/**
+ * The seed's per-row projection (EI-22086776666843792, endgame D-002). In precedence:
+ *   1. an identity literal in the row ADDRESS (hbKey)          → DROP (cannot be rewritten);
+ *   2. an external-integration ingest envelope anywhere inside → DROP, in EVERY table;
+ *   3. an identity literal anywhere inside a CONTENT row       → DROP (replicates post-admission);
+ *   4. a STRUCTURAL row ({@link SEED_REDACT_IN_PLACE_TABLES})  → redact in place, keep;
+ *   5. otherwise carry the value as is (email shapes still fold to `[email]`).
+ * Returns the transform plus a live stats object the cut logs once the fold finishes.
+ */
+export function seedSnapshotValueTransform(
+  literals: readonly string[] = SEED_BUILD_IDENTITY_LITERALS,
+): { transform: SnapshotValueTransform; stats: SeedProjectionStats } {
+  const stats: SeedProjectionStats = {
+    droppedIdentityKey: 0,
+    droppedPrivateIngest: 0,
+    droppedIdentityContent: 0,
+    redactedInPlace: 0,
+    carried: 0,
+  };
+  const transform: SnapshotValueTransform = (value, { table, hbKey }) => {
+    if (seedKeyCarriesBuildIdentity(hbKey, literals)) {
+      stats.droppedIdentityKey += 1;
+      return DROP_SNAPSHOT_ROW;
+    }
+    if (valueCarriesExternalIngest(value)) {
+      stats.droppedPrivateIngest += 1;
+      return DROP_SNAPSHOT_ROW;
+    }
+    const structural = SEED_REDACT_IN_PLACE_TABLES.has(table);
+    if (!structural && valueCarriesSeedIdentity(value, literals)) {
+      stats.droppedIdentityContent += 1;
+      return DROP_SNAPSHOT_ROW;
+    }
+    const redacted = redactSeedValue(value, literals);
+    if (redacted !== value) stats.redactedInPlace += 1;
+    else stats.carried += 1;
+    return redacted;
+  };
+  return { transform, stats };
+}
+
 /**
  * Mint the seed's CONTENT core: one filtered snapshot of the owner's log, in a core
  * the owner never wrote (EI-20108164746219771).
@@ -350,6 +425,8 @@ export async function mintFilteredSeedContentCore(inp: {
   readonly onStall?: (stall: SnapshotFoldStall) => void;
   /** Override the cursor-stall diagnostic threshold. The scan is never timed out. */
   readonly filteredScanStallMs?: number;
+  /** Receives the per-cut projection report; omitted ⇒ one `console.warn` line. */
+  readonly onProjection?: (report: SeedProjectionReport) => void;
 }): Promise<MintedSeedCore> {
   const sourceCore = inp.sourceStore.get({
     key: Buffer.from(inp.ownerKeyHex, 'hex'),
@@ -376,6 +453,7 @@ export async function mintFilteredSeedContentCore(inp: {
             `the scan remains live and is not being aborted`,
         );
       };
+      const projection = seedSnapshotValueTransform(inp.redactValues);
       const produced = await produceFilteredSnapshotIntoLog(sourceLog, synthetic, {
         now: inp.now ?? Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -383,10 +461,13 @@ export async function mintFilteredSeedContentCore(inp: {
         onProgress: inp.onProgress,
         onStall: reportStall,
         stallMs: inp.filteredScanStallMs,
-        transformValue: (value, { hbKey }) =>
-          seedKeyCarriesBuildIdentity(hbKey, inp.redactValues)
-            ? DROP_SNAPSHOT_ROW
-            : redactSeedValue(value, inp.redactValues),
+        transformValue: projection.transform,
+      });
+      (inp.onProjection ?? logProjectionReport)({
+        ...projection.stats,
+        rows: produced.rowCount,
+        literals: (inp.redactValues ?? SEED_BUILD_IDENTITY_LITERALS).length,
+        ownerKeyHex: inp.ownerKeyHex,
       });
       if (!produced.appended) {
         throw new Error(
@@ -404,7 +485,7 @@ export async function mintFilteredSeedContentCore(inp: {
       } finally {
         teardown();
       }
-      return { keyHex: synthetic.keyHex, length, rowCount: produced.rowCount };
+      return { keyHex: synthetic.keyHex, length, rowCount: produced.rowCount, projection: projection.stats };
     } finally {
       await mintStore.close().catch(() => {});
     }
@@ -490,6 +571,8 @@ export interface CorestoreCutContext {
   readonly onStall?: (stall: SnapshotFoldStall) => void;
   /** Optional test/release override for the filtered-scan stall diagnostic. */
   readonly filteredScanStallMs?: number;
+  /** Optional sink for the per-cut projection report (default: one `console.warn` line). */
+  readonly onProjection?: (report: SeedProjectionReport) => void;
 }
 
 /** Context for {@link createCorestoreSeedProvider}.restore (first-boot time). */
@@ -868,6 +951,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
         onProgress,
         onStall,
         filteredScanStallMs,
+        onProjection,
       } =
         ctx as unknown as CorestoreCutContext;
       await mkdir(stagingDir, { recursive: true });
@@ -894,6 +978,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
                 onProgress,
                 onStall,
                 filteredScanStallMs,
+                onProjection,
               });
               filteredCoreKeys.push(minted.keyHex);
               coreLengths[minted.keyHex] = minted.length;

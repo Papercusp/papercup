@@ -21,11 +21,15 @@ import { openOwnLog, type PeerLogOp } from './peer-log';
 import {
   createCorestoreSeedProvider,
   CORESTORE_SEED_KIND,
+  isExternalTriggerEnvelope,
   mintFilteredSeedContentCore,
   redactSeedValue,
   SEED_EXCLUDED_TABLES,
+  SEED_REDACT_IN_PLACE_TABLES,
+  seedSnapshotValueTransform,
+  valueCarriesSeedIdentity,
 } from './seed-provider-corestore';
-import { produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
+import { DROP_SNAPSHOT_ROW, produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -289,7 +293,8 @@ describe('corestore seed provider', () => {
       coreKeys: [keyHex],
       stagingDir: filteredStage,
       filtered: true,
-    });
+      onProjection: () => {},
+    } as unknown as Parameters<typeof provider.cut>[0]);
     const filteredMeta = filteredEntry.meta as { coreKeys: string[]; coreLengths: Record<string, number> };
     const filteredKeyHex = filteredMeta.coreKeys[0]!;
     expect(filteredKeyHex).not.toBe(keyHex);
@@ -476,6 +481,10 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       author_pubkey: own.keyHex,
     });
     await own.append(op('plans', 'p1', { title: 'intended content', owner: privateEmail, handle: privateHandle }, 1));
+    // EI-22086776666843792 / D-002: p1 NAMES the handle, so the public projection drops the
+    // whole row. p2 carries only an email SHAPE, which is redacted in place — the control
+    // proving the row-drop is literal-driven, not "anything with an address".
+    await own.append(op('plans', 'p2', { title: 'intended content', contact: privateEmail }, 1));
     // EI-20342237035251887: the real 0.0.17 cut failed on this exact class — an
     // included plan-parts row whose KEY (not value) named the build user. A key is an
     // address and cannot be rewritten safely, so the public projection drops the row.
@@ -536,6 +545,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       ownerKeyHex: own.keyHex,
       stagingStore: staging,
       redactValues: [privateHandle],
+      onProjection: () => {},
     });
 
     // Filtering the owner's live log in place would make historical rows unreachable
@@ -562,6 +572,13 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     expect(tables.size).toBeGreaterThan(0);
     expect(tables.has('plans')).toBe(true);
     expect(tables.has('presence')).toBe(false);
+    // D-002 row-drop: the content row that NAMED the handle is gone whole (not redacted),
+    // the email-only sibling is carried with `[email]`, and the cut reports both counts.
+    expect(hbKeys.has('p1')).toBe(false);
+    expect(hbKeys.has('p2')).toBe(true);
+    expect(minted.projection.droppedIdentityContent).toBeGreaterThanOrEqual(1);
+    expect(minted.projection.droppedIdentityKey).toBeGreaterThanOrEqual(1);
+    expect(minted.projection.droppedPrivateIngest).toBe(0);
     // `usage` SURVIVES by design — it is the append-only contributor ledger and carries
     // no identity (measured against the release gate's own denylist). This assertion is
     // deliberately the opposite of what an earlier revision asserted; see the
@@ -590,6 +607,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       sourceStore: src,
       ownerKeyHex: own.keyHex,
       stagingStore: staging,
+      onProjection: () => {},
     });
 
     const core = openReplica(staging, minted.keyHex);
@@ -608,6 +626,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       stagingDir,
       filtered: true,
       redactValues: [privateHandle],
+      onProjection: () => {},
     } as unknown as Parameters<typeof provider.cut>[0]);
     const meta = entry.meta as { coreKeys: string[]; coreLengths: Record<string, number>; coreSparseFrom?: unknown };
     const [seedKey] = meta.coreKeys;
@@ -651,6 +670,110 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     expect(SEED_EXCLUDED_TABLES).not.toContain('hive-members');
     expect(SEED_EXCLUDED_TABLES).not.toContain('hive-policy');
     expect(SEED_EXCLUDED_TABLES).not.toContain('contributors');
+  });
+
+  it('structural tables are redacted in place; content tables are row-dropped (D-002)', () => {
+    // A joiner cannot function without these rows — they are never dropped for a literal.
+    for (const t of ['hive-members', 'hive-policy', 'hive-settings-by-key', 'hive-epoch-keys', 'contributors', 'usage']) {
+      expect(SEED_REDACT_IN_PLACE_TABLES.has(t)).toBe(true);
+    }
+    // Content tables must NOT be listed: that would reinstate the redact path whose blind
+    // spots (case, object keys) shipped the owner's name in build #5.
+    for (const t of ['engineer-issues', 'features-by-id', 'plans', 'plan-parts', 'coord-messages', 'plans-by-slug']) {
+      expect(SEED_REDACT_IN_PLACE_TABLES.has(t)).toBe(false);
+    }
+    // The two lists must not overlap — an excluded table has no rows to redact.
+    for (const t of SEED_EXCLUDED_TABLES) expect(SEED_REDACT_IN_PLACE_TABLES.has(t)).toBe(false);
+  });
+});
+
+/**
+ * EI-22086776666843792 / endgame D-002 — the per-row projection. Build #5's seed shipped the
+ * owner's name because the scrub matched case-sensitively and never looked at object keys,
+ * and shipped the owner's inbox because the Gmail ingest lives INSIDE work-item payloads.
+ * Each case below is the exact shape that leaked, with a control proving the rule is not
+ * vacuous. The handle is assembled at runtime so the literal never sits in tracked source.
+ */
+describe('seed projection — literal matching mirrors the release gate; private ingest is dropped', () => {
+  const handle = ['avi', 'ynw'].join('');
+  const ctx = (table: string, hbKey = 'row-1') => ({ table, hbKey });
+
+  it('drops a CONTENT row whose value carries the literal in a different CASE', () => {
+    const { transform, stats } = seedSnapshotValueTransform([handle]);
+    const shouted = handle.charAt(0).toUpperCase() + handle.slice(1);
+    expect(transform({ title: `mentions ${shouted} in prose` }, ctx('engineer-issues'))).toBe(DROP_SNAPSHOT_ROW);
+    // control: a row without the literal is carried by reference, untouched
+    const clean = { title: 'plain content' };
+    expect(transform(clean, ctx('engineer-issues'))).toBe(clean);
+    expect(stats).toMatchObject({ droppedIdentityContent: 1, carried: 1, redactedInPlace: 0 });
+  });
+
+  it('drops a CONTENT row whose value carries the literal as an object KEY', () => {
+    const { transform } = seedSnapshotValueTransform([handle]);
+    // the exact 2026-09-01 survivor: account-pool ids as JSON keys under a rubric rating
+    const value = { 'accounts-capacity': { value: { [`${handle}3`]: 'walled', accounts: 4 } } };
+    expect(valueCarriesSeedIdentity(value, [handle])).toBe(true);
+    expect(transform(value, ctx('features-by-id'))).toBe(DROP_SNAPSHOT_ROW);
+    // control: the same shape with an innocent key is carried
+    expect(valueCarriesSeedIdentity({ 'accounts-capacity': { value: { pool3: 'walled' } } }, [handle])).toBe(false);
+  });
+
+  it('a SHORT literal matches on a word boundary only, still case-insensitively', () => {
+    const short = 'kip';
+    expect(valueCarriesSeedIdentity({ t: 'kipling wrote this' }, [short])).toBe(false);
+    expect(valueCarriesSeedIdentity({ t: 'for Kip: review' }, [short])).toBe(true);
+    expect(valueCarriesSeedIdentity({ t: 'host kip-dev pid 1' }, [short])).toBe(true);
+  });
+
+  it('sees through encoded-JSON bytes, and leaves opaque binary alone', () => {
+    const encoded = Buffer.from(JSON.stringify({ note: `ping ${handle.toUpperCase()}` }));
+    expect(valueCarriesSeedIdentity(encoded, [handle])).toBe(true);
+    expect(valueCarriesSeedIdentity(Buffer.from([0xff, 0x00, 0x91, 0x02]), [handle])).toBe(false);
+  });
+
+  it('REDACTS in place — never drops — a STRUCTURAL row (the roster) carrying the literal', () => {
+    const { transform, stats } = seedSnapshotValueTransform([handle]);
+    const out = transform(
+      { github_user_id: 42, github_username: handle, device_label: `${handle}-laptop` },
+      ctx('hive-members', '42'),
+    );
+    expect(out).toEqual({ github_user_id: 42, github_username: '[build-identity]', device_label: '[build-identity]-laptop' });
+    expect(stats).toMatchObject({ redactedInPlace: 1, droppedIdentityContent: 0 });
+  });
+
+  it('redacts an identity literal used as an object KEY when the row is kept', () => {
+    expect(redactSeedValue({ [handle]: 'walled', keep: 1 }, [handle])).toEqual({ '[build-identity]': 'walled', keep: 1 });
+  });
+
+  it('drops a row carrying an external-integration ingest envelope in ANY table, with NO literal hit', () => {
+    const { transform, stats } = seedSnapshotValueTransform([]);
+    const envelope = {
+      key: 'ext:mail:message.received',
+      event: 'message.received',
+      source: 'mail',
+      payload: { from: `Intro <intro${'@'}example.org>`, subject: 'hello', html: '<!DOCTYPE html><p>private</p>' },
+    };
+    expect(isExternalTriggerEnvelope(envelope)).toBe(true);
+    // the exact nesting the 2026-09-01 seed shipped: a plan run's inputs.trigger inside a
+    // work-item payload (features-by-id PR-974-P-001)
+    const row = { harness_slug: 'h', payload: { plan_run: { runId: 974, inputs: { trigger: envelope } } } };
+    expect(transform(row, ctx('features-by-id', 'PR-974-P-001'))).toBe(DROP_SNAPSHOT_ROW);
+    // a structural table does NOT exempt the owner's inbox
+    expect(transform(row, ctx('hive-settings-by-key', 'k'))).toBe(DROP_SNAPSHOT_ROW);
+    // the canonical ingest record shape is an envelope too
+    expect(isExternalTriggerEnvelope({ source: 'mail', event: 'x', dedupeKey: 'mail:1:x', adapterPayload: { raw: 1 } })).toBe(true);
+    // controls: trigger-shaped objects WITHOUT a payload are not envelopes and are carried
+    const notEnvelope = { payload: { plan_run: { inputs: { trigger: { key: 'plan:run', source: 'cron', event: 'tick' } } } } };
+    expect(isExternalTriggerEnvelope(notEnvelope.payload.plan_run.inputs.trigger)).toBe(false);
+    expect(transform(notEnvelope, ctx('features-by-id'))).toBe(notEnvelope);
+    expect(stats).toMatchObject({ droppedPrivateIngest: 2, carried: 1 });
+  });
+
+  it('drops a row whose ADDRESS carries the literal before looking at the value', () => {
+    const { transform, stats } = seedSnapshotValueTransform([handle]);
+    const value = { body: 'clean' };
+    expect(transform(value, ctx('plan-parts', `p1/section:recon-against-${handle}-restart`))).toBe(DROP_SNAPSHOT_ROW);
+    expect(stats.droppedIdentityKey).toBe(1);
   });
 });
 
