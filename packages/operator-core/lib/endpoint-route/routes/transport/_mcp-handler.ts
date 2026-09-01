@@ -103,6 +103,7 @@ import {
   maybeListFanoutPreempt,
   maybeStatePlaneNudge,
   canRoleActOnCodeRun,
+  advisorySessionKey,
 } from '../../../code-run-batch-nudge';
 // EI-10892: detect the ok:true-but-every-field-blank code:run result — a mis-mapped
 // response shape, which is the dominant tool-waste mode and invisible to the
@@ -2722,10 +2723,24 @@ const handler = createMcpHandler(
               }
             }
           }
-          // Keys are scoped to the caller's STABLE identity: uiClientId (the
-          // per-session SID for SU/power sessions, where spawnId is per-request)
-          // falling back to spawnId (stable for signed orchestrator spawns).
+          // Durable coordination/replay keys stay scoped to the caller's STABLE identity: uiClientId
+          // (the per-session SID for SU/power sessions, where spawnId is per-request) falling back
+          // to spawnId (stable for signed orchestrator spawns). Advisory nudge state has a narrower
+          // lifetime and must additionally isolate independent MCP transport connections that happen
+          // to carry the same stable SID; see `nudgeSessionKey` below.
           const replayOwnerKey = spawnRes.ctx.uiClientId ?? spawnRes.ctx.spawnId;
+          const transportSessionId = (() => {
+            const sdkSessionId = (extra as { sessionId?: unknown })?.sessionId;
+            if (typeof sdkSessionId === 'string' && sdkSessionId.trim()) return sdkSessionId.trim();
+            // mcp-handler's current stateless POST adapter does not populate SDK `sessionId`, but
+            // clients may still carry the protocol's connection marker in this request header.
+            return headersFromExtra(extra).get('mcp-session-id')?.trim() || null;
+          })();
+          // Keep the stable owner as the prefix for attribution, but scope all process-local
+          // advisory rings/one-shot guards to the actual MCP transport when one is available.
+          // Reconnects intentionally receive a fresh advisory window; durable identity continuity
+          // remains on replayOwnerKey for coordination, replay, and result-door aggregation.
+          const nudgeSessionKey = advisorySessionKey(replayOwnerKey, transportSessionId);
           // P-006 / D-014: reserve the aggregate cohort at REQUEST START. A
           // turn-aware client supplies outputGroupId/turnId; older MCP clients
           // use beginResultDoorAggregate's explicit best-effort start cohort.
@@ -3162,7 +3177,7 @@ const handler = createMcpHandler(
                 const codeRunInSurface = !nudgeSurface || nudgeSurface.has('code:run');
                 try {
                   const hint = maybeBatchNudge({
-                    sessionKey: replayOwnerKey,
+                    sessionKey: nudgeSessionKey,
                     toolName,
                     // P-001/P-003 (code-run-batch-adoption): args unwrap tools:invoke-routed calls
                     // to their inner tool and prefill the skeletons with the burst's real args.
@@ -3197,7 +3212,7 @@ const handler = createMcpHandler(
                       // hint.tool = the EFFECTIVE tool (the inner verb for tools:invoke-routed
                       // calls), so fires attribute to the real verb, not the wrapper.
                       recordBatchNudgeFire({
-                        sessionKey: replayOwnerKey,
+                        sessionKey: nudgeSessionKey,
                         role: dispatchSpawnCtx.role,
                         kind: hint.kind,
                         toolName: hint.tool,
@@ -3250,7 +3265,7 @@ const handler = createMcpHandler(
                 // couple of set lookups, not a parse of every tool result.
                 try {
                   const preempt = maybeListFanoutPreempt({
-                    sessionKey: replayOwnerKey,
+                    sessionKey: nudgeSessionKey,
                     toolName,
                     args,
                     canCodeRun: canCodeRunHere,
@@ -3270,7 +3285,7 @@ const handler = createMcpHandler(
                     // PREDICTIVE hint convert better than the reactive ones?" is the existing
                     // conversion join with one more GROUP BY, not a new pipeline.
                     recordBatchNudgeFire({
-                      sessionKey: replayOwnerKey,
+                      sessionKey: nudgeSessionKey,
                       role: dispatchSpawnCtx.role,
                       kind: preempt.kind,
                       toolName: preempt.tool,
@@ -3290,7 +3305,7 @@ const handler = createMcpHandler(
                 // agnostic (every agent uses orient). Best-effort — never affect the tool result.
                 try {
                   const orientHint = maybeOrientDedupNudge({
-                    sessionKey: replayOwnerKey,
+                    sessionKey: nudgeSessionKey,
                     toolName,
                   });
                   if (orientHint && canAttachAdvisory && (await getFlag(FLAGS.ORIENT_DEDUP_NUDGE, 'system'))) {
@@ -3308,7 +3323,7 @@ const handler = createMcpHandler(
                 // immediately. Role-agnostic. Best-effort — never affect the tool result.
                 try {
                   const planeHint = maybeStatePlaneNudge({
-                    sessionKey: replayOwnerKey,
+                    sessionKey: nudgeSessionKey,
                     toolName,
                   });
                   if (planeHint && canAttachAdvisory && (await getFlag(FLAGS.STATE_PLANE_NUDGE, 'system'))) {
