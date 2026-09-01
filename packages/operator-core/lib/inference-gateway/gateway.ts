@@ -77,10 +77,7 @@ import {
   parseCodexRequestShape,
   type CodexBearerFetchResponse,
 } from './codex-bearer-kernel-adapter';
-import {
-  createCodexOAuthKernelAdapter,
-  type CodexOAuthFetchResponse,
-} from './codex-oauth-kernel-adapter';
+import { createCodexOAuthKernelAdapter, type CodexOAuthFetchResponse } from './codex-oauth-kernel-adapter';
 import { decideThrottleRecovery, shapeTerminalThrottle } from './throttle-recovery-ladder';
 import {
   createCodexCliKernelAdapter,
@@ -154,11 +151,7 @@ import {
   type OpenAiCacheStats,
 } from './cache-policy';
 import type { LocalBackend, LocalBackendPool } from './local-backend-pool';
-import {
-  AdmitImmediatelyDriver,
-  Governor,
-  type AdmissionContext,
-} from '../resource-governor/admission';
+import { AdmitImmediatelyDriver, Governor, type AdmissionContext } from '../resource-governor/admission';
 import {
   admitGatewayRequest,
   gatewayAdmissionBypassKeyForRequest,
@@ -171,11 +164,7 @@ import {
   type GatewayAdmissionRequestInput,
   type GatewayAdmissionGovernor,
 } from './admission-context';
-import {
-  PayloadSpoolPersistenceError,
-  PayloadTooLargeError,
-  type GatewayPayloadSpool,
-} from './payload-spool';
+import { PayloadSpoolPersistenceError, PayloadTooLargeError, type GatewayPayloadSpool } from './payload-spool';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
  *  lib `RequestInit` type omits it, but Node's global `fetch` honors it. */
@@ -1781,10 +1770,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
    * recovery decision consumes only the resulting deadline; role/tier policy
    * stays here at the gateway boundary where request headers are available.
    */
-  const absorbDeadlineForRequest = (
-    req: http.IncomingMessage,
-    requestTierMap: PriorityTierMap | undefined,
-  ): number => {
+  const absorbDeadlineForRequest = (req: http.IncomingMessage, requestTierMap: PriorityTierMap | undefined): number => {
     const priLabel = effectivePriorityLabel(req.headers);
     const reqTier = requestTierMap ? tierOf(priLabel ?? undefined, requestTierMap) : undefined;
     let effectiveMs = requestAbsorbMs > 0 ? Math.round(requestAbsorbMs * absorbTierFactor(reqTier)) : 0;
@@ -1801,11 +1787,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** Wait through gateway-owned recovery work without letting the downstream
    * idle timer kill a request whose silence is intentional. Abort wakes the
    * wait immediately so a disconnected caller never leaves a parked timer. */
-  const waitForCodexRecovery = async (
-    res: http.ServerResponse,
-    waitMs: number,
-    signal: AbortSignal,
-  ): Promise<void> => {
+  const waitForCodexRecovery = async (res: http.ServerResponse, waitMs: number, signal: AbortSignal): Promise<void> => {
     if (waitMs <= 0 || signal.aborted) return;
     res.setTimeout(downstreamIdleMs > 0 ? waitMs + downstreamIdleMs : 0);
     try {
@@ -3302,8 +3284,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // Request-derived, parsed once above — the same one fact drives the span.
         streaming: isStream,
         attemptTimeoutMs: localAttemptTimeoutMs,
-        fetchImpl: (target, init) =>
-          doFetch(target, init as RequestInit) as unknown as Promise<LocalFetchResponse>,
+        fetchImpl: (target, init) => doFetch(target, init as RequestInit) as unknown as Promise<LocalFetchResponse>,
         isUpstreamUnreachable,
         startableOnDemand,
         ensureOnDemandBackend,
@@ -3448,7 +3429,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (!res.headersSent) {
         sendJson(res, 502, {
           type: 'error',
-          error: { type: 'api_error', message: `inference-gateway local backend error: ${(e as Error).message ?? String(e)}` },
+          error: {
+            type: 'api_error',
+            message: `inference-gateway local backend error: ${(e as Error).message ?? String(e)}`,
+          },
           gateway: true,
         });
       } else {
@@ -4223,8 +4207,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // C2: only a DEAD proxy (connect error) escalates the flap backoff. A TTFB
           // stall hits every account during a hold-storm; doubling would exile a
           // budget-healthy account that recovers in seconds.
-          const reopen =
-            !failed.stalled && stableFor < EGRESS_FLAP_RESET_MS ? (egressReopenCount.get(id) ?? 0) + 1 : 0;
+          const reopen = !failed.stalled && stableFor < EGRESS_FLAP_RESET_MS ? (egressReopenCount.get(id) ?? 0) + 1 : 0;
           egressReopenCount.set(id, reopen);
           egressLastOpenAt.set(id, nowMs);
           openMs = Math.min(EGRESS_CIRCUIT_OPEN_MS * 2 ** reopen, EGRESS_CIRCUIT_OPEN_MAX_MS);
@@ -4505,10 +4488,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const prepared = await kernelAdapter.prepareAttempt(context);
             // Counted only once the token resolved — a token stall never reached
             // the proxy and must not count as an egress attempt.
-            egressAttemptsByAccount.set(
-              active.accountId,
-              (egressAttemptsByAccount.get(active.accountId) ?? 0) + 1,
-            );
+            egressAttemptsByAccount.set(active.accountId, (egressAttemptsByAccount.get(active.accountId) ?? 0) + 1);
             return prepared;
           },
         };
@@ -4617,10 +4597,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   const hasEgressProxy = !!usedEg?.proxyUrl && /^https?:\/\//i.test(usedEg.proxyUrl);
                   lastTransportHadProxy = hasEgressProxy;
                   if (!hasEgressProxy) return;
-                  egressFailsByAccount.set(
-                    account.accountId,
-                    (egressFailsByAccount.get(account.accountId) ?? 0) + 1,
-                  );
+                  egressFailsByAccount.set(account.accountId, (egressFailsByAccount.get(account.accountId) ?? 0) + 1);
                   // ESCALATING per-IP cooldown: a FIXED one re-admitted a
                   // permanently-dead egress on a constant cycle forever, so a
                   // hard-down host got no worse treatment than a one-off blip.
@@ -4751,10 +4728,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     if (siblingEgressAvailable(account, Date.now(), egressKey)) {
                       const ipStreak = (ipBare429Streak.get(egressKey) ?? 0) + 1;
                       ipBare429Streak.set(egressKey, ipStreak);
-                      const ipCoolMs = Math.min(
-                        bare429FailoverBackoffMs * 2 ** (ipStreak - 1),
-                        IP_COOLDOWN_MAX_MS,
-                      );
+                      const ipCoolMs = Math.min(bare429FailoverBackoffMs * 2 ** (ipStreak - 1), IP_COOLDOWN_MAX_MS);
                       coolIp(egressKey, ipCoolMs);
                       lastExhaustResetAt = Date.now() + bare429FailoverBackoffMs;
                       log(
@@ -4785,8 +4759,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                       }
                       // G1: with ≥half the pool out of rotation, rotating finds no
                       // capacity and merely multiplies upstream load.
-                      suppressBareBurstRotate =
-                        isFleetWideBareBurst() || noteRecentBareBurstCluster(account.accountId);
+                      suppressBareBurstRotate = isFleetWideBareBurst() || noteRecentBareBurstCluster(account.accountId);
                     }
                   } else {
                     // unifiedRejected: recordResponse already set a BOUNDED re-probe
@@ -5091,9 +5064,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // (re-acquire's own maxWaitMs, below) before any of it elapses, so a
               // live caller mid-absorb is never killed out from under an in-progress
               // internal retry. Reset once the wait settles, win or lose.
-              res.setTimeout(
-                downstreamIdleMs > 0 ? Math.max(0, absorbDeadlineAt - Date.now()) + downstreamIdleMs : 0,
-              );
+              res.setTimeout(downstreamIdleMs > 0 ? Math.max(0, absorbDeadlineAt - Date.now()) + downstreamIdleMs : 0);
               // Free the slot NOW — the wait below admits nothing until an account
               // has serviceable budget, so it cannot wedge.
               release();
@@ -5324,9 +5295,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // (it withholds every downstream byte on purpose, not because the
               // client went away) so the 120s guard can't kill a live caller
               // mid-absorb; restore it once the wait settles.
-              res.setTimeout(
-                downstreamIdleMs > 0 ? Math.max(0, absorbDeadlineAt - Date.now()) + downstreamIdleMs : 0,
-              );
+              res.setTimeout(downstreamIdleMs > 0 ? Math.max(0, absorbDeadlineAt - Date.now()) + downstreamIdleMs : 0);
               release();
               release = () => {};
               let cand = active;
@@ -5659,9 +5628,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             yield bodyBuf;
           })(),
           ownerId: routing.ownerId ?? null,
-          pin: routing.pinned
-            ? { accountId: routing.pinned.accountId, mode: routing.hardPin ? 'hard' : 'soft' }
-            : null,
+          pin: routing.pinned ? { accountId: routing.pinned.accountId, mode: routing.hardPin ? 'hard' : 'soft' } : null,
           signal: ac.signal,
         },
         policy: {
@@ -6024,52 +5991,53 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return iterable;
     };
 
-    const makeKernelAdapter = () => createCodexOAuthKernelAdapter({
-      // D-010: the account was resolved by `proxyOpenAi` BEFORE this handler was
-      // entered, and `AccountPool.active()` advances. The adapter replays it and
-      // never selects an initial account itself.
-      initialAccount: cli,
-      accounts: () => codexCliAccounts(),
-      pool: codexCliPool,
-      upstreamUrl: codexBackendUrl(url),
-      method: req.method ?? 'POST',
-      requestHeaders: req.headers,
-      stripRequestHeaders: STRIP_REQUEST,
-      streaming: wantStream,
-      // Public Luna may be backed by the ChatGPT subscription's hidden reserve
-      // tier after a premium-window 429. The adapter keeps the public model in
-      // telemetry and only rewrites the retry body at the upstream seam.
-      reserveModel: codexReserveModelFor(bodyModel),
-      tokenTimeoutMs,
-      failoverBackoffMs: bare429FailoverBackoffMs,
-      ipCooldownMaxMs: IP_COOLDOWN_MAX_MS,
-      transportCooldownMs: IP_TRANSPORT_COOLDOWN_MS,
-      resolveAccessToken: (home) => resolveCodexAccessToken(home),
-      refreshAccessToken: (home, current) => refreshCodexToken(home, current),
-      buildHeaders: buildCodexUpstreamHeaders,
-      pickEgress: (account, at) => pickEgress(account, at),
-      siblingEgressAvailable: (account, at, currentKey) => siblingEgressAvailable(account, at, currentKey),
-      coolIp: (key, ms) => coolIp(key, ms),
-      dispatcherFor: (account, entry) => dispatcherFor(account, entry as AccountEgress | undefined),
-      rateReset: (headers) => {
-        // WI-2038027 (codex 429 recovery P1): the ChatGPT codex backend speaks the x-codex-*
-        // dialect, never anthropic-ratelimit-*. Wired to `parseRateReset` this always came back
-        // empty, so `resolveResetAt` parked a WEEKLY-walled account only the 15s failover backoff
-        // — it rejoined rotation still walled and re-burned an upstream 429 on nearly every
-        // request. The codex parser reads the real dialect (exhausted-window resets + retry-after).
-        const parsed = parseCodexRateReset(headers);
-        return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs };
-      },
-      onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
-      onEgressFailure: (id) => egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1),
-      fetch: async (target, init) => {
-        const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
-        if (init.body) fetchInit.body = init.body as unknown as BodyInit;
-        if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-        const upstream = await doFetch(target, fetchInit as RequestInit);
-        return { status: upstream.status, headers: upstream.headers, body: toKernelResponseBody(upstream.body) };
-      },
-    });
+    const makeKernelAdapter = () =>
+      createCodexOAuthKernelAdapter({
+        // D-010: the account was resolved by `proxyOpenAi` BEFORE this handler was
+        // entered, and `AccountPool.active()` advances. The adapter replays it and
+        // never selects an initial account itself.
+        initialAccount: cli,
+        accounts: () => codexCliAccounts(),
+        pool: codexCliPool,
+        upstreamUrl: codexBackendUrl(url),
+        method: req.method ?? 'POST',
+        requestHeaders: req.headers,
+        stripRequestHeaders: STRIP_REQUEST,
+        streaming: wantStream,
+        // Public Luna may be backed by the ChatGPT subscription's hidden reserve
+        // tier after a premium-window 429. The adapter keeps the public model in
+        // telemetry and only rewrites the retry body at the upstream seam.
+        reserveModel: codexReserveModelFor(bodyModel),
+        tokenTimeoutMs,
+        failoverBackoffMs: bare429FailoverBackoffMs,
+        ipCooldownMaxMs: IP_COOLDOWN_MAX_MS,
+        transportCooldownMs: IP_TRANSPORT_COOLDOWN_MS,
+        resolveAccessToken: (home) => resolveCodexAccessToken(home),
+        refreshAccessToken: (home, current) => refreshCodexToken(home, current),
+        buildHeaders: buildCodexUpstreamHeaders,
+        pickEgress: (account, at) => pickEgress(account, at),
+        siblingEgressAvailable: (account, at, currentKey) => siblingEgressAvailable(account, at, currentKey),
+        coolIp: (key, ms) => coolIp(key, ms),
+        dispatcherFor: (account, entry) => dispatcherFor(account, entry as AccountEgress | undefined),
+        rateReset: (headers) => {
+          // WI-2038027 (codex 429 recovery P1): the ChatGPT codex backend speaks the x-codex-*
+          // dialect, never anthropic-ratelimit-*. Wired to `parseRateReset` this always came back
+          // empty, so `resolveResetAt` parked a WEEKLY-walled account only the 15s failover backoff
+          // — it rejoined rotation still walled and re-burned an upstream 429 on nearly every
+          // request. The codex parser reads the real dialect (exhausted-window resets + retry-after).
+          const parsed = parseCodexRateReset(headers);
+          return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs };
+        },
+        onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
+        onEgressFailure: (id) => egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1),
+        fetch: async (target, init) => {
+          const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
+          if (init.body) fetchInit.body = init.body as unknown as BodyInit;
+          if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
+          const upstream = await doFetch(target, fetchInit as RequestInit);
+          return { status: upstream.status, headers: upstream.headers, body: toKernelResponseBody(upstream.body) };
+        },
+      });
 
     type OAuthThrottleIntercept = {
       action: 'wait' | 'absorb';
@@ -6092,9 +6060,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
     let attemptsUsed = 0;
     let attemptsThisPass = 0;
-    let continuationActive = false;
     const runOAuthRecovery = async (): Promise<void> => {
-      continuationActive = false;
+      let continuationActive = false;
       interception.taken = null;
       attemptsThisPass = 0;
       // A resumed pass starts from the pool's CURRENT best account instead of
@@ -6108,434 +6075,431 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
       }
       const kernelAdapter = makeKernelAdapter();
-    try {
-      await executeGatewayRequestKernel({
-        request: {
-          lane: providerAdapters.codex.lane,
-          // Already read, normalized, cache-rewritten and (for a non-streaming
-          // caller) converted to the upstream streaming shape above — the body is
-          // what SELECTS this transport, so it cannot be read inside the kernel.
-          body: (async function* () {
-            yield bodyBuf;
-          })(),
-          ownerId: routing.ownerId ?? null,
-          pin: routing.pinned
-            ? { accountId: routing.pinned.accountId, mode: routing.hardPin ? 'hard' : 'soft' }
-            : null,
-          signal: reqAbort.signal,
-        },
-        policy: {
-          maxBodyBytes: Number(process.env.PAPERCUSP_GATEWAY_MAX_BODY_BYTES) || 64 * 1024 * 1024,
-          bodyReadTimeoutMs: requestCeilingMs,
-          requestCeilingMs,
-          // Always the SHORT deadline. Unlike the bearer and Claude lanes this one
-          // does not need D-007's request-derived resolver: the ChatGPT backend
-          // answers every request with a stream, so the live handler armed the
-          // stream deadline unconditionally.
-          ttfbTimeoutMs: upstreamStreamHeadersTimeoutMs,
-          bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
-          downstreamIdleTimeoutMs: downstreamIdleMs,
-          maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
-        },
-        telemetry: requestStageTelemetry,
-        span: stageSpan,
-        admission: {
-          // P-011 / D-027: threaded down from `proxyOpenAi` via `executeCodexLegacyTransport`,
-          // and PASS-THROUGH by design rather than by transition. `proxyOpenAi` takes the
-          // `openai-responses` slot at its own entry, above the account resolution and the
-          // transport dispatch that reach this handler, so re-admitting here would deadlock on
-          // the slot this request already holds. It is also why the slot cannot move down to
-          // this seam: this transport commits its response head BEFORE the kernel call below.
-          run: (context, task) => kernelAdmission.run(context, task),
-          observeAttempt: ({ context, response, error }) => {
-            attemptsThisPass = context.attempt;
-            attemptsSeen = attemptsUsed + context.attempt;
-            const account = context.route.accountId ?? lastAccountId;
-            // A same-account re-attempt (refreshed token, sibling IP) changes the
-            // ROUTE KEY but is not a failover — `rotateCli` only counted account
-            // changes, so count those.
-            if (account !== lastAccountId) codexFailovers++;
-            lastAccountId = account;
-            if (error) {
-              // The STATUS discriminates the token-resolve throw (503) from the
-              // transport throw (502); a TTFB timeout, the request ceiling and a
-              // downstream abort all surfaced through the old transport catch, so
-              // they classify the same way here.
-              const tokenResolve = error.status === 503;
-              codexUpstreamErrors++;
-              recordOwnerOutcome(routing.ownerId, 'upstream_error', {
-                account,
-                detail: tokenResolve ? 'oauth-token-resolve' : 'oauth-transport',
-              });
-              log(
-                'error',
-                `inference-gateway: codex OAuth ${tokenResolve ? 'token resolve' : 'upstream'} failed on '${account}': ${error.message}`,
+      try {
+        await executeGatewayRequestKernel({
+          request: {
+            lane: providerAdapters.codex.lane,
+            // Already read, normalized, cache-rewritten and (for a non-streaming
+            // caller) converted to the upstream streaming shape above — the body is
+            // what SELECTS this transport, so it cannot be read inside the kernel.
+            body: (async function* () {
+              yield bodyBuf;
+            })(),
+            ownerId: routing.ownerId ?? null,
+            pin: routing.pinned
+              ? { accountId: routing.pinned.accountId, mode: routing.hardPin ? 'hard' : 'soft' }
+              : null,
+            signal: reqAbort.signal,
+          },
+          policy: {
+            maxBodyBytes: Number(process.env.PAPERCUSP_GATEWAY_MAX_BODY_BYTES) || 64 * 1024 * 1024,
+            bodyReadTimeoutMs: requestCeilingMs,
+            requestCeilingMs,
+            // Always the SHORT deadline. Unlike the bearer and Claude lanes this one
+            // does not need D-007's request-derived resolver: the ChatGPT backend
+            // answers every request with a stream, so the live handler armed the
+            // stream deadline unconditionally.
+            ttfbTimeoutMs: upstreamStreamHeadersTimeoutMs,
+            bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
+            downstreamIdleTimeoutMs: downstreamIdleMs,
+            maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+          },
+          telemetry: requestStageTelemetry,
+          span: stageSpan,
+          admission: {
+            // P-011 / D-027: threaded down from `proxyOpenAi` via `executeCodexLegacyTransport`,
+            // and PASS-THROUGH by design rather than by transition. `proxyOpenAi` takes the
+            // `openai-responses` slot at its own entry, above the account resolution and the
+            // transport dispatch that reach this handler, so re-admitting here would deadlock on
+            // the slot this request already holds. It is also why the slot cannot move down to
+            // this seam: this transport commits its response head BEFORE the kernel call below.
+            run: (context, task) => kernelAdmission.run(context, task),
+            observeAttempt: ({ context, response, error }) => {
+              attemptsThisPass = context.attempt;
+              attemptsSeen = attemptsUsed + context.attempt;
+              const account = context.route.accountId ?? lastAccountId;
+              // A same-account re-attempt (refreshed token, sibling IP) changes the
+              // ROUTE KEY but is not a failover — `rotateCli` only counted account
+              // changes, so count those.
+              if (account !== lastAccountId) codexFailovers++;
+              lastAccountId = account;
+              if (error) {
+                // The STATUS discriminates the token-resolve throw (503) from the
+                // transport throw (502); a TTFB timeout, the request ceiling and a
+                // downstream abort all surfaced through the old transport catch, so
+                // they classify the same way here.
+                const tokenResolve = error.status === 503;
+                codexUpstreamErrors++;
+                recordOwnerOutcome(routing.ownerId, 'upstream_error', {
+                  account,
+                  detail: tokenResolve ? 'oauth-token-resolve' : 'oauth-transport',
+                });
+                log(
+                  'error',
+                  `inference-gateway: codex OAuth ${tokenResolve ? 'token resolve' : 'upstream'} failed on '${account}': ${error.message}`,
+                );
+                return;
+              }
+              if (!response) return;
+              // WI-38582: feed the ChatGPT backend's x-codex-* rate-limit headers to
+              // the SAME observer the Anthropic path uses. Every attempt counts — a
+              // 429 carries the authoritative window too.
+              deps.onResponse?.(response.metadata.headers, response.status, bodyModel, account);
+              if (response.status === 429) {
+                codexUpstream429++;
+                providerAdmission.recordThrottle('codex');
+                recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429 });
+              } else if (response.status >= 200 && response.status < 300) {
+                providerAdmission.recordSuccess('codex');
+                lastEgressOkAt.set(account, Date.now());
+                ipTransportFailStreak.delete(response.metadata.egressKey);
+              }
+            },
+          },
+          adapter: kernelAdapter,
+          // The old handler never registered in `inFlightReg`, and D-003 forbids
+          // folding a behaviour change into an extraction.
+          inFlight: { register: () => ({ unregister: () => undefined }) },
+          downstream: {
+            start: ({ status, metadata }) => {
+              const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
+              for (const [key, value] of Object.entries(metadata.headers)) {
+                if (!STRIP_RESPONSE.has(key.toLowerCase())) outHeaders[key] = value;
+              }
+              if (metadata.pinYieldedFrom) {
+                outHeaders[PIN_YIELDED_HEADER] = `${metadata.pinYieldedFrom}->${metadata.accountId}`;
+                recordOwnerOutcome(routing.ownerId, 'pin_yield', {
+                  account: metadata.accountId,
+                  detail: outHeaders[PIN_YIELDED_HEADER],
+                });
+              }
+              // WI-2038027 (codex 429 recovery P1): this head IS the gateway's final answer — the
+              // kernel ladder (reserve-tier retry, sibling-IP, rotation) is exhausted. Forwarding
+              // the raw upstream 429 stranded codex sessions: the backend's retry-after is absent
+              // or hours long, the codex CLI's ~4 client retries burn in seconds ("exceeded retry
+              // limit, last status: 429"), and nothing ever woke the session when capacity
+              // returned. Shape it exactly as the Claude lane shapes its terminal 429s: (1) a
+              // retry-after CAPPED at BEE_RETRY_AFTER_CAP_S so the client re-asks soon (by then
+              // routing has walked to a healthy account, or the stall-waker resumes it later);
+              // (2) the retries-exhausted marker so "slow" is distinguishable from "never";
+              // (3) recordStall, which is what plugs codex sessions into the stall-waker's
+              // confirm → un-wedge → capacity-gated wake recovery (stall-waker.ts).
+              if (status === 429) {
+                const parsed = parseCodexRateReset(metadata.headers);
+                const now = Date.now();
+                const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
+                const decision = decideThrottleRecovery({
+                  status,
+                  retryIntent: true,
+                  lastExhaustResetAt: ladderResetAt,
+                  state: {
+                    transientWaitedMs: recovery.transientWaitedMs,
+                    retryDeadlineAt: recovery.retryDeadlineAt,
+                    absorbDeadlineAt: recovery.absorbDeadlineAt,
+                    headersSent: res.headersSent,
+                  },
+                  budgets: {
+                    waitCapMs: ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+                    transientTotalWaitBudgetMs: TRANSIENT_TOTAL_WAIT_BUDGET_MS,
+                    overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
+                  },
+                  now,
+                });
+                if (decision.action === 'wait') {
+                  interception.taken = {
+                    action: 'wait',
+                    waitMs: decision.waitMs,
+                    backoffMs: 0,
+                    resetAt: parsed.resetAt,
+                    accountId: metadata.accountId,
+                  };
+                  throw INTERCEPT_OAUTH_THROTTLE;
+                }
+                if (decision.action === 'absorb') {
+                  interception.taken = {
+                    action: 'absorb',
+                    waitMs: 0,
+                    backoffMs: decision.backoffMs,
+                    resetAt: parsed.resetAt,
+                    accountId: metadata.accountId,
+                  };
+                  throw INTERCEPT_OAUTH_THROTTLE;
+                }
+                if (routing.ownerId) {
+                  recordStall(routing.ownerId, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
+                }
+                const shaped = shapeTerminalThrottle({
+                  attempts: attemptsSeen,
+                  retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+                  retryAfter: {
+                    resetAt: parsed.resetAt,
+                    fallbackSec: LOADSHED_RETRY_AFTER_SEC,
+                    capS: BEE_RETRY_AFTER_CAP_S,
+                  },
+                });
+                Object.assign(outHeaders, shaped.headers);
+                log(
+                  'warn',
+                  `inference-gateway: codex upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (${parsed.transient ? 'transient burst' : 'window walled'}; retry-after ${shaped.retryAfterSec}s${routing.ownerId ? `; stall recorded for '${routing.ownerId}'` : ''})`,
+                );
+              }
+              recordRoute(routing.ownerId, metadata.accountId, 'codex');
+              recordOwnerOutcome(
+                routing.ownerId,
+                status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
+                { account: metadata.accountId, status },
               );
-              return;
-            }
-            if (!response) return;
-            // WI-38582: feed the ChatGPT backend's x-codex-* rate-limit headers to
-            // the SAME observer the Anthropic path uses. Every attempt counts — a
-            // 429 carries the authoritative window too.
-            deps.onResponse?.(response.metadata.headers, response.status, bodyModel, account);
-            if (response.status === 429) {
-              codexUpstream429++;
-              providerAdmission.recordThrottle('codex');
-              recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429 });
-            } else if (response.status >= 200 && response.status < 300) {
-              providerAdmission.recordSuccess('codex');
-              lastEgressOkAt.set(account, Date.now());
-              ipTransportFailStreak.delete(response.metadata.egressKey);
-            }
-          },
-        },
-        adapter: kernelAdapter,
-        // The old handler never registered in `inFlightReg`, and D-003 forbids
-        // folding a behaviour change into an extraction.
-        inFlight: { register: () => ({ unregister: () => undefined }) },
-        downstream: {
-          start: ({ status, metadata }) => {
-            const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
-            for (const [key, value] of Object.entries(metadata.headers)) {
-              if (!STRIP_RESPONSE.has(key.toLowerCase())) outHeaders[key] = value;
-            }
-            if (metadata.pinYieldedFrom) {
-              outHeaders[PIN_YIELDED_HEADER] = `${metadata.pinYieldedFrom}->${metadata.accountId}`;
-              recordOwnerOutcome(routing.ownerId, 'pin_yield', {
-                account: metadata.accountId,
-                detail: outHeaders[PIN_YIELDED_HEADER],
-              });
-            }
-            // WI-2038027 (codex 429 recovery P1): this head IS the gateway's final answer — the
-            // kernel ladder (reserve-tier retry, sibling-IP, rotation) is exhausted. Forwarding
-            // the raw upstream 429 stranded codex sessions: the backend's retry-after is absent
-            // or hours long, the codex CLI's ~4 client retries burn in seconds ("exceeded retry
-            // limit, last status: 429"), and nothing ever woke the session when capacity
-            // returned. Shape it exactly as the Claude lane shapes its terminal 429s: (1) a
-            // retry-after CAPPED at BEE_RETRY_AFTER_CAP_S so the client re-asks soon (by then
-            // routing has walked to a healthy account, or the stall-waker resumes it later);
-            // (2) the retries-exhausted marker so "slow" is distinguishable from "never";
-            // (3) recordStall, which is what plugs codex sessions into the stall-waker's
-            // confirm → un-wedge → capacity-gated wake recovery (stall-waker.ts).
-            if (status === 429) {
-              const parsed = parseCodexRateReset(metadata.headers);
-              const now = Date.now();
-              const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
-              const decision = decideThrottleRecovery({
-                status,
-                retryIntent: true,
-                lastExhaustResetAt: ladderResetAt,
-                state: {
-                  transientWaitedMs: recovery.transientWaitedMs,
-                  retryDeadlineAt: recovery.retryDeadlineAt,
-                  absorbDeadlineAt: recovery.absorbDeadlineAt,
-                  headersSent: res.headersSent,
-                },
-                budgets: {
-                  waitCapMs: ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
-                  transientTotalWaitBudgetMs: TRANSIENT_TOTAL_WAIT_BUDGET_MS,
-                  overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
-                },
-                now,
-              });
-              if (decision.action === 'wait') {
-                interception.taken = {
-                  action: 'wait',
-                  waitMs: decision.waitMs,
-                  backoffMs: 0,
-                  resetAt: parsed.resetAt,
-                  accountId: metadata.accountId,
-                };
-                throw INTERCEPT_OAUTH_THROTTLE;
-              }
-              if (decision.action === 'absorb') {
-                interception.taken = {
-                  action: 'absorb',
-                  waitMs: 0,
-                  backoffMs: decision.backoffMs,
-                  resetAt: parsed.resetAt,
-                  accountId: metadata.accountId,
-                };
-                throw INTERCEPT_OAUTH_THROTTLE;
-              }
-              if (routing.ownerId) {
-                recordStall(routing.ownerId, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
-              }
-              const shaped = shapeTerminalThrottle({
-                attempts: attemptsSeen,
-                retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
-                retryAfter: {
-                  resetAt: parsed.resetAt,
-                  fallbackSec: LOADSHED_RETRY_AFTER_SEC,
-                  capS: BEE_RETRY_AFTER_CAP_S,
-                },
-              });
-              Object.assign(outHeaders, shaped.headers);
-              log(
-                'warn',
-                `inference-gateway: codex upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (${parsed.transient ? 'transient burst' : 'window walled'}; retry-after ${shaped.retryAfterSec}s${routing.ownerId ? `; stall recorded for '${routing.ownerId}'` : ''})`,
+
+              cacheProbe = new PassThrough();
+              // Keep the tee flowing for the stream's whole life: the observer detaches
+              // its own 'data' listener once it has the usage record.
+              cacheProbe.on('data', () => undefined);
+              cacheProbe.on('error', () => undefined);
+              observeOpenAiCacheUsage(
+                cacheProbe,
+                metadata.accountId,
+                attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
               );
-            }
-            recordRoute(routing.ownerId, metadata.accountId, 'codex');
-            recordOwnerOutcome(
-              routing.ownerId,
-              status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
-              { account: metadata.accountId, status },
-            );
 
-            cacheProbe = new PassThrough();
-            // Keep the tee flowing for the stream's whole life: the observer detaches
-            // its own 'data' listener once it has the usage record.
-            cacheProbe.on('data', () => undefined);
-            cacheProbe.on('error', () => undefined);
-            observeOpenAiCacheUsage(
-              cacheProbe,
-              metadata.accountId,
-              attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
-            );
-
-            // Do not expose the transport detail that a non-streaming request was
-            // served by SSE: withhold the head and aggregate. Error statuses
-            // (including a hard-pinned 429) stay byte-transparent.
-            if (!wantStream && status >= 200 && status < 300) {
-              pendingHead = { status, headers: { ...outHeaders, 'content-type': 'application/json' } };
-              aggregateSource = new PassThrough();
-              aggregateSource.on('error', () => undefined);
-              // `res.setTimeout` measures DOWNSTREAM socket inactivity, while this
-              // path withholds every downstream byte until aggregation completes.
-              // Give aggregation its full budget plus one normal drain window.
-              res.setTimeout(downstreamIdleMs > 0 ? codexOAuthNonStreamTimeoutMs + downstreamIdleMs : 0);
-              aggregatePromise = aggregateCodexNonStreamResponse(aggregateSource, {
-                contentType: metadata.headers['content-type'] ?? null,
-                maxBytes: codexOAuthNonStreamMaxBytes,
-                timeoutMs: codexOAuthNonStreamTimeoutMs,
-                signal: reqAbort.signal,
-                onTimeout: () =>
-                  abortRequest(`codex OAuth non-stream response timed out after ${codexOAuthNonStreamTimeoutMs}ms`),
-              });
-              return;
-            }
-            res.writeHead(status, outHeaders);
-          },
-          write: async (chunk) => {
-            cacheProbe?.write(chunk);
-            if (aggregateSource) {
-              aggregateSource.write(chunk);
-              return;
-            }
-            // Honour downstream backpressure exactly as the old `nodeStream.pipe(res)` did.
-            if (!res.write(chunk)) {
-              await new Promise<void>((resolve) => {
-                const settle = () => {
-                  res.off('drain', settle);
-                  res.off('close', settle);
-                  res.off('error', settle);
-                  resolve();
-                };
-                res.once('drain', settle);
-                res.once('close', settle);
-                res.once('error', settle);
-              });
-            }
-          },
-          end: async () => {
-            endCacheProbe();
-            if (!aggregateSource || !aggregatePromise || !pendingHead) {
-              res.end();
-              return;
-            }
-            const source = aggregateSource;
-            const pending = aggregatePromise;
-            const head = pendingHead;
-            aggregateSource = null;
-            source.end();
-            let aggregated: Buffer;
-            try {
-              aggregated = await pending;
-            } catch (e) {
+              // Do not expose the transport detail that a non-streaming request was
+              // served by SSE: withhold the head and aggregate. Error statuses
+              // (including a hard-pinned 429) stay byte-transparent.
+              if (!wantStream && status >= 200 && status < 300) {
+                pendingHead = { status, headers: { ...outHeaders, 'content-type': 'application/json' } };
+                aggregateSource = new PassThrough();
+                aggregateSource.on('error', () => undefined);
+                // `res.setTimeout` measures DOWNSTREAM socket inactivity, while this
+                // path withholds every downstream byte until aggregation completes.
+                // Give aggregation its full budget plus one normal drain window.
+                res.setTimeout(downstreamIdleMs > 0 ? codexOAuthNonStreamTimeoutMs + downstreamIdleMs : 0);
+                aggregatePromise = aggregateCodexNonStreamResponse(aggregateSource, {
+                  contentType: metadata.headers['content-type'] ?? null,
+                  maxBytes: codexOAuthNonStreamMaxBytes,
+                  timeoutMs: codexOAuthNonStreamTimeoutMs,
+                  signal: reqAbort.signal,
+                  onTimeout: () =>
+                    abortRequest(`codex OAuth non-stream response timed out after ${codexOAuthNonStreamTimeoutMs}ms`),
+                });
+                return;
+              }
+              res.writeHead(status, outHeaders);
+            },
+            write: async (chunk) => {
+              cacheProbe?.write(chunk);
+              if (aggregateSource) {
+                aggregateSource.write(chunk);
+                return;
+              }
+              // Honour downstream backpressure exactly as the old `nodeStream.pipe(res)` did.
+              if (!res.write(chunk)) {
+                await new Promise<void>((resolve) => {
+                  const settle = () => {
+                    res.off('drain', settle);
+                    res.off('close', settle);
+                    res.off('error', settle);
+                    resolve();
+                  };
+                  res.once('drain', settle);
+                  res.once('close', settle);
+                  res.once('error', settle);
+                });
+              }
+            },
+            end: async () => {
+              endCacheProbe();
+              if (!aggregateSource || !aggregatePromise || !pendingHead) {
+                res.end();
+                return;
+              }
+              const source = aggregateSource;
+              const pending = aggregatePromise;
+              const head = pendingHead;
+              aggregateSource = null;
+              source.end();
+              let aggregated: Buffer;
+              try {
+                aggregated = await pending;
+              } catch (e) {
+                res.setTimeout(downstreamIdleMs);
+                const aggregateError =
+                  e instanceof CodexNonStreamAggregateError
+                    ? e
+                    : new CodexNonStreamAggregateError(
+                        'invalid',
+                        `codex OAuth non-stream response aggregation failed: ${(e as Error).message}`,
+                      );
+                // `onTimeout` aborts the request so the socket is torn down. That abort
+                // is an aggregation timeout, not a downstream cancellation, so only the
+                // helper's explicit aborted code suppresses a gateway response.
+                if (aggregateError.code === 'aborted') {
+                  if (!res.destroyed && !res.writableEnded) res.destroy();
+                  return;
+                }
+                codexUpstreamErrors++;
+                recordOwnerOutcome(routing.ownerId, 'upstream_error', {
+                  account: lastAccountId,
+                  detail: `oauth-nonstream-${aggregateError.code}`,
+                });
+                log(
+                  'error',
+                  `inference-gateway: codex OAuth non-stream aggregation failed on '${lastAccountId}': ${aggregateError.message}`,
+                );
+                if (!res.headersSent) {
+                  sendJson(
+                    res,
+                    aggregateError.code === 'timeout' ? 504 : 502,
+                    {
+                      type: 'error',
+                      error: {
+                        type: aggregateError.code === 'timeout' ? 'timeout_error' : 'api_error',
+                        message: `inference-gateway: codex OAuth non-stream response ${aggregateError.message}`,
+                      },
+                      gateway: true,
+                    },
+                    { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+                  );
+                }
+                return;
+              }
               res.setTimeout(downstreamIdleMs);
-              const aggregateError =
-                e instanceof CodexNonStreamAggregateError
-                  ? e
-                  : new CodexNonStreamAggregateError(
-                      'invalid',
-                      `codex OAuth non-stream response aggregation failed: ${(e as Error).message}`,
-                    );
-              // `onTimeout` aborts the request so the socket is torn down. That abort
-              // is an aggregation timeout, not a downstream cancellation, so only the
-              // helper's explicit aborted code suppresses a gateway response.
-              if (aggregateError.code === 'aborted') {
+              if (reqAbort.signal.aborted) {
                 if (!res.destroyed && !res.writableEnded) res.destroy();
                 return;
               }
-              codexUpstreamErrors++;
-              recordOwnerOutcome(routing.ownerId, 'upstream_error', {
-                account: lastAccountId,
-                detail: `oauth-nonstream-${aggregateError.code}`,
-              });
-              log(
-                'error',
-                `inference-gateway: codex OAuth non-stream aggregation failed on '${lastAccountId}': ${aggregateError.message}`,
-              );
-              if (!res.headersSent) {
-                sendJson(
-                  res,
-                  aggregateError.code === 'timeout' ? 504 : 502,
-                  {
-                    type: 'error',
-                    error: {
-                      type: aggregateError.code === 'timeout' ? 'timeout_error' : 'api_error',
-                      message: `inference-gateway: codex OAuth non-stream response ${aggregateError.message}`,
-                    },
-                    gateway: true,
-                  },
-                  { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
-                );
-              }
-              return;
-            }
-            res.setTimeout(downstreamIdleMs);
-            if (reqAbort.signal.aborted) {
-              if (!res.destroyed && !res.writableEnded) res.destroy();
-              return;
-            }
-            res.writeHead(head.status, head.headers);
-            res.end(aggregated);
+              res.writeHead(head.status, head.headers);
+              res.end(aggregated);
+            },
           },
-        },
-      });
-    } catch (error) {
-      const taken = takeOAuthIntercept();
-      // As on the Claude and bearer lanes, the flag survives kernel error
-      // normalization while thrown-error identity deliberately does not.
-      if (taken) {
-        attemptsUsed += attemptsThisPass;
-        continuationActive = true;
-        if (taken.action === 'wait') {
-          recovery.transientWaitedMs += taken.waitMs;
+        });
+      } catch (error) {
+        const taken = takeOAuthIntercept();
+        // As on the Claude and bearer lanes, the flag survives kernel error
+        // normalization while thrown-error identity deliberately does not.
+        if (taken) {
+          attemptsUsed += attemptsThisPass;
+          continuationActive = true;
+          if (taken.action === 'wait') {
+            recovery.transientWaitedMs += taken.waitMs;
+            log(
+              'warn',
+              `inference-gateway: Codex OAuth pool transiently throttled → wait ${taken.waitMs}ms + retry (wait-budget ${recovery.transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`,
+            );
+            await waitForCodexRecovery(res, taken.waitMs, reqAbort.signal);
+            return runOAuthRecovery();
+          }
+          if (!kernelAdmission.park) {
+            throw new Error('inference-gateway: codex OAuth absorb requires cooperative lane admission');
+          }
+          const now = Date.now();
+          const remainingMs = Math.max(0, recovery.absorbDeadlineAt - now);
+          const capacityWaitMs = taken.resetAt
+            ? Math.max(0, taken.resetAt - now)
+            : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
+          const waitMs = Math.min(remainingMs, capacityWaitMs);
+          recovery.transientWaitedMs = 0;
           log(
             'warn',
-            `inference-gateway: Codex OAuth pool transiently throttled → wait ${taken.waitMs}ms + retry (wait-budget ${recovery.transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`,
+            `inference-gateway: Codex OAuth absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms, then re-enter (${remainingMs}ms budget left)`,
           );
-          await waitForCodexRecovery(res, taken.waitMs, reqAbort.signal);
-          return runOAuthRecovery();
-        }
-        if (!kernelAdmission.park) {
-          throw new Error('inference-gateway: codex OAuth absorb requires cooperative lane admission');
-        }
-        const now = Date.now();
-        const remainingMs = Math.max(0, recovery.absorbDeadlineAt - now);
-        const capacityWaitMs = taken.resetAt
-          ? Math.max(0, taken.resetAt - now)
-          : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
-        const waitMs = Math.min(remainingMs, capacityWaitMs);
-        recovery.transientWaitedMs = 0;
-        log(
-          'warn',
-          `inference-gateway: Codex OAuth absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms, then re-enter (${remainingMs}ms budget left)`,
-        );
-        return kernelAdmission.park(
-          async () => {
+          return kernelAdmission.park(async () => {
             await waitForCodexRecovery(res, waitMs, reqAbort.signal);
             recovery.retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
-          },
-          runOAuthRecovery,
-        );
-      }
-      endCacheProbe();
-      const failure =
-        error instanceof GatewayRequestKernelError
-          ? error
-          : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
-              code: 'gateway-error',
-              outcome: 'gateway-error',
-              status: 500,
-              cause: error,
+          }, runOAuthRecovery);
+        }
+        endCacheProbe();
+        const failure =
+          error instanceof GatewayRequestKernelError
+            ? error
+            : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
+                code: 'gateway-error',
+                outcome: 'gateway-error',
+                status: 500,
+                cause: error,
+              });
+
+        if (failure.code === 'request-ceiling') {
+          log(
+            'error',
+            `inference-gateway: codex OAuth request hit the ${requestCeilingMs}ms hard ceiling on '${lastAccountId}' — force-terminating`,
+          );
+          try {
+            req.destroy();
+          } catch {
+            /* already torn down */
+          }
+          try {
+            res.destroy();
+          } catch {
+            /* already torn down */
+          }
+          return;
+        }
+
+        if (failure.code === 'body-read-timeout' || failure.code === 'body-too-large') {
+          try {
+            req.destroy();
+          } catch {
+            /* already torn down */
+          }
+          if (!reqAbort.signal.aborted && !res.headersSent) {
+            sendJson(res, 503, {
+              type: 'error',
+              error: {
+                type: 'overloaded_error',
+                message: 'inference-gateway: codex request body read stalled; retry shortly',
+              },
+              gateway: true,
             });
-
-      if (failure.code === 'request-ceiling') {
-        log(
-          'error',
-          `inference-gateway: codex OAuth request hit the ${requestCeilingMs}ms hard ceiling on '${lastAccountId}' — force-terminating`,
-        );
-        try {
-          req.destroy();
-        } catch {
-          /* already torn down */
+          }
+          return;
         }
-        try {
+
+        if (res.headersSent) {
           res.destroy();
-        } catch {
-          /* already torn down */
+          return;
         }
-        return;
-      }
 
-      if (failure.code === 'body-read-timeout' || failure.code === 'body-too-large') {
-        try {
-          req.destroy();
-        } catch {
-          /* already torn down */
+        if (failure.code === 'upstream-error' && failure.status === 503) {
+          // OAuth resolution never produced a usable token on any account.
+          sendJson(
+            res,
+            503,
+            { type: 'error', error: { type: 'overloaded_error', message: failure.message }, gateway: true },
+            { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+          );
+          return;
         }
-        if (!reqAbort.signal.aborted && !res.headersSent) {
-          sendJson(res, 503, {
+        if (failure.code === 'invalid-route' || failure.code === 'invalid-pin') {
+          sendJson(
+            res,
+            failure.status ?? 503,
+            { type: 'error', error: { type: 'api_error', message: failure.message }, gateway: true },
+            { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+          );
+          return;
+        }
+        sendJson(
+          res,
+          502,
+          {
             type: 'error',
             error: {
-              type: 'overloaded_error',
-              message: 'inference-gateway: codex request body read stalled; retry shortly',
+              type: 'api_error',
+              message: failure.message.startsWith('inference-gateway:')
+                ? failure.message
+                : `inference-gateway: codex OAuth upstream failed: ${failure.message}`,
             },
             gateway: true,
-          });
-        }
-        return;
-      }
-
-      if (res.headersSent) {
-        res.destroy();
-        return;
-      }
-
-      if (failure.code === 'upstream-error' && failure.status === 503) {
-        // OAuth resolution never produced a usable token on any account.
-        sendJson(
-          res,
-          503,
-          { type: 'error', error: { type: 'overloaded_error', message: failure.message }, gateway: true },
-          { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: lastAccountId },
-        );
-        return;
-      }
-      if (failure.code === 'invalid-route' || failure.code === 'invalid-pin') {
-        sendJson(
-          res,
-          failure.status ?? 503,
-          { type: 'error', error: { type: 'api_error', message: failure.message }, gateway: true },
+          },
           { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
         );
-        return;
+      } finally {
+        if (!continuationActive) {
+          endCacheProbe();
+          req.off('aborted', onReqAborted);
+          res.off('close', onResClose);
+        }
       }
-      sendJson(
-        res,
-        502,
-        {
-          type: 'error',
-          error: {
-            type: 'api_error',
-            message: failure.message.startsWith('inference-gateway:')
-              ? failure.message
-              : `inference-gateway: codex OAuth upstream failed: ${failure.message}`,
-          },
-          gateway: true,
-        },
-        { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
-      );
-    } finally {
-      if (!continuationActive) {
-        endCacheProbe();
-        req.off('aborted', onReqAborted);
-        res.off('close', onResClose);
-      }
-    }
     };
     await runOAuthRecovery();
   }
@@ -6817,352 +6781,347 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
     let attemptsUsed = 0;
     let attemptsThisPass = 0;
-    let continuationActive = false;
     const runBearerRecovery = async (): Promise<void> => {
-      continuationActive = false;
+      let continuationActive = false;
       interception.taken = null;
       attemptsThisPass = 0;
-    try {
-      await executeGatewayRequestKernel({
-        request: {
-          lane: adapter.lane,
-          // MUST go through readBody: it serves the admission spool's pre-read
-          // buffer (`preReadRequestBodies`). Iterating `req` directly here would
-          // send an EMPTY body on every request the spool already drained.
-          body: (async function* () {
-            yield await readBody(req);
-          })(),
-          ownerId: wantOwner ?? null,
-          pin: pinnedBearer ? { accountId: pinnedBearer.accountId, mode: hardPin ? 'hard' : 'soft' } : null,
-          signal: reqAbort.signal,
-        },
-        policy: {
-          // D-009: kernel adoption necessarily adds a request-body byte cap the
-          // hand-rolled path never had. Sized well above the admission spool's own
-          // 32MB cap so it is non-binding wherever the spool is enabled.
-          maxBodyBytes: Number(process.env.PAPERCUSP_GATEWAY_MAX_BODY_BYTES) || 64 * 1024 * 1024,
-          bodyReadTimeoutMs: requestCeilingMs,
-          requestCeilingMs,
-          // D-007: a stream:true request gets the SHORT TTFB headers deadline, a
-          // non-streaming one keeps the generous deadline. Derived from the REQUEST
-          // body by the SAME parser the adapter uses — two hand-written parsers here
-          // is precisely the drift D-007 was raised to correct.
-          ttfbTimeoutMs: ({ body }) =>
-            parseCodexRequestShape(body).streaming ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs,
-          bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
-          downstreamIdleTimeoutMs: downstreamIdleMs,
-          maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
-        },
-        telemetry: requestStageTelemetry,
-        // D-008: adopt the span this HTTP request already opened. Without it the
-        // kernel would begin a SECOND span and double-count the request.
-        span: stageSpan,
-        admission: {
-          // P-011 / D-027: arrives from this executor's caller and is PASS-THROUGH by design.
-          // `proxyOpenAi`'s entry wrapper already took the `openai-responses` slot around this
-          // whole body, so exactly one of the two admits and re-admitting here would deadlock
-          // against the slot this request already holds.
-          run: (context, task) => kernelAdmission.run(context, task),
-          observeAttempt: ({ context, response, error }) => {
-            attemptsThisPass = context.attempt;
-            attemptsSeen = attemptsUsed + context.attempt;
-            const account = context.route.accountId ?? lastAccountId;
-            lastAccountId = account;
-            if (lastRouteKey !== null && lastRouteKey !== context.route.key) codexFailovers++;
-            lastRouteKey = context.route.key;
-            if (error) {
-              // The STATUS is the only discriminator between the token-read throw
-              // (`prepareAttempt`, 503) and the transport throw (`executeAttempt`,
-              // 502); a TTFB timeout, the request ceiling and a downstream abort all
-              // surfaced through the old transport catch, so they classify the same
-              // way here. Do not "tidy" those statuses in the adapter.
-              const tokenResolve = error.status === 503;
-              codexUpstreamErrors++;
-              recordOwnerOutcome(wantOwner, 'upstream_error', {
-                account,
-                detail: tokenResolve ? 'bearer-token-resolve' : 'bearer-transport',
-              });
-              if (tokenResolve) {
-                log('error', `inference-gateway: Codex token read failed on '${account}': ${error.message}`);
-              }
-              return;
-            }
-            if (!response) return;
-            if (response.status === 429) {
-              // Counted here even when the kernel goes on to rotate: the old path
-              // recorded the throttle against the account that emitted it.
-              codexUpstream429++;
-              providerAdmission.recordThrottle('codex');
-              recordOwnerOutcome(wantOwner, 'upstream_429', { account, status: 429 });
-            } else if (response.status >= 200 && response.status < 300) {
-              providerAdmission.recordSuccess('codex');
-            }
+      try {
+        await executeGatewayRequestKernel({
+          request: {
+            lane: adapter.lane,
+            // MUST go through readBody: it serves the admission spool's pre-read
+            // buffer (`preReadRequestBodies`). Iterating `req` directly here would
+            // send an EMPTY body on every request the spool already drained.
+            body: (async function* () {
+              yield await readBody(req);
+            })(),
+            ownerId: wantOwner ?? null,
+            pin: pinnedBearer ? { accountId: pinnedBearer.accountId, mode: hardPin ? 'hard' : 'soft' } : null,
+            signal: reqAbort.signal,
           },
-        },
-        adapter: kernelAdapter,
-        // The old handler never registered in `inFlightReg` (its own comment said
-        // so), and D-003 forbids folding a behaviour change into an extraction.
-        // Registering is a real improvement — it belongs in its own change.
-        inFlight: { register: () => ({ unregister: () => undefined }) },
-        downstream: {
-          start: ({ status, metadata }) => {
-            const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
-            for (const [key, value] of Object.entries(metadata.headers)) {
-              if (!STRIP_RESPONSE.has(key.toLowerCase())) outHeaders[key] = value;
-            }
-            if (metadata.pinYieldedFrom) {
-              outHeaders[PIN_YIELDED_HEADER] = `${metadata.pinYieldedFrom}->${metadata.accountId}`;
-              recordOwnerOutcome(wantOwner, 'pin_yield', {
+          policy: {
+            // D-009: kernel adoption necessarily adds a request-body byte cap the
+            // hand-rolled path never had. Sized well above the admission spool's own
+            // 32MB cap so it is non-binding wherever the spool is enabled.
+            maxBodyBytes: Number(process.env.PAPERCUSP_GATEWAY_MAX_BODY_BYTES) || 64 * 1024 * 1024,
+            bodyReadTimeoutMs: requestCeilingMs,
+            requestCeilingMs,
+            // D-007: a stream:true request gets the SHORT TTFB headers deadline, a
+            // non-streaming one keeps the generous deadline. Derived from the REQUEST
+            // body by the SAME parser the adapter uses — two hand-written parsers here
+            // is precisely the drift D-007 was raised to correct.
+            ttfbTimeoutMs: ({ body }) =>
+              parseCodexRequestShape(body).streaming ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs,
+            bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
+            downstreamIdleTimeoutMs: downstreamIdleMs,
+            maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+          },
+          telemetry: requestStageTelemetry,
+          // D-008: adopt the span this HTTP request already opened. Without it the
+          // kernel would begin a SECOND span and double-count the request.
+          span: stageSpan,
+          admission: {
+            // P-011 / D-027: arrives from this executor's caller and is PASS-THROUGH by design.
+            // `proxyOpenAi`'s entry wrapper already took the `openai-responses` slot around this
+            // whole body, so exactly one of the two admits and re-admitting here would deadlock
+            // against the slot this request already holds.
+            run: (context, task) => kernelAdmission.run(context, task),
+            observeAttempt: ({ context, response, error }) => {
+              attemptsThisPass = context.attempt;
+              attemptsSeen = attemptsUsed + context.attempt;
+              const account = context.route.accountId ?? lastAccountId;
+              lastAccountId = account;
+              if (lastRouteKey !== null && lastRouteKey !== context.route.key) codexFailovers++;
+              lastRouteKey = context.route.key;
+              if (error) {
+                // The STATUS is the only discriminator between the token-read throw
+                // (`prepareAttempt`, 503) and the transport throw (`executeAttempt`,
+                // 502); a TTFB timeout, the request ceiling and a downstream abort all
+                // surfaced through the old transport catch, so they classify the same
+                // way here. Do not "tidy" those statuses in the adapter.
+                const tokenResolve = error.status === 503;
+                codexUpstreamErrors++;
+                recordOwnerOutcome(wantOwner, 'upstream_error', {
+                  account,
+                  detail: tokenResolve ? 'bearer-token-resolve' : 'bearer-transport',
+                });
+                if (tokenResolve) {
+                  log('error', `inference-gateway: Codex token read failed on '${account}': ${error.message}`);
+                }
+                return;
+              }
+              if (!response) return;
+              if (response.status === 429) {
+                // Counted here even when the kernel goes on to rotate: the old path
+                // recorded the throttle against the account that emitted it.
+                codexUpstream429++;
+                providerAdmission.recordThrottle('codex');
+                recordOwnerOutcome(wantOwner, 'upstream_429', { account, status: 429 });
+              } else if (response.status >= 200 && response.status < 300) {
+                providerAdmission.recordSuccess('codex');
+              }
+            },
+          },
+          adapter: kernelAdapter,
+          // The old handler never registered in `inFlightReg` (its own comment said
+          // so), and D-003 forbids folding a behaviour change into an extraction.
+          // Registering is a real improvement — it belongs in its own change.
+          inFlight: { register: () => ({ unregister: () => undefined }) },
+          downstream: {
+            start: ({ status, metadata }) => {
+              const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
+              for (const [key, value] of Object.entries(metadata.headers)) {
+                if (!STRIP_RESPONSE.has(key.toLowerCase())) outHeaders[key] = value;
+              }
+              if (metadata.pinYieldedFrom) {
+                outHeaders[PIN_YIELDED_HEADER] = `${metadata.pinYieldedFrom}->${metadata.accountId}`;
+                recordOwnerOutcome(wantOwner, 'pin_yield', {
+                  account: metadata.accountId,
+                  detail: outHeaders[PIN_YIELDED_HEADER],
+                });
+              }
+              // WI-2038027 (codex 429 recovery P1): same terminal-429 shaping as the OAuth lane —
+              // capped retry-after + retries-exhausted marker + stall attribution, so a bearer-pool
+              // caller is paced and its session is stall-waker-recoverable instead of dying on the
+              // raw upstream throttle. (api.openai.com speaks x-ratelimit-reset-* durations this
+              // parser does not read — P2; a numeric retry-after still parses, and the shed floor
+              // covers the rest.)
+              if (status === 429) {
+                const parsed = parseCodexRateReset(metadata.headers);
+                const now = Date.now();
+                const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
+                const decision = decideThrottleRecovery({
+                  status,
+                  retryIntent: true,
+                  lastExhaustResetAt: ladderResetAt,
+                  state: {
+                    transientWaitedMs: recovery.transientWaitedMs,
+                    retryDeadlineAt: recovery.retryDeadlineAt,
+                    absorbDeadlineAt: recovery.absorbDeadlineAt,
+                    headersSent: res.headersSent,
+                  },
+                  budgets: {
+                    waitCapMs: ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+                    transientTotalWaitBudgetMs: TRANSIENT_TOTAL_WAIT_BUDGET_MS,
+                    overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
+                  },
+                  now,
+                });
+                if (decision.action === 'wait') {
+                  interception.taken = {
+                    action: 'wait',
+                    waitMs: decision.waitMs,
+                    backoffMs: 0,
+                    resetAt: parsed.resetAt,
+                    accountId: metadata.accountId,
+                  };
+                  throw INTERCEPT_BEARER_THROTTLE;
+                }
+                if (decision.action === 'absorb') {
+                  interception.taken = {
+                    action: 'absorb',
+                    waitMs: 0,
+                    backoffMs: decision.backoffMs,
+                    resetAt: parsed.resetAt,
+                    accountId: metadata.accountId,
+                  };
+                  throw INTERCEPT_BEARER_THROTTLE;
+                }
+                if (wantOwner) {
+                  recordStall(wantOwner, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
+                }
+                const shaped = shapeTerminalThrottle({
+                  attempts: attemptsSeen,
+                  retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+                  retryAfter: {
+                    resetAt: parsed.resetAt,
+                    fallbackSec: LOADSHED_RETRY_AFTER_SEC,
+                    capS: BEE_RETRY_AFTER_CAP_S,
+                  },
+                });
+                Object.assign(outHeaders, shaped.headers);
+                log(
+                  'warn',
+                  `inference-gateway: Codex bearer upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (retry-after ${shaped.retryAfterSec}s${wantOwner ? `; stall recorded for '${wantOwner}'` : ''})`,
+                );
+              }
+              recordRoute(wantOwner, metadata.accountId, 'codex');
+              recordOwnerOutcome(wantOwner, status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error', {
                 account: metadata.accountId,
-                detail: outHeaders[PIN_YIELDED_HEADER],
-              });
-            }
-            // WI-2038027 (codex 429 recovery P1): same terminal-429 shaping as the OAuth lane —
-            // capped retry-after + retries-exhausted marker + stall attribution, so a bearer-pool
-            // caller is paced and its session is stall-waker-recoverable instead of dying on the
-            // raw upstream throttle. (api.openai.com speaks x-ratelimit-reset-* durations this
-            // parser does not read — P2; a numeric retry-after still parses, and the shed floor
-            // covers the rest.)
-            if (status === 429) {
-              const parsed = parseCodexRateReset(metadata.headers);
-              const now = Date.now();
-              const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
-              const decision = decideThrottleRecovery({
                 status,
-                retryIntent: true,
-                lastExhaustResetAt: ladderResetAt,
-                state: {
-                  transientWaitedMs: recovery.transientWaitedMs,
-                  retryDeadlineAt: recovery.retryDeadlineAt,
-                  absorbDeadlineAt: recovery.absorbDeadlineAt,
-                  headersSent: res.headersSent,
-                },
-                budgets: {
-                  waitCapMs: ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
-                  transientTotalWaitBudgetMs: TRANSIENT_TOTAL_WAIT_BUDGET_MS,
-                  overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
-                },
-                now,
               });
-              if (decision.action === 'wait') {
-                interception.taken = {
-                  action: 'wait',
-                  waitMs: decision.waitMs,
-                  backoffMs: 0,
-                  resetAt: parsed.resetAt,
-                  accountId: metadata.accountId,
-                };
-                throw INTERCEPT_BEARER_THROTTLE;
-              }
-              if (decision.action === 'absorb') {
-                interception.taken = {
-                  action: 'absorb',
-                  waitMs: 0,
-                  backoffMs: decision.backoffMs,
-                  resetAt: parsed.resetAt,
-                  accountId: metadata.accountId,
-                };
-                throw INTERCEPT_BEARER_THROTTLE;
-              }
-              if (wantOwner) {
-                recordStall(wantOwner, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
-              }
-              const shaped = shapeTerminalThrottle({
-                attempts: attemptsSeen,
-                retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
-                retryAfter: {
-                  resetAt: parsed.resetAt,
-                  fallbackSec: LOADSHED_RETRY_AFTER_SEC,
-                  capS: BEE_RETRY_AFTER_CAP_S,
-                },
-              });
-              Object.assign(outHeaders, shaped.headers);
-              log(
-                'warn',
-                `inference-gateway: Codex bearer upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (retry-after ${shaped.retryAfterSec}s${wantOwner ? `; stall recorded for '${wantOwner}'` : ''})`,
+              res.writeHead(status, outHeaders);
+              cacheProbe = new PassThrough();
+              // Keep the tee in flowing mode for the stream's whole life: the observer
+              // detaches its own 'data' listener once it has read the usage record, and
+              // without a second listener the PassThrough would stop draining and buffer
+              // the rest of a long agent stream in memory.
+              cacheProbe.on('data', () => undefined);
+              cacheProbe.on('error', () => undefined);
+              observeOpenAiCacheUsage(
+                cacheProbe,
+                metadata.accountId,
+                attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
               );
-            }
-            recordRoute(wantOwner, metadata.accountId, 'codex');
-            recordOwnerOutcome(
-              wantOwner,
-              status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
-              { account: metadata.accountId, status },
+            },
+            write: async (chunk) => {
+              cacheProbe?.write(chunk);
+              // Honour downstream backpressure exactly as the old `nodeStream.pipe(res)`
+              // did. The kernel wraps this call in the downstream-idle deadline, so a
+              // client that never drains is torn down by that guard rather than hanging.
+              if (!res.write(chunk)) {
+                await new Promise<void>((resolve) => {
+                  const settle = () => {
+                    res.off('drain', settle);
+                    res.off('close', settle);
+                    res.off('error', settle);
+                    resolve();
+                  };
+                  res.once('drain', settle);
+                  res.once('close', settle);
+                  res.once('error', settle);
+                });
+              }
+            },
+            end: () => {
+              endCacheProbe();
+              res.end();
+            },
+          },
+        });
+      } catch (error) {
+        const taken = takeBearerIntercept();
+        // The kernel normalizes a thrown downstream.start error before it reaches
+        // this catch, so identity is not stable. The dedicated flag is written
+        // only by our interception seam and is the authoritative discriminator.
+        if (taken) {
+          attemptsUsed += attemptsThisPass;
+          continuationActive = true;
+          if (taken.action === 'wait') {
+            recovery.transientWaitedMs += taken.waitMs;
+            log(
+              'warn',
+              `inference-gateway: Codex bearer pool transiently throttled → wait ${taken.waitMs}ms + retry (wait-budget ${recovery.transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`,
             );
-            res.writeHead(status, outHeaders);
-            cacheProbe = new PassThrough();
-            // Keep the tee in flowing mode for the stream's whole life: the observer
-            // detaches its own 'data' listener once it has read the usage record, and
-            // without a second listener the PassThrough would stop draining and buffer
-            // the rest of a long agent stream in memory.
-            cacheProbe.on('data', () => undefined);
-            cacheProbe.on('error', () => undefined);
-            observeOpenAiCacheUsage(
-              cacheProbe,
-              metadata.accountId,
-              attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
-            );
-          },
-          write: async (chunk) => {
-            cacheProbe?.write(chunk);
-            // Honour downstream backpressure exactly as the old `nodeStream.pipe(res)`
-            // did. The kernel wraps this call in the downstream-idle deadline, so a
-            // client that never drains is torn down by that guard rather than hanging.
-            if (!res.write(chunk)) {
-              await new Promise<void>((resolve) => {
-                const settle = () => {
-                  res.off('drain', settle);
-                  res.off('close', settle);
-                  res.off('error', settle);
-                  resolve();
-                };
-                res.once('drain', settle);
-                res.once('close', settle);
-                res.once('error', settle);
-              });
-            }
-          },
-          end: () => {
-            endCacheProbe();
-            res.end();
-          },
-        },
-      });
-    } catch (error) {
-      const taken = takeBearerIntercept();
-      // The kernel normalizes a thrown downstream.start error before it reaches
-      // this catch, so identity is not stable. The dedicated flag is written
-      // only by our interception seam and is the authoritative discriminator.
-      if (taken) {
-        attemptsUsed += attemptsThisPass;
-        continuationActive = true;
-        if (taken.action === 'wait') {
-          recovery.transientWaitedMs += taken.waitMs;
+            await waitForCodexRecovery(res, taken.waitMs, reqAbort.signal);
+            return runBearerRecovery();
+          }
+          if (!kernelAdmission.park) {
+            throw new Error('inference-gateway: codex bearer absorb requires cooperative lane admission');
+          }
+          const now = Date.now();
+          const remainingMs = Math.max(0, recovery.absorbDeadlineAt - now);
+          const capacityWaitMs = taken.resetAt
+            ? Math.max(0, taken.resetAt - now)
+            : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
+          const waitMs = Math.min(remainingMs, capacityWaitMs);
+          recovery.transientWaitedMs = 0;
           log(
             'warn',
-            `inference-gateway: Codex bearer pool transiently throttled → wait ${taken.waitMs}ms + retry (wait-budget ${recovery.transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`,
+            `inference-gateway: Codex bearer absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms, then re-enter (${remainingMs}ms budget left)`,
           );
-          await waitForCodexRecovery(res, taken.waitMs, reqAbort.signal);
-          return runBearerRecovery();
-        }
-        if (!kernelAdmission.park) {
-          throw new Error('inference-gateway: codex bearer absorb requires cooperative lane admission');
-        }
-        const now = Date.now();
-        const remainingMs = Math.max(0, recovery.absorbDeadlineAt - now);
-        const capacityWaitMs = taken.resetAt
-          ? Math.max(0, taken.resetAt - now)
-          : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
-        const waitMs = Math.min(remainingMs, capacityWaitMs);
-        recovery.transientWaitedMs = 0;
-        log(
-          'warn',
-          `inference-gateway: Codex bearer absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms, then re-enter (${remainingMs}ms budget left)`,
-        );
-        return kernelAdmission.park(
-          async () => {
+          return kernelAdmission.park(async () => {
             await waitForCodexRecovery(res, waitMs, reqAbort.signal);
             recovery.retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
-          },
-          runBearerRecovery,
-        );
-      }
-      endCacheProbe();
-      const failure =
-        error instanceof GatewayRequestKernelError
-          ? error
-          : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
-              code: 'gateway-error',
-              outcome: 'gateway-error',
-              status: 500,
-              cause: error,
+          }, runBearerRecovery);
+        }
+        endCacheProbe();
+        const failure =
+          error instanceof GatewayRequestKernelError
+            ? error
+            : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
+                code: 'gateway-error',
+                outcome: 'gateway-error',
+                status: 500,
+                cause: error,
+              });
+
+        if (failure.code === 'request-ceiling') {
+          log(
+            'error',
+            `inference-gateway: Codex request hit the ${requestCeilingMs}ms hard ceiling on '${lastAccountId}' — force-terminating`,
+          );
+          try {
+            req.destroy();
+          } catch {
+            /* already torn down */
+          }
+          try {
+            res.destroy();
+          } catch {
+            /* already torn down */
+          }
+          return;
+        }
+
+        if (failure.code === 'body-read-timeout' || failure.code === 'body-too-large') {
+          try {
+            req.destroy();
+          } catch {
+            /* already torn down */
+          }
+          if (!reqAbort.signal.aborted && !res.headersSent) {
+            sendJson(res, 503, {
+              type: 'error',
+              error: {
+                type: 'overloaded_error',
+                message: 'inference-gateway: Codex request body read stalled; retry shortly',
+              },
+              gateway: true,
             });
-
-      if (failure.code === 'request-ceiling') {
-        log(
-          'error',
-          `inference-gateway: Codex request hit the ${requestCeilingMs}ms hard ceiling on '${lastAccountId}' — force-terminating`,
-        );
-        try {
-          req.destroy();
-        } catch {
-          /* already torn down */
+          }
+          return;
         }
-        try {
+
+        if (res.headersSent) {
+          // Committed to a response already — the only honest signal left is a teardown.
           res.destroy();
-        } catch {
-          /* already torn down */
+          return;
         }
-        return;
-      }
 
-      if (failure.code === 'body-read-timeout' || failure.code === 'body-too-large') {
-        try {
-          req.destroy();
-        } catch {
-          /* already torn down */
+        if (failure.code === 'upstream-error' && failure.status === 503) {
+          // Token resolution never produced a usable bearer on any account.
+          sendJson(
+            res,
+            503,
+            { type: 'error', error: { type: 'overloaded_error', message: failure.message }, gateway: true },
+            { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+          );
+          return;
         }
-        if (!reqAbort.signal.aborted && !res.headersSent) {
-          sendJson(res, 503, {
+        if (failure.code === 'invalid-route' || failure.code === 'invalid-pin') {
+          sendJson(
+            res,
+            failure.status ?? 503,
+            { type: 'error', error: { type: 'api_error', message: failure.message }, gateway: true },
+            { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+          );
+          return;
+        }
+        // Everything else — a dead socket, a TTFB stall, a mid-stream idle, a
+        // cancellation — surfaced through the old transport catch as this envelope.
+        sendJson(
+          res,
+          502,
+          {
             type: 'error',
             error: {
-              type: 'overloaded_error',
-              message: 'inference-gateway: Codex request body read stalled; retry shortly',
+              type: 'api_error',
+              message: failure.message.startsWith('inference-gateway:')
+                ? failure.message
+                : `inference-gateway: Codex upstream failed: ${failure.message}`,
             },
             gateway: true,
-          });
-        }
-        return;
-      }
-
-      if (res.headersSent) {
-        // Committed to a response already — the only honest signal left is a teardown.
-        res.destroy();
-        return;
-      }
-
-      if (failure.code === 'upstream-error' && failure.status === 503) {
-        // Token resolution never produced a usable bearer on any account.
-        sendJson(
-          res,
-          503,
-          { type: 'error', error: { type: 'overloaded_error', message: failure.message }, gateway: true },
-          { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: lastAccountId },
-        );
-        return;
-      }
-      if (failure.code === 'invalid-route' || failure.code === 'invalid-pin') {
-        sendJson(
-          res,
-          failure.status ?? 503,
-          { type: 'error', error: { type: 'api_error', message: failure.message }, gateway: true },
+          },
           { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
         );
-        return;
+      } finally {
+        if (!continuationActive) {
+          endCacheProbe();
+          req.off('aborted', onReqAborted);
+          res.off('close', onResClose);
+        }
       }
-      // Everything else — a dead socket, a TTFB stall, a mid-stream idle, a
-      // cancellation — surfaced through the old transport catch as this envelope.
-      sendJson(
-        res,
-        502,
-        {
-          type: 'error',
-          error: {
-            type: 'api_error',
-            message: failure.message.startsWith('inference-gateway:')
-              ? failure.message
-              : `inference-gateway: Codex upstream failed: ${failure.message}`,
-          },
-          gateway: true,
-        },
-        { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
-      );
-    } finally {
-      if (!continuationActive) {
-        endCacheProbe();
-        req.off('aborted', onReqAborted);
-        res.off('close', onResClose);
-      }
-    }
     };
     await runBearerRecovery();
   }
@@ -7397,16 +7356,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
       res.once('error', finish);
       // A malformed control handler must not pin a canonical admission lease
       // forever. This is only a backstop; normal handlers finish on the events.
-      timer = setTimeout(() => {
-        if (!res.writableEnded && !res.destroyed) {
-          try {
-            res.destroy();
-          } catch {
-            /* already torn down */
+      timer = setTimeout(
+        () => {
+          if (!res.writableEnded && !res.destroyed) {
+            try {
+              res.destroy();
+            } catch {
+              /* already torn down */
+            }
           }
-        }
-        finish();
-      }, Math.max(1, timeoutMs));
+          finish();
+        },
+        Math.max(1, timeoutMs),
+      );
       timer.unref?.();
       if (res.writableEnded || res.destroyed) finish();
     });
@@ -7601,10 +7563,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // The lifecycle has no generation counter of its own; the most recent lane
           // change is the honest "when did this state last move" stamp, and 0 says
           // "never moved" rather than implying a generation that does not exist.
-          generation: providerAdmission.snapshot().lanes.reduce(
-            (acc, l) => Math.max(acc, l.lastChangeAtMs ?? 0),
-            0,
-          ),
+          generation: providerAdmission.snapshot().lanes.reduce((acc, l) => Math.max(acc, l.lastChangeAtMs ?? 0), 0),
           evaluatedAtMs: Date.now(),
           healthState: s.aimd ? 'healthy' : 'unknown',
         }),
@@ -7819,10 +7778,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       return;
     }
-    if (
-      req.method === 'POST' &&
-      requestPath === MAINTENANCE_SUMMARIZE_PATH
-    ) {
+    if (req.method === 'POST' && requestPath === MAINTENANCE_SUMMARIZE_PATH) {
       // MAINTENANCE SUMMARIZE (deterministic-context-carry P-002, ornith-overflow brief fixes 2–3).
       // Speaks omp's remote-compaction wire: POST {systemPrompt?, prompt} → {summary}. The summary is
       // generated on a CHEAP HOSTED model via a LOOPBACK /v1/messages call into this gateway's OWN
@@ -7985,10 +7941,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         );
       return;
     }
-    if (
-      req.method === 'GET' &&
-      requestPath === MAINTENANCE_BACKEND_CONTEXT_PATH
-    ) {
+    if (req.method === 'GET' && requestPath === MAINTENANCE_BACKEND_CONTEXT_PATH) {
       // BACKEND CONTEXT PROBE (deterministic-context-carry P-005): report the LIVE per-slot
       // context window of the local backend serving `model`, from the backend's own /props —
       // the ground truth a hand-set registry contextWindow drifts away from (the 2026-07-13
@@ -8215,47 +8168,47 @@ export function createInferenceGateway(deps: GatewayDeps) {
      * request there could be destroyed while holding no slot.
      */
     const runProviderLaneTask = <TResult>(task: () => Promise<TResult>): Promise<TResult> => {
-        stageSpan?.admissionQueued('provider', providerAdmissionObservation());
-        return admissionQueue.run(
-          pri,
-          async () => {
-            markProviderAdmitted();
-            if (providerId !== 'codex') return task();
-            const reqId = ++reqSeq;
-            inFlightReg.set(reqId, {
-              id: reqId,
-              provider: 'codex',
-              startedAt: Date.now(),
-              isStream: url.startsWith('/v1/responses'),
-              reclaimed: false,
-              abort: () => {
-                // Destroying either side triggers proxyOpenAi's existing request-aborted/response-close
-                // listeners, which abort the current upstream fetch. Do not attach an Error here: an
-                // IncomingMessage with no error listener would turn a recovery action into an uncaught event.
-                try {
-                  req.destroy();
-                } catch {
-                  /* already torn down */
-                }
-                try {
-                  res.destroy();
-                } catch {
-                  /* already torn down */
-                }
-              },
-            });
-            try {
-              return await task();
-            } finally {
-              const entry = inFlightReg.get(reqId);
-              if (entry) {
-                inFlightReg.delete(reqId);
-                if (!entry.reclaimed) lastDrainAt.codex = Date.now();
+      stageSpan?.admissionQueued('provider', providerAdmissionObservation());
+      return admissionQueue.run(
+        pri,
+        async () => {
+          markProviderAdmitted();
+          if (providerId !== 'codex') return task();
+          const reqId = ++reqSeq;
+          inFlightReg.set(reqId, {
+            id: reqId,
+            provider: 'codex',
+            startedAt: Date.now(),
+            isStream: url.startsWith('/v1/responses'),
+            reclaimed: false,
+            abort: () => {
+              // Destroying either side triggers proxyOpenAi's existing request-aborted/response-close
+              // listeners, which abort the current upstream fetch. Do not attach an Error here: an
+              // IncomingMessage with no error listener would turn a recovery action into an uncaught event.
+              try {
+                req.destroy();
+              } catch {
+                /* already torn down */
               }
+              try {
+                res.destroy();
+              } catch {
+                /* already torn down */
+              }
+            },
+          });
+          try {
+            return await task();
+          } finally {
+            const entry = inFlightReg.get(reqId);
+            if (entry) {
+              inFlightReg.delete(reqId);
+              if (!entry.reclaimed) lastDrainAt.codex = Date.now();
             }
-          },
-          tier !== undefined ? { tier } : undefined,
-        );
+          }
+        },
+        tier !== undefined ? { tier } : undefined,
+      );
     };
     const providerLaneAdmission: GatewayLaneAdmission = {
       run: async (_context, initialTask) => {
@@ -8412,8 +8365,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const server = http.createServer((req, res) => {
     const bypassKey = gatewayAdmissionBypassKeyForRequest(req.method, req.url);
     const requestPath = (req.url ?? '/').split('?', 1)[0] || '/';
-    const isMaintenanceSummarize =
-      req.method === 'POST' && requestPath === MAINTENANCE_SUMMARIZE_PATH;
+    const isMaintenanceSummarize = req.method === 'POST' && requestPath === MAINTENANCE_SUMMARIZE_PATH;
     if (!bypassKey && !isMaintenanceSummarize) {
       dispatchRequest(req, res);
       return;

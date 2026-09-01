@@ -321,7 +321,11 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
   });
 
   it('a HARD account pin never fails over, even when a sibling could serve', async () => {
-    await bootCodex(byBearer);
+    await bootCodex(byBearer, [codexAcct('cdx-1'), codexAcct('cdx-2')], {
+      requestAbsorbMs: 0,
+      internalRetryDeadlineMs: 1,
+      bare429FailoverBackoffMs: 1,
+    });
     const res = await postResponses(
       { model: 'gpt-x', input: 'hi' },
       { [ACCOUNT_HEADER]: 'cdx-1', [ACCOUNT_PIN_HEADER]: 'hard' },
@@ -338,7 +342,13 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
         res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'over' } }));
       },
       [codexAcct('cdx-solo')],
-      { concurrency: 8, aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 100 } },
+      {
+        concurrency: 8,
+        aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 100 },
+        requestAbsorbMs: 0,
+        internalRetryDeadlineMs: 1,
+        bare429FailoverBackoffMs: 1,
+      },
     );
     expect((await postResponses({ model: 'gpt-x', input: 'hi' })).status).toBe(429);
     const stats = (await (await ask('/stats')).json()) as {
@@ -361,6 +371,7 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
         res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'over' } }));
       },
       [codexAcct('cdx-solo')],
+      { requestAbsorbMs: 0, internalRetryDeadlineMs: 1, bare429FailoverBackoffMs: 1 },
     );
     const res = await postResponses({ model: 'gpt-x', input: 'hi' });
     expect(res.status).toBe(429);
@@ -546,7 +557,6 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       codexCliRun: cliRun,
       codexOAuthProxy: true,
       fetchImpl,
-      requestAbsorbMs: 0,
       selfHeal: { enabled: false },
     });
     port = await gw.listen(0);
@@ -862,6 +872,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
       ),
       codexOAuthProxy: true,
       fetchImpl,
+      requestAbsorbMs: 0,
       selfHeal: { enabled: false },
     });
     port = await gw.listen(0);
@@ -1785,7 +1796,9 @@ describe('codex cli-exec bridge — attempt ladder (P-005 characterization)', ()
     const stalls = (await (await ask('/admin/stalls?since=0')).json()) as {
       stalls: Array<{ ownerId: string; accountId: string }>;
     };
-    expect(stalls.stalls).toContainEqual(expect.objectContaining({ ownerId: 'su-cli-stall-test', accountId: 'cli-walled' }));
+    expect(stalls.stalls).toContainEqual(
+      expect.objectContaining({ ownerId: 'su-cli-stall-test', accountId: 'cli-walled' }),
+    );
   });
 
   it('an AUTH-DEAD account is quarantined and not re-chosen on the NEXT request (EI-21618978789879488)', async () => {

@@ -766,7 +766,9 @@ export function codexRateLimitBucket(h: Record<string, string | undefined>): Cod
   if (active === 'base_model_inference' || active === 'basemodelinference') return 'base_model_inference';
   if (active === 'premium') return 'premium';
   const hasReserve = Object.keys(lower).some((key) => key.startsWith('x-base-model-inference-'));
-  const hasPremium = Object.keys(lower).some((key) => key.startsWith('x-codex-primary-') || key.startsWith('x-codex-secondary-'));
+  const hasPremium = Object.keys(lower).some(
+    (key) => key.startsWith('x-codex-primary-') || key.startsWith('x-codex-secondary-'),
+  );
   if (hasReserve && !hasPremium) return 'base_model_inference';
   if (hasPremium) return 'premium';
   return 'unknown';
@@ -848,7 +850,8 @@ export function parseCodexRateLimitHeaders(
   // guard against treating the generic weekly wall as Luna capacity (or vice
   // versa). With no active-limit marker, retain the historical generic-first
   // behavior and fall back to the reserve family when it is the only signal.
-  const families = bucket === 'base_model_inference' ? [reserve] : bucket === 'premium' ? [generic] : [generic, reserve];
+  const families =
+    bucket === 'base_model_inference' ? [reserve] : bucket === 'premium' ? [generic] : [generic, reserve];
   for (const family of families) {
     const parsed = parseCodexWindowFamily(lower, family, nowMs);
     if (Object.keys(parsed).length > 0) return parsed;
