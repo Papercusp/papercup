@@ -1633,17 +1633,19 @@ export async function settleRunPhase(input: {
               FROM harness_shared.attention_bulk_run_items
              WHERE workspace_id = ${ws} AND run_id = ${input.runId}
           `;
-    const awaitingOwner = states.some((i) =>
-      runKind === 'plan-cleanup'
-        ? !['auto_applied', 'accepted', 'dismissed'].includes(i.outcome)
-        : !['auto_resolved', 'dismissed'].includes(i.outcome),
-    );
-    const phase: BulkRunPhase = awaitingOwner ? 'review' : 'complete';
+    // `complete` is the only SUCCESS outcome, so it has to be earned: an empty
+    // state set or a run that never reported life settles `failed` with a
+    // reason instead of silently reading as finished (EI-22013650201095388).
+    const { phase, refusedReason } = deriveSettleOutcome({
+      runKind,
+      outcomes: states.map((i) => i.outcome),
+      everReportedLife: locked[0].heartbeat_at != null,
+    });
     const rows = await tx<RawRunRow[]>`
       UPDATE harness_shared.attention_bulk_runs
          SET phase = ${phase},
              resolver_owner = COALESCE(resolver_owner, ${input.resolverOwner ?? null}),
-             error = NULL,
+             error = ${refusedReason},
              -- Review ends the resolver pass even though the owner workflow
              -- remains open. Stamp it so elapsed time stops growing forever.
              finished_at = now(),
