@@ -68,6 +68,7 @@ import {
   isIssueLocallyClaimable,
   isIssueLocallyClaimableWhereSql,
   loadTrustedGithubUserIds,
+  stopTheLineExclusionSql,
 } from './work-items-admission';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { hasGenericKind } from './datatype-registry-store';
@@ -5287,6 +5288,13 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     AND ${autoPickableWhereSql(sql, opts.workspaceId)}
     -- P-002 born-pending: pending items stay out of every feature self-select path.
     AND ${admittedWhereSql(sql)}
+    -- P-013/D-012 stop-the-line: while this harness's gate-red-streak condition item has
+    -- been open >24h, feature-family self-select on the harness pauses entirely (the
+    -- consolidated view has no condition_key column and placement kinds carry no repair
+    -- lane — repair flows through the issue family's exempt classes). By-id claims and
+    -- other harnesses are unaffected. Same shared fragment as the issue family's
+    -- ok_stop_line, composed for this relation's unaliased context.
+    AND ${stopTheLineExclusionSql(sql, 'feature-consolidated')}
     AND (taken_by IS NULL OR taken_by = '')
     AND (CASE WHEN status = 'todo' THEN 'open' ELSE status END) = ANY(${states}::text[])
     -- P-006 (fleet-deltas-leader-primitives): the claim-hold floor, extended to the
@@ -7642,6 +7650,12 @@ export async function claimNextIssueWorkItem(
           AND ${isIssueLocallyClaimableWhereSql(tx, issueWs)}
           -- P-002 born-pending: the promoter owns this lifecycle transition.
           AND ${admittedWhereSqlWi(tx)}
+          -- P-013/D-012 stop-the-line: while this harness's gate-red-streak condition item
+          -- has been open >24h, non-repair rows are not self-selectable (bugs and
+          -- alarm-condition items exempt; a named by-id claim still bypasses, which is the
+          -- owner-directed escape). SAME shared fragment as the claimability preview's
+          -- ok_stop_line (issueClaimCandidateSubquery), so read and claim cannot diverge.
+          AND ${stopTheLineExclusionSql(tx, 'issue-wi')}
           -- swarm affinity (P-002): under the per-Hive lease, honor the issue's affinity too.
           AND ${filter.swarmId ? tx`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : tx`TRUE`}
           -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.
