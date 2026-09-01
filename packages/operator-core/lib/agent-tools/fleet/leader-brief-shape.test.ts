@@ -49,13 +49,28 @@ function largeBrief() {
         schemaVersion: 'fleet-population-lifecycle-v1',
         fleet: 'large-fleet',
         window: { startAt: '2026-08-13T00:00:00.000Z', endAt: '2026-08-26T20:00:00.000Z' },
-        populationBasis: { writer: 'fleet-roster', comparisonRule: 'compare only identical population, window, and unit' },
+        populationBasis: {
+          writer: 'fleet-roster',
+          comparisonRule: 'compare only identical population, window, and unit',
+        },
         currentRunnableRoster: {
-          census: { population: 'current-runnable-roster', candidates: 63, counted: 53, withheld: 10, basis: 'runnable roster' },
+          census: {
+            population: 'current-runnable-roster',
+            candidates: 63,
+            counted: 53,
+            withheld: 10,
+            basis: 'runnable roster',
+          },
           ownerIds: members.map((member) => member.agentId),
         },
         relevantRoster: {
-          census: { population: 'relevant-roster', candidates: 63, counted: 53, withheld: 10, basis: 'relevant roster' },
+          census: {
+            population: 'relevant-roster',
+            candidates: 63,
+            counted: 53,
+            withheld: 10,
+            basis: 'relevant roster',
+          },
           ownerIds: members.map((member) => member.agentId),
         },
         everMembers: { counted: 53, ownerIds: members.map((member) => member.agentId) },
@@ -113,6 +128,16 @@ function largeBrief() {
 }
 
 describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
+  it('preserves an unavailable admission-block count as null through every bounded tier', () => {
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeLeaderBrief(
+        { ok: true, summary: { fleet: 'fleet-a', cumulative: { admission_blocked: null } } },
+        tier,
+      ) as { summary: { cumulative: { admission_blocked: number | null } } };
+      expect(out.summary.cumulative.admission_blocked).toBeNull();
+    }
+  });
+
   it('keeps a canonical fleet-metrics unavailable result and recovery path atomically', () => {
     const fleetMetrics = {
       ok: false,
@@ -127,10 +152,10 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
         window: 'fleet-lifetime',
       },
     };
-    const out = shapeLeaderBrief(
-      { ok: true, summary: { fleet: 'large-fleet' }, fleetMetrics },
-      'trimmed',
-    ) as Record<string, unknown>;
+    const out = shapeLeaderBrief({ ok: true, summary: { fleet: 'large-fleet' }, fleetMetrics }, 'trimmed') as Record<
+      string,
+      unknown
+    >;
     expect(out.fleetMetrics).toEqual(fleetMetrics);
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
   });
@@ -384,16 +409,18 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
             progressBasis: 'harness_shared.work_items.last_progress_at',
             holderBasis: 'reconciled-fleet-assignment-claims',
           },
-          findings: [{
-            code: 'high-degree-node',
-            classification: 'advisory',
-            confidence: 'medium',
-            nodes: ['work_item:WI-0', 'plan_item:one-plan#P-001'],
-            edges: [{ subject: 'plan_item:one-plan#P-001', dependency: 'work_item:WI-0' }],
-            evidence: { topologyMetrics: { directFanOut: 4 } },
-            provenance: ['dependency-graph-admission-and-health-2026-08-26#D-005'],
-            suggestedAction: 'Review the node as a fragility bottleneck.',
-          }],
+          findings: [
+            {
+              code: 'high-degree-node',
+              classification: 'advisory',
+              confidence: 'medium',
+              nodes: ['work_item:WI-0', 'plan_item:one-plan#P-001'],
+              edges: [{ subject: 'plan_item:one-plan#P-001', dependency: 'work_item:WI-0' }],
+              evidence: { topologyMetrics: { directFanOut: 4 } },
+              provenance: ['dependency-graph-admission-and-health-2026-08-26#D-005'],
+              suggestedAction: 'Review the node as a fragility bottleneck.',
+            },
+          ],
           rows: Array.from({ length: 8 }, (_, index) => ({
             rank: index + 1,
             key: `work_item:WI-${index}`,
@@ -441,14 +468,16 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       rowsTruncated: { total: 8, shown: 4 },
     });
     expect(bottlenecks.rows).toHaveLength(4);
-    expect(bottlenecks.findings).toEqual([expect.objectContaining({
-      code: 'high-degree-node',
-      classification: 'advisory',
-      confidence: 'medium',
-      nodes: ['work_item:WI-0', 'plan_item:one-plan#P-001'],
-      edges: [{ subject: 'plan_item:one-plan#P-001', dependency: 'work_item:WI-0' }],
-      provenance: ['dependency-graph-admission-and-health-2026-08-26#D-005'],
-    })]);
+    expect(bottlenecks.findings).toEqual([
+      expect.objectContaining({
+        code: 'high-degree-node',
+        classification: 'advisory',
+        confidence: 'medium',
+        nodes: ['work_item:WI-0', 'plan_item:one-plan#P-001'],
+        edges: [{ subject: 'plan_item:one-plan#P-001', dependency: 'work_item:WI-0' }],
+        provenance: ['dependency-graph-admission-and-health-2026-08-26#D-005'],
+      }),
+    ]);
     expect(bottlenecks.rows[0]).toMatchObject({
       rank: 1,
       ref: 'WI-0',

@@ -81,10 +81,9 @@ export interface FleetControlResult {
    *  exclusion breakdown + the exact re-verify command. Absent when it could not be
    *  computed (fails soft) or the action was resume. */
   drainStamp?: import('./drain-stamp').FleetDrainStamp;
-  /** EI-20199397615670608: the claim-holds this control flip SET (wind-down) or CLEARED
-   *  (resume) on the fleet members' held work-items, so the pause cannot leak its lane
-   *  back into the claimable pool the moment members comply with it. Absent when nothing
-   *  matched or the leg failed soft. */
+  /** EI-20199397615670608 / EI-21275382431686489: the claim-holds this control flip
+   *  SET (resumable wind-down) or CLEARED (resume / terminal wind-down) on the fleet's
+   *  work-items. Absent when nothing matched or the leg failed soft. */
   pauseHolds?: FleetPauseHoldResult;
   /** True when the durable state flip returned before optional release/cue work settled. */
   postControlPending?: boolean;
@@ -269,6 +268,11 @@ async function runFleetControlPostSaga(args: {
     sessionHarness?: string | null;
   };
 }): Promise<FleetControlPostSagaResult> {
+  // A scheduler-oracle drain stamp describes the ISSUE-family lane. It is useful on
+  // the fleet control row/cue, but it must never be copied into a FEATURE-family
+  // work-item's claim_hold_reason. Preserve the caller-authored reason separately
+  // before `effectiveReason` is augmented below.
+  const pauseHoldReason = args.effectiveReason;
   let effectiveReason = args.effectiveReason;
   let drainStamp: import('./drain-stamp').FleetDrainStamp | undefined;
   let pauseHolds: FleetPauseHoldResult | undefined;
@@ -344,13 +348,19 @@ async function runFleetControlPostSaga(args: {
   const pauseWork = await startBoundedOptional(
     () =>
       args.action === 'wind-down'
-        ? applyFleetPauseHolds({
-            fleetSlug: args.slug,
-            workspaceId: args.workspaceId,
-            byOwnerId: args.ownerId,
-            leaderOwnerId: args.fleet.leaderOwnerId,
-            reason: effectiveReason,
-          })
+        ? args.park?.terminal === true
+          ? // A terminal park has no successor resume edge. Setting durable holds here
+            // strands the successor fleet forever; clear only this fleet's own marker
+            // instead. The operation is idempotent, so a repeated terminal wind-down
+            // also sweeps residue left by the pre-fix implementation.
+            clearFleetPauseHolds({ fleetSlug: args.slug, workspaceId: args.workspaceId })
+          : applyFleetPauseHolds({
+              fleetSlug: args.slug,
+              workspaceId: args.workspaceId,
+              byOwnerId: args.ownerId,
+              leaderOwnerId: args.fleet.leaderOwnerId,
+              reason: pauseHoldReason,
+            })
         : clearFleetPauseHolds({ fleetSlug: args.slug, workspaceId: args.workspaceId }),
     {
       fallback: null,
