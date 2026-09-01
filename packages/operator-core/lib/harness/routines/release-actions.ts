@@ -789,9 +789,63 @@ export interface SignedGateVerdictPublishResult {
 }
 
 interface GateTestRunRow {
+  /** Database identity used to break same-timestamp retry ties. */
+  id?: number | string | null;
   file_path: string;
   status: string;
   duration_ms: number | string | null;
+  /** The reporter's completion timestamp; latest completion is authoritative. */
+  finished_at?: string | Date | null;
+}
+
+/**
+ * Collapse retry rows to the writer's authoritative final attempt.
+ *
+ * `test_runs` is append-only: a retry records another row for the same
+ * `(run_group_id, file_path)`.  The Tests-tab reader and verdict-diff reader
+ * both use `finished_at DESC NULLS LAST, id DESC`; the signed-verdict producer
+ * must apply that exact rule too.  Otherwise a historical fail survives beside
+ * a later pass and `matching.some(...)` signs a false shard failure.
+ *
+ * Exported as a pure helper so the retry contract is regression-tested without
+ * a live database. Rows from older callers may omit the ordering fields; those
+ * retain input order, while a row with a measured timestamp/id wins whenever
+ * available.
+ */
+export function collapseFinalTestRunRows(rows: readonly GateTestRunRow[]): GateTestRunRow[] {
+  const byFile = new Map<string, { row: GateTestRunRow; index: number }>();
+  const timestamp = (value: string | Date | null | undefined): number => {
+    if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : Number.NEGATIVE_INFINITY;
+    if (typeof value !== 'string' || !value.trim()) return Number.NEGATIVE_INFINITY;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+  };
+  const idValue = (value: number | string | null | undefined): number => {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+    }
+    return Number.NEGATIVE_INFINITY;
+  };
+  const isLater = (candidate: GateTestRunRow, incumbent: GateTestRunRow): boolean => {
+    const candidateTs = timestamp(candidate.finished_at);
+    const incumbentTs = timestamp(incumbent.finished_at);
+    if (candidateTs !== incumbentTs) return candidateTs > incumbentTs;
+    const candidateId = idValue(candidate.id);
+    const incumbentId = idValue(incumbent.id);
+    if (candidateId !== incumbentId) return candidateId > incumbentId;
+    return false;
+  };
+
+  rows.forEach((row, index) => {
+    const key = String(row.file_path ?? '').replaceAll('\\', '/').replace(/^\.\//, '');
+    const existing = byFile.get(key);
+    if (!existing || isLater(row, existing.row)) byFile.set(key, { row, index });
+  });
+  return [...byFile.values()]
+    .sort((a, b) => a.index - b.index)
+    .map(({ row }) => row);
 }
 
 /** Injectable seams for the signed-verdict producer. Production callers omit this;
@@ -915,12 +969,12 @@ export async function publishSignedGateVerdicts(
     const rows = deps.readTestRuns
       ? await deps.readTestRuns(runId, stagingSha)
       : ((await sql.unsafe(
-          `SELECT file_path, status, duration_ms
+          `SELECT id, file_path, status, duration_ms, finished_at
              FROM harness_shared.test_runs
             WHERE run_group_id = $1
               AND source = 'ci'
               AND commit_sha = $2
-            ORDER BY file_path`,
+            ORDER BY file_path, finished_at DESC NULLS LAST, id DESC`,
           [runId, stagingSha],
         )) as GateTestRunRow[]);
     if (!rows.length) return { published: 0, skipped: 0, reason: 'no-test-rows' };
@@ -947,7 +1001,8 @@ export async function publishSignedGateVerdicts(
       /(?:^|\/)(?:integration\/|[^/]*\.integration\.(?:test|spec)\.)/.test(file)
         ? 'integration'
         : 'unit';
-    const normalizedRows = rows.map((row) => ({
+    const finalRows = collapseFinalTestRunRows(rows);
+    const normalizedRows = finalRows.map((row) => ({
       file: normalize(String(row.file_path ?? '')),
       status: String(row.status ?? '').toLowerCase(),
       durationMs: Math.max(0, Number(row.duration_ms ?? 0) || 0),
