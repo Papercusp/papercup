@@ -27,6 +27,9 @@ import {
   EMBED_SIDECAR_CAP_HEALTHZ,
   EMBED_SIDECAR_CAP_RERANK,
   EMBED_SIDECAR_RUNTIME,
+  EMBED_SIDECAR_INTERACTIVE_PRIORITY,
+  EMBED_SIDECAR_BACKGROUND_PRIORITY,
+  EMBED_SIDECAR_PRIORITY_BURST_MAX,
   type EmbedderBuilders,
   type EmbedSidecarHandle,
   type RerankerBuilders,
@@ -417,6 +420,52 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(admissions[1]?.demand?.memoryBytes).toBe(2);
     expect(admissions[2]?.demand?.memoryBytes).toBe(2);
     expect(admissions[3]?.demand?.memoryBytes).toBe(3);
+    expect(admissions.map((input) => input.priority)).toEqual([
+      EMBED_SIDECAR_INTERACTIVE_PRIORITY,
+      EMBED_SIDECAR_INTERACTIVE_PRIORITY,
+      EMBED_SIDECAR_INTERACTIVE_PRIORITY,
+      EMBED_SIDECAR_INTERACTIVE_PRIORITY,
+    ]);
+  });
+
+  it('assigns background priority to document embeds', async () => {
+    const admissions: Array<GovernedOperationInput<unknown>> = [];
+    const governedOperation = async <T>(
+      input: GovernedOperationInput<T>,
+      run: (context: AdmissionContext) => Promise<T>,
+    ): Promise<T> => {
+      admissions.push(input as GovernedOperationInput<unknown>);
+      return run({
+        contractVersion: 1,
+        requestId: 'priority-test',
+        rootRequestId: 'priority-test',
+        parentRequestId: null,
+        idempotencyKey: 'priority-test',
+        admissionClass: input.admissionClass,
+        priority: input.priority ?? 0,
+        demand: input.demand ?? {},
+        depth: 0,
+        createdAtMs: 0,
+        decisionGeneration: 1,
+      });
+    };
+    handle = createEmbedSidecarServer({
+      port: 0,
+      builders: fakeBuilders,
+      warmAtBoot: false,
+      log: () => {},
+      workspaceId: 'priority-test-workspace',
+      governedOperation,
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    const response = await fetch(`${baseUrl}/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'document', texts: ['doc'] }),
+    });
+    expect(response.status).toBe(200);
+    expect(admissions).toHaveLength(1);
+    expect(admissions[0]?.priority).toBe(EMBED_SIDECAR_BACKGROUND_PRIORITY);
   });
 
   it('propagates a client abort to the durable governor for abandoned started work', async () => {
@@ -659,6 +708,34 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(a.vectors).toEqual([[10, 1]]);
     expect(b.vectors).toEqual(a.vectors);
     expect(c.vectors).toEqual(a.vectors);
+  });
+
+  it('normalizes exact-query identity across casing and whitespace variants', async () => {
+    let embedCalls = 0;
+    handle = createEmbedSidecarServer({
+      port: 0,
+      warmAtBoot: false,
+      log: () => {},
+      concurrency: 1,
+      builders: {
+        gemma: async () => async (text: string) => {
+          embedCalls++;
+          return [text.length];
+        },
+        local: fakeBuilders.local,
+        harrier: fakeBuilders.harrier,
+      },
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    const post = (text: string) =>
+      fetch(`${baseUrl}/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'query', texts: [text] }),
+      });
+    expect((await (await post('  Same\tQuery ')).json()).vectors).toEqual([[13]]);
+    expect((await (await post('same query')).json()).vectors).toEqual([[13]]);
+    expect(embedCalls).toBe(1);
   });
 
   it('serves repeats from the LRU, keys per model:kind, and reports cache stats', async () => {
@@ -1016,6 +1093,12 @@ describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: 'query', texts }),
     });
+  const postKind = (kind: 'query' | 'document', texts: string[]) =>
+    fetch(`${baseUrl}/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, texts }),
+    });
 
   it('concurrency 2: two units run in flight, the third starts only when a slot frees', async () => {
     gated = makeGated();
@@ -1076,6 +1159,35 @@ describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)
 
     expect((await batch).status).toBe(200);
     expect((await later).status).toBe(200);
+  });
+
+  it('prioritizes interactive queries while bounding the burst so background recovery still runs', async () => {
+    gated = makeGated();
+    await boot(1);
+    const background = postKind('document', ['background-active', 'background-waiting']);
+    await waitFor(() => gated.started.length === 1);
+
+    const interactive = Array.from({ length: EMBED_SIDECAR_PRIORITY_BURST_MAX + 1 }, (_, i) =>
+      postKind('query', [`interactive-${i}`]),
+    );
+    gated.release.get('background-active')!();
+
+    for (let i = 0; i < EMBED_SIDECAR_PRIORITY_BURST_MAX; i++) {
+      await waitFor(() => gated.started.length === i + 2);
+      expect(gated.started.at(-1)).toBe(`interactive-${i}`);
+      gated.release.get(`interactive-${i}`)!();
+    }
+
+    await waitFor(() => gated.started.length === EMBED_SIDECAR_PRIORITY_BURST_MAX + 2);
+    expect(gated.started.at(-1)).toBe('background-waiting');
+    gated.release.get('background-waiting')!();
+
+    await waitFor(() => gated.started.length === EMBED_SIDECAR_PRIORITY_BURST_MAX + 3);
+    expect(gated.started.at(-1)).toBe(`interactive-${EMBED_SIDECAR_PRIORITY_BURST_MAX}`);
+    gated.release.get(`interactive-${EMBED_SIDECAR_PRIORITY_BURST_MAX}`)!();
+
+    expect((await background).status).toBe(200);
+    for (const response of await Promise.all(interactive)) expect(response.status).toBe(200);
   });
 
   it('an aborted request removes its queued work before it starts', async () => {

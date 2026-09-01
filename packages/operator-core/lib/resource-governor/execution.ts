@@ -196,6 +196,9 @@ export interface GovernedOperationInput<T = unknown> {
   readonly namespace: string;
   readonly owner: string;
   readonly admissionClass: AdmissionClass;
+  /** Higher values are admitted sooner. Callers should use a bounded shared
+   * ladder rather than inventing an open-ended scale. */
+  readonly priority?: number;
   readonly demand?: ResourceDemand;
   readonly payloadRef?: string;
   readonly parent?: AdmissionContext;
@@ -229,6 +232,7 @@ export function runGovernedOperation<T>(
   const request = {
     idempotencyKey: input.idempotencyKey?.trim() || `${namespace}:${randomUUID()}`,
     admissionClass: input.admissionClass,
+    ...(input.priority !== undefined ? { priority: input.priority } : {}),
     demand: input.demand,
     payloadRef: input.payloadRef,
     parent: input.parent,

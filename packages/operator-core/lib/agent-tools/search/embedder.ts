@@ -35,6 +35,7 @@
  */
 
 import type { Embedder } from '@papercusp/search';
+import { normalizeEmbeddingText } from '@papercusp/memory';
 import { buildSidecarAwareEmbedder } from '../../memory/embed-sidecar-wiring';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embed-admission';
 import {
@@ -166,7 +167,7 @@ function cachedQueryEmbed(mode: string, dims: number, embed: Embedder): Embedder
     }
   };
   return (text: string, signal?: AbortSignal) => {
-    const key = `${mode}:${dims}:${text}`;
+    const key = `${mode}:${dims}:${normalizeEmbeddingText(text)}`;
     const now = Date.now();
     const hit = queryEmbedCache.get(key);
     if (hit && now - hit.at < QUERY_EMBED_CACHE_TTL_MS) {

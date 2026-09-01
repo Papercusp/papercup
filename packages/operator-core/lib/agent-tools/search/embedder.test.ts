@@ -293,6 +293,14 @@ describe('query-embed memo (WI-4734 — facet/window re-queries must not re-pay 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('normalizes casing and incidental whitespace for exact-query memo identity', async () => {
+    const fetchMock = openAiReady([0.6]);
+    const embedder = await buildQueryEmbedder();
+    await expect(embedder!('  Same\tQuery ')).resolves.toEqual([0.6]);
+    await expect(embedder!('same query')).resolves.toEqual([0.6]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('a different query is a miss; a failed embed is evicted (never sticks)', async () => {
     vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
     vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);

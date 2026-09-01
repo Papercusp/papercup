@@ -69,6 +69,7 @@ import {
   HARRIER_MODEL,
   LOCAL_EMBEDDER_MODEL,
   SIDECAR_MAX_TEXT_CHARS,
+  normalizeEmbeddingText,
   getWorkerState as getEmbedderWorkerState,
   shutdownLocalEmbedder,
   type GemmaEmbedKind,
@@ -119,6 +120,14 @@ const MAX_BODY_BYTES = 16 * 1024 * 1024;
 /** WI-4196: default cap for the text→vector LRU. A 1024-dim vector is ~8KB of
  *  JS numbers, so the default cap bounds the cache near ~8MB. */
 export const EMBED_CACHE_MAX_DEFAULT = 1024;
+/** Bounded durable-admission priorities. Query/rerank work is interactive;
+ * document indexing and boot warm-up are background and must not starve it. */
+export const EMBED_SIDECAR_INTERACTIVE_PRIORITY = 100;
+export const EMBED_SIDECAR_BACKGROUND_PRIORITY = 0;
+/** Serve at most this many queued interactive units while background work is
+ * waiting. This bounds priority in both directions: fleet bursts cannot block
+ * a live query, and a sustained live-query stream cannot starve recovery. */
+export const EMBED_SIDECAR_PRIORITY_BURST_MAX = 4;
 
 type EmbedFn = (text: string, signal?: AbortSignal) => Promise<number[]>;
 
@@ -743,6 +752,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     operation: 'embed' | 'rerank' | 'warmup';
     model: string;
     kind?: GemmaEmbedKind;
+    priority: number;
     textChars: number;
     demand: ResourceDemand;
     signal?: AbortSignal;
@@ -754,6 +764,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       namespace: 'embed-sidecar',
       owner: operationOwner,
       admissionClass: input.admissionClass,
+      priority: input.priority,
       demand: input.demand,
       payloadRef: `embed-sidecar:${input.operation}:${input.model}`,
       ...(parentAdmission ? { parent: parentAdmission } : {}),
@@ -785,10 +796,17 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     entries: Array<QueueEntry<unknown>>;
     queued: boolean;
     running: number;
+    priority: number;
   }
   const waiting: QueueBatch[] = [];
   let queued = 0;
-  const createQueueBatch = (): QueueBatch => ({ entries: [], queued: false, running: 0 });
+  let consecutivePriorityStarts = 0;
+  const createQueueBatch = (priority = EMBED_SIDECAR_BACKGROUND_PRIORITY): QueueBatch => ({
+    entries: [],
+    queued: false,
+    running: 0,
+    priority,
+  });
   const queueBatch = (batch: QueueBatch): void => {
     if (batch.entries.length === 0 || batch.queued) return;
     batch.queued = true;
@@ -801,9 +819,26 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     next.start();
     return true;
   };
+  const takeWaitingBatch = (): QueueBatch | undefined => {
+    if (waiting.length === 0) return undefined;
+    let bestIndex = 0;
+    for (let i = 1; i < waiting.length; i++) {
+      if (waiting[i].priority > waiting[bestIndex].priority) bestIndex = i;
+    }
+    const bestPriority = waiting[bestIndex].priority;
+    const lowerIndex = waiting.findIndex((batch) => batch.priority < bestPriority);
+    const selectedIndex =
+      lowerIndex >= 0 && consecutivePriorityStarts >= EMBED_SIDECAR_PRIORITY_BURST_MAX
+        ? lowerIndex
+        : bestIndex;
+    const selected = waiting.splice(selectedIndex, 1)[0];
+    if (lowerIndex >= 0 && selectedIndex === bestIndex) consecutivePriorityStarts++;
+    else consecutivePriorityStarts = 0;
+    return selected;
+  };
   function drainQueue(): void {
     while (active < concurrency && waiting.length > 0) {
-      const batch = waiting.shift()!;
+      const batch = takeWaitingBatch()!;
       batch.queued = false;
       startNext(batch);
     }
@@ -1017,13 +1052,15 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     bypassCache = false,
   ): Promise<number[]> =>
     computeCached(
-      `${model}:${kind}\0${text}`,
+      `${model}:${kind}\0${normalizeEmbeddingText(text)}`,
       (taskSignal) =>
         runSidecarUnit({
           admissionClass: 'embedding',
           operation: 'embed',
           model,
           kind,
+          priority:
+            kind === 'query' ? EMBED_SIDECAR_INTERACTIVE_PRIORITY : EMBED_SIDECAR_BACKGROUND_PRIORITY,
           textChars: text.length,
           demand: {
             cpuWeight: 1,
@@ -1057,12 +1094,13 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     batch: QueueBatch,
   ): Promise<number> =>
     computeCached(
-      `${model}\0${query}\0${text}`,
+      `${model}\0${normalizeEmbeddingText(query)}\0${normalizeEmbeddingText(text)}`,
       (taskSignal) =>
         runSidecarUnit({
           admissionClass: 'inference',
           operation: 'rerank',
           model,
+          priority: EMBED_SIDECAR_INTERACTIVE_PRIORITY,
           textChars: query.length + text.length,
           demand: {
             cpuWeight: 1,
@@ -1101,7 +1139,9 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       return;
     }
     try {
-      const batch = createQueueBatch();
+      const batch = createQueueBatch(
+        v.kind === 'query' ? EMBED_SIDECAR_INTERACTIVE_PRIORITY : EMBED_SIDECAR_BACKGROUND_PRIORITY,
+      );
       // EI-19323982006772080: counted per request, so the answer to "did this
       // measure the model?" travels WITH the vectors it is about instead of
       // living in a process-global gauge the caller has to sample separately
@@ -1149,7 +1189,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       // any threshold are the CLIENT's job. The server never reorders — that
       // keeps the ranking policy in one place (@papercusp/rerank) instead of
       // split across a wire.
-      const batch = createQueueBatch();
+      const batch = createQueueBatch(EMBED_SIDECAR_INTERACTIVE_PRIORITY);
       const scores = await Promise.all(
         v.texts.map((text) => rerankOneCached(v.model, v.query, text, signal, batch)),
       );
@@ -1308,6 +1348,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
             operation: 'warmup',
             model,
             kind,
+            priority: EMBED_SIDECAR_BACKGROUND_PRIORITY,
             textChars: 'warm-up'.length,
             demand: { cpuWeight: 1, memoryBytes: Buffer.byteLength('warm-up', 'utf8') },
             run: async () => {
@@ -1326,6 +1367,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
           admissionClass: 'inference',
           operation: 'warmup',
           model,
+          priority: EMBED_SIDECAR_BACKGROUND_PRIORITY,
           textChars: 'warm-up'.length * 2,
           demand: { cpuWeight: 1, memoryBytes: Buffer.byteLength('warm-up', 'utf8') * 2 },
           run: async () => {
