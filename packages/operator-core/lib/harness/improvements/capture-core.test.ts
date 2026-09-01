@@ -707,33 +707,30 @@ describe('captureImprovement — native kind + paths (close-loop D-002)', () => 
 describe('captureImprovement — search-first dedup (D-001)', () => {
   const dup = existing({ id: 'EI-7', title: 'presence list dumps stale rows', state: 'open' });
 
-  it('declines a likely duplicate by default (link instead)', async () => {
+  it('P-002 / D-001: a likely duplicate FILES with payload.dedupVerdict (silent intake)', async () => {
     const d = deps({ found: [dup] });
     const res = await captureImprovement(
       { title: 'presence list dumps stale rows', kind: 'bug', body: 'fresh repro evidence', createdBy: 'su-reporter' },
       d,
     );
-    expect(res.created).toBe(false);
-    expect(res.reason).toBe('likely-duplicate');
+    expect(res.created).toBe(true);
     expect(res.possibleDuplicates[0].id).toBe('EI-7');
-    expect(d.created).toHaveLength(0);
-    expect(d.occurrences).toEqual([
-      expect.objectContaining({
-        canonicalId: 'EI-7',
-        reporter: 'su-reporter',
-        sourceTool: 'improvements:capture',
-        reportKind: 'duplicate',
-        reportedTitle: 'presence list dumps stale rows',
-        admissionIdentity: expect.objectContaining({ schemaVersion: 'admission-identity-v1' }),
-        evidence: expect.objectContaining({ body: 'fresh repro evidence' }),
-      }),
-    ]);
+    expect(d.created).toHaveLength(1);
+    // The created row IS the record: the file-time verdict + candidates ride its
+    // payload for the central resolver; the 'duplicate' occurrence append onto the
+    // canonical is retired with the decline.
+    expect(d.created[0].payload).toMatchObject({
+      dedupVerdict: 'likely-duplicate',
+      dedupCandidates: [expect.objectContaining({ id: 'EI-7' })],
+    });
+    expect(d.occurrences).not.toContainEqual(expect.objectContaining({ reportKind: 'duplicate' }));
   });
 
-  it('force overrides the decline', async () => {
+  it('force asserts distinctness — files with NO dedupVerdict annotation', async () => {
     const d = deps({ found: [dup] });
     const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug', force: true }, d);
     expect(res.created).toBe(true);
+    expect((d.created[0].payload as Record<string, unknown> | undefined)?.dedupVerdict).toBeUndefined();
   });
 
   it('checkDuplicatesOnly never creates', async () => {
@@ -773,10 +770,11 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     expect(res.possibleDuplicates[0].id).toBe('EI-7');
   });
 
-  it("dedupScope:'open' — an OPEN duplicate still declines", async () => {
+  it("dedupScope:'open' — an OPEN duplicate still carries the verdict (files under P-002)", async () => {
     const d = deps({ found: [dup] });
     const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug', dedupScope: 'open' }, d);
-    expect(res.created).toBe(false);
+    expect(res.created).toBe(true);
+    expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
 
   it('an unrelated existing item does not decline', async () => {
@@ -941,15 +939,15 @@ describe('captureImprovement — watchdogKey-aware dedup (watchdog-audit P-004 /
     expect(res.created).toBe(true);
   });
 
-  it('a candidate WITHOUT a key stays in the net (legacy items still dedup)', async () => {
+  it('a candidate WITHOUT a key stays in the net (legacy items still classify — verdict rides the row)', async () => {
     const legacy = existing({ id: 'EI-9', title: 'Test failing repeatedly: lib/a.test.ts', state: 'open', payload: null });
     const d = deps({ found: [legacy] });
     const res = await captureImprovement(
       { title: 'Test failing repeatedly: lib/a.test.ts', kind: 'bug', dedupScope: 'open', watchdogKey: 'red-test:lib/a.test.ts' },
       d,
     );
-    expect(res.created).toBe(false);
-    expect(res.reason).toBe('likely-duplicate');
+    expect(res.created).toBe(true);
+    expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
 });
 
@@ -962,7 +960,7 @@ describe('captureImprovement — resolved-dup evidence gate (watchdog-audit P-00
     updatedAt: resolvedAt,
   });
 
-  it("dedupScope:'open' + evidence OLDER than the resolution → declined as stale-evidence", async () => {
+  it("dedupScope:'open' + evidence OLDER than the resolution → files with dedupVerdict 'stale-evidence' (P-002)", async () => {
     const d = deps({ found: [resolvedDup] });
     const res = await captureImprovement(
       {
@@ -973,9 +971,9 @@ describe('captureImprovement — resolved-dup evidence gate (watchdog-audit P-00
       },
       d,
     );
-    expect(res.created).toBe(false);
-    expect(res.reason).toBe('stale-evidence');
-    expect(d.created).toHaveLength(0);
+    expect(res.created).toBe(true);
+    expect(d.created).toHaveLength(1);
+    expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'stale-evidence' });
   });
 
   it("dedupScope:'open' + evidence NEWER than the resolution → re-files (real regression)", async () => {
@@ -990,6 +988,9 @@ describe('captureImprovement — resolved-dup evidence gate (watchdog-audit P-00
       d,
     );
     expect(res.created).toBe(true);
+    // A real regression re-file carries NO stale verdict — the annotation is scoped
+    // to the case the old decline covered.
+    expect((d.created[0].payload as Record<string, unknown> | undefined)?.dedupVerdict).toBeUndefined();
   });
 
   it('no evidenceAt (live-state signal) keeps the old regression semantics — re-file', async () => {
@@ -1050,7 +1051,7 @@ describe('captureImprovement — signal provenance (frontier P-002 / D-002)', ()
     expect(res.created).toBe(true);
   });
 
-  it('same-origin dedup still declines (drill vs drill)', async () => {
+  it('same-origin dedup still classifies (drill vs drill — files with the verdict, P-002)', async () => {
     const drillDup = existing({
       id: 'EI-7',
       title: 'presence list dumps stale rows',
@@ -1062,8 +1063,8 @@ describe('captureImprovement — signal provenance (frontier P-002 / D-002)', ()
       { title: 'presence list dumps stale rows', kind: 'bug', origin: 'drill' },
       d,
     );
-    expect(res.created).toBe(false);
-    expect(res.reason).toBe('likely-duplicate');
+    expect(res.created).toBe(true);
+    expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
 
   it('already-decided recall is origin-scoped: a decided REPLAY row is not recalled for an organic capture', async () => {
@@ -1102,13 +1103,13 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     getIssue: async (id) => issues.find((i) => i.id === id) ?? null,
   });
 
-  it('a HARD semantic hit declines the capture even when the lexical net misses it', async () => {
+  it('a HARD semantic hit carries the verdict even when the lexical net misses it (files, P-002)', async () => {
     const worded = existing({ id: 'EI-50', title: 'agents keep refiling identical tool bugs' });
     const d = semDeps(deps({ found: [] }), { hard: [{ id: 'EI-50', similarity: 0.95 }], soft: [] }, [worded]);
     const res = await captureImprovement({ title: 'duplicate friction reports flood the queue', kind: 'bug' }, d);
-    expect(res.created).toBe(false);
-    expect(res.reason).toBe('likely-duplicate');
+    expect(res.created).toBe(true);
     expect(res.possibleDuplicates[0]).toMatchObject({ id: 'EI-50', semantic: 'hard', similarity: 0.95 });
+    expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
 
   it('a SOFT semantic hit is advisory-only: surfaced in possibleDuplicates, capture still created', async () => {
@@ -1177,21 +1178,23 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     expect(base.created).toHaveLength(1);
   });
 
-  // ── D-033 (learning-loop-identity-and-consumption-2026-08-08 P-008):
-  // `semanticBlockBand:'soft'` lets a soft hit decline, for high-volume MACHINE
-  // ideation only. The pair below is deliberate: the CONTROL pins the default so
-  // a future change that makes soft blocking universal fails HERE rather than
-  // silently costing agents their filings (owner constraint D-004).
-  it('D-033: semanticBlockBand:"soft" lets a SOFT hit decline the capture', async () => {
+  // ── D-033 (learning-loop-identity-and-consumption-2026-08-08 P-008), narrowed
+  // by P-002 (silent-intake, D-001): `semanticBlockBand:'soft'` now lets a soft
+  // hit carry the file-time VERDICT (the decline it used to gate is retired), for
+  // high-volume MACHINE ideation only. The pair below is deliberate: the CONTROL
+  // pins the default so a future change that makes the soft band verdict-eligible
+  // universally fails HERE rather than silently mislabeling agent filings
+  // (owner constraint D-004).
+  it('D-033: semanticBlockBand:"soft" lets a SOFT hit carry the dedupVerdict (files, P-002)', async () => {
     const worded = existing({ id: 'EI-54', title: 'similar-ish friction wording' });
     const d = semDeps(deps({ found: [] }), { hard: [], soft: [{ id: 'EI-54', similarity: 0.87 }] }, [worded]);
     const res = await captureImprovement(
       { title: 'a completely differently worded capture', kind: 'change', semanticBlockBand: 'soft' },
       d,
     );
-    expect(res.created).toBe(false);
-    expect(res.reason).toBe('likely-duplicate');
+    expect(res.created).toBe(true);
     expect(res.possibleDuplicates[0]).toMatchObject({ id: 'EI-54', semantic: 'soft', similarity: 0.87 });
+    expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
 
   it('D-033 CONTROL: the DEFAULT still lets a soft hit through — agent filings are never blocked by a soft band', async () => {
@@ -1201,6 +1204,7 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     const res = await captureImprovement({ title: 'a completely differently worded capture', kind: 'change' }, d);
     expect(res.created).toBe(true);
     expect(res.possibleDuplicates[0]).toMatchObject({ id: 'EI-55', semantic: 'soft' });
+    expect((d.created[0].payload as Record<string, unknown> | undefined)?.dedupVerdict).toBeUndefined();
   });
 
   it('D-033: semanticBlockBand:"soft" does NOT widen blocking to CONTAINMENT hits (asymmetric, stays advisory in both modes)', async () => {
@@ -1239,7 +1243,7 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
       [same],
     );
     const res = await captureImprovement({ title: 'docs search returns stale results', kind: 'bug' }, d);
-    expect(res.created).toBe(false);
+    expect(res.created).toBe(true);
     expect(res.possibleDuplicates[0].semantic).toBeUndefined();
     expect(res.possibleDuplicates[0].similarity).toBe(1);
   });
@@ -1801,23 +1805,20 @@ describe('WI-38403 — stable identity + fail-closed DRAIN admission', () => {
     }
   });
 
-  it('rejects a DRAIN bug before persistence when any dedup leg is unavailable, even with force', async () => {
+  it('P-002: a DRAIN bug on an unmeasured dedup path now FILES with the degradation stamped (veto retired)', async () => {
     const d = deps();
-    await expect(
-      captureImprovement(
-        {
-          title: 'direct drain blocker with no semantic verdict',
-          kind: 'bug',
-          force: true,
-          requireCompleteDedupCoverage: true,
-        },
-        { ...d, findSemanticDupes: async () => null },
-      ),
-    ).rejects.toMatchObject({
-      code: 'dedup_unavailable',
-      coverage: { lexical: 'ok', semantic: 'unavailable', degraded: true },
-    });
-    expect(d.created).toHaveLength(0);
+    const res = await captureImprovement(
+      {
+        title: 'direct drain blocker with no semantic verdict',
+        kind: 'bug',
+        force: true,
+        requireCompleteDedupCoverage: true,
+      },
+      { ...d, findSemanticDupes: async () => null },
+    );
+    expect(res.created).toBe(true);
+    expect(d.created).toHaveLength(1);
+    expect(payloadOf(d)?.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
   });
 
   it('admits a DRAIN bug when both dedup legs returned real verdicts', async () => {
