@@ -22,7 +22,9 @@
  * whether a navigation is LEAVING the panel's sandbox (WI-4827). The SPA imports
  * this same module, so there is exactly one list.
  */
-export const CHROMELESS_PREFIXES = ['/pi', '/project-docs', '/el-min', '/quick-panel', '/tasks-roster', '/plans', '/inbox'] as const;
+import { isPortalEmbedLocation, PORTAL_PANES_PATH_PREFIX } from './portal-embed';
+
+export const CHROMELESS_PREFIXES = ['/pi', '/project-docs', '/el-min', '/quick-panel', '/tasks-roster', '/plans', '/inbox', PORTAL_PANES_PATH_PREFIX] as const;
 
 /** True when `pathname` is (or is nested under) a chromeless route. */
 export function isChromelessPath(pathname: string): boolean {
@@ -32,16 +34,19 @@ export function isChromelessPath(pathname: string): boolean {
 /**
  * Whether the operator's steering sidebar belongs on this route.
  *
- * Portal-embedded `/adv` intentionally remains eligible: the hosted cloud
- * experience keeps the existing Accounts rail beside Papercup Chat. Focused
- * extracted surfaces (`/plans`, `/inbox`, task roster) remain bare because
- * they are members of CHROMELESS_PREFIXES.
+ * Focused extracted surfaces (`/plans`, `/inbox`, task roster, the portal
+ * pane documents) are bare because they are members of CHROMELESS_PREFIXES.
+ * A portal-EMBEDDED `/adv` is bare too (owner ask 2026-09-01): the hosted
+ * cloud shell frames the steering rail and the Papercup chat as its OWN
+ * sidebars (`PORTAL_PANE_PATHS`), so the embedded tab body must not grow a
+ * second copy of either dock. Pass the location's search so the query
+ * contract can be read; `/adv` outside the portal keeps the rail.
  */
-export function routeHasSteeringSidebar(pathname: string): boolean {
-  return !isChromelessPath(pathname);
+export function routeHasSteeringSidebar(pathname: string, search = ''): boolean {
+  return !isChromelessPath(pathname) && !isPortalEmbedLocation(pathname, search);
 }
 
 // Portal-hosted /adv documents use a query contract rather than a new route.
 // Re-export the browser-safe protocol predicate instead of maintaining a
 // second spelling here; ChromeShell and the theme bridge must never drift.
-export { isPortalEmbedLocation } from './portal-embed';
+export { isPortalEmbedLocation };

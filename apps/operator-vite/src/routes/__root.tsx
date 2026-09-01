@@ -265,13 +265,14 @@ function RootComponent() {
                   (its open/tab/selection state is URL-backed) + RootSyncProvider
                   (its panels use useSyncQuery); docked via
                   body.has-left-sidebar. Papercup chat mounts after it as the
-                  middle pane. It remains present inside portal-embedded /adv so
-                  the Accounts-first steering surface stays beside Papercup Chat;
-                  focused /plans and /inbox embeds still self-suppress because
-                  LeftSidebar treats chromeless routes as bare documents. Skipped
-                  while the WSL onboarding gate is blocking (WI-2749 item
-                  #2) — see useWslGateBlocking. */}
-              {routeHasSteeringSidebar(pathname) && !wslGateBlocking && (
+                  middle pane. A portal-embedded /adv is BARE (owner ask
+                  2026-09-01): the cloud portal frames this rail and the chat as
+                  its own outer sidebars via /portal-panes/*, so the predicate
+                  reads the search too. Focused /plans and /inbox embeds
+                  self-suppress because LeftSidebar treats chromeless routes as
+                  bare documents. Skipped while the WSL onboarding gate is
+                  blocking (WI-2749 item #2) — see useWslGateBlocking. */}
+              {routeHasSteeringSidebar(pathname, searchParams.toString()) && !wslGateBlocking && (
                 <Suspense fallback={null}>
                   <LeftSidebar />
                 </Suspense>
