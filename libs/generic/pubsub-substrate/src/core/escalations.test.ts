@@ -9,13 +9,31 @@
  * Run: cd libs/generic/pubsub-substrate && npx vitest run src/core/escalations.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { foldResolved, indexResolves, foldEscalations } from './escalations';
-import type { EscalationRecord, EscalationResolvedEvent } from './escalations';
+import {
+  escalationGeneration,
+  foldResolved,
+  indexResolves,
+  foldEscalations,
+  reopenedEventId,
+  resolvedEventId,
+} from './escalations';
+import type { EscalationRecord, EscalationReopenedEvent, EscalationResolvedEvent } from './escalations';
 
 const esc = (msg_id: string, ts: string): EscalationRecord =>
   ({ msg_id, ts, kind: 'escalation', severity: 'blocker', summary: 's', from: 'a', to: ['*'], resolved: null }) as EscalationRecord;
 const res = (msg_id: string, ts: string, related: string, choice: string, extra: Record<string, unknown> = {}): EscalationResolvedEvent =>
   ({ msg_id, ts, kind: 'escalation_resolved', related_msg_id: related, choice, from: 'h', to: ['*'], ...extra }) as EscalationResolvedEvent;
+
+const reopen = (msg_id: string, ts: string, related: string, generation: number): EscalationReopenedEvent => ({
+  msg_id,
+  ts,
+  kind: 'escalation_reopened',
+  related_msg_id: related,
+  generation,
+  from: 'owner',
+  to: ['human'],
+  summary: 'reopened',
+});
 
 describe('foldResolved', () => {
   it('leaves resolved null when there is no resolve event', () => {
@@ -59,5 +77,30 @@ describe('foldEscalations', () => {
   it('sorts ascending by (ts, msg_id)', () => {
     const shuffled = [esc('b', '2026-01-01T00:00:02Z'), esc('a', '2026-01-01T00:00:01Z')];
     expect(foldEscalations(shuffled, []).map((o) => o.msg_id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('append-only reopen generations', () => {
+  it('a reopen removes the prior resolution without deleting its audit event', () => {
+    const opens = [esc('e1', '2026-01-01T00:00:00.000Z')];
+    const resolves = [res(resolvedEventId('e1'), '2026-01-01T00:00:01.000Z', 'e1', 'done')];
+    const reopens = [reopen(reopenedEventId('e1', 1), '2026-01-01T00:00:02.000Z', 'e1', 1)];
+
+    expect(indexResolves(resolves, reopens).has('e1')).toBe(false);
+    expect(foldEscalations(opens, resolves, { status: 'open', reopens }).map((e) => e.msg_id)).toEqual(['e1']);
+    expect(escalationGeneration('e1', reopens)).toBe(1);
+    expect(resolvedEventId('e1', 1)).toBe('res-e1-g1');
+  });
+
+  it('a later resolve closes the reopened generation again', () => {
+    const opens = [esc('e1', '2026-01-01T00:00:00.000Z')];
+    const reopens = [reopen(reopenedEventId('e1', 1), '2026-01-01T00:00:02.000Z', 'e1', 1)];
+    const resolves = [
+      res(resolvedEventId('e1'), '2026-01-01T00:00:01.000Z', 'e1', 'first'),
+      res(resolvedEventId('e1', 1), '2026-01-01T00:00:03.000Z', 'e1', 'second', { generation: 1 }),
+    ];
+
+    expect(indexResolves(resolves, reopens).get('e1')?.choice).toBe('second');
+    expect(foldEscalations(opens, resolves, { status: 'resolved', reopens })[0]?.resolved?.choice).toBe('second');
   });
 });

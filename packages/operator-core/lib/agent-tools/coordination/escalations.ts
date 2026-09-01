@@ -17,12 +17,15 @@ import {
   foldResolved,
   indexResolves,
   resolvedEventId,
+  reopenedEventId,
+  escalationGeneration,
   type EscalationSeverity,
   type EscalationOption,
   type OpenEscalationInput,
   type ResolveInput,
   type EscalationRecord,
   type EscalationResolvedEvent,
+  type EscalationReopenedEvent,
 } from '@papercusp/coordination/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { EVIDENCE_FIELD, type EvidenceStamp } from './relay-provenance';
@@ -39,6 +42,7 @@ export type {
   ResolveInput,
   EscalationRecord,
   EscalationResolvedEvent,
+  EscalationReopenedEvent,
 };
 
 export async function armEscalationRequesterInterest(
@@ -384,8 +388,8 @@ async function tryBumpProjectionDuplicate(
 async function findOpenDuplicate(
   dedup: EscalationDedupIdentity,
 ): Promise<EscalationRecord | null> {
-  const { opens, resolves } = await loadEscalations();
-  const open = foldEscalations(opens, resolves, { status: 'open' }).find((rec) => {
+  const { opens, resolves, reopens } = await loadEscalations();
+  const open = foldEscalations(opens, resolves, { status: 'open', reopens }).find((rec) => {
     const meta = rec as Record<string, unknown>;
     return (
       meta[OPEN_ESCALATION_DEDUP_KIND_KEY] === dedup.dedupKind &&
@@ -453,18 +457,23 @@ export async function openEscalation(
 async function loadEscalations(): Promise<{
   opens: EscalationRecord[];
   resolves: EscalationResolvedEvent[];
+  reopens: EscalationReopenedEvent[];
 }> {
   const all = await coordLog.readEvents('escalations');
   const opens: EscalationRecord[] = [];
   const resolves: EscalationResolvedEvent[] = [];
+  const reopens: EscalationReopenedEvent[] = [];
   for (const rec of all) {
     if (rec.kind === 'escalation') opens.push(rec as EscalationRecord);
     else if (rec.kind === 'escalation_resolved') {
       const ev = rec as EscalationResolvedEvent;
       if (typeof ev.related_msg_id === 'string') resolves.push(ev);
+    } else if (rec.kind === 'escalation_reopened') {
+      const ev = rec as EscalationReopenedEvent;
+      if (typeof ev.related_msg_id === 'string') reopens.push(ev);
     }
   }
-  return { opens, resolves };
+  return { opens, resolves, reopens };
 }
 
 /**
@@ -534,8 +543,8 @@ export async function listEscalations(
       }
     }
   }
-  const { opens, resolves } = await loadEscalations();
-  return foldEscalations(opens, resolves, opts);
+  const { opens, resolves, reopens } = await loadEscalations();
+  return foldEscalations(opens, resolves, { ...opts, reopens });
 }
 
 /** WI-4181: slack subtracted from the oldest open's ts when deciding whether the
@@ -660,7 +669,10 @@ export async function listEscalationsPaginated(
   // conflating the two.
   const [opensRaw, firstResolvePage, trueOpenTotal] = await Promise.all([
     coordLog.readEventsBounded('escalations', { limit: maxRecords, kinds: ['escalation'] }),
-    coordLog.readEventsBoundedCursor('escalations', { limit: maxRecords, kinds: ['escalation_resolved'] }),
+    coordLog.readEventsBoundedCursor('escalations', {
+      limit: maxRecords,
+      kinds: ['escalation_resolved', 'escalation_reopened'],
+    }),
     opts.status === 'open' ? listEscalations({ status: 'open' }).then((rows) => rows.length) : Promise.resolve(undefined),
   ]);
   const opens = opensRaw as EscalationRecord[];
@@ -696,7 +708,7 @@ export async function listEscalationsPaginated(
   ) {
     const page = await coordLog.readEventsBoundedCursor('escalations', {
       limit: maxRecords,
-      kinds: ['escalation_resolved'],
+      kinds: ['escalation_resolved', 'escalation_reopened'],
       beforeId: resolveRows[resolveRows.length - 1].id,
     });
     resolveRows = resolveRows.concat(page.rows);
@@ -707,10 +719,17 @@ export async function listEscalationsPaginated(
   const resolves = resolveRows
     .map((r) => r.envelope)
     .filter(
-      (rec): rec is EscalationResolvedEvent => typeof (rec as EscalationResolvedEvent).related_msg_id === 'string',
+      (rec): rec is EscalationResolvedEvent =>
+        rec.kind === 'escalation_resolved' && typeof (rec as EscalationResolvedEvent).related_msg_id === 'string',
+    );
+  const reopens = resolveRows
+    .map((r) => r.envelope)
+    .filter(
+      (rec): rec is EscalationReopenedEvent =>
+        rec.kind === 'escalation_reopened' && typeof (rec as EscalationReopenedEvent).related_msg_id === 'string',
     );
 
-  const foldedAll = foldEscalations(opens, resolves, opts);
+  const foldedAll = foldEscalations(opens, resolves, { ...opts, reopens });
   // EI-19403159016550818: same `from` scoping as the projection path above. NOTE
   // this leg filters AFTER a recency-bounded fold, so it is bounded-by-window in
   // the way that path always was — it is consistent, not complete. The projection
@@ -754,8 +773,8 @@ export async function archiveResolvedEscalations(
   const limit = opts.limit ?? 200;
   const nowMs = Date.now();
   
-  const { opens, resolves } = await loadEscalations();
-  const resolveMap = indexResolves(resolves);
+  const { opens, resolves, reopens } = await loadEscalations();
+  const resolveMap = indexResolves(resolves, reopens);
   
   // Find resolved escalations older than TTL
   const toArchive: string[] = [];
@@ -908,9 +927,9 @@ export async function resolveEscalationsBatch(
   if (inputs.length === 0) return result;
 
   // ONE load for the whole batch (the O(n²) → O(n) fix).
-  const { opens, resolves } = await loadEscalations();
+  const { opens, resolves, reopens } = await loadEscalations();
   const openById = new Map(opens.map((e) => [e.msg_id, e]));
-  const alreadyResolved = indexResolves(resolves);
+  const alreadyResolved = indexResolves(resolves, reopens);
   // Also guard against the same msg_id appearing twice in `inputs`.
   const resolvedThisBatch = new Set<string>();
 
@@ -949,15 +968,17 @@ export async function resolveEscalationsBatch(
     // collapse onto ONE row instead of duplicating — no new primitive needed here,
     // because a drain sweep reports COUNTS and pages nobody, so it needs the row to
     // be unique but does not need to elect a single announcer.
+    const generation = escalationGeneration(input.msg_id, reopens);
     const ev: EscalationResolvedEvent = {
       ts: new Date().toISOString(),
-      msg_id: resolvedEventId(input.msg_id),
+      msg_id: resolvedEventId(input.msg_id, generation),
       from: input.resolver ?? open.from,
       to: [open.from],
       kind: 'escalation_resolved',
       related_msg_id: input.msg_id,
       summary: `resolved: ${input.choice}`,
       choice: input.choice,
+      generation,
     };
     if (input.resolver !== undefined) ev.by = input.resolver;
     if (input.note !== undefined) ev.note = input.note;
@@ -984,8 +1005,40 @@ export async function getEscalation(
 ): Promise<EscalationRecord | null> {
   const open = await coordLog.getEvent('escalations', msg_id);
   if (!open || open.kind !== 'escalation') return null;
-  const { resolves } = await loadEscalations();
-  return foldResolved(open as EscalationRecord, indexResolves(resolves).get(msg_id));
+  const { resolves, reopens } = await loadEscalations();
+  return foldResolved(open as EscalationRecord, indexResolves(resolves, reopens).get(msg_id));
+}
+
+/**
+ * Append an owner compensation that reopens a resolved escalation. The original
+ * resolution remains in history; the next resolve writes a new deterministic
+ * generation, so repeat resolve/reopen cycles stay race-safe and auditable.
+ */
+export async function reopenEscalation(input: {
+  msg_id: string;
+  by?: string;
+  note?: string;
+}): Promise<EscalationRecord | 'not_found' | 'already_open'> {
+  const { opens, resolves, reopens } = await loadEscalations();
+  const open = opens.find((event) => event.msg_id === input.msg_id);
+  if (!open) return 'not_found';
+  if (!indexResolves(resolves, reopens).has(input.msg_id)) return 'already_open';
+  const generation = escalationGeneration(input.msg_id, reopens) + 1;
+  const event: EscalationReopenedEvent = {
+    ts: new Date().toISOString(),
+    msg_id: reopenedEventId(input.msg_id, generation),
+    from: input.by ?? 'owner',
+    to: [open.from],
+    kind: 'escalation_reopened',
+    related_msg_id: input.msg_id,
+    generation,
+    summary: `reopened escalation ${input.msg_id}`,
+    ...(input.by ? { by: input.by } : {}),
+    ...(input.note ? { note: input.note } : {}),
+  };
+  const won = await coordLog.putEventIfAbsent('escalations', event.msg_id, event);
+  if (!won) return 'already_open';
+  return foldResolved(open, undefined);
 }
 
 /**
@@ -997,10 +1050,10 @@ export async function resolveEscalation(
   input: ResolveInput,
   opts: { allowSpawnRequest?: boolean } = {},
 ): Promise<EscalationRecord | 'not_found' | 'already_resolved' | 'requires_spawn_approve'> {
-  const { opens, resolves } = await loadEscalations();
+  const { opens, resolves, reopens } = await loadEscalations();
   const open = opens.find((e) => e.msg_id === input.msg_id);
   if (!open) return 'not_found';
-  if (indexResolves(resolves).has(input.msg_id)) return 'already_resolved';
+  if (indexResolves(resolves, reopens).has(input.msg_id)) return 'already_resolved';
   // unify-agent-spawn-chokepoint P-005/P-006: a `new_subagent` spawn-approval request
   // (it carries meta.spawnRequest) is resolvable ONLY via the brain-gated
   // `new_subagent:approve` tool (which passes allowSpawnRequest), NOT the general
@@ -1015,15 +1068,17 @@ export async function resolveEscalation(
   // was never expressing anything true: it made N concurrent resolves of the SAME
   // row land as N distinct rows that no unique constraint could catch. Deriving it
   // makes "at most one resolve per escalation" a property of the key.
+  const generation = escalationGeneration(input.msg_id, reopens);
   const ev: EscalationResolvedEvent = {
     ts: new Date().toISOString(),
-    msg_id: resolvedEventId(input.msg_id),
+    msg_id: resolvedEventId(input.msg_id, generation),
     from: input.resolver ?? open.from,
     to: [open.from],
     kind: 'escalation_resolved',
     related_msg_id: input.msg_id,
     summary: `resolved: ${input.choice}`,
     choice: input.choice,
+    generation,
   };
   if (input.resolver !== undefined) ev.by = input.resolver;
   if (input.note !== undefined) ev.note = input.note;

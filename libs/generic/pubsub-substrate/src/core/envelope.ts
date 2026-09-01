@@ -55,8 +55,14 @@ export const COORD_EXECUTABLE_KINDS = [
 export const COORD_CONVERSATIONAL_KINDS = [
   'message',
   'ack',
+  // Append-only compensation for an acknowledgement. Readers fold it against
+  // the same principal's earlier ack; the original receipt stays immutable.
+  'unack',
   'escalation',
   'escalation_resolved',
+  // Append-only compensation for a resolution. A later generation may resolve
+  // the same escalation again without deleting either historical event.
+  'escalation_reopened',
   // context-injection-audit-2026-07-28 P-039 / D-012: a commitment-scoped notice
   // that a peer the RECEIVER is blocked on changed liveness state. Conversational
   // by construction — it reports a derived verdict and carries no authority over

@@ -22,7 +22,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import type { AgentIdentity } from './identity';
-import { sendMessage, appendAck, readAckedMsgIds } from './messages';
+import { sendMessage, appendAck, appendUnack, readAckedMsgIds } from './messages';
 
 let fx: BaselineCoordFixture;
 
@@ -91,5 +91,16 @@ describe('readAckedMsgIds (EI-401 SQL path)', () => {
     await sendAndAck(ALICE, BOB);
     const set = await readAckedMsgIds('');
     expect(set.size).toBe(0);
+  });
+
+  it('folds an append-only unack out, then permits a later ack again', async () => {
+    const target = await sendAndAck(ALICE, BOB);
+    expect((await readAckedMsgIds(BOB.ownerId)).has(target)).toBe(true);
+
+    await appendUnack(BOB, target, ALICE.ownerId);
+    expect((await readAckedMsgIds(BOB.ownerId)).has(target)).toBe(false);
+
+    await appendAck(BOB, target, ALICE.ownerId);
+    expect((await readAckedMsgIds(BOB.ownerId)).has(target)).toBe(true);
   });
 });

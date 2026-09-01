@@ -34,7 +34,11 @@ import { getLoopCarryNote } from '../../carry-note';
 import { listActiveAwaits, listParkedAwaitsForSubscribers, INBOX_WAKE_KEY_PREFIX } from '../../events/await/store';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
-import { readFleetWindDownLoopEndAuthorization } from '../coordination/tools/continuation-gate';
+import {
+  readFleetParkResumePathForOwner,
+  readFleetWindDownLoopEndAuthorization,
+} from '../coordination/tools/continuation-gate';
+import { describeParkResumePath } from '../../fleet-park-resume-path';
 
 /** Bound the receipt's surviving-awaits enumeration (the count stays exact). */
 const SURVIVING_AWAITS_LISTED_CAP = 10;
@@ -308,6 +312,17 @@ export default defineTool({
         ...args,
         acknowledgeWakeLessAutonomy: true,
       };
+      // WI-2034563: when the reason this session is stopping is a PARK DIRECTIVE, a
+      // generic "register an events:await" is not enough — the member has to await
+      // the ONE key the park declared, and a key retyped from prose never
+      // rendezvouses. Read it on the refusal path only and hand it over verbatim.
+      // Fail-soft: the refusal must still stand if the read misses.
+      const parkedUnder = workspaceId
+        ? await readFleetParkResumePathForOwner({ ownerId, workspaceId }).catch(() => null)
+        : null;
+      const parkGuidance = parkedUnder
+        ? ` This session is parked under fleet '${parkedUnder.fleet}'. ${describeParkResumePath(parkedUnder.path)}`
+        : '';
       return {
         content: [
           {
@@ -318,10 +333,26 @@ export default defineTool({
               message:
                 `REFUSED — loop:end would leave ${ownerId} in autonomy-implying mode(s) ` +
                 `[${wakeLessAutonomy.autonomyModes.join(', ')}] with no deliberate independent event await. ` +
-                'Action required: keep the loop armed, register an events:await wake, exit the autonomy-implying modes, or retry loop:end with the exact arguments in recovery.args to consciously create a wake-less autonomy state.',
+                'Action required: keep the loop armed, register an events:await wake, exit the autonomy-implying modes, or retry loop:end with the exact arguments in recovery.args to consciously create a wake-less autonomy state.' +
+                parkGuidance,
               ownerId,
               autonomyModes: wakeLessAutonomy.autonomyModes,
               requiredAcknowledgement: 'acknowledgeWakeLessAutonomy',
+              ...(parkedUnder
+                ? {
+                    parkedUnder: {
+                      fleet: parkedUnder.fleet,
+                      resumeGate: parkedUnder.path.gate,
+                      expiresAt: parkedUnder.path.expiresAt,
+                      kind: parkedUnder.path.kind,
+                      // The action that actually fixes this, ready to copy. Preferred
+                      // over the acknowledgement: it leaves a wake source behind.
+                      ...(parkedUnder.path.gate
+                        ? { preferredRecovery: { tool: 'events:await', args: { event: parkedUnder.path.gate } } }
+                        : {}),
+                    },
+                  }
+                : {}),
               recovery: {
                 action: 'retry',
                 tool: 'loop:end',

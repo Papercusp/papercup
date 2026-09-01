@@ -65,6 +65,21 @@ export interface EscalationResolvedEvent extends CoordEnvelope {
   kind: 'escalation_resolved';
   related_msg_id: string;
   choice: string;
+  /** Reopen generation this resolution closes; legacy rows are generation 0. */
+  generation?: number;
+  by?: string;
+  note?: string;
+}
+
+/**
+ * Append-only compensation for a resolution. The original escalation and every
+ * resolution remain immutable; the fold treats this as the next lifecycle
+ * generation becoming open again.
+ */
+export interface EscalationReopenedEvent extends CoordEnvelope {
+  kind: 'escalation_reopened';
+  related_msg_id: string;
+  generation: number;
   by?: string;
   note?: string;
 }
@@ -92,12 +107,23 @@ export function foldResolved(
  */
 export function indexResolves(
   resolves: EscalationResolvedEvent[],
+  reopens: EscalationReopenedEvent[] = [],
 ): Map<string, EscalationResolvedEvent> {
+  const generationByTarget = new Map<string, number>();
+  for (const event of reopens) {
+    if (!Number.isInteger(event.generation)) continue;
+    generationByTarget.set(
+      event.related_msg_id,
+      Math.max(generationByTarget.get(event.related_msg_id) ?? 0, event.generation),
+    );
+  }
   const sorted = [...resolves].sort(
     (a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id),
   );
   const byTarget = new Map<string, EscalationResolvedEvent>();
   for (const ev of sorted) {
+    const eventGeneration = Number.isInteger(ev.generation) ? ev.generation! : 0;
+    if (eventGeneration !== (generationByTarget.get(ev.related_msg_id) ?? 0)) continue;
     if (!byTarget.has(ev.related_msg_id)) byTarget.set(ev.related_msg_id, ev);
   }
   return byTarget;
@@ -122,8 +148,27 @@ export function indexResolves(
  * their own msg_id (see `indexResolves` above), so rows written before this
  * existed — with random ids — still fold correctly. Do not "migrate" them.
  */
-export function resolvedEventId(escalationMsgId: string): string {
-  return `res-${escalationMsgId}`;
+export function resolvedEventId(escalationMsgId: string, generation = 0): string {
+  return generation === 0 ? `res-${escalationMsgId}` : `res-${escalationMsgId}-g${generation}`;
+}
+
+/** Deterministic one-per-generation id for an append-only reopen compensation. */
+export function reopenedEventId(escalationMsgId: string, generation: number): string {
+  return `reopen-${escalationMsgId}-g${generation}`;
+}
+
+/** The generation a subsequent resolve/reopen belongs to. */
+export function escalationGeneration(
+  escalationMsgId: string,
+  reopens: readonly EscalationReopenedEvent[],
+): number {
+  return reopens.reduce(
+    (max, event) =>
+      event.related_msg_id === escalationMsgId && Number.isInteger(event.generation)
+        ? Math.max(max, event.generation)
+        : max,
+    0,
+  );
 }
 
 /**
@@ -133,9 +178,9 @@ export function resolvedEventId(escalationMsgId: string): string {
 export function foldEscalations(
   opens: EscalationRecord[],
   resolves: EscalationResolvedEvent[],
-  opts: { status?: 'open' | 'resolved' } = {},
+  opts: { status?: 'open' | 'resolved'; reopens?: EscalationReopenedEvent[] } = {},
 ): EscalationRecord[] {
-  const byTarget = indexResolves(resolves);
+  const byTarget = indexResolves(resolves, opts.reopens ?? []);
   const out: EscalationRecord[] = [];
   for (const open of opens) {
     const folded = foldResolved(open, byTarget.get(open.msg_id));

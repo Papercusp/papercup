@@ -49,9 +49,12 @@ export {
   type ResolveInput,
   type EscalationRecord,
   type EscalationResolvedEvent,
+  type EscalationReopenedEvent,
   foldResolved,
   indexResolves,
   resolvedEventId,
+  reopenedEventId,
+  escalationGeneration,
   foldEscalations,
 } from './escalations';
 export {

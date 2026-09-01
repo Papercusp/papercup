@@ -176,6 +176,18 @@ describe('composeDispatch', () => {
     expect(res.recipient_absent).toBeUndefined();
   });
 
+  it('preserves sessionState from a tier-shaped coord:presence row', async () => {
+    const { call } = mockCall({
+      'coord:presence': presence([{ ownerId: 'su-shaped', state: 'parked', wakeable: true }]),
+      'coord:send': sendEnv('su-shaped', { mode: 'required', targets: ['su-shaped'], woken: 1 }),
+    });
+
+    const res = await composeDispatch({ to: 'su-shaped', note: 'resume shaped dispatch' }, call);
+
+    expect(res.sessionState).toBe('parked');
+    expect(res.wakeable).toBe(true);
+  });
+
   it('dispatch to an ENDED target is a LOUD miss — lane assigned, but warning + recipient_dead', async () => {
     const { call } = mockCall({
       'coord:presence': presence([{ ownerId: 'su-dead', sessionState: 'ended', wakeable: false }]),
