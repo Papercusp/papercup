@@ -1954,3 +1954,49 @@ describe('affected-tests: substitution registry drift guard (D-046)', () => {
     ).toContain('--check');
   });
 });
+
+/**
+ * EI-19453217565223331 — `positions.deployed` is git ancestry, while process
+ * liveness requires `serving.startedSinceCodeChange`.  The detector scans the
+ * whole production tree, so routing must fire for an edit outside its host
+ * workspace and must defer to this in-suite ratchet when operator-core itself
+ * is already selected.
+ */
+describe('affected-tests: deployed-liveness read guard (EI-19453217565223331)', () => {
+  const SCRIPT = 'lint:no-deployed-liveness-read';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+  const OUTSIDE_PATH = 'apps/operator/lib/release/deploy-cli.ts';
+  const INSIDE_PATH = 'packages/operator-core/lib/git-pipeline-position.ts';
+  const UNMATCHED_PATH = 'apps/operator/app/_brand-primitives.css';
+
+  it('attaches for a production TS change outside operator-core', () => {
+    expect(
+      dryTasks(OUTSIDE_PATH),
+      `${OUTSIDE_PATH} is in the detector scan population but routes to @papercusp/web; ` +
+        'without the repo-wide attachment a new ungrounded reader there gets no local signal',
+    ).toContain(TASK);
+  });
+
+  it('defers to the host suite when operator-core is affected', () => {
+    const out = dryTasks(INSIDE_PATH);
+    expect(out).toContain(`${HOST_WORKSPACE} :: test`);
+    expect(
+      out,
+      'the in-suite ratchet executes findOffenders() over the real tree, so queueing the same ' +
+        'detector task would only duplicate work',
+    ).not.toContain(TASK);
+  });
+
+  it('does not attach for a path outside the detector population', () => {
+    const out = dryTasks(UNMATCHED_PATH);
+    expect(out).not.toContain(TASK);
+    expect(out).not.toContain(`${HOST_WORKSPACE} :: test`);
+  });
+
+  it('keeps the guard script declared on the host workspace', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[SCRIPT]).toContain('check-no-deployed-liveness-read.mjs');
+  });
+});
