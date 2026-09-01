@@ -372,7 +372,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(out.results[0].length).toBeGreaterThan(0);
   });
 
-  it('clears the checkpoint when blank/omitted (cleared:true)', async () => {
+  it('clears the checkpoint when omitted (cleared:true)', async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue(null);
     const r = await one({ id: 'WI-7' });
@@ -381,6 +381,65 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       undefined,
     );
     expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: true, length: 0, contentHash: null });
+  });
+
+  it('EI-21020695928840897: refuses accidental empty-string clears in both single and bulk shapes before touching the store', async () => {
+    const single = await one({ id: 'WI-7', checkpoint: '' });
+    const bulk = await env({
+      items: [
+        { id: 'WI-A', checkpoint: '' },
+        { id: 'WI-B', checkpoint: ' \n\t ' },
+      ],
+    });
+
+    for (const result of [single, ...bulk.results]) {
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'empty_checkpoint_requires_confirmation',
+        retryable: true,
+        recovery: {
+          clear: { args: { checkpoint: null } },
+          confirm: { args: { confirmClear: true } },
+        },
+      });
+    }
+    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it('EI-21020695928840897: preserves explicit null/clear:true and confirmed blank clears in single and bulk shapes', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockResolvedValue(null);
+
+    const singleResults = await Promise.all([
+      one({ id: 'WI-7', checkpoint: null }),
+      one({ id: 'WI-7', clear: true }),
+      one({ id: 'WI-7', checkpoint: ' \n', confirmClear: 'true' as unknown as boolean }),
+    ]);
+    const bulk = await env({
+      items: [
+        { id: 'WI-7', clear: true },
+        { id: 'WI-7', checkpoint: '', confirmClear: true },
+      ],
+    });
+
+    for (const result of [...singleResults, ...bulk.results]) {
+      expect(result).toMatchObject({
+        ok: true,
+        id: 'WI-7',
+        cleared: true,
+        length: 0,
+        contentHash: null,
+      });
+    }
+  });
+
+  it('EI-21020695928840897: clear:true rejects a contradictory non-blank checkpoint', async () => {
+    const r = await one({ id: 'WI-7', checkpoint: 'keep this body', clear: true });
+    expect(r).toMatchObject({ ok: false, errorCode: 'clear_with_checkpoint' });
+    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
   });
 
   it('EI-8987: returns a contentHash of the STORED text on a real write (same-call round-trip proof)', async () => {
@@ -401,7 +460,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
   it('EI-8987: contentHash is null when the write clears (nothing stored to hash)', async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue(null);
-    const r = await one({ id: 'WI-7', checkpoint: '' });
+    const r = await one({ id: 'WI-7', checkpoint: null });
     expect(r).toMatchObject({ ok: true, cleared: true, contentHash: null, verified: null, storedHead: null });
   });
 
@@ -613,8 +672,8 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r).toMatchObject({ ok: true, cleared: false });
     });
 
-    it('append:true rejects a blank/omitted checkpoint (append + clear is a contradiction) without touching the store', async () => {
-      const r = await one({ id: 'WI-7', checkpoint: '', append: true });
+    it('append:true rejects a confirmed blank checkpoint (append + clear is a contradiction) without touching the store', async () => {
+      const r = await one({ id: 'WI-7', checkpoint: '', confirmClear: true, append: true });
       expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
       expect(getWorkItemCheckpoint).not.toHaveBeenCalled();
       expect(r.ok).toBe(false);
@@ -1786,7 +1845,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const prior = await lastStored();
 
       withPrior(prior);
-      const r = await one({ id: 'WI-7', checkpoint: '' });
+      const r = await one({ id: 'WI-7', checkpoint: null });
       expect(r.ok).toBe(true);
       expect(r.cleared).toBe(true);
       expect(await lastStored()).toBeNull();
