@@ -2205,7 +2205,7 @@ impl App {
         Self {
             should_quit: false,
             status:
-                "pui · Agent Chat · s Sessions · l conversation · m model · e effort · a account · [/] pot · ? help"
+                "pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot"
                     .to_string(),
             // D-031 / P-019: Agent Chat is the product front door. `title()`
             // remains Operator only as the stable persistence identity.
@@ -4902,7 +4902,10 @@ impl App {
         self.session_browser.launch_refresh = Some(LaunchRefresh::default());
         self.push_notif(Notif {
             level: "info".into(),
-            message: format!("⏎ new SU session · {} (pick backend in the pane)", spec.argv.join(" ")),
+            message: format!(
+                "⏎ new SU session · {} (pick backend in the pane)",
+                spec.argv.join(" ")
+            ),
             harness: None,
             ts: None,
         });
@@ -11299,20 +11302,25 @@ mod tests {
         a.agent_chat_summaries = vec![kettle, steward];
         a.open_conversation_picker();
         let picker = a.session_picker.as_ref().expect("picker opens");
-        assert_eq!(
-            picker.axis,
-            crate::session_config::PickerAxis::Conversation
-        );
+        assert_eq!(picker.axis, crate::session_config::PickerAxis::Conversation);
         assert_eq!(
             picker.options.len(),
             2,
             "exactly one row per existing conversation, no role × backend product: {:?}",
-            picker.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>()
+            picker
+                .options
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>()
         );
         assert!(
             picker.options.iter().all(|o| o.id.starts_with("chat:")),
             "every row is an existing conversation: {:?}",
-            picker.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>()
+            picker
+                .options
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>()
         );
         assert!(
             !picker
@@ -11341,7 +11349,10 @@ mod tests {
         a.agent_chat_summaries = vec![chat_summary_for("chat-one")];
         assert_eq!(a.update(key('l', KeyModifiers::NONE)), Action::Render);
         assert_eq!(a.tab, Tab::Operator);
-        let picker = a.session_picker.as_ref().expect("conversation picker opens");
+        let picker = a
+            .session_picker
+            .as_ref()
+            .expect("conversation picker opens");
         assert_eq!(picker.options[0].id, "chat:chat-one");
     }
 
@@ -11359,7 +11370,11 @@ mod tests {
         };
         assert_eq!(spec.argv, vec!["psu", "--role=su", "--tui=pui"]);
         assert_eq!(spec, App::new_su_session_spec());
-        assert_eq!(a.launched.len(), 1, "recorded in the crew roster like every launch");
+        assert_eq!(
+            a.launched.len(),
+            1,
+            "recorded in the crew roster like every launch"
+        );
         assert_eq!(
             a.session_browser.launch_refresh,
             Some(LaunchRefresh::default()),
