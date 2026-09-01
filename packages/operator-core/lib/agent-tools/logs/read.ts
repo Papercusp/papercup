@@ -84,6 +84,23 @@ export default defineTool({
     scope: z.enum(JOURNAL_SCOPES).optional()
       .describe("Which journal: 'user' (default, the papercup-* units), 'system' (kernel/OOM records, pgbouncer, systemd-oomd — a DIFFERENT journal, not a filter), or 'all' (everything you can see). If a unit you know exists comes back with unitsUnknown naming it, you are reading the wrong journal."),
   }),
+  result: z
+    .object({
+      entries: z.unknown().optional(),
+      matched: z.unknown().optional(),
+      collapsed: z.unknown().optional(),
+      truncated: z.unknown().optional(),
+      window: z.unknown().optional(),
+      units: z.unknown().optional(),
+      unitsUnknown: z.unknown().optional(),
+      unitsHistorical: z.unknown().optional(),
+      historicalCommand: z.unknown().optional(),
+      windowOutsideJournal: z.unknown().optional(),
+      journalAvailable: z.unknown().optional(),
+      journalError: z.unknown().optional(),
+      command: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     void ctx;
     const units = args.unit === undefined

@@ -63,6 +63,18 @@ export default defineTool({
         'Inspect the loop for this owner id (default: yourself). The status read is owner-scoped; `harness` is intentionally not an argument.',
       ),
   }),
+  result: z
+    .object({
+      ok: z.unknown().optional(),
+      ownerId: z.unknown().optional(),
+      loop: z.unknown().optional(),
+      lastTransition: z.unknown().optional(),
+      carryNote: z.unknown().optional(),
+      reachability: z.unknown().optional(),
+      pendingAwaits: z.unknown().optional(),
+      storeIdentityWarning: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const ownerId = args.ownerId ?? identity.ownerId;

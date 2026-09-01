@@ -425,6 +425,16 @@ export default defineTool({
     limit: z.number().int().min(1).max(100).optional().default(DEFAULT_LIMIT),
     filter: z.string().trim().min(1).max(500).optional(),
   }),
+  result: z
+    .object({
+      requestedWindowSec: z.unknown().optional(),
+      limit: z.unknown().optional(),
+      sample: z.unknown().optional(),
+      hot: z.unknown().optional(),
+      staleLifetimeLeaders: z.unknown().optional(),
+      note: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(rawArgs, ctx) {
     const args = rawArgs ?? {};
     try {

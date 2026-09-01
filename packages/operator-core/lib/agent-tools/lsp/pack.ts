@@ -75,6 +75,7 @@ export default defineTool({
       .describe('pack only: collapse bodies to signatures. Much smaller; loses implementation detail.'),
     rootPath: z.string().min(1).optional().describe('Project root override. Defaults to the agent workspace root.'),
   }),
+  result: z.object({ answer: z.unknown().optional(), artifact: z.unknown().optional() }).passthrough(),
   async handler(args, ctx) {
     const root = args.rootPath ?? resolveAgentWorkspaceRoot(ctx);
     const result = await packerFacade(args.op, {

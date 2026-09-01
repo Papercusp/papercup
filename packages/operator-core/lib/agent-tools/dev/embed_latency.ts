@@ -55,6 +55,24 @@ export default defineTool({
       .optional()
       .describe('Trailing window in milliseconds (default 3600000; maximum 24 hours).'),
   }),
+  result: z
+    .object({
+      ok: z.unknown().optional(),
+      pid: z.unknown().optional(),
+      clusterSize: z.unknown().optional(),
+      sampledWorkers: z.unknown().optional(),
+      perWorkerCaveat: z.unknown().optional(),
+      uptimeSec: z.unknown().optional(),
+      observedCount: z.unknown().optional(),
+      capacity: z.unknown().optional(),
+      windowMs: z.unknown().optional(),
+      embeds: z.unknown().optional(),
+      callers: z.unknown().optional(),
+      oldestSampleMs: z.unknown().optional(),
+      newestSampleMs: z.unknown().optional(),
+      truncatedByCapacity: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args) {
     const pid = process.pid;
     SEEN_PIDS.add(pid);

@@ -107,6 +107,16 @@ export default defineTool({
       .default(false)
       .describe('Explicitly allow writing a tenant-scoped table without a workspace_id/harness_slug predicate.'),
   }),
+  result: z
+    .object({
+      rowsAffected: z.unknown().optional(),
+      committed: z.unknown().optional(),
+      rows: z.unknown().optional(),
+      truncated: z.unknown().optional(),
+      fields: z.unknown().optional(),
+      elapsedMs: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');

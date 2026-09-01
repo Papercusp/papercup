@@ -291,6 +291,17 @@ export default defineTool({
     operator: { perRun: 20 },
   },
   args: argsSchema,
+  result: z
+    .object({
+      hits: z.unknown().optional(),
+      hitCount: z.unknown().optional(),
+      surface: z.unknown().optional(),
+      legs: z.unknown().optional(),
+      applied: z.unknown().optional(),
+      scopeNote: z.unknown().optional(),
+      crossSurface: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const ctxAny = ctx as {
       harnessSlug?: string;

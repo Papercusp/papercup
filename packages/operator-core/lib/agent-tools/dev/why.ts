@@ -39,6 +39,18 @@ export default defineTool({
     workspace: z.string().max(200).optional().describe('Workspace id to scope the account-pool read to (default: active workspace).'),
     harness: z.string().max(120).optional().describe('Harness slug to scope the recent-test-failures read to (default: workspace-wide).'),
   }),
+  result: z
+    .object({
+      configured: z.unknown().optional(),
+      effective: z.unknown().optional(),
+      evidence: z.unknown().optional(),
+      rootCause: z.unknown().optional(),
+      nextVerb: z.unknown().optional(),
+      stages: z.unknown().optional(),
+      summary: z.unknown().optional(),
+      recentFailingFiles: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const result = await computeWhyChain({
       workspaceId: args.workspace ?? ctx.workspaceId,

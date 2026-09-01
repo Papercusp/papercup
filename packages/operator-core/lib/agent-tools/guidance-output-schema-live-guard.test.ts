@@ -30,6 +30,12 @@ type CatalogTool = {
   outputJsonSchema?: JsonSchema;
 };
 
+// This tool deliberately returns mixed MCP content (a ledger text line plus an
+// accessibility tree or image), not a JSON object. Advertising an object-rooted
+// output schema would make structured MCP callers require structuredContent
+// that the handler cannot truthfully provide.
+const NON_OBJECT_RETURN_TOOLS = new Set(['capability:computer']);
+
 export interface ReturnSchemaViolation {
   tool: string;
   kind: 'missing-output-schema' | 'promised-field-missing' | 'generated-clause-omission';
@@ -154,6 +160,7 @@ export function returnSchemaViolations(
     const name = tool.expose?.mcp?.name ?? '<unnamed-tool>';
     const schema = tool.outputJsonSchema;
     if (!schema) {
+      if (NON_OBJECT_RETURN_TOOLS.has(name)) continue;
       violations.push({ tool: name, kind: 'missing-output-schema', fields: structuralReturnFields(returns) });
       continue;
     }
@@ -215,6 +222,12 @@ describe('guidance return shapes resolve through registered output schemas', () 
         kind: 'generated-clause-omission',
         fields: ['loadBearingSentinel'],
       });
+  });
+
+  it('does not force mixed MCP content into a fake object schema', () => {
+    const computer = namedTool('capability:computer');
+    expect(computer.outputJsonSchema).toBeUndefined();
+    expect(returnSchemaViolations([computer])).toEqual([]);
   });
 
   it('every authored returns contract is backed by a registered, resolvable schema', () => {

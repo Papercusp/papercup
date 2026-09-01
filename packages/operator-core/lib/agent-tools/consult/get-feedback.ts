@@ -107,6 +107,25 @@ export default defineTool({
     topics: z.array(z.string().min(1)).max(8).optional().describe('Area topics to tag the consult with (ambient discoverability).'),
     harness: z.string().optional().describe('Tag the conversation harness-scoped.'),
   }),
+  result: z
+    .object({
+      verdict: z.unknown().optional(),
+      conversation_id: z.unknown().optional(),
+      thread_id: z.unknown().optional(),
+      responder: z.unknown().optional(),
+      responder_via: z.unknown().optional(),
+      floor: z.unknown().optional(),
+      remaining_candidates: z.unknown().optional(),
+      origin_task_ref: z.unknown().optional(),
+      latency_contract: z.unknown().optional(),
+      expires_at: z.unknown().optional(),
+      wake: z.unknown().optional(),
+      park_key: z.unknown().optional(),
+      archive: z.unknown().optional(),
+      served_from_archive: z.unknown().optional(),
+      hint: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
 

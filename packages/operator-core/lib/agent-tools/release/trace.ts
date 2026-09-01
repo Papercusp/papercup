@@ -173,6 +173,22 @@ export default defineTool({
     z.object({ path: tracePath, sha: traceSha.optional(), ...traceContext }),
     z.object({ path: tracePath.optional(), sha: traceSha, ...traceContext }),
   ]),
+  result: z
+    .object({
+      generatedAtMs: z.unknown().optional(),
+      target: z.unknown().optional(),
+      gate: z.unknown().optional(),
+      greenPin: z.unknown().optional(),
+      deploy: z.unknown().optional(),
+      testedDeployedParity: z.unknown().optional(),
+      awaits: z.unknown().optional(),
+      staleWake: z.unknown().optional(),
+      constraints: z.unknown().optional(),
+      nextVerb: z.unknown().optional(),
+      resync: z.unknown().optional(),
+      summary: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const subjectStamp = releaseTraceSubjectStamp(ctx);
     if (!args.path && !args.sha) return { data: { ok: false, ...subjectStamp, error: 'Provide path or sha.' } };

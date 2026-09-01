@@ -133,6 +133,20 @@ export default defineTool({
     message:
       'consulted: false requires consult_reason — state why you are proceeding without consulting (it is recorded)',
   }),
+  result: z
+    .object({
+      id: z.unknown().optional(),
+      title: z.unknown().optional(),
+      status: z.unknown().optional(),
+      kill_criterion: z.unknown().optional(),
+      budget_cents: z.unknown().optional(),
+      tripwires: z.unknown().optional(),
+      workspace_id: z.unknown().optional(),
+      mode_subject_stamped: z.unknown().optional(),
+      mode_subject_advisory: z.unknown().optional(),
+      kickoff_consult: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     // The table declares workspace_id NOT NULL with a CHECK (workspace_id <> ''),
     // so — unlike harness_text_artifacts, whose blank-stamp fallback minted the

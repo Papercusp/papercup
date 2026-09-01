@@ -223,5 +223,22 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   timeoutSec: 200,
   args: recordArgs,
+  result: z
+    .object({
+      ok: z.unknown().optional(),
+      recording: z.unknown().optional(),
+      directory: z.unknown().optional(),
+      bounds: z.unknown().optional(),
+      frames: z.unknown().optional(),
+      droppedFrames: z.unknown().optional(),
+      wallClockMs: z.unknown().optional(),
+      exported: z.unknown().optional(),
+      format: z.unknown().optional(),
+      path: z.unknown().optional(),
+      playbackSec: z.unknown().optional(),
+      bytes: z.unknown().optional(),
+      parked: z.unknown().optional(),
+    })
+    .passthrough(),
   handler: (args, ctx) => runRecordTrajectory(args, ctx as RecordTrajectoryCtx),
 });

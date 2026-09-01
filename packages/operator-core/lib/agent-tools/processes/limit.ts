@@ -42,6 +42,9 @@ export default defineTool({
     .refine((a) => a.memoryMaxMb != null || a.cpuWeight != null || a.tasksMax != null, {
       message: 'pass at least one of memoryMaxMb / cpuWeight / tasksMax',
     }),
+  result: z
+    .object({ ok: z.unknown().optional(), results: z.unknown().optional(), counts: z.unknown().optional() })
+    .passthrough(),
   async handler(args) {
     const ids = [...new Set([...toList<string>(args.taskId), ...toList<string>(args.taskIds)])];
     const limits = {

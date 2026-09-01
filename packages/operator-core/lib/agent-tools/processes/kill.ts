@@ -103,6 +103,9 @@ export default defineTool({
         (a.scopeUnits?.length ?? 0) > 0,
       { message: 'pass `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or `pid`/`pids`' },
     ),
+  result: z
+    .object({ ok: z.unknown().optional(), results: z.unknown().optional(), counts: z.unknown().optional() })
+    .passthrough(),
   async handler(args, ctx) {
     // Task-addressed kills go through the cgroup: whole subtree, no recycled-pid
     // hazard. Pid-addressed kills keep the legacy tracked-kind path.

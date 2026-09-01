@@ -43,6 +43,9 @@ export default defineTool({
     .refine((a) => Boolean(a.taskId) || (a.taskIds?.length ?? 0) > 0, {
       message: 'pass `taskId` (one) or `taskIds` (many)',
     }),
+  result: z
+    .object({ ok: z.unknown().optional(), results: z.unknown().optional(), counts: z.unknown().optional() })
+    .passthrough(),
   async handler(args) {
     const ids = [...new Set([...toList<string>(args.taskId), ...toList<string>(args.taskIds)])];
     const env = await runBulk(ids, async (taskId) => (args.resume ? thawTask(taskId) : freezeTask(taskId)), {

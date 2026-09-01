@@ -181,6 +181,24 @@ const goalUpdateTool = defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_WRITE_ROLES],
   args: goalUpdateArgs,
+  result: z
+    .object({
+      stop: z.unknown().optional(),
+      potsStopped: z.unknown().optional(),
+      potsSkippedContributing: z.unknown().optional(),
+      loopsStopped: z.unknown().optional(),
+      unattributedActiveLoops: z.unknown().optional(),
+      modesCleared: z.unknown().optional(),
+      modesLeftArmed: z.unknown().optional(),
+      drainFleet: z.unknown().optional(),
+      drainFleetWoundDown: z.unknown().optional(),
+      drainFleetWindDownError: z.unknown().optional(),
+      potsResumed: z.unknown().optional(),
+      loopsLeftDisarmed: z.unknown().optional(),
+      timeWakeRestored: z.unknown().optional(),
+      degraded: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     // ── The criterion gate (P-009) ───────────────────────────────────────────
     //
