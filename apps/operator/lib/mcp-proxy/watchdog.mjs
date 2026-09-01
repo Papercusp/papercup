@@ -54,9 +54,12 @@ import { MCP_PROXY_LOCAL_HEALTH_PATH, MCP_PROXY_RETRY_WINDOW_MS, PSU_CLIENT_HEAD
 import { samplePgBouncerPools, SAMPLE_LOG_FILE as POOL_SAMPLE_LOG_FILE, MIN_SAMPLE_INTERVAL_MS as POOL_SAMPLE_MIN_INTERVAL_MS } from './pgbouncer-pool-sample.mjs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { EXTERNAL_SCHEDULES } from '../../../../packages/operator-core/lib/schedule-descriptors.mjs';
 
 const PORT = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_PORT) || 9071;
-const POLL_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_POLL_MS) || 15_000;
+const POLL_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_POLL_MS) || EXTERNAL_SCHEDULES.mcpProxyWatchdogPoll.defaultIntervalMs;
+const SESSION_PLANE_POLL_MS =
+  Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_POLL_MS) || EXTERNAL_SCHEDULES.mcpProxySessionPlanePoll.defaultIntervalMs;
 /**
  * The liveness path — see "THE LIVENESS PROBE MUST NOT TRAVERSE THE UPSTREAM" above.
  * proxy.ts answers this one locally (`{ok:true,target}`) and returns BEFORE any forwarding,
@@ -759,7 +762,10 @@ function start() {
       `PROBE CONFIG: PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_ARGS is not a JSON object — probing "${DB_PROBE_TOOL}" with NO arguments instead of guessing. Fix it or unset it.`,
     );
   }
-  setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
+  setInterval(
+    () => void poll().catch((e) => log(`poll error: ${e.message}`)),
+    POLL_MS,
+  );
   // WI-39378 — pollHandshake must not overlap itself. One pass can spend up to three
   // HANDSHAKE_TIMEOUT_MS probes (session, confirm-full, upstream) against a POLL_MS of
   // 15s, so overlapping runs were routine, not exotic. Overlap is how one run observed
@@ -778,7 +784,7 @@ function start() {
       .finally(() => {
         handshakePollInFlight = false;
       });
-  }, POLL_MS);
+  }, SESSION_PLANE_POLL_MS);
 }
 
 // Auto-start when run as the systemd unit (`node watchdog.mjs`). Tests set

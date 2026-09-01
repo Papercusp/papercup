@@ -23,9 +23,10 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EXTERNAL_SCHEDULES } from '../schedule-descriptors.mjs';
 
 const PORT = Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788;
-const POLL_MS = Number(process.env.PAPERCUSP_GATEWAY_WATCHDOG_POLL_MS) || 15_000;
+const POLL_MS = Number(process.env.PAPERCUSP_GATEWAY_WATCHDOG_POLL_MS) || EXTERNAL_SCHEDULES.gatewayWatchdogPoll.defaultIntervalMs;
 const FREEZE_MS = Number(process.env.PAPERCUSP_GATEWAY_WATCHDOG_FREEZE_MS) || 120_000;
 const UNREACHABLE_MS = Number(process.env.PAPERCUSP_GATEWAY_WATCHDOG_UNREACHABLE_MS) || 60_000;
 const DEBOUNCE_MS = Number(process.env.PAPERCUSP_GATEWAY_WATCHDOG_DEBOUNCE_MS) || 5 * 60_000;
@@ -302,7 +303,10 @@ function start() {
     `up — port ${PORT}, poll ${POLL_MS}ms, freeze ${FREEZE_MS}ms, debounce ${DEBOUNCE_MS}ms, cap ${MAX_RESTARTS_PER_HR}/hr, unit ${UNIT}; suppress-restart-on-external-stall ON; dead-proxy alert >=${Math.round(DEADPROXY_RATE * 100)}% over >=${DEADPROXY_MIN_ATTEMPTS} attempts; durable log ${LOG_FILE}`,
   );
   void reportVintage('inference-gateway-watchdog');
-  setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
+  setInterval(
+    () => void poll().catch((e) => log(`poll error: ${e.message}`)),
+    POLL_MS,
+  );
 }
 
 // Auto-start when run as the systemd unit (`node watchdog.mjs`). Tests set PAPERCUSP_WATCHDOG_NO_AUTOSTART=1

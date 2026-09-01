@@ -85,6 +85,7 @@ import { SU_TIER_ROLES } from "../../../packages/operator-core/lib/su-tier-roles
 // carry two byte-identical copies of its regex pair (cloudModelBackendHint,
 // validateModelSpec); both now call it, so the gate cannot drift from them.
 import { isLocalModelSpec } from "../../../packages/operator-core/lib/local-model-spec.mjs";
+import { EXTERNAL_SCHEDULES } from "../../../packages/operator-core/lib/schedule-descriptors.mjs";
 import {
   SU_CONTEXT_SIZE,
   normalizeSuContextSize,
@@ -7363,7 +7364,7 @@ export function shouldSilenceClaudeTitle({
  *
  * Exported with injectables for tests (scripts/__tests__).
  */
-export const SUPERVISOR_BEAT_MS = 60_000;
+export const SUPERVISOR_BEAT_MS = EXTERNAL_SCHEDULES.psuSupervisorHeartbeat.defaultIntervalMs;
 
 /**
  * EI-19412221266350408 — consecutive `sessionTerminal` beats required before psu exits.
