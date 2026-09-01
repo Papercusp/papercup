@@ -25,7 +25,8 @@
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { deriveRepoPathsFromText } from './agent-tools/work_items/_derive-paths';
 
 export interface ClaimTimeStalePathHint {
   /** The stored hint exactly as filed. */
@@ -41,12 +42,39 @@ export interface ClaimTimeStalePathHint {
   resolvedTo?: string;
 }
 
+/**
+ * The title/summary counterpart to `payload.paths` hints. These are deliberately
+ * plain repo-relative strings: unlike a stored path hint, a prose citation has no
+ * authoritative rename history or intended disposition. Its only safe verdict is
+ * that the cited path cannot be resolved in the current tree.
+ */
+export type ClaimTimeStalePathRef = string;
+
+export interface ClaimTimeStalePathAdvisory {
+  pathHints?: ClaimTimeStalePathHint[];
+  pathHintsNote?: string;
+  stalePathRefs?: ClaimTimeStalePathRef[];
+  stalePathRefsNote?: string;
+}
+
 /** Bounded so a pathological rename chain can never stall the claim path. */
 const MAX_RENAME_HOPS = 3;
 
 /** Globs cannot be validated against the tree or walked through renames — skip silently. */
 function isConcretePath(p: string): boolean {
   return p.length > 0 && !/[*?[\]{}]/.test(p);
+}
+
+function isContainedRepoPath(root: string, path: string): boolean {
+  if (!isConcretePath(path) || isAbsolute(path)) return false;
+  const candidate = resolve(root, path);
+  const rel = relative(root, candidate);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+async function resolveRepoRoot(repoRoot?: string): Promise<string | null> {
+  const defaultRoot = process.env.PAPERCUSP_INTEGRATION_ROOT || process.cwd();
+  return (await git(['rev-parse', '--show-toplevel'], resolve(repoRoot ?? defaultRoot)))?.trim() || null;
 }
 
 /**
@@ -153,10 +181,11 @@ export async function getClaimTimeStalePathHints(ref: {
     // work_items:claim_next, claim-time-enrichment) without touching any of
     // them; `ref.repoRoot` — when a caller does supply it, e.g. these tests —
     // still wins over both.
-    const defaultRoot = process.env.PAPERCUSP_INTEGRATION_ROOT || process.cwd();
-    const topLevel = (await git(['rev-parse', '--show-toplevel'], resolve(ref.repoRoot ?? defaultRoot)))?.trim();
+    const topLevel = await resolveRepoRoot(ref.repoRoot);
     if (!topLevel) return null;
-    const candidates = requestedPaths.filter((p) => isConcretePath(p) && !existsSync(join(topLevel, p)));
+    const candidates = requestedPaths.filter(
+      (p) => isContainedRepoPath(topLevel, p) && !existsSync(join(topLevel, p)),
+    );
     if (candidates.length === 0) return null;
     const hints = await Promise.all(
       candidates.map(async (requested): Promise<ClaimTimeStalePathHint> => {
@@ -187,6 +216,112 @@ export async function getClaimTimeStalePathHints(ref: {
   } catch {
     return null;
   }
+}
+
+export interface StalePathRefSubject {
+  id: string;
+  title?: string | null;
+  summary?: string | null;
+}
+
+/**
+ * Resolve prose-cited repo paths for several subjects against ONE tree lookup.
+ *
+ * This is the shared seam used by claim-time enrichment (one subject) and
+ * `plans:get` (many structured plan items). Missing paths are advisory: an item
+ * may intentionally describe a file to create. A successful stat proves only
+ * existence, never that the surrounding prose is semantically current.
+ */
+export async function getStalePathRefsForSubjects(
+  subjects: readonly StalePathRefSubject[],
+  repoRoot?: string,
+): Promise<Record<string, ClaimTimeStalePathRef[]>> {
+  if (subjects.length === 0) return {};
+  try {
+    const topLevel = await resolveRepoRoot(repoRoot);
+    if (!topLevel) return {};
+    const byId: Record<string, ClaimTimeStalePathRef[]> = {};
+    for (const subject of subjects) {
+      const cited = deriveRepoPathsFromText(`${subject.title ?? ''}\n${subject.summary ?? ''}`);
+      const unresolved = cited.filter(
+        (path) => isContainedRepoPath(topLevel, path) && !existsSync(join(topLevel, path)),
+      );
+      if (unresolved.length > 0) byId[subject.id] = unresolved;
+    }
+    return byId;
+  } catch {
+    // Advisory-only. A filesystem/git failure is absence of evidence, not a clean bill
+    // of health and not a reason to fail a claim or a plan read.
+    return {};
+  }
+}
+
+export async function getClaimTimeStalePathRefs(ref: {
+  workItem?: { id?: string | null; title?: string | null; summary?: string | null } | null;
+  title?: string | null;
+  summary?: string | null;
+  repoRoot?: string;
+}): Promise<ClaimTimeStalePathRef[] | null> {
+  const subject = {
+    id: ref.workItem?.id || 'claim-subject',
+    title: ref.title ?? ref.workItem?.title,
+    summary: ref.summary ?? ref.workItem?.summary,
+  };
+  const byId = await getStalePathRefsForSubjects([subject], ref.repoRoot);
+  return byId[subject.id] ?? null;
+}
+
+export function stalePathRefsNote(refs: ClaimTimeStalePathRef[] | null): string | null {
+  if (!refs || refs.length === 0) return null;
+  const noun = refs.length === 1 ? 'path' : 'paths';
+  return (
+    `⚠ UNRESOLVABLE PATH REFS: ${refs.length} repo-relative ${noun} cited in this item's ` +
+    `title/summary do not resolve in the current tree: ${refs.map((ref) => `'${ref}'`).join(', ')}. ` +
+    `Advisory only: an item may intentionally describe a file to CREATE. This detects unresolved ` +
+    `paths only, not semantic staleness; absence of this field does not verify the item. ` +
+    `[EI-20049758099997696]`
+  );
+}
+
+/**
+ * One fail-soft context object for the existing claim-time stale-path leg. Keeping
+ * payload hints and title/summary refs in the same registered leg means every claim
+ * surface gains the new advisory without creating a second hand-wired registry.
+ */
+export async function getClaimTimeStalePathAdvisory(ref: {
+  workItem?: {
+    id?: string | null;
+    payload?: unknown;
+    title?: string | null;
+    summary?: string | null;
+  } | null;
+  payload?: unknown;
+  title?: string | null;
+  summary?: string | null;
+  repoRoot?: string;
+}): Promise<ClaimTimeStalePathAdvisory | null> {
+  const [hints, refs] = await Promise.all([
+    getClaimTimeStalePathHints({
+      workItem: ref.workItem,
+      payload: ref.payload,
+      repoRoot: ref.repoRoot,
+    }),
+    getClaimTimeStalePathRefs({
+      workItem: ref.workItem,
+      title: ref.title,
+      summary: ref.summary,
+      repoRoot: ref.repoRoot,
+    }),
+  ]);
+  if (!hints && !refs) return null;
+  return {
+    ...(hints
+      ? { pathHints: hints, pathHintsNote: stalePathHintsNote(hints) ?? undefined }
+      : {}),
+    ...(refs
+      ? { stalePathRefs: refs, stalePathRefsNote: stalePathRefsNote(refs) ?? undefined }
+      : {}),
+  };
 }
 
 /**
