@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   releaseSlot: vi.fn(),
   setTransaction: vi.fn(),
   liveMemberIds: vi.fn(),
+  executingOwnersSince: vi.fn(),
   buildEnvelope: vi.fn(),
   spawnHeadless: vi.fn(),
   spawnConsole: vi.fn(),
@@ -56,6 +57,9 @@ vi.mock('../../console-spawn', () => ({
 }));
 vi.mock('../../fleet/fleet-roster', () => ({
   liveFleetMemberIds: (...args: unknown[]) => mocks.liveMemberIds(...args),
+}));
+vi.mock('../../fleet/assignments', () => ({
+  executingOwnersSince: (...args: unknown[]) => mocks.executingOwnersSince(...args),
 }));
 vi.mock('../../agent-launch-core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-launch-core')>()),
@@ -171,6 +175,11 @@ beforeEach(() => {
   });
   mocks.resolveGoalLaunch.mockResolvedValue({ effective: {}, refusal: null });
   mocks.resolveGoalContext.mockResolvedValue(null);
+  // The integration verifier fixtures model a successful first turn for every
+  // live member. Keep the independent P-007 execution signal deterministic too;
+  // otherwise the real assignments query returns an empty set and turns a
+  // verified late boot into a synthetic refill deficit.
+  mocks.executingOwnersSince.mockImplementation(async (ownerIds: string[]) => new Set(ownerIds));
   mocks.capacity.mockImplementation(async (args: { headroom?: number }) => ({
     content: [{
       type: 'text',
