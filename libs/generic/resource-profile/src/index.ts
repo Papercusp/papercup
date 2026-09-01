@@ -121,6 +121,10 @@ export interface DatabaseTuning {
   /** `work_mem` (MiB) — per sort/hash node. Sized so `max_connections` worth of
    *  concurrent sorts can't blow past RAM. */
   readonly workMemMb: number;
+  /** `random_page_cost` for the supported SSD/NVMe storage profile. */
+  readonly randomPageCost: number;
+  /** `effective_io_concurrency` for the supported SSD/NVMe storage profile. */
+  readonly effectiveIoConcurrency: number;
   /** `wal_buffers` (MiB). */
   readonly walBuffersMb: number;
   /** `max_worker_processes` — background-worker slot ceiling (>= the parallel
@@ -235,6 +239,8 @@ function clamp(n: number, lo: number, hi: number): number {
  * | effectiveCacheSizeMb          | RAM * (embeddedPg ? 0.50 : 0.75)                   |  256  | 786432   |
  * | maintenanceWorkMemMb          | RAM / 16                                            |   64  |   2048   |
  * | workMemMb                     | (RAM - sharedBuffers) / (maxConnections * 4)       |    4  |     64   |
+ * | randomPageCost                | supported SSD/NVMe storage profile                 |  1.1  |    1.1   |
+ * | effectiveIoConcurrency        | supported SSD/NVMe storage profile                 |  200  |    200   |
  * | walBuffersMb                  | sharedBuffers * 0.03                                |    4  |     64   |
  * | maxWorkerProcesses            | cores                                              |    8  |    256   |
  * | maxParallelWorkers            | cores                                              |    8  |    256   |
@@ -267,6 +273,12 @@ export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
   const effectiveCacheSizeMb = clamp(Math.round(totalMb * (embeddedPg ? 0.5 : 0.75)), 256, 786432);
   const maintenanceWorkMemMb = clamp(Math.round(totalMb / 16), 64, 2048);
   const workMemMb = clamp(Math.round((totalMb - sharedBuffersMb) / (maxConnections * 4)), 4, 64);
+  // Papercusp's supported hosts are SSD/NVMe-backed. PostgreSQL's stock
+  // 4.0/16 profile models rotational media and can reject useful index scans.
+  // If rotational storage becomes a supported target, add an explicit storage
+  // signal rather than silently restoring the global defaults.
+  const randomPageCost = 1.1;
+  const effectiveIoConcurrency = 200;
   const walBuffersMb = clamp(Math.round(sharedBuffersMb * 0.03), 4, 64);
   const maxWorkerProcesses = clamp(cores, 8, 256);
   const maxParallelWorkers = clamp(cores, 8, 256);
@@ -280,6 +292,8 @@ export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
     effectiveCacheSizeMb,
     maintenanceWorkMemMb,
     workMemMb,
+    randomPageCost,
+    effectiveIoConcurrency,
     walBuffersMb,
     maxWorkerProcesses,
     maxParallelWorkers,
@@ -369,6 +383,10 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
     effective_cache_size: `${t.effectiveCacheSizeMb}MB`,
     maintenance_work_mem: `${t.maintenanceWorkMemMb}MB`,
     work_mem: `${t.workMemMb}MB`,
+    // WI-37533 — explicit SSD/NVMe planner profile; do not inherit the
+    // rotational-disk defaults of 4.0 and 16.
+    random_page_cost: String(t.randomPageCost),
+    effective_io_concurrency: String(t.effectiveIoConcurrency),
     wal_buffers: `${t.walBuffersMb}MB`,
     // max_slot_wal_keep_size — disk-fill-SPOF defense (WI-347; complements the
     // WARN-only detector in operator-core storage/replication-slot-alarm.ts).

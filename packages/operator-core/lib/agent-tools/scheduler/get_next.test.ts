@@ -91,6 +91,9 @@ const writePresenceM = vi.hoisted(() =>
 // dynamically imported recall seam. Keep the rest of the suite off real memory/PG I/O
 // and make the fake-timer test exercise the production timeout boundary directly.
 const buildClaimRecallBlockM = vi.hoisted(() => vi.fn(async () => null as string | null));
+const planTerminalityInWorkspaceM = vi.hoisted(() =>
+  vi.fn(async () => null as { status: string | null; hasOpenItems: boolean } | null),
+);
 // PARTIAL mock, deliberately: this module also exports PRESENCE_STALE_MS, which
 // presence-wakeability.ts -> fleet-roster.ts imports transitively. A whole-module factory
 // drops it and the mock fails at import time rather than in a test.
@@ -105,6 +108,10 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 }));
 vi.mock('../../memory/claim-port', () => ({
   buildClaimRecallBlock: buildClaimRecallBlockM,
+}));
+vi.mock('../plans/source', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  planTerminalityInWorkspace: planTerminalityInWorkspaceM,
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scheduler/claim-spec-store')>();
@@ -198,6 +205,7 @@ beforeEach(() => {
   getPresenceM.mockResolvedValue(null);
   writePresenceM.mockResolvedValue(undefined);
   buildClaimRecallBlockM.mockResolvedValue(null);
+  planTerminalityInWorkspaceM.mockResolvedValue(null);
   getClaimSpecRecordM.mockResolvedValue({
     source: 'default',
     spec: { specId: 'default', revision: 0 },
@@ -480,6 +488,7 @@ describe('scheduler:get_next declared-plan boundary (EI-21238986333755666)', () 
     });
     getNextM.mockResolvedValue({ workItem: { id: 'WI-must-not-claim', title: 'Unrelated work' } });
     getPresenceM.mockResolvedValue({ currentPlanSlug: 'active-control-plan' });
+    planTerminalityInWorkspaceM.mockResolvedValue({ status: 'active', hasOpenItems: true });
   });
 
   it('fails closed before getNextForBee when a non-fleet caller declares a plan but has only the default spec', async () => {
@@ -514,6 +523,68 @@ describe('scheduler:get_next declared-plan boundary (EI-21238986333755666)', () 
     });
     expect((body.recovery as { args: Record<string, unknown> }).args).not.toHaveProperty('plan');
     expect(getNextM).not.toHaveBeenCalled();
+  });
+
+  it('clears a positively terminal stale declaration before resuming the default pull', async () => {
+    getPresenceM.mockResolvedValue({ intent: 'finished plan work', currentPlanSlug: 'shipped-plan' });
+    planTerminalityInWorkspaceM.mockResolvedValue({ status: 'shipped', hasOpenItems: false });
+    getNextM.mockResolvedValue(null);
+
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body.error).not.toBe('plan_scope_missing');
+    expect(getNextM).toHaveBeenCalledOnce();
+    expect(planTerminalityInWorkspaceM).toHaveBeenCalledWith('ws-1', 'shipped-plan');
+    expect(writePresenceM).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-member' }),
+      { intent: 'finished plan work', currentPlanSlug: null },
+      'papercusp',
+    );
+  });
+
+  it('also clears an active plan declaration whose plan has no open items', async () => {
+    getPresenceM.mockResolvedValue({ intent: 'drained plan work', currentPlanSlug: 'drained-plan' });
+    planTerminalityInWorkspaceM.mockResolvedValue({ status: 'active', hasOpenItems: false });
+    getNextM.mockResolvedValue(null);
+
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+
+    expect(getNextM).toHaveBeenCalledOnce();
+    expect(writePresenceM).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-member' }),
+      { intent: 'drained plan work', currentPlanSlug: null },
+      'papercusp',
+    );
+  });
+
+  it('keeps the fail-closed refusal when clearing the terminal declaration fails', async () => {
+    getPresenceM.mockResolvedValue({ intent: 'finished plan work', currentPlanSlug: 'shipped-plan' });
+    planTerminalityInWorkspaceM.mockResolvedValue({ status: 'shipped', hasOpenItems: false });
+    writePresenceM.mockRejectedValue(new Error('presence write failed'));
+
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({ ok: false, error: 'plan_scope_missing', noClaim: true });
+    expect(getNextM).not.toHaveBeenCalled();
+  });
+
+  it('keeps the fail-closed refusal when terminality cannot be positively established', async () => {
+    planTerminalityInWorkspaceM.mockResolvedValue(null);
+
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({ ok: false, error: 'plan_scope_missing', noClaim: true });
+    expect(getNextM).not.toHaveBeenCalled();
+    expect(writePresenceM).not.toHaveBeenCalled();
   });
 
   it('allows a declared-plan caller whose explicit per-bee spec supplies the scope', async () => {

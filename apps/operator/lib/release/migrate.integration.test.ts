@@ -5,7 +5,8 @@
  * deploy aborts → rollback) rather than the boot-time log-and-continue.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
@@ -30,8 +31,8 @@ beforeEach(async () => {
   // reports appliedCount 0).
   const sql = postgres(dbUrl, { max: 1 });
   try {
-    await sql`DELETE FROM harness_shared.schema_migrations WHERE filename IN ('900-reltest-apply.sql', '901-reltest-bad.sql')`.catch(() => {});
-    await sql`DROP TABLE IF EXISTS harness_shared.reltest_apply, harness_shared.reltest_bad`.catch(() => {});
+    await sql`DELETE FROM harness_shared.schema_migrations WHERE filename IN ('900-reltest-apply.sql', '901-reltest-bad.sql', '903-reltest-code-guard.sql')`.catch(() => {});
+    await sql`DROP TABLE IF EXISTS harness_shared.reltest_apply, harness_shared.reltest_bad, harness_shared.reltest_code_guard`.catch(() => {});
   } finally {
     await sql.end();
   }
@@ -93,6 +94,54 @@ describe('applyStagedMigrations', () => {
     // Re-run = no-op (tracked in schema_migrations).
     const r2 = await applyStagedMigrations({ dbUrl, sqlDir, log: () => {} });
     expect(r2.appliedCount).toBe(0);
+  });
+
+  it('refuses an armed code-coupled migration until its companion is in the deployed checkout', async () => {
+    const filename = '903-reltest-code-guard.sql';
+    const releaseRoot = mkdtempSync(join(tmpdir(), 'relmig-release-'));
+    const sourcePath = join(releaseRoot, 'packages/operator-core/lib/issues-engineer.ts');
+    mkdirSync(join(releaseRoot, 'packages/operator-core/lib'), { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: releaseRoot });
+    execFileSync('git', ['config', 'user.email', 'migration-test@papercusp.local'], { cwd: releaseRoot });
+    execFileSync('git', ['config', 'user.name', 'Migration Test'], { cwd: releaseRoot });
+    writeFileSync(sourcePath, '// old deployed writer\n');
+    execFileSync('git', ['add', '.'], { cwd: releaseRoot });
+    execFileSync('git', ['commit', '-qm', 'old deployed writer'], { cwd: releaseRoot });
+    const deployedSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: releaseRoot, encoding: 'utf8' }).trim();
+    writeFileSync(sourcePath, '// target writer\n// EI-companion-not-deployed\n');
+    execFileSync('git', ['commit', '-qam', 'target writer'], { cwd: releaseRoot });
+    writeFileSync(
+      join(sqlDir, filename),
+      [
+        '-- PENDING-CODE-DEPLOY: deliberately armed too early',
+        '-- REQUIRES-DEPLOYED: packages/operator-core/lib/issues-engineer.ts#EI-companion-not-deployed',
+        'CREATE TABLE IF NOT EXISTS harness_shared.reltest_code_guard (id int);',
+      ].join('\n'),
+    );
+
+    try {
+      await expect(
+        applyStagedMigrations({ dbUrl, sqlDir, releaseRoot, deployedSha, log: () => {} }),
+      ).rejects.toThrow(/migration-deploy-guard.*deploy the companion code before applying it/);
+
+      const sql = postgres(dbUrl, { max: 1 });
+      try {
+        const applied = await sql<Array<{ filename: string }>>`
+          SELECT filename
+            FROM harness_shared.schema_migrations
+           WHERE filename = ${filename}
+        `;
+        expect(applied).toEqual([]);
+        const relation = await sql<Array<{ relation: string | null }>>`
+          SELECT to_regclass('harness_shared.reltest_code_guard')::text AS relation
+        `;
+        expect(relation[0]?.relation).toBeNull();
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      rmSync(releaseRoot, { recursive: true, force: true });
+    }
   });
 
   it('FAILS LOUD on a broken migration (deploy aborts → rollback)', async () => {

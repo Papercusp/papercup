@@ -168,6 +168,21 @@ describe('executeDeploy — happy path', () => {
     expect(calls[calls.length - 1]).toBe('drain:release');
   });
 
+  it('passes the pre-swap release SHA to the migration guard instead of target checkout HEAD', async () => {
+    let deployedSha: string | null | undefined;
+    const { deps } = makeDeps({
+      migrate: async (sha) => {
+        deployedSha = sha;
+        return { appliedCount: 0, totalKnown: 0, applied: [], sqlDir: '/x' };
+      },
+    });
+
+    const res = await executeDeploy(cfg, plan, deps);
+    expect(res.ok).toBe(true);
+    expect(deployedSha).toBe(plan.currentReleaseSha);
+    expect(deployedSha).not.toBe(plan.targetSha);
+  });
+
   it('WI-41242: a host-bundle build failure aborts before migration or restart and rebuilds the rollback bundle', async () => {
     let bundleCalls = 0;
     const { deps, calls } = makeDeps({
@@ -350,7 +365,13 @@ describe('executeDeploy — restartOnly (WI-5864)', () => {
   };
 
   it('skips runSetup (swap), but still rebuilds the host bundle before preflight/cutover', async () => {
+    let deployedSha: string | null | undefined;
     const { deps, calls } = makeDeps();
+    deps.migrate = async (sha) => {
+      calls.push('migrate');
+      deployedSha = sha;
+      return { appliedCount: 0, totalKnown: 0, applied: [], sqlDir: '/x' };
+    };
     const res = await executeDeploy(cfg, restartOnlyPlan, deps);
     expect(res.ok).toBe(true);
     expect(calls.some((c) => c.startsWith('runSetup:'))).toBe(false);
@@ -364,6 +385,7 @@ describe('executeDeploy — restartOnly (WI-5864)', () => {
     // order still holds for the steps that DO run
     expect(calls.indexOf('preflight')).toBeLessThan(calls.indexOf('migrate'));
     expect(calls.indexOf('migrate')).toBeLessThan(calls.indexOf('restart'));
+    expect(deployedSha).toBe(restartOnlyPlan.servingSha);
   });
 
   it('a NON-restartOnly plan still runs runSetup (swap) as before — no regression to the normal path', async () => {

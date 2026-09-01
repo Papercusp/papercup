@@ -108,6 +108,34 @@ export function sumValues(map: Record<string, number>): number;
  */
 export function gitChangedFiles(root?: string): Set<string>;
 /**
+ * Resolve the local source files reachable from a set of diagnostics. A full-tree tsc run is
+ * not an atomic snapshot on the shared checkout: a peer can edit an imported module while tsc is
+ * reading its importer, then leave only the importer in the diagnostic. Walking direct local
+ * imports keeps the concurrency check scoped to the error site rather than declaring every
+ * unrelated edit in the tree inconclusive.
+ *
+ * @param {{root:string, files:string[]|Set<string>}} input
+ * @returns {Set<string>} repo-relative paths (including the seed files)
+ */
+export function relatedSourceFiles({ root, files }: {
+    root: string;
+    files: string[] | Set<string>;
+}): Set<string>;
+/**
+ * Find dependency-cone files whose mtime is newer than a typecheck's start. Such a file may have
+ * been half-written while tsc read the tree, so a regression that names the cone is INCONCLUSIVE
+ * until the caller re-runs against a settled snapshot.
+ *
+ * @param {{root:string, files:string[]|Set<string>, runStartMs:number, dirtyFiles?:Set<string>|null}} input
+ * @returns {string[]} repo-relative paths, sorted and de-duplicated
+ */
+export function filesModifiedDuringRun({ root, files, runStartMs, dirtyFiles }: {
+    root: string;
+    files: string[] | Set<string>;
+    runStartMs: number;
+    dirtyFiles?: Set<string> | null;
+}): string[];
+/**
  * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` CLI flag naming exactly the
  * files the caller changed THIS session, as an alternative to `--mine`'s implicit
  * git-status-derived scoping. Large callers may use `--files-from=/path/to/json`, where the
@@ -1104,15 +1132,16 @@ export function lintTscScopeFromArgv(argv: string[]): "update" | "update:files" 
  * established and this must not break. `routed`/`routed-failed` remain reserved for the case
  * where this gate had NO verdict of its own and handed the whole request over.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, filesUnchecked?: number, filesRouted?: number, routed?: boolean, runStartIso?: string | null, headSha?: string | null }} input
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, concurrentEditInconclusive?: boolean, filesUnchecked?: number, filesRouted?: number, routed?: boolean, runStartIso?: string | null, headSha?: string | null }} input
  * @returns {string}
  */
-export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, preflightFailed, filesUnchecked, filesRouted, routed, runStartIso, headSha, }: {
+export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, preflightFailed, concurrentEditInconclusive, filesUnchecked, filesRouted, routed, runStartIso, headSha, }: {
     label: string;
     scope: string;
     code: number;
     nothingTypechecked?: boolean;
     preflightFailed?: boolean;
+    concurrentEditInconclusive?: boolean;
     filesUnchecked?: number;
     filesRouted?: number;
     routed?: boolean;

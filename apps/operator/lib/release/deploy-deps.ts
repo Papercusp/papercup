@@ -391,8 +391,12 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       log(`release checkout swapped to ${targetSha.slice(0, 8)} (node_modules: auto; SPA rebuilt)`);
     },
 
-    async migrate() {
-      return applyStagedMigrations({ releaseRoot: cfg.releaseRoot, log: (s) => log(`migrate: ${s}`) });
+    async migrate(deployedSha) {
+      return applyStagedMigrations({
+        releaseRoot: cfg.releaseRoot,
+        deployedSha,
+        log: (s) => log(`migrate: ${s}`),
+      });
     },
 
     async bundleHost(): Promise<void> {

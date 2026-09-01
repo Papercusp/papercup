@@ -125,9 +125,7 @@ describe('attention bulk-run store (real PG)', () => {
         requestedBy: 'system:inbox-bulk-resolve',
         phase: 'complete',
       }),
-      expect.arrayContaining([
-        expect.objectContaining({ itemId: 'coord-escalation:owner-digest-1' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ itemId: 'coord-escalation:owner-digest-1' })]),
     );
 
     h.deliverOwnerDigest.mockClear();
@@ -237,18 +235,20 @@ describe('attention bulk-run store (real PG)', () => {
 
     const reported = await reportOutcomes({
       runId: run.runId,
-      outcomes: [{
-        itemId: 'work-item-needs-human:typed-2',
-        outcome: 'recommended',
-        disposition: 'owner_action',
-        recommendationKind: 'owner_action',
-        recommendationLabel: 'Provide the external key',
-        recommendationRationale: 'The item explicitly names a credential only the owner can provide.',
-        evidenceBasis: ['work-item-needs-human:typed-2', 'credential dependency'],
-        responsibility: 'owner',
-        confidenceLevel: 'high',
-        rationale: 'The item explicitly names a credential only the owner can provide.',
-      }],
+      outcomes: [
+        {
+          itemId: 'work-item-needs-human:typed-2',
+          outcome: 'recommended',
+          disposition: 'owner_action',
+          recommendationKind: 'owner_action',
+          recommendationLabel: 'Provide the external key',
+          recommendationRationale: 'The item explicitly names a credential only the owner can provide.',
+          evidenceBasis: ['work-item-needs-human:typed-2', 'credential dependency'],
+          responsibility: 'owner',
+          confidenceLevel: 'high',
+          rationale: 'The item explicitly names a credential only the owner can provide.',
+        },
+      ],
     });
     expect(reported.updated).toEqual(['work-item-needs-human:typed-2']);
     const item = (await getRunItems(run.runId)).find((row) => row.itemId === 'work-item-needs-human:typed-2');
@@ -396,7 +396,12 @@ describe('attention bulk-run store (real PG)', () => {
       runId: run.runId,
       outcomes: [
         { itemId: 'coord-escalation:e-1', outcome: 'auto_resolved', actionId: 'resolve', rationale: 'moot' },
-        { itemId: 'work-item-needs-human:e-2', outcome: 'recommended', actionId: 'answer', rationale: 'owner holds the key' },
+        {
+          itemId: 'work-item-needs-human:e-2',
+          outcome: 'recommended',
+          actionId: 'answer',
+          rationale: 'owner holds the key',
+        },
         { itemId: 'smoke-fail:e-3', outcome: 'skipped', error: 'no terminal action for this kind' },
       ],
     });
@@ -409,10 +414,7 @@ describe('attention bulk-run store (real PG)', () => {
     // Both rows still need the owner. A resolver skip is evidence that it could
     // not act, not an implicit owner dismissal.
     const pending = await getPendingReviewItems(run.runId);
-    expect(pending.map((i) => i.itemId)).toEqual([
-      'work-item-needs-human:e-2',
-      'smoke-fail:e-3',
-    ]);
+    expect(pending.map((i) => i.itemId)).toEqual(['work-item-needs-human:e-2', 'smoke-fail:e-3']);
     expect(settled!.finishedAt).toBeTruthy();
 
     // Accepting the recommendation is not enough while the skipped row remains
@@ -469,24 +471,30 @@ describe('attention bulk-run store (real PG)', () => {
       ],
     });
 
-    expect(await markItemAccepted({
-      runId: run.runId,
-      itemId: 'work-item-needs-human:owner-accept-rail-2',
-      actionId: 'answer',
-    })).toBeNull();
+    expect(
+      await markItemAccepted({
+        runId: run.runId,
+        itemId: 'work-item-needs-human:owner-accept-rail-2',
+        actionId: 'answer',
+      }),
+    ).toBeNull();
     expect((await getRunItems(run.runId)).find((row) => row.itemId.endsWith('-2'))?.outcome).toBe('recommended');
 
     await settleRunPhase({ runId: run.runId, resolverOwner: 'su-resolver' });
-    expect(await markItemAccepted({
-      runId: run.runId,
-      itemId: 'work-item-needs-human:owner-accept-rail-2',
-      actionId: 'answer',
-    })).toMatchObject({ outcome: 'auto_resolved', actionId: 'answer' });
-    expect(await markItemAccepted({
-      runId: run.runId,
-      itemId: 'work-item-needs-human:owner-accept-rail-2',
-      actionId: 'drop',
-    })).toBeNull();
+    expect(
+      await markItemAccepted({
+        runId: run.runId,
+        itemId: 'work-item-needs-human:owner-accept-rail-2',
+        actionId: 'answer',
+      }),
+    ).toMatchObject({ outcome: 'auto_resolved', actionId: 'answer' });
+    expect(
+      await markItemAccepted({
+        runId: run.runId,
+        itemId: 'work-item-needs-human:owner-accept-rail-2',
+        actionId: 'drop',
+      }),
+    ).toBeNull();
     expect((await getRunItems(run.runId)).find((row) => row.itemId.endsWith('-2'))).toMatchObject({
       outcome: 'auto_resolved',
       actionId: 'answer',
@@ -500,8 +508,19 @@ describe('attention bulk-run store (real PG)', () => {
       runId: run.runId,
       resolverOwner: 'su-prior',
       outcomes: [
-        { itemId: 'coord-escalation:resume-review-1', outcome: 'auto_resolved', actionId: 'resolve', rationale: 'done' },
-        { itemId: 'work-item-needs-human:resume-review-2', outcome: 'recommended', actionId: 'answer', rationale: 'needs owner', draftAnswer: 'Use key A' },
+        {
+          itemId: 'coord-escalation:resume-review-1',
+          outcome: 'auto_resolved',
+          actionId: 'resolve',
+          rationale: 'done',
+        },
+        {
+          itemId: 'work-item-needs-human:resume-review-2',
+          outcome: 'recommended',
+          actionId: 'answer',
+          rationale: 'needs owner',
+          draftAnswer: 'Use key A',
+        },
         { itemId: 'smoke-fail:resume-review-3', outcome: 'skipped', error: 'no current option' },
       ],
     });
@@ -621,14 +640,10 @@ describe('attention bulk-run store (real PG)', () => {
     // A second start — a double-click, or two clients — must not create a
     // second run: each run LAUNCHES A RESOLVER, so two runs is two agents
     // racing over the same items with terminal authority.
-    await expect(createRun({ items: seed('sf2'), workspaceId: ws })).rejects.toBeInstanceOf(
-      BulkRunAlreadyActiveError,
-    );
+    await expect(createRun({ items: seed('sf2'), workspaceId: ws })).rejects.toBeInstanceOf(BulkRunAlreadyActiveError);
 
     await setRunPhase({ runId: first.runId, phase: 'running', workspaceId: ws });
-    await expect(createRun({ items: seed('sf3'), workspaceId: ws })).rejects.toThrow(
-      /already active/i,
-    );
+    await expect(createRun({ items: seed('sf3'), workspaceId: ws })).rejects.toThrow(/already active/i);
 
     // The refusal NAMES the run in flight, so the caller can point at it rather
     // than telling the owner "something went wrong".
@@ -847,25 +862,23 @@ describe('attention bulk-run store (real PG)', () => {
         state: 'live',
       });
       // … and one that never beat at all eventually goes stale, measured from start.
-      expect(
-        classifyRunLiveness({ ...base, heartbeatAt: null }, t0 + RUN_HEARTBEAT_STALE_MS + 1_000),
-      ).toMatchObject({ state: 'stale', measuredFrom: 'start' });
+      expect(classifyRunLiveness({ ...base, heartbeatAt: null }, t0 + RUN_HEARTBEAT_STALE_MS + 1_000)).toMatchObject({
+        state: 'stale',
+        measuredFrom: 'start',
+      });
 
       // reported recently → live; reported long ago → stale, measured from the beat.
-      expect(
-        classifyRunLiveness({ ...base, heartbeatAt: at(60_000) }, t0 + 61_000),
-      ).toMatchObject({ state: 'live' });
-      expect(
-        classifyRunLiveness(
-          { ...base, heartbeatAt: at(0) },
-          t0 + RUN_HEARTBEAT_STALE_MS + 1_000,
-        ),
-      ).toMatchObject({ state: 'stale', measuredFrom: 'heartbeat' });
+      expect(classifyRunLiveness({ ...base, heartbeatAt: at(60_000) }, t0 + 61_000)).toMatchObject({ state: 'live' });
+      expect(classifyRunLiveness({ ...base, heartbeatAt: at(0) }, t0 + RUN_HEARTBEAT_STALE_MS + 1_000)).toMatchObject({
+        state: 'stale',
+        measuredFrom: 'heartbeat',
+      });
 
       // a run that is not executing is not a liveness question at all
-      expect(
-        classifyRunLiveness({ ...base, phase: 'review', heartbeatAt: null }, t0 + 10 ** 9),
-      ).toMatchObject({ state: 'not-executing', phase: 'review' });
+      expect(classifyRunLiveness({ ...base, phase: 'review', heartbeatAt: null }, t0 + 10 ** 9)).toMatchObject({
+        state: 'not-executing',
+        phase: 'review',
+      });
     });
 
     it('REFUSES to restart a HEALTHY executing run — restarting one would race a live resolver', async () => {
@@ -976,9 +989,9 @@ describe('attention bulk-run store (real PG)', () => {
       expect((await getRunItems(run.runId, ws())).every((item) => item.outcome === 'pending')).toBe(true);
 
       // CONTROL: the replacement owner can still advance the same row.
-      expect(
-        await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-replacement' }),
-      ).toMatchObject({ resolverOwner: 'su-replacement' });
+      expect(await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-replacement' })).toMatchObject({
+        resolverOwner: 'su-replacement',
+      });
     });
 
     it('restarts a FAILED run and reuses its click-time launch snapshot rather than current defaults', async () => {

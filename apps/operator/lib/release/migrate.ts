@@ -29,6 +29,10 @@ import * as path from 'node:path';
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
 import { readMigratePolicy } from '@papercusp/operator-core/lib/migrate-policy';
+import {
+  resolveDeployedReleaseRoot,
+  verifyPendingCodeDeployMigration,
+} from '@papercusp/operator-core/lib/migration-deploy-guard';
 
 type MigrationClient = ReturnType<typeof postgres>;
 
@@ -99,6 +103,8 @@ export interface MigrateOpts {
   /** Defaults to <releaseRoot>/libs/papercusp/libs/db/sql, else cwd-relative. */
   sqlDir?: string;
   releaseRoot?: string;
+  /** Revision the currently-running operator serves before this deploy cuts over. */
+  deployedSha?: string | null;
   /** Defaults to getHarnessAdminUrl() (embedded-pg discovery / DATABASE_URL). */
   dbUrl?: string;
   log?: (s: string) => void;
@@ -179,12 +185,23 @@ export async function applyStagedMigrations(opts: MigrateOpts = {}): Promise<Mig
   });
   try {
     const before = await appliedSet(client);
+    const deployedReleaseRoot = opts.releaseRoot ?? resolveDeployedReleaseRoot(sqlDir);
+    const deployedRefWasProvided = Object.prototype.hasOwnProperty.call(opts, 'deployedSha');
     const { appliedCount, totalKnown, failed } = await applyPendingMigrations({
       client,
       sqlDir,
       continueOnError: false, // FAIL-LOUD — a deploy migration failure aborts the deploy
       log,
-      beforeApply: (filename, rawSql) => assertMigrationCreatePrivileges(client, filename, rawSql),
+      beforeApply: async (filename, rawSql) => {
+        await assertMigrationCreatePrivileges(client, filename, rawSql);
+        const guard = verifyPendingCodeDeployMigration({
+          filename,
+          sqlText: rawSql,
+          releaseRoot: deployedReleaseRoot,
+          ...(deployedRefWasProvided ? { deployedRef: opts.deployedSha } : {}),
+        });
+        if (!guard.ok) throw new Error(`[migration-deploy-guard] ${guard.error}`);
+      },
     });
     if (failed.length > 0) {
       throw new Error(

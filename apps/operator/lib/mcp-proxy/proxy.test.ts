@@ -2275,6 +2275,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call("coord:orient"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:send"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:glance"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("state:read"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:inbox"))).toBe(true);
     expect(isReservedControlPlaneCall(call("fleet:assignments"))).toBe(true);
     expect(isReservedControlPlaneCall(call("fleet:leader-brief"))).toBe(true);
@@ -2338,6 +2339,19 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
             params: {
               name: "tools:invoke",
               arguments: { name: "work_items:search", args: {} },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: { name: "state:read", args: { cell: "gate.greenCheckpoint.ownership" } },
             },
           }),
         ),

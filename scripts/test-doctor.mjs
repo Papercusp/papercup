@@ -5,6 +5,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findIncompleteSubmoduleInstalls, formatProblems } from './lib/submodule-installs.mjs';
 import { findShallowGitdirs, formatShallowProblems } from './lib/shallow-gitdirs.mjs';
+import { missingPlaywrightBrowsers, browserCachePath } from './ensure-playwright-browsers.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -108,6 +109,13 @@ check('submodule installs complete (submodules with their own lockfile)', () => 
   });
   if (problems.length > 0) {
     throw new Error(`submodule dependencies not installed:\n    ${formatProblems(problems)}`);
+  }
+});
+
+check('Playwright browser cache matches the installed registry', () => {
+  const missing = missingPlaywrightBrowsers();
+  if (missing.length > 0) {
+    throw new Error(`missing browser installation(s): ${missing.join(', ')} (cache: ${browserCachePath()}); run npm run ensure:playwright-browsers`);
   }
 });
 

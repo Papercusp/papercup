@@ -137,6 +137,12 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   },
   { name: 'precompute-derived-reads', seedScript: 'seed-precompute-derived-reads-routine.ts' },
   { name: 'project-history-refresh', seedScript: 'seed-project-history-refresh-routine.ts' },
+  // WI-35718. The INACTIVE-loop sibling of sweep-stalled-loops below: that one acts on armed
+  // loops that stopped producing turns, this one on a loop already switched OFF while its
+  // session's process is still alive and still holds an autonomy posture. Registered here for
+  // the reason this registry exists — a detector for silently-halted agents that is itself
+  // never seeded would be the exact failure it was built to find.
+  { name: 'reconcile-silent-halts', seedScript: 'seed-silent-halt-routine.ts' },
   { name: 'sql-read-census', seedScript: 'seed-sql-read-census-routine.ts' },
   { name: 'supervision-reconcile', seedScript: 'seed-supervision-reconcile-routine.ts' },
   { name: 'sweep-stalled-loops', seedScript: 'seed-stalled-loops-routine.ts' },

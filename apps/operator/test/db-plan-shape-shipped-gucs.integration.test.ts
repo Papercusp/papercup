@@ -12,11 +12,11 @@
  *   effective_cache_size            193,536 MB            8,192 MB      ← 24x
  *   work_mem                        64 MB                 35 MB
  *   max_parallel_workers_per_gather 8                     4
- *   random_page_cost                4.0 (PG default — absent from the derivation entirely)
+ *   random_page_cost                1.1 (explicit supported SSD/NVMe profile)
  *
  * `effective_cache_size` is a pure planner hint: it is how the planner decides
  * whether the random I/O of an index scan will be served from cache or from the
- * disk that `random_page_cost = 4.0` prices at 4x a sequential page. At 189 GB
+ * disk that the old `random_page_cost = 4.0` priced at 4x a sequential page. At 189 GB
  * of assumed cache every index looks cheap and nearly any plan is fine. At 8 GB
  * it does not, and a query that index-scans here can sequentially scan there.
  *
@@ -54,20 +54,17 @@
  * agrees. The reason is structural. `effective_cache_size` enters the cost model
  * mainly through the Mackert-Lohman estimate of INDEX pages surviving in cache
  * across REPEATED scans; for a single scan the dominant term is the heap fetch,
- * priced by `random_page_cost` — which is 4.0 on BOTH hosts, because the
- * derivation does not produce one.
+ * priced by `random_page_cost` — which is now 1.1 on BOTH supported SSD/NVMe
+ * hosts, rather than inheriting PostgreSQL's rotational-media default.
  *
- * So the divergence risk is smaller than assumed, and the real exposure is the
- * opposite shape: both hosts get the SAME plan from the SAME wrong constant, and
- * on this box that is harmless because everything is resident in 63 GB of shared
- * buffers, while on a laptop it is not. That is a runtime cost, not a plan-shape
- * difference — which is exactly why assertion 1, not assertion 2, is the one
- * doing the work here.
+ * So the divergence risk is smaller than assumed. The prior exposure was that
+ * both hosts got the SAME plan from the SAME wrong constant; the derived profile
+ * now carries the explicit SSD/NVMe value to both native and embedded PG.
  *
  * A permanent CONTROL (the `CONTROL:` test below) proves the assertion can still
  * fail, by flipping a real case to Seq Scan under a deliberately hostile
- * `random_page_cost`. Without it, "every case passed" is indistinguishable from
- * "the plan is no longer being read" — a whole population passing is only
+ * `random_page_cost`. Without the hostile control, "every case passed" is
+ * indistinguishable from "the plan is no longer being read" — a whole population passing is only
  * evidence when something is known to be able to fail.
  *
  * ## Why the session can stand in for a whole server
@@ -166,24 +163,15 @@ const SHIPPED_TUNING = deriveDatabaseTuning(SHIPPED_LAPTOP_SIGNALS);
  * Only the knobs the planner reads are set — the rest of `DatabaseTuning`
  * (max_connections, shared_buffers, wal_buffers, maintenance_work_mem) is about
  * capacity and execution, not plan choice, and `shared_buffers` cannot be set
- * per-session anyway. `random_page_cost` is set EXPLICITLY to Postgres's
- * default rather than left implicit: the derivation does not produce one today,
- * and writing the value we actually ship keeps that fact visible here. If the
- * derivation later grows a `randomPageCost`, switch this to read it — the
- * `randomPageCostFor` indirection is where that lands.
+ * per-session anyway. The storage-cost and I/O-concurrency settings are read
+ * directly from the same derived profile that boot/native autotune ships.
  */
-function randomPageCostFor(_tuning: DatabaseTuning): number {
-  // deriveDatabaseTuning() does not derive random_page_cost, so BOTH hosts
-  // inherit PostgreSQL's built-in 4.0 (spinning-disk arithmetic). Measured and
-  // reported 2026-08-29; a fix is tracked separately and is NOT in this scope.
-  return 4.0;
-}
-
 async function applyProfile(sql: postgres.Sql, tuning: DatabaseTuning): Promise<void> {
   await sql.unsafe(`SET effective_cache_size = '${tuning.effectiveCacheSizeMb}MB'`);
   await sql.unsafe(`SET work_mem = '${tuning.workMemMb}MB'`);
   await sql.unsafe(`SET max_parallel_workers_per_gather = ${tuning.maxParallelWorkersPerGather}`);
-  await sql.unsafe(`SET random_page_cost = ${randomPageCostFor(tuning)}`);
+  await sql.unsafe(`SET random_page_cost = ${tuning.randomPageCost}`);
+  await sql.unsafe(`SET effective_io_concurrency = ${tuning.effectiveIoConcurrency}`);
 }
 
 /** Every scan-ish node type Postgres can put at a leaf, split by what it means. */
@@ -404,14 +392,11 @@ describe('plan shape at the SHIPPED embedded GUC profile', () => {
     expect(SHIPPED_TUNING.workMemMb).toBeLessThan(DEV_TUNING.workMemMb);
   });
 
-  it('random_page_cost is the one knob on which the two hosts agree', () => {
-    // Documented, not aspirational: the derivation produces no random_page_cost,
-    // so both hosts inherit 4.0. This assertion exists so that ADDING one to the
-    // derivation (the separately-tracked fix) makes this test fail loudly and
-    // forces `randomPageCostFor` to start reading it rather than returning a
-    // constant that has quietly gone wrong.
-    expect(randomPageCostFor(DEV_TUNING)).toBe(randomPageCostFor(SHIPPED_TUNING));
-    expect(Object.keys(SHIPPED_TUNING)).not.toContain('randomPageCost');
+  it('both supported hosts carry the explicit SSD/NVMe planner profile', () => {
+    expect(DEV_TUNING.randomPageCost).toBe(1.1);
+    expect(SHIPPED_TUNING.randomPageCost).toBe(DEV_TUNING.randomPageCost);
+    expect(DEV_TUNING.effectiveIoConcurrency).toBe(200);
+    expect(SHIPPED_TUNING.effectiveIoConcurrency).toBe(DEV_TUNING.effectiveIoConcurrency);
   });
 
   it('CONTROL: the assertion can actually fail — a hostile profile flips a hot query to Seq Scan', async () => {
@@ -458,7 +443,7 @@ describe('plan shape at the SHIPPED embedded GUC profile', () => {
       // 1. ABSOLUTE — what the shipped profile actually does.
       expect(
         [...shipped].sort(),
-        `${testCase.why}\n\nAt the SHIPPED profile (effective_cache_size=${SHIPPED_TUNING.effectiveCacheSizeMb}MB, work_mem=${SHIPPED_TUNING.workMemMb}MB, random_page_cost=${randomPageCostFor(SHIPPED_TUNING)}) this query reaches ${testCase.relation} via [${[...shipped].join(', ')}], expected [${testCase.expectShipped}].\n\nPlan:\n${JSON.stringify(shippedPlan, null, 2)}`,
+        `${testCase.why}\n\nAt the SHIPPED profile (effective_cache_size=${SHIPPED_TUNING.effectiveCacheSizeMb}MB, work_mem=${SHIPPED_TUNING.workMemMb}MB, random_page_cost=${SHIPPED_TUNING.randomPageCost}) this query reaches ${testCase.relation} via [${[...shipped].join(', ')}], expected [${testCase.expectShipped}].\n\nPlan:\n${JSON.stringify(shippedPlan, null, 2)}`,
       ).toEqual([testCase.expectShipped]);
 
       // 2. AGREEMENT — whether the dev box can still OBSERVE what a laptop does.

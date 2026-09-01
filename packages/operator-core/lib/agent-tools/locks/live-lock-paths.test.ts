@@ -46,12 +46,17 @@ describe('liveLockHoldings', () => {
 
   it('preserves the live goal_ref so git-sync can keep an edit cohort atomic', async () => {
     readQueue.mockResolvedValue({
-      active_locks: [{ ...holding('source.ts', 'su-1'), goal_ref: ' WI-atomic ' }, holding('test.ts', 'su-1')],
+      active_locks: [
+        { ...holding('source.ts', 'su-1'), goal_ref: ' WI-atomic ' },
+        { ...holding('test.ts', 'su-1'), goal_ref: '   ' },
+        { ...holding('legacy.ts', 'su-1'), goal_ref: null },
+      ],
       waiting: [],
     });
     expect(await liveLockHoldingsStrict()).toEqual([
       { path: 'source.ts', owner: 'su-1', intent: 'edit source.ts', goalRef: 'WI-atomic' },
       { path: 'test.ts', owner: 'su-1', intent: 'edit test.ts' },
+      { path: 'legacy.ts', owner: 'su-1', intent: 'edit legacy.ts' },
     ]);
   });
 

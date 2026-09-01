@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Governor } from './admission';
-import {
-  PgWorkItemAdmissionQueueStore,
-  WorkItemAdmissionQueueDriver,
-  type DurableAdmissionQueueStore,
-} from './queue';
+import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
+import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore } from './queue';
 import {
   admissionContextFromEnvironment,
   beginGovernedExecution,
@@ -172,7 +169,10 @@ describe('governed execution lifecycle', () => {
         d,
       ),
     ).rejects.toThrow('lease store unavailable');
-    expect(d.current()).toMatchObject({ state: 'cancelled', cancellationReason: expect.stringContaining('lease acquisition') });
+    expect(d.current()).toMatchObject({
+      state: 'cancelled',
+      cancellationReason: expect.stringContaining('lease acquisition'),
+    });
   });
 
   it('releases a partial lease and cancels when mark-running fails', async () => {
@@ -194,7 +194,9 @@ describe('governed execution lifecycle', () => {
   it('serializes concurrent terminal callbacks and accepts measured demand', async () => {
     const d = deps();
     let unblock!: () => void;
-    const gate = new Promise<void>((resolve) => { unblock = resolve; });
+    const gate = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
     const release = vi.spyOn(d.governor, 'release').mockImplementation(async (_context, actualDemand) => {
       await gate;
       return { requestId: 'request-1', released: actualDemand?.memoryBytes === 42 };
@@ -224,9 +226,10 @@ describe('governed execution lifecycle', () => {
       { idempotencyKey: 'aborted-caller', admissionClass: 'process' },
       { owner: 'bounded-runner', signal: controller.signal },
       d,
-      async () => new Promise<string>((resolve) => {
-        resolveRun = resolve;
-      }),
+      async () =>
+        new Promise<string>((resolve) => {
+          resolveRun = resolve;
+        }),
     );
 
     await vi.waitFor(() => expect(d.current()).toMatchObject({ state: 'running' }));
@@ -371,7 +374,7 @@ describe('governed process client lifetime (WI-638180)', () => {
     // process-wide database outage instead of a local teardown.
     await withGovernedProcessRuntime('ws-1', 'ns-1', async (deps) => {
       const store = (deps.driver as unknown as { store: { sql: unknown } }).store;
-      expect(store).toBeInstanceOf(PgWorkItemAdmissionQueueStore);
+      expect(store).toBeInstanceOf(PgAdmissionLedgerQueueStore);
       expect(store.sql).toBe(built[0]!.sql);
     });
   });
@@ -382,10 +385,14 @@ describe('governed process client lifetime (WI-638180)', () => {
     // production, where the runners admit several groups concurrently.
     let releaseFirst!: () => void;
     let markStarted!: () => void;
-    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
     const first = withGovernedProcessRuntime('ws-1', 'ns-1', async () => {
       markStarted();
-      await new Promise<void>((done) => { releaseFirst = done; });
+      await new Promise<void>((done) => {
+        releaseFirst = done;
+      });
     });
     await started;
 
@@ -425,12 +432,12 @@ describe('governed process client lifetime (WI-638180)', () => {
   });
 
   it('does not let a close failure replace the operation result', async () => {
-    setGovernedProcessClientFactoryForTests(() => fakeClient(async () => {
-      throw new Error('pool teardown failed');
-    }));
-    await expect(
-      withGovernedProcessRuntime('ws-1', 'ns-1', async () => 'real result'),
-    ).resolves.toBe('real result');
+    setGovernedProcessClientFactoryForTests(() =>
+      fakeClient(async () => {
+        throw new Error('pool teardown failed');
+      }),
+    );
+    await expect(withGovernedProcessRuntime('ws-1', 'ns-1', async () => 'real result')).resolves.toBe('real result');
     expect(built[0]!.ends).toBe(1);
   });
 

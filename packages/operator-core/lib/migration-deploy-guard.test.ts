@@ -68,6 +68,27 @@ describe('PENDING-CODE-DEPLOY migration guard', () => {
     expect(result).toMatchObject({ ok: true, deployedSha: 'deadbeef1234567890', releaseRoot: '/release' });
   });
 
+  it('reads an explicit live revision instead of a checkout HEAD that may already point at the target', () => {
+    const refs: string[] = [];
+    const result = verifyPendingCodeDeployMigration({
+      filename: '900-example.sql',
+      sqlText: PENDING,
+      releaseRoot: '/release',
+      deployedRef: 'old-serving-sha',
+      resolveHead: (_root, ref) => {
+        refs.push(ref ?? 'HEAD');
+        return 'old-serving-sha-full';
+      },
+      readAtHead: (_root, _sourcePath, ref) => {
+        refs.push(ref ?? 'HEAD');
+        return '// old writer without companion';
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('deploy the companion code before applying it');
+    expect(refs).toEqual(['old-serving-sha', 'old-serving-sha']);
+  });
+
   it('finds every armed pending migration and leaves unmarked SQL alone', () => {
     const files: Record<string, string> = {
       '900-good.sql': PENDING,

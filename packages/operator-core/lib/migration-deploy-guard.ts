@@ -120,12 +120,12 @@ export function evaluatePendingCodeDeployMigration(args: {
   };
 }
 
-type GitRead = (releaseRoot: string, sourcePath: string) => string | null;
-type GitHead = (releaseRoot: string) => string | null;
+type GitRead = (releaseRoot: string, sourcePath: string, deployedRef?: string) => string | null;
+type GitHead = (releaseRoot: string, deployedRef?: string) => string | null;
 
-const readAtHead: GitRead = (releaseRoot, sourcePath) => {
+const readAtHead: GitRead = (releaseRoot, sourcePath, deployedRef = 'HEAD') => {
   try {
-    return execFileSync('git', ['-C', releaseRoot, 'show', `HEAD:${sourcePath}`], {
+    return execFileSync('git', ['-C', releaseRoot, 'show', `${deployedRef}:${sourcePath}`], {
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
     });
@@ -134,9 +134,9 @@ const readAtHead: GitRead = (releaseRoot, sourcePath) => {
   }
 };
 
-const resolveHead: GitHead = (releaseRoot) => {
+const resolveHead: GitHead = (releaseRoot, deployedRef = 'HEAD') => {
   try {
-    return execFileSync('git', ['-C', releaseRoot, 'rev-parse', 'HEAD'], {
+    return execFileSync('git', ['-C', releaseRoot, 'rev-parse', deployedRef], {
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
     }).trim();
@@ -154,6 +154,13 @@ export function verifyPendingCodeDeployMigration(args: {
   filename: string;
   sqlText: string;
   releaseRoot?: string | null;
+  /**
+   * Revision the live process is actually serving. Omit outside the deploy
+   * transaction to inspect HEAD; pass null when serving identity is unknown so
+   * the guard fails closed instead of mistaking a pre-cutover target checkout
+   * for deployed code.
+   */
+  deployedRef?: string | null;
   readAtHead?: GitRead;
   resolveHead?: GitHead;
 }): MigrationDeployGuardResult {
@@ -161,9 +168,13 @@ export function verifyPendingCodeDeployMigration(args: {
   if (!isPendingCodeDeployMigration(args.sqlText)) return { ok: true, filename: args.filename };
   if (!required) return evaluatePendingCodeDeployMigration({ filename: args.filename, sqlText: args.sqlText });
   const releaseRoot = args.releaseRoot?.trim() || undefined;
-  const deployedSha = releaseRoot ? (args.resolveHead ?? resolveHead)(releaseRoot) : null;
+  const deployedRefWasProvided = Object.prototype.hasOwnProperty.call(args, 'deployedRef');
+  const deployedRef = deployedRefWasProvided ? args.deployedRef?.trim() || null : 'HEAD';
+  const deployedSha = releaseRoot && deployedRef ? (args.resolveHead ?? resolveHead)(releaseRoot, deployedRef) : null;
   const deployedSourceText =
-    releaseRoot && deployedSha ? (args.readAtHead ?? readAtHead)(releaseRoot, required.sourcePath) : null;
+    releaseRoot && deployedSha && deployedRef
+      ? (args.readAtHead ?? readAtHead)(releaseRoot, required.sourcePath, deployedRef)
+      : null;
   return evaluatePendingCodeDeployMigration({
     filename: args.filename,
     sqlText: args.sqlText,

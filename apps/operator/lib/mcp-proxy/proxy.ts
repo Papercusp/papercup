@@ -1330,6 +1330,9 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     // reserved admission path so a saturated ordinary pool cannot hide the fleet
     // state that agents use to recover from the saturation.
     "coord:glance",
+    // Gate ownership is a recovery-critical state read: it must remain available
+    // when ordinary traffic fills the non-reserved admission ceiling.
+    "state:read",
     // DRAIN reconciliation reads must remain callable while ordinary tool traffic
     // occupies the non-reserved ceiling. `coord:inbox` is intentionally not in
     // READ_ONLY_TOOLS because reading it advances message-read state, but it is

@@ -399,6 +399,50 @@ export function planScopeMissingRefusal(planSlug: string, cupId: string, harness
 }
 
 /**
+ * EI-22003108135602428: a terminal plan can remain in presence after its last
+ * turn. That declaration is no longer a useful scope boundary, but blindly
+ * falling through to DEFAULT_CLAIM_SPEC would make an active plan declaration
+ * unsafe. Only clear it after the plan store positively proves terminality (or
+ * that no non-terminal plan items remain), and require the presence write to
+ * succeed before allowing the generic pull to continue.
+ */
+async function clearStaleTerminalPlanDeclaration(args: {
+  identity: AgentIdentity;
+  presence: { intent?: string | null };
+  planSlug: string;
+  harness: string;
+}): Promise<boolean> {
+  // Presence and claim specs both use the coordination default when an
+  // unscoped identity carries no concrete workspace. Keep the terminality
+  // read on that same partition instead of leaving an unscoped stale plan
+  // declaration permanently fail-closed.
+  const workspaceId = resolveClaimSpecWorkspace(args.identity.workspaceId) ?? 'default';
+  try {
+    const { planTerminalityInWorkspace } = await import('../plans/source');
+    const terminality = await planTerminalityInWorkspace(workspaceId, args.planSlug);
+    if (
+      !terminality ||
+      (terminality.status !== 'shipped' && terminality.status !== 'superseded' && terminality.hasOpenItems)
+    ) {
+      return false;
+    }
+    await writePresence(
+      args.identity,
+      {
+        intent: args.presence.intent ?? '',
+        currentPlanSlug: null,
+      },
+      args.harness,
+    );
+    return true;
+  } catch {
+    // A failed terminality or presence read/write is unknown, not proof that a
+    // plan is safe to widen past. Preserve the existing fail-closed refusal.
+    return false;
+  }
+}
+
+/**
  * WI-4413: build the self-explaining miss. Two layers:
  *  1. AGGREGATE — the POOL/READY split from diagnoseClaimNextMiss (already the source of truth
  *     shared with the claim itself). Distinguishes "genuinely drained, idling is correct" from
@@ -672,6 +716,9 @@ export function assembleSchedulerClaimResult(legs: {
   /** EI-21267393427094356: dead-at-HEAD payload paths, resolved to current locations. */
   pathHints?: unknown;
   pathHintsNote?: string | null;
+  /** EI-20049758099997696: unresolved repo paths cited in title/summary prose. */
+  stalePathRefs?: unknown;
+  stalePathRefsNote?: string | null;
   /**
    * P-011: WHICH behavior clauses this claim puts the agent on the hook for, at
    * WHICH revision. ⚠ ADVISORY (D-017) — reported, never enforced here; P-013 owns
@@ -710,6 +757,9 @@ export function assembleSchedulerClaimResult(legs: {
     // Stale-path hints join the prefix block: a caller that loses the response tail must
     // still know which stored paths are fossils before it starts work (EI-21267393427094356).
     ...(legs.pathHints ? { pathHints: legs.pathHints, pathHintsNote: legs.pathHintsNote } : {}),
+    ...(legs.stalePathRefs
+      ? { stalePathRefs: legs.stalePathRefs, stalePathRefsNote: legs.stalePathRefsNote }
+      : {}),
     workItem: legs.workItem,
     claimedUnder: legs.claimedUnder,
     ...(legs.freshness ? { freshness: legs.freshness } : {}),
@@ -1047,7 +1097,15 @@ export default defineTool({
               workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
             }).catch(() => null);
             const effectiveDefault = !specOn || record?.source === 'default';
-            if (effectiveDefault) return { kind: 'plan-scope-missing', planSlug: declaredPlanSlug };
+            if (effectiveDefault) {
+              const stalePlanCleared = await clearStaleTerminalPlanDeclaration({
+                identity: ident,
+                presence: { intent: presence?.intent },
+                planSlug: declaredPlanSlug,
+                harness: args.harness,
+              });
+              if (!stalePlanCleared) return { kind: 'plan-scope-missing', planSlug: declaredPlanSlug };
+            }
           }
         }
         // P-015: authoritative lock-plane snapshot, holders only and excluding this
@@ -1480,10 +1538,7 @@ export default defineTool({
       behaviorContract: unknown;
       behaviorContractNote: string;
     } | null;
-    let pathHintsHint = null as {
-      pathHints: unknown;
-      pathHintsNote: string | null;
-    } | null;
+    let pathHintsHint = null as import('../../stale-path-hints-claim-port').ClaimTimeStalePathAdvisory | null;
     let planItemLandedHint = null as {
       planItemLanded: unknown;
       planItemLandedWarning: string;
@@ -1664,11 +1719,10 @@ export default defineTool({
                   )
                   .catch(() => null)
               : Promise.resolve(null),
-            wi.payload
+            wi.payload || wi.title || wi.summary
               ? import('../../stale-path-hints-claim-port')
                   .then(async (m) => {
-                    const hints = await m.getClaimTimeStalePathHints({ payload: wi.payload });
-                    return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
+                    return m.getClaimTimeStalePathAdvisory({ workItem: wi });
                   })
                   .catch(() => null)
               : Promise.resolve(null),
@@ -1868,6 +1922,8 @@ export default defineTool({
           behaviorContractNote: behaviorContractHint?.behaviorContractNote,
           pathHints: pathHintsHint?.pathHints,
           pathHintsNote: pathHintsHint?.pathHintsNote ?? undefined,
+          stalePathRefs: pathHintsHint?.stalePathRefs,
+          stalePathRefsNote: pathHintsHint?.stalePathRefsNote ?? undefined,
           // EI-19396519606401168: this note used to be built from the
           // POST-CAP length, so a capped brief announced itself as the
           // complete set. The shared helper still renders the true total

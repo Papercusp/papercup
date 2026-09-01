@@ -17,32 +17,40 @@
  * and spent it on a dead channel. A watchdog that repeats the same finding at the same agent for
  * four days without escalating CHANNEL is not a detector, it is a metronome.
  *
- * ── THE FIFTH TERM (measured 2026-09-01, before this file was written) ────────────────────────
+ * ── WHY THIS PAGES ONLY ABOUT A SESSION THAT HOLDS WORK ───────────────────────────────────────
  *
- * WI-35718 states the conjunction and calls it "an unambiguous silently-halted autonomous
- * agent". Run against live PG it is not unambiguous — as written it selects 4,037 rows:
+ * WI-35718 states its conjunction and calls it "an unambiguous silently-halted autonomous
+ * agent". Measured against live PG before this file was written, it is not unambiguous — as
+ * written it selects ~4,037 rows, because ~4,091 candidates have no coord_presence row at all.
+ * Presence is reaped, so a mode row beside an inactive loop is the normal terminal RESIDUE every
+ * cleanly-ended session leaves behind forever. Adding a presence join drops that ~60x, and the
+ * item's own `no pending await` term drops it again (an await IS a wake source).
  *
- *   active=false + autonomy posture + no pending await ............ 4,037
- *   ... AND a coord_presence row exists ............................... 67
- *   ... AND heartbeat_at fresh (<10m) ................................. 67
- *   ... AND no pending await (expiry-corrected) ........................ 3   ← true positives
+ * That gets the population small. It does NOT establish that the survivors are halted, and the
+ * distinction matters because `unguarded-halt-rescue-action.ts` (2026-07-26, which PRE-dates
+ * this item and which the item does not mention) already targets this failure class — and its
+ * own measurement contradicts the obvious gate head-on:
  *
- * Two independent collapses, and the first is the term the item omits. 4,091 candidates have NO
- * presence row at all: presence is reaped, so a mode row beside an inactive loop is the normal
- * terminal RESIDUE every cleanly-ended session leaves behind forever. Building the conjunction
- * as filed would page the owner ~4,037 times — the exact metronome failure above, amplified
- * 4000x, which is why LIVENESS is a required term here and not a refinement:
+ *     "The obvious gate — heartbeat fresh ⇒ the process is alive, so wake it — is WRONG here,
+ *      and measurably so. 30+ agents had made no tool call for 6-9 DAYS while still heartbeating
+ *      every ~50s."
  *
- *     a silently-halted agent is one whose PROCESS IS ALIVE but which produces no turns.
- *     A reaped presence row means GONE, which is not the same thing and must not page.
+ * So heartbeat-fresh proves a PROCESS EXISTS; it does not separate halted-and-recoverable from
+ * abandoned, and no available signal does (that module reports sessionState and wakeable failing
+ * the same way). It therefore targets by REASON TO WAKE — fleet still active, load 0, and work
+ * actually claimable — and WAKES the agent, which is strictly better than bothering a human.
  *
- * The second collapse (67 → 3) is the item's own `no pending await` term doing real work: 63 of
- * 67 live sessions hold an await, and an await IS a wake source, so they are correctly silent.
+ * This module must not re-litigate that. It takes the one case that design provably EXCLUDES:
+ * its conjunct (2) requires load 0 ("nothing to resume"), so a halted session that HOLDS a
+ * claimed work-item is rescued by nothing. That case is worth a human, and it is the only one
+ * here that survives the abandoned-vs-halted ambiguity — because it does not depend on resolving
+ * it. Either way the held item is STRANDED: the owner is heartbeat-fresh, so the dead-owner claim
+ * reaper does not reclaim it, and the session takes no turns, so nothing advances it. The work
+ * sits claimed and unworkable until a human looks. Whether the agent behind it is recoverable or
+ * abandoned changes the remedy, not the fact that one is needed.
  *
- * All three survivors were true positives, and the population is the bug: one had been disarmed
- * 5,906 minutes — 4.1 DAYS — while its heartbeat was 65 seconds old. That is WI-35718's own
- * cited failure, live, at the moment this file was written, with nothing in the system due to
- * notice it.
+ * Hence: liveness NARROWS the population, held work JUSTIFIES the page. Neither alone is enough,
+ * and paging on liveness alone is the mistake the counter-design already measured.
  *
  * WHY REUSE getLoopStatuses. `lastRealTurnAt` is a union over the journal and session_turns'
  * assistant turns (loop.ts ~line 2000) and has under-reported twice already (WI-6069 and its
@@ -105,6 +113,12 @@ export interface SilentHaltInput {
   inactiveForMs: number | null;
   /** The loop's own cadence, for the interval-relative staleness floor. */
   intervalSec: number | null;
+  /**
+   * Non-terminal work-items this session still holds. ZERO means `unguarded-halt-rescue` owns
+   * the case (it wakes exactly the load-0 population) and this module must stay silent; only a
+   * HELD item makes the strand concrete enough to justify a human. See the header.
+   */
+  heldWorkItems: number;
 }
 
 export interface SilentHaltVerdict {
@@ -142,11 +156,22 @@ export function evaluateSilentHalt(input: SilentHaltInput): SilentHaltVerdict {
   // liveness, is what separates a waiting agent from a halted one.
   if (input.pendingAwaits > 0) return no(`pending-await x${input.pendingAwaits} (a live wake source)`);
 
-  // THE FIFTH TERM. No presence row = reaped = long gone. This is the 4,037 → 67 collapse, and
-  // omitting it is what turns this detector into a metronome.
+  // No presence row = reaped = long gone. This is the ~60x collapse, and omitting it is what
+  // turns this detector into a metronome. It NARROWS the population; it does not establish that
+  // a survivor is halted rather than abandoned — see the header, and the held-work term below.
   if (input.heartbeatAgeMs == null) return no('no-presence-row (session is gone, not halted)');
   if (input.heartbeatAgeMs > SILENT_HALT_HEARTBEAT_FRESH_MS) {
     return no(`heartbeat-stale ${Math.round(input.heartbeatAgeMs / 60000)}m (process gone, not halted)`);
+  }
+
+  // THE TERM THAT JUSTIFIES A PAGE. A load-0 halt is `unguarded-halt-rescue`'s case and it WAKES
+  // that agent — strictly better than bothering a human, so this module must not double-report
+  // it. Only a HELD item makes the strand concrete: heartbeat-fresh means the dead-owner reaper
+  // will not reclaim it, and a session taking no turns will not advance it, so it is stuck
+  // whether the agent is recoverable OR abandoned. That is what makes this the one case here
+  // that does not depend on a distinction no available signal can make.
+  if (input.heldWorkItems <= 0) {
+    return no('holds-no-work (unguarded-halt-rescue wakes this case; nothing is stranded)');
   }
 
   // Both clocks must clear the floor. A loop disarmed seconds ago is not yet a halt however old
@@ -188,6 +213,8 @@ export interface SilentHaltCandidate {
   heartbeatAgeMs: number | null;
   inactiveForMs: number | null;
   pendingAwaits: number;
+  /** Non-terminal, non-observation work-items this session still holds (`taken_by`). */
+  heldWorkItems: number;
   modes: Array<{ mode: string }>;
 }
 
@@ -233,6 +260,7 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
       heartbeat_age_ms: string | number | null;
       inactive_for_ms: string | number | null;
       pending_awaits: string | number | null;
+      held_work_items: string | number | null;
       modes: string[] | null;
     }>
   >`
@@ -255,6 +283,13 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
            round(extract(epoch from (now() - p.heartbeat_at)) * 1000)     AS heartbeat_age_ms,
            round(extract(epoch from (now() - l.active_changed_at)) * 1000) AS inactive_for_ms,
            COALESCE(a.n, 0)                                                AS pending_awaits,
+           -- lane <> 'observation' is load-bearing: work_items also holds agents' own turn-end
+           -- notes, which are never claimed work and would make every session look loaded.
+           (SELECT count(*)::int FROM harness_shared.work_items w
+             WHERE w.taken_by = l.owner_id
+               AND w.lane IS DISTINCT FROM 'observation'
+               AND w.status NOT IN ('done','dropped','passed','deprecated','resolved','closed'))
+                                                                           AS held_work_items,
            array_agg(DISTINCT m.mode)                                      AS modes
       FROM loops l
       JOIN harness_shared.agent_modes m
@@ -274,6 +309,7 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
     heartbeatAgeMs: r.heartbeat_age_ms == null ? null : Number(r.heartbeat_age_ms),
     inactiveForMs: r.inactive_for_ms == null ? null : Number(r.inactive_for_ms),
     pendingAwaits: Number(r.pending_awaits ?? 0),
+    heldWorkItems: Number(r.held_work_items ?? 0),
     modes: (r.modes ?? []).filter(Boolean).map((mode) => ({ mode })),
   }));
 }
@@ -342,6 +378,7 @@ export async function sweepSilentHalts(opts: {
       lastRealTurnAgeMs: Number.isFinite(lastRealTurnAgeMs as number) ? lastRealTurnAgeMs : null,
       inactiveForMs: c.inactiveForMs,
       intervalSec: c.intervalSec,
+      heldWorkItems: c.heldWorkItems,
     });
 
     if (!verdict.halted) {

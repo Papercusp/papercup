@@ -160,7 +160,7 @@ export interface DeployDeps {
    *  last-known-good fallback is not a successful deploy (WI-41242). */
   bundleHost(): Promise<void>;
   /** Apply staged migrations to the operator DB, fail-loud (D-007). */
-  migrate(): Promise<MigrateResult>;
+  migrate(deployedSha: string | null): Promise<MigrateResult>;
   /** Restart the operator (systemctl) so it boots the release checkout. */
   restart(): Promise<void>;
   /** Poll /api/health until healthy or timeout. */
@@ -451,7 +451,11 @@ export async function executeDeploy(
           `pre-cutover boot check failed — release checkout would not boot, refusing to cut over :3070: ${preflight.error ?? 'unknown'}`,
         );
       }
-      migrations = await step('migrate', () => deps.migrate());
+      // The checkout now points at targetSha, but :3070 is still serving the
+      // pre-cutover revision. A guarded migration must judge THAT revision;
+      // checking checkout HEAD here would incorrectly certify same-deploy code.
+      const deployedSha = plan.restartOnly ? plan.servingSha : plan.currentReleaseSha;
+      migrations = await step('migrate', () => deps.migrate(deployedSha));
       migrateRan = true;
       await step('restart', () => deps.restart());
       liveCutover = true;

@@ -33,6 +33,21 @@ const ROUTINES = [
   { name: 'green-checkpoint', target: 'system:green-checkpoint', cron: greenCheckpointCronForInstall(SLUG), activeDefault: true },
   // ACTIVE: auto-serve (staging-branch-pipeline-2026-06-06 D-002).
   { name: 'release-trigger', target: 'system:release-trigger', cron: '0 */15 * * * *', activeDefault: true },
+  // Daily at 03:00 local. The action itself requires PAPERCUSP_NIGHTLY_RELEASE_ROOT
+  // (a dedicated checkout) and PAPERCUSP_RELEASE_OWNER_NAME; absent either it logs a
+  // fail-soft skip rather than mutating the canonical or live release trees.
+  {
+    name: 'nightly-release-cut',
+    target: 'system:nightly-release-cut',
+    cron: '0 0 3 * * *',
+    activeDefault: true,
+    triggerConfig: {
+      cron: '0 0 3 * * *',
+      channel: 'nightly',
+      platform: 'linux',
+      roles: 'gui',
+    },
+  },
 ] as const;
 
 async function main(): Promise<void> {
@@ -51,6 +66,7 @@ async function main(): Promise<void> {
     // (blank metadata; a steward fills it in via routines:group-set) so a FRESH seed
     // lands pre-grouped. group_slug is deliberately NOT in the ON CONFLICT SET list — a
     // re-seed must never clobber a manual routines:set{group} reassignment.
+    const triggerConfig = 'triggerConfig' in r && r.triggerConfig ? r.triggerConfig : { cron: r.cron };
     await sql`
       INSERT INTO harness_shared.routine_groups (workspace_id, slug)
       VALUES (${ws}, 'release')
@@ -60,7 +76,7 @@ async function main(): Promise<void> {
       INSERT INTO harness_shared.routines
         (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
          concurrency, catchup, active, next_fire_at, group_slug)
-      VALUES (${id}, ${SLUG}, ${ws}, ${r.name}, 'cron', ${JSON.stringify({ cron: r.cron })}::text::jsonb, ${r.target},
+      VALUES (${id}, ${SLUG}, ${ws}, ${r.name}, 'cron', ${JSON.stringify(triggerConfig)}::text::jsonb, ${r.target},
               'skip', 'skip-old', ${active}, now(), 'release')
       ON CONFLICT (install_slug, name) DO UPDATE SET
         target_role = EXCLUDED.target_role,
