@@ -127,7 +127,10 @@ async function stateBurnWall(
     const { broadcastSevereEventResolved } = await import('../severe-event-broadcast');
     await broadcastSevereEventResolved({
       conditionKey: factKey(accountId),
-      summary: `account '${accountId}' burn RECOVERED (${transition.from} → none): ${transition.reason}`,
+      // `transition.label` and not a bare `none`: the recovery line states a verdict too, and the
+      // reader-contract is that no verdict string travels without its disposition (P-005). Here it
+      // renders as "no wall asserted", which is the whole point — the alarm is over.
+      summary: `account '${accountId}' burn RECOVERED (was ${transition.from}) → ${transition.label}: ${transition.reason}`,
     });
     return;
   }
