@@ -128,11 +128,7 @@ export interface FleetMemberObservation {
 export function isActionableFleetObservation(
   observation: Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'>,
 ): boolean {
-  return !(
-    observation.sessionState === 'recorded' &&
-    observation.wakeable === false &&
-    observation.claimCount === 0
-  );
+  return !(observation.sessionState === 'recorded' && observation.wakeable === false && observation.claimCount === 0);
 }
 
 /** One detected crossing, ready to emit. */
@@ -157,7 +153,8 @@ export interface FleetAdmissionTransitionEdge {
 /** One fleet's current distinct admission-block count. */
 export interface FleetAdmissionObservation {
   fleetSlug: string;
-  blockedCount: number;
+  /** null means the detector could not measure this fleet on this sweep. */
+  blockedCount: number | null;
 }
 
 /** Snapshot identity for a member — a member is only ever compared against
@@ -262,7 +259,10 @@ export function detectFleetTransitions(
       });
     }
   }
-  edges.sort((a, b) => a.fleetSlug.localeCompare(b.fleetSlug) || a.agentId.localeCompare(b.agentId) || a.kind.localeCompare(b.kind));
+  edges.sort(
+    (a, b) =>
+      a.fleetSlug.localeCompare(b.fleetSlug) || a.agentId.localeCompare(b.agentId) || a.kind.localeCompare(b.kind),
+  );
   return edges;
 }
 
@@ -274,7 +274,12 @@ export function detectFleetAdmissionTransitions(
   next: readonly FleetAdmissionObservation[],
 ): FleetAdmissionTransitionEdge[] {
   return next
-    .filter((observation) => Number.isFinite(observation.blockedCount) && observation.blockedCount > 0)
+    .filter(
+      (observation): observation is FleetAdmissionObservation & { blockedCount: number } =>
+        typeof observation.blockedCount === 'number' &&
+        Number.isFinite(observation.blockedCount) &&
+        observation.blockedCount > 0,
+    )
     .map((observation) => {
       const before = prev.get(observation.fleetSlug) ?? 0;
       return before < observation.blockedCount
@@ -388,14 +393,8 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
       // A queued edge can outlive a graceful stand-down. Revalidate the member
       // control state before delivery so recorded/non-wakeable claimless residue
       // cannot wake a leader after it has become non-actionable.
-      if (
-        (edge.kind === 'member-dead' || edge.kind === 'context-critical') &&
-        deps.currentMemberObservation
-      ) {
-        let currentMember:
-          | Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'>
-          | null
-          | undefined;
+      if ((edge.kind === 'member-dead' || edge.kind === 'context-critical') && deps.currentMemberObservation) {
+        let currentMember: Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'> | null | undefined;
         try {
           currentMember = await deps.currentMemberObservation(edge.fleetSlug, edge.agentId);
         } catch (e: unknown) {
@@ -410,7 +409,11 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
         ) {
           return;
         }
-        if (edge.kind === 'context-critical' && currentMember !== undefined && !isActionableFleetObservation(currentMember)) {
+        if (
+          edge.kind === 'context-critical' &&
+          currentMember !== undefined &&
+          !isActionableFleetObservation(currentMember)
+        ) {
           return;
         }
       }
@@ -458,8 +461,7 @@ export function emitFleetAdmissionTransitionEdge(
     .then(() =>
       emit({
         key: fleetTransitionKey(edge.fleetSlug, edge.kind),
-        summary:
-          `fleet ${edge.fleetSlug}: claim admission is BLOCKED (${edge.from} → ${edge.to} distinct refusal(s))`,
+        summary: `fleet ${edge.fleetSlug}: claim admission is BLOCKED (${edge.from} → ${edge.to} distinct refusal(s))`,
         payload: {
           fleetSlug: edge.fleetSlug,
           transition: edge.kind,

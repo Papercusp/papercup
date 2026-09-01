@@ -78,6 +78,24 @@ export interface FleetAdmissionBlockRow {
   stamp: unknown;
 }
 
+/**
+ * Availability-preserving read result.
+ *
+ * An empty `blocks` array is a measured zero. `available:false` means the read
+ * did not produce a measurement and MUST NOT be coerced to that zero by a
+ * health consumer.
+ */
+export type FleetAdmissionBlockRead =
+  | { available: true; blocks: FleetAdmissionBlock[] }
+  | { available: false; blocks: null; reason: string };
+
+export interface FleetAdmissionBlockRowReadArgs {
+  workspaceId: string;
+  audience: string;
+  sinceMs: number;
+  scanCap: number;
+}
+
 /** The authored fleet claim-spec head used to validate historical refusals. */
 export interface FleetAdmissionSpecHead {
   specId: string | null;
@@ -111,6 +129,10 @@ export interface FetchFleetAdmissionBlocksOptions {
    * empty set is meaningful (the fleet has no live members), unlike an omitted set.
    */
   liveMemberIds?: readonly string[] | ReadonlySet<string>;
+  /** Test seam for the PG capability check. */
+  hasPgFastPath?: () => boolean;
+  /** Test seam for the bounded coord-event row read. */
+  readRows?: (args: FleetAdmissionBlockRowReadArgs) => Promise<readonly FleetAdmissionBlockRow[]>;
 }
 
 const clipReason = (value: unknown, max = 240): string | null => {
@@ -296,8 +318,7 @@ export function filterCurrentFleetAdmissionBlocks(
 ): FleetAdmissionBlock[] {
   const liveMemberIds = opts.liveMemberIds == null ? null : new Set(opts.liveMemberIds);
   const currentSpec = opts.currentSpec ?? null;
-  const canCompareSpec =
-    currentSpec?.specId != null && currentSpec.specId.length > 0 && currentSpec.revision != null;
+  const canCompareSpec = currentSpec?.specId != null && currentSpec.specId.length > 0 && currentSpec.revision != null;
 
   return blocks.filter((block) => {
     if (liveMemberIds && !liveMemberIds.has(block.member ?? '')) return false;
@@ -334,39 +355,44 @@ async function claimSpecHeadForFleet(fleetSlug: string, workspaceId: string): Pr
  * spec inside the lookback window.
  *
  * Best-effort like its sibling decorations (fetchDirectiveActuationSummaries /
- * fetchUnansweredDirected): gated on the coord PG fast path, empty array on any
- * failure. A decoration must never be able to fail the brief it decorates — a
- * leader-brief that throws because one advisory read had a bad day is a strictly
- * worse outcome than a leader-brief missing that advisory.
+ * fetchUnansweredDirected), but availability-preserving: a measured empty set is
+ * `{ available:true, blocks:[] }`; an unavailable read is explicitly typed and
+ * carries no array. A decoration must never be able to fail the brief it
+ * decorates, but it also must never manufacture a green zero from a failed read.
  */
-export async function fetchFleetAdmissionBlocks(
+export async function readFleetAdmissionBlocks(
   fleetSlug: string,
   opts: FetchFleetAdmissionBlocksOptions = {},
-): Promise<FleetAdmissionBlock[]> {
-  if (!fleetSlug || !coordHasPgFastPath()) return [];
+): Promise<FleetAdmissionBlockRead> {
+  if (!fleetSlug) return { available: false, blocks: null, reason: 'fleet slug is missing' };
   try {
+    if (!(opts.hasPgFastPath ?? coordHasPgFastPath)()) {
+      return { available: false, blocks: null, reason: 'coordination PostgreSQL fast path is unavailable' };
+    }
     const nowMs = opts.nowMs ?? Date.now();
     const sinceMs = nowMs - (opts.lookbackMs ?? FLEET_ADMISSION_BLOCK_LOOKBACK_MS);
-    const sql = coordSql();
     const ws = coordWorkspaceId();
     // The durable audience KEY, not the expanded `to`: `@fleet-leader:<slug>` is
     // recorded at send time and survives a leadership change, whereas `to` holds
     // whichever ownerId happened to hold leadership then.
     const audience = `@fleet-leader:${fleetSlug}`;
-    const rows = await sql<FleetAdmissionBlockRow[]>`
-      SELECT e.body->>'msg_id' AS msg_id,
-             (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms,
-             e.body->${FLEET_ADMISSION_BLOCK_STAMP} AS stamp
-        FROM harness_shared.coord_event_log e
-       WHERE e.workspace_id = ${ws}
-         AND e.surface = 'messages'
-         AND e.body->>'category' = ${FLEET_ADMISSION_BLOCK_CATEGORY}
-         AND e.body ? ${FLEET_ADMISSION_BLOCK_STAMP}
-         AND jsonb_typeof(e.body->'audience') = 'array'
-         AND e.body->'audience' ? ${audience}
-         AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
-       ORDER BY (e.body->>'ts')::timestamptz DESC
-       LIMIT ${opts.scanCap ?? FLEET_ADMISSION_BLOCK_SCAN_CAP}`;
+    const scanCap = opts.scanCap ?? FLEET_ADMISSION_BLOCK_SCAN_CAP;
+    const rows = opts.readRows
+      ? await opts.readRows({ workspaceId: ws, audience, sinceMs, scanCap })
+      : await coordSql()<FleetAdmissionBlockRow[]>`
+          SELECT e.body->>'msg_id' AS msg_id,
+                 (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms,
+                 e.body->${FLEET_ADMISSION_BLOCK_STAMP} AS stamp
+            FROM harness_shared.coord_event_log e
+           WHERE e.workspace_id = ${ws}
+             AND e.surface = 'messages'
+             AND e.body->>'category' = ${FLEET_ADMISSION_BLOCK_CATEGORY}
+             AND e.body ? ${FLEET_ADMISSION_BLOCK_STAMP}
+             AND jsonb_typeof(e.body->'audience') = 'array'
+             AND e.body->'audience' ? ${audience}
+             AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
+           ORDER BY (e.body->>'ts')::timestamptz DESC
+           LIMIT ${scanCap}`;
     const parsed: FleetAdmissionBlock[] = [];
     for (const row of rows) {
       const block = parseAdmissionBlockStamp(row.stamp, {
@@ -376,21 +402,37 @@ export async function fetchFleetAdmissionBlocks(
       if (block) parsed.push(block);
     }
     const deduped = dedupeAdmissionBlocks(parsed, opts.rowCap ?? FLEET_ADMISSION_BLOCK_ROW_CAP);
-    if (deduped.length === 0) return [];
+    if (deduped.length === 0) return { available: true, blocks: [] };
     const currentSpec = await (opts.resolveFleetSpec ?? claimSpecHeadForFleet)(fleetSlug, ws).catch(() => null);
     const currentFleetBlocks = filterCurrentFleetAdmissionBlocks(deduped, {
       currentSpec,
       liveMemberIds: opts.liveMemberIds,
     });
-    if (currentFleetBlocks.length === 0) return [];
+    if (currentFleetBlocks.length === 0) return { available: true, blocks: [] };
     const harness =
       opts.harness?.trim() ||
       (await (opts.resolveFleetHarness ?? claimSpecHarnessForFleet)(fleetSlug, ws).catch(() => null));
-    return filterCurrentAdmissionBlocks(currentFleetBlocks, {
-      harness,
-      isTargetTerminal: opts.isTargetTerminal,
-    });
+    return {
+      available: true,
+      blocks: await filterCurrentAdmissionBlocks(currentFleetBlocks, {
+        harness,
+        isTargetTerminal: opts.isTargetTerminal,
+      }),
+    };
   } catch {
-    return [];
+    return { available: false, blocks: null, reason: 'fleet admission-block read failed' };
   }
+}
+
+/**
+ * Legacy array-only wrapper for callers that have not migrated to the typed
+ * availability contract. New health/transition consumers must use
+ * `readFleetAdmissionBlocks` so failure cannot masquerade as a measured zero.
+ */
+export async function fetchFleetAdmissionBlocks(
+  fleetSlug: string,
+  opts: FetchFleetAdmissionBlocksOptions = {},
+): Promise<FleetAdmissionBlock[]> {
+  const read = await readFleetAdmissionBlocks(fleetSlug, opts);
+  return read.available ? read.blocks : [];
 }

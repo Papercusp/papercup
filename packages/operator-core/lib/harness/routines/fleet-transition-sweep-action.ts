@@ -38,7 +38,7 @@ import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../
 import { reconcileWakeability } from '../../agent-tools/fleet/assignments';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
 import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
-import { fetchFleetAdmissionBlocks } from '../../agent-tools/coordination/fleet-scope-admission-blocks';
+import { readFleetAdmissionBlocks } from '../../agent-tools/coordination/fleet-scope-admission-blocks';
 import {
   detectFleetAdmissionTransitions,
   detectFleetTransitions,
@@ -103,9 +103,7 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
   // detector only fires on a crossing INTO a known-bad state), so a degraded read
   // is silent rather than a false alarm.
   const withLiveness = await reconcileWakeability(fleeted).catch(() => fleeted);
-  const pressure = await fetchContextPressure(fleeted.map((a) => a.agentId)).catch(
-    () => new Map<string, string>(),
-  );
+  const pressure = await fetchContextPressure(fleeted.map((a) => a.agentId)).catch(() => new Map<string, string>());
 
   return withLiveness
     .filter((a): a is typeof a & { fleetSlug: string } => Boolean(a.fleetSlug))
@@ -139,8 +137,9 @@ async function gatherCurrentFleetMemberObservation(
 /**
  * Gather one round of fleet-level admission observations. Admission blocks are
  * already a bounded, fail-soft leader-brief read; this sweep only needs their
- * distinct count to detect a rising block edge. Keep zeroes in the snapshot so
- * a block that clears and later reappears is a real new crossing.
+ * distinct count to detect a rising block edge. Keep measured zeroes in the
+ * snapshot so a block that clears and later reappears is a real new crossing;
+ * keep unavailable reads as null so they cannot manufacture a clear edge.
  */
 export async function gatherFleetAdmissionObservations(): Promise<FleetAdmissionObservation[]> {
   let agents: ObservableAgent[];
@@ -176,12 +175,12 @@ export async function gatherFleetAdmissionObservations(): Promise<FleetAdmission
           )
           .map((agent) => agent.agentId)
           .sort();
-        const blocks = await fetchFleetAdmissionBlocks(fleetSlug, { liveMemberIds });
-        return { fleetSlug, blockedCount: blocks.length };
+        const read = await readFleetAdmissionBlocks(fleetSlug, { liveMemberIds });
+        return { fleetSlug, blockedCount: read.available ? read.blocks.length : null };
       } catch {
-        // `fetchFleetAdmissionBlocks` is already fail-soft in production, but
+        // `readFleetAdmissionBlocks` is already fail-soft in production, but
         // preserve the boundary if a test seam or future implementation throws.
-        return { fleetSlug, blockedCount: 0 };
+        return { fleetSlug, blockedCount: null };
       }
     }),
   );
@@ -212,9 +211,16 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   const edges = detectFleetTransitions(previousObservations, observations);
   const admissionEdges = detectFleetAdmissionTransitions(previousAdmissionObservations, admissionObservations);
   previousObservations = indexObservations(observations);
-  previousAdmissionObservations = new Map(
-    admissionObservations.map((observation) => [observation.fleetSlug, observation.blockedCount]),
-  );
+  // Merge measured values into the prior snapshot rather than replacing it.
+  // An empty observation set can mean the outer roster read was unavailable,
+  // and a per-fleet null means its optional block read was unavailable. Neither
+  // is evidence of clearance. A genuine measured zero still overwrites the
+  // prior count, so a later positive count remains a real new crossing.
+  for (const observation of admissionObservations) {
+    if (typeof observation.blockedCount === 'number' && Number.isFinite(observation.blockedCount)) {
+      previousAdmissionObservations.set(observation.fleetSlug, observation.blockedCount);
+    }
+  }
   let emitDeps = deps;
   const memberDeadEdges = edges.filter((edge) => edge.kind === 'member-dead');
   const contextEdges = edges.filter((edge) => edge.kind === 'context-critical');
@@ -271,9 +277,7 @@ registerSystemAction('fleet-transition-sweep', async (ctx: SystemActionCtx) => {
   if (nowMs - lastControlReconcileMs < CONTROL_RECONCILE_INTERVAL_MS) return;
   lastControlReconcileMs = nowMs;
   try {
-    const { reconcileFleetControlStates, defaultFleetControlReconcileDeps } = await import(
-      './fleet-control-reconcile'
-    );
+    const { reconcileFleetControlStates, defaultFleetControlReconcileDeps } = await import('./fleet-control-reconcile');
     const res = await reconcileFleetControlStates(await defaultFleetControlReconcileDeps(ctx.workspaceId));
     // Speak only on a real mutation. A wind-down is a registry write other components read,
     // so it must be attributable in the log; a quiet pass must not be.

@@ -14,7 +14,7 @@ const productionMocks = vi.hoisted(() => ({
   listFleetAssignments: vi.fn(),
   reconcileWakeability: vi.fn(),
   fetchContextPressure: vi.fn(),
-  fetchFleetAdmissionBlocks: vi.fn(),
+  readFleetAdmissionBlocks: vi.fn(),
 }));
 
 vi.mock('../../fleet/assignments', async (importOriginal) => ({
@@ -31,7 +31,7 @@ vi.mock('../../agent-tools/coordination/context-pressure', async (importOriginal
 }));
 vi.mock('../../agent-tools/coordination/fleet-scope-admission-blocks', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-tools/coordination/fleet-scope-admission-blocks')>()),
-  fetchFleetAdmissionBlocks: productionMocks.fetchFleetAdmissionBlocks,
+  readFleetAdmissionBlocks: productionMocks.readFleetAdmissionBlocks,
 }));
 import {
   __resetFleetTransitionSnapshotForTests,
@@ -100,7 +100,7 @@ beforeEach(() => {
   productionMocks.listFleetAssignments.mockReset();
   productionMocks.reconcileWakeability.mockReset();
   productionMocks.fetchContextPressure.mockReset();
-  productionMocks.fetchFleetAdmissionBlocks.mockReset();
+  productionMocks.readFleetAdmissionBlocks.mockReset();
 });
 
 describe('runFleetTransitionSweep', () => {
@@ -213,14 +213,60 @@ describe('runFleetTransitionSweep', () => {
         wakeable: agent.agentId !== 'su-former',
       })),
     );
-    productionMocks.fetchFleetAdmissionBlocks.mockResolvedValue([{}]);
+    productionMocks.readFleetAdmissionBlocks.mockResolvedValue({ available: true, blocks: [{}] });
 
-    await expect(gatherFleetAdmissionObservations()).resolves.toEqual([
-      { fleetSlug: 'fleet-a', blockedCount: 1 },
-    ]);
-    expect(productionMocks.fetchFleetAdmissionBlocks).toHaveBeenCalledWith('fleet-a', {
+    await expect(gatherFleetAdmissionObservations()).resolves.toEqual([{ fleetSlug: 'fleet-a', blockedCount: 1 }]);
+    expect(productionMocks.readFleetAdmissionBlocks).toHaveBeenCalledWith('fleet-a', {
       liveMemberIds: ['su-live'],
     });
+  });
+
+  it('retains the last measured admission count across an unavailable sweep', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const gather = async () => [];
+
+    await runFleetTransitionSweep({
+      gather,
+      gatherAdmissions: async () => [{ fleetSlug: 'fleet-a', blockedCount: 0 }],
+      emit,
+    });
+    await runFleetTransitionSweep({
+      gather,
+      gatherAdmissions: async () => [{ fleetSlug: 'fleet-a', blockedCount: 4 }],
+      emit,
+    });
+    await runFleetTransitionSweep({
+      gather,
+      gatherAdmissions: async () => [{ fleetSlug: 'fleet-a', blockedCount: null }],
+      emit,
+    });
+    await runFleetTransitionSweep({
+      gather,
+      gatherAdmissions: async () => [],
+      emit,
+    });
+    await runFleetTransitionSweep({
+      gather,
+      gatherAdmissions: async () => [{ fleetSlug: 'fleet-a', blockedCount: 4 }],
+      emit,
+    });
+    await settle();
+
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'fleet:admission-blocked:fleet-a',
+        payload: expect.objectContaining({ from: 0, to: 4 }),
+      }),
+    );
+  });
+
+  it('projects a thrown admission read as unknown instead of zero', async () => {
+    productionMocks.listFleetAssignments.mockResolvedValue([presenceRow('live')]);
+    productionMocks.reconcileWakeability.mockImplementation(async (agents: unknown[]) => agents);
+    productionMocks.readFleetAdmissionBlocks.mockRejectedValue(new Error('optional read failed'));
+
+    await expect(gatherFleetAdmissionObservations()).resolves.toEqual([{ fleetSlug: 'fleet-a', blockedCount: null }]);
   });
 
   it('keeps fleets independent — a crossing in one fleet is not attributed to another', async () => {

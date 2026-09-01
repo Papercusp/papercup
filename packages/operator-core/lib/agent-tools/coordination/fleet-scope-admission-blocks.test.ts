@@ -11,6 +11,7 @@ import {
   filterCurrentFleetAdmissionBlocks,
   filterCurrentAdmissionBlocks,
   parseAdmissionBlockStamp,
+  readFleetAdmissionBlocks,
   type FleetAdmissionBlock,
 } from './fleet-scope-admission-blocks';
 import { detectFleetAdmissionTransitions } from '../../fleet-transition-events';
@@ -263,5 +264,27 @@ describe('filterCurrentFleetAdmissionBlocks', () => {
         liveMemberIds: new Set(),
       }),
     ).toEqual([]);
+  });
+});
+
+describe('readFleetAdmissionBlocks availability contract (EI-22054599451266989)', () => {
+  it('distinguishes an unavailable row read from a measured empty result', async () => {
+    const unavailable = await readFleetAdmissionBlocks('fleet-a', {
+      hasPgFastPath: () => true,
+      readRows: async () => {
+        throw new Error('coord read unavailable');
+      },
+    });
+    expect(unavailable).toEqual({
+      available: false,
+      blocks: null,
+      reason: 'fleet admission-block read failed',
+    });
+
+    const measuredEmpty = await readFleetAdmissionBlocks('fleet-a', {
+      hasPgFastPath: () => true,
+      readRows: async () => [],
+    });
+    expect(measuredEmpty).toEqual({ available: true, blocks: [] });
   });
 });
