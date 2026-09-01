@@ -36,6 +36,7 @@ vi.mock('./_components/MemoryTab', () => ({ default: () => null }));
 vi.mock('./testing.css', () => ({}));
 
 import { useTestingCustomTabs, useUniversalTestingTabs } from './testing-custom-tabs';
+import { adminRegistry } from '@papercusp/operator-core/lib/testing-domains-registry';
 
 /** Probe: render the hook outputs as data-attributes / text we can assert. */
 function Probe() {
@@ -81,4 +82,25 @@ describe('testing-custom-tabs hooks', () => {
     expect(typeof map['test-runs']).toBe('function');
     expect(typeof map['vitals']).toBe('function');
   });
+
+  it('every custom component key resolves to a live universal tab or registry domain', () => {
+    let map: Record<string, () => unknown> = {};
+    function Capture() {
+      map = useTestingCustomTabs();
+      return null;
+    }
+    render(<Capture />);
+    const knownIds = new Set([...useUniversalTestingIds(), ...adminRegistry.map((domain) => domain.id)]);
+    expect(Object.keys(map).filter((id) => !knownIds.has(id))).toEqual([]);
+  });
 });
+
+function useUniversalTestingIds(): string[] {
+  let ids: string[] = [];
+  function Capture() {
+    ids = useUniversalTestingTabs().map((tab) => tab.id);
+    return null;
+  }
+  render(<Capture />);
+  return ids;
+}

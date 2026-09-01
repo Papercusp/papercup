@@ -64,6 +64,7 @@ function serializeDomain(d: TestDomain): unknown {
       if (s.description !== undefined) out.description = s.description;
       if (s.globs !== undefined) out.globs = s.globs;
       if (s.runners !== undefined) out.runners = s.runners;
+      if (s.role !== undefined) out.role = s.role;
       return out;
     }),
   };

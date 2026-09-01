@@ -23,14 +23,14 @@ describe('testing-domains-registry', () => {
     expect(new Set(ids).size, 'no duplicate domain ids').toBe(ids.length);
   });
 
-  it('registers the `dogfood` domain with its 12 collaborative-substrate sections', () => {
+  it('registers the `dogfood` domain with its collaborative-substrate sections', () => {
     const dogfood = papercuspRegistry.find((d) => d.id === 'dogfood');
     expect(dogfood, 'dogfood domain must be registered (surfaces the shared-harness suite in the Tests tab)').toBeTruthy();
     const sectionIds = (dogfood!.sections ?? []).map((s) => s.id).sort();
     expect(sectionIds).toEqual(
       [
         'substrate', 'identity-binding', 'federation', 'claim', 'pr-lifecycle',
-        'completion-ref', 'reactivity', 'revocation', 'cupboard', 'ui', 'routes', 'e2e',
+        'completion-ref', 'reactivity', 'revocation', 'cupboard', 'ui', 'routes',
       ].sort(),
     );
     // every section carries a glob or runner so the shell can resolve it
@@ -82,21 +82,16 @@ describe('testing-domains-registry', () => {
       'packages/operator-core/lib/__tests__/client-navigation.test.ts',
       'packages/operator-core/lib/__tests__/desktop-static-host.test.ts',
       'packages/operator-core/lib/__tests__/desktop-ui-intents.test.ts',
-      'packages/operator-core/lib/__tests__/operator-vite-dev-mode.test.ts',
       'packages/operator-core/lib/__tests__/lazy-with-retry.test.ts',
-      'packages/operator-core/lib/__tests__/navigation-progress-helpers.test.ts',
       'apps/operator/app/admin/testing/_lib/recorder-start-params.test.ts',
       'apps/operator/app/_components/__tests__/SupportChatButton.test.tsx',
       'apps/operator/app/_components/__tests__/ChatwootWidget.test.tsx',
       'apps/operator/app/_components/__tests__/OperatorChatSidebar.test.ts',
       'apps/operator/app/_components/__tests__/UiPresenceProvider.test.tsx',
       'apps/operator/app/_components/__tests__/UserPicker.test.tsx',
-      'packages/operator-core/lib/__tests__/PluginIframe.test.tsx',
-      'packages/operator-core/lib/__tests__/notify.test.ts',
       'packages/operator-core/lib/__tests__/workspaces-tauri.test.ts',
       'apps/operator/app/_components/__tests__/routePending.test.ts',
       'apps/operator/app/_components/__tests__/RouteLink.test.ts',
-      'apps/operator/app/_components/__tests__/RouteProgressProvider.test.ts',
     ]));
   });
 });

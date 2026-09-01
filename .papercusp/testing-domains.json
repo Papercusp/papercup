@@ -64,7 +64,8 @@
           "label": "Endpoint tests",
           "globs": [
             "packages/operator-core/lib/endpoint-route/__tests__/**/*.test.ts"
-          ]
+          ],
+          "role": "endpoints"
         }
       ]
     },
@@ -163,6 +164,74 @@
       ]
     },
     {
+      "id": "operator-ui-lib",
+      "label": "Operator UI lib",
+      "description": "UI-tier lib kept in apps/operator after the operator-core carve (router-compat, flag-hooks, plugin UI, forms, chat-cards, theme/notify/visual-effects hooks + the operator-vite/script/bin-composition tests).",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "all",
+          "label": "UI lib",
+          "globs": [
+            "apps/operator/lib/**/*.test.ts",
+            "apps/operator/lib/**/*.test.tsx"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "learnings",
+      "label": "Learnings",
+      "description": "Knowledge packs: format/seed/manage, hive memory scope, Learnings UI, Comb review pipeline.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "packs",
+          "label": "Packs core",
+          "description": "Pack format + loader, default-pack content pin, seeding, install/uninstall/upgrade/sweep + conflict review.",
+          "globs": [
+            "packages/operator-core/lib/knowledge-packs/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "hive-memory",
+          "label": "Hive memory",
+          "description": "hive:<slug> scope resolution + budgeted pre-turn injection (pack-muting-aware).",
+          "globs": [
+            "packages/operator-core/lib/memory/hive-scope.test.ts",
+            "packages/operator-core/lib/memory/injection.test.ts"
+          ]
+        },
+        {
+          "id": "reader",
+          "label": "Learnings view reader",
+          "globs": [
+            "packages/operator-core/lib/sync-resolver/learning-hive-read.test.ts"
+          ]
+        },
+        {
+          "id": "ui",
+          "label": "UI",
+          "description": "Creation pack picker + seeded summary, Learning tab, Comb storefront/detail.",
+          "globs": [
+            "apps/operator/app/harness/__tests__/EntryGithubUrlForm.test.tsx",
+            "apps/operator/app/harness/__tests__/CreateHarnessPicker.test.tsx",
+            "apps/operator/app/cupboard/__tests__/*.test.tsx",
+            "apps/operator-vite/src/components/adv/LearningTab.test.tsx"
+          ]
+        },
+        {
+          "id": "comb-review",
+          "label": "Comb review",
+          "description": "Cupboard worker: listing kinds + the pending→approve/reject pre-publication pipeline (D-007).",
+          "globs": [
+            "apps/operator-public/src/__tests__/review.test.ts",
+            "apps/operator-public/src/__tests__/listings.test.ts"
+          ]
+        }
+      ]
+    },
+    {
       "id": "llm",
       "label": "LLM",
       "description": "Scenario-driven LLM evaluations (Runs / Scenarios / Targets / Findings).",
@@ -235,13 +304,6 @@
           "globs": [
             "apps/operator/e2e/harness-*.spec.ts"
           ]
-        },
-        {
-          "id": "sidecar-paths",
-          "label": "Sidecar paths",
-          "globs": [
-            "papercusp-desktop/src-tauri/sidecar/harness/**/*.test.ts"
-          ]
         }
       ]
     },
@@ -270,7 +332,6 @@
           "label": "Engines",
           "globs": [
             "packages/operator-core/lib/voice-engines/**/*.test.ts",
-            "packages/operator-core/lib/voice-engines.test.ts",
             "packages/operator-core/lib/voice-engine-health.test.ts"
           ]
         },
@@ -297,8 +358,7 @@
           "id": "lib",
           "label": "Lib",
           "globs": [
-            "packages/operator-core/lib/voice-*.test.ts",
-            "packages/operator-core/lib/voice/**/*.test.ts"
+            "packages/operator-core/lib/voice-*.test.ts"
           ]
         },
         {
@@ -385,7 +445,6 @@
           "description": "Auth principals, device JWT, OAuth, audit, rate-limit, power-user.",
           "globs": [
             "packages/operator-core/lib/agent-tools/coordination/identity*.test.ts",
-            "packages/operator-core/lib/agent-tools/locks/identity*.test.ts",
             "packages/operator-core/lib/auth.test.ts",
             "packages/operator-core/lib/auth-*.test.ts",
             "packages/operator-core/lib/device-jwt*.test.ts",
@@ -400,7 +459,6 @@
           "globs": [
             "packages/operator-core/lib/agent-tools/__tests__/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/agent_chats/**/*.test.ts",
-            "packages/operator-core/lib/agent-tools/agents/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/agent_tools/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/architect/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/capability/**/*.test.ts",
@@ -408,15 +466,12 @@
             "packages/operator-core/lib/agent-tools/backup/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/chat/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/cross_harness/**/*.test.ts",
-            "packages/operator-core/lib/agent-tools/delegates/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/dev/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/docs/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/flags/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/harness/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/harness_docs/**/*.test.ts",
-            "packages/operator-core/lib/agent-tools/hooks/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/memory/**/*.test.ts",
-            "packages/operator-core/lib/agent-tools/omp/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/operator/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/oracle/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/plans/**/*.test.ts",
@@ -428,7 +483,6 @@
             "packages/operator-core/lib/agent-tools/instance/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/tasks/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/ui/**/*.test.ts",
-            "packages/operator-core/lib/agent-tools/wiki/**/*.test.ts",
             "packages/agent-mcp/**/*.test.ts"
           ]
         }
@@ -467,9 +521,7 @@
           "label": "Authoring",
           "globs": [
             "packages/operator-core/lib/agent-tools/plans/__tests__/add-*.test.ts",
-            "packages/operator-core/lib/agent-tools/plans/__tests__/set-*.test.ts",
-            "packages/operator-core/lib/agent-tools/plans/__tests__/new.test.ts",
-            "packages/operator-core/lib/agent-tools/plans/__tests__/lint.test.ts"
+            "packages/operator-core/lib/agent-tools/plans/__tests__/set-*.test.ts"
           ]
         },
         {
@@ -486,16 +538,14 @@
           "id": "revisions",
           "label": "Revisions",
           "globs": [
-            "packages/operator-core/lib/agent-tools/plans/__tests__/revision-*.test.ts",
-            "packages/operator-core/lib/agent-tools/plans/__tests__/diff.test.ts"
+            "packages/operator-core/lib/agent-tools/plans/__tests__/revision-*.test.ts"
           ]
         },
         {
           "id": "concurrency",
           "label": "Concurrency",
           "globs": [
-            "packages/operator-core/lib/agent-tools/plans/__tests__/concurrency*.test.ts",
-            "packages/operator-core/lib/agent-tools/plans/__tests__/e2e.test.ts"
+            "packages/operator-core/lib/agent-tools/plans/__tests__/concurrency*.test.ts"
           ]
         },
         {
@@ -535,21 +585,16 @@
             "packages/operator-core/lib/__tests__/client-navigation.test.ts",
             "packages/operator-core/lib/__tests__/desktop-static-host.test.ts",
             "packages/operator-core/lib/__tests__/desktop-ui-intents.test.ts",
-            "packages/operator-core/lib/__tests__/operator-vite-dev-mode.test.ts",
             "packages/operator-core/lib/__tests__/lazy-with-retry.test.ts",
-            "packages/operator-core/lib/__tests__/navigation-progress-helpers.test.ts",
             "apps/operator/app/admin/testing/_lib/recorder-start-params.test.ts",
             "apps/operator/app/_components/__tests__/SupportChatButton.test.tsx",
             "apps/operator/app/_components/__tests__/ChatwootWidget.test.tsx",
             "apps/operator/app/_components/__tests__/UiPresenceProvider.test.tsx",
             "apps/operator/app/_components/__tests__/OperatorChatSidebar.test.ts",
             "apps/operator/app/_components/__tests__/UserPicker.test.tsx",
-            "packages/operator-core/lib/__tests__/PluginIframe.test.tsx",
-            "packages/operator-core/lib/__tests__/notify.test.ts",
             "packages/operator-core/lib/__tests__/workspaces-tauri.test.ts",
             "apps/operator/app/_components/__tests__/routePending.test.ts",
             "apps/operator/app/_components/__tests__/RouteLink.test.ts",
-            "apps/operator/app/_components/__tests__/RouteProgressProvider.test.ts",
             "apps/operator/app/_components/__tests__/ChromeShellNav.test.ts"
           ]
         }
@@ -569,18 +614,10 @@
           ]
         },
         {
-          "id": "cards",
-          "label": "Cards",
-          "globs": [
-            "packages/operator-core/lib/operator-card*.test.ts"
-          ]
-        },
-        {
           "id": "suggestions",
           "label": "Suggestions",
           "globs": [
-            "packages/operator-core/lib/operator-suggest*.test.ts",
-            "packages/operator-core/lib/operator-scan*.test.ts"
+            "packages/operator-core/lib/operator-suggest*.test.ts"
           ]
         },
         {
@@ -622,20 +659,6 @@
       "tier": "project",
       "sections": [
         {
-          "id": "ir",
-          "label": "IR",
-          "globs": [
-            "packages/operator-core/lib/design-ir*.test.ts"
-          ]
-        },
-        {
-          "id": "adapters",
-          "label": "Adapters",
-          "globs": [
-            "packages/operator-core/lib/design-adapter*.test.ts"
-          ]
-        },
-        {
           "id": "spec",
           "label": "Spec",
           "globs": [
@@ -654,7 +677,6 @@
           "label": "Lib",
           "globs": [
             "packages/operator-core/lib/design-*.test.ts",
-            "packages/operator-core/lib/design/**/*.test.ts",
             "design-tokens/**/*.test.ts"
           ]
         },
@@ -740,45 +762,6 @@
       ]
     },
     {
-      "id": "transport",
-      "label": "Transport",
-      "description": "SSE / IPC / adapters / sync-resolver.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "sse",
-          "label": "SSE",
-          "globs": [
-            "libs/generic/sse/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "ipc",
-          "label": "IPC",
-          "globs": [
-            "packages/operator-core/lib/endpoint-ipc/**/*.test.ts",
-            "libs/generic/ipc-endpoint-server/**/*.test.ts",
-            "libs/generic/ipc-framing/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "adapters",
-          "label": "Adapters",
-          "globs": [
-            "libs/generic/desktop-ipc/src/**/*.test.ts",
-            "packages/operator-core/lib/transport-adapters/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "sync-delta",
-          "label": "Sync delta codec",
-          "globs": [
-            "apps/operator/providers/**/*.test.ts"
-          ]
-        }
-      ]
-    },
-    {
       "id": "instance-spec",
       "label": "Instance spec",
       "description": "The reproducible InstanceSpec: genome surface, capture/boot/vary, eval-battery subject.",
@@ -852,8 +835,7 @@
           "id": "lib",
           "label": "Lib",
           "globs": [
-            "packages/operator-core/lib/device-*.test.ts",
-            "packages/operator-core/lib/mobile-*.test.ts"
+            "packages/operator-core/lib/device-*.test.ts"
           ]
         }
       ]
@@ -897,50 +879,6 @@
           "label": "Lib",
           "globs": [
             "packages/operator-core/lib/provision/**/*.test.ts"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "docs",
-      "label": "Docs",
-      "description": "Docs engine: outline, search, adapters.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "engine",
-          "label": "Engine",
-          "globs": [
-            "packages/docs-engine/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "outline",
-          "label": "Outline",
-          "globs": [
-            "packages/operator-core/lib/agent-tools/docs/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "search",
-          "label": "Search",
-          "globs": [
-            "packages/operator-core/lib/search/**/*.test.ts",
-            "packages/operator-core/lib/agent-tools/search/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "adapters",
-          "label": "Adapters",
-          "globs": [
-            "packages/operator-core/lib/agent-tools/cross_harness/docs*.test.ts"
-          ]
-        },
-        {
-          "id": "freshness",
-          "label": "Freshness + steward",
-          "globs": [
-            "packages/operator-core/lib/harness/docs/**/*.test.ts"
           ]
         }
       ]
@@ -1089,13 +1027,104 @@
             "packages/operator-core/lib/endpoint-route/routes/harness/__tests__/**/*.test.ts",
             "packages/operator-core/lib/endpoint-route/routes/users/__tests__/**/*.test.ts"
           ]
+        }
+      ]
+    },
+    {
+      "id": "p2p-perf",
+      "label": "P2P Perf",
+      "description": "Hyperbee-substrate performance suite: merge/decode benches, multi-process replication + churn, netem WAN sim, real-frame tier.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "infra",
+          "label": "Suite infra",
+          "description": "Corpus determinism, comparator math, meter envelope, and the CI-locked EI-79 idle-tick invariant (merge-scaling.test.ts).",
+          "globs": [
+            "packages/operator-core/lib/sync/hyperbee/perf/**/*.test.ts"
+          ]
         },
         {
-          "id": "e2e",
-          "label": "E2E",
-          "description": "Browser collaboration flows (Playwright).",
+          "id": "tier1",
+          "label": "Tier 1 (local)",
+          "description": "Loopback benches: merge cost / decode throughput / replication latency+ceiling / churn. Every scenario asserts the loop-lag SLO (p95 < 100ms).",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier1",
+                "--profile",
+                "smoke"
+              ],
+              "label": "tier1 smoke (~3 min)"
+            },
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier1",
+                "--profile",
+                "ci"
+              ],
+              "label": "tier1 ci profile (~15 min)"
+            },
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier1",
+                "--profile",
+                "full"
+              ],
+              "label": "tier1 full sweep (long)"
+            }
+          ]
+        },
+        {
+          "id": "tier2",
+          "label": "Tier 2 (netem WAN)",
+          "description": "Simulated WAN: unprivileged userns + veth + tc netem (RTT/jitter/loss matrix + the UDX loss curve). Skips on hosts without userns.",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier2",
+                "--profile",
+                "smoke"
+              ],
+              "label": "tier2 netem smoke"
+            },
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier2",
+                "--profile",
+                "full"
+              ],
+              "label": "tier2 netem full matrix"
+            }
+          ]
+        },
+        {
+          "id": "tier3",
+          "label": "Tier 3 (real frames)",
+          "description": "Latitude/Hetzner real-machine measurements (NAT/holepunch, real-WAN DHT, cross-region replication). Cred-gated: $0 and skipped without LATITUDE_API_KEY.",
           "globs": [
-            "apps/operator/e2e/collab-*.spec.ts"
+            "packages/operator-core/lib/deployment/**/p2p-perf*.test.ts",
+            "packages/operator-core/lib/deployment/p2p-perf-tier3/**/*.test.ts"
           ]
         }
       ]
@@ -1110,9 +1139,7 @@
           "id": "lib",
           "label": "Lib",
           "globs": [
-            "packages/operator-core/lib/gym/**/*.test.ts",
-            "packages/operator-core/lib/gym/**/*.test.tsx",
-            "packages/operator-core/lib/gym-*.test.ts"
+            "packages/operator-core/lib/gym/**/*.test.ts"
           ]
         },
         {
@@ -1128,21 +1155,6 @@
               ],
               "label": "wake-mode autonomous chain links 1→4 (fake, zero-LLM — hive-loop-e2e P-006)"
             }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "scout",
-      "label": "Scout",
-      "description": "The autonomous idea-scout: corpus-grounded creative ideation invariants (grounded / forced-diversity / non-duplicate / bettable / no-human-prompt — D-003), the tolerant LLM-JSON extractor (fenced/prose-wrapped responses), critique + novelty scoring, and the run loop.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "lib",
-          "label": "Lib",
-          "globs": [
-            "packages/operator-core/lib/scout/**/*.test.ts"
           ]
         }
       ]
@@ -1236,6 +1248,99 @@
       ]
     },
     {
+      "id": "scout",
+      "label": "Scout",
+      "description": "The autonomous idea-scout: corpus-grounded creative ideation invariants (grounded / forced-diversity / non-duplicate / bettable / no-human-prompt — D-003), the tolerant LLM-JSON extractor (fenced/prose-wrapped responses), critique + novelty scoring, and the run loop.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/scout/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dream",
+      "label": "Dreaming",
+      "description": "REM dreaming: cross-time, cross-type fragment sampling and the reviewed insight pipeline.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/dream/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dbos",
+      "label": "DBOS",
+      "description": "Durable workflow engine: steps, crash-replay, sweep glue.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/dbos/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "integration",
+          "label": "Integration",
+          "globs": [
+            "apps/operator/test/dbos-*.integration.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspace",
+      "label": "Workspace",
+      "description": "Workspace registry, multi-workspace context, per-window scoping.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/workspace-*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adv",
+      "label": "ADV Shell",
+      "description": "The /adv operator shell: dock panels, sessions, contributors, Vite SPA.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "panels",
+          "label": "Panels",
+          "globs": [
+            "apps/operator/app/adv/**/*.test.ts",
+            "apps/operator/app/adv/**/*.test.tsx",
+            "packages/operator-core/lib/adv-*.test.ts"
+          ]
+        },
+        {
+          "id": "vite",
+          "label": "Vite SPA",
+          "globs": [
+            "apps/operator-vite/src/**/*.test.ts",
+            "apps/operator-vite/src/**/*.test.tsx",
+            "apps/operator-vite/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
       "id": "behaviour-suite",
       "label": "Behaviour Suite (desktop)",
       "description": "The desktop agent-behaviour suite: scores a real su/ornith run (its captured omp session transcript) against 8 deterministic, no-LLM-judge checks — model-routing, context-fit, routing-gate, plan-execution, scope-adherence, lock-discipline, fleet-launch, completion-evidence — reusing cert-battery's ToolCallStats + verdict shape. The transcript parser + assertions + report are pure; the runner's launch/capture I/O sits behind an injected port.",
@@ -1275,88 +1380,6 @@
       ]
     },
     {
-      "id": "dream",
-      "label": "Dreaming",
-      "description": "REM dreaming: cross-time, cross-type fragment sampling and the reviewed insight pipeline.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "lib",
-          "label": "Lib",
-          "globs": [
-            "packages/operator-core/lib/dream/**/*.test.ts"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "dbos",
-      "label": "DBOS",
-      "description": "Durable workflow engine: steps, crash-replay, sweep glue.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "lib",
-          "label": "Lib",
-          "globs": [
-            "packages/operator-core/lib/dbos/**/*.test.ts",
-            "packages/operator-core/lib/dbos-*.test.ts"
-          ]
-        },
-        {
-          "id": "integration",
-          "label": "Integration",
-          "globs": [
-            "apps/operator/test/dbos-*.integration.test.ts"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "workspace",
-      "label": "Workspace",
-      "description": "Workspace registry, multi-workspace context, per-window scoping.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "lib",
-          "label": "Lib",
-          "globs": [
-            "packages/operator-core/lib/workspace-*.test.ts",
-            "packages/operator-core/lib/workspaces-*.test.ts",
-            "packages/operator-core/lib/workspace/**/*.test.ts"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "adv",
-      "label": "ADV Shell",
-      "description": "The /adv operator shell: dock panels, sessions, contributors, Vite SPA.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "panels",
-          "label": "Panels",
-          "globs": [
-            "apps/operator/app/adv/**/*.test.ts",
-            "apps/operator/app/adv/**/*.test.tsx",
-            "packages/operator-core/lib/adv-*.test.ts"
-          ]
-        },
-        {
-          "id": "vite",
-          "label": "Vite SPA",
-          "globs": [
-            "apps/operator-vite/src/**/*.test.ts",
-            "apps/operator-vite/src/**/*.test.tsx",
-            "apps/operator-vite/*.test.ts",
-            "apps/operator-vite/*.test.tsx"
-          ]
-        }
-      ]
-    },
-    {
       "id": "operator-core",
       "label": "Operator (core & misc)",
       "description": "Flat catch-all for the operator app: every lib/app/bin/script/integration test, so nothing is invisible. Files here may also appear under a more specific domain — overlap is intentional.",
@@ -1366,16 +1389,14 @@
           "id": "repo-root",
           "label": "repo root",
           "globs": [
-            "*.test.ts",
-            "*.test.tsx"
+            "*.test.ts"
           ]
         },
         {
           "id": "lib-root",
           "label": "lib (root)",
           "globs": [
-            "packages/operator-core/lib/*.test.ts",
-            "packages/operator-core/lib/*.test.tsx"
+            "packages/operator-core/lib/*.test.ts"
           ]
         },
         {
@@ -1385,7 +1406,6 @@
             "packages/operator-core/lib/*/*.test.ts",
             "packages/operator-core/lib/*/*.test.tsx",
             "packages/operator-core/lib/*/__tests__/**/*.test.ts",
-            "packages/operator-core/lib/*/__tests__/**/*.test.tsx",
             "packages/operator-core/lib/endpoint-route/routes/**/*.test.ts"
           ]
         },
@@ -1393,8 +1413,7 @@
           "id": "lib-tests",
           "label": "lib/__tests__",
           "globs": [
-            "packages/operator-core/lib/__tests__/**/*.test.ts",
-            "packages/operator-core/lib/__tests__/**/*.test.tsx"
+            "packages/operator-core/lib/__tests__/**/*.test.ts"
           ]
         },
         {
@@ -1411,7 +1430,6 @@
           "globs": [
             "apps/operator/bin/**/*.test.ts",
             "apps/operator/scripts/**/*.test.ts",
-            "apps/operator/scripts/**/*.test.mjs",
             "scripts/*.test.ts",
             "scripts/*.test.mjs"
           ]
@@ -1434,17 +1452,353 @@
       ]
     },
     {
-      "id": "operator-ui-lib",
-      "label": "Operator UI lib",
-      "description": "UI-tier lib kept in apps/operator after the operator-core carve (router-compat, flag-hooks, plugin UI, forms, chat-cards, theme/notify/visual-effects hooks + the operator-vite/script/bin-composition tests).",
+      "id": "hive",
+      "label": "Hive (Mug/bee loop)",
+      "description": "The local-hive orchestration loop: tracked Mug launch, bee placement + nursery, the deliver-and-wake / parent-wake liveness chain, spawn reclaim, host self-recycle, and the Apiary IQ battery. Many files also appear under operator-core (overlap intentional); this is the cohesive subsystem view.",
       "tier": "project",
       "sections": [
         {
-          "id": "all",
-          "label": "UI lib",
+          "id": "wake-loop",
+          "label": "Wake loop",
+          "description": "Deliver-and-wake: parent-wake on bee terminal, the wake executor (resume command + MCP remount), inbox-wake fan, await engine/store, and the end-to-end reclaim→parent-wake liveness contract.",
           "globs": [
-            "apps/operator/lib/**/*.test.ts",
-            "apps/operator/lib/**/*.test.tsx"
+            "packages/operator-core/lib/fleet/parent-wake.integration.test.ts",
+            "packages/operator-core/lib/fleet/hive-wake-loop.integration.test.ts",
+            "packages/operator-core/lib/events/await/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/coordination/tools/deliver-and-wake.test.ts"
+          ]
+        },
+        {
+          "id": "placement",
+          "label": "Placement & nursery",
+          "description": "cup:spawn chokepoint, the fleet_assignment (Brood Box) projection, graceful drain, selected-bee, spawn budget/governor, and the concurrency-primitive suite.",
+          "globs": [
+            "packages/operator-core/lib/fleet/operator-spawn.test.ts",
+            "packages/operator-core/lib/fleet/assignments*.test.ts",
+            "packages/operator-core/lib/fleet/nursery.integration.test.ts",
+            "packages/operator-core/lib/fleet/selected-bee.test.ts",
+            "packages/operator-core/lib/fleet/spawn-budget.integration.test.ts",
+            "packages/operator-core/lib/fleet/governor.integration.test.ts",
+            "packages/operator-core/lib/fleet/supervision.integration.test.ts",
+            "packages/operator-core/lib/fleet/saga.integration.test.ts",
+            "packages/operator-core/lib/fleet/lock-release.integration.test.ts",
+            "packages/operator-core/lib/fleet/classic-*.test.ts",
+            "packages/operator-core/lib/agent-tools/fleet/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "reclaim",
+          "label": "Reclaim",
+          "description": "P-011 heartbeat-stale reclaim of orphaned spawns (frees the concurrency ceiling; fires parent-wake).",
+          "globs": [
+            "packages/operator-core/lib/fleet/spawn-reclaim.integration.test.ts"
+          ]
+        },
+        {
+          "id": "host-health",
+          "label": "Host health",
+          "description": "Operator self-protection: the memory watchdog (bounded-RSS self-recycle) and the event-loop-lag gauge.",
+          "globs": [
+            "packages/operator-core/lib/memory-watchdog.test.ts",
+            "packages/operator-core/lib/event-loop-lag-monitor.test.ts"
+          ]
+        },
+        {
+          "id": "apiary",
+          "label": "Apiary IQ battery",
+          "description": "The Apiary instance-gym: corpus seeder, the seven metric collectors, and the Beekeeper runner.",
+          "globs": [
+            "packages/operator-core/lib/iq-battery/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "shared-pot",
+      "label": "Shared Hive (federation)",
+      "description": "Cross-Hive peer-to-peer federation: the mediated Hive→Hive boundary (capability-grant admission + translation), signed wire + store-and-forward outbox, Hyperswarm transport, the P2P hive directory, per-Hive identity/membership/settings + contributor revocation, and Hive-scoped work-item claim authority.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "boundary",
+          "label": "Boundary (admit + signed wire)",
+          "description": "The sovereignty boundary: capability-grant allow-list admission (default-deny, per-peer, per-kind), translation into B's ordinary conversation/work_item surfaces, the Ed25519-signed wire envelope + verify (incl. malformed-input robustness + correlationId canonicalization), the durable store-and-forward outbox (partial-failure recovery + id-keyed dedup), and the persisted grant store.",
+          "globs": [
+            "packages/operator-core/lib/cross-hive-boundary*.test.ts",
+            "packages/operator-core/lib/cross-hive-transport*.test.ts",
+            "packages/operator-core/lib/cross-hive-grants.integration.test.ts",
+            "packages/operator-core/lib/cross-hive-outbox-pg.integration.test.ts"
+          ]
+        },
+        {
+          "id": "transport-swarm",
+          "label": "Hyperswarm transport + live wire",
+          "description": "The Hive-pubkey-topic Hyperswarm transport (dial-by-pubkey, subscribe, close) and the live two-Hive wire E2E over a real Hyperswarm testnet (bidirectional ask→answer). NOTE: the two-hive testnet wire test is timing-flaky on the DHT and is actively being stabilized.",
+          "globs": [
+            "packages/operator-core/lib/cross-hive-swarm-transport.test.ts",
+            "packages/operator-core/lib/cross-hive-e2e.test.ts",
+            "packages/operator-core/lib/cross-hive-two-hive.test.ts"
+          ]
+        },
+        {
+          "id": "directory",
+          "label": "Hive directory + publish",
+          "description": "The P2P hive-discovery directory (verified-only ingest, LWW dedup, mute, visibility-routed announce, TTL GC, boot wiring) plus announce-on-publish and the harness→Hive swarm-binding re-key.",
+          "globs": [
+            "packages/operator-core/lib/hive-directory*.test.ts",
+            "packages/operator-core/lib/hive-publish.test.ts",
+            "packages/operator-core/lib/hive-federation.test.ts"
+          ]
+        },
+        {
+          "id": "identity",
+          "label": "Identity & store",
+          "description": "Per-Hive Ed25519 identity get-or-mint + pubkey resolution, and the hive entity PG store (pubkey/keychain CRUD, workspace scoping).",
+          "globs": [
+            "packages/operator-core/lib/hive-identity*.test.ts",
+            "packages/operator-core/lib/hive-store.integration.test.ts"
+          ]
+        },
+        {
+          "id": "membership",
+          "label": "Membership, settings & revocation",
+          "description": "Per-Hive contributor admission (device pubkeys, the revoked-pubkey union), federated per-Hive settings, owner revocation of a Hive contributor (blocklist into the owner row), and the P-MEMBER/P-MOD owner-enforcement boundary end-to-end against real PG — open auto-admit, approval-mode pending → owner approve/deny, and ban/unban re-join refusal.",
+          "globs": [
+            "packages/operator-core/lib/hive-membership-store.integration.test.ts",
+            "packages/operator-core/lib/hive-membership-admission.integration.test.ts",
+            "packages/operator-core/lib/hive-settings-store.integration.test.ts",
+            "packages/operator-core/lib/hive-revoke-contributor.test.ts"
+          ]
+        },
+        {
+          "id": "claim-authority",
+          "label": "Work-item claim + replica authority",
+          "description": "The Hive-scoped work-item arbitration seams (single-peer local authority + the Track-B swap-in registry) and their stores: (1) the CLAIM lease — acquire/heartbeat/release op routing, lease lifecycle, concurrency races, two-instance split; and (2) the BOINC REDUNDANCY replica store (EI-266) — the per-Hive replica-authority seam + the claim-slot/heartbeat/release/record-result/list/judge op routing that homes the N replicas of a high-stakes item in ONE store so cross-swarm replicas meet, plus the replica lease/steal/record/judge store behavior.",
+          "globs": [
+            "packages/operator-core/lib/work-item-claim-authority*.test.ts",
+            "packages/operator-core/lib/work-item-claims*.test.ts",
+            "packages/operator-core/lib/work-item-replica-authority*.test.ts",
+            "packages/operator-core/lib/work-item-redundancy*.test.ts"
+          ]
+        },
+        {
+          "id": "tab-suite",
+          "label": "Tests-tab federation suite (shared-hive-core)",
+          "description": "The shared-hive-core Tests-tab suite (buildSharedHiveCoreChecks) + its CI guard: the live end-to-end federation check composing the shipped modules — the Hive-pubkey topic re-key, Ed25519 hive identity, the per-Hive lock-authority election + file-claim routing (P-009), the instant lock-handover event fold (P-015), the work-item claim/replica seams, and the real shared_presence election + per-Hive admission union (P-006) against a throwaway Postgres. The one automated gate behind the live Tests-tab suite (mirrors memory-core).",
+          "globs": [
+            "packages/operator-core/lib/shared-pot/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "authority",
+          "label": "Lock authority (election, failover, fencing, RPC, caller-auth)",
+          "description": "The D-005 deterministic lock/claim authority layer: argmin election + staleness failover over presence (harness + Hive scope), hardened epoch fencing + anti-flap, the authority-op registry, the HTTP peer-RPC transport + boot wiring + address resolution, file-lock authority ops + Hive-aware routing, the two-instance authority rigs, cross-machine lock failover mid-hold (P-007), the failover flood (P-003), the lock-set reconstructor handover, the remote-peers fast-path cache, and the EI-322 authenticated peer-RPC envelope (Ed25519 sign/verify, freshness, holderPubkey identity binding + revocation in the receiving caller-verifier, end-to-end signed/forged/tampered loopback).",
+          "globs": [
+            "packages/operator-core/lib/authority/__tests__/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "wire-federation",
+          "label": "Federation wire (peers, presence, partition, coord rails)",
+          "description": "The Hive-relevant slice of the hyperbee substrate over the REAL wire (the full substrate suite lives at dogfood/substrate — overlap by design): two-peer + bidi swarms, three-peer partition/rejoin convergence, presence announce + hive_slug projection, the federated coord rails (messages/threads/conversations incl. the deliver-and-wake intent), the federation triggers (hive members, plan-item assignment, engineer issues, feature content, substrate outbox), the adversarial two-peer battery, swarm join/guard/chaos, topic derivation + default binding, and the live two-peer hive directory.",
+          "globs": [
+            "packages/operator-core/lib/sync/hyperbee/__tests__/hive-*.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/two-peer*.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/three-peer-*.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/presence-*.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/wire-presence.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/federation-adversarial.integration.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/coord-*-federation.integration.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/*federation-trigger.integration.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/feature-content-federation.integration.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/cross-plan-federation-seam.integration.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/plan-item-assignment-two-peer-federation.integration.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/substrate-outbox-trigger.integration.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/swarm*.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/convergence.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/derive-swarm-topic.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/default-swarm-binding-p007.test.ts"
+          ]
+        },
+        {
+          "id": "coordination",
+          "label": "Cross-peer coordination (presence→authority→claim→failover/partition)",
+          "description": "Coordination across the shared Hive end-to-end: two REAL peers federate presence over the wire → the federated roster drives a CONSISTENT (no-split-brain) Hive authority election → both Swarms contend for one work-item and the federated-presence-elected authority grants EXACTLY ONE (cross-peer exactly-once). Plus the topology-change legs over the same real federated roster: the authority Swarm DEPARTS → staleness deposes it and the survivor elects itself (D-005 failover by definition) with claims continuing locally; a PARTITION (authority fresh in roster, RPC severed) → the non-authority fails open LOUDLY into its own store (D-004, the documented optimistic split-brain window), then routes remote-authority again on heal; THREE-peer failover consistency (both survivors independently elect the SAME successor; contended claim grants exactly one) + departed-Swarm REJOIN reconverging all three on the original argmin; the full claim LEASE LIFECYCLE across peers (acquire remote → contention refused → release remote → re-acquire); FILE-LOCK routing (the production routeFileLockOp cutover seam) resolving its Hive scope off the federated roster and crossing the wire (grant / busy-with-holder / release); DELIVER-AND-WAKE over the real wire (a body.wake coord-message federates A→B; B fires the fan EXACTLY once; the EI-117 echo breaker keeps A at one origin=local copy); and SCALE (the -scale sibling file — own vitest worker, see _cross-peer-rig.ts): a FIVE-Swarm cascade where every authority departure is followed by UNANIMOUS re-election among all survivors and claims serialize at every epoch, 5→1. Closes the gap the injected-roster authority/claim suites leave open.",
+          "globs": [
+            "packages/operator-core/lib/sync/hyperbee/__tests__/cross-peer-coordination*.integration.test.ts"
+          ]
+        },
+        {
+          "id": "loop-composition",
+          "label": "Multi-swarm loop composition (hermetic 2-swarm rig)",
+          "description": "The shared-hive autonomous LOOP as a system (shared-pot-loop-e2e-testing-2026-06-10): the hermetic 2-swarm composition rig — scripted Mug steering → concurrent cross-swarm claim_next + authority lease → fake pipelines → real CDC convergence — plus the chaos scenarios (partition fail-open + reconcile, kill-authority re-election, lease-steal D-007 adoption, split-brain Mug D-008 gate/detector, outbox write-storm, two-identity redundancy) and the Phase-3 fleet monitors (double-completion scanner, orphaned-taken_by sweep, outbox health, presence ghosts, convergence-lag probe). Brief 12's coord verb-lifecycle two-cell suite rides the same rig.",
+          "globs": [
+            "packages/operator-core/lib/shared-pot-loop/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "tools",
+          "label": "Hive agent tools",
+          "description": "The agent-facing hive lifecycle tools: pot:create / pot:add-member, discovery:pots, and harness create→hive-membership wiring.",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/pot/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/discovery/pots.test.ts",
+            "packages/operator-core/lib/agent-tools/harness/__tests__/create-hive-membership.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "coordination-suite",
+      "label": "Coordination suite (adversarial)",
+      "description": "The adversarial, multi-session, real-seam coordination suite that closes the EI-152/EI-153 escape classes: cross-agent isolation, real-seam integration, multi-session concurrency, and the liveness matrix. Cross-subsystem view; files overlap their home domains by design.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "wake-liveness",
+          "label": "C4 liveness matrix + EI-152",
+          "description": "The wake-executor liveness×handle/socket matrix over the REAL socket seam; EI-152 (no-handle + live socket → socket-inject, not park) verified red-on-pre-fix.",
+          "globs": [
+            "packages/operator-core/lib/events/await/wake-executor-matrix.test.ts"
+          ]
+        },
+        {
+          "id": "wake-identity",
+          "label": "C5 identity + EI-153",
+          "description": "Cross-agent wake isolation + identity across resume (per-owner CLAUDE_CONFIG_DIR / CODEX_HOME, exact-session resume never --continue) + the launch-side per-spawn config isolation (headless bees) AND the interactive psu/SU + role claude config-dir materializer (EI-155 — a symlink mirror of ~/.claude with an isolated transcript store).",
+          "globs": [
+            "packages/operator-core/lib/events/await/wake-resume-isolation.test.ts",
+            "libs/papercusp/packages/orchestrator/src/spawn-config-isolation.test.ts",
+            "packages/operator-core/lib/interactive-claude-config.test.ts"
+          ]
+        },
+        {
+          "id": "fork-identity",
+          "label": "C5 fork identity (psu --resume --fork)",
+          "description": "psu --resume --fork mints a genuinely fresh, PERSISTED adv_sessions identity (distinct coord owner id + forced native id) that branches the original’s history and runs concurrently WITHOUT mutating the original — proven against real PG (real recordAdvSession / listResumableSessions / markAdvSessionEnded + the real launcher fork fns: forkBootstrapBody / resumeArgsFor / resumeEnvFor / nativeSessionIdFromLaunchArgs).",
+          "globs": [
+            "apps/operator/lib/psu-launcher-fork.integration.test.ts"
+          ]
+        },
+        {
+          "id": "resume-live",
+          "label": "C5 real resume spawn (live)",
+          "description": "LIVE-SMOKE (needs claude/codex creds → not CI): a REAL claude/codex resume — built by the SAME wake-executor resumeCommandFor, run in the EI-155 isolated CLAUDE_CONFIG_DIR/CODEX_HOME — continues the EXACT session (transcript/rollout GROWS). Complements the injected-spawnDetached CI rung in wake-resume-isolation.test.",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "apps/operator/scripts/resume-spawn-live.ts"
+              ],
+              "label": "real claude/codex resume (live · needs creds)"
+            }
+          ]
+        },
+        {
+          "id": "wake-realseam",
+          "label": "C2/C6 real-seam pump + host",
+          "description": "The real psu-pty-host idle-gate + mode:turn CR-submit + discovery handshake; the real emit→pump path with armInboxWake idempotency and cross-agent isolation.",
+          "globs": [
+            "apps/operator/lib/psu-pty-host-turn.integration.test.ts",
+            "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts"
+          ]
+        },
+        {
+          "id": "channel-isolation",
+          "label": "C1 channel isolation (coord/locks)",
+          "description": "Cross-agent isolation for coord:send/inbox/presence (real PgCoordLog) and file/resource locks (A can't release/heartbeat B's; block-on-held; authority election) + the file-lock PreToolUse hook decision rendering (block-on-held deny / fail-open).",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/coordination/__tests__/cross-agent-isolation.integration.test.ts",
+            "packages/operator-core/lib/agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts",
+            "apps/operator/scripts/hooks/cc/__tests__/pretooluse-locks-decision.test.ts"
+          ]
+        },
+        {
+          "id": "concurrency-federation",
+          "label": "C3 concurrency + federation",
+          "description": "N-session claim concurrency (no double-claim), federation data-plane (peer-log→projection→PG, admission/revocation, no-loss/no-dup), and the full multi-session concurrency capstone (wakes+sends+claims+locks → zero loss/dup/misroute).",
+          "globs": [
+            "packages/operator-core/lib/work-item-claims-concurrency.integration.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/federation-adversarial.integration.test.ts",
+            "packages/operator-core/lib/multi-session-concurrency.integration.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transport",
+      "label": "Transport",
+      "description": "SSE / IPC / adapters / sync-resolver.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "sse",
+          "label": "SSE",
+          "globs": [
+            "libs/generic/sse/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "ipc",
+          "label": "IPC",
+          "globs": [
+            "packages/operator-core/lib/endpoint-ipc/**/*.test.ts",
+            "libs/generic/ipc-endpoint-server/**/*.test.ts",
+            "libs/generic/ipc-framing/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "adapters",
+          "label": "Adapters",
+          "globs": [
+            "libs/generic/desktop-ipc/src/**/*.test.ts",
+            "packages/operator-core/lib/transport-adapters/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "sync-delta",
+          "label": "Sync delta codec",
+          "globs": [
+            "apps/operator/providers/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "docs",
+      "label": "Docs",
+      "description": "Docs engine: outline, search, adapters.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "engine",
+          "label": "Engine",
+          "globs": [
+            "packages/docs-engine/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "outline",
+          "label": "Outline",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/docs/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "search",
+          "label": "Search",
+          "globs": [
+            "packages/operator-core/lib/search/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/search/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "freshness",
+          "label": "Freshness + steward",
+          "globs": [
+            "packages/operator-core/lib/harness/docs/**/*.test.ts"
           ]
         }
       ]
@@ -1469,8 +1823,6 @@
           "label": "libs/papercusp",
           "globs": [
             "libs/papercusp/packages/**/*.test.ts",
-            "libs/papercusp/packages/**/*.test.tsx",
-            "libs/papercusp/packages/**/*.spec.ts",
             "libs/papercusp/libs/**/*.test.ts"
           ]
         },
@@ -1480,7 +1832,6 @@
           "globs": [
             "libs/papercusp-shared/src/**/*.test.ts",
             "libs/papercusp-shared/src/**/*.test.tsx",
-            "libs/papercusp-export-state/src/**/*.test.ts",
             "libs/papercusp-publish-auth/src/**/*.test.ts",
             "libs/host-platform/src/**/*.test.ts",
             "libs/flags/src/**/*.test.ts",
@@ -1515,8 +1866,7 @@
           "label": "packages",
           "globs": [
             "packages/**/*.test.ts",
-            "packages/**/*.test.tsx",
-            "packages/**/*.spec.ts"
+            "packages/**/*.test.tsx"
           ]
         }
       ]
@@ -1851,398 +2201,6 @@
               ],
               "label": "live-federation-gate streak escalation: a run of consecutive non-GREEN verdicts computes its own streak length and escalates, instead of going quiet because each repeat reason was already filed (WI-39354)"
             }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "hive",
-      "label": "Hive (Mug/bee loop)",
-      "description": "The local-hive orchestration loop: tracked Mug launch, bee placement + nursery, the deliver-and-wake / parent-wake liveness chain, spawn reclaim, host self-recycle, and the Apiary IQ battery. Many files also appear under operator-core (overlap intentional); this is the cohesive subsystem view.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "wake-loop",
-          "label": "Wake loop",
-          "description": "Deliver-and-wake: parent-wake on bee terminal, the wake executor (resume command + MCP remount), inbox-wake fan, await engine/store, and the end-to-end reclaim→parent-wake liveness contract.",
-          "globs": [
-            "packages/operator-core/lib/fleet/parent-wake.integration.test.ts",
-            "packages/operator-core/lib/fleet/hive-wake-loop.integration.test.ts",
-            "packages/operator-core/lib/events/await/**/*.test.ts",
-            "packages/operator-core/lib/agent-tools/coordination/tools/deliver-and-wake.test.ts",
-            "packages/operator-core/lib/agent-tools/coordination/tools/await-inbox*.test.ts"
-          ]
-        },
-        {
-          "id": "placement",
-          "label": "Placement & nursery",
-          "description": "cup:spawn chokepoint, the fleet_assignment (Brood Box) projection, graceful drain, selected-bee, spawn budget/governor, and the concurrency-primitive suite.",
-          "globs": [
-            "packages/operator-core/lib/fleet/operator-spawn.test.ts",
-            "packages/operator-core/lib/fleet/assignments*.test.ts",
-            "packages/operator-core/lib/fleet/nursery.integration.test.ts",
-            "packages/operator-core/lib/fleet/selected-bee.test.ts",
-            "packages/operator-core/lib/fleet/spawn-budget.integration.test.ts",
-            "packages/operator-core/lib/fleet/governor.integration.test.ts",
-            "packages/operator-core/lib/fleet/supervision.integration.test.ts",
-            "packages/operator-core/lib/fleet/saga.integration.test.ts",
-            "packages/operator-core/lib/fleet/lock-release.integration.test.ts",
-            "packages/operator-core/lib/fleet/classic-*.test.ts",
-            "packages/operator-core/lib/agent-tools/fleet/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "reclaim",
-          "label": "Reclaim",
-          "description": "P-011 heartbeat-stale reclaim of orphaned spawns (frees the concurrency ceiling; fires parent-wake).",
-          "globs": [
-            "packages/operator-core/lib/fleet/spawn-reclaim.integration.test.ts"
-          ]
-        },
-        {
-          "id": "hive-wake",
-          "label": "Pot wake",
-          "description": "The Mug wake routine — pot:wake / declare-wake / urgent-wake scheduling and the hive-wake PG path.",
-          "globs": [
-            "packages/operator-core/lib/hive/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "host-health",
-          "label": "Host health",
-          "description": "Operator self-protection: the memory watchdog (bounded-RSS self-recycle) and the event-loop-lag gauge.",
-          "globs": [
-            "packages/operator-core/lib/memory-watchdog.test.ts",
-            "packages/operator-core/lib/event-loop-lag-monitor.test.ts"
-          ]
-        },
-        {
-          "id": "apiary",
-          "label": "Apiary IQ battery",
-          "description": "The Apiary instance-gym: corpus seeder, the seven metric collectors, and the Beekeeper runner.",
-          "globs": [
-            "packages/operator-core/lib/iq-battery/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "run-eval",
-          "label": "Hive run evaluation",
-          "description": "The Hive-run-evaluation battery (sibling of the apiary): seeded scenarios with an objective optimum (parallelism math + validation), the throwaway-hive run harness, and the determinism + repeat-distribution controls.",
-          "globs": [
-            "packages/operator-core/lib/hive-eval/**/*.test.ts"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "shared-pot",
-      "label": "Shared Hive (federation)",
-      "description": "Cross-Hive peer-to-peer federation: the mediated Hive→Hive boundary (capability-grant admission + translation), signed wire + store-and-forward outbox, Hyperswarm transport, the P2P hive directory, per-Hive identity/membership/settings + contributor revocation, and Hive-scoped work-item claim authority.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "boundary",
-          "label": "Boundary (admit + signed wire)",
-          "description": "The sovereignty boundary: capability-grant allow-list admission (default-deny, per-peer, per-kind), translation into B's ordinary conversation/work_item surfaces, the Ed25519-signed wire envelope + verify (incl. malformed-input robustness + correlationId canonicalization), the durable store-and-forward outbox (partial-failure recovery + id-keyed dedup), and the persisted grant store.",
-          "globs": [
-            "packages/operator-core/lib/cross-hive-boundary*.test.ts",
-            "packages/operator-core/lib/cross-hive-transport*.test.ts",
-            "packages/operator-core/lib/cross-hive-grants.integration.test.ts",
-            "packages/operator-core/lib/cross-hive-outbox-pg.integration.test.ts"
-          ]
-        },
-        {
-          "id": "transport-swarm",
-          "label": "Hyperswarm transport + live wire",
-          "description": "The Hive-pubkey-topic Hyperswarm transport (dial-by-pubkey, subscribe, close) and the live two-Hive wire E2E over a real Hyperswarm testnet (bidirectional ask→answer). NOTE: the two-hive testnet wire test is timing-flaky on the DHT and is actively being stabilized.",
-          "globs": [
-            "packages/operator-core/lib/cross-hive-swarm-transport.test.ts",
-            "packages/operator-core/lib/cross-hive-e2e.test.ts",
-            "packages/operator-core/lib/cross-hive-two-hive.test.ts"
-          ]
-        },
-        {
-          "id": "directory",
-          "label": "Hive directory + publish",
-          "description": "The P2P hive-discovery directory (verified-only ingest, LWW dedup, mute, visibility-routed announce, TTL GC, boot wiring) plus announce-on-publish and the harness→Hive swarm-binding re-key.",
-          "globs": [
-            "packages/operator-core/lib/hive-directory*.test.ts",
-            "packages/operator-core/lib/hive-publish.test.ts",
-            "packages/operator-core/lib/hive-federation.test.ts"
-          ]
-        },
-        {
-          "id": "identity",
-          "label": "Identity & store",
-          "description": "Per-Hive Ed25519 identity get-or-mint + pubkey resolution, and the hive entity PG store (pubkey/keychain CRUD, workspace scoping).",
-          "globs": [
-            "packages/operator-core/lib/hive-identity*.test.ts",
-            "packages/operator-core/lib/hive-store.integration.test.ts"
-          ]
-        },
-        {
-          "id": "membership",
-          "label": "Membership, settings & revocation",
-          "description": "Per-Hive contributor admission (device pubkeys, the revoked-pubkey union), federated per-Hive settings, owner revocation of a Hive contributor (blocklist into the owner row), and the P-MEMBER/P-MOD owner-enforcement boundary end-to-end against real PG — open auto-admit, approval-mode pending → owner approve/deny, and ban/unban re-join refusal.",
-          "globs": [
-            "packages/operator-core/lib/hive-membership-store.integration.test.ts",
-            "packages/operator-core/lib/hive-membership-admission.integration.test.ts",
-            "packages/operator-core/lib/hive-settings-store.integration.test.ts",
-            "packages/operator-core/lib/hive-revoke-contributor.test.ts"
-          ]
-        },
-        {
-          "id": "claim-authority",
-          "label": "Work-item claim + replica authority",
-          "description": "The Hive-scoped work-item arbitration seams (single-peer local authority + the Track-B swap-in registry) and their stores: (1) the CLAIM lease — acquire/heartbeat/release op routing, lease lifecycle, concurrency races, two-instance split; and (2) the BOINC REDUNDANCY replica store (EI-266) — the per-Hive replica-authority seam + the claim-slot/heartbeat/release/record-result/list/judge op routing that homes the N replicas of a high-stakes item in ONE store so cross-swarm replicas meet, plus the replica lease/steal/record/judge store behavior.",
-          "globs": [
-            "packages/operator-core/lib/work-item-claim-authority*.test.ts",
-            "packages/operator-core/lib/work-item-claims*.test.ts",
-            "packages/operator-core/lib/work-item-replica-authority*.test.ts",
-            "packages/operator-core/lib/work-item-redundancy*.test.ts"
-          ]
-        },
-        {
-          "id": "tab-suite",
-          "label": "Tests-tab federation suite (shared-hive-core)",
-          "description": "The shared-hive-core Tests-tab suite (buildSharedHiveCoreChecks) + its CI guard: the live end-to-end federation check composing the shipped modules — the Hive-pubkey topic re-key, Ed25519 hive identity, the per-Hive lock-authority election + file-claim routing (P-009), the instant lock-handover event fold (P-015), the work-item claim/replica seams, and the real shared_presence election + per-Hive admission union (P-006) against a throwaway Postgres. The one automated gate behind the live Tests-tab suite (mirrors memory-core).",
-          "globs": [
-            "packages/operator-core/lib/shared-pot/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "authority",
-          "label": "Lock authority (election, failover, fencing, RPC, caller-auth)",
-          "description": "The D-005 deterministic lock/claim authority layer: argmin election + staleness failover over presence (harness + Hive scope), hardened epoch fencing + anti-flap, the authority-op registry, the HTTP peer-RPC transport + boot wiring + address resolution, file-lock authority ops + Hive-aware routing, the two-instance authority rigs, cross-machine lock failover mid-hold (P-007), the failover flood (P-003), the lock-set reconstructor handover, the remote-peers fast-path cache, and the EI-322 authenticated peer-RPC envelope (Ed25519 sign/verify, freshness, holderPubkey identity binding + revocation in the receiving caller-verifier, end-to-end signed/forged/tampered loopback).",
-          "globs": [
-            "packages/operator-core/lib/authority/__tests__/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "wire-federation",
-          "label": "Federation wire (peers, presence, partition, coord rails)",
-          "description": "The Hive-relevant slice of the hyperbee substrate over the REAL wire (the full substrate suite lives at dogfood/substrate — overlap by design): two-peer + bidi swarms, three-peer partition/rejoin convergence, presence announce + hive_slug projection, the federated coord rails (messages/threads/conversations incl. the deliver-and-wake intent), the federation triggers (hive members, plan-item assignment, engineer issues, feature content, substrate outbox), the adversarial two-peer battery, swarm join/guard/chaos, topic derivation + default binding, and the live two-peer hive directory.",
-          "globs": [
-            "packages/operator-core/lib/sync/hyperbee/__tests__/hive-*.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/two-peer*.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/three-peer-*.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/presence-*.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/wire-presence.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/federation-adversarial.integration.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/coord-*-federation.integration.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/*federation-trigger.integration.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/feature-content-federation.integration.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/cross-plan-federation-seam.integration.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/plan-item-assignment-two-peer-federation.integration.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/substrate-outbox-trigger.integration.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/swarm*.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/convergence.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/derive-swarm-topic.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/default-swarm-binding-p007.test.ts"
-          ]
-        },
-        {
-          "id": "coordination",
-          "label": "Cross-peer coordination (presence→authority→claim→failover/partition)",
-          "description": "Coordination across the shared Hive end-to-end: two REAL peers federate presence over the wire → the federated roster drives a CONSISTENT (no-split-brain) Hive authority election → both Swarms contend for one work-item and the federated-presence-elected authority grants EXACTLY ONE (cross-peer exactly-once). Plus the topology-change legs over the same real federated roster: the authority Swarm DEPARTS → staleness deposes it and the survivor elects itself (D-005 failover by definition) with claims continuing locally; a PARTITION (authority fresh in roster, RPC severed) → the non-authority fails open LOUDLY into its own store (D-004, the documented optimistic split-brain window), then routes remote-authority again on heal; THREE-peer failover consistency (both survivors independently elect the SAME successor; contended claim grants exactly one) + departed-Swarm REJOIN reconverging all three on the original argmin; the full claim LEASE LIFECYCLE across peers (acquire remote → contention refused → release remote → re-acquire); FILE-LOCK routing (the production routeFileLockOp cutover seam) resolving its Hive scope off the federated roster and crossing the wire (grant / busy-with-holder / release); DELIVER-AND-WAKE over the real wire (a body.wake coord-message federates A→B; B fires the fan EXACTLY once; the EI-117 echo breaker keeps A at one origin=local copy); and SCALE (the -scale sibling file — own vitest worker, see _cross-peer-rig.ts): a FIVE-Swarm cascade where every authority departure is followed by UNANIMOUS re-election among all survivors and claims serialize at every epoch, 5→1. Closes the gap the injected-roster authority/claim suites leave open.",
-          "globs": [
-            "packages/operator-core/lib/sync/hyperbee/__tests__/cross-peer-coordination*.integration.test.ts"
-          ]
-        },
-        {
-          "id": "loop-composition",
-          "label": "Multi-swarm loop composition (hermetic 2-swarm rig)",
-          "description": "The shared-hive autonomous LOOP as a system (shared-pot-loop-e2e-testing-2026-06-10): the hermetic 2-swarm composition rig — scripted Mug steering → concurrent cross-swarm claim_next + authority lease → fake pipelines → real CDC convergence — plus the chaos scenarios (partition fail-open + reconcile, kill-authority re-election, lease-steal D-007 adoption, split-brain Mug D-008 gate/detector, outbox write-storm, two-identity redundancy) and the Phase-3 fleet monitors (double-completion scanner, orphaned-taken_by sweep, outbox health, presence ghosts, convergence-lag probe). Brief 12's coord verb-lifecycle two-cell suite rides the same rig.",
-          "globs": [
-            "packages/operator-core/lib/shared-pot-loop/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "tools",
-          "label": "Hive agent tools",
-          "description": "The agent-facing hive lifecycle tools: pot:create / pot:add-member, discovery:pots, and harness create→hive-membership wiring.",
-          "globs": [
-            "packages/operator-core/lib/agent-tools/pot/**/*.test.ts",
-            "packages/operator-core/lib/agent-tools/discovery/pots.test.ts",
-            "packages/operator-core/lib/agent-tools/harness/__tests__/create-hive-membership.test.ts"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "p2p-perf",
-      "label": "P2P Perf",
-      "description": "Hyperbee-substrate performance suite: merge/decode benches, multi-process replication + churn, netem WAN sim, real-frame tier.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "infra",
-          "label": "Suite infra",
-          "description": "Corpus determinism, comparator math, meter envelope, and the CI-locked EI-79 idle-tick invariant (merge-scaling.test.ts).",
-          "globs": [
-            "packages/operator-core/lib/sync/hyperbee/perf/**/*.test.ts"
-          ]
-        },
-        {
-          "id": "tier1",
-          "label": "Tier 1 (local)",
-          "description": "Loopback benches: merge cost / decode throughput / replication latency+ceiling / churn. Every scenario asserts the loop-lag SLO (p95 < 100ms).",
-          "runners": [
-            {
-              "kind": "node",
-              "cmd": "npx",
-              "args": [
-                "tsx",
-                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
-                "--tier1",
-                "--profile",
-                "smoke"
-              ],
-              "label": "tier1 smoke (~3 min)"
-            },
-            {
-              "kind": "node",
-              "cmd": "npx",
-              "args": [
-                "tsx",
-                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
-                "--tier1",
-                "--profile",
-                "ci"
-              ],
-              "label": "tier1 ci profile (~15 min)"
-            },
-            {
-              "kind": "node",
-              "cmd": "npx",
-              "args": [
-                "tsx",
-                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
-                "--tier1",
-                "--profile",
-                "full"
-              ],
-              "label": "tier1 full sweep (long)"
-            }
-          ]
-        },
-        {
-          "id": "tier2",
-          "label": "Tier 2 (netem WAN)",
-          "description": "Simulated WAN: unprivileged userns + veth + tc netem (RTT/jitter/loss matrix + the UDX loss curve). Skips on hosts without userns.",
-          "runners": [
-            {
-              "kind": "node",
-              "cmd": "npx",
-              "args": [
-                "tsx",
-                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
-                "--tier2",
-                "--profile",
-                "smoke"
-              ],
-              "label": "tier2 netem smoke"
-            },
-            {
-              "kind": "node",
-              "cmd": "npx",
-              "args": [
-                "tsx",
-                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
-                "--tier2",
-                "--profile",
-                "full"
-              ],
-              "label": "tier2 netem full matrix"
-            }
-          ]
-        },
-        {
-          "id": "tier3",
-          "label": "Tier 3 (real frames)",
-          "description": "Latitude/Hetzner real-machine measurements (NAT/holepunch, real-WAN DHT, cross-region replication). Cred-gated: $0 and skipped without LATITUDE_API_KEY.",
-          "globs": [
-            "packages/operator-core/lib/deployment/**/p2p-perf*.test.ts",
-            "packages/operator-core/lib/deployment/p2p-perf-tier3/**/*.test.ts"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "coordination-suite",
-      "label": "Coordination suite (adversarial)",
-      "description": "The adversarial, multi-session, real-seam coordination suite that closes the EI-152/EI-153 escape classes: cross-agent isolation, real-seam integration, multi-session concurrency, and the liveness matrix. Cross-subsystem view; files overlap their home domains by design.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "wake-liveness",
-          "label": "C4 liveness matrix + EI-152",
-          "description": "The wake-executor liveness×handle/socket matrix over the REAL socket seam; EI-152 (no-handle + live socket → socket-inject, not park) verified red-on-pre-fix.",
-          "globs": [
-            "packages/operator-core/lib/events/await/wake-executor-matrix.test.ts"
-          ]
-        },
-        {
-          "id": "wake-identity",
-          "label": "C5 identity + EI-153",
-          "description": "Cross-agent wake isolation + identity across resume (per-owner CLAUDE_CONFIG_DIR / CODEX_HOME, exact-session resume never --continue) + the launch-side per-spawn config isolation (headless bees) AND the interactive psu/SU + role claude config-dir materializer (EI-155 — a symlink mirror of ~/.claude with an isolated transcript store).",
-          "globs": [
-            "packages/operator-core/lib/events/await/wake-resume-isolation.test.ts",
-            "libs/papercusp/packages/orchestrator/src/spawn-config-isolation.test.ts",
-            "packages/operator-core/lib/interactive-claude-config.test.ts"
-          ]
-        },
-        {
-          "id": "fork-identity",
-          "label": "C5 fork identity (psu --resume --fork)",
-          "description": "psu --resume --fork mints a genuinely fresh, PERSISTED adv_sessions identity (distinct coord owner id + forced native id) that branches the original’s history and runs concurrently WITHOUT mutating the original — proven against real PG (real recordAdvSession / listResumableSessions / markAdvSessionEnded + the real launcher fork fns: forkBootstrapBody / resumeArgsFor / resumeEnvFor / nativeSessionIdFromLaunchArgs).",
-          "globs": [
-            "apps/operator/lib/psu-launcher-fork.integration.test.ts"
-          ]
-        },
-        {
-          "id": "resume-live",
-          "label": "C5 real resume spawn (live)",
-          "description": "LIVE-SMOKE (needs claude/codex creds → not CI): a REAL claude/codex resume — built by the SAME wake-executor resumeCommandFor, run in the EI-155 isolated CLAUDE_CONFIG_DIR/CODEX_HOME — continues the EXACT session (transcript/rollout GROWS). Complements the injected-spawnDetached CI rung in wake-resume-isolation.test.",
-          "runners": [
-            {
-              "kind": "node",
-              "cmd": "npx",
-              "args": [
-                "tsx",
-                "apps/operator/scripts/resume-spawn-live.ts"
-              ],
-              "label": "real claude/codex resume (live · needs creds)"
-            }
-          ]
-        },
-        {
-          "id": "wake-realseam",
-          "label": "C2/C6 real-seam pump + host",
-          "description": "The real psu-pty-host idle-gate + mode:turn CR-submit + discovery handshake; the real emit→pump path with armInboxWake idempotency and cross-agent isolation.",
-          "globs": [
-            "apps/operator/lib/psu-pty-host-turn.integration.test.ts",
-            "packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts"
-          ]
-        },
-        {
-          "id": "channel-isolation",
-          "label": "C1 channel isolation (coord/locks)",
-          "description": "Cross-agent isolation for coord:send/inbox/presence (real PgCoordLog) and file/resource locks (A can't release/heartbeat B's; block-on-held; authority election) + the file-lock PreToolUse hook decision rendering (block-on-held deny / fail-open).",
-          "globs": [
-            "packages/operator-core/lib/agent-tools/coordination/__tests__/cross-agent-isolation.integration.test.ts",
-            "packages/operator-core/lib/agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts",
-            "apps/operator/scripts/hooks/cc/__tests__/pretooluse-locks-decision.test.ts"
-          ]
-        },
-        {
-          "id": "concurrency-federation",
-          "label": "C3 concurrency + federation",
-          "description": "N-session claim concurrency (no double-claim), federation data-plane (peer-log→projection→PG, admission/revocation, no-loss/no-dup), and the full multi-session concurrency capstone (wakes+sends+claims+locks → zero loss/dup/misroute).",
-          "globs": [
-            "packages/operator-core/lib/work-item-claims-concurrency.integration.test.ts",
-            "packages/operator-core/lib/sync/hyperbee/__tests__/federation-adversarial.integration.test.ts",
-            "packages/operator-core/lib/multi-session-concurrency.integration.test.ts"
           ]
         }
       ]

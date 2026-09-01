@@ -11,6 +11,7 @@ import { attestDeclarations, type ContractDomain } from '../../../../apps/operat
 
 const repoRoot = '/synthetic-repo';
 const files = [
+  'packages/operator-core',
   'packages/operator-core/lib/example.test.ts',
   'packages/operator-core/lib/runner.mjs',
   'packages/operator-core/package.json',
@@ -18,14 +19,14 @@ const files = [
 
 function findings(domains: ContractDomain[], existing: string[] = files) {
   const seen: string[] = [];
+  const existingPaths = new Set(existing.map((path) => `${repoRoot}/${path}`));
   const result = attestDeclarations(
     { domains },
     repoRoot,
     existing,
     (path) => {
       seen.push(path);
-      return path === `${repoRoot}/packages/operator-core/lib/runner.mjs` ||
-        path === `${repoRoot}/packages/operator-core/package.json`;
+      return existingPaths.has(path);
     },
   );
   return { result, seen };
@@ -39,7 +40,7 @@ describe('attestDeclarations (EI-211141)', () => {
         sections: [{
           id: 'tests',
           globs: ['packages/operator-core/lib/**/*.test.ts'],
-          runners: [{ kind: 'node', filePath: 'packages/operator-core/lib/runner.mjs' }],
+          runners: [{ kind: 'node', cmd: 'node', args: ['packages/operator-core/lib/runner.mjs'] }],
         }],
       },
     ]);
@@ -72,11 +73,10 @@ describe('attestDeclarations (EI-211141)', () => {
         id: 'runtime',
         sections: [{
           id: 'runner',
-          runners: [{
-            kind: 'node',
-            filePath: 'packages/operator-core/lib/missing.mjs',
-            manifestPath: 'packages/operator-core/missing-package.json',
-          }],
+          runners: [
+            { kind: 'vitest', filePath: 'packages/operator-core/lib/missing.mjs' },
+            { kind: 'cargo', crate: 'operator-core', manifestPath: 'packages/operator-core/missing-package.json' },
+          ],
         }],
       },
     ]);
@@ -98,7 +98,7 @@ describe('attestDeclarations (EI-211141)', () => {
         id: 'runtime',
         sections: [{
           id: 'runner',
-          runners: [{ kind: 'node', args: ['--prefix', 'packages/operator-core', 'scripts/missing.ts'] }],
+          runners: [{ kind: 'node', cmd: 'npm', args: ['--prefix', 'packages/operator-core', 'scripts/missing.ts'] }],
         }],
       },
     ]);
@@ -127,6 +127,40 @@ describe('attestDeclarations (EI-211141)', () => {
       expect.objectContaining({ kind: 'unknown-admin-suite', value: '<missing>' }),
     ]));
     await expect(result).resolves.toHaveLength(2);
+  });
+
+  it('falsifies unresolved roles and malformed explicit runners', async () => {
+    const { result } = findings([
+      {
+        id: 'runtime',
+        sections: [
+          { id: 'role', role: 'endpoints' },
+          { id: 'node', runners: [{ kind: 'node' }] },
+          { id: 'cargo', runners: [{ kind: 'cargo', manifestPath: 'packages/operator-core/package.json' }] },
+          { id: 'k6', runners: [{ kind: 'k6' }] },
+          { id: 'playwright', runners: [{ kind: 'playwright' }] },
+        ],
+      },
+    ]);
+
+    await expect(result).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'unresolved-role', value: 'endpoints' }),
+      expect.objectContaining({ kind: 'invalid-runner', section: 'node', value: 'node' }),
+      expect.objectContaining({ kind: 'invalid-runner', section: 'cargo', value: 'cargo' }),
+      expect.objectContaining({ kind: 'invalid-runner', section: 'k6', value: 'k6' }),
+      expect.objectContaining({ kind: 'invalid-runner', section: 'playwright', value: 'playwright' }),
+    ]));
+    await expect(result).resolves.toHaveLength(5);
+  });
+
+  it('checks k6 script targets', async () => {
+    const { result } = findings([
+      { id: 'load', sections: [{ id: 'k6', runners: [{ kind: 'k6', script: 'load-tests/missing.js' }] }] },
+    ]);
+
+    await expect(result).resolves.toEqual([
+      expect.objectContaining({ kind: 'missing-runner-target', value: 'load-tests/missing.js' }),
+    ]);
   });
 
   it('matches recursive globs without treating a sibling prefix as live', async () => {

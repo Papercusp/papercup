@@ -252,12 +252,14 @@ export interface ContractRunner {
   suiteId?: string;
   cmd?: string;
   args?: string[];
+  crate?: string;
 }
 
 export interface ContractSection {
   id: string;
   globs?: string[];
   runners?: ContractRunner[];
+  role?: string;
 }
 
 export interface ContractDomain {
@@ -290,7 +292,7 @@ async function loadContractGlobs(): Promise<string[]> {
  * closes the stale-declaration direction that the orphan check cannot see.
  */
 export interface DeclarationFinding {
-  kind: 'stale-glob' | 'empty-section' | 'missing-runner-target' | 'unknown-admin-suite';
+  kind: 'stale-glob' | 'empty-section' | 'unresolved-role' | 'invalid-runner' | 'missing-runner-target' | 'unknown-admin-suite';
   domain: string;
   section: string;
   value: string;
@@ -314,6 +316,10 @@ export async function attestDeclarations(
     for (const section of domain.sections ?? []) {
       const globs = section.globs ?? [];
       const runners = section.runners ?? [];
+      if (section.role && globs.length === 0) {
+        findings.push({ kind: 'unresolved-role', domain: domain.id, section: section.id, value: section.role,
+          detail: 'role binding resolved to no globs' });
+      }
       for (const glob of globs) {
         if (matches(glob).length === 0) {
           findings.push({ kind: 'stale-glob', domain: domain.id, section: section.id, value: glob,
@@ -332,9 +338,26 @@ export async function attestDeclarations(
           }
           continue;
         }
+        if ((runner.kind === 'node' || runner.kind === 'shell') && !runner.cmd) {
+          findings.push({ kind: 'invalid-runner', domain: domain.id, section: section.id,
+            value: runner.kind, detail: `${runner.kind} runner requires cmd` });
+        }
+        if ((runner.kind === 'vitest' || runner.kind === 'playwright') && !runner.filePath) {
+          findings.push({ kind: 'invalid-runner', domain: domain.id, section: section.id,
+            value: runner.kind, detail: `${runner.kind} runner requires filePath` });
+        }
+        if (runner.kind === 'cargo' && !runner.crate) {
+          findings.push({ kind: 'invalid-runner', domain: domain.id, section: section.id,
+            value: runner.kind, detail: 'cargo runner requires crate' });
+        }
+        if (runner.kind === 'k6' && !runner.script) {
+          findings.push({ kind: 'invalid-runner', domain: domain.id, section: section.id,
+            value: runner.kind, detail: 'k6 runner requires script' });
+        }
         const targets: string[] = [];
         if (runner.filePath) targets.push(runner.filePath);
         if (runner.manifestPath) targets.push(runner.manifestPath);
+        if (runner.script) targets.push(runner.script);
         for (const arg of runner.args ?? []) {
           // Runner args that name a repository file.  Commands/flags and
           // package names are intentionally ignored.
@@ -429,6 +452,8 @@ async function main(): Promise<void> {
   for (const finding of declarations) {
     const prefix = finding.kind === 'stale-glob' ? '[STALE_GLOB]' :
       finding.kind === 'empty-section' ? '[EMPTY_SECTION]' :
+      finding.kind === 'unresolved-role' ? '[UNRESOLVED_ROLE]' :
+      finding.kind === 'invalid-runner' ? '[INVALID_RUNNER]' :
       finding.kind === 'missing-runner-target' ? '[RUNNER_TARGET]' : '[ADMIN_SUITE]';
     offenders.push(`${prefix} ${finding.domain}/${finding.section}: ${finding.value}\n        → ${finding.detail}`);
   }
