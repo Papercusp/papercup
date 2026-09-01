@@ -489,6 +489,78 @@ export function formatFailingFilesLine({
   );
 }
 
+/** The greppable token that opens the per-FILE SELECTION line — which test files a run
+ *  actually executed. Exported so a consumer greps a shared constant rather than a
+ *  hand-typed copy that can drift from the emitter. */
+export const AFFECTED_TESTS_SELECTED_FILES_TOKEN = 'AFFECTED_TESTS_SELECTED_FILES';
+
+/** Beyond this many entries the JSON payload is truncated and says so. Mirrors
+ *  {@link FAILING_FILES_LINE_MAX_ENTRIES}; the counts stay exact either way. */
+export const SELECTED_FILES_LINE_MAX_ENTRIES = 400;
+
+/**
+ * Render the canonical, machine-readable per-FILE SELECTION set for a run's summary.
+ *
+ * EI-19416573016968871: the verdict log named the files that FAILED but never the files
+ * that RAN, so "no FAIL row for X" was indistinguishable from "X never ran" — and because
+ * `test:affected` only runs the workspaces the changed paths map into, the second case is
+ * common. The absence reads as a POSITIVE observation, so agents used it to DATE
+ * regressions: "the 05:48Z verdict didn't list this test; loop.ts changed 05:51Z; the
+ * 07:05Z verdict does" — a clean, plausible, wrong causal story. Measured 2026-08-03 on
+ * deliver-and-wake.test.ts: two agents independently reached the same false "brand-new
+ * break" reading within the hour, one of them actively chasing an innocent commit. The
+ * real explanation was that ~1162 files changed in the window, pulling the file into the
+ * affected set for the FIRST time — so the break may have been far older.
+ *
+ * ⚠ COVERAGE IS THE POINT, not decoration — and it is the same lesson as
+ * {@link formatFailingFilesLine}'s, pointed the other way. There, an empty `files=[]`
+ * could mean "nothing failed" OR "we could not attribute what failed". Here, an empty or
+ * short list could mean "these are the only files that ran" OR "we cannot enumerate what
+ * ran at all", and only the FIRST licenses the inference `absent ⇒ did not run`. Shipping
+ * this line without the axis would reproduce, at one remove, the exact bug it exists to
+ * kill. So:
+ *
+ *   - `complete`     — every executed task's file set is enumerated. ONLY this value
+ *                      licenses "X is absent from `files`, therefore X did not run".
+ *   - `partial`      — some tasks enumerated, others not. The list is a LOWER BOUND:
+ *                      absence proves nothing.
+ *   - `unenumerated` — tasks ran and NONE could be enumerated (a wide run, or one whose
+ *                      narrowing failed). The line asserts only that the run happened.
+ *   - `none`         — nothing ran at all.
+ *
+ * A task is `unenumerated` when its selection is not a positional file list: a wide
+ * (non-`--related`) run, a run whose narrowing failed open, and the deliberately
+ * non-narrowable lanes (integration, el-suite, the invariant guards) each mean something
+ * by "run" that a file list would misdescribe. Naming those tasks explicitly — rather
+ * than omitting them — is what keeps `complete` honest.
+ *
+ * @param {{
+ *   runToken: string,
+ *   entries?: Array<{ workspace: string, file: string }>,
+ *   unenumerated?: Array<{ task: string, reason: string }>,
+ * }} args
+ * @returns {string}
+ */
+export function formatSelectedFilesLine({ runToken, entries = [], unenumerated = [] }) {
+  const files = [...entries];
+  const unenum = [...unenumerated];
+  const coverage =
+    files.length === 0 && unenum.length === 0
+      ? 'none'
+      : unenum.length === 0
+        ? 'complete'
+        : files.length === 0
+          ? 'unenumerated'
+          : 'partial';
+  const truncated = files.length > SELECTED_FILES_LINE_MAX_ENTRIES;
+  const shown = truncated ? files.slice(0, SELECTED_FILES_LINE_MAX_ENTRIES) : files;
+  return (
+    `${AFFECTED_TESTS_SELECTED_FILES_TOKEN} run=${runToken} coverage=${coverage} ` +
+    `fileCount=${files.length} unenumeratedCount=${unenum.length} truncated=${truncated} ` +
+    `files=${JSON.stringify(shown)} unenumerated=${JSON.stringify(unenum)}`
+  );
+}
+
 /**
  * Stable key for one workspace-relative failure entry.
  *
