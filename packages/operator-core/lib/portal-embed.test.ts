@@ -43,6 +43,17 @@ describe('portalEmbed protocol', () => {
     expect(portalEmbedThemeFromSearch('?portalTheme=unknown')).toBe('system');
   });
 
+  it('forwards extra deep-link params into the framed document (portal-work-two-pane-2026-09-01 D-001)', () => {
+    expect(portalEmbedHref('/plans', 'dark', 'http://127.0.0.1:3081', { pdash: 'papercusp::my-plan' }))
+      .toBe('/plans?portalEmbed=1&portalTheme=dark&portalOrigin=http%3A%2F%2F127.0.0.1%3A3081&pdash=papercusp%3A%3Amy-plan');
+    // Empty / null values are skipped; a deep link overrides a stale value
+    // already in the href (the key keeps its position, URLSearchParams.set).
+    expect(portalEmbedHref('/inbox?opcis=old', 'light', null, { opcis: 'coord-escalation:m9', pdash: null, x: '' }))
+      .toBe('/inbox?opcis=coord-escalation%3Am9&portalEmbed=1&portalTheme=light');
+    // No extra ⇒ byte-identical to the three-argument form.
+    expect(portalEmbedHref('/plans', 'light', null, {})).toBe(portalEmbedHref('/plans', 'light', null));
+  });
+
   it('accepts only versioned messages from the known parent origin', () => {
     const message = portalEmbedThemeMessage('dark');
     expect(isTrustedPortalEmbedMessage(message, 'http://127.0.0.1:3081', 'http://127.0.0.1:3081')).toBe(true);

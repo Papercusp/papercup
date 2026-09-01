@@ -80,11 +80,20 @@ export function operatorThemeForPortalTheme(
   return theme === 'dark' || (theme === 'system' && prefersDark) ? 'portal-dark' : 'portal-light';
 }
 
+/**
+ * Extra query params an embed forwards into the framed document — deep links:
+ * the portal's `?plan` / `?item` become the operator's `pdash` / `opcis`
+ * (portal-work-two-pane-2026-09-01 D-001). Empty / null values are skipped; a
+ * present value overrides the same key already in the href.
+ */
+export type PortalEmbedExtraParams = Readonly<Record<string, string | null | undefined>>;
+
 /** Build an embedded operator URL while preserving the surface's existing query. */
 export function portalEmbedHref(
   href: string,
   theme: PortalEmbedTheme,
   parentOrigin?: string | null,
+  extra?: PortalEmbedExtraParams,
 ): string {
   const [pathAndQuery, hash = ''] = href.split('#', 2);
   const [path, query = ''] = pathAndQuery.split('?', 2);
@@ -93,6 +102,9 @@ export function portalEmbedHref(
   params.set(PORTAL_EMBED_THEME_PARAM, theme);
   const origin = typeof parentOrigin === 'string' ? parentOrigin.trim() : '';
   if (origin) params.set(PORTAL_EMBED_ORIGIN_PARAM, origin);
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    if (typeof value === 'string' && value !== '') params.set(key, value);
+  }
   return `${path}?${params.toString()}${hash ? `#${hash}` : ''}`;
 }
 
