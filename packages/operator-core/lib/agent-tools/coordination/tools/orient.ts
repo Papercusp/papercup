@@ -2922,6 +2922,25 @@ export default defineTool({
         'Pass true on your FIRST orient after a compaction: folds a recovery block — your held work-items’ checkpoints, armed-loop status, staleness_warnings (presence/fleet/claims that changed AFTER your summary was written — the summary’s view of them is stale), and the self-recall pointer (pre-compaction turns are searchable via sessions:search { session:’self’ }).',
       ),
   }),
+  // Orient is a deliberately broad bootstrap aggregate. Keep its structured
+  // result open-ended while naming stable roots consumed by callers.
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      status: z.string().optional(),
+      self: z.unknown().optional(),
+      assignments: z.unknown().optional(),
+      claimable: z.unknown().optional(),
+      inbox: z.unknown().optional(),
+      planEvents: z.unknown().optional(),
+      memory: z.unknown().optional(),
+      recipes: z.unknown().optional(),
+      fleet: z.unknown().optional(),
+      leaderBrief: z.unknown().optional(),
+      recovery: z.unknown().optional(),
+      warning: z.string().optional(),
+    })
+    .passthrough(),
   // context-trimming-tiers P-012: orient is the fattest bootstrap read (one
   // unshaped call measured ~43k tokens in the 2026-07-01 fleet incident). The
   // tier shapers project the SAME orientation with caps + fetch-pointers;

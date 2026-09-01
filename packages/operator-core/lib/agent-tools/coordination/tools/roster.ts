@@ -191,6 +191,22 @@ export default defineTool({
         'CHEAP UNCHANGED RE-POLL (view=live,members): pass the `etag` from your PRIOR coord:roster read with THE SAME lens args. If the rows you would be handed are byte-identical, you get a ~120B { unchanged:true, etag, as_of } instead of the payload. This etag hashes the EMITTED representation, so unlike coord:presence\'s it DOES track liveness — a live↔parked flip changes it, and { project:"liveness", states:["live"] } re-polls correctly. It is NOT interchangeable with a coord:presence etag (different scope, salted apart); a foreign, stale, or different-lens token simply misses and you get the full read. ⚠ On the DEFAULT project:"full" read the rows carry lastActiveSecAgo, which moves nearly every read — the etag churns and this guard does nothing. Pair `since:` with a cheap lens (ids/liveness/states), which is where re-polling is worth guarding anyway.',
       ),
   }),
+  result: z
+    .object({
+      active: z.array(z.unknown()).optional(),
+      agents: z.array(z.unknown()).optional(),
+      summary: z.unknown().optional(),
+      self: z.unknown().optional(),
+      etag: z.string().optional(),
+      as_of: z.string().optional(),
+      view: z.string().optional(),
+      orphaned: z.array(z.unknown()).optional(),
+      stalled: z.array(z.unknown()).optional(),
+      data: z.unknown().optional(),
+      suggestion: z.string().optional(),
+      unchanged: z.boolean().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const view = args.view ?? 'live';
     const scope = args.scope ?? 'hive';
