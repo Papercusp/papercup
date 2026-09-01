@@ -100,8 +100,10 @@ Cupboard) is mid-rename: `project-centric-harness-rethink` D-014.
 ## Scope: which harness a tool acts on
 
 Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`,
-`features:*`, `issues:*`, `agent_chats:*`, `harness:get/status/…`) need to know
-**which** — and **the `harness` arg is per-call, not a session property**:
+`features:*`, `issues:*`, `agent_chats:*`) need to know **which** — and **the
+`harness` arg is per-call, not a session property**. Important exception:
+`harness:get` and `harness:status` take their own `slug`/`slugs` arguments; do
+**not** add a top-level `harness` field to those calls:
 
 1. **Session scoped to a harness** (`ctx.harnessSlug` set) — pass nothing.
 2. **Operator scope (the usual SU case)** — **name the harness on the call**:
