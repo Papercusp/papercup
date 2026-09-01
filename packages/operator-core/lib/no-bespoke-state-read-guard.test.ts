@@ -29,7 +29,7 @@ const REPO_ROOT = new URL('../../../', import.meta.url).pathname;
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
 import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup, capabilityEffect, SCAN_DIRS, WRITE_CAPABILITIES as GUARD_WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES as GUARD_WRITE_CAPABILITY_SUFFIXES, VOLUME_WINDOW_DAYS, VOLUME_MIN_CALLS, VOLUME_MIN_DISTINCT_CALLERS, meetsVolumeFloor, findVolumeCandidates, volumeReportStatus, formatVolumeReport } from '../../../scripts/check-no-bespoke-state-read.mjs';
 import { inferCapabilityEffect, WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES } from '@papercusp/tooldef';
-import { TOOL_SOURCE_DIRS } from './static-tool-catalog';
+import { buildBuiltinToolSourceFiles } from './static-tool-catalog';
 
 /** Build the text of a defineTool literal, optionally carrying a marker. */
 const toolSrc = (name: string, opts: { capability?: string; marker?: string } = {}) => `
@@ -100,7 +100,18 @@ describe('no-bespoke-state-read guard:the state-read signature', () => {
 
   it('backstops an undeclared-capability mutation via the verb list', () => {
     // Defence in depth for the case the effect oracle cannot see: no capability declared.
-    for (const verb of ['freeze', 'thaw', 'limit', 'throttle', 'drain', 'park', 'couple', 'decouple', 'admit', 'wake']) {
+    for (const verb of [
+      'freeze',
+      'thaw',
+      'limit',
+      'throttle',
+      'drain',
+      'park',
+      'couple',
+      'decouple',
+      'admit',
+      'wake',
+    ]) {
       expect(isMutatingVerb(verb), `${verb} should read as mutating`).toBe(true);
     }
     expect(isStateReadCandidate({ name: 'processes:freeze_status', capability: null })).toBe(false);
@@ -126,10 +137,23 @@ describe('no-bespoke-state-read guard:the declared-effect oracle is a PINNED mir
 
   it('agrees with tooldef on every capability declared in the tree', () => {
     for (const cap of [
-      'processes:control', 'processes:kill', 'intel:read', 'harness:write', 'coord:read',
-      'fleet:status', 'capability:bash', 'capability:fs-read', 'ui:dispatch', 'ui:read',
-      'activity:report', 'activity:read', 'operator:converse', 'operator:read',
-      'secrets:operator-credentials:read', 'plans:write', 'turn:interrupt',
+      'processes:control',
+      'processes:kill',
+      'intel:read',
+      'harness:write',
+      'coord:read',
+      'fleet:status',
+      'capability:bash',
+      'capability:fs-read',
+      'ui:dispatch',
+      'ui:read',
+      'activity:report',
+      'activity:read',
+      'operator:converse',
+      'operator:read',
+      'secrets:operator-credentials:read',
+      'plans:write',
+      'turn:interrupt',
     ]) {
       expect(capabilityEffect(cap), `${cap}`).toBe(inferCapabilityEffect(cap));
     }
@@ -267,10 +291,19 @@ describe('no-bespoke-state-read guard:the shrink-only baseline', () => {
     // and the test below already asserts the guard "stops expiring once the baseline is
     // actually empty" — so a live-population non-vacuity control would red this file the
     // day P-020 lands, contradicting its own sibling four tests down. WI-1556492.
-    expect(isStateReadCandidate({ name: 'fixture:get_status', capability: null }), 'a read-shaped state door trips it').toBe(true);
-    expect(isStateReadCandidate({ name: 'fixture:set_status', capability: null }), 'a mutating verb does not').toBe(false);
-    expect(isStateReadCandidate({ name: 'fixture:get_widget', capability: null }), 'a non-state noun does not').toBe(false);
-    expect(isStateReadCandidate({ name: 'fixturestatus', capability: null }), 'an unqualified name does not').toBe(false);
+    expect(
+      isStateReadCandidate({ name: 'fixture:get_status', capability: null }),
+      'a read-shaped state door trips it',
+    ).toBe(true);
+    expect(isStateReadCandidate({ name: 'fixture:set_status', capability: null }), 'a mutating verb does not').toBe(
+      false,
+    );
+    expect(isStateReadCandidate({ name: 'fixture:get_widget', capability: null }), 'a non-state noun does not').toBe(
+      false,
+    );
+    expect(isStateReadCandidate({ name: 'fixturestatus', capability: null }), 'an unqualified name does not').toBe(
+      false,
+    );
 
     for (const name of BASELINE) {
       expect(isStateReadCandidate({ name, capability: null }), `${name} should trip the signature`).toBe(true);
@@ -299,7 +332,10 @@ describe('no-bespoke-state-read guard:the shrink-only baseline', () => {
     // moved; keyed to the same set, it cannot.
     const gaps = verdictGaps();
     expect(gaps.missing, `grandfathered with no verdict: ${gaps.missing.join(', ')}`).toEqual([]);
-    expect(gaps.extra, `verdict for a tool that left BASELINE without an 'adopted' note: ${gaps.extra.join(', ')}`).toEqual([]);
+    expect(
+      gaps.extra,
+      `verdict for a tool that left BASELINE without an 'adopted' note: ${gaps.extra.join(', ')}`,
+    ).toEqual([]);
     expect(gaps.badKind).toEqual([]);
     expect(gaps.unreasoned, `verdict with no real reason: ${gaps.unreasoned.join(', ')}`).toEqual([]);
   });
@@ -420,7 +456,13 @@ describe('no-bespoke-state-read guard:the advisory volume signature', () => {
       { name: 'dev:pg_active_queries', capability: 'intel:read', file: 'pg.ts', lens: null, exemption: null },
       { name: 'processes:limit', capability: 'processes:control', file: 'processes.ts', lens: null, exemption: null },
       { name: 'fleet:status', capability: 'fleet:status', file: 'fleet.ts', lens: 'fleet.live', exemption: null },
-      { name: 'state:read', capability: 'harness:read', file: 'state.ts', lens: null, exemption: 'single shared cell door' },
+      {
+        name: 'state:read',
+        capability: 'harness:read',
+        file: 'state.ts',
+        lens: null,
+        exemption: 'single shared cell door',
+      },
       { name: 'dev:thing_status', capability: 'harness:write', file: 'write.ts', lens: null, exemption: null },
     ];
     const rows = [
@@ -449,9 +491,7 @@ describe('no-bespoke-state-read guard:the advisory volume signature', () => {
       known: false,
       exitCode: 1,
     });
-    expect(formatVolumeReport({ workspaceId: 'ws', harnessSlug: 'h', totalCalls: 0 })).toContain(
-      'UNKNOWN (no-data)',
-    );
+    expect(formatVolumeReport({ workspaceId: 'ws', harnessSlug: 'h', totalCalls: 0 })).toContain('UNKNOWN (no-data)');
   });
 });
 
@@ -468,79 +508,56 @@ describe('no-bespoke-state-read guard:the advisory volume signature', () => {
  * confident `0 offenders`, blind to all four coordination verbs in `lib/coord-ops`),
  * and it was caught only by a coverage cross-check like the one below.
  *
- * WHY A TEST AND NOT AN IMPORT. The obvious fix — have the guard import the
- * canonical `TOOL_SOURCE_DIRS` — is unavailable: the guard runs as bare `node`
- * (package.json `lint:no-bespoke-state-read`) with no TS transform, and nothing in
- * `scripts/**` imports a `.ts` anywhere in this repo (verified 2026-08-03, zero
- * precedents). A `.test.ts` importing a `.mjs`, on the other hand, is routine here
- * (five precedents). So the duplicated list stays, and THIS is what makes it safe.
+ * The bare-node guard still needs directory inputs, but the independent coverage
+ * oracle no longer compares them with another directory list. It derives the
+ * production tool files from the real registry import graph and checks the guard
+ * can see every one of those files and every state-read candidate they declare.
  */
 describe('no-bespoke-state-read guard:where it looks (EI-19444550724173505)', () => {
-  it('scans every canonical tool root — a root added to TOOL_SOURCE_DIRS must be added here too', () => {
-    const missing = TOOL_SOURCE_DIRS.filter((d) => !(SCAN_DIRS as string[]).includes(d));
-    expect(
-      missing,
-      'SCAN_DIRS in scripts/check-no-bespoke-state-read.mjs is missing these canonical tool root(s), so a ' +
-        'state-read tool declared in one would never be judged and the gate would still print a clean run. ' +
-        'The guard runs as bare node and cannot import TOOL_SOURCE_DIRS, so add them by hand there.',
-    ).toEqual([]);
-  });
+  const sourceFiles = buildBuiltinToolSourceFiles(REPO_ROOT);
+  const relativeSourceFiles = sourceFiles.map((file) => file.slice(REPO_ROOT.length).replace(/^\/+/, ''));
 
-  it('the two lists agree in BOTH directions — a stale root here silently costs scan coverage elsewhere', () => {
-    // Not merely cosmetic: a root in SCAN_DIRS that the catalog has dropped means
-    // one of the two lists is wrong about where tools live, and the guard is the
-    // one that fails silently. Fail loudly instead and let a human pick.
-    const extra = (SCAN_DIRS as string[]).filter((d) => !TOOL_SOURCE_DIRS.includes(d));
-    expect(extra, 'SCAN_DIRS names root(s) the canonical TOOL_SOURCE_DIRS does not — reconcile the two').toEqual(
-      [],
+  it('covers every graph-derived production tool source, with no dead scan roots', () => {
+    const uncovered = relativeSourceFiles.filter(
+      (file) => !(SCAN_DIRS as string[]).some((root) => file === root || file.startsWith(`${root}/`)),
     );
+    expect(
+      uncovered,
+      'SCAN_DIRS misses graph-reachable production tool source(s), so the guard can report a false clean',
+    ).toEqual([]);
+    const deadRoots = (SCAN_DIRS as string[]).filter(
+      (root) => !relativeSourceFiles.some((file) => file === root || file.startsWith(`${root}/`)),
+    );
+    expect(deadRoots, 'SCAN_DIRS contains root(s) with no graph-reachable production tool').toEqual([]);
+    expect(sourceFiles.length, 'production tool source graph collapsed').toBeGreaterThan(100);
   });
 
-  it('no state-read candidate lives OUTSIDE the scanned roots — the property, not just the list', () => {
-    // The list assertions above compare two hand-written arrays; this one asks the
-    // question those arrays exist to answer. Measured 2026-08-03 when the roots were
-    // widened from 2 to 4: 522 additional files came into scope and the candidate
-    // count stayed at 48 — i.e. this closed a LATENT hole, nothing had escaped yet.
+  it('sees every state-read candidate derived from the production tool graph', () => {
     const scanned = new Set<string>();
-    const outside = new Set<string>();
-    for (const [dirs, sink] of [
-      [SCAN_DIRS as string[], scanned],
-      [TOOL_SOURCE_DIRS.filter((d) => !(SCAN_DIRS as string[]).includes(d)), outside],
-    ] as const) {
-      if (dirs.length === 0) continue;
-      // cwd MUST be the repo root: vitest runs from `packages/operator-core`, and
-      // `git ls-files` resolves pathspecs relative to the CWD — so the repo-root-
-      // relative dirs above match NOTHING from there. That is not a hypothetical:
-      // this test first ran with 0 files scanned and still reported every
-      // assertion green, because "no candidate outside the roots" is trivially
-      // true when you scanned no files at all. The `scanned.size` floor below is
-      // what caught it, which is precisely why a coverage check needs a floor and
-      // not just an emptiness assertion.
-      const files = execSync(`git ls-files ${dirs.join(' ')}`, {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-        maxBuffer: 256 * 1024 * 1024,
-        timeout: 30_000,
-        killSignal: 'SIGKILL',
-      })
-        .split('\n')
-        .filter((f) => /\.ts$/.test(f) && !/\.(test|spec)\./.test(f));
-      for (const f of files) {
-        let text: string;
-        try {
-          text = readFileSync(join(REPO_ROOT, f), 'utf8');
-        } catch {
-          continue;
-        }
-        for (const row of parseToolDefs(text)) if (isStateReadCandidate(row)) sink.add(row.name);
+    const guardFiles = execSync(`git ls-files ${(SCAN_DIRS as string[]).join(' ')}`, {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    })
+      .split('\n')
+      .filter((file) => /\.ts$/.test(file) && !/\.(test|spec)\./.test(file));
+    for (const file of guardFiles) {
+      for (const row of parseToolDefs(readFileSync(join(REPO_ROOT, file), 'utf8'))) {
+        if (isStateReadCandidate(row)) scanned.add(row.name);
+      }
+    }
+    const graphCandidates = new Set<string>();
+    for (const file of sourceFiles) {
+      for (const row of parseToolDefs(readFileSync(file, 'utf8'))) {
+        if (isStateReadCandidate(row)) graphCandidates.add(row.name);
       }
     }
     expect(
-      [...outside],
-      'these state-read tools are declared in a tool root the guard does not scan, so they are invisible to it',
+      [...graphCandidates].filter((name) => !scanned.has(name)),
+      'these graph-derived state-read tools are invisible to the guard scan',
     ).toEqual([]);
-    // A collapsed scan must not read as "clean" either (the census's own
-    // MIN_PLAUSIBLE reasoning): if this ever returns near-zero, the scan broke.
     expect(scanned.size).toBeGreaterThanOrEqual(20);
   }, 30_000);
 });

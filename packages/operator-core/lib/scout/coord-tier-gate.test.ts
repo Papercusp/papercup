@@ -163,7 +163,7 @@ describe('extractSeeAlsoRegion — bounded, and readable in BOTH shapes', () => 
 });
 
 describe('collectSeeAlsoPointers', () => {
-  it('credits the LEADING token only, never a verb named incidentally in an entry\'s prose', () => {
+  it("credits the LEADING token only, never a verb named incidentally in an entry's prose", () => {
     const src = `defineTool({ name: 'x:y', seeAlso: ['coord:roster { view } (not coord:impostor)'] })`;
     const got = collectSeeAlsoPointers(src);
     expect([...got]).toEqual(['coord:roster']);
@@ -235,13 +235,19 @@ describe('THE RATCHET HAS TEETH (synthetic tree, real scan seam)', () => {
     const { mkdtemp } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
-    return mkdtemp(join(tmpdir(), 'coord-tier-gate-'));
+    const root = await mkdtemp(join(tmpdir(), 'coord-tier-gate-'));
+    await write(root, `${TOOLS}/index.ts`, `import './fixture';\n`);
+    return root;
   };
   const TOOLS = 'packages/operator-core/lib/agent-tools';
 
   it('FAILS on a newly added untiered coordination behaviour', async () => {
     const root = await tempRoot();
-    await write(root, `${TOOLS}/new-verb.ts`, `defineTool({\n  name: 'coord:brand-new',\n  capability: 'coord:write',\n});\n`);
+    await write(
+      root,
+      `${TOOLS}/fixture.ts`,
+      `defineTool({\n  name: 'coord:brand-new',\n  capability: 'coord:write',\n});\n`,
+    );
     const r = await scanCoordTierGate(root);
     expect(r.offenders.map((o) => o.name)).toEqual(['coord:brand-new']);
     expect(r.offenders[0]!.rule).toBe('untiered-coord-behaviour');
@@ -249,11 +255,10 @@ describe('THE RATCHET HAS TEETH (synthetic tree, real scan seam)', () => {
 
   it('goes GREEN once a real mechanism is added — a seeAlso pointer from another tool', async () => {
     const root = await tempRoot();
-    await write(root, `${TOOLS}/new-verb.ts`, `defineTool({\n  name: 'coord:brand-new',\n  capability: 'coord:write',\n});\n`);
     await write(
       root,
-      `${TOOLS}/pointer.ts`,
-      `defineTool({\n  name: 'other:tool',\n  seeAlso: ['coord:brand-new (surfaced at result time)'],\n});\n`,
+      `${TOOLS}/fixture.ts`,
+      `defineTool({\n  name: 'coord:brand-new',\n  capability: 'coord:write',\n});\ndefineTool({\n  name: 'other:tool',\n  seeAlso: ['coord:brand-new (surfaced at result time)'],\n});\n`,
     );
     const r = await scanCoordTierGate(root);
     expect(r.offenders).toEqual([]);
@@ -263,7 +268,7 @@ describe('THE RATCHET HAS TEETH (synthetic tree, real scan seam)', () => {
     const root = await tempRoot();
     await write(
       root,
-      `${TOOLS}/exempt.ts`,
+      `${TOOLS}/fixture.ts`,
       `defineTool({\n  name: 'coord:brand-new',\n  capability: 'coord:write',\n  // @no-coord-tier operator-only tuning surface, no agent behaviour to enforce\n});\n`,
     );
     expect((await scanCoordTierGate(root)).offenders).toEqual([]);
@@ -271,7 +276,7 @@ describe('THE RATCHET HAS TEETH (synthetic tree, real scan seam)', () => {
     const root2 = await tempRoot();
     await write(
       root2,
-      `${TOOLS}/exempt.ts`,
+      `${TOOLS}/fixture.ts`,
       `defineTool({\n  name: 'coord:brand-new',\n  capability: 'coord:write',\n  // @no-coord-tier because\n});\n`,
     );
     const r2 = await scanCoordTierGate(root2);
@@ -281,7 +286,11 @@ describe('THE RATCHET HAS TEETH (synthetic tree, real scan seam)', () => {
   it('does not fire on a verb that is already in the shipped baseline', async () => {
     const root = await tempRoot();
     const [grandfathered] = [...UNTIERED_BASELINE];
-    await write(root, `${TOOLS}/old.ts`, `defineTool({\n  name: '${grandfathered}',\n  capability: 'coord:write',\n});\n`);
+    await write(
+      root,
+      `${TOOLS}/fixture.ts`,
+      `defineTool({\n  name: '${grandfathered}',\n  capability: 'coord:write',\n});\n`,
+    );
     expect((await scanCoordTierGate(root)).offenders).toEqual([]);
   }, 30_000);
 });
@@ -291,8 +300,8 @@ describe('THE GATE, against the real tree', () => {
     const r = await scanCoordTierGate(ROOT);
     expect(
       r.offenders.map((o) => `${o.name} [${o.rule}] ${o.file ?? ''}\n      ${o.detail}`),
-      'A coordination behaviour must resolve to one of D-001\'s tiers 1-3. Satisfy it with a REAL mechanism, ' +
-        'never an assertion: (1) point some tool\'s seeAlso at it (tier 3, derived, cannot rot); ' +
+      "A coordination behaviour must resolve to one of D-001's tiers 1-3. Satisfy it with a REAL mechanism, " +
+        "never an assertion: (1) point some tool's seeAlso at it (tier 3, derived, cannot rot); " +
         '(2) add an evidence-carrying entry to DECLARED_COORD_TIERS (tiers 1-2); ' +
         `(3) write "@no-coord-tier <reason, >= ${MIN_TIER_EXEMPTION_REASON} chars>" inside its defineTool literal. ` +
         'Do NOT add to UNTIERED_BASELINE — it is shrink-only.',
@@ -301,9 +310,7 @@ describe('THE GATE, against the real tree', () => {
 
   it('sees EVERY coord verb the independent catalog knows — a blind scanner reports a false clean', async () => {
     const r = await scanCoordTierGate(ROOT);
-    expect(r.unparsed, 'these coord verbs exist but this gate cannot parse them, so it cannot govern them').toEqual(
-      [],
-    );
+    expect(r.unparsed, 'these coord verbs exist but this gate cannot parse them, so it cannot govern them').toEqual([]);
     // A collapsed denominator must not read as progress (the census's own
     // MIN_PLAUSIBLE_COORD_BEHAVIOURS reasoning, applied to the gate).
     expect(r.scanned).toBeGreaterThanOrEqual(20);

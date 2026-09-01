@@ -119,8 +119,9 @@ import { pathToFileURL } from 'node:url';
 const ROOT = new URL('..', import.meta.url).pathname;
 
 /**
- * Where agent tools are declared — ALL FOUR canonical roots, kept in step with
- * `TOOL_SOURCE_DIRS` in `packages/operator-core/lib/static-tool-catalog.ts`.
+ * Where the bare-node guard reads agent-tool declarations. Its independent
+ * coverage test derives the production source set from the real registry import
+ * graph and proves every graph-reachable tool file falls under one of these roots.
  *
  * ⚠ THIS LIST USED TO NAME ONLY THE FIRST TWO, and that is a false-clean waiting
  * to happen: a state-read tool declared in an unscanned root is never judged, and
@@ -132,20 +133,17 @@ const ROOT = new URL('..', import.meta.url).pathname;
  * whose first draft hand-listed two roots, reported a confident 0 offenders, and
  * was blind to all four coordination verbs in `lib/coord-ops`.)
  *
- * ⚠ AND IT MUST STAY HAND-LISTED — importing the canonical `TOOL_SOURCE_DIRS` is
- * the obvious fix and it is NOT available here. This guard runs as bare
+ * ⚠ IT MUST STAY HAND-LISTED HERE — importing the TypeScript graph builder is
+ * unavailable because this guard runs as bare
  * `node scripts/check-no-bespoke-state-read.mjs` (package.json `lint:no-bespoke-state-read`),
- * with no TypeScript transform, and nothing in `scripts/**` imports a `.ts` —
- * verified 2026-08-03, zero precedents repo-wide. So the copy is unavoidable; what
- * makes it SAFE is that it cannot drift silently: `no-bespoke-state-read-guard.test.ts`
- * imports BOTH lists (a .test.ts may import a .mjs — five precedents) and fails the
- * moment a root is added there and not here.
+ * with no TypeScript transform. What makes the list safe is the graph-derived
+ * source/file and candidate parity in `no-bespoke-state-read-guard.test.ts`, not a
+ * comparison against a second hand-written directory list.
  */
 export const SCAN_DIRS = [
   'packages/operator-core/lib/agent-tools',
   'packages/agent-mcp/src',
   'packages/operator-core/lib/coord-ops',
-  'packages/operator-core/lib/endpoint-route/routes',
 ];
 
 /**

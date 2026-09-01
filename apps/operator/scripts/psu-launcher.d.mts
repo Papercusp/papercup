@@ -3253,7 +3253,7 @@ export const TTY_CLAIMS_DIR: string;
  *
  * Exported with injectables for tests (scripts/__tests__).
  */
-export const SUPERVISOR_BEAT_MS: 60000;
+export const SUPERVISOR_BEAT_MS: number;
 /**
  * EI-19412221266350408 — consecutive `sessionTerminal` beats required before psu exits.
  *

@@ -152,7 +152,7 @@ const SQL_COMMENT_MARKER = /(?:^|\s)--\s/;
 // NOTE the boundary placement: `\b@generated` can never match (space→`@` is
 // non-word→non-word, so there is no boundary), which is why `@generated` carries
 // only a TRAILING \b while the prose spellings are \b-wrapped.
-const GENERATED_FILE_HEADER = /^(?:\/\/|\/\*)[^\n]*(?:\bgenerated (?:by|from)\b|\bdo not edit\b|@generated\b)/i;
+const GENERATED_FILE_HEADER = /^(?:#![^\n]*\n)?(?:\/\/|\/\*)[^\n]*(?:\bgenerated (?:by|from)\b|\bdo not edit\b|@generated\b)/i;
 
 /**
  * Scope mirror for the registry entry + the CI script, so the two can never

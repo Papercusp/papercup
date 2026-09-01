@@ -1144,7 +1144,7 @@ mod live_tests {
     //!
     //! then run with that HOME so `~/.papercusp/operator.json` resolves:
     //!
-    //!   HOME=<tmp-home> cargo test -p pui --lib http_live -- --ignored
+    //!   HOME=<tmp-home> cargo test --bin pui http_live -- --ignored
     use super::*;
     use serde_json::Value;
     use std::io::ErrorKind;

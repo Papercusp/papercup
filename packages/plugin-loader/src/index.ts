@@ -172,6 +172,8 @@ interface ManifestShape {
   papercusp?: string;
   kind?: import('@papercusp/plugin-sdk').Plugin['kind'];
   capabilities?: string[];
+  /** Install/consent-canonical action declarations. Runtime handlers bind by name. */
+  actions?: import('@papercusp/plugin-sdk').ActionDefinition[];
   configSchema?: Record<string, unknown>;
   oauth?: import('@papercusp/plugin-sdk').PluginOAuthRequirement[];
   /** MCP tool declarations. Handlers live on the plugin's `tools` export. */
@@ -187,6 +189,10 @@ interface ManifestShape {
    * distinguishes React (in-bundle) from iframe surfaces (Batch H).
    */
   ui?: import('@papercusp/plugin-sdk').UiSurfaceManifestEntry[];
+  /** Manifest-driven dashboard contributions (runtime exports may add component functions). */
+  dashboardTabs?: Array<Record<string, unknown> & { id: string }>;
+  /** Manifest-driven sidebar contributions (runtime exports may add badge functions). */
+  sidebarItems?: Array<Record<string, unknown> & { id: string }>;
   /**
    * Declarative event-reaction rules (plugin-system-hive-port D-003 / P-005).
    * The manifest carries the declarative subset only (data-match `when`,
@@ -334,22 +340,24 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
       return `plugin "${plugin.name}" requires plugin-protocol "${protocolRange}" but host implements "${PROTOCOL_VERSION}"`;
     }
   }
-  if (!Array.isArray(plugin.capabilities)) {
-    return `plugin "${plugin.name}" must declare \`capabilities: Capability[]\` (can be empty array, but the field is required)`;
-  }
+  // papercusp.json is the install + consent boundary, so it is the canonical
+  // source for declarative permissions. The entry export is a runtime carrier,
+  // not a second permission manifest; reconcileManifestDeclarations() below
+  // projects this exact list onto the loaded Plugin and drops export-only caps.
+  const declaredCapabilities = manifest.capabilities ?? [];
   // Validate UI surfaces require the right cap, per entry type. react/iframe
   // panes are desktop surfaces gated by ui:harness-route; tui-pane panes are
   // pui surfaces gated by ui:tui-pane and must carry a non-empty `command`
   // (revive-plugin-system-2026-06-04 D-002). The exec-gate on command[0]
   // (compute:exec:<bin>) is enforced at the resolution endpoint.
-  if (Array.isArray(plugin.ui) && plugin.ui.length > 0) {
-    const entries = plugin.ui as Array<{ type?: string; slug?: string; command?: unknown }>;
+  if (Array.isArray(manifest.ui) && manifest.ui.length > 0) {
+    const entries = manifest.ui as Array<{ type?: string; slug?: string; command?: unknown }>;
     const hasDesktopSurface = entries.some((u) => (u.type ?? 'react') !== 'tui-pane');
-    if (hasDesktopSurface && !plugin.capabilities.includes('ui:harness-route' as any)) {
+    if (hasDesktopSurface && !declaredCapabilities.includes('ui:harness-route')) {
       return `plugin "${plugin.name}" declares a react/iframe ui contribution but lacks capability "ui:harness-route"`;
     }
     const tuiPanes = entries.filter((u) => u.type === 'tui-pane');
-    if (tuiPanes.length > 0 && !plugin.capabilities.includes('ui:tui-pane' as any)) {
+    if (tuiPanes.length > 0 && !declaredCapabilities.includes('ui:tui-pane')) {
       return `plugin "${plugin.name}" declares a tui-pane ui contribution but lacks capability "ui:tui-pane"`;
     }
     for (const u of tuiPanes) {
@@ -357,12 +365,29 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
         return `plugin "${plugin.name}" tui-pane "${u.slug ?? '?'}" must declare a non-empty string[] \`command\``;
       }
     }
+    // React is the one UI form whose live component cannot exist in JSON.
+    // Resolve that structural boundary by identity at load time: every
+    // manifest-declared React surface must have a same-slug runtime component.
+    const exportedUi = normalizeDeclarationRecords((plugin as unknown as { ui?: unknown }).ui);
+    for (const u of entries.filter((entry) => (entry.type ?? 'react') === 'react')) {
+      const live = exportedUi.find((entry) => entry.slug === u.slug);
+      if (!live || typeof live.component !== 'function') {
+        return `plugin "${plugin.name}" declares react manifest.ui slug "${u.slug ?? '?'}" but its export has no matching runtime component`;
+      }
+    }
   }
-  if ((plugin.dashboardTabs?.length ?? 0) > 0 && !plugin.capabilities.includes('ui:dashboard-tab' as any)) {
+  if ((manifest.dashboardTabs?.length ?? 0) > 0 && !declaredCapabilities.includes('ui:dashboard-tab')) {
     return `plugin "${plugin.name}" declares dashboardTabs but lacks capability "ui:dashboard-tab"`;
   }
-  if ((plugin.sidebarItems?.length ?? 0) > 0 && !plugin.capabilities.includes('ui:sidebar-item' as any)) {
+  if ((manifest.sidebarItems?.length ?? 0) > 0 && !declaredCapabilities.includes('ui:sidebar-item')) {
     return `plugin "${plugin.name}" declares sidebarItems but lacks capability "ui:sidebar-item"`;
+  }
+  for (const action of manifest.actions ?? []) {
+    for (const capability of action.capabilities ?? []) {
+      if (!declaredCapabilities.includes(capability)) {
+        return `plugin "${plugin.name}" action "${action.name}" requires capability "${capability}" but papercusp.json doesn't declare it`;
+      }
+    }
   }
   // Tool validation:
   //   1. Every manifest tool must have a matching handler key on plugin.tools.
@@ -402,7 +427,7 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
     }
     const caps = Array.isArray(t.capabilities) ? t.capabilities : [];
     for (const c of caps) {
-      if (!plugin.capabilities.includes(c as any)) {
+      if (!declaredCapabilities.includes(c)) {
         return `plugin "${plugin.name}" tool "${t.name}" requires capability "${c}" but plugin manifest doesn't declare it`;
       }
     }
@@ -447,11 +472,11 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
           return `plugin "${plugin.name}" reaction "${r.id}" has an invalid \`on\` trigger`;
         }
         for (const t of triggers) {
-          if (!plugin.capabilities.includes(`events:listen:${t}` as any)) {
+          if (!declaredCapabilities.includes(`events:listen:${t}`)) {
             return `plugin "${plugin.name}" reaction "${r.id}" listens on "${t}" but lacks capability "events:listen:${t}"`;
           }
         }
-        if (r.capability !== undefined && !plugin.capabilities.includes(r.capability as any)) {
+        if (r.capability !== undefined && !declaredCapabilities.includes(r.capability)) {
           return `plugin "${plugin.name}" reaction "${r.id}" scopes to capability "${r.capability}" the plugin doesn't declare`;
         }
       }
@@ -473,16 +498,16 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
       return `pack "${plugin.name}" implements getDynamicTools — dynamic (MCP-proxy) tools ride a plugin runtime; use kind "plugin"`;
     }
     const offending: string[] = [];
-    if (Array.isArray(plugin.ui) && plugin.ui.length > 0) offending.push('ui');
-    if ((plugin.dashboardTabs?.length ?? 0) > 0) offending.push('dashboardTabs');
-    if ((plugin.sidebarItems?.length ?? 0) > 0) offending.push('sidebarItems');
+    if ((manifest.ui?.length ?? 0) > 0 || normalizeDeclarationRecords((plugin as unknown as { ui?: unknown }).ui).length > 0) offending.push('ui');
+    if ((manifest.dashboardTabs?.length ?? 0) > 0 || (plugin.dashboardTabs?.length ?? 0) > 0) offending.push('dashboardTabs');
+    if ((manifest.sidebarItems?.length ?? 0) > 0 || (plugin.sidebarItems?.length ?? 0) > 0) offending.push('sidebarItems');
     // roles/routines are retired SDK axes (plugin-system-hive-port D-004) —
     // the typed Plugin no longer carries them, but an untyped JS export can
     // still smuggle them in, so the pack purity check stays defensive.
     const legacy = plugin as { roles?: Record<string, unknown>; routines?: unknown[] };
     if (Object.keys(legacy.roles ?? {}).length > 0) offending.push('roles');
     if ((legacy.routines?.length ?? 0) > 0) offending.push('routines');
-    if ((plugin.actions?.length ?? 0) > 0) offending.push('actions');
+    if ((manifest.actions?.length ?? 0) > 0 || (plugin.actions?.length ?? 0) > 0) offending.push('actions');
     if (plugin.hooks && Object.keys(plugin.hooks).length > 0) offending.push('hooks');
     if ((plugin.reactions?.length ?? 0) > 0 || (manifest.reactions?.length ?? 0) > 0) offending.push('reactions');
     // NB (events-as-a-dependency axis, D-003 / P-005): `provides.events` and
@@ -499,6 +524,56 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
     }
   }
   return null;
+}
+
+/** Normalize a singular legacy runtime declaration or an array to records. */
+function normalizeDeclarationRecords(value: unknown): Array<Record<string, unknown>> {
+  const values = Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : [];
+  return values.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object');
+}
+
+/**
+ * Reconcile a manifest-owned declaration axis with its runtime-only half.
+ *
+ * The manifest controls which identities exist and every serializable field.
+ * A same-key export may contribute non-serializable behavior (React component,
+ * action handler, badge callback). Export-only identities are deliberately
+ * absent from the result, so code cannot bypass install/consent truth.
+ */
+function reconcileDeclarationAxis(manifestValue: unknown, exportValue: unknown, key: string): Array<Record<string, unknown>> {
+  const exportedByKey = new Map<unknown, Record<string, unknown>>();
+  for (const entry of normalizeDeclarationRecords(exportValue)) {
+    if (entry[key] !== undefined) exportedByKey.set(entry[key], entry);
+  }
+  return normalizeDeclarationRecords(manifestValue).map((declared) => {
+    const runtime = exportedByKey.get(declared[key]);
+    return runtime ? { ...runtime, ...declared } : { ...declared };
+  });
+}
+
+/**
+ * Make papercusp.json the single declarative source while preserving the
+ * entry module's runtime-only functions for identities the manifest admits.
+ * This is the load-time package-boundary reconciliation required by the
+ * derived-truth ladder: manifest→live projects; live→manifest cannot smuggle.
+ */
+function reconcileManifestDeclarations(plugin: Plugin, manifest: ManifestShape): Plugin {
+  const reconciled: Record<string, unknown> = {
+    ...(plugin as unknown as Record<string, unknown>),
+    capabilities: [...(manifest.capabilities ?? [])],
+  };
+  const axes = [
+    ['actions', manifest.actions, (plugin as unknown as { actions?: unknown }).actions, 'name'],
+    ['ui', manifest.ui, (plugin as unknown as { ui?: unknown }).ui, 'slug'],
+    ['dashboardTabs', manifest.dashboardTabs, (plugin as unknown as { dashboardTabs?: unknown }).dashboardTabs, 'id'],
+    ['sidebarItems', manifest.sidebarItems, (plugin as unknown as { sidebarItems?: unknown }).sidebarItems, 'id'],
+  ] as const;
+  for (const [field, manifestValue, exportValue, key] of axes) {
+    const declarations = reconcileDeclarationAxis(manifestValue, exportValue, key);
+    if (declarations.length > 0) reconciled[field] = declarations;
+    else delete reconciled[field];
+  }
+  return reconciled as unknown as Plugin;
 }
 
 /**
@@ -578,7 +653,7 @@ function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugi
     runtime = { ...runtime, wasmPath: resolve(r.path, runtime.wasmPath) };
   }
   return {
-    plugin: r.plugin,
+    plugin: reconcileManifestDeclarations(r.plugin, manifest),
     path: r.path,
     source: r.source as LoadedPlugin['source'],
     toolDefinitions: manifest.tools ?? [],
@@ -659,6 +734,10 @@ function makeManifestOnlyPluginShim(manifest: ManifestShape): import('@papercusp
     capabilities: manifest.capabilities ?? [],
     configSchema: manifest.configSchema,
     oauth: manifest.oauth,
+    actions: manifest.actions,
+    ui: manifest.ui,
+    dashboardTabs: manifest.dashboardTabs,
+    sidebarItems: manifest.sidebarItems,
     provides: manifest.provides,
     dependencies: manifest.dependencies,
     triggerPack: manifest.triggerPack,

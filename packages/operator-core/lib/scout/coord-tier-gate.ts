@@ -193,8 +193,7 @@ export function judgeCoordBehaviour(row: CoordToolRow, tiered: ReadonlySet<strin
   if (tiered.has(row.name)) return null;
   return {
     rule: 'untiered-coord-behaviour',
-    detail:
-      'a NEW coordination behaviour must resolve to one of D-001\'s tiers 1-3, or say why it cannot.',
+    detail: "a NEW coordination behaviour must resolve to one of D-001's tiers 1-3, or say why it cannot.",
   };
 }
 
@@ -403,23 +402,6 @@ export function resolveTieredSet(
 }
 
 /**
- * The tool source trees this gate reads — IMPORTED from `static-tool-catalog`,
- * never re-listed here.
- *
- * ⚠ THIS WAS A REAL BUG, CAUGHT BY THE COVERAGE CROSS-CHECK BELOW, AND IT IS THE
- * reason both exist. The first draft hand-listed the two obvious roots and
- * reported a perfectly clean 0 offenders — while silently missing all four verbs
- * defined in `lib/coord-ops` (`coord:vote`, `coord:deliberate`,
- * `coord:ask-owner`, `coord:thread-post`), a THIRD tool root. A gate that cannot
- * see a verb cannot govern it, and a hand-kept root list is exactly the copy that
- * drifts — which is why `static-tool-catalog.ts` was extracted in the first place
- * (agent-trap-guards-2026-07-26 P-007: "so a SECOND static catalog scanner didn't
- * need constructing"). Its own header says the fix for a missing tool is to
- * extend THAT list; importing it means this gate inherits the fix for free.
- */
-export { TOOL_SOURCE_DIRS as SCAN_DIRS } from '../static-tool-catalog';
-
-/**
  * IO seam: read the tool sources and run the gate over them.
  *
  * Kept apart from every pure function above so the judging logic is unit-testable
@@ -432,32 +414,10 @@ export { TOOL_SOURCE_DIRS as SCAN_DIRS } from '../static-tool-catalog';
  * about deriving over the whole registry rather than the coord slice).
  */
 export async function scanCoordTierGate(repoRoot: string): Promise<TierGateResult> {
-  const { readFile, readdir, stat } = await import('node:fs/promises');
-  const { join } = await import('node:path');
-  const { TOOL_SOURCE_DIRS, buildBuiltinToolCatalog } = await import('../static-tool-catalog');
+  const { readFile } = await import('node:fs/promises');
+  const { buildBuiltinToolCatalog, buildBuiltinToolSourceFiles } = await import('../static-tool-catalog');
   const { selectCoordBehaviours } = await import('./enforcement-tier-census');
-
-  const files: string[] = [];
-  const walk = async (dir: string): Promise<void> => {
-    let entries: string[];
-    try {
-      entries = await readdir(dir);
-    } catch {
-      return; // a root that does not exist here is not a failure
-    }
-    for (const e of entries) {
-      const p = join(dir, e);
-      const st = await stat(p).catch(() => null);
-      if (!st) continue;
-      if (st.isDirectory()) {
-        if (e === 'node_modules' || e === 'dist') continue;
-        await walk(p);
-      } else if (/\.tsx?$/.test(p) && !/\.(test|spec)\.[cm]?tsx?$/.test(p)) {
-        files.push(p);
-      }
-    }
-  };
-  for (const d of TOOL_SOURCE_DIRS) await walk(join(repoRoot, d));
+  const files = buildBuiltinToolSourceFiles(repoRoot);
 
   const rows: CoordToolRow[] = [];
   const pointers = new Set<string>();

@@ -46,13 +46,16 @@ import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve as resolvePath } from 'node:path';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
+import { ALLOC_ADVISORY_KEY } from './lib/migration-allocation.mjs';
 import {
   fetchRedundancyCandidates,
   formatRedundancyMessage,
   judgeRedundantReservation,
 } from './lib/migration-slug-dedup.mjs';
 
-const ALLOC_ADVISORY_KEY = 873_135; // must match next_migration.ts
+// Keep the key available to contract tests without creating a second source
+// of truth. The MCP door re-exports the same binding.
+export { ALLOC_ADVISORY_KEY };
 
 // The canonical dir is scanned + written; the sidecar dir is folded into the
 // on-disk max only so a stray mirror file can't collide. Write the file to the

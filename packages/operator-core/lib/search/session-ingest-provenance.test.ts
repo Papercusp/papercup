@@ -10,7 +10,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { stampTurnProvenance, UNENROLLED_ORIGIN_VERDICT, FILE_BACKED_SOURCE_KINDS } from './session-ingest';
+import {
+  stampTurnProvenance,
+  UNENROLLED_ORIGIN_VERDICT,
+  FILE_BACKED_SOURCE_KINDS,
+  correlatePromptOriginStamps,
+  promptOriginHash,
+  PROMPT_ORIGIN_MATCH_WINDOW_MS,
+} from './session-ingest';
 import { MACHINE_SURFACE_CATALOGUE_VERSION } from '../turn-provenance/machine-surface-catalogue';
 import { classifyRecordedTurn, OWNER_CANDIDATE_TURN_VERDICTS } from '../turn-provenance/turn-ref';
 
@@ -241,5 +248,67 @@ describe('stampTurnProvenance', () => {
     expect(r.turn_origin).toBe(first.turn_origin);
     expect(r.turn_origin_verdict).toBe(first.turn_origin_verdict);
     expect(r.turn_origin_classifier_version).toBe(first.turn_origin_classifier_version);
+  });
+});
+
+describe('hook-authenticated prompt-origin correlation', () => {
+  it('keeps the hook and ingest hash normalization in lockstep', () => {
+    expect(promptOriginHash('  line one\r\nline two\r\n ')).toBe(
+      promptOriginHash('line one\nline two'),
+    );
+  });
+
+  it('upgrades only an exact v5 unenrolled user row and consumes each stamp once', () => {
+    const submittedAt = '2026-09-01T10:00:00.000Z';
+    const hash = promptOriginHash('owner directive');
+    const candidate = row({
+      ts: submittedAt,
+      prompt_hash: hash,
+      turn_origin_verdict: UNENROLLED_ORIGIN_VERDICT,
+      turn_origin_classifier_version: MACHINE_SURFACE_CATALOGUE_VERSION,
+    });
+    const machine = row({
+      turn_idx: 1,
+      ts: submittedAt,
+      prompt_hash: hash,
+      turn_origin_verdict: 'machine-surface',
+      turn_origin_classifier_version: MACHINE_SURFACE_CATALOGUE_VERSION,
+    });
+    const stamp = {
+      source_kind: 'claude',
+      session_id: 's-1',
+      prompt_hash: hash,
+      submitted_at: submittedAt,
+    };
+
+    expect(correlatePromptOriginStamps([candidate, machine], [stamp])).toBe(1);
+    expect(candidate.turn_origin_verdict).toBe('owner-typed');
+    expect(machine.turn_origin_verdict).toBe('machine-surface');
+    expect(correlatePromptOriginStamps([candidate], [stamp])).toBe(0);
+  });
+
+  it.each([
+    ['wrong source', { source_kind: 'omp' }],
+    ['wrong session', { session_id: 'other-session' }],
+    ['wrong hash', { prompt_hash: promptOriginHash('different directive') }],
+    ['outside time window', { submitted_at: new Date(Date.parse('2026-09-01T10:00:00.000Z') - PROMPT_ORIGIN_MATCH_WINDOW_MS - 1).toISOString() }],
+  ])('does not correlate %s', (_label, override) => {
+    const submittedAt = '2026-09-01T10:00:00.000Z';
+    const hash = promptOriginHash('owner directive');
+    const candidate = row({
+      ts: submittedAt,
+      prompt_hash: hash,
+      turn_origin_verdict: UNENROLLED_ORIGIN_VERDICT,
+      turn_origin_classifier_version: MACHINE_SURFACE_CATALOGUE_VERSION,
+    });
+    const stamp = {
+      source_kind: 'claude',
+      session_id: 's-1',
+      prompt_hash: hash,
+      submitted_at: submittedAt,
+      ...override,
+    };
+    expect(correlatePromptOriginStamps([candidate], [stamp])).toBe(0);
+    expect(candidate.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
   });
 });

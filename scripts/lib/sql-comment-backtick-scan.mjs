@@ -74,6 +74,11 @@ const HAS_RAW_DDL = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|(?:UNIQUE\s+)?
 
 const SQL_COMMENT_MARKER = /(?:^|\s)--\s/;
 
+// Bundled Node entrypoints retain a shebang before esbuild's generated marker.
+// Keep this in sync with the TypeScript detector so generated output is routed
+// back to its generator instead of quarantined for an uneditable prose hit.
+const GENERATED_FILE_HEADER = /^(?:#![^\n]*\n)?(?:\/\/|\/\*)[^\n]*(?:\bgenerated (?:by|from)\b|\bdo not edit\b|@generated\b)/i;
+
 /**
  * Does this path fall in scope for the detector?
  * @param {string} f repo-relative (or absolute) file path
@@ -124,6 +129,7 @@ function firstUnescapedBacktick(line, fromIndex) {
  * @returns {SqlCommentBacktickHit | null}
  */
 export function findSqlCommentBacktick(fileName, text) {
+  if (GENERATED_FILE_HEADER.test(text)) return null;
   if (!USES_SQL_TAG.test(text) && !HAS_RAW_DDL.test(text)) return null;
 
   const lines = text.split('\n');

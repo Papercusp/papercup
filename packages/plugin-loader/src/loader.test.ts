@@ -276,6 +276,130 @@ status: draft
   });
 });
 
+describe('manifest/export declaration reconciliation', () => {
+  async function writeReconciliationPlugin(
+    name: string,
+    manifestExtra: Record<string, unknown>,
+    entryBody: string,
+  ): Promise<string> {
+    const dir = join(ROOT, name);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      join(dir, 'papercusp.json'),
+      JSON.stringify({ name, version: '0.1.0', papercusp: '^0.1.0', ...manifestExtra }),
+      'utf8',
+    );
+    await fs.writeFile(join(dir, 'index.cjs'), entryBody, 'utf8');
+    return dir;
+  }
+
+  function loadedPlugin(result: Awaited<ReturnType<typeof loadPluginFromDir>>): Record<string, unknown> {
+    assert.ok(!('error' in result) && !('skipped' in result), `expected load, got ${JSON.stringify(result)}`);
+    return result.plugin as unknown as Record<string, unknown>;
+  }
+
+  it('projects manifest-only capabilities, actions, and UI declarations onto the live plugin', async () => {
+    const name = 'manifest-to-live-declarations';
+    const dir = await writeReconciliationPlugin(
+      name,
+      {
+        capabilities: ['ui:tui-pane', 'compute:exec:sh', 'ui:dashboard-tab', 'ui:sidebar-item'],
+        actions: [{ name: 'declared-action', label: 'Declared action' }],
+        ui: [{ type: 'tui-pane', slug: 'declared-pane', label: 'Declared pane', command: ['sh', 'render.sh'] }],
+        dashboardTabs: [{ id: 'declared-tab', label: 'Declared tab', iframeUrl: '/tab' }],
+        sidebarItems: [{ id: 'declared-nav', label: 'Declared nav', href: '/nav' }],
+      },
+      `module.exports = { name: ${JSON.stringify(name)}, version: '0.1.0', papercusp: '^0.1.0', capabilities: [] };`,
+    );
+
+    const plugin = loadedPlugin(await loadPluginFromDir(dir, 'project'));
+    assert.deepEqual(plugin.capabilities, ['ui:tui-pane', 'compute:exec:sh', 'ui:dashboard-tab', 'ui:sidebar-item']);
+    assert.deepEqual((plugin.actions as Array<{ name: string }>).map((entry) => entry.name), ['declared-action']);
+    assert.deepEqual((plugin.ui as Array<{ slug: string }>).map((entry) => entry.slug), ['declared-pane']);
+    assert.deepEqual((plugin.dashboardTabs as Array<{ id: string }>).map((entry) => entry.id), ['declared-tab']);
+    assert.deepEqual((plugin.sidebarItems as Array<{ id: string }>).map((entry) => entry.id), ['declared-nav']);
+  });
+
+  it('drops export-only declarations while retaining runtime functions for manifest identities', async () => {
+    const name = 'live-to-manifest-declarations';
+    const dir = await writeReconciliationPlugin(
+      name,
+      {
+        capabilities: ['ui:harness-route', 'ui:dashboard-tab', 'ui:sidebar-item'],
+        actions: [{ name: 'declared-action', label: 'Manifest action' }],
+        ui: [{ type: 'react', slug: 'declared-pane', label: 'Manifest pane' }],
+        dashboardTabs: [{ id: 'declared-tab', label: 'Manifest tab' }],
+        sidebarItems: [{ id: 'declared-nav', label: 'Manifest nav', href: '/manifest' }],
+      },
+      `
+        const component = async () => ({ default: () => null });
+        module.exports = {
+          name: ${JSON.stringify(name)},
+          version: '0.1.0',
+          papercusp: '^0.1.0',
+          capabilities: ['ui:harness-route', 'ui:dashboard-tab', 'ui:sidebar-item', 'export-only:permission'],
+          actions: [
+            { name: 'declared-action', label: 'Export action', handler: () => 'kept' },
+            { name: 'export-only-action', handler: () => 'dropped' },
+          ],
+          ui: [
+            { slug: 'declared-pane', label: 'Export pane', component },
+            { slug: 'export-only-pane', label: 'Dropped pane', component },
+          ],
+          dashboardTabs: [
+            { id: 'declared-tab', label: 'Export tab', component: () => null },
+            { id: 'export-only-tab', label: 'Dropped tab', component: () => null },
+          ],
+          sidebarItems: [
+            { id: 'declared-nav', label: 'Export nav', href: '/export', badge: async () => 1 },
+            { id: 'export-only-nav', label: 'Dropped nav', href: '/dropped' },
+          ],
+        };
+      `,
+    );
+
+    const plugin = loadedPlugin(await loadPluginFromDir(dir, 'project'));
+    assert.deepEqual(plugin.capabilities, ['ui:harness-route', 'ui:dashboard-tab', 'ui:sidebar-item']);
+
+    const actions = plugin.actions as Array<Record<string, unknown>>;
+    assert.deepEqual(actions.map((entry) => entry.name), ['declared-action']);
+    assert.equal(actions[0]!.label, 'Manifest action');
+    assert.equal(typeof actions[0]!.handler, 'function');
+
+    const ui = plugin.ui as Array<Record<string, unknown>>;
+    assert.deepEqual(ui.map((entry) => entry.slug), ['declared-pane']);
+    assert.equal(ui[0]!.label, 'Manifest pane');
+    assert.equal(typeof ui[0]!.component, 'function');
+
+    const tabs = plugin.dashboardTabs as Array<Record<string, unknown>>;
+    assert.deepEqual(tabs.map((entry) => entry.id), ['declared-tab']);
+    assert.equal(tabs[0]!.label, 'Manifest tab');
+    assert.equal(typeof tabs[0]!.component, 'function');
+
+    const sidebar = plugin.sidebarItems as Array<Record<string, unknown>>;
+    assert.deepEqual(sidebar.map((entry) => entry.id), ['declared-nav']);
+    assert.equal(sidebar[0]!.label, 'Manifest nav');
+    assert.equal(sidebar[0]!.href, '/manifest');
+    assert.equal(typeof sidebar[0]!.badge, 'function');
+  });
+
+  it('rejects a manifest-declared React surface with no same-slug runtime component', async () => {
+    const name = 'react-manifest-without-live-component';
+    const dir = await writeReconciliationPlugin(
+      name,
+      {
+        capabilities: ['ui:harness-route'],
+        ui: [{ type: 'react', slug: 'declared-pane', label: 'Declared pane' }],
+      },
+      `module.exports = { name: ${JSON.stringify(name)}, version: '0.1.0', papercusp: '^0.1.0', capabilities: ['ui:harness-route'] };`,
+    );
+
+    const result = await loadPluginFromDir(dir, 'project');
+    assert.ok('error' in result);
+    assert.match(result.error, /manifest\.ui slug "declared-pane".*runtime component/);
+  });
+});
+
 describe('loadPlugins', () => {
   it('honors PAPERCUSP_WORKSPACES_ROOT when HOME is remapped', async () => {
     const canonicalRoot = join(ROOT, 'workspace-root');

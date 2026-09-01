@@ -28,6 +28,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveSqlDir } from '../../migration-drift';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { ALLOC_ADVISORY_KEY } from '../../../../../scripts/lib/migration-allocation.mjs';
 // WI-38353 — shared with scripts/next-migration.mjs so the two doors cannot
 // diverge on what counts as duplicate work. Both are postgres.js callers, so
 // the ledger query itself is shared too, not just the judgement.
@@ -37,11 +38,9 @@ import {
   judgeRedundantReservation,
 } from '../../../../../scripts/lib/migration-slug-dedup.mjs';
 
-// Fixed advisory-lock key for migration-number allocation — serialises
-// concurrent db:next-migration calls across connections/processes.
-// Exported so the regression test can hold it to reproduce the fsMax TOCTOU
-// window (EI-6852). Must match scripts/next-migration.mjs.
-export const ALLOC_ADVISORY_KEY = 873_135;
+// Re-export the canonical binding so the integration test can hold the same
+// lock to reproduce the fsMax TOCTOU window (EI-6852).
+export { ALLOC_ADVISORY_KEY };
 
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
