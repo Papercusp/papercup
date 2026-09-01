@@ -8,7 +8,7 @@
  * non-increase ratchet. A rise rolls the whole stage back and leaves a failed
  * `bulk-stage` ledger row outside the transaction.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
 import { admissionIdentity } from './harness/improvements/digest';
@@ -75,13 +75,8 @@ export const BULK_JUDGE_TOKEN_OVERHEAD = 500;
  * `pairsPerCall` and the `maxTokens` passed to the model both read from it, so
  * they cannot drift apart again.
  */
-export function maxPairsForOutputBudget(
-  maxOutputTokens: number = BULK_JUDGE_MAX_OUTPUT_TOKENS,
-): number {
-  return Math.max(
-    1,
-    Math.floor((maxOutputTokens - BULK_JUDGE_TOKEN_OVERHEAD) / BULK_JUDGE_TOKENS_PER_PAIR),
-  );
+export function maxPairsForOutputBudget(maxOutputTokens: number = BULK_JUDGE_MAX_OUTPUT_TOKENS): number {
+  return Math.max(1, Math.floor((maxOutputTokens - BULK_JUDGE_TOKEN_OVERHEAD) / BULK_JUDGE_TOKENS_PER_PAIR));
 }
 
 /** Output tokens a batch of `pairs` judgements needs. Never exceeds the ceiling
@@ -93,6 +88,12 @@ export const DEFAULT_BULK_SHARD_CONCURRENCY = 4;
 /** Bounded retries for a single model batch. A successful earlier batch stays
  * in memory, so only the failed batch is replayed. */
 export const DEFAULT_BULK_BATCH_RETRY_BACKOFFS_MS = [500, 1_500, 4_000] as const;
+export const BULK_STAGE_SCHEMA_VERSION = 'work-item-admission-bulk-stage-v2';
+export const BULK_BATCH_CHECKPOINT_SCHEMA_VERSION = 'work-item-admission-bulk-batch-v1';
+/** A live owner refreshes this lease before and after every batch. Two hours is
+ * deliberately much longer than one normal model call, while still letting a
+ * dead routine be reclaimed without manual row surgery. */
+export const DEFAULT_BULK_STAGE_LEASE_MS = 2 * 60 * 60_000;
 
 export type BulkDedupScope = 'full-corpus' | 'machine-emitter-targeted';
 
@@ -123,6 +124,79 @@ interface BulkInput {
   pairShard: Map<string, number>;
   ghostIdsByShard: Map<number, string[]>;
   memberCount: number;
+  fingerprint: string;
+}
+
+interface BulkBatchCheckpoint {
+  schemaVersion: typeof BULK_BATCH_CHECKPOINT_SCHEMA_VERSION;
+  key: string;
+  shard: number;
+  offset: number;
+  pairKeys: string[];
+  canary: boolean;
+  status: 'complete';
+  judgements: PromoterJudgement[];
+  modelCalls: number;
+  modelRetries: number;
+  modelProtocolFailures: number;
+  modelProtocolExhaustedBatches: number;
+  modelProtocolLastError: string | null;
+  ignoredUnknownJudgements: number;
+  omittedExpectedJudgements: number;
+  tokensIn: number;
+  tokensOut: number;
+  servedAccounts: string[];
+  completedAt: number;
+}
+
+interface BulkStageLease {
+  ownerId: string;
+  acquiredAt: number;
+  heartbeatAt: number;
+  expiresAt: number;
+  takeoverCount: number;
+}
+
+interface BulkStageEnvelope {
+  schemaVersion: string;
+  status?: string;
+  mode?: string;
+  scope?: BulkDedupScope;
+  sourceCensusRunId?: string;
+  inputFingerprint?: string;
+  lease?: BulkStageLease;
+  preflight?: BulkDedupPreflightResult;
+  canary?: { status: 'pending' | 'passed' | 'failed'; batchKey?: string; reason?: string; servedAccount?: string };
+  checkpoints?: { batches?: Record<string, BulkBatchCheckpoint> };
+  failure?: { class: string; message: string; retryable: boolean };
+  [key: string]: unknown;
+}
+
+export interface BulkModelFailureClassification {
+  kind: 'transport' | 'protocol' | 'capacity' | 'lease' | 'unknown';
+  class: string;
+  retryable: boolean;
+  message: string;
+}
+
+export class BulkAdmissionBlockedError extends Error {
+  readonly classification: BulkModelFailureClassification;
+  constructor(message: string, classification: BulkModelFailureClassification) {
+    super(message);
+    this.name = 'BulkAdmissionBlockedError';
+    this.classification = classification;
+  }
+}
+
+export class BulkRunActiveError extends Error {
+  readonly ownerId: string;
+  readonly expiresAt: number;
+  constructor(ownerId: string, expiresAt: number) {
+    super(`bulk admission run is already active under ${ownerId} until ${new Date(expiresAt).toISOString()}`);
+    this.name = 'BulkRunActiveError';
+    this.ownerId = ownerId;
+    this.expiresAt = expiresAt;
+  }
 }
 
 export interface BulkDedupStageResult {
@@ -144,6 +218,10 @@ export interface BulkDedupStageResult {
   censusBefore: number;
   censusAfter: number;
   scopedPairsAfter: number;
+  /** Accounts that actually served at least one model response in this stage. */
+  servedAccounts: string[];
+  /** Model batches recovered from the durable stage envelope rather than called again. */
+  reusedBatches: number;
 }
 
 export interface BulkDedupRunResult {
@@ -158,6 +236,29 @@ export interface BulkDedupRunResult {
 }
 
 type CensusRunner = (opts: AdmissionCensusRunOptions) => Promise<AdmissionCensusRunResult>;
+
+export type BulkDedupModelProvider = 'claude' | 'codex' | 'unknown';
+
+export interface BulkDedupPreflightResult {
+  status: 'ready' | 'unknown' | 'blocked';
+  provider: BulkDedupModelProvider;
+  model: string;
+  checkedAt: string;
+  reason: string;
+  /** Bounded, JSON-safe evidence from the reused account/gateway capacity readers. */
+  evidence?: Record<string, unknown>;
+}
+
+export type BulkDedupPreflight = (input: {
+  workspaceId: string;
+  harnessSlug: string;
+  model: string;
+  ownerId?: string;
+}) => Promise<BulkDedupPreflightResult>;
+
+/** DBOS-backed in production, direct in focused/integration tests. Step names
+ * are deterministic within one root run so DBOS can replay completed phases. */
+export type BulkDedupStepRunner = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 
 export interface BulkDedupRunOptions {
   workspaceId: string;
@@ -212,6 +313,16 @@ export interface BulkDedupRunOptions {
   /** Injectable sleep seam for retry tests; production uses setTimeout. */
   batchRetryDelay?: (ms: number) => Promise<void>;
   runCensus?: CensusRunner;
+  /** Model/account capacity check. Production supplies the shared probe/readers;
+   * direct tests may omit it, which is recorded as unknown and then proven by
+   * the mandatory one-batch canary. */
+  preflight?: BulkDedupPreflight;
+  /** Durable phase checkpoint seam (`runCheckpointedStep` in the routine). */
+  step?: BulkDedupStepRunner;
+  /** Stable owner of the stage lease. Production passes DBOS.workflowID. */
+  executionId?: string;
+  /** Injectable stale threshold for recovery tests. */
+  stageLeaseMs?: number;
 }
 
 function finiteMs(value: string | number | null): number {
@@ -322,7 +433,10 @@ async function readBulkInput(
   }
   for (const [shard, ids] of ghostIdsByShard) ghostIdsByShard.set(shard, [...new Set(ids)].sort());
 
-  return { items, pairs, pairShard, ghostIdsByShard, memberCount: memberRows.length };
+  const fingerprint = createHash('sha256')
+    .update(pairs.map((pair) => `${pair.pairKey}\x00${pairShard.get(pair.pairKey) ?? -1}`).join('\x01'))
+    .digest('hex');
+  return { items, pairs, pairShard, ghostIdsByShard, memberCount: memberRows.length, fingerprint };
 }
 
 export function buildBulkDedupPrompt(
@@ -376,27 +490,183 @@ export function assertAdmissionCensusRatchet(before: number, after: number): voi
   }
 }
 
+interface BulkStageRow {
+  id: string;
+  started_at: Date | string;
+  finished_at: Date | string | null;
+  detail: BulkStageEnvelope | null;
+}
+
+function parseStageEnvelope(value: unknown): BulkStageEnvelope {
+  if (!value || typeof value !== 'object') return { schemaVersion: BULK_STAGE_SCHEMA_VERSION };
+  const envelope = { ...(value as Record<string, unknown>) } as BulkStageEnvelope;
+  // Older rows predate the resumability envelope. Treat them as v2-shaped
+  // defaults while preserving every field they did record; this keeps a
+  // partially written/legacy row readable and makes the parser's type contract
+  // match the durable default used by beginBulkStage.
+  if (typeof envelope.schemaVersion !== 'string' || envelope.schemaVersion.length === 0) {
+    envelope.schemaVersion = BULK_STAGE_SCHEMA_VERSION;
+  }
+  return envelope;
+}
+
+function stageStatus(envelope: BulkStageEnvelope): string {
+  return typeof envelope.status === 'string' ? envelope.status : 'running';
+}
+
+function stageWasStale(
+  row: Pick<BulkStageRow, 'started_at' | 'finished_at'>,
+  envelope: BulkStageEnvelope,
+  nowMs: number,
+  leaseMs: number,
+): boolean {
+  if (row.finished_at != null || stageStatus(envelope) !== 'running') return false;
+  const leaseExpiry = Number(envelope.lease?.expiresAt);
+  if (Number.isFinite(leaseExpiry) && leaseExpiry > 0) return leaseExpiry <= nowMs;
+  const started = row.started_at instanceof Date ? row.started_at.getTime() : Date.parse(String(row.started_at));
+  return Number.isFinite(started) && nowMs - started >= leaseMs;
+}
+
+function modelProvider(model: string): BulkDedupModelProvider {
+  return /^(gpt-|chatgpt:|openai-codex\/)/i.test(model.trim()) ? 'codex' : model.trim() ? 'claude' : 'unknown';
+}
+
+/** Classify a bulk-run failure once, preserving the structured transport
+ * verdict instead of making downstream readers infer it from prose. */
+export function classifyBulkModelFailure(
+  error: unknown,
+  kind: BulkModelFailureClassification['kind'] = 'unknown',
+): BulkModelFailureClassification {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof BulkAdmissionBlockedError) return error.classification;
+  if (isLlmCallError(error)) {
+    const turn = error.turn as { class?: unknown; retryable?: unknown };
+    return {
+      kind: kind === 'unknown' ? 'transport' : kind,
+      class: typeof turn.class === 'string' ? turn.class : 'transport_error',
+      retryable: turn.retryable === true,
+      message,
+    };
+  }
+  return {
+    kind: kind === 'protocol' ? 'protocol' : kind,
+    class: kind === 'protocol' ? 'protocol_error' : isTransientNetworkError(error) ? 'transient_io' : 'unknown',
+    retryable: isTransientNetworkError(error),
+    message,
+  };
+}
+
+/** Reuse the gateway's live headroom reader for a cheap, bounded preflight.
+ * An unreachable gateway is recorded as UNKNOWN (the canary remains the
+ * authoritative serviceability proof); an observed zero-capacity pool blocks
+ * before spending a model call. */
+export async function defaultBulkDedupPreflight(input: {
+  workspaceId: string;
+  harnessSlug: string;
+  model: string;
+  ownerId?: string;
+}): Promise<BulkDedupPreflightResult> {
+  const provider = modelProvider(input.model);
+  const checkedAt = new Date().toISOString();
+  if (provider === 'unknown') {
+    return { status: 'blocked', provider, model: input.model, checkedAt, reason: 'model is empty or unresolvable' };
+  }
+  try {
+    const { fetchGatewayHeadroom } = await import('./inference-gateway/observability');
+    const headroom = await fetchGatewayHeadroom({ provider, timeoutMs: 1_500 });
+    if (!headroom.reachable) {
+      return {
+        status: 'unknown',
+        provider,
+        model: input.model,
+        checkedAt,
+        reason: headroom.error ?? 'gateway headroom could not be read',
+        evidence: { reachable: false },
+      };
+    }
+    if (headroom.healthyAccounts === undefined) {
+      return {
+        status: 'unknown',
+        provider,
+        model: input.model,
+        checkedAt,
+        reason: 'gateway is reachable but does not report provider account capacity',
+        evidence: { reachable: true, healthyAccounts: null, queueDepth: headroom.queueDepth ?? null },
+      };
+    }
+    if (headroom.healthyAccounts === 0) {
+      return {
+        status: 'blocked',
+        provider,
+        model: input.model,
+        checkedAt,
+        reason: 'gateway reports zero healthy accounts',
+        evidence: { reachable: true, healthyAccounts: 0, queueDepth: headroom.queueDepth ?? null },
+      };
+    }
+    return {
+      status: 'ready',
+      provider,
+      model: input.model,
+      checkedAt,
+      reason: 'gateway reports serviceable capacity',
+      evidence: {
+        reachable: true,
+        healthyAccounts: headroom.healthyAccounts ?? null,
+        queueDepth: headroom.queueDepth ?? null,
+        accountId: headroom.accountId ?? null,
+      },
+    };
+  } catch (error) {
+    return {
+      status: 'unknown',
+      provider,
+      model: input.model,
+      checkedAt,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function beginBulkStage(
   sql: OrgSql,
   input: {
-    runId: string;
+    id: string;
     workspaceId: string;
     harnessSlug: string;
     scope: BulkDedupScope;
     sourceCensusRunId: string;
     pairs: number;
+    inputFingerprint: string;
+    ownerId: string;
+    nowMs: number;
+    leaseMs: number;
   },
-): Promise<void> {
+): Promise<BulkStageEnvelope> {
+  const lease: BulkStageLease = {
+    ownerId: input.ownerId,
+    acquiredAt: input.nowMs,
+    heartbeatAt: input.nowMs,
+    expiresAt: input.nowMs + input.leaseMs,
+    takeoverCount: 0,
+  };
+  const envelope: BulkStageEnvelope = {
+    schemaVersion: BULK_STAGE_SCHEMA_VERSION,
+    status: 'running',
+    mode: 'bulk-dedup',
+    scope: input.scope,
+    sourceCensusRunId: input.sourceCensusRunId,
+    inputFingerprint: input.inputFingerprint,
+    lease,
+    canary: { status: 'pending' },
+    checkpoints: { batches: {} },
+  };
   await sql`
     INSERT INTO harness_shared.admission_runs
       (id, workspace_id, harness_slug, run_kind, started_at, batch_size, detail)
-    VALUES (${input.runId}, ${input.workspaceId}, ${input.harnessSlug}, 'bulk-stage', now(), ${input.pairs},
+    VALUES (${input.id}, ${input.workspaceId}, ${input.harnessSlug}, 'bulk-stage', now(), ${input.pairs},
             ${JSON.stringify({
-              schemaVersion: 'work-item-admission-bulk-stage-v1',
-              status: 'running',
-              mode: 'bulk-dedup',
-              scope: input.scope,
-              sourceCensusRunId: input.sourceCensusRunId,
+              ...envelope,
               outcome: {
                 unit: 'pairs',
                 attempted: input.pairs,
@@ -409,6 +679,241 @@ async function beginBulkStage(
               } satisfies AdmissionRunOutcome,
             })}::text::jsonb)
     ON CONFLICT (id) DO NOTHING`;
+  return envelope;
+}
+
+async function readBulkStage(sql: OrgSql, id: string): Promise<BulkStageRow | null> {
+  const rows = await sql<BulkStageRow[]>`
+    SELECT id, started_at, finished_at, detail
+      FROM harness_shared.admission_runs
+     WHERE id = ${id}
+     LIMIT 1`;
+  return rows[0] ?? null;
+}
+
+async function writeBulkStageEnvelope(
+  sql: OrgSql,
+  id: string,
+  envelope: BulkStageEnvelope,
+  ownerId?: string,
+): Promise<void> {
+  if (!ownerId) {
+    await sql`
+      UPDATE harness_shared.admission_runs
+         SET detail = COALESCE(detail, '{}'::jsonb) || ${JSON.stringify(envelope)}::text::jsonb
+       WHERE id = ${id}`;
+    return;
+  }
+  const rows = await sql`
+    UPDATE harness_shared.admission_runs
+       SET detail = COALESCE(detail, '{}'::jsonb) || ${JSON.stringify(envelope)}::text::jsonb
+     WHERE id = ${id}
+       AND detail->'lease'->>'ownerId' = ${ownerId}
+     RETURNING id`;
+  if (!rows?.length) throw new BulkRunActiveError('unknown-owner', Date.now());
+}
+
+interface BulkStageLeaseState {
+  envelope: BulkStageEnvelope;
+  reused: boolean;
+  complete: boolean;
+}
+
+/** Acquire/reacquire a stage lease. The conditional UPDATE is the final fence:
+ * a second executor cannot proceed while a different owner has a live lease. */
+async function acquireBulkStageLease(
+  sql: OrgSql,
+  input: {
+    id: string;
+    ownerId: string;
+    nowMs: number;
+    leaseMs: number;
+    inputFingerprint: string;
+    sourceCensusRunId: string;
+    scope: BulkDedupScope;
+    pairs: number;
+    workspaceId: string;
+    harnessSlug: string;
+  },
+): Promise<BulkStageLeaseState> {
+  const inserted = await beginBulkStage(sql, input);
+  const row = await readBulkStage(sql, input.id);
+  if (!row) throw new Error(`bulk stage ${input.id} disappeared after creation`);
+  const current = parseStageEnvelope(row.detail ?? inserted);
+  const currentStatus = stageStatus(current);
+  if (currentStatus === 'complete') return { envelope: current, reused: true, complete: true };
+
+  const stale = stageWasStale(row, current, input.nowMs, input.leaseMs);
+  const currentOwner = current.lease?.ownerId;
+  const currentExpiry = Number(current.lease?.expiresAt);
+  if (
+    currentStatus === 'running' &&
+    currentOwner &&
+    currentOwner !== input.ownerId &&
+    !stale &&
+    Number.isFinite(currentExpiry) &&
+    currentExpiry > input.nowMs
+  ) {
+    throw new BulkRunActiveError(currentOwner, currentExpiry);
+  }
+
+  const takeoverCount =
+    stale && currentOwner && currentOwner !== input.ownerId
+      ? Number(current.lease?.takeoverCount ?? 0) + 1
+      : Number(current.lease?.takeoverCount ?? 0);
+  const next: BulkStageEnvelope = {
+    ...current,
+    schemaVersion: BULK_STAGE_SCHEMA_VERSION,
+    status: 'running',
+    mode: 'bulk-dedup',
+    scope: input.scope,
+    sourceCensusRunId: input.sourceCensusRunId,
+    inputFingerprint: input.inputFingerprint,
+    lease: {
+      ownerId: input.ownerId,
+      acquiredAt: current.lease?.acquiredAt ?? input.nowMs,
+      heartbeatAt: input.nowMs,
+      expiresAt: input.nowMs + input.leaseMs,
+      takeoverCount,
+    },
+    canary:
+      current.inputFingerprint === input.inputFingerprint
+        ? (current.canary ?? { status: 'pending' })
+        : { status: 'pending' },
+    checkpoints:
+      current.inputFingerprint === input.inputFingerprint
+        ? { batches: current.checkpoints?.batches ?? {} }
+        : { batches: {} },
+    // Capacity blocks are retryable. A re-arm must take a fresh headroom
+    // reading rather than fossilizing the previous zero-capacity verdict.
+    preflight: currentStatus === 'blocked' ? undefined : current.preflight,
+  };
+  // Preserve an explicit failure history while making the live state resumable.
+  if (currentStatus === 'failed' || currentStatus === 'blocked') {
+    next.failureHistory = [
+      ...(Array.isArray(current.failureHistory) ? current.failureHistory : []),
+      ...(current.failure ? [{ ...current.failure, at: input.nowMs }] : []),
+    ].slice(-8);
+    delete next.failure;
+  }
+  const updated = await sql`
+    UPDATE harness_shared.admission_runs
+       SET finished_at = NULL,
+           detail = ${JSON.stringify(next)}::text::jsonb
+     WHERE id = ${input.id}
+       AND (
+         detail->>'status' IS DISTINCT FROM 'running'
+         OR detail->'lease'->>'ownerId' = ${input.ownerId}
+         OR COALESCE(NULLIF(detail->'lease'->>'expiresAt', '')::double precision, 0) <= ${input.nowMs}
+       )
+     RETURNING id`;
+  if (!updated?.length) {
+    const latest = await readBulkStage(sql, input.id);
+    const latestEnvelope = parseStageEnvelope(latest?.detail);
+    const expiry = Number(latestEnvelope.lease?.expiresAt);
+    if (latestEnvelope.lease?.ownerId && Number.isFinite(expiry) && expiry > input.nowMs) {
+      throw new BulkRunActiveError(latestEnvelope.lease.ownerId, expiry);
+    }
+    throw new Error(`could not acquire bulk stage lease ${input.id}`);
+  }
+  return {
+    envelope: next,
+    reused: current.inputFingerprint === input.inputFingerprint,
+    complete: false,
+  };
+}
+
+async function heartbeatBulkStage(
+  sql: OrgSql,
+  input: { id: string; ownerId: string; nowMs: number; leaseMs: number },
+): Promise<void> {
+  const rows = await sql`
+    UPDATE harness_shared.admission_runs
+       SET detail = jsonb_set(
+         COALESCE(detail, '{}'::jsonb),
+         '{lease}',
+         jsonb_build_object(
+           'ownerId', ${input.ownerId}::text,
+           'acquiredAt', COALESCE((detail->'lease'->>'acquiredAt')::double precision, ${input.nowMs}::double precision),
+           'heartbeatAt', ${input.nowMs}::double precision,
+           'expiresAt', ${input.nowMs + input.leaseMs}::double precision,
+           'takeoverCount', COALESCE((detail->'lease'->>'takeoverCount')::int, 0)
+         ),
+         true
+       )
+     WHERE id = ${input.id} AND detail->'lease'->>'ownerId' = ${input.ownerId}
+     RETURNING id`;
+  if (!rows?.length) throw new BulkRunActiveError('unknown-owner', input.nowMs);
+}
+
+function batchCheckpointKey(stageRunId: string, shard: number, offset: number, pairKeys: readonly string[]): string {
+  const digest = createHash('sha256')
+    .update(`${stageRunId}\x00${shard}\x00${offset}\x00${pairKeys.join('\x01')}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `shard-${shard}-offset-${offset}-${digest}`;
+}
+
+function checkpointMatchesBatch(
+  checkpoint: BulkBatchCheckpoint | undefined,
+  batch: readonly PromoterPair[],
+): checkpoint is BulkBatchCheckpoint {
+  if (
+    !checkpoint ||
+    checkpoint.status !== 'complete' ||
+    checkpoint.schemaVersion !== BULK_BATCH_CHECKPOINT_SCHEMA_VERSION
+  )
+    return false;
+  const expected = batch.map((pair) => pair.pairKey);
+  return expected.length === checkpoint.pairKeys.length && expected.every((key, i) => key === checkpoint.pairKeys[i]);
+}
+
+async function persistBulkBatchCheckpoint(
+  sql: OrgSql,
+  input: { stageRunId: string; ownerId: string; nowMs: number; leaseMs: number; checkpoint: BulkBatchCheckpoint },
+): Promise<void> {
+  const path = ['checkpoints', 'batches', input.checkpoint.key];
+  const rows = await sql`
+    UPDATE harness_shared.admission_runs
+       SET detail = (
+         jsonb_set(
+           jsonb_set(
+             COALESCE(detail, '{}'::jsonb),
+             '{checkpoints}',
+             COALESCE(detail->'checkpoints', '{}'::jsonb) || jsonb_build_object(
+               'batches', COALESCE(detail->'checkpoints'->'batches', '{}'::jsonb)
+             ),
+             true
+           ),
+           ${path}::text[],
+           ${JSON.stringify(input.checkpoint)}::text::jsonb,
+           true
+         )
+         || jsonb_build_object(
+           'lease', jsonb_build_object(
+             'ownerId', ${input.ownerId}::text,
+             'acquiredAt', COALESCE((detail->'lease'->>'acquiredAt')::double precision, ${input.nowMs}::double precision),
+             'heartbeatAt', ${input.nowMs}::double precision,
+             'expiresAt', ${input.nowMs + input.leaseMs}::double precision,
+             'takeoverCount', COALESCE((detail->'lease'->>'takeoverCount')::int, 0)
+           )
+         )
+       )
+     WHERE id = ${input.stageRunId} AND detail->'lease'->>'ownerId' = ${input.ownerId}
+     RETURNING id`;
+  if (!rows?.length) throw new BulkRunActiveError('unknown-owner', input.nowMs);
+}
+
+async function persistBulkStageField(
+  sql: OrgSql,
+  input: { stageRunId: string; ownerId: string; path: string[]; value: unknown },
+): Promise<void> {
+  const rows = await sql`
+    UPDATE harness_shared.admission_runs
+       SET detail = jsonb_set(COALESCE(detail, '{}'::jsonb), ${input.path}::text[], ${JSON.stringify(input.value)}::text::jsonb, true)
+     WHERE id = ${input.stageRunId} AND detail->'lease'->>'ownerId' = ${input.ownerId}
+     RETURNING id`;
+  if (!rows?.length) throw new BulkRunActiveError('unknown-owner', Date.now());
 }
 
 const MAX_BULK_ERROR_CAUSE_DEPTH = 8;
@@ -448,16 +953,23 @@ async function failBulkStage(
   runId: string,
   error: unknown,
   attempted: number | null = null,
+  ownerId?: string,
 ): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
   const cause = error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined;
+  const failure = classifyBulkModelFailure(error);
+  const status = failure.kind === 'capacity' ? 'blocked' : 'failed';
   await sql`
     UPDATE harness_shared.admission_runs
        SET finished_at = now(),
            detail = (COALESCE(detail, '{}'::jsonb) - 'errorCause') ||
                     ${JSON.stringify({
-                      status: 'failed',
+                      status,
                       error: message,
+                      failure,
+                      ...(failure.class === 'canary_protocol_failure'
+                        ? { canary: { status: 'failed', reason: failure.message } }
+                        : {}),
                       outcome: {
                         unit: 'pairs',
                         attempted,
@@ -468,12 +980,15 @@ async function failBulkStage(
                         rolledBack: null,
                         unchanged: null,
                         uniqueRowsChanged: null,
-                        failureReason: message,
-                        blockedReason: null,
+                        failureReason: status === 'failed' ? message : null,
+                        blockedReason: status === 'blocked' ? message : null,
                       } satisfies AdmissionRunOutcome,
                       ...(cause !== undefined ? { errorCause: serializeBulkErrorCause(cause) } : {}),
                     })}::text::jsonb
-     WHERE id = ${runId}`.catch(() => undefined);
+     WHERE id = ${runId}
+       AND (${ownerId ?? null}::text IS NULL OR detail->'lease'->>'ownerId' = ${ownerId ?? null})`.catch(
+    () => undefined,
+  );
 }
 
 type BulkModelResponse = Awaited<ReturnType<PromoterLlmCall>>;
@@ -583,8 +1098,15 @@ async function judgeBulkPairs(
     pairsPerCall: number;
     shardConcurrency: number;
     ownerId?: string;
+    executionId: string;
     batchRetryBackoffsMs: readonly number[];
     batchRetryDelay: (ms: number) => Promise<void>;
+    stageRunId: string;
+    sql: OrgSql;
+    leaseMs: number;
+    now: () => number;
+    step: BulkDedupStepRunner;
+    checkpoints: Record<string, BulkBatchCheckpoint>;
   },
 ): Promise<{
   judgements: PromoterJudgement[];
@@ -597,6 +1119,8 @@ async function judgeBulkPairs(
   omittedExpectedJudgements: number;
   tokensIn: number;
   tokensOut: number;
+  servedAccounts: string[];
+  reusedBatches: number;
 }> {
   const byShard = new Map<number, PromoterPair[]>();
   for (const pair of input.pairs) {
@@ -606,6 +1130,26 @@ async function judgeBulkPairs(
   }
 
   const shardEntries = [...byShard.entries()].sort((a, b) => a[0] - b[0]);
+  const firstBatchKey = (() => {
+    const first = shardEntries[0];
+    return first
+      ? batchCheckpointKey(
+          opts.stageRunId,
+          first[0],
+          0,
+          first[1].slice(0, opts.pairsPerCall).map((p) => p.pairKey),
+        )
+      : null;
+  })();
+  let resolveCanary!: () => void;
+  let rejectCanary!: (error: unknown) => void;
+  const canaryGate = new Promise<void>((resolve, reject) => {
+    resolveCanary = resolve;
+    rejectCanary = reject;
+  });
+  // A one-batch stage has no waiter, but a failed canary still rejects the gate.
+  void canaryGate.catch(() => undefined);
+  if (!firstBatchKey) resolveCanary();
   const results = new Array<{
     judgements: PromoterJudgement[];
     modelCalls: number;
@@ -617,6 +1161,8 @@ async function judgeBulkPairs(
     omittedExpectedJudgements: number;
     tokensIn: number;
     tokensOut: number;
+    servedAccounts: string[];
+    reusedBatches: number;
   }>(shardEntries.length);
   let nextShardIndex = 0;
   const judgeShard = async (shard: number, shardPairs: PromoterPair[]) => {
@@ -630,25 +1176,78 @@ async function judgeBulkPairs(
     let omittedExpectedJudgements = 0;
     let tokensIn = 0;
     let tokensOut = 0;
+    const servedAccounts = new Set<string>();
+    let reusedBatches = 0;
     const ghostItems = (input.ghostIdsByShard.get(shard) ?? [])
       .map((id) => input.items.get(id))
       .filter((item): item is PromoterItem => Boolean(item));
     for (let offset = 0; offset < shardPairs.length; offset += opts.pairsPerCall) {
       const batch = shardPairs.slice(offset, offset + opts.pairsPerCall);
+      const pairKeys = batch.map((pair) => pair.pairKey);
+      const checkpointKey = batchCheckpointKey(opts.stageRunId, shard, offset, pairKeys);
+      const saved = opts.checkpoints[checkpointKey];
+      if (checkpointMatchesBatch(saved, batch)) {
+        if (saved.canary) {
+          // Keep the DBOS call sequence stable on a recovery replay: the first
+          // batch is always represented by the same named step, even when its
+          // parsed result is now coming from admission_runs.
+          await opts.step(`bulk:${opts.stageRunId}:canary`, async () => undefined);
+          resolveCanary();
+        }
+        judgements.push(...saved.judgements);
+        // A checkpoint is the durable accounting record for one unique batch.
+        // Fold its counters in exactly once so the terminal stage still reports
+        // the whole run after a takeover; reusedBatches separately explains how
+        // much of that work this executor recovered rather than re-issued.
+        modelCalls += saved.modelCalls;
+        modelRetries += saved.modelRetries;
+        modelProtocolFailures += saved.modelProtocolFailures;
+        modelProtocolExhaustedBatches += saved.modelProtocolExhaustedBatches;
+        if (saved.modelProtocolLastError) modelProtocolLastError = saved.modelProtocolLastError;
+        ignoredUnknownJudgements += saved.ignoredUnknownJudgements;
+        omittedExpectedJudgements += saved.omittedExpectedJudgements;
+        tokensIn += saved.tokensIn;
+        tokensOut += saved.tokensOut;
+        for (const account of saved.servedAccounts) servedAccounts.add(account);
+        reusedBatches += 1;
+        continue;
+      }
       const prompt = buildBulkDedupPrompt(batch, ghostItems);
-      const attempted = await callBulkModelBatchWithRetry(
-        () =>
-          opts.llmCall({
-            model: opts.model,
-            system: prompt.system,
-            messages: [{ role: 'user', content: prompt.user }],
-            responseFormat: 'json',
-            maxTokens: bulkJudgeMaxTokens(batch.length),
-            ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
-          }),
-        (response) => parsePromoterJudgements(responsePayload(response)),
-        { backoffsMs: opts.batchRetryBackoffsMs, delay: opts.batchRetryDelay },
-      );
+      const canary = checkpointKey === firstBatchKey;
+      // Exactly one batch proves model + account serviceability before the
+      // remaining shards spend capacity. Once it returns a schema-valid result,
+      // independent shards fan out under the ordinary concurrency bound.
+      if (!canary) await canaryGate;
+      await heartbeatBulkStage(opts.sql, {
+        id: opts.stageRunId,
+        ownerId: opts.executionId,
+        nowMs: opts.now(),
+        leaseMs: opts.leaseMs,
+      });
+      const callBatch = () =>
+        callBulkModelBatchWithRetry(
+          () =>
+            opts.llmCall({
+              model: opts.model,
+              system: prompt.system,
+              messages: [{ role: 'user', content: prompt.user }],
+              responseFormat: 'json',
+              maxTokens: bulkJudgeMaxTokens(batch.length),
+              ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
+            }),
+          (response) => parsePromoterJudgements(responsePayload(response)),
+          { backoffsMs: opts.batchRetryBackoffsMs, delay: opts.batchRetryDelay },
+        );
+      // The canary is the DBOS-visible model checkpoint. Remaining batches use
+      // the admission_runs checkpoints below; concurrent DBOS.runStep calls
+      // would allocate replay function ids nondeterministically.
+      let attempted: Awaited<ReturnType<typeof callBatch>>;
+      try {
+        attempted = canary ? await opts.step(`bulk:${opts.stageRunId}:canary`, callBatch) : await callBatch();
+      } catch (error) {
+        if (canary) rejectCanary(error);
+        throw error;
+      }
       modelRetries += attempted.retries;
       modelProtocolFailures += attempted.protocolFailures;
       if (attempted.protocolError) modelProtocolLastError = attempted.protocolError;
@@ -660,6 +1259,24 @@ async function judgeBulkPairs(
       const returned = new Set(accepted.map((judgement) => judgement.pairKey));
       const missing = batch.map((pair) => pair.pairKey).filter((key) => !returned.has(key));
       omittedExpectedJudgements += missing.length;
+      if (attempted.response.servedAccount?.trim()) servedAccounts.add(attempted.response.servedAccount.trim());
+      if (canary && attempted.value === null) {
+        const error = new BulkAdmissionBlockedError(
+          `bulk admission canary failed for ${checkpointKey}: no valid expected judgement`,
+          {
+            kind: 'protocol',
+            class: 'canary_protocol_failure',
+            retryable: false,
+            message: attempted.protocolError ?? 'canary response omitted every expected pair',
+          },
+        );
+        rejectCanary(error);
+        throw error;
+      }
+      // The canary has now produced a schema-valid response for an expected
+      // pair. Only at this point may the remaining shard workers spend model
+      // capacity; their DB writes are still held behind the stage transaction.
+      if (canary) resolveCanary();
       // Model text is untrusted evidence. Extra cross-pairs are ignored, while
       // omitted expected pairs flow into planPromoterDispositions' existing
       // fail-open hold path and are reconsidered in the next shrinking stage.
@@ -667,6 +1284,50 @@ async function judgeBulkPairs(
       modelCalls += 1;
       tokensIn += attempted.tokensIn;
       tokensOut += attempted.tokensOut;
+      const checkpoint: BulkBatchCheckpoint = {
+        schemaVersion: BULK_BATCH_CHECKPOINT_SCHEMA_VERSION,
+        key: checkpointKey,
+        shard,
+        offset,
+        pairKeys,
+        canary,
+        status: 'complete',
+        judgements: accepted,
+        modelCalls: 1,
+        modelRetries: attempted.retries,
+        modelProtocolFailures: attempted.protocolFailures,
+        modelProtocolExhaustedBatches: attempted.value === null ? 1 : 0,
+        modelProtocolLastError: attempted.protocolError,
+        ignoredUnknownJudgements: parsed.length - accepted.length,
+        omittedExpectedJudgements: missing.length,
+        tokensIn: attempted.tokensIn,
+        tokensOut: attempted.tokensOut,
+        servedAccounts: attempted.response.servedAccount?.trim() ? [attempted.response.servedAccount.trim()] : [],
+        completedAt: opts.now(),
+      };
+      // A protocol-exhausted response is not a completed batch. Leaving it
+      // uncheckpointed makes a later stale-run takeover retry the batch rather
+      // than fossilizing an omission as successful work.
+      if (attempted.value !== null)
+        await persistBulkBatchCheckpoint(opts.sql, {
+          stageRunId: opts.stageRunId,
+          ownerId: opts.executionId,
+          nowMs: opts.now(),
+          leaseMs: opts.leaseMs,
+          checkpoint,
+        });
+      if (canary) {
+        await persistBulkStageField(opts.sql, {
+          stageRunId: opts.stageRunId,
+          ownerId: opts.executionId,
+          path: ['canary'],
+          value: {
+            status: 'passed',
+            batchKey: checkpointKey,
+            ...(checkpoint.servedAccounts[0] ? { servedAccount: checkpoint.servedAccounts[0] } : {}),
+          },
+        });
+      }
     }
     return {
       judgements,
@@ -679,6 +1340,8 @@ async function judgeBulkPairs(
       omittedExpectedJudgements,
       tokensIn,
       tokensOut,
+      servedAccounts: [...servedAccounts].sort(),
+      reusedBatches,
     };
   };
   const workers = Array.from({ length: Math.min(opts.shardConcurrency, shardEntries.length) }, async () => {
@@ -705,6 +1368,8 @@ async function judgeBulkPairs(
     omittedExpectedJudgements: results.reduce((sum, result) => sum + result.omittedExpectedJudgements, 0),
     tokensIn: results.reduce((sum, result) => sum + result.tokensIn, 0),
     tokensOut: results.reduce((sum, result) => sum + result.tokensOut, 0),
+    servedAccounts: [...new Set(results.flatMap((result) => result.servedAccounts))].sort(),
+    reusedBatches: results.reduce((sum, result) => sum + result.reusedBatches, 0),
   };
 }
 
@@ -712,16 +1377,19 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
   const rootRunId = opts.runId ?? `bulk-dedup-${now()}-${randomUUID().slice(0, 8)}`;
+  const executionId = opts.executionId?.trim() || `bulk-executor:${rootRunId}:${randomUUID().slice(0, 12)}`;
+  const leaseMs =
+    Number.isFinite(opts.stageLeaseMs) && (opts.stageLeaseMs ?? 0) > 0
+      ? Math.max(1, Math.floor(opts.stageLeaseMs!))
+      : DEFAULT_BULK_STAGE_LEASE_MS;
+  const step: BulkDedupStepRunner = opts.step ?? (async <T>(_name: string, fn: () => Promise<T>) => fn());
   const maxStages = Math.max(1, Math.floor(opts.maxStages ?? DEFAULT_BULK_MAX_STAGES));
   // Clamp to what ONE batch's output budget can actually hold. A larger request
   // does not produce a bigger answer, it produces a TRUNCATED one that fails
   // parsing identically on every retry (see BULK_JUDGE_MAX_OUTPUT_TOKENS).
   const pairsPerCall = Math.max(
     1,
-    Math.min(
-      maxPairsForOutputBudget(),
-      Math.min(200, Math.floor(opts.pairsPerCall ?? DEFAULT_BULK_PAIRS_PER_CALL)),
-    ),
+    Math.min(maxPairsForOutputBudget(), Math.min(200, Math.floor(opts.pairsPerCall ?? DEFAULT_BULK_PAIRS_PER_CALL))),
   );
   const shardConcurrency = Math.max(
     1,
@@ -736,13 +1404,57 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   // Resolved ONCE and used for both the model calls and the ledger write, so
   // `admission_runs.model_id` can never disagree with the model that ran.
   const model = opts.model?.trim() || LEARNING_MODEL_SPEC;
+  const preflight: BulkDedupPreflight =
+    opts.preflight ??
+    (async (input) => ({
+      status: 'unknown',
+      provider: modelProvider(input.model),
+      model: input.model,
+      checkedAt: new Date(now()).toISOString(),
+      reason: 'no production capacity preflight was configured; the one-batch canary is authoritative',
+    }));
   const censusBase = {
     ...(opts.census ?? {}),
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
   };
 
-  let census = await runCensus({ ...censusBase, sql, runId: `${rootRunId}-census-0` });
+  // A terminal stage is the durable idempotency answer for a repeated root
+  // runId. Return its recorded result without issuing another census/model call.
+  const priorFirstStage = await readBulkStage(sql, `${rootRunId}-stage-1`);
+  const priorEnvelope = parseStageEnvelope(priorFirstStage?.detail);
+  const priorResult = priorEnvelope.stageResult as BulkDedupStageResult | undefined;
+  if (
+    stageStatus(priorEnvelope) === 'complete' &&
+    priorResult &&
+    (priorEnvelope.convergence === 'global-zero' || priorEnvelope.convergence === 'scope-zero')
+  ) {
+    const savedRun = priorEnvelope.runResult as BulkDedupRunResult | undefined;
+    const replayResult: BulkDedupRunResult = savedRun ?? {
+      runId: rootRunId,
+      scope: priorResult.scope,
+      converged: true,
+      convergenceReason: priorEnvelope.convergence,
+      initialCensus: Number(priorEnvelope.initialCensus ?? priorResult.censusBefore),
+      finalCensus: priorResult.censusAfter,
+      finalScopedPairs: 0,
+      stages: [priorResult],
+    };
+    // A completed root is a no-op at the application layer, but a DBOS recovery
+    // must still encounter the same named steps in the same order. Direct calls
+    // execute these no-op thunks; DBOS returns the previously checkpointed
+    // outputs, which are deliberately ignored because the terminal envelope is
+    // the authoritative result.
+    await step(`bulk:${rootRunId}:census:0`, async () => undefined);
+    for (const stage of replayResult.stages) {
+      if (stage.pairs > 0) await step(`bulk:${stage.runId}:canary`, async () => undefined);
+    }
+    return replayResult;
+  }
+
+  let census = await step(`bulk:${rootRunId}:census:0`, () =>
+    runCensus({ ...censusBase, sql, runId: `${rootRunId}-census-0` }),
+  );
   const initialCensus = census.censusAfter;
   const scope = census.projection.recommendedBulkScope;
   const stageLimit = scope === 'machine-emitter-targeted' ? 1 : maxStages;
@@ -757,18 +1469,73 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       scope,
     });
     const stageRunId = `${rootRunId}-stage-${stageIndex}`;
-    await beginBulkStage(sql, {
-      runId: stageRunId,
+    const leaseState = await acquireBulkStageLease(sql, {
+      id: stageRunId,
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       scope,
       sourceCensusRunId: census.runId,
       pairs: input.pairs.length,
+      inputFingerprint: input.fingerprint,
+      ownerId: executionId,
+      nowMs: now(),
+      leaseMs,
     });
+    let stageEnvelope = leaseState.envelope;
+    const savedCheckpoints =
+      stageEnvelope.inputFingerprint === input.fingerprint ? (stageEnvelope.checkpoints?.batches ?? {}) : {};
+
+    if (stageStatus(stageEnvelope) === 'complete' && stageEnvelope.stageResult) {
+      const savedStage = stageEnvelope.stageResult as BulkDedupStageResult;
+      if (savedStage.pairs > 0) await step(`bulk:${savedStage.runId}:canary`, async () => undefined);
+      stages.push(savedStage);
+      if (stageEnvelope.convergence === 'global-zero' || stageEnvelope.convergence === 'scope-zero') {
+        return {
+          runId: rootRunId,
+          scope,
+          converged: true,
+          convergenceReason: stageEnvelope.convergence,
+          initialCensus,
+          finalCensus: savedStage.censusAfter,
+          finalScopedPairs: savedStage.scopedPairsAfter,
+          stages,
+        };
+      }
+      if (savedStage.resultCensusRunId) {
+        // A completed non-terminal stage can be resumed from its result census;
+        // the next loop iteration will read the pinned map afresh.
+        const resumed = await runCensus({ ...censusBase, sql, runId: savedStage.resultCensusRunId });
+        census = resumed;
+        continue;
+      }
+    }
+
+    const preflightResult =
+      stageEnvelope.preflight ??
+      (await preflight({
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+        model,
+        ownerId: executionId,
+      }));
+    if (!stageEnvelope.preflight) {
+      stageEnvelope = { ...stageEnvelope, preflight: preflightResult };
+      await writeBulkStageEnvelope(sql, stageRunId, stageEnvelope, executionId);
+    }
+    if (preflightResult.status === 'blocked') {
+      const error = new BulkAdmissionBlockedError(`bulk admission preflight blocked: ${preflightResult.reason}`, {
+        kind: 'capacity',
+        class: 'preflight_capacity_unavailable',
+        retryable: true,
+        message: preflightResult.reason,
+      });
+      await failBulkStage(sql, stageRunId, error, input.pairs.length, executionId);
+      throw error;
+    }
 
     if (input.pairs.length === 0) {
       const convergenceReason = census.censusAfter === 0 ? 'global-zero' : 'scope-zero';
-      await sql`
+      const completedRows = await sql`
         UPDATE harness_shared.admission_runs
            SET finished_at = now(), promoted = 0, merged = 0, held = 0,
                census_before = ${census.censusAfter}, census_after = ${census.censusAfter},
@@ -789,7 +1556,10 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                    blockedReason: null,
                  } satisfies AdmissionRunOutcome,
                })}::text::jsonb
-         WHERE id = ${stageRunId}`;
+         WHERE id = ${stageRunId}
+           AND detail->'lease'->>'ownerId' = ${executionId}
+         RETURNING id`;
+      if (!completedRows?.length) throw new BulkRunActiveError('unknown-owner', now());
       stages.push({
         runId: stageRunId,
         sourceCensusRunId: census.runId,
@@ -809,7 +1579,32 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         censusBefore: census.censusAfter,
         censusAfter: census.censusAfter,
         scopedPairsAfter: 0,
+        servedAccounts: [],
+        reusedBatches: 0,
       });
+      const emptyStage = stages.at(-1)!;
+      await writeBulkStageEnvelope(
+        sql,
+        stageRunId,
+        {
+          schemaVersion: BULK_STAGE_SCHEMA_VERSION,
+          status: 'complete',
+          convergence: convergenceReason,
+          initialCensus,
+          stageResult: emptyStage,
+          runResult: {
+            runId: rootRunId,
+            scope,
+            converged: true,
+            convergenceReason,
+            initialCensus,
+            finalCensus: census.censusAfter,
+            finalScopedPairs: 0,
+            stages,
+          },
+        },
+        executionId,
+      );
       return {
         runId: rootRunId,
         scope,
@@ -830,8 +1625,15 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         pairsPerCall,
         shardConcurrency,
         ownerId: opts.ownerId,
+        executionId,
         batchRetryBackoffsMs,
         batchRetryDelay,
+        stageRunId,
+        sql,
+        leaseMs,
+        now,
+        step,
+        checkpoints: savedCheckpoints,
       });
       const itemIds = new Set(input.pairs.flatMap((pair) => [pair.a.id, pair.b.id]));
       const stageItems = [...itemIds].map((id) => input.items.get(id)!).filter(Boolean);
@@ -890,12 +1692,14 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           censusBefore: census.censusAfter,
           censusAfter: nextCensus.censusAfter,
           scopedPairsAfter: nextInput.pairs.length,
+          servedAccounts: judged.servedAccounts,
+          reusedBatches: judged.reusedBatches,
         };
         const verdicts = plan.adjudications.reduce<Record<string, number>>((acc, row) => {
           acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;
           return acc;
         }, {});
-        await tx`
+        const completedRows = await tx`
           UPDATE harness_shared.admission_runs
              SET finished_at = now(), promoted = 0, merged = ${merged}, held = ${held},
                  census_before = ${census.censusAfter}, census_after = ${nextCensus.censusAfter},
@@ -921,6 +1725,9 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                      ignoredUnknownJudgements: judged.ignoredUnknownJudgements,
                      omittedExpectedJudgements: judged.omittedExpectedJudgements,
                    },
+                   servedAccounts: judged.servedAccounts,
+                   reusedBatches: judged.reusedBatches,
+                   preflight: preflightResult,
                    verdicts,
                    // before/after only. There used to be an `ok: true` here, a
                    // HARDCODED literal: this write is downstream of
@@ -942,7 +1749,53 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                      blockedReason: null,
                    } satisfies AdmissionRunOutcome,
                  })}::text::jsonb
-           WHERE id = ${stageRunId}`;
+           WHERE id = ${stageRunId}
+             AND detail->'lease'->>'ownerId' = ${executionId}
+           RETURNING id`;
+        if (!completedRows?.length) throw new BulkRunActiveError('unknown-owner', now());
+        const completedEnvelope: BulkStageEnvelope = {
+          schemaVersion: BULK_STAGE_SCHEMA_VERSION,
+          status: 'complete',
+          convergence:
+            nextInput.pairs.length === 0 ? (nextCensus.censusAfter === 0 ? 'global-zero' : 'scope-zero') : null,
+          resultCensusRunId: nextCensus.runId,
+          stageResult: stage,
+          initialCensus,
+          runResult:
+            nextInput.pairs.length === 0
+              ? {
+                  runId: rootRunId,
+                  scope,
+                  converged: true,
+                  convergenceReason: nextCensus.censusAfter === 0 ? 'global-zero' : 'scope-zero',
+                  initialCensus,
+                  finalCensus: nextCensus.censusAfter,
+                  finalScopedPairs: 0,
+                  stages: [...stages, stage],
+                }
+              : undefined,
+          lease: {
+            ...(stageEnvelope.lease ?? { acquiredAt: now() }),
+            ownerId: executionId,
+            heartbeatAt: now(),
+            expiresAt: now() + leaseMs,
+            takeoverCount: stageEnvelope.lease?.takeoverCount ?? 0,
+          },
+          outcome: {
+            unit: 'pairs',
+            attempted: input.pairs.length,
+            successful: plan.adjudications.length,
+            rolledBack: 0,
+            unchanged: Math.max(0, plan.adjudications.length - merged),
+            uniqueRowsChanged: merged,
+            failureReason: null,
+            blockedReason: null,
+          } satisfies AdmissionRunOutcome,
+        };
+        // Merge only terminal fields. Spreading the pre-judge envelope here
+        // would overwrite `checkpoints.batches` with its stale snapshot and
+        // erase every checkpoint written during this stage.
+        await writeBulkStageEnvelope(tx, stageRunId, completedEnvelope, executionId);
         committed = { census: nextCensus, scopedPairsAfter: nextInput.pairs.length, stage };
       });
 
@@ -968,7 +1821,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       }
       census = committed.census;
     } catch (error) {
-      await failBulkStage(sql, stageRunId, error, input.pairs.length);
+      await failBulkStage(sql, stageRunId, error, input.pairs.length, executionId);
       throw error;
     }
   }

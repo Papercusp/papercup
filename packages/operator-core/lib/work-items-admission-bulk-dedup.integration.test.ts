@@ -176,6 +176,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
           },
           inputTokens: 100,
           outputTokens: 20,
+          servedAccount: 'pool-account-a',
         };
       },
     });
@@ -185,7 +186,13 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(result.initialCensus).toBe(1);
     expect(result.finalCensus).toBe(0);
     expect(result.stages).toHaveLength(1);
-    expect(result.stages[0]).toMatchObject({ pairs: 1, merged: 1, censusBefore: 1, censusAfter: 0 });
+    expect(result.stages[0]).toMatchObject({
+      pairs: 1,
+      merged: 1,
+      censusBefore: 1,
+      censusAfter: 0,
+      servedAccounts: ['pool-account-a'],
+    });
 
     const items = await db.sql<Array<{ feature_id: string; status: string; canonical: string | null }>>`
       SELECT feature_id, status, payload #>> '{admissionMerge,canonicalId}' AS canonical
@@ -195,16 +202,42 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       { feature_id: 'b', status: 'dropped', canonical: 'a' },
       { feature_id: 'c', status: 'open', canonical: null },
     ]);
-    const ledger = await db.sql<Array<{ state: string; before: number; after: number; unit: string; attempted: number; successful: number; unchanged: number; rows_changed: number }>>`
+    const ledger = await db.sql<
+      Array<{
+        state: string;
+        before: number;
+        after: number;
+        unit: string;
+        attempted: number;
+        successful: number;
+        unchanged: number;
+        rows_changed: number;
+        served_accounts: string[];
+        canary_account: string;
+      }>
+    >`
       SELECT detail->>'status' AS state, census_before AS before, census_after AS after,
              detail #>> '{outcome,unit}' AS unit,
              (detail #>> '{outcome,attempted}')::int AS attempted,
              (detail #>> '{outcome,successful}')::int AS successful,
              (detail #>> '{outcome,unchanged}')::int AS unchanged,
-             (detail #>> '{outcome,uniqueRowsChanged}')::int AS rows_changed
+             (detail #>> '{outcome,uniqueRowsChanged}')::int AS rows_changed,
+             ARRAY(SELECT jsonb_array_elements_text(detail->'servedAccounts')) AS served_accounts,
+             detail #>> '{canary,servedAccount}' AS canary_account
         FROM harness_shared.admission_runs WHERE id = 'bulk-success-stage-1'`;
     expect(ledger).toEqual([
-      { state: 'complete', before: 1, after: 0, unit: 'pairs', attempted: 1, successful: 1, unchanged: 0, rows_changed: 1 },
+      {
+        state: 'complete',
+        before: 1,
+        after: 0,
+        unit: 'pairs',
+        attempted: 1,
+        successful: 1,
+        unchanged: 0,
+        rows_changed: 1,
+        served_accounts: ['pool-account-a'],
+        canary_account: 'pool-account-a',
+      },
     ]);
   }, 60_000);
 
@@ -705,6 +738,215 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(stage).toEqual([{ state: 'complete', retries: 1 }]);
   }, 60_000);
 
+  it('returns the durable terminal result on a repeated root runId without another census or model call', async () => {
+    await seed();
+    let modelCalls = 0;
+    const stepNames: string[] = [];
+    const preflight = vi.fn(async () => ({
+      status: 'ready' as const,
+      provider: 'claude' as const,
+      model: 'test-model',
+      checkedAt: '2026-09-01T00:00:00.000Z',
+      reason: 'integration capacity is injected',
+    }));
+    const step = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      stepNames.push(name);
+      return fn();
+    };
+    const first = await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-root-replay',
+      sql: db.sql,
+      executionId: 'executor-first',
+      model: 'test-model',
+      preflight,
+      step,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => {
+        modelCalls += 1;
+        return {
+          text: '',
+          json: { judgements: [{ pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure' }] },
+          inputTokens: 11,
+          outputTokens: 7,
+        };
+      },
+    });
+
+    const callsBeforeReplay = modelCalls;
+    const preflightCallsBeforeReplay = preflight.mock.calls.length;
+    const replay = await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-root-replay',
+      sql: db.sql,
+      executionId: 'executor-replay',
+      model: 'test-model',
+      preflight: async () => {
+        throw new Error('terminal replay must not preflight');
+      },
+      step,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => {
+        throw new Error('terminal replay must not call the model');
+      },
+    });
+
+    expect(replay).toEqual(first);
+    expect(modelCalls).toBe(callsBeforeReplay);
+    expect(preflight.mock.calls.length).toBe(preflightCallsBeforeReplay);
+    expect(stepNames).toEqual([
+      'bulk:bulk-root-replay:census:0',
+      'bulk:bulk-root-replay-stage-1:canary',
+      'bulk:bulk-root-replay:census:0',
+      'bulk:bulk-root-replay-stage-1:canary',
+    ]);
+    expect(
+      await db.sql<Array<{ stages: number; stageRows: number }>>`
+        SELECT 1::int AS stages,
+               (SELECT count(*)::int FROM harness_shared.admission_runs WHERE id = 'bulk-root-replay-stage-1') AS "stageRows"`,
+    ).toEqual([{ stages: 1, stageRows: 1 }]);
+  }, 60_000);
+
+  it('takes over an expired running stage and replays only the uncheckpointed shard batch', async () => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'A separate failure and remedy',
+              'open', NULL, '{}'::jsonb, 'change', 'watch:other', 4, 4,
+              '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET condition_key = NULL
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+
+    let modelCalls = 0;
+    const seenPairs: string[] = [];
+    const ready = {
+      status: 'ready' as const,
+      provider: 'claude' as const,
+      model: 'test-model',
+      checkedAt: '2026-09-01T00:00:00.000Z',
+      reason: 'integration capacity is injected',
+    };
+    const firstStepNames: string[] = [];
+    const firstStep = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      firstStepNames.push(name);
+      return fn();
+    };
+    await expect(
+      runWorkItemAdmissionBulkDedup({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'bulk-stale-takeover',
+        sql: db.sql,
+        executionId: 'executor-dead',
+        model: 'test-model',
+        stageLeaseMs: 1_000,
+        now: () => 10_000,
+        preflight: async () => ready,
+        step: firstStep,
+        pairsPerCall: 1,
+        shardConcurrency: 1,
+        batchRetryBackoffsMs: [],
+        census: { chunkCount: 1, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+        llmCall: async (input) => {
+          modelCalls += 1;
+          const pairKey = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)][0]?.[1];
+          expect(pairKey).toBeTruthy();
+          seenPairs.push(pairKey!);
+          if (modelCalls === 2) throw new Error('executor died after first checkpoint');
+          return {
+            text: '',
+            json: { judgements: [{ pairKey, verdict: 'distinct', reason: 'separate finding' }] },
+            inputTokens: 13,
+            outputTokens: 5,
+          };
+        },
+      }),
+    ).rejects.toThrow('executor died after first checkpoint');
+
+    const failed = await db.sql<Array<{ detail: Record<string, unknown> }>>`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'bulk-stale-takeover-stage-1'`;
+    expect(failed[0]?.detail).toMatchObject({
+      status: 'failed',
+      checkpoints: { batches: expect.any(Object) },
+    });
+    const oldLease = {
+      ownerId: 'executor-dead',
+      acquiredAt: 1,
+      heartbeatAt: 1,
+      expiresAt: 1,
+      takeoverCount: 0,
+    };
+    // Simulate a process death after the first durable batch checkpoint. The
+    // lease is deliberately expired, while the checkpoint map remains intact.
+    await db.sql`
+      UPDATE harness_shared.admission_runs
+         SET finished_at = NULL,
+             detail = detail || ${JSON.stringify({ status: 'running', lease: oldLease })}::text::jsonb
+       WHERE id = 'bulk-stale-takeover-stage-1'`;
+
+    const resumedStepNames: string[] = [];
+    const resumed = await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-stale-takeover',
+      sql: db.sql,
+      executionId: 'executor-replacement',
+      model: 'test-model',
+      stageLeaseMs: 1_000,
+      now: () => 20_000,
+      preflight: async () => ready,
+      step: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        resumedStepNames.push(name);
+        return fn();
+      },
+      pairsPerCall: 1,
+      shardConcurrency: 1,
+      batchRetryBackoffsMs: [],
+      census: { chunkCount: 1, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async (input) => {
+        modelCalls += 1;
+        const pairKey = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)][0]?.[1];
+        expect(pairKey).toBeTruthy();
+        seenPairs.push(pairKey!);
+        return {
+          text: '',
+          json: { judgements: [{ pairKey, verdict: 'distinct', reason: 'separate finding' }] },
+          inputTokens: 17,
+          outputTokens: 6,
+        };
+      },
+    });
+
+    expect(modelCalls).toBe(3);
+    expect(seenPairs).toEqual(['a::b', 'c::d', 'c::d']);
+    expect(resumed).toMatchObject({ converged: true, initialCensus: 2, finalCensus: 0 });
+    expect(resumed.stages[0]).toMatchObject({
+      pairs: 2,
+      modelCalls: 2,
+      reusedBatches: 1,
+      modelRetries: 0,
+      censusBefore: 2,
+      censusAfter: 0,
+    });
+    expect(resumedStepNames).toContain('bulk:bulk-stale-takeover-stage-1:canary');
+    const recovered = await db.sql<
+      Array<{ state: string; takeover_count: number; checkpoint_count: number; reused: number }>
+    >`
+      SELECT detail->>'status' AS state,
+             (detail #>> '{lease,takeoverCount}')::int AS takeover_count,
+             (SELECT count(*)::int FROM jsonb_object_keys(detail #> '{checkpoints,batches}')) AS checkpoint_count,
+             (detail->>'reusedBatches')::int AS reused
+        FROM harness_shared.admission_runs WHERE id = 'bulk-stale-takeover-stage-1'`;
+    expect(recovered).toEqual([{ state: 'complete', takeover_count: 1, checkpoint_count: 2, reused: 1 }]);
+  }, 60_000);
+
   it('judges independent shards concurrently while keeping each shard internally ordered', async () => {
     await seed();
     await db.sql`
@@ -718,6 +960,12 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
          admitted_at, admitted_by)
       VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', ${'d'.repeat(180)}, 'open', NULL, '{}'::jsonb,
               'change', 'watch:other', 4, 4, '[0,0.999,0.04]'::vector, 'gemma',
+              'admitted', now(), 'test'),
+             (${WS}, ${HARNESS}, 'e', 'Third finding', ${'e'.repeat(180)}, 'open', NULL, '{}'::jsonb,
+              'change', 'watch:third', 5, 5, '[0,0,1]'::vector, 'gemma',
+              'admitted', now(), 'test'),
+             (${WS}, ${HARNESS}, 'f', 'Third finding sibling', ${'f'.repeat(180)}, 'open', NULL, '{}'::jsonb,
+              'change', 'watch:third', 6, 6, '[0.04,0,0.999]'::vector, 'gemma',
               'admitted', now(), 'test')`;
 
     let active = 0;
@@ -732,7 +980,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       llmCall: async (input) => {
         active += 1;
         maxActive = Math.max(maxActive, active);
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        await new Promise((resolve) => setTimeout(resolve, 75));
         active -= 1;
         const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
         return {
@@ -747,6 +995,6 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
 
     expect(maxActive).toBe(2);
-    expect(result.stages[0]).toMatchObject({ pairs: 2, modelCalls: 2, censusBefore: 2, censusAfter: 0 });
+    expect(result.stages[0]).toMatchObject({ pairs: 3, modelCalls: 3, censusBefore: 3, censusAfter: 0 });
   }, 60_000);
 });
