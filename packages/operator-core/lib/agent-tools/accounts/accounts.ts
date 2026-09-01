@@ -161,7 +161,7 @@ export const accountsRemoveTool = defineTool({
 export const accountsStatusTool = defineTool({
   name: 'accounts:status',
   description:
-    "Per-account rate-limit PROJECTION: `available` (⚠ ONLY \"not inside a local pause window right now\" — seconds-scale, NOT a routability or authentication verdict), the sustained-limit flag (the scale-out trigger), the rate projection, and any LIVE local governor buckets. ⚠ `available`/`usageWalled` derive from the last OBSERVED usage window, which can be old — each row also carries `readingStatus` ('never-observed'|'stale'|'fresh'), `readingAgeMs`, and `lastProbeFailedAt` (a recent `accounts:probe-capacity` attempt got NO answer). Treat `readingStatus !== 'fresh'` or a present `lastProbeFailedAt` as UNKNOWN, not measured-unavailable — refresh via `accounts:probe-capacity` before trusting a `false`. NEVER conclude \"the pool is exhausted / a fleet cannot launch\" from this tool. Returns {ok, accounts}.",
+    "Per-account rate-limit PROJECTION: `available` (⚠ ONLY \"not inside a local pause window right now\" — seconds-scale, NOT a routability or authentication verdict), the sustained-limit flag (the scale-out trigger), the rate projection, and any LIVE local governor buckets. ⚠ `available`/`usageWalled` derive from the last OBSERVED usage window, which can be old — each row also carries `readingStatus` ('never-observed'|'stale'|'fresh'), `readingAgeMs`, and `lastProbeFailedAt` (a recent `accounts:probe-capacity` attempt got NO answer). Treat `readingStatus !== 'fresh'` or a present `lastProbeFailedAt` as UNKNOWN, not measured-unavailable — refresh via `accounts:probe-capacity` before trusting a `false`. NEVER conclude \"the pool is exhausted / a fleet cannot launch\" from this tool. Returns {ok, accounts, poolVerdict}.",
   guidance: {
     when: 'Inspecting one account’s rate-limit penalty/pause projection, or why an account auto-scaled out.',
     notWhen:
@@ -173,16 +173,22 @@ export const accountsStatusTool = defineTool({
       'accounts:reset-rate (clear a stale rate-limit penalty)',
       'accounts:scale_policy (tune when to scale out under sustained limiting)',
     ],
+    returns:
+      "{ ok, accounts:[...], poolVerdict:[...] }. ⚠ `accounts` INTERLEAVES every provider in one list, so counting walled rows yourself makes a claude wall read as evidence about codex. Read `poolVerdict` instead — one row PER PROVIDER, derived from those same rows: { provider, total, serviceable, walledFresh, paused, pacing, unknown, atCapacity, binding, reason }. `atCapacity` is true ONLY when every row is measured unable to serve (no serviceable AND no unknown rows) — a pool of stale readings is unmeasured, never at capacity. `binding` is the shared capacity vocabulary: usage-wall | admission-concurrency | pacing-policy | host | none. The counts OVERLAP (a row can be both walledFresh and paused); `pacing` counts accounts under a burn PACING PROJECTION, which still SERVE — never add them to the walls. Per row, `burn.disposition` ('measured-wall' | 'pacing-projection' | 'no-verdict') says whether that verdict is a measurement or this system pacing itself; a 'pacing-projection' throttle/shed is NOT a provider wall and must not be remedied by throttling the fleet.",
   },
   capability: 'harness:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({ workspace: wsArg }),
   async handler(args) {
-    const { accountStatus } = await import('../../deployment/account-pool-store');
+    const { accountStatus, poolVerdictByProvider } = await import('../../deployment/account-pool-store');
     const ws = args.workspace ?? activeWorkspaceId();
-    const accounts = await accountStatus(ws);
-    return ok({ accounts });
+    const now = Date.now();
+    const accounts = await accountStatus(ws, now);
+    // P-002: the rows are INTERLEAVED across providers, so a reader diagnosing one provider
+    // otherwise counts another's walls as evidence about theirs. Roll up per provider, from
+    // these same rows, so that inference cannot be made.
+    return ok({ accounts, poolVerdict: poolVerdictByProvider(accounts, now) });
   },
 });
 
