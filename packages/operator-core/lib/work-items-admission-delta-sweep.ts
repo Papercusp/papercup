@@ -18,7 +18,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { z } from 'zod';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
-import { responsePayload, type PromoterLlmCall } from './work-items-admission-promoter';
+import {
+  responsePayload,
+  type AdmissionRunOutcome,
+  type PromoterLlmCall,
+} from './work-items-admission-promoter';
 import type { OrgSql } from './work-items';
 
 export const WORK_ITEM_ADMISSION_DELTA_SWEEP = 'work-item-admission-delta-sweep';
@@ -376,7 +380,20 @@ async function beginRun(
   sql: OrgSql,
   input: { runId: string; workspaceId: string; harnessSlug: string; startedAt: string },
 ): Promise<void> {
-  const detail = JSON.stringify({ schemaVersion: 'work-item-admission-delta-sweep-v1', status: 'running' });
+  const detail = JSON.stringify({
+    schemaVersion: 'work-item-admission-delta-sweep-v1',
+    status: 'running',
+    outcome: {
+      unit: 'links',
+      attempted: null,
+      successful: null,
+      rolledBack: null,
+      unchanged: null,
+      uniqueRowsChanged: null,
+      failureReason: null,
+      blockedReason: null,
+    } satisfies AdmissionRunOutcome,
+  });
   await sql`
     INSERT INTO harness_shared.admission_runs
       (id, workspace_id, harness_slug, run_kind, started_at, detail)
@@ -396,7 +413,20 @@ async function failRun(sql: OrgSql, runId: string, error: unknown, latencyMs: nu
     UPDATE harness_shared.admission_runs
        SET finished_at = clock_timestamp(), latency_ms = ${latencyMs},
            detail = COALESCE(detail, '{}'::jsonb) ||
-                    ${JSON.stringify({ status: 'failed', error: message })}::text::jsonb
+                    ${JSON.stringify({
+                      status: 'failed',
+                      error: message,
+                      outcome: {
+                        unit: 'links',
+                        attempted: null,
+                        successful: null,
+                        rolledBack: null,
+                        unchanged: null,
+                        uniqueRowsChanged: null,
+                        failureReason: message,
+                        blockedReason: null,
+                      } satisfies AdmissionRunOutcome,
+                    })}::text::jsonb
      WHERE id = ${runId}`.catch(() => undefined);
 }
 
@@ -487,6 +517,16 @@ export async function runWorkItemAdmissionDeltaSweep(opts: DeltaSweepRunOptions)
       umbrellaYield: umbrellas.length,
       linksWritten,
       umbrellas,
+      outcome: {
+        unit: 'links',
+        attempted: linksWritten,
+        successful: linksWritten,
+        rolledBack: 0,
+        unchanged: 0,
+        uniqueRowsChanged: null,
+        failureReason: null,
+        blockedReason: null,
+      } satisfies AdmissionRunOutcome,
     };
     await sql`
       UPDATE harness_shared.admission_runs

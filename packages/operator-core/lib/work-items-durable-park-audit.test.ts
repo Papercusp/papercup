@@ -359,12 +359,14 @@ describe('durable park evidence matrix and reconciliation CAS', () => {
  */
 function scriptedSql(responses: unknown[][]) {
   const calls: string[] = [];
+  const values: unknown[][] = [];
   let i = 0;
-  const sql = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+  const sql = (strings: TemplateStringsArray, ...vals: unknown[]) => {
     calls.push(strings.join('?').replace(/\s+/g, ' ').trim().slice(0, 40));
+    values.push(vals);
     return Promise.resolve(responses[i++] ?? []);
   };
-  return { sql: sql as never, calls };
+  return { sql: sql as never, calls, values };
 }
 
 function cachedDetail(schemaVersion: string) {
@@ -398,7 +400,7 @@ describe('runWorkItemDurableParkAudit — replay idempotency (P-022 scheduled ca
     // recorded detail would pass the replay test while silently serving a v1 report whose
     // shape the current readers no longer understand. The schemaVersion check must be
     // load-bearing, so the v1 case has to take the full insert/scan/update path.
-    const { sql, calls } = scriptedSql([[{ detail: cachedDetail('durable-park-audit-v1') }], [], [], []]);
+    const { sql, calls, values } = scriptedSql([[{ detail: cachedDetail('durable-park-audit-v1') }], [], [], []]);
 
     const report = await runWorkItemDurableParkAudit({
       workspaceId: 'ws-1',
@@ -411,5 +413,16 @@ describe('runWorkItemDurableParkAudit — replay idempotency (P-022 scheduled ca
     expect(calls.length).toBeGreaterThan(1);
     expect((report as unknown as { marker?: string }).marker).toBeUndefined();
     expect(report.schemaVersion).toBe('durable-park-audit-v2');
+    const writtenDetail = values
+      .flat()
+      .filter((value): value is string => typeof value === 'string' && value.includes('"mode":"durable-park-audit"'))
+      .map((value) => JSON.parse(value) as Record<string, unknown>)
+      .find((detail) => detail.status === 'complete');
+    expect(writtenDetail?.outcome).toMatchObject({
+      unit: 'snapshots',
+      attempted: 1,
+      successful: 1,
+      uniqueRowsChanged: 0,
+    });
   });
 });

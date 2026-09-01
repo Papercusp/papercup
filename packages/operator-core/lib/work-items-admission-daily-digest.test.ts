@@ -411,6 +411,14 @@ describe('work-item admission daily digest', () => {
     expect(harness.prompts[0]).not.toContain('WI-10');
     // and the drift is on the ledger row: disclosed partial coverage, never silent
     expect(harness.detail().coverage).toEqual({ live: 10, covered: 9, uncovered: 1, ratio: 0.9 });
+    expect(harness.detail().outcome).toMatchObject({
+      unit: 'links',
+      attempted: 0,
+      successful: 0,
+      rolledBack: 0,
+      unchanged: 0,
+      uniqueRowsChanged: 0,
+    });
   });
 
   it('D-028: still blocks below the coverage floor rather than digest a misleading sample', async () => {
@@ -423,6 +431,12 @@ describe('work-item admission daily digest', () => {
     // a blocked run still reports what it measured, so the block is diagnosable
     expect(result.coverage).toMatchObject({ live: 10, covered, uncovered: 10 - covered });
     expect(harness.detail().coverage).toMatchObject({ live: 10, covered });
+    expect(harness.detail().outcome).toMatchObject({
+      unit: 'links',
+      attempted: 0,
+      successful: 0,
+      blockedReason: 'census-coverage-mismatch',
+    });
   });
 
   it('D-028: duplicate member rows still hard-block — coverage tolerance never weakens the one-shard invariant', async () => {

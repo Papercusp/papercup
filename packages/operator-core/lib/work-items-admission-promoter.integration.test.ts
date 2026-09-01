@@ -559,4 +559,32 @@ describe('work-item admission promoter (real Postgres)', () => {
       maxIdeators: null,
     });
   });
+
+  it('uses writer status over finished_at and keeps outcome totals unit-separated', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.admission_runs
+        (id, workspace_id, harness_slug, run_kind, started_at, finished_at, batch_size,
+         promoted, merged, held, detail)
+      VALUES
+        ('status-blocked', ${WS}, ${HARNESS}, 'daily-digest', now(), now(), 0, 0, 0, 0,
+         '{"status":"blocked","blockedReason":"awaiting-bulk","outcome":{"unit":"links","attempted":0,"successful":0,"rolledBack":0,"unchanged":0,"uniqueRowsChanged":0,"blockedReason":"awaiting-bulk"}}'::jsonb),
+        ('status-failed', ${WS}, ${HARNESS}, 'bulk-stage', now(), now(), 7, 0, 0, 0,
+         '{"status":"failed","error":"transport down","outcome":{"unit":"pairs","attempted":7,"successful":null,"rolledBack":null,"unchanged":null,"uniqueRowsChanged":null,"failureReason":"transport down"}}'::jsonb),
+        ('status-invalid', ${WS}, ${HARNESS}, 'census', now(), now(), 2, 0, 0, 0,
+         '{"status":"future-status"}'::jsonb)`;
+
+    const snapshot = await readWorkItemAdmissionSnapshot({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    expect(snapshot.runs.map((run) => [run.id, run.state, run.stateSource])).toEqual(
+      expect.arrayContaining([
+        ['status-blocked', 'blocked', 'writer'],
+        ['status-failed', 'failed', 'writer'],
+        ['status-invalid', 'failed', 'invalid-writer'],
+      ]),
+    );
+    expect(snapshot.runs.find((run) => run.id === 'status-blocked')?.outcome.blockedReason).toBe('awaiting-bulk');
+    expect(snapshot.runs.find((run) => run.id === 'status-failed')?.outcome.failureReason).toBe('transport down');
+    expect(snapshot.summary.runCounts.byUnit?.links?.runs).toBe(1);
+    expect(snapshot.summary.runCounts.byUnit?.pairs?.runs).toBe(1);
+    expect(snapshot.summary.runCounts.byUnit?.snapshots?.runs).toBe(1);
+  });
 });

@@ -49,6 +49,7 @@ function payload(
         harnessSlug: "papercusp",
         runKind: "promoter-tick",
         state: "complete",
+        stateSource: "writer",
         startedAt: "2026-08-26T15:00:00.000Z",
         finishedAt: "2026-08-26T15:00:01.000Z",
         batchSize: 4,
@@ -63,6 +64,17 @@ function payload(
         tokensIn: 100,
         tokensOut: 20,
         latencyMs: 1_000,
+        outcome: {
+          unit: "items",
+          attempted: 4,
+          successful: 3,
+          rolledBack: 0,
+          unchanged: 1,
+          uniqueRowsChanged: 3,
+          failureReason: null,
+          blockedReason: null,
+        },
+        outcomeSource: "writer",
         detail: { status: "complete" },
       },
     ],
@@ -107,6 +119,28 @@ function payload(
         before: 7,
         after: 8,
         delta: 1,
+      },
+      runCounts: {
+        total: 1,
+        running: 0,
+        complete: 1,
+        failed: 0,
+        blocked: 0,
+        attempted: 4,
+        successful: 3,
+        rolledBack: 0,
+        unchanged: 1,
+        uniqueRowsChanged: 3,
+        byUnit: {
+          items: {
+            attempted: 4,
+            successful: 3,
+            rolledBack: 0,
+            unchanged: 1,
+            uniqueRowsChanged: 3,
+            runs: 1,
+          },
+        },
       },
     },
     ...overrides,
@@ -159,6 +193,9 @@ describe("AdmissionRunsClient", () => {
     ).toBeTruthy();
     expect(screen.getByText("promoter-tick")).toBeTruthy();
     expect(screen.getByText("model-a · 120")).toBeTruthy();
+    expect(screen.getByText("Run states (shown)")).toBeTruthy();
+    expect(screen.getByText("1/1")).toBeTruthy();
+    expect(screen.getByText(/3 unique row change/)).toBeTruthy();
   });
 
   it("passes URL-backed kind and run-state filters to the single sync query", () => {
@@ -181,6 +218,19 @@ describe("AdmissionRunsClient", () => {
         promotedToFirstClaim: { sampleSize: 0, p50Ms: null, p95Ms: null },
         latestCensus: null,
         latestCensusRise: null,
+        runCounts: {
+          total: 0,
+          running: 0,
+          complete: 0,
+          failed: 0,
+          blocked: 0,
+          attempted: 0,
+          successful: 0,
+          rolledBack: 0,
+          unchanged: 0,
+          uniqueRowsChanged: 0,
+          byUnit: {},
+        },
       },
     });
     syncResult = { data: [empty], loading: false, error: null };

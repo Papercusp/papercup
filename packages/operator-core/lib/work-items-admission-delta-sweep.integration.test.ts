@@ -222,12 +222,18 @@ describe('work-item admission hourly delta sweep (real PostgreSQL)', () => {
         status: string;
         umbrella_yield: number;
         links_written: number;
+        outcome_unit: string;
+        outcome_attempted: number;
+        outcome_successful: number;
       }>
     >`
       SELECT run_kind, batch_size, tokens_in::text, tokens_out::text,
              detail->>'status' AS status,
              (detail->>'umbrellaYield')::int AS umbrella_yield,
-             (detail->>'linksWritten')::int AS links_written
+             (detail->>'linksWritten')::int AS links_written,
+             detail #>> '{outcome,unit}' AS outcome_unit,
+             (detail #>> '{outcome,attempted}')::int AS outcome_attempted,
+             (detail #>> '{outcome,successful}')::int AS outcome_successful
         FROM harness_shared.admission_runs WHERE id = 'delta-live'`;
     expect(ledger).toEqual([
       {
@@ -238,6 +244,9 @@ describe('work-item admission hourly delta sweep (real PostgreSQL)', () => {
         status: 'complete',
         umbrella_yield: 1,
         links_written: 5,
+        outcome_unit: 'links',
+        outcome_attempted: 5,
+        outcome_successful: 5,
       },
     ]);
 

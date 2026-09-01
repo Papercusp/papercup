@@ -22,6 +22,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { clusterPairs, type OverlapPair } from '@papercusp/overlap-clusters';
 import { getOrgPg } from '@papercusp/db-org';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
+import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import type { OrgSql } from './work-items';
 
 export const ADMISSION_EDGE_FLOOR = 0.85;
@@ -874,7 +875,21 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
     INSERT INTO harness_shared.admission_runs
       (id, workspace_id, harness_slug, run_kind, started_at, detail)
     VALUES (${runId}, ${opts.workspaceId}, ${opts.harnessSlug}, 'census', ${startedAt}::timestamptz,
-            ${JSON.stringify({ schemaVersion: 'work-item-admission-census-v1', status: 'running', config })}::text::jsonb)
+            ${JSON.stringify({
+              schemaVersion: 'work-item-admission-census-v1',
+              status: 'running',
+              config,
+              outcome: {
+                unit: 'snapshots',
+                attempted: 1,
+                successful: null,
+                rolledBack: null,
+                unchanged: null,
+                uniqueRowsChanged: 0,
+                failureReason: null,
+                blockedReason: null,
+              } satisfies AdmissionRunOutcome,
+            })}::text::jsonb)
     ON CONFLICT (id) DO UPDATE SET
       workspace_id = EXCLUDED.workspace_id,
       harness_slug = EXCLUDED.harness_slug,
@@ -988,6 +1003,16 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         uniqueMembers: plan.memberRows,
         ok: plan.memberRows === corpus.length,
       },
+      outcome: {
+        unit: 'snapshots',
+        attempted: 1,
+        successful: 1,
+        rolledBack: 0,
+        unchanged: 0,
+        uniqueRowsChanged: 0,
+        failureReason: null,
+        blockedReason: null,
+      } satisfies AdmissionRunOutcome,
     };
     await sql`
       UPDATE harness_shared.admission_runs
@@ -1027,7 +1052,20 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
          SET finished_at = clock_timestamp(),
              latency_ms = ${Math.max(0, now() - startedMs)},
              detail = COALESCE(detail, '{}'::jsonb) ||
-                      ${JSON.stringify({ status: 'failed', error: message })}::text::jsonb
+                      ${JSON.stringify({
+                        status: 'failed',
+                        error: message,
+                        outcome: {
+                          unit: 'snapshots',
+                          attempted: 1,
+                          successful: 0,
+                          rolledBack: 0,
+                          unchanged: 0,
+                          uniqueRowsChanged: 0,
+                          failureReason: message,
+                          blockedReason: null,
+                        } satisfies AdmissionRunOutcome,
+                      })}::text::jsonb
        WHERE id = ${runId}`.catch(() => undefined);
     throw error;
   }

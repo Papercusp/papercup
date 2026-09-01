@@ -2829,8 +2829,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z
       .object({
         harnessSlug: z.string().min(1).max(200).optional(),
-        kind: z.enum(['census', 'promoter-tick', 'bulk-stage', 'delta-sweep', 'daily-digest']).optional(),
-        state: z.enum(['running', 'complete', 'failed']).optional(),
+        kind: z
+          .enum(['census', 'promoter-tick', 'bulk-stage', 'delta-sweep', 'daily-digest', 'durable-park-audit'])
+          .optional(),
+        state: z.enum(['running', 'complete', 'failed', 'blocked']).optional(),
         // Clamp in the reader rather than rejecting a newer client's larger
         // window — the same client/server skew rule as workItems.byHarness.
         limit: z.number().int().positive().optional(),
@@ -2844,8 +2846,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       ]);
       const a = (args ?? {}) as {
         harnessSlug?: string;
-        kind?: 'census' | 'promoter-tick' | 'bulk-stage' | 'delta-sweep' | 'daily-digest';
-        state?: 'running' | 'complete' | 'failed';
+        kind?: 'census' | 'promoter-tick' | 'bulk-stage' | 'delta-sweep' | 'daily-digest' | 'durable-park-audit';
+        state?: 'running' | 'complete' | 'failed' | 'blocked';
         limit?: number;
       };
       return [

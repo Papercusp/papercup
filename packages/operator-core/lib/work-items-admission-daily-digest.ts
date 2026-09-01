@@ -13,7 +13,11 @@ import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
-import { responsePayload, type PromoterLlmCall } from './work-items-admission-promoter';
+import {
+  responsePayload,
+  type AdmissionRunOutcome,
+  type PromoterLlmCall,
+} from './work-items-admission-promoter';
 import type { OrgSql } from './work-items';
 
 export const WORK_ITEM_ADMISSION_DAILY_DIGEST = 'work-item-admission-daily-digest';
@@ -945,7 +949,20 @@ async function beginRun(
     INSERT INTO harness_shared.admission_runs
       (id, workspace_id, harness_slug, run_kind, started_at, detail)
     VALUES (${input.runId}, ${input.workspaceId}, ${input.harnessSlug}, 'daily-digest', ${input.startedAt}::timestamptz,
-            ${JSON.stringify({ schemaVersion: DAILY_DIGEST_SCHEMA_VERSION, status: 'running' })}::text::jsonb)
+            ${JSON.stringify({
+              schemaVersion: DAILY_DIGEST_SCHEMA_VERSION,
+              status: 'running',
+              outcome: {
+                unit: 'links',
+                attempted: null,
+                successful: null,
+                rolledBack: null,
+                unchanged: null,
+                uniqueRowsChanged: null,
+                failureReason: null,
+                blockedReason: null,
+              } satisfies AdmissionRunOutcome,
+            })}::text::jsonb)
     ON CONFLICT (id) DO UPDATE SET
       workspace_id = EXCLUDED.workspace_id,
       harness_slug = EXCLUDED.harness_slug,
@@ -961,7 +978,21 @@ async function failRun(sql: OrgSql, runId: string, error: unknown, latencyMs: nu
     UPDATE harness_shared.admission_runs
        SET finished_at = clock_timestamp(), latency_ms = ${latencyMs},
            detail = COALESCE(detail, '{}'::jsonb) ||
-                    ${JSON.stringify({ schemaVersion: DAILY_DIGEST_SCHEMA_VERSION, status: 'failed', error: message })}::text::jsonb
+                    ${JSON.stringify({
+                      schemaVersion: DAILY_DIGEST_SCHEMA_VERSION,
+                      status: 'failed',
+                      error: message,
+                      outcome: {
+                        unit: 'links',
+                        attempted: null,
+                        successful: null,
+                        rolledBack: null,
+                        unchanged: null,
+                        uniqueRowsChanged: null,
+                        failureReason: message,
+                        blockedReason: null,
+                      } satisfies AdmissionRunOutcome,
+                    })}::text::jsonb
      WHERE id = ${runId}`.catch(() => undefined);
 }
 
@@ -1006,7 +1037,20 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         UPDATE harness_shared.admission_runs
            SET finished_at = clock_timestamp(), batch_size = 0, promoted = 0, merged = 0, held = 0,
                model_id = NULL, tokens_in = 0, tokens_out = 0, latency_ms = ${Math.max(0, now() - startedMs)},
-               detail = ${JSON.stringify({ schemaVersion: DAILY_DIGEST_SCHEMA_VERSION, ...result })}::text::jsonb
+               detail = ${JSON.stringify({
+                 schemaVersion: DAILY_DIGEST_SCHEMA_VERSION,
+                 ...result,
+                 outcome: {
+                   unit: 'links',
+                   attempted: 0,
+                   successful: 0,
+                   rolledBack: 0,
+                   unchanged: 0,
+                   uniqueRowsChanged: 0,
+                   failureReason: null,
+                   blockedReason: result.blockedReason ?? null,
+                 } satisfies AdmissionRunOutcome,
+               })}::text::jsonb
          WHERE id = ${runId}`;
       return result;
     }
@@ -1037,7 +1081,20 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         UPDATE harness_shared.admission_runs
            SET finished_at = clock_timestamp(), batch_size = 0, promoted = 0, merged = 0, held = 0,
                model_id = NULL, tokens_in = 0, tokens_out = 0, latency_ms = ${Math.max(0, now() - startedMs)},
-               detail = ${JSON.stringify({ schemaVersion: DAILY_DIGEST_SCHEMA_VERSION, ...result })}::text::jsonb
+               detail = ${JSON.stringify({
+                 schemaVersion: DAILY_DIGEST_SCHEMA_VERSION,
+                 ...result,
+                 outcome: {
+                   unit: 'links',
+                   attempted: 0,
+                   successful: 0,
+                   rolledBack: 0,
+                   unchanged: 0,
+                   uniqueRowsChanged: 0,
+                   failureReason: null,
+                   blockedReason: result.blockedReason ?? null,
+                 } satisfies AdmissionRunOutcome,
+               })}::text::jsonb
          WHERE id = ${runId}`;
       return result;
     }
@@ -1064,7 +1121,20 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         UPDATE harness_shared.admission_runs
            SET finished_at = clock_timestamp(), batch_size = 0, promoted = 0, merged = 0, held = 0,
                model_id = NULL, tokens_in = 0, tokens_out = 0, latency_ms = ${Math.max(0, now() - startedMs)},
-               detail = ${JSON.stringify({ schemaVersion: DAILY_DIGEST_SCHEMA_VERSION, ...result })}::text::jsonb
+               detail = ${JSON.stringify({
+                 schemaVersion: DAILY_DIGEST_SCHEMA_VERSION,
+                 ...result,
+                 outcome: {
+                   unit: 'links',
+                   attempted: 0,
+                   successful: 0,
+                   rolledBack: 0,
+                   unchanged: 0,
+                   uniqueRowsChanged: 0,
+                   failureReason: null,
+                   blockedReason: result.blockedReason ?? null,
+                 } satisfies AdmissionRunOutcome,
+               })}::text::jsonb
          WHERE id = ${runId}`;
       return result;
     }
@@ -1123,12 +1193,27 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
       linksWritten: umbrellas.reduce((sum, umbrella) => sum + umbrella.linksWritten, 0),
       umbrellas,
     };
+    const linksWritten = result.linksWritten;
+    const uniqueRowsChanged = new Set(umbrellas.flatMap((umbrella) => umbrella.memberIds)).size;
     await sql`
       UPDATE harness_shared.admission_runs
          SET finished_at = clock_timestamp(), batch_size = ${context.items.length}, promoted = 0, merged = 0, held = 0,
              census_before = ${context.censusAfter}, census_after = ${context.censusAfter}, model_id = ${model},
              tokens_in = ${tokensIn}, tokens_out = ${tokensOut}, latency_ms = ${Math.max(0, now() - startedMs)},
-             detail = ${JSON.stringify({ schemaVersion: DAILY_DIGEST_SCHEMA_VERSION, ...result })}::text::jsonb
+             detail = ${JSON.stringify({
+               schemaVersion: DAILY_DIGEST_SCHEMA_VERSION,
+               ...result,
+               outcome: {
+                 unit: 'links',
+                 attempted: linksWritten,
+                 successful: linksWritten,
+                 rolledBack: 0,
+                 unchanged: 0,
+                 uniqueRowsChanged,
+                 failureReason: null,
+                 blockedReason: null,
+               } satisfies AdmissionRunOutcome,
+             })}::text::jsonb
        WHERE id = ${runId}`;
     return result;
   } catch (error) {

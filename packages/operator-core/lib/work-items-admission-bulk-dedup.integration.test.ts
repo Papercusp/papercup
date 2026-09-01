@@ -195,10 +195,17 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       { feature_id: 'b', status: 'dropped', canonical: 'a' },
       { feature_id: 'c', status: 'open', canonical: null },
     ]);
-    const ledger = await db.sql<Array<{ state: string; before: number; after: number }>>`
-      SELECT detail->>'status' AS state, census_before AS before, census_after AS after
+    const ledger = await db.sql<Array<{ state: string; before: number; after: number; unit: string; attempted: number; successful: number; unchanged: number; rows_changed: number }>>`
+      SELECT detail->>'status' AS state, census_before AS before, census_after AS after,
+             detail #>> '{outcome,unit}' AS unit,
+             (detail #>> '{outcome,attempted}')::int AS attempted,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             (detail #>> '{outcome,unchanged}')::int AS unchanged,
+             (detail #>> '{outcome,uniqueRowsChanged}')::int AS rows_changed
         FROM harness_shared.admission_runs WHERE id = 'bulk-success-stage-1'`;
-    expect(ledger).toEqual([{ state: 'complete', before: 1, after: 0 }]);
+    expect(ledger).toEqual([
+      { state: 'complete', before: 1, after: 0, unit: 'pairs', attempted: 1, successful: 1, unchanged: 0, rows_changed: 1 },
+    ]);
   }, 60_000);
 
   /**
@@ -484,11 +491,15 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       await db.sql<Array<{ embedding: string }>>`
         SELECT embedding::text AS embedding FROM harness_shared.work_items WHERE feature_id = 'c'`,
     ).toEqual([{ embedding: '[0,1,0]' }]);
-    const stage = await db.sql<Array<{ state: string; error: string }>>`
-      SELECT detail->>'status' AS state, detail->>'error' AS error
+    const stage = await db.sql<Array<{ state: string; error: string; unit: string; failure: string }>>`
+      SELECT detail->>'status' AS state, detail->>'error' AS error,
+             detail #>> '{outcome,unit}' AS unit,
+             detail #>> '{outcome,failureReason}' AS failure
         FROM harness_shared.admission_runs WHERE id = 'bulk-rise-stage-1'`;
     expect(stage[0]?.state).toBe('failed');
     expect(stage[0]?.error).toMatch(/ratchet violated/);
+    expect(stage[0]?.unit).toBe('pairs');
+    expect(stage[0]?.failure).toMatch(/ratchet violated/);
   }, 60_000);
 
   it('persists a nested transport Error.cause alongside the compatible error message', async () => {

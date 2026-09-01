@@ -232,7 +232,7 @@ describe('admission run reporting semantics', () => {
         held: 0,
         autoPromotedUnreviewed: 0,
       }),
-    ).toMatchObject({ unit: 'unknown', attempted: 0, successful: 0, blockedReason: 'awaiting-bulk' });
+    ).toMatchObject({ unit: 'links', attempted: 0, successful: 0, blockedReason: 'awaiting-bulk' });
   });
 
   it('derives promoter item outcomes and preserves explicit writer outcomes', () => {

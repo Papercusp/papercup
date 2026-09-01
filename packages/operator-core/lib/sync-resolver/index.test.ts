@@ -37,6 +37,10 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
     expect(knownQueryNamesV2()).toContain('workItemAdmission.runs');
     const entry = (await import('./index')).getRegistryEntryV2('workItemAdmission.runs');
     expect(entry?.argsSchema?.parse(undefined)).toBeUndefined();
+    expect(entry?.argsSchema?.parse({ kind: 'durable-park-audit', state: 'blocked' })).toEqual({
+      kind: 'durable-park-audit',
+      state: 'blocked',
+    });
   });
 
   it('returns filtered runs plus unfiltered queue latency and chronological census evidence', async () => {

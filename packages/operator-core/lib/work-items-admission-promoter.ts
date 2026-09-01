@@ -146,14 +146,257 @@ export interface FailOpenRunResult {
   liveness: PromoterLiveness;
 }
 
-export type AdmissionRunKind = 'census' | 'promoter-tick' | 'bulk-stage' | 'delta-sweep' | 'daily-digest';
-export type AdmissionRunState = 'running' | 'complete' | 'failed';
+export type AdmissionRunKind =
+  | 'census'
+  | 'promoter-tick'
+  | 'bulk-stage'
+  | 'delta-sweep'
+  | 'daily-digest'
+  | 'durable-park-audit';
+/**
+ * Durable writer state.  `finished_at` is deliberately not used as the
+ * success signal: blocked and failed actions also write a finish timestamp.
+ */
+export type AdmissionRunState = 'running' | 'complete' | 'failed' | 'blocked';
+export type AdmissionRunStateSource = 'writer' | 'legacy-finished-at' | 'invalid-writer';
+export type AdmissionRunOutcomeSource = 'writer' | 'legacy-derived';
+
+/**
+ * The unit is part of the metric contract.  In particular, a census/audit
+ * row is a repeated snapshot, not a population of items that may be added to
+ * the item totals, and a bulk row counts pair verdicts rather than rows.
+ */
+export type AdmissionRunMetricUnit = 'items' | 'pairs' | 'links' | 'parks' | 'snapshots' | 'unknown';
+
+/**
+ * Outcome counters are explicit about both the unit and what was actually
+ * changed.  Older rows do not have `detail.outcome`; the reader derives a
+ * conservative fallback so historical reports remain truthful rather than
+ * silently presenting a missing value as zero.
+ */
+export interface AdmissionRunOutcome {
+  unit: AdmissionRunMetricUnit;
+  attempted: number | null;
+  successful: number | null;
+  rolledBack: number | null;
+  unchanged: number | null;
+  uniqueRowsChanged: number | null;
+  failureReason: string | null;
+  blockedReason: string | null;
+}
+
+const ADMISSION_RUN_STATES: ReadonlySet<string> = new Set(['running', 'complete', 'failed', 'blocked']);
+
+export function normalizeAdmissionRunState(value: unknown, finishedAt: unknown): AdmissionRunState {
+  if (typeof value === 'string' && ADMISSION_RUN_STATES.has(value)) return value as AdmissionRunState;
+  // Legacy rows have no status at all; a finish timestamp is sufficient only
+  // for that pre-status shape.  An unknown explicit status fails closed.
+  if (value === null || value === undefined || value === '') return finishedAt == null ? 'running' : 'complete';
+  return 'failed';
+}
+
+function finiteMetric(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null;
+}
+
+function metricUnit(value: unknown): AdmissionRunMetricUnit {
+  return value === 'items' ||
+    value === 'pairs' ||
+    value === 'links' ||
+    value === 'parks' ||
+    value === 'snapshots'
+    ? value
+    : 'unknown';
+}
+
+/** Normalize a writer-provided outcome, preserving unknown values as null. */
+export function normalizeAdmissionRunOutcome(
+  value: unknown,
+  fallback: Partial<AdmissionRunOutcome> = {},
+): AdmissionRunOutcome {
+  const raw = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const has = (key: string): boolean => Object.prototype.hasOwnProperty.call(raw, key);
+  const pick = (key: keyof AdmissionRunOutcome): unknown => (has(key) ? raw[key] : fallback[key]);
+  const stringOrNull = (candidate: unknown, fallbackValue: string | null = null): string | null =>
+    typeof candidate === 'string' && candidate.trim() ? candidate : fallbackValue;
+  return {
+    unit: metricUnit(pick('unit')),
+    attempted: finiteMetric(pick('attempted')),
+    successful: finiteMetric(pick('successful')),
+    rolledBack: finiteMetric(pick('rolledBack')),
+    unchanged: finiteMetric(pick('unchanged')),
+    uniqueRowsChanged: finiteMetric(pick('uniqueRowsChanged')),
+    failureReason: stringOrNull(pick('failureReason'), fallback.failureReason ?? null),
+    blockedReason: stringOrNull(pick('blockedReason'), fallback.blockedReason ?? null),
+  };
+}
+
+/**
+ * Derive a truthful outcome for legacy rows that predate `detail.outcome`.
+ * `finished_at` is intentionally never treated as proof of success.
+ */
+export function deriveAdmissionRunOutcome(input: {
+  state: string;
+  runKind: string;
+  detail: Record<string, unknown> | null;
+  batchSize: number | null;
+  promoted: number | null;
+  merged: number | null;
+  held: number | null;
+  autoPromotedUnreviewed: number | null;
+}): AdmissionRunOutcome {
+  const detail = input.detail ?? {};
+  const explicit = detail.outcome;
+  const explicitFailureReason = typeof detail.error === 'string' && detail.error ? detail.error : null;
+  const explicitBlockedReason = typeof detail.blockedReason === 'string' && detail.blockedReason ? detail.blockedReason : null;
+  if (explicit && typeof explicit === 'object') {
+    return normalizeAdmissionRunOutcome(explicit, {
+      failureReason: explicitFailureReason,
+      blockedReason: explicitBlockedReason,
+    });
+  }
+  const status = ADMISSION_RUN_STATES.has(input.state) ? input.state : 'unknown';
+  const unit: AdmissionRunMetricUnit =
+    input.runKind === 'bulk-stage'
+      ? 'pairs'
+      : input.runKind === 'delta-sweep' || input.runKind === 'daily-digest'
+        ? 'links'
+        : input.runKind === 'census' ||
+            (input.runKind === 'durable-park-audit' && detail.mode !== 'durable-park-reconcile')
+          ? 'snapshots'
+          : input.runKind === 'durable-park-audit'
+            ? 'parks'
+            : input.runKind === 'promoter-tick'
+              ? 'items'
+              : 'unknown';
+  const blockedReason = explicitBlockedReason;
+  const failureReason = explicitFailureReason;
+  if (status === 'blocked') {
+    return normalizeAdmissionRunOutcome({
+      unit,
+      attempted: 0,
+      successful: 0,
+      rolledBack: 0,
+      unchanged: 0,
+      uniqueRowsChanged: 0,
+      blockedReason,
+    });
+  }
+  if (status === 'failed') {
+    return normalizeAdmissionRunOutcome({
+      unit,
+      attempted: null,
+      successful: null,
+      rolledBack: null,
+      unchanged: null,
+      uniqueRowsChanged: null,
+      failureReason,
+    });
+  }
+  if (input.runKind === 'promoter-tick' && detail.mode === 'fail-open') {
+    const n = input.autoPromotedUnreviewed;
+    return normalizeAdmissionRunOutcome({
+      unit: 'items',
+      attempted: n,
+      successful: n,
+      rolledBack: 0,
+      unchanged: 0,
+      uniqueRowsChanged: n,
+    });
+  }
+  if (input.runKind === 'promoter-tick') {
+    const attempted = input.batchSize;
+    const successful =
+      input.promoted == null || input.merged == null ? null : Math.max(0, input.promoted + input.merged);
+    const unchanged = attempted == null || successful == null ? null : Math.max(0, attempted - successful);
+    return normalizeAdmissionRunOutcome({
+      unit: 'items',
+      attempted,
+      successful,
+      rolledBack: 0,
+      unchanged,
+      uniqueRowsChanged: successful,
+    });
+  }
+  if (input.runKind === 'bulk-stage') {
+    const attempted =
+      finiteMetric(detail.scopedPairsBefore) ??
+      finiteMetric(detail.pairs) ??
+      input.batchSize;
+    const verdicts = detail.verdicts && typeof detail.verdicts === 'object' ? (detail.verdicts as Record<string, unknown>) : {};
+    const successful =
+      Object.values(verdicts).reduce<number>((sum, value) => sum + (finiteMetric(value) ?? 0), 0) || null;
+    const uniqueRowsChanged = input.merged;
+    const unchanged = attempted == null || successful == null ? null : Math.max(0, attempted - successful);
+    return normalizeAdmissionRunOutcome({
+      unit: 'pairs',
+      attempted,
+      successful,
+      rolledBack: 0,
+      unchanged,
+      uniqueRowsChanged,
+    });
+  }
+  if (input.runKind === 'durable-park-audit' && detail.mode === 'durable-park-reconcile') {
+    const attempted = input.batchSize;
+    const successful = input.promoted;
+    return normalizeAdmissionRunOutcome({
+      unit: 'parks',
+      attempted,
+      successful,
+      rolledBack: 0,
+      unchanged: attempted == null || successful == null ? null : Math.max(0, attempted - successful),
+      uniqueRowsChanged: successful,
+    });
+  }
+  if (
+    input.runKind === 'census' ||
+    (input.runKind === 'durable-park-audit' && detail.mode !== 'durable-park-reconcile')
+  ) {
+    return normalizeAdmissionRunOutcome({
+      unit: 'snapshots',
+      attempted: 1,
+      successful: status === 'complete' ? 1 : 0,
+      rolledBack: 0,
+      unchanged: 0,
+      uniqueRowsChanged: 0,
+    });
+  }
+  if (input.runKind === 'delta-sweep' || input.runKind === 'daily-digest') {
+    const linksWritten = finiteMetric(detail.linksWritten);
+    return normalizeAdmissionRunOutcome({
+      unit: 'links',
+      attempted: linksWritten,
+      successful: linksWritten,
+      rolledBack: 0,
+      unchanged: linksWritten == null ? null : 0,
+      // Historical writers returned total link coverage, not INSERT rowCount,
+      // so replay-vs-new cannot be reconstructed honestly.
+      uniqueRowsChanged: null,
+    });
+  }
+  // Census, delta, digest, and report-only park-audit rows are measurements or
+  // projections, not item mutations.  Do not manufacture "successful" counts
+  // from their population snapshot; those counters become explicit when the
+  // corresponding writer can name a real mutation.
+  return normalizeAdmissionRunOutcome({
+    unit: 'unknown',
+    attempted: null,
+    successful: null,
+    rolledBack: null,
+    unchanged: null,
+    uniqueRowsChanged: 0,
+  });
+}
 
 export interface WorkItemAdmissionRun {
   id: string;
   harnessSlug: string;
   runKind: string;
-  state: string;
+  state: AdmissionRunState;
+  stateSource?: AdmissionRunStateSource;
   startedAt: string;
   finishedAt: string | null;
   batchSize: number | null;
@@ -168,6 +411,8 @@ export interface WorkItemAdmissionRun {
   tokensIn: number | null;
   tokensOut: number | null;
   latencyMs: number | null;
+  outcome: AdmissionRunOutcome;
+  outcomeSource?: AdmissionRunOutcomeSource;
   detail: Record<string, unknown> | null;
 }
 
@@ -197,7 +442,77 @@ export interface WorkItemAdmissionSnapshot {
   summary: WorkItemAdmissionQueueHealth & {
     latestCensus: AdmissionCensusPoint | null;
     latestCensusRise: AdmissionCensusPoint | null;
+    runCounts: AdmissionRunCounts;
   };
+}
+
+export interface AdmissionRunCounts {
+  total: number;
+  running: number;
+  complete: number;
+  failed: number;
+  blocked: number;
+  attempted: number;
+  successful: number;
+  rolledBack: number;
+  unchanged: number;
+  uniqueRowsChanged: number;
+  /**
+   * Unit-separated totals.  The flat counters above are retained for clients
+   * that predate P-002 and intentionally contain ONLY `items` totals; callers
+   * that need pair/link/park/snapshot metrics must use this map.
+   */
+  byUnit?: Partial<Record<AdmissionRunMetricUnit, AdmissionRunOutcomeTotals>>;
+}
+
+export interface AdmissionRunOutcomeTotals {
+  attempted: number;
+  successful: number;
+  rolledBack: number;
+  unchanged: number;
+  uniqueRowsChanged: number;
+  /** Number of runs contributing this unit (useful for repeated snapshots). */
+  runs: number;
+}
+
+function emptyOutcomeTotals(): AdmissionRunOutcomeTotals {
+  return { attempted: 0, successful: 0, rolledBack: 0, unchanged: 0, uniqueRowsChanged: 0, runs: 0 };
+}
+
+function summarizeAdmissionRuns(runs: readonly WorkItemAdmissionRun[]): AdmissionRunCounts {
+  const counts: AdmissionRunCounts = {
+    total: runs.length,
+    running: 0,
+    complete: 0,
+    failed: 0,
+    blocked: 0,
+    attempted: 0,
+    successful: 0,
+    rolledBack: 0,
+    unchanged: 0,
+    uniqueRowsChanged: 0,
+    byUnit: {},
+  };
+  for (const run of runs) {
+    if (run.state === 'running' || run.state === 'complete' || run.state === 'failed' || run.state === 'blocked') {
+      counts[run.state] += 1;
+    }
+    const outcome = run.outcome;
+    const unit = outcome.unit;
+    const unitTotals = (counts.byUnit![unit] ??= emptyOutcomeTotals());
+    unitTotals.runs += 1;
+    for (const key of ['attempted', 'successful', 'rolledBack', 'unchanged', 'uniqueRowsChanged'] as const) {
+      const value = outcome[key];
+      if (value != null) {
+        unitTotals[key] += value;
+        // Do not add pair verdicts, links, parks, or repeated snapshots to
+        // the legacy flat item counters.  That aggregation was the original
+        // source of the owner-facing "thousands of rows changed" illusion.
+        if (unit === 'items') counts[key] += value;
+      }
+    }
+  }
+  return counts;
 }
 
 export type WorkItemAdmissionPressureLevel = 'normal' | 'elevated' | 'deep';
@@ -777,7 +1092,20 @@ async function beginRun(
   sql: OrgSql,
   input: { runId: string; workspaceId: string; harnessSlug: string; mode: 'promoter' | 'fail-open' },
 ): Promise<void> {
-  const detail = JSON.stringify({ status: 'running', mode: input.mode });
+  const detail = JSON.stringify({
+    status: 'running',
+    mode: input.mode,
+    outcome: {
+      unit: 'items',
+      attempted: null,
+      successful: null,
+      rolledBack: null,
+      unchanged: null,
+      uniqueRowsChanged: null,
+      failureReason: null,
+      blockedReason: null,
+    } satisfies AdmissionRunOutcome,
+  });
   await sql`
     INSERT INTO harness_shared.admission_runs
       (id, workspace_id, harness_slug, run_kind, started_at, detail)
@@ -803,7 +1131,21 @@ async function finishRun(
     detail: Record<string, unknown>;
   },
 ): Promise<void> {
-  const detail = JSON.stringify(input.detail);
+  const mode = input.detail.mode;
+  const successful = mode === 'fail-open' ? input.autoPromoted : input.promoted + input.merged;
+  const detail = JSON.stringify({
+    ...input.detail,
+    outcome: {
+      unit: 'items',
+      attempted: input.batchSize,
+      successful,
+      rolledBack: 0,
+      unchanged: input.held,
+      uniqueRowsChanged: successful,
+      failureReason: null,
+      blockedReason: null,
+    } satisfies AdmissionRunOutcome,
+  });
   await sql`
     UPDATE harness_shared.admission_runs
        SET finished_at = now(),
@@ -824,7 +1166,21 @@ async function finishRun(
 
 async function failRun(sql: OrgSql, runId: string, mode: string, error: unknown, latencyMs: number): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
-  const detail = JSON.stringify({ status: 'failed', mode, error: message });
+  const detail = JSON.stringify({
+    status: 'failed',
+    mode,
+    error: message,
+    outcome: {
+      unit: 'items',
+      attempted: null,
+      successful: null,
+      rolledBack: null,
+      unchanged: null,
+      uniqueRowsChanged: null,
+      failureReason: message,
+      blockedReason: null,
+    } satisfies AdmissionRunOutcome,
+  });
   await sql`
     UPDATE harness_shared.admission_runs
        SET finished_at = now(), latency_ms = ${latencyMs}, detail = ${detail}::text::jsonb
@@ -967,7 +1323,9 @@ export async function readWorkItemAdmissionSnapshot(opts: {
     id: string;
     harness_slug: string;
     run_kind: string;
-    state: string;
+    recorded_state?: string | null;
+    /** Compatibility for injected/read mocks written against the pre-P-001 alias. */
+    state?: string | null;
     started_at: Date | string;
     finished_at: Date | string | null;
     batch_size: number | string | null;
@@ -996,10 +1354,7 @@ export async function readWorkItemAdmissionSnapshot(opts: {
     SELECT ar.id,
            ar.harness_slug,
            ar.run_kind,
-           COALESCE(
-             ar.detail->>'status',
-             CASE WHEN ar.finished_at IS NULL THEN 'running' ELSE 'complete' END
-           ) AS state,
+           ar.detail->>'status' AS recorded_state,
            ar.started_at,
            ar.finished_at,
            ar.batch_size,
@@ -1020,10 +1375,13 @@ export async function readWorkItemAdmissionSnapshot(opts: {
        AND (${kind}::text IS NULL OR ar.run_kind = ${kind})
        AND (
          ${state}::text IS NULL
-         OR COALESCE(
-              ar.detail->>'status',
-              CASE WHEN ar.finished_at IS NULL THEN 'running' ELSE 'complete' END
-            ) = ${state}
+         OR CASE
+              WHEN ar.detail->>'status' IN ('running', 'complete', 'failed', 'blocked')
+                THEN ar.detail->>'status'
+              WHEN COALESCE(ar.detail->>'status', '') <> '' THEN 'failed'
+              WHEN ar.finished_at IS NULL THEN 'running'
+              ELSE 'complete'
+            END = ${state}
        )
      ORDER BY ar.started_at DESC, ar.id DESC
      LIMIT ${limit}`;
@@ -1053,13 +1411,22 @@ export async function readWorkItemAdmissionSnapshot(opts: {
     value == null ? null : Number(value);
   const instant = (value: Date | string): string => (value instanceof Date ? value.toISOString() : String(value));
   const normalizedRuns: WorkItemAdmissionRun[] = runs.map((row) => {
+    const recordedState = row.recorded_state ?? row.state ?? null;
+    const state = normalizeAdmissionRunState(recordedState, row.finished_at);
+    const stateSource: AdmissionRunStateSource =
+      typeof recordedState === 'string' && ADMISSION_RUN_STATES.has(recordedState)
+        ? 'writer'
+        : recordedState == null || recordedState === ''
+          ? 'legacy-finished-at'
+          : 'invalid-writer';
     const censusBefore = numberOrNull(row.census_before);
     const censusAfter = numberOrNull(row.census_after);
     return {
       id: row.id,
       harnessSlug: row.harness_slug,
       runKind: row.run_kind,
-      state: row.state,
+      state,
+      stateSource,
       startedAt: instant(row.started_at),
       finishedAt: row.finished_at == null ? null : instant(row.finished_at),
       batchSize: numberOrNull(row.batch_size),
@@ -1074,6 +1441,18 @@ export async function readWorkItemAdmissionSnapshot(opts: {
       tokensIn: numberOrNull(row.tokens_in),
       tokensOut: numberOrNull(row.tokens_out),
       latencyMs: numberOrNull(row.latency_ms),
+      outcome: deriveAdmissionRunOutcome({
+        state,
+        runKind: row.run_kind,
+        detail: row.detail,
+        batchSize: numberOrNull(row.batch_size),
+        promoted: numberOrNull(row.promoted),
+        merged: numberOrNull(row.merged),
+        held: numberOrNull(row.held),
+        autoPromotedUnreviewed: numberOrNull(row.auto_promoted_unreviewed),
+      }),
+      outcomeSource:
+        row.detail?.outcome && typeof row.detail.outcome === 'object' ? 'writer' : 'legacy-derived',
       detail: row.detail,
     };
   });
@@ -1099,6 +1478,7 @@ export async function readWorkItemAdmissionSnapshot(opts: {
       ...queueHealth,
       latestCensus: newestFirstCensus[0] ?? null,
       latestCensusRise: newestFirstCensus.find((point) => point.delta > 0) ?? null,
+      runCounts: summarizeAdmissionRuns(normalizedRuns),
     },
   };
 }

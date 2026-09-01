@@ -5,6 +5,7 @@ import { parseAsStringEnum, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import type {
   AdmissionRunKind,
+  AdmissionRunOutcomeTotals,
   AdmissionRunState,
   WorkItemAdmissionRun,
   WorkItemAdmissionSnapshot,
@@ -22,8 +23,15 @@ const KINDS: readonly KindFilter[] = [
   "bulk-stage",
   "delta-sweep",
   "daily-digest",
+  "durable-park-audit",
 ];
-const STATES: readonly StateFilter[] = ["all", "running", "complete", "failed"];
+const STATES: readonly StateFilter[] = [
+  "all",
+  "running",
+  "complete",
+  "blocked",
+  "failed",
+];
 
 const PAGE_STYLE: CSSProperties = {
   display: "grid",
@@ -62,7 +70,17 @@ function when(value: string | null): string {
 function stateColor(state: string): string {
   if (state === "complete") return "var(--good, #34d399)";
   if (state === "failed") return "var(--bad, #fb7185)";
+  if (state === "running") return "var(--accent, #67e8f9)";
   return "var(--warn, #fbbf24)";
+}
+
+function outcomeUnitLabel(unit: WorkItemAdmissionRun["outcome"]["unit"]): string {
+  if (unit === "items") return "run-local unique items";
+  if (unit === "pairs") return "pair verdicts";
+  if (unit === "links") return "link coverage";
+  if (unit === "parks") return "run-local unique parks";
+  if (unit === "snapshots") return "repeated snapshots";
+  return "unit unknown";
 }
 
 /** Dependency-free, token-themed trend used by the validated P-005 UI IR. */
@@ -133,7 +151,10 @@ const RUN_COLUMNS: TableColumn<WorkItemAdmissionRun>[] = [
     header: "State",
     render: (row) => (
       <span style={{ color: stateColor(row.state), fontWeight: 650 }}>
-        {row.state}
+        {row.state}{" "}
+        <small style={MUTED_STYLE}>
+          ({row.stateSource === "writer" ? "writer" : row.stateSource ?? "legacy"})
+        </small>
       </span>
     ),
   },
@@ -141,9 +162,25 @@ const RUN_COLUMNS: TableColumn<WorkItemAdmissionRun>[] = [
   { key: "harness", header: "Harness", render: (row) => row.harnessSlug },
   {
     key: "disposition",
-    header: "Promoted / merged / held",
+    header: "Run-local promoted / merged / held",
     render: (row) =>
       `${numberOrDash(row.promoted)} / ${numberOrDash(row.merged)} / ${numberOrDash(row.held)}`,
+  },
+  {
+    key: "outcome",
+    header: "Attempted / successful / unchanged / rolled back · rows changed",
+    render: (row) => (
+      <span
+        title={`Counter unit: ${outcomeUnitLabel(row.outcome.unit)}; source: ${row.outcomeSource ?? "legacy-derived"}`}
+      >
+        {numberOrDash(row.outcome.attempted)} / {numberOrDash(row.outcome.successful)} /{" "}
+        {numberOrDash(row.outcome.unchanged)} / {numberOrDash(row.outcome.rolledBack)}{" "}
+        · {numberOrDash(row.outcome.uniqueRowsChanged)}{" "}
+        <small style={MUTED_STYLE}>
+          ({outcomeUnitLabel(row.outcome.unit)} · {row.outcomeSource ?? "legacy-derived"})
+        </small>
+      </span>
+    ),
   },
   {
     key: "census",
@@ -180,6 +217,11 @@ const RUN_COLUMNS: TableColumn<WorkItemAdmissionRun>[] = [
     header: "Run latency",
     render: (row) => duration(row.latencyMs),
   },
+  {
+    key: "reason",
+    header: "Failure / blocked reason",
+    render: (row) => row.outcome.failureReason ?? row.outcome.blockedReason ?? "—",
+  },
   { key: "started", header: "Started", render: (row) => when(row.startedAt) },
 ];
 
@@ -212,6 +254,19 @@ export default function AdmissionRunsClient() {
     () => payload?.censusTrend.map((point) => point.after) ?? [],
     [payload],
   );
+  const outcomeUnitSummary = useMemo(() => {
+    const entries = (Object.entries(summary?.runCounts.byUnit ?? {}) as Array<
+      [string, AdmissionRunOutcomeTotals]
+    >).filter(([, counts]) => counts.runs > 0);
+    return {
+      count: entries.length,
+      detail: entries
+        .map(([unit, counts]) =>
+          `${unit}: ${counts.successful.toLocaleString()}/${counts.attempted.toLocaleString()} · ${counts.uniqueRowsChanged.toLocaleString()} unique row change(s) · ${counts.unchanged.toLocaleString()} unchanged · ${counts.rolledBack.toLocaleString()} rolled back`,
+        )
+        .join(" · "),
+    };
+  }, [summary]);
 
   if (query.loading && !payload) {
     return <div style={PAGE_STYLE}>Loading admission runs…</div>;
@@ -295,6 +350,16 @@ export default function AdmissionRunsClient() {
               ? `${summary.latestCensus.harnessSlug} · ${when(summary.latestCensus.startedAt)}`
               : "No census yet"
           }
+        />
+        <Stat
+          label="Run states (shown)"
+          value={`${summary?.runCounts.complete ?? 0}/${summary?.runCounts.total ?? 0}`}
+          detail={`${summary?.runCounts.failed ?? 0} failed · ${summary?.runCounts.blocked ?? 0} blocked · ${summary?.runCounts.running ?? 0} running`}
+        />
+        <Stat
+          label="Outcome counters by unit (shown)"
+          value={`${outcomeUnitSummary.count} unit${outcomeUnitSummary.count === 1 ? "" : "s"}`}
+          detail={outcomeUnitSummary.detail || "No outcome counters yet"}
         />
       </div>
 

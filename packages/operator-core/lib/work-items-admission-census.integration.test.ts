@@ -221,13 +221,16 @@ describe('runWorkItemAdmissionCensus (real Postgres)', () => {
     expect(second.fingerprint).toBe(first.fingerprint);
     expect(second.censusBefore).toBe(first.censusAfter);
 
-    const runs = await db.sql<Array<{ id: string; status: string; members: number }>>`
+    const runs = await db.sql<Array<{ id: string; status: string; members: number; unit: string; attempted: number; successful: number }>>`
       SELECT id, detail->>'status' AS status,
-             (detail #>> '{coverageAssertion,memberRows}')::int AS members
+             (detail #>> '{coverageAssertion,memberRows}')::int AS members,
+             detail #>> '{outcome,unit}' AS unit,
+             (detail #>> '{outcome,attempted}')::int AS attempted,
+             (detail #>> '{outcome,successful}')::int AS successful
         FROM harness_shared.admission_runs ORDER BY id`;
     expect(runs).toEqual([
-      { id: 'census-1', status: 'complete', members: 4 },
-      { id: 'census-2', status: 'complete', members: 4 },
+      { id: 'census-1', status: 'complete', members: 4, unit: 'snapshots', attempted: 1, successful: 1 },
+      { id: 'census-2', status: 'complete', members: 4, unit: 'snapshots', attempted: 1, successful: 1 },
     ]);
 
     const coverage = await db.sql<Array<{ run_id: string; members: number; unique_members: number }>>`
@@ -342,10 +345,14 @@ describe('runWorkItemAdmissionCensus (real Postgres)', () => {
       }),
     ).rejects.toThrow(/mixed embedding modes/);
 
-    const rows = await db.sql<Array<{ status: string; error: string }>>`
-      SELECT detail->>'status' AS status, detail->>'error' AS error
+    const rows = await db.sql<Array<{ status: string; error: string; unit: string; failure: string }>>`
+      SELECT detail->>'status' AS status, detail->>'error' AS error,
+             detail #>> '{outcome,unit}' AS unit,
+             detail #>> '{outcome,failureReason}' AS failure
         FROM harness_shared.admission_runs WHERE id = 'mixed-mode'`;
     expect(rows[0]?.status).toBe('failed');
     expect(rows[0]?.error).toMatch(/mixed embedding modes/);
+    expect(rows[0]?.unit).toBe('snapshots');
+    expect(rows[0]?.failure).toMatch(/mixed embedding modes/);
   }, 60_000);
 });

@@ -12,6 +12,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { readAgentReviewState } from './harness/improvements/agent-review-policy';
 import { saveTextArtifact } from './text-artifacts';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import { readWorkItemClaimHoldProvenance, type OrgSql } from './work-items';
 
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
@@ -727,7 +728,21 @@ export async function runWorkItemDurableParkAudit(opts: {
     VALUES
       (${runId}, ${opts.workspaceId}, ${opts.harnessSlug}, ${DURABLE_PARK_AUDIT_RUN_KIND},
        ${new Date(startedAtMs)},
-       ${JSON.stringify({ status: 'running', mode: 'durable-park-audit', reportOnly: true })}::text::jsonb)
+       ${JSON.stringify({
+         status: 'running',
+         mode: 'durable-park-audit',
+         reportOnly: true,
+         outcome: {
+           unit: 'snapshots',
+           attempted: 1,
+           successful: null,
+           rolledBack: null,
+           unchanged: null,
+           uniqueRowsChanged: 0,
+           failureReason: null,
+           blockedReason: null,
+         } satisfies AdmissionRunOutcome,
+       })}::text::jsonb)
     ON CONFLICT (id) DO NOTHING`;
 
   try {
@@ -802,6 +817,16 @@ export async function runWorkItemDurableParkAudit(opts: {
                  durableParks: matrix.population.durableParks,
                  holdOpenLeases: matrix.population.holdOpenLeases,
                },
+               outcome: {
+                 unit: 'snapshots',
+                 attempted: 1,
+                 successful: 1,
+                 rolledBack: 0,
+                 unchanged: 0,
+                 uniqueRowsChanged: 0,
+                 failureReason: null,
+                 blockedReason: null,
+               } satisfies AdmissionRunOutcome,
              })}::text::jsonb
        WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}`;
     return report;
@@ -815,6 +840,16 @@ export async function runWorkItemDurableParkAudit(opts: {
                mode: 'durable-park-audit',
                reportOnly: true,
                error: error instanceof Error ? error.message : String(error),
+               outcome: {
+                 unit: 'snapshots',
+                 attempted: 1,
+                 successful: 0,
+                 rolledBack: 0,
+                 unchanged: 0,
+                 uniqueRowsChanged: 0,
+                 failureReason: error instanceof Error ? error.message : String(error),
+                 blockedReason: null,
+               } satisfies AdmissionRunOutcome,
              })}::text::jsonb
        WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}`;
     throw error;
@@ -954,6 +989,16 @@ export async function runWorkItemDurableParkReconciliation(opts: {
          actor: opts.actor,
          inputSha256,
          requested: opts.decisions.length,
+         outcome: {
+           unit: 'parks',
+           attempted: null,
+           successful: null,
+           rolledBack: null,
+           unchanged: null,
+           uniqueRowsChanged: null,
+           failureReason: null,
+           blockedReason: null,
+         } satisfies AdmissionRunOutcome,
        })}::text::jsonb)
     ON CONFLICT (id) DO NOTHING`;
 
@@ -1095,7 +1140,17 @@ export async function runWorkItemDurableParkReconciliation(opts: {
                actor: opts.actor,
                inputSha256,
                artifactPath,
-               result,
+             result,
+             outcome: {
+               unit: 'parks',
+               attempted: result.requested,
+               successful: result.cleared,
+               rolledBack: 0,
+               unchanged: result.unchanged,
+               uniqueRowsChanged: result.cleared,
+               failureReason: null,
+               blockedReason: null,
+             } satisfies AdmissionRunOutcome,
              })}::text::jsonb
        WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}`;
     return result;
@@ -1109,6 +1164,16 @@ export async function runWorkItemDurableParkReconciliation(opts: {
                mode: 'durable-park-reconcile',
                actor: opts.actor,
                error: error instanceof Error ? error.message : String(error),
+               outcome: {
+                 unit: 'parks',
+                 attempted: opts.decisions.length,
+                 successful: null,
+                 rolledBack: null,
+                 unchanged: null,
+                 uniqueRowsChanged: null,
+                 failureReason: error instanceof Error ? error.message : String(error),
+                 blockedReason: null,
+               } satisfies AdmissionRunOutcome,
              })}::text::jsonb
        WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}`;
     throw error;
