@@ -280,14 +280,14 @@ beforeAll(async () => {
   // EI-21268387863408600: ordinary draft/paused lifecycle plans are also reserved, while ready
   // and done controls remain free and per-run instance lifecycle rows stay exempt.
   await db.sql.unsafe(readMigration('920-draft-paused-plan-claim-floor.sql.DRAFT')).simple();
-  // EI-22040912157347872: an active durable plan-item assignment reserves the linked work-item
-  // while its owner is between claim leases. Apply the real migration so the queryable SSOT and
-  // every TS claim path must agree on the new assignment leg.
-  await db.sql.unsafe(readMigration('1059-plan-assignment-claim-floor.sql')).simple();
   // EI-22040898205841125: an already-claimed work-item implementing the same canonical
   // plan-item is a pre-claim exclusion, not an invisible claim/clear miss. Apply the real
   // migration so the queryable SSOT and the TypeScript selector stay bound.
   await db.sql.unsafe(readMigration('1070-plan-item-sibling-claim-floor.sql')).simple();
+  // EI-22040912157347872: an active durable plan-item assignment reserves the linked work-item
+  // while its owner is between claim leases. Migration 1072 follows 1070 and wraps its v19
+  // public floor as v20, so applying the real migration in chain order proves both additions compose.
+  await db.sql.unsafe(readMigration('1072-plan-assignment-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
