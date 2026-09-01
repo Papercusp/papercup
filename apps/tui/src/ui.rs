@@ -2926,12 +2926,18 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         // up front. Without this the box still reads "Enter send" right up
         // until Enter silently does nothing, which is indistinguishable from
         // a dead key.
+        //
+        // The draft LEADS the line (WI-2140867): this body is one unwrapped
+        // row and the reason note alone is ~69 cols, so beside the Presence
+        // rail (68 content cols at width 100) a trailing `> draft` was
+        // truncated clean off the screen. The title already says Read-only;
+        // the note is the explanation, so it is the part allowed to truncate.
         (
             " Read-only — Esc close ",
             format!(
-                "{} · nothing typed here can be sent · > {}",
-                chat_dispatch.reason.note(),
-                app.chat_input.replace('\n', "⏎")
+                "> {} · {} · nothing typed here can be sent",
+                app.chat_input.replace('\n', "⏎"),
+                chat_dispatch.reason.note()
             ),
             Theme::notify(),
         )
