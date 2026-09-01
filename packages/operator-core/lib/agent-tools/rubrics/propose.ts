@@ -119,7 +119,12 @@ export const rubricsProposeArgs = z.object({
     .array(z.string())
     .optional()
     .describe('default scale shared by criteria (omit → ["healthy","degraded","broken","unknown"])'),
-  methodRef: z.string().max(200).optional().describe('agent-insights runbook slug for the long-form method'),
+  methodRef: z
+    .string()
+    .max(200)
+    .nullable()
+    .optional()
+    .describe('agent-insights runbook slug for the long-form method; null is accepted from rubrics:get when unset'),
   releaseGating: z
     .boolean()
     .optional()
@@ -203,7 +208,10 @@ export default defineTool({
       description: args.description,
       criteria: args.criteria,
       ratingScale: args.ratingScale,
-      methodRef: args.methodRef,
+      // rubrics:get projects an unset methodRef as null. Treat that read-back value
+      // as omitted so a get → edit → propose round trip reaches the same validated
+      // template-data shape instead of failing dispatch validation.
+      ...(args.methodRef != null ? { methodRef: args.methodRef } : {}),
       releaseGating: args.releaseGating,
       dropKeys: args.dropKeys,
       allowMethodShrink: args.allowMethodShrink,

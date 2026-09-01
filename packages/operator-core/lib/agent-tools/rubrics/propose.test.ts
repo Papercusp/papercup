@@ -79,4 +79,14 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
 
     expect(parsed.success).toBe(true);
   });
+
+  it('accepts methodRef:null emitted by rubrics:get for an unset runbook', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      methodRef: null,
+    });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.methodRef).toBeNull();
+  });
 });

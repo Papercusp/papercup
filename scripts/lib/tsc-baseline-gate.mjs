@@ -1447,23 +1447,6 @@ export function formatLandingRaceCaveat({ recentCount, windowMin = LANDING_RACE_
 }
 
 /**
- * EI-19341572300046923 — the repo-relative directory prefix a `tsc -p <dir>/tsconfig.json`
- * invocation actually COMPILES.
- *
- * Every per-project CLI here is a thin wrapper whose `tscCommand` is a per-project constant
- * (`lint-tsc.mjs` → `packages/operator-core/`, `lint-tsc-operator-vite.mjs` →
- * `apps/operator-vite/`, …). `--files=` is a GATE-scoping flag that never reaches tsc, so
- * naming a file OUTSIDE that project does not widen the compile — it just scopes the verdict
- * to files this run never looked at. Deriving the prefix from the command itself (rather than
- * a hand-maintained roster) means a new per-project CLI inherits the guard below for free;
- * a roster would reproduce the very "gate exists, gates nothing" defect WI-6841 documents.
- *
- * @param {string} tscCommand
- * @returns {string | null} prefix with a trailing slash, `''` for a whole-repo project, or
- *   `null` when no `-p` operand is parseable (callers must then FAIL OPEN — an unparseable
- *   command is not evidence that a file is uncovered).
- */
-/**
  * V8 old-space ceiling (MB) for the `tsc` CHILD, applied by `tscChildEnv` below.
  *
  * WHY THIS EXISTS (WI-37503, measured 2026-08-09): every gate here shells out to
@@ -1601,6 +1584,23 @@ export function tscChildEnv(extra = {}) {
   };
 }
 
+/**
+ * EI-19341572300046923 — the repo-relative directory prefix a `tsc -p <dir>/tsconfig.json`
+ * invocation actually COMPILES.
+ *
+ * Every per-project CLI here is a thin wrapper whose `tscCommand` is a per-project constant
+ * (`lint-tsc.mjs` → `packages/operator-core/`, `lint-tsc-operator-vite.mjs` →
+ * `apps/operator-vite/`, …). `--files=` is a GATE-scoping flag that never reaches tsc, so
+ * naming a file OUTSIDE that project does not widen the compile — it just scopes the verdict
+ * to files this run never looked at. Deriving the prefix from the command itself (rather than
+ * a hand-maintained roster) means a new per-project CLI inherits the guard below for free;
+ * a roster would reproduce the very "gate exists, gates nothing" defect WI-6841 documents.
+ *
+ * @param {string} tscCommand
+ * @returns {string | null} prefix with a trailing slash, `''` for a whole-repo project, or
+ *   `null` when no `-p` operand is parseable (callers must then FAIL OPEN — an unparseable
+ *   command is not evidence that a file is uncovered).
+ */
 export function projectPrefixFromTscCommand(tscCommand) {
   const m = /(?:^|\s)-p\s+(\S+)/.exec(String(tscCommand ?? ''));
   if (!m) return null;
@@ -2126,11 +2126,37 @@ export function formatUncoveredFilesBanner({
 }
 
 /**
- * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
- * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
+ * The `.d.mts` companions of the `.mjs` modules declared in `tsconfig.declarations.json`
+ * (WI-6394's naming convention: `foo.mjs` -> `foo.d.mts`, same directory) — the hidden
+ * dependency `coalesceWatermarkFor` folds in below (EI-19483243844876537).
  *
- * @param {RunTscBaselineGateOptions} options
+ * Deliberately duplicated rather than imported from `scripts/gen-declarations.ts`: that
+ * module calls `generate()`/`check()` UNCONDITIONALLY at module load — no entrypoint guard —
+ * so importing it here would regenerate declarations as a side effect of every gate call,
+ * including read-only ones on a shared, concurrently-edited checkout. `generated-
+ * declarations.test.ts` already duplicates `BANNER_MARKER` for the identical reason; this
+ * follows the same precedent rather than introducing a new one.
+ *
+ * Fails open (empty array) on any read/parse error — this is a supplementary freshness
+ * SIGNAL, not a hard dependency, and a missing/malformed config must never crash the gate.
+ *
+ * @param {string} root
+ * @returns {string[]} repo-relative `.d.mts` paths
  */
+export function declarationFilesFromConfig(root) {
+  try {
+    const raw = readFileSync(resolve(root, 'tsconfig.declarations.json'), 'utf8');
+    // tsc accepts JSONC (`//` comments) here — strip before parsing, same approach as
+    // gen-declarations.ts's own `inputs()`.
+    const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
+    const parsed = JSON.parse(stripped);
+    const mjsFiles = Array.isArray(parsed.files) ? parsed.files : [];
+    return mjsFiles.map((f) => String(f).replace(/\.mjs$/, '.d.mts'));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * The freshness watermark this run may safely replay a COALESCED compile from
  * (epoch seconds), or `null` to opt out of sharing entirely.
@@ -2189,39 +2215,6 @@ export function formatUncoveredFilesBanner({
  * @param {{ root: string, files: Set<string> | null, updateFlag: boolean }} args
  * @returns {number | null} epoch seconds, or null to disable coalescing for this run
  */
-
-/**
- * The `.d.mts` companions of the `.mjs` modules declared in `tsconfig.declarations.json`
- * (WI-6394's naming convention: `foo.mjs` -> `foo.d.mts`, same directory) — the hidden
- * dependency `coalesceWatermarkFor` folds in below (EI-19483243844876537).
- *
- * Deliberately duplicated rather than imported from `scripts/gen-declarations.ts`: that
- * module calls `generate()`/`check()` UNCONDITIONALLY at module load — no entrypoint guard —
- * so importing it here would regenerate declarations as a side effect of every gate call,
- * including read-only ones on a shared, concurrently-edited checkout. `generated-
- * declarations.test.ts` already duplicates `BANNER_MARKER` for the identical reason; this
- * follows the same precedent rather than introducing a new one.
- *
- * Fails open (empty array) on any read/parse error — this is a supplementary freshness
- * SIGNAL, not a hard dependency, and a missing/malformed config must never crash the gate.
- *
- * @param {string} root
- * @returns {string[]} repo-relative `.d.mts` paths
- */
-export function declarationFilesFromConfig(root) {
-  try {
-    const raw = readFileSync(resolve(root, 'tsconfig.declarations.json'), 'utf8');
-    // tsc accepts JSONC (`//` comments) here — strip before parsing, same approach as
-    // gen-declarations.ts's own `inputs()`.
-    const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
-    const parsed = JSON.parse(stripped);
-    const mjsFiles = Array.isArray(parsed.files) ? parsed.files : [];
-    return mjsFiles.map((f) => String(f).replace(/\.mjs$/, '.d.mts'));
-  } catch {
-    return [];
-  }
-}
-
 export function coalesceWatermarkFor({ root, files, updateFlag }) {
   if (updateFlag) return null;
   if (files === null || files.size === 0) return null;
@@ -2537,6 +2530,12 @@ export function gitHeadShaForLintTsc(root) {
   }
 }
 
+/**
+ * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
+ * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
+ *
+ * @param {RunTscBaselineGateOptions} options
+ */
 export async function runTscBaselineGate({
   root,
   tscCommand,
