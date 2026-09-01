@@ -129,9 +129,11 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       // silence (the 2026-08-17 mass-interrupt root cause — see StallWakerDeps.ownerLastActivityAt):
       //   (a) the bee nursery's stream output (only a bee has a spawned_agents row);
       //   (b) coord presence's last_active_at (EVERY coord agent has one, any role);
-      //   (c) the gateway's per-owner ledger lastAt (/admin/owner-report) — bumped by EVERY request through
-      //       the gateway, retries included, so a CLI in 429 retry-backoff reads as ALIVE here even while
-      //       (a)+(b) are silent. Best-effort: a down gateway degrades to (a)+(b), never fails the read.
+      //   (c) the gateway's per-owner ledger lastRequestAt (/admin/owner-report) — bumped when EVERY request
+      //       STARTS, retries included, so a CLI in 429 retry-backoff reads as ALIVE here even while (a)+(b)
+      //       are silent. Do not use the mixed outcome timestamp (`lastAt`): a request that began BEFORE the
+      //       stall can finish/cancel after it and otherwise masquerade as post-stall recovery (WI-2054656).
+      //       Best-effort: a down gateway degrades to (a)+(b), never fails the read.
       const sql = getOrgPg().sql;
       const node = await getSpawnPg(sql, workspaceId, ownerId).catch(() => null);
       const beeOut = node?.lastOutputAt ? new Date(node.lastOutputAt).getTime() : 0;
@@ -146,8 +148,8 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
           signal: AbortSignal.timeout(3000),
         });
         if (r.ok) {
-          const body = (await r.json()) as { ledger?: { lastAt?: number } | null };
-          gatewayAct = body.ledger?.lastAt ?? 0;
+          const body = (await r.json()) as GatewayOwnerActivityReport;
+          gatewayAct = gatewayOwnerRequestActivityAt(body);
         }
       } catch {
         // gateway unreachable — (a)+(b) still serve
@@ -251,6 +253,17 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
     now: () => Date.now(),
     log: (level, msg) => (level === 'warn' ? console.warn : console.log)(`[stall-waker] ${msg}`),
   };
+}
+
+export interface GatewayOwnerActivityReport {
+  ledger?: { lastRequestAt?: number; lastAt?: number } | null;
+}
+
+/** Request-start activity for the stall false-positive guard. `lastAt` is a rolling-deploy fallback
+ *  for an older gateway that has not yet learned `lastRequestAt`; once the gateway is current, late
+ *  outcomes can no longer make pre-stall work look like post-stall recovery. */
+export function gatewayOwnerRequestActivityAt(report: GatewayOwnerActivityReport): number {
+  return report.ledger?.lastRequestAt ?? report.ledger?.lastAt ?? 0;
 }
 
 let timer: ManagedHandle | null = null;
