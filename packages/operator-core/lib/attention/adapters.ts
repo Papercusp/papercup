@@ -360,7 +360,15 @@ export function smokeFailToAttention(s: SmokeFailInput): AttentionItem {
     ownerAgentId: null,
     ownerLabel: null,
     ...untriaged(),
-    actions: [{ id: 'view-log', label: 'View log', primary: true }, DISCUSS],
+    // P-003: `ack` is the acknowledgement-class terminal — an operator cannot
+    // make a past smoke run pass, so acknowledging that the failure was seen is
+    // the honest end of the CARD. Fixing it is engineering work with its own
+    // work-item, which is why this is not a source mutation.
+    actions: [
+      { id: 'view-log', label: 'View log', primary: true },
+      { id: 'ack', label: 'Acknowledge' },
+      DISCUSS,
+    ],
     ref: { kind: 'smoke-fail', harnessSlug: s.harnessSlug },
   };
 }
@@ -591,7 +599,16 @@ export function conversationToAttention(c: ConversationInput): AttentionItem {
     // with the owner's text (conversations:resolve { accepted_answer }), which
     // captures it to the knowledge layer AND drops it from the Queue (the reader
     // surfaces only open, unanswered conversations).
-    actions: [{ id: 'answer', label: 'Answer', primary: true }, DISCUSS],
+    // P-003: Answer stays a navigate (it opens the inline input card, and the
+    // owner's text becomes the accepted answer). `Close` is the terminal for the
+    // question the owner is never going to answer — conversations:resolve on the
+    // row itself, so it stops being an open question at the source rather than
+    // sitting in the queue forever.
+    actions: [
+      { id: 'answer', label: 'Answer', primary: true },
+      { id: 'dismiss', label: 'Close' },
+      DISCUSS,
+    ],
     ref: { kind: 'conversation', conversationId: c.conversationId },
   };
 }
@@ -629,7 +646,13 @@ export function scoutGradeToAttention(g: ScoutGradeInput): AttentionItem {
     ownerAgentId: null,
     ownerLabel: null,
     ...untriaged(),
-    actions: [{ id: 'open', label: 'Grade ideas', primary: true }],
+    // P-003: grading is OPTIONAL feedback, so there is no per-idea source state
+    // an inbox click should mutate — dismissing records that the owner declined
+    // the nudge, which is the whole disposition this rollup can have.
+    actions: [
+      { id: 'open', label: 'Grade ideas', primary: true },
+      { id: 'dismiss', label: 'Dismiss' },
+    ],
     ref: { kind: 'scout-grade', count: g.count },
   };
 }
@@ -652,6 +675,10 @@ export interface WorkItemNeedsHumanInput {
   harnessSlug?: string | null;
   ownerAgentId?: string | null;
   ownerLabel?: string | null;
+  /** The row's own lifecycle status. P-003 derives WHICH of the source query's
+   *  two legs admitted this row, so the terminal action clears the right gate;
+   *  omitted ⇒ treated as the payload leg (the issue-family default). */
+  status?: string | null;
 }
 
 /**
@@ -668,14 +695,27 @@ export interface WorkItemNeedsHumanInput {
  */
 export function workItemNeedsHumanToAttention(i: WorkItemNeedsHumanInput): AttentionItem {
   const tier: AttentionTier = 'decision';
+  // P-003: until now EVERY action here was a navigate — Answer opens an input
+  // card, Open opens the source, Discuss opens a chat — so the single largest
+  // population in the owner's inbox (46% of the bulk-run ledger) had no way to
+  // END, by click or by resolver. `Release` clears the owner gate and hands the
+  // item back to the agents; `Drop` closes it. Both write the work_items row, so
+  // the card cannot re-derive on the next read.
+  const ownerGateActions: AttentionAction[] = [
+    { id: 'resolve', label: 'Release to agents' },
+    { id: 'drop', label: 'Drop' },
+  ];
   const actions: AttentionAction[] = i.ownerAgentId
     ? [
         { id: 'answer', label: 'Answer', primary: true },
+        ...ownerGateActions,
         { id: 'open', label: i.harnessSlug ? 'Open work item' : 'Open source' },
         DISCUSS,
       ]
     : [
-        { id: 'open', label: i.harnessSlug ? 'Open work item' : 'Open source', primary: true },
+        { ...ownerGateActions[0]!, primary: true },
+        ownerGateActions[1]!,
+        { id: 'open', label: i.harnessSlug ? 'Open work item' : 'Open source' },
         DISCUSS,
       ];
   return {
@@ -710,7 +750,12 @@ export function workItemNeedsHumanToAttention(i: WorkItemNeedsHumanInput): Atten
     ownerLabel: i.ownerLabel ?? null,
     ...untriaged(),
     actions,
-    ref: { kind: 'work-item-needs-human', workItemId: i.workItemId, itemKind: i.itemKind },
+    ref: {
+      kind: 'work-item-needs-human',
+      workItemId: i.workItemId,
+      itemKind: i.itemKind,
+      ownerGate: i.status === 'needs-human' ? 'status' : 'payload',
+    },
   };
 }
 
@@ -776,7 +821,14 @@ export function blockedWorkItemToAttention(i: BlockedWorkItemInput): AttentionIt
     ownerAgentId: i.ownerAgentId ?? null,
     ownerLabel: i.ownerLabel ?? null,
     ...untriaged(),
-    actions: [{ id: 'open', label: 'Open', primary: true }, DISCUSS],
+    // P-003: a permanently-blocked row should be closeable from the surface that
+    // shows it. Drop writes the terminal state with the caller's rationale as the
+    // completion evidence a terminal close requires.
+    actions: [
+      { id: 'open', label: 'Open', primary: true },
+      { id: 'drop', label: 'Drop' },
+      DISCUSS,
+    ],
     ref: { kind: 'work-item-blocked', workItemId: i.workItemId, itemKind: i.itemKind },
   };
 }
@@ -866,21 +918,35 @@ export function ownerWallToAttention(w: OwnerWallInput): AttentionItem {
   const hours = w.waitingHours ?? 0;
   const workItemSource =
     w.source === 'work-item' && w.ref && /^(?:WI|EI|F)-\d+$/i.test(w.ref);
+  // P-003: every branch here was navigate-only, so a registered wall could never
+  // be ENDED from the inbox — only talked about. A work-item-backed wall clears
+  // through the same owner gate as a `work-item-needs-human` card (a real source
+  // mutation); a loop-carry-note wall has no operator-writable row, so its honest
+  // terminal is the acknowledgement record instead.
+  const wallTerminal: AttentionAction = workItemSource
+    ? { id: 'resolve', label: 'Clear wall' }
+    : { id: 'dismiss', label: 'Clear wall' };
   const actions: AttentionAction[] =
     actionability === 'actionable' && w.ownerId
       ? [
           { id: 'answer', label: 'Answer', primary: true },
+          wallTerminal,
           { id: 'message-owner', label: 'Open agent session' },
           DISCUSS,
         ]
       : workItemSource
         ? [
             { id: 'open', label: w.harnessSlug ? 'Open work item' : 'Open source', primary: true },
+            wallTerminal,
             DISCUSS,
           ]
         : w.ownerId
-          ? [{ id: 'message-owner', label: 'Open agent session', primary: true }, DISCUSS]
-          : [DISCUSS];
+          ? [
+              { id: 'message-owner', label: 'Open agent session', primary: true },
+              wallTerminal,
+              DISCUSS,
+            ]
+          : [{ ...wallTerminal, primary: true }, DISCUSS];
   return {
     id: `owner-wall:${w.source}:${idPart}`,
     kind: 'owner-wall',
@@ -943,7 +1009,17 @@ export function darkFlagRatificationToAttention(f: DarkFlagRatificationInput): A
     ownerAgentId: null,
     ownerLabel: null,
     ...untriaged(),
-    actions: [{ id: 'open', label: 'Review flag', primary: true }],
+    // P-003: this card is derived from the STATIC DARK_FLAGS allowlist compiled
+    // into libs/flags — no runtime write can remove the entry, so `Review flag`
+    // alone left 14% of the bulk-run ledger permanently unresolvable. `Confirm
+    // dark` is the acknowledgement-class terminal: a real owner decision that the
+    // flag stays dark for now, recorded durably in the triage ledger. Graduating
+    // the flag remains a source edit (flip the default ON + shrink the
+    // shrink-only allowlist), which is engineering work, not an inbox click.
+    actions: [
+      { id: 'open', label: 'Review flag', primary: true },
+      { id: 'dismiss', label: 'Confirm dark' },
+    ],
     ref: { kind: 'dark-flag-ratification', flagKey: f.flagKey },
   };
 }
@@ -1001,7 +1077,10 @@ export function blockedSessionToAttention(g: BlockedSessionInput): AttentionItem
     ownerAgentId: g.ownerAgentId ?? null,
     ownerLabel: null,
     ...untriaged(),
-    actions: [DISCUSS, MESSAGE_OWNER],
+    // P-003: `Clear gate` closes the `session_pending_gates` row — the same
+    // transition the watcher/hook performs when the ask clears on its own. Without
+    // it a gate whose session died stayed in the inbox with nothing but Discuss.
+    actions: [{ id: 'resolve', label: 'Clear gate' }, DISCUSS, MESSAGE_OWNER],
     ref: { kind: 'blocked-session', sessionId: g.sessionId, client: g.client, refId: g.refId },
   };
 }
@@ -1049,7 +1128,12 @@ export function decisionOwedToAttention(d: DecisionOwedInput): AttentionItem {
     ownerAgentId: d.ownerAgentId ?? null,
     ownerLabel: null,
     ...untriaged(),
-    actions: [DISCUSS, MESSAGE_OWNER],
+    // P-003: the card is a mechanical heuristic over ALREADY-CLOSED ask gates, so
+    // there is no row to mutate — recording the decision is separate deliberate
+    // work (plans:add-decision, reached through Discuss). `No decision owed` is the
+    // acknowledgement-class terminal: the owner's verdict that the heuristic fired
+    // on something that was never a governed decision.
+    actions: [{ id: 'dismiss', label: 'No decision owed' }, DISCUSS, MESSAGE_OWNER],
     ref: { kind: 'decision-owed', sessionId: d.sessionId, refId: d.refId },
   };
 }

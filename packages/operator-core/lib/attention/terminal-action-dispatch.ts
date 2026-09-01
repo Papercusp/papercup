@@ -75,10 +75,13 @@ export interface TerminalActionDependencies {
   }): Promise<void>;
   /** P-003 — resolve an open question conversation. `acceptedAnswer` carries the
    *  owner's (or resolver's drafted) text when there is one; a bare close still
-   *  records why it was closed. */
+   *  records why it was closed. `capture` is `'none'` for a bare close: a close
+   *  note is NOT an answer, and writing it to the knowledge layer would hand the
+   *  next `coord:ask` a synthesized non-answer as if it were one. */
   resolveConversation(input: {
     conversationId: string;
     acceptedAnswer: string;
+    capture: 'mem0' | 'none';
   }): Promise<void>;
   /** P-003 — close an open client-session gate (`session_pending_gates`), the
    *  same transition the watcher/hook performs when the ask clears. */
@@ -123,8 +126,11 @@ export async function dispatchAttentionTerminalAction(input: {
   deps: TerminalActionDependencies;
   /** Caller's audit rationale, threaded into effects that require a reason (plan-item drops). */
   rationale?: string;
+  /** P-003 — the owner's (or resolver's drafted) free text, when the terminal
+   *  effect can carry one. Today: the accepted answer on a conversation close. */
+  answerText?: string;
 }): Promise<TerminalActionResult> {
-  const { item, actionId, deps, rationale } = input;
+  const { item, actionId, deps, rationale, answerText } = input;
   if (isNavigateAction(actionId)) return { resolved: false };
 
   if (item.ref.kind === 'coord-escalation') {
@@ -201,14 +207,115 @@ export async function dispatchAttentionTerminalAction(input: {
     return { resolved: true };
   }
 
-  if (item.ref.kind === 'operator-report' && (actionId === 'resolve' || actionId === 'mark-done')) {
+  // ── P-003: the owner-gate kinds ────────────────────────────────────────────
+  // `work-item-needs-human` is 46% of the bulk-run ledger and had no terminal
+  // action at all: the owner could open it, chat about it, or answer it in the
+  // browser, but nothing — not the click path, not the resolver — could clear
+  // the gate that put it in the inbox. Resolve does exactly that; Drop closes
+  // the item. Both write the SOURCE row, so the card cannot re-derive.
+  if (item.ref.kind === 'work-item-needs-human' || isWorkItemBackedWall(item)) {
+    const workItemId = workItemIdFor(item);
+    if (workItemId && (actionId === 'resolve' || actionId === 'mark-done')) {
+      await deps.clearWorkItemOwnerGate({
+        workItemId,
+        harnessSlug: item.harnessSlug ?? null,
+        statusGated: refString(item, 'ownerGate') === 'status',
+      });
+      return { resolved: true };
+    }
+    if (workItemId && actionId === 'drop') {
+      await deps.closeWorkItem({
+        workItemId,
+        harnessSlug: item.harnessSlug ?? null,
+        rationale: dropRationale(rationale),
+      });
+      return { resolved: true };
+    }
+  }
+
+  if (item.ref.kind === 'work-item-blocked' && actionId === 'drop') {
+    await deps.closeWorkItem({
+      workItemId: refString(item, 'workItemId'),
+      harnessSlug: item.harnessSlug ?? null,
+      rationale: dropRationale(rationale),
+    });
+    return { resolved: true };
+  }
+
+  if (
+    item.ref.kind === 'conversation' &&
+    (actionId === 'dismiss' || actionId === 'resolve' || actionId === 'mark-done')
+  ) {
+    const answered = Boolean(answerText?.trim());
+    await deps.resolveConversation({
+      conversationId: refString(item, 'conversationId'),
+      acceptedAnswer: answered ? answerText!.trim() : closeNote(rationale),
+      capture: answered ? 'mem0' : 'none',
+    });
+    return { resolved: true };
+  }
+
+  if (
+    item.ref.kind === 'blocked-session' &&
+    (actionId === 'resolve' || actionId === 'dismiss' || actionId === 'mark-done')
+  ) {
+    await deps.closeSessionGate({
+      sessionId: refString(item, 'sessionId'),
+      client: refString(item, 'client'),
+      refId: refString(item, 'refId'),
+    });
+    return { resolved: true };
+  }
+
+  // ── The acknowledgement class ──────────────────────────────────────────────
+  // A card DERIVED from something no operator write can change (a compiled-in
+  // DARK_FLAGS entry, a past smoke result, a heuristic over closed gates, a
+  // rollup nudge, an operator status report). Its honest terminal is the durable
+  // triage record the readers already honour — `applyTriage` tiers it Handled and
+  // `readTriagedHandledItemIds` suppresses it downstream. Deliberately LAST, so a
+  // kind that grows a real source mutation is caught by the branch above rather
+  // than silently degrading to an acknowledgement.
+  //
+  // `operator-report` reached this by its own branch until P-003; the effect is
+  // byte-identical, so its behaviour is unchanged — it is simply no longer the
+  // only kind allowed to end this way.
+  if (
+    (isAcknowledgementKind(item.ref.kind) ||
+      // A wall that names no work-item (a loop-carry-note wall) has no
+      // operator-writable row — the acknowledgement record IS its terminal.
+      (item.ref.kind === 'owner-wall' && !isWorkItemBackedWall(item))) &&
+    ACKNOWLEDGEMENT_ACTION_IDS.has(actionId as never)
+  ) {
     await deps.triageAttentionItem({
       itemId: item.id,
       action: 'resolve',
-      note: 'Resolved from the inbox detail pane',
+      note: rationale?.trim() || 'Resolved from the inbox detail pane',
     });
     return { resolved: true };
   }
 
   return { resolved: false };
+}
+
+/** An owner wall is work-item-backed when it names a real work-item id; those
+ *  clear through the same owner gate as a `work-item-needs-human` card. A
+ *  loop-carry-note wall has no operator-writable row and is left to the
+ *  acknowledgement branch. */
+function isWorkItemBackedWall(item: TerminalAttentionItem): boolean {
+  if (item.ref.kind !== 'owner-wall') return false;
+  return item.ref.wallSource === 'work-item' && /^(?:WI|EI|F)-\d+$/i.test(refString(item, 'wallRef'));
+}
+
+function workItemIdFor(item: TerminalAttentionItem): string {
+  return item.ref.kind === 'owner-wall' ? refString(item, 'wallRef') : refString(item, 'workItemId');
+}
+
+/** A terminal work-item close REQUIRES completion evidence, so a blank caller
+ *  rationale must still produce a truthful, attributable one. */
+function dropRationale(rationale?: string): string {
+  return rationale?.trim() || 'Closed from the owner inbox as no longer needed';
+}
+
+function closeNote(rationale?: string): string {
+  return rationale?.trim() || 'Closed from the owner inbox without a recorded answer';
 }

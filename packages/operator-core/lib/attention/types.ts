@@ -344,7 +344,19 @@ export type AttentionRef =
   | { kind: 'conversation'; conversationId: string }
   | { kind: 'scout-grade'; count: number }
   // owner-inbox-single-pane P-005 folded owner-gate channels:
-  | { kind: 'work-item-needs-human'; workItemId: string; itemKind: string }
+  | {
+      kind: 'work-item-needs-human';
+      workItemId: string;
+      itemKind: string;
+      /** WHICH gate put this row in the owner's inbox — the two legs of the
+       *  source query are cleared differently (P-003). `status`: the row's own
+       *  `status` is `needs-human` (feature family), so it must also be moved
+       *  off that state. `payload`: the row carries
+       *  `payload.needsOwnerAction`/`needsHuman` (issue family). The terminal
+       *  action clears the payload keys either way — a row can hold both, and
+       *  clearing only one leaves the card standing (EI-21675115869134466). */
+      ownerGate: 'status' | 'payload';
+    }
   | { kind: 'owner-wall'; wallSource: 'loop-carry-note' | 'work-item'; wallOwnerId: string | null; wallRef: string | null }
   | { kind: 'dark-flag-ratification'; flagKey: string }
   | { kind: 'blocked-session'; sessionId: string; client: string; refId: string }

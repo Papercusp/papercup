@@ -337,7 +337,10 @@ describe('smokeFailToAttention — alert tier', () => {
     expect(a.tier).toBe('alert');
     expect(a.needsHuman).toBe(false);
     expect(a.body).toContain('boot crashed');
-    expect(a.actions.map((x) => x.id)).toEqual(['view-log', 'discuss']);
+    // P-003: `ack` is the acknowledgement-class terminal — an operator cannot make
+    // a past smoke run pass, so acknowledging that it was seen is the honest end
+    // of the CARD (fixing it is engineering work with its own work-item).
+    expect(a.actions.map((x) => x.id)).toEqual(['view-log', 'ack', 'discuss']);
   });
 });
 
@@ -479,18 +482,37 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(a.status).toBe('needs-human (bug)');
     expect(a.id).toBe('work-item-needs-human:WI-9001');
     expect(a.ownerAgentId).toBe('su-abc');
+    // P-003 added the two TERMINAL actions. Before them every action here was a
+    // navigate, so the single largest population in the owner's inbox could be
+    // opened, discussed or answered — but never ended, by click or by resolver.
     expect(a.actions.map((action) => [action.id, action.label, action.primary ?? false])).toEqual([
       ['answer', 'Answer', true],
+      ['resolve', 'Release to agents', false],
+      ['drop', 'Drop', false],
       ['open', 'Open work item', false],
       ['discuss', 'Discuss', false],
     ]);
-    expect(a.ref).toEqual({ kind: 'work-item-needs-human', workItemId: 'WI-9001', itemKind: 'bug' });
+    // `ownerGate` records WHICH leg of the source query admitted the row, because
+    // the two are cleared differently (status vs payload keys).
+    expect(a.ref).toEqual({
+      kind: 'work-item-needs-human',
+      workItemId: 'WI-9001',
+      itemKind: 'bug',
+      ownerGate: 'payload',
+    });
   });
 
   it('work-item-needs-human: falls back to title as body when body is blank', () => {
     const a = workItemNeedsHumanToAttention({ workItemId: 'F-1', itemKind: 'feature', title: 'ship it' });
     expect(a.body).toBe('ship it');
-    expect(a.actions.map((action) => action.label)).toEqual(['Open source', 'Discuss']);
+    // No asker to answer, so the owner-gate CLEAR becomes the primary action
+    // rather than a navigate to the source (P-003).
+    expect(a.actions.map((action) => action.label)).toEqual([
+      'Release to agents',
+      'Drop',
+      'Open source',
+      'Discuss',
+    ]);
     expect(a.actions[0]?.primary).toBe(true);
   });
 
@@ -532,8 +554,11 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(waiting.importance).toBe('urgent'); // >= 4h
     expect(waiting.body).toContain('Recheck: accounts:status');
     expect(waiting.body).not.toContain('STRANDED');
+    // P-003: 'Clear wall' is the terminal every branch of this adapter lacked —
+    // a registered wall could previously only be talked about, never ended.
     expect(waiting.actions.map((action) => action.label)).toEqual([
       'Answer',
+      'Clear wall',
       'Open agent session',
       'Discuss',
     ]);
@@ -548,7 +573,15 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     });
     expect(stranded.importance).toBe('normal'); // < 1h
     expect(stranded.body).toContain('STRANDED');
-    expect(stranded.actions.map((action) => action.label)).toEqual(['Open source', 'Discuss']);
+    // A STRANDED wall is exactly the case that most needs a terminal: its agent is
+    // gone, so answering it would reach nobody and it would otherwise sit in the
+    // inbox forever. Its ref names a work-item, so 'Clear wall' clears that item's
+    // owner gate rather than merely recording an acknowledgement (P-003).
+    expect(stranded.actions.map((action) => action.label)).toEqual([
+      'Open source',
+      'Clear wall',
+      'Discuss',
+    ]);
     expect(stranded.ref).toEqual({ kind: 'owner-wall', wallSource: 'work-item', wallOwnerId: 'su-xyz', wallRef: 'WI-42' });
   });
 

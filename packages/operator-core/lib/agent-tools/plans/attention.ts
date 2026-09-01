@@ -704,6 +704,9 @@ export default defineTool({
                     body: r.summary,
                     harnessSlug: resolveHarness(r.harness_slug, null),
                     ownerAgentId: r.taken_by,
+                    // P-003: WHICH leg of the source query admitted this row —
+                    // the terminal action clears a different gate for each.
+                    status: r.status,
                   }),
                   // Migration 896: lifecycle age, not metadata churn. Legacy
                   // NULL remains unknown rather than pretending a recent

@@ -273,6 +273,60 @@ export function terminalDependencies(input: {
       }),
     decideStandingApproval: (args) => callRequired(call, 'operator:standing_approvals_decide', args),
     triageAttentionItem: (args) => callRequired(call, 'inbox:triage', args),
+    // P-003 — the owner-gate clear. `needsHuman:false` is the compatibility input
+    // that unsets BOTH the strict `payload.needsOwnerAction` and the legacy
+    // `payload.needsHuman` key; unsetting only one is precisely how
+    // EI-21675115869134466 leaked rows back into the inbox forever. The status
+    // leg runs SECOND and only when the row's own status is the gate, so an item
+    // sitting in wip/blocked for its own reasons is never yanked back to open.
+    async clearWorkItemOwnerGate({ workItemId, harnessSlug, statusGated }) {
+      await callRequired(call, 'work_items:update', {
+        id: workItemId,
+        needsHuman: false,
+        ...(harnessSlug ? { harness: harnessSlug } : {}),
+      });
+      if (statusGated) {
+        await callRequired(call, 'work_items:set_state', {
+          id: workItemId,
+          state: 'open',
+          ...(harnessSlug ? { harness: harnessSlug } : {}),
+        });
+      }
+    },
+    // A terminal state REQUIRES completion evidence and an explicit assumptions
+    // declaration (work_items:set_state's own refines reject the call otherwise),
+    // so the caller's audit rationale is threaded in as the completionRef rather
+    // than inventing one at the tool boundary.
+    closeWorkItem: ({ workItemId, harnessSlug, rationale }) =>
+      callRequired(call, 'work_items:set_state', {
+        id: workItemId,
+        state: 'dropped',
+        completionRef: rationale,
+        assumptions: 'none',
+        ...(harnessSlug ? { harness: harnessSlug } : {}),
+      }),
+    resolveConversation: ({ conversationId, acceptedAnswer, capture }) =>
+      callRequired(call, 'conversations:resolve', {
+        conversation_id: conversationId,
+        accepted_answer: acceptedAnswer,
+        capture,
+      }),
+    // `closeGate` is idempotent by contract (an already-closed or never-opened
+    // ref is REPORTED, not thrown), which is what makes it safe as a terminal
+    // effect a resolver may retry. `client` is not part of its key — the
+    // (workspace, session, ref) triple is — so it is deliberately unused here.
+    async closeSessionGate({ sessionId, refId }) {
+      const [{ closeGate }, { activeWorkspaceId }] = await Promise.all([
+        import('../../attention/gate-store'),
+        import('../../workspace-registry'),
+      ]);
+      await closeGate({
+        workspaceId: input.workspaceId ?? activeWorkspaceId(),
+        sessionId,
+        refId,
+        reason: 'hook_cleared',
+      });
+    },
     async deliverOwnerReply(args) {
       const result = await deliverInboxOwnerReply({
         ...args,
@@ -574,6 +628,11 @@ export const bulkRunAct = defineTool({
       ref: { kind: String(row.ref.kind ?? ''), ...row.ref },
     };
     const call = inProcessCall(ctx);
+    // P-003: the resolver's drafted answer used to be RECORDED and nothing else —
+    // the only code that could apply one lived in the browser card. Hoisted so the
+    // terminal dispatch can carry it into effects that accept the owner's text
+    // (today: the accepted answer on a conversation resolve).
+    const draftAnswer = clampText(args.draftAnswer, LIMITS.ANNOTATION)?.trim() ?? null;
     let actionDispatched = false;
 
     try {
@@ -582,7 +641,7 @@ export const bulkRunAct = defineTool({
         itemId: row.itemId,
         actionId: args.actionId,
         rationale,
-        draftAnswer: clampText(args.draftAnswer, LIMITS.ANNOTATION)?.trim() ?? null,
+        draftAnswer,
         confidence: args.confidence ?? null,
         confidenceLevel: args.confidenceLevel ?? null,
         recommendationKind: args.recommendationKind ?? null,
@@ -615,6 +674,7 @@ export const bulkRunAct = defineTool({
             item,
             actionId: args.actionId,
             rationale,
+            ...(draftAnswer ? { answerText: draftAnswer } : {}),
             deps: terminalDependencies({ call, workspaceId: run.workspaceId }),
           });
           if (!dispatched.resolved) {

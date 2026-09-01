@@ -372,6 +372,77 @@ describe('P-003 conversation close', () => {
   });
 });
 
+/**
+ * FALSIFIABILITY CONTROLS — permanent, deliberately-wrong inputs run through the
+ * SAME predicates the audit above uses.
+ *
+ * Without these, every assertion above passing is equally consistent with "the
+ * coverage is real" and "the audit cannot detect a gap". These are the module-tier
+ * control from the repo's mutation-probe guidance: never mutate the shared tree to
+ * prove a guard bites — keep the wrong implementation here, permanently, beside
+ * the right one.
+ */
+describe('P-003 audit controls — the guard detects the gaps it claims to', () => {
+  const navigateOnly: TerminalAttentionItem = {
+    id: 'control:navigate-only',
+    kind: 'control',
+    title: 'a kind that offers only sub-surfaces',
+    ref: { kind: 'control-unknown-kind' },
+  };
+
+  it('CONTROL: a navigate-only action set reads as UNCOVERED', () => {
+    // The exact predicate the coverage assertion uses, against an item whose
+    // actions are all navigate ids. If this ever reports coverage, the audit
+    // above is measuring nothing.
+    const control: AttentionItem = {
+      ...(FIXTURES['scout-grade'] as AttentionItem),
+      actions: [
+        { id: 'open', label: 'Open' },
+        { id: 'discuss', label: 'Discuss' },
+      ],
+    };
+    expect(terminalActionIds(control)).toEqual([]);
+    // ...while the real fixture it was derived from IS covered — a calibration
+    // case, so a predicate that returned [] for everything cannot pass this.
+    expect(terminalActionIds(FIXTURES['scout-grade']).length).toBeGreaterThan(0);
+  });
+
+  it('CONTROL: an unknown ref kind does NOT resolve, whatever action it is given', async () => {
+    for (const actionId of ['resolve', 'drop', 'dismiss', 'ack', 'mark-done']) {
+      const deps = spyDeps();
+      const result = await dispatchAttentionTerminalAction({ item: navigateOnly, actionId, deps });
+      expect(result.resolved, `dispatcher claimed to resolve "${actionId}" on an unknown kind`).toBe(
+        false,
+      );
+      expect(sourceMutatingCalls(deps) + deps.triageAttentionItem.mock.calls.length).toBe(0);
+    }
+  });
+
+  it('CONTROL: the class check distinguishes a source write from a triage record', async () => {
+    // An acknowledgement-class kind reaches ONLY the triage record...
+    const ack = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES['dark-flag-ratification']),
+      actionId: 'dismiss',
+      deps: ack,
+    });
+    expect(sourceMutatingCalls(ack)).toBe(0);
+    expect(ack.triageAttentionItem).toHaveBeenCalled();
+
+    // ...and a source-mutating one reaches ONLY its source effect. Both
+    // directions asserted, so a `sourceMutatingCalls` that always returned 0 (or
+    // always > 0) fails here rather than silently passing the class assertion.
+    const src = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES['work-item-needs-human']),
+      actionId: 'resolve',
+      deps: src,
+    });
+    expect(sourceMutatingCalls(src)).toBeGreaterThan(0);
+    expect(src.triageAttentionItem).not.toHaveBeenCalled();
+  });
+});
+
 describe('P-003 does not widen navigation into resolution', () => {
   it.each(['discuss', 'chat', 'open', 'answer', 'view-log', 'message-owner'])(
     '%s stays non-terminal for every kind',
