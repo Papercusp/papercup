@@ -81,6 +81,16 @@ function configUser(repo: string): void {
   git(repo, 'config', 'commit.gpgsign', 'false');
 }
 
+/** Avoid the production spawner sidecar in this focused real-git regression. */
+const directRunGit: RunGit = async (args, cwd) => {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+  return {
+    code: result.status ?? -1,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? result.error ?? ''),
+  };
+};
+
 const REPO_ROOT = resolve(__dirname, '../../../../..');
 
 describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', () => {
@@ -767,6 +777,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const logs: string[] = [];
     const first = await runGitSync('test', {
       repoPath: repo,
+      runGit: directRunGit,
       config: cfg,
       excludePaths: [sourcePath],
       liveLockHoldings: [{
@@ -790,6 +801,7 @@ describe('runGitSync (real git, no submodule)', () => {
     // the first pass must not have left a source/test split in the remote tree.
     const second = await runGitSync('test', {
       repoPath: repo,
+      runGit: directRunGit,
       config: cfg,
       loadRoster: async () => roster,
     });
