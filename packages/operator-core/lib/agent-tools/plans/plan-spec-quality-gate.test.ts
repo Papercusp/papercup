@@ -224,15 +224,25 @@ describe('evaluatePlanSpecQualityGate', () => {
 
   it('still reports plain "missing" when no exact card exists at all, pending or not', async () => {
     const clauses = [clause()];
-    const staleClauses = [clause({ currentRevision: 2, revision: 2, contentHash: 'sha256:spec-two' })];
+    // computeSpecSetHash hashes semantic content (behavior, behaviorClass, etc.) —
+    // NOT revision/contentHash — so the differentiator here must change `behavior`,
+    // mirroring the sibling "invalidates an older card" case below.
+    const revisedClauses = [
+      clause({
+        currentRevision: 2,
+        revision: 2,
+        behavior: 'POST /events returns 201 for a valid request',
+        contentHash: 'sha256:spec-two',
+      }),
+    ];
     const result = await evaluatePlanSpecQualityGate(
       { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
       {
-        listClauses: vi.fn(async () => staleClauses),
-        // A pending card exists, but for a DIFFERENT (superseded) specSetHash — its
-        // subjectRef will not match staleClauses' evaluation, so listCards (scoped by
-        // subjectRef) returns nothing for the current evaluation and the generic
-        // missing verdict must still apply.
+        listClauses: vi.fn(async () => revisedClauses),
+        // A pending card exists, but for the SUPERSEDED specSetHash (built off the
+        // pre-revision `clauses`) — its subjectRef will not match revisedClauses'
+        // evaluation, so the generic missing verdict must still apply, not the
+        // grading-audit-pending one.
         listCards: vi.fn(async () => [auditPendingCard(clauses)]),
       },
     );
