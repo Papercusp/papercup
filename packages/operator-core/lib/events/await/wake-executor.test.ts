@@ -397,6 +397,32 @@ describe('executeWake — delivery-time fleet member-dead liveness re-check (EI-
     expect(write).not.toHaveBeenCalled();
   });
 
+  // EI-22068041747784942: the emit-time payload asserts "member X is DEAD" — the
+  // downgrade message used to APPEND the correction AFTER that assertion, so a
+  // reader skimming only the leading clause could still be misled into believing
+  // the member is dead (the exact risk a leader could act on destructively, even
+  // though — per the tests above and below — executeWake itself never resumes/
+  // PTY-injects on a confirmed-stale delivery). The corrected reading must now be
+  // the FIRST thing stated, and the original claim must be explicitly labeled as
+  // retracted rather than repeated as a fresh assertion.
+  it('the downgraded summary leads with the correction and marks the original DEAD claim as retracted, never re-asserting it', async () => {
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const resolveMemberLiveness = verdictMap('live');
+    const d = deps({ sendCoordMessage: sendCoordMessage as never, resolveMemberLiveness: resolveMemberLiveness as never });
+
+    await executeWake(memberDeadWork(), d);
+
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
+    // The leading clause must be the CORRECTED truth, not the stale "is DEAD" claim.
+    expect(opts.summary.indexOf('STALE')).toBeLessThan(opts.summary.indexOf('is DEAD'));
+    expect(opts.summary).toMatch(/^⚠ STALE/);
+    // The original claim, when present, must be explicitly labeled RETRACTED —
+    // never left to read as a live/current assertion.
+    expect(opts.summary).toContain('RETRACTED');
+    expect(opts.summary).toContain('Do NOT treat this as a live death signal');
+  });
+
   it('unknown/missing/erroring liveness read fails open and preserves the normal wake', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const resolvers = [

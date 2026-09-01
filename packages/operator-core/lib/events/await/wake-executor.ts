@@ -2805,6 +2805,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // before injection; a confirmed non-'ended' current state downgrades the
     // wake instead of re-asserting a stale death. Fail-open on every uncertain
     // read, exactly like the claim-released check above.
+    //
+    // EI-22068041747784942: the downgrade message used to APPEND the correction
+    // after the ORIGINAL "member X is DEAD" assertion (`${d.summary} (delivery-time
+    // check: ...)`), so a reader/agent skimming only the leading clause could still
+    // come away believing the member is dead — exactly the misread that risks a
+    // leader "destructively recovering" (relaunching/reclaiming) a still-live
+    // holder, even though the wake-executor itself never resumes/PTY-injects on a
+    // confirmed-stale member-dead delivery (see the tests above this block).
+    // Lead with the CURRENT, CORRECTED truth instead, and fold the original claim
+    // in as an explicitly-labeled RETRACTED quote rather than a fresh assertion —
+    // so the first thing anyone reads is "this is stale, do not act on it".
     const memberDeadCheck = await currentFleetMemberDeadIsStale(
       d,
       resolveMemberLiveness,
@@ -2816,12 +2827,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       const staleDelivery = {
         ...d,
         summary:
-          `${d.summary} (delivery-time check: ${staleAgentId} is currently ` +
-          `'${memberDeadCheck.currentState}', not 'ended'; wake downgraded to inbox)`,
+          `⚠ STALE — fleet member ${staleAgentId} is currently '${memberDeadCheck.currentState}', ` +
+          `not 'ended' (recovered since this wake was queued). Do NOT treat this as a live death ` +
+          `signal or act on it (no relaunch/reclaim/release). Original now-RETRACTED assertion: ${d.summary}`,
       };
       return degradeToInboxOrDrop(
         staleDelivery,
-        `fleet member ${staleAgentId} is currently '${memberDeadCheck.currentState}', not 'ended'`,
+        `fleet member ${staleAgentId} is currently '${memberDeadCheck.currentState}', not 'ended' — this member-dead wake is STALE and RETRACTED, do not act on it`,
         sendCoordMessage,
       );
     }
