@@ -251,6 +251,17 @@ export default defineTool({
         ),
     }),
   ]),
+  result: z
+    .object({
+      rowCount: z.unknown().optional(),
+      truncated: z.unknown().optional(),
+      fields: z.unknown().optional(),
+      elapsedMs: z.unknown().optional(),
+      rows: z.unknown().optional(),
+      positiveControl: z.unknown().optional(),
+      absence: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     // `describe` is the `\d` path (P-011): a psql CLIENT meta-command has no
     // SQL form, so it cannot ride through pgReadQuery's statement path at all.
