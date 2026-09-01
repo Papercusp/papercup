@@ -50,18 +50,18 @@ export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
   description:
-    "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is history-cleared instead of parking the item; authority cannot fabricate the others. Internal deps stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history. Main/:3070/green-checkpoint blockers are refused for ordinary implementation items: use staging/current-build unless a concrete deployed-only property is named with a staging limitation; final shipment and gate-repair items remain allowed.",
+    "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
   guidance: {
     // P-011: response documentation lives here, not in `description` — `returns` is not
     // counted against the 1500-char prompt-weight budget and is demand-loaded via
     // tools:find instead of baked into every system prompt (the WI-9334 pattern).
     returns:
-      'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), and lifecycle.',
+      'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by.',
     when: 'Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.',
     notWhen:
       "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker. Do not use a main/:3070/green-checkpoint blocker to pause ordinary implementation; staging/current-build is the acceptance plane. Only final shipment or a named deployed-only property may wait on the release plane.",
     chaining:
-      'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind from a ref naming one active blocker; pass kind when the ref is reused. Clearing the last blocker returns a feature blocked→todo or drops the issue-family claim hold.',
+      'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind from a ref naming one active blocker; pass kind when the ref is reused.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
