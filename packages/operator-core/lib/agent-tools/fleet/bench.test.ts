@@ -20,6 +20,11 @@ vi.mock('../coordination/identity', () => ({
   deriveFleetMembership: vi.fn(() => ({ fleetSlug: 'p2p-git' })),
 }));
 vi.mock('../../agent-fleets-store', () => ({
+  // A full vi.mock replaces EVERY runtime export, so the FLEET_TYPES vocabulary has to be
+  // carried here: goal-launch-settings builds its fleetType schema from FLEET_TYPES at module
+  // scope, so omitting it fails COLLECTION on any newly-connected import path, before a test
+  // can run. Pinned by agent-fleets-store.test.ts "full-mock contract".
+  FLEET_TYPES: ['single', 'paired'] as const,
   listFleetsLedBy: vi.fn(async () => []),
 }));
 vi.mock('../coordination/presence-fleet', () => ({
