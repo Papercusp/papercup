@@ -9,7 +9,7 @@ import {
   type AdmissionRequest,
   type ResourceDemand,
 } from './admission';
-import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
+import { PgAdmissionCutoverQueueStore } from './admission-cutover-store';
 import { WorkItemAdmissionQueueDriver, type AdmissionQueueLeaseClaim, type SqlClient } from './queue';
 
 export const GOVERNED_EXECUTION_LEASE_TTL_MS = 24 * 60 * 60_000;
@@ -342,7 +342,7 @@ export function governedExecutionRuntime(workspaceId: string, namespace = 'agent
   const key = `${workspaceId}\0${namespace}`;
   let runtime = runtimes.get(key);
   if (!runtime) {
-    const driver = new WorkItemAdmissionQueueDriver(new PgAdmissionLedgerQueueStore({ workspaceId }), {
+    const driver = new WorkItemAdmissionQueueDriver(new PgAdmissionCutoverQueueStore({ workspaceId }), {
       namespace,
       leaseIdFactory: () => randomUUID(),
     });
@@ -404,7 +404,7 @@ function governedProcessRuntime(workspaceId: string, namespace: string): Governe
   let runtime = processRuntimes.get(key);
   if (!runtime) {
     const driver = new WorkItemAdmissionQueueDriver(
-      new PgAdmissionLedgerQueueStore({ workspaceId, sql: processClient.sql }),
+      new PgAdmissionCutoverQueueStore({ workspaceId, sql: processClient.sql }),
       { namespace, leaseIdFactory: () => randomUUID() },
     );
     runtime = { driver, governor: new Governor(driver) };
