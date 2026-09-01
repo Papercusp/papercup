@@ -127,6 +127,8 @@ export interface WorkspaceHostAgentProbeInvocation {
   readonly command: string;
   readonly args: readonly string[];
   readonly timeoutMs: number;
+  /** When supplied, this is the COMPLETE child environment, not an overlay on the parent. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export interface WorkspaceHostAgentProbeOutcome {
@@ -179,7 +181,8 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
   run(invocation: WorkspaceHostAgentProbeInvocation): Promise<WorkspaceHostAgentProbeOutcome> {
     return new Promise((resolve, reject) => {
       const child = this.spawnImpl(invocation.command, [...invocation.args], {
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ["ignore", "pipe", "pipe"],
+        ...(invocation.env ? { env: { ...invocation.env } } : {}),
       });
       let stdout = '';
       let bytes = 0;
@@ -226,6 +229,7 @@ export interface ProbeWorkspaceHostAgentInput {
   readonly spec: WorkspaceHostAgentAuthenticationProbeSpec;
   readonly runner: WorkspaceHostAgentProbeRunner;
   readonly now: () => Date;
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /** Run one probe and reduce it to publishable evidence. */
@@ -246,6 +250,7 @@ export async function probeWorkspaceHostAgentAuthentication(
       command: spec.command,
       args: spec.args,
       timeoutMs: spec.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
+      ...(input.env ? { env: input.env } : {}),
     });
   } catch {
     // The thrown error may carry a command line or CLI text, so it is reduced to a code here and
@@ -312,6 +317,8 @@ export interface ProbeWorkspaceHostAgentsInput {
     Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentAuthenticationProbeSpec>
   >;
   readonly now?: () => Date;
+  /** Exact environment shared by all three sequential probes. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -334,7 +341,12 @@ export async function probeWorkspaceHostAgents(
     if (spec.agent !== agent) {
       throw new Error(`agent probe for '${agent}' declares agent '${spec.agent}'`);
     }
-    agents[agent] = await probeWorkspaceHostAgentAuthentication({ spec, runner: input.runner, now });
+    agents[agent] = await probeWorkspaceHostAgentAuthentication({
+      spec,
+      runner: input.runner,
+      now,
+      ...(input.env ? { env: input.env } : {}),
+    });
   }
   const complete = agents as Record<
     WorkspaceHostCanaryAgent,

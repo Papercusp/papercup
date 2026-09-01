@@ -195,6 +195,11 @@ export interface WorkspaceHostImportWorkspaceInput {
 export interface WorkspaceHostVerifyInitializationInput {
   readonly sourceKind: string;
   readonly requiredChannels: readonly WorkspaceHostCredentialChannel[];
+  /** Re-carried because every remote step is a fresh process with no prior clone object. */
+  readonly repository?: {
+    readonly destination: string;
+    readonly visibility: "public" | "private";
+  };
 }
 
 /**
@@ -218,8 +223,11 @@ export interface WorkspaceHostRemoteInitializerHost {
   /** Probe the three agents. Called by the verify step; must be non-interactive. */
   probeAgentAuthentication(): Promise<WorkspaceHostAgentAuthenticationReport>;
   /** Confirm the private clone landed, for the verify step's repository evidence. */
-  describeClonedRepository(): Promise<{
-    readonly visibility: 'public' | 'private';
+  describeClonedRepository(input?: {
+    readonly destination: string;
+    readonly visibility: "public" | "private";
+  }): Promise<{
+    readonly visibility: "public" | "private";
     readonly cloned: boolean;
   }>;
 }
@@ -460,12 +468,49 @@ export async function executeWorkspaceHostRemoteInitializerStep(
       break;
     }
     case 'verify-initialization': {
+      const sourceKind = requireString(
+        input.sourceKind,
+        "step.input.sourceKind",
+      );
       const requiredChannels = readInclude(
         input.requiredChannels,
         'step.input.requiredChannels',
       ) as readonly WorkspaceHostCredentialChannel[];
+      let repositoryInput:
+        | {
+            readonly destination: string;
+            readonly visibility: "public" | "private";
+          }
+        | undefined;
+      if (sourceKind === "git") {
+        const repository = requireObject(
+          input.repository,
+          "step.input.repository",
+        );
+        const visibility = requireString(
+          repository.visibility,
+          "step.input.repository.visibility",
+        );
+        if (visibility !== "public" && visibility !== "private") {
+          throw new WorkspaceHostRemoteInitializerProtocolError(
+            "step.input.repository.visibility must be 'public' or 'private'",
+          );
+        }
+        repositoryInput = {
+          destination: requireString(
+            repository.destination,
+            "step.input.repository.destination",
+          ),
+          visibility,
+        };
+      } else if (input.repository !== undefined) {
+        throw new WorkspaceHostRemoteInitializerProtocolError(
+          "step.input.repository is allowed only for a git source",
+        );
+      }
       const report = await deps.host.probeAgentAuthentication();
-      const repository = await deps.host.describeClonedRepository();
+      const repository =
+        await deps.host.describeClonedRepository(repositoryInput);
       const failed = WORKSPACE_HOST_CANARY_AGENTS.filter(
         (agent) => !report.agents[agent]?.authenticated,
       );
@@ -479,7 +524,7 @@ export async function executeWorkspaceHostRemoteInitializerStep(
         );
       }
       publicEvidence = {
-        sourceKind: requireString(input.sourceKind, 'step.input.sourceKind'),
+        sourceKind,
         requiredChannels,
         repository,
         agents: report.agents,

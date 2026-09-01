@@ -1,0 +1,542 @@
+import { isAbsolute, join, normalize } from "node:path";
+
+/** The sealed material format installed into one workspace user's native agent homes. */
+export const WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION =
+  "papercusp-workspace-host-agent-home-bundle-v1";
+
+export const WORKSPACE_HOST_AGENT_HOME_FILES = {
+  claude: [".claude", ".credentials.json"],
+  codex: [".codex", "auth.json"],
+  omp: [".omp", "agent", "auth.json"],
+} as const;
+
+export const WORKSPACE_HOST_AGENT_HOME_STATE_VERSION =
+  "papercusp-workspace-host-agent-home-state-v1";
+
+export const WORKSPACE_HOST_AGENT_HOME_FAMILIES = [
+  "agent-forwarded-reference",
+  "agent-encrypted-reference",
+] as const;
+export type WorkspaceHostAgentHomeFamily =
+  (typeof WORKSPACE_HOST_AGENT_HOME_FAMILIES)[number];
+
+export type WorkspaceHostAgentHomeFile =
+  keyof typeof WORKSPACE_HOST_AGENT_HOME_FILES;
+
+export interface WorkspaceHostAgentHomeBundle {
+  readonly contractVersion: typeof WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION;
+  readonly files: Readonly<Record<WorkspaceHostAgentHomeFile, Buffer>>;
+}
+
+/** Public, secret-free record of which delivered generation currently backs the native homes. */
+export interface WorkspaceHostAgentHomeState {
+  readonly contractVersion: typeof WORKSPACE_HOST_AGENT_HOME_STATE_VERSION;
+  readonly family: WorkspaceHostAgentHomeFamily;
+  readonly generation: number;
+  readonly home: string;
+  readonly files: Readonly<Record<WorkspaceHostAgentHomeFile, string>>;
+}
+
+/** Minimal host filesystem seam shared by the agent-home consumer and production host adapter. */
+export interface WorkspaceHostAgentHomeFilesystem {
+  ensureDirectory(path: string): Promise<void>;
+  writePrivateFile(path: string, bytes: Buffer): Promise<void>;
+  readFileIfPresent(path: string): Promise<Buffer | null>;
+  removePath(path: string): Promise<void>;
+  pathExists(path: string): Promise<boolean>;
+  /** Optional because hermetic doubles need not model uid/gid; production provides it. */
+  setOwnership?(path: string, owner: string, group: string): Promise<void>;
+}
+
+export class WorkspaceHostAgentHomeStateError extends Error {
+  readonly family?: WorkspaceHostAgentHomeFamily;
+  readonly generation?: number;
+
+  constructor(
+    message: string,
+    details: {
+      family?: WorkspaceHostAgentHomeFamily;
+      generation?: number;
+    } = {},
+  ) {
+    super(message);
+    this.name = "WorkspaceHostAgentHomeStateError";
+    this.family = details.family;
+    this.generation = details.generation;
+  }
+}
+
+export class WorkspaceHostAgentHomeBundleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceHostAgentHomeBundleError";
+  }
+}
+
+function record(
+  value: unknown,
+  label: string,
+): Readonly<Record<string, unknown>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new WorkspaceHostAgentHomeBundleError(`${label} must be an object`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function exactKeys(
+  value: Readonly<Record<string, unknown>>,
+  expected: readonly string[],
+  label: string,
+): void {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (
+    actual.length !== wanted.length ||
+    actual.some((key, index) => key !== wanted[index])
+  ) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      `${label} must contain exactly ${wanted.join(", ")}`,
+    );
+  }
+}
+
+function decodeJsonFile(
+  value: unknown,
+  label: WorkspaceHostAgentHomeFile,
+): Buffer {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      `files.${label} must be canonical base64`,
+    );
+  }
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.length === 0 || bytes.toString("base64") !== value) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      `files.${label} must be canonical base64`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new WorkspaceHostAgentHomeBundleError(
+      `files.${label} must decode to valid JSON`,
+    );
+  }
+  record(parsed, `files.${label} JSON`);
+  return bytes;
+}
+
+/** Parse without ever echoing a decoded byte into an error or receipt. */
+export function parseWorkspaceHostAgentHomeBundle(
+  material: Buffer,
+): WorkspaceHostAgentHomeBundle {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(material.toString("utf8"));
+  } catch {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "agent-home material must be valid JSON",
+    );
+  }
+  const body = record(parsed, "agent-home material");
+  exactKeys(body, ["contractVersion", "files"], "agent-home material");
+  if (body.contractVersion !== WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      `agent-home material must use ${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}`,
+    );
+  }
+  const files = record(body.files, "agent-home material.files");
+  exactKeys(
+    files,
+    Object.keys(WORKSPACE_HOST_AGENT_HOME_FILES),
+    "agent-home material.files",
+  );
+  return {
+    contractVersion: WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+    files: {
+      claude: decodeJsonFile(files.claude, "claude"),
+      codex: decodeJsonFile(files.codex, "codex"),
+      omp: decodeJsonFile(files.omp, "omp"),
+    },
+  };
+}
+
+/** Explicit secret-bearing encoder used by setup code and hermetic tests. */
+export function encodeWorkspaceHostAgentHomeBundle(
+  files: Readonly<Record<WorkspaceHostAgentHomeFile, Buffer>>,
+): Buffer {
+  for (const [label, bytes] of Object.entries(files)) {
+    decodeJsonFile(
+      bytes.toString("base64"),
+      label as WorkspaceHostAgentHomeFile,
+    );
+  }
+  return Buffer.from(
+    JSON.stringify({
+      contractVersion: WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+      files: {
+        claude: files.claude.toString("base64"),
+        codex: files.codex.toString("base64"),
+        omp: files.omp.toString("base64"),
+      },
+    }),
+    "utf8",
+  );
+}
+
+export function workspaceHostAgentHomePaths(
+  home: string,
+): Readonly<Record<WorkspaceHostAgentHomeFile, string>> {
+  requireExplicitWorkspaceHostHome(home);
+  return {
+    claude: join(home, ...WORKSPACE_HOST_AGENT_HOME_FILES.claude),
+    codex: join(home, ...WORKSPACE_HOST_AGENT_HOME_FILES.codex),
+    omp: join(home, ...WORKSPACE_HOST_AGENT_HOME_FILES.omp),
+  };
+}
+
+/**
+ * Refuse an inferred, relative, or non-canonical home before a root-owned consumer writes into it.
+ * The caller supplies the workspace user's home explicitly; it is never recovered from HOME.
+ */
+export function requireExplicitWorkspaceHostHome(home: string): string {
+  if (
+    typeof home !== "string" ||
+    !isAbsolute(home) ||
+    home === "/" ||
+    normalize(home) !== home ||
+    /[\r\n\0]/.test(home)
+  ) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "workspace user home must be an absolute, canonical, non-root path",
+    );
+  }
+  return home;
+}
+
+/** Directories the consumer creates/checks in parent-first order. */
+export function workspaceHostAgentHomeDirectories(
+  home: string,
+): readonly string[] {
+  requireExplicitWorkspaceHostHome(home);
+  return [
+    home,
+    join(home, ".claude"),
+    join(home, ".codex"),
+    join(home, ".omp"),
+    join(home, ".omp", "agent"),
+  ];
+}
+
+/** Root-private active record; the native files themselves remain below the explicit user home. */
+export function workspaceHostAgentHomeStatePath(materialRoot: string): string {
+  return join(materialRoot, "active", "agent-home.json");
+}
+
+export function encodeWorkspaceHostAgentHomeState(
+  family: WorkspaceHostAgentHomeFamily,
+  generation: number,
+  home: string,
+): Buffer {
+  if (!WORKSPACE_HOST_AGENT_HOME_FAMILIES.includes(family)) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      `unsupported agent-home family '${family}'`,
+    );
+  }
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "agent-home generation must be a positive safe integer",
+    );
+  }
+  const files = workspaceHostAgentHomePaths(home);
+  return Buffer.from(
+    JSON.stringify({
+      contractVersion: WORKSPACE_HOST_AGENT_HOME_STATE_VERSION,
+      family,
+      generation,
+      home,
+      files,
+    }),
+    "utf8",
+  );
+}
+
+/** Parse fail-closed: a tampered state file must never redirect root-owned cleanup outside HOME. */
+export function parseWorkspaceHostAgentHomeState(
+  material: Buffer,
+): WorkspaceHostAgentHomeState {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(material.toString("utf8"));
+  } catch {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "agent-home state must be valid JSON",
+    );
+  }
+  const body = record(parsed, "agent-home state");
+  exactKeys(
+    body,
+    ["contractVersion", "family", "generation", "home", "files"],
+    "agent-home state",
+  );
+  if (body.contractVersion !== WORKSPACE_HOST_AGENT_HOME_STATE_VERSION) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      `agent-home state must use ${WORKSPACE_HOST_AGENT_HOME_STATE_VERSION}`,
+    );
+  }
+  if (
+    typeof body.family !== "string" ||
+    !WORKSPACE_HOST_AGENT_HOME_FAMILIES.includes(
+      body.family as WorkspaceHostAgentHomeFamily,
+    )
+  ) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "agent-home state has an unsupported family",
+    );
+  }
+  if (
+    !Number.isSafeInteger(body.generation) ||
+    (body.generation as number) < 1
+  ) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "agent-home state generation must be a positive safe integer",
+    );
+  }
+  if (typeof body.home !== "string") {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "agent-home state.home must be a string",
+    );
+  }
+  const home = requireExplicitWorkspaceHostHome(body.home);
+  const files = record(body.files, "agent-home state.files");
+  exactKeys(
+    files,
+    Object.keys(WORKSPACE_HOST_AGENT_HOME_FILES),
+    "agent-home state.files",
+  );
+  const expected = workspaceHostAgentHomePaths(home);
+  for (const label of Object.keys(expected) as WorkspaceHostAgentHomeFile[]) {
+    if (files[label] !== expected[label]) {
+      throw new WorkspaceHostAgentHomeBundleError(
+        `agent-home state.files.${label} does not resolve inside the recorded home`,
+      );
+    }
+  }
+  return {
+    contractVersion: WORKSPACE_HOST_AGENT_HOME_STATE_VERSION,
+    family: body.family as WorkspaceHostAgentHomeFamily,
+    generation: body.generation as number,
+    home,
+    files: expected,
+  };
+}
+
+export interface WorkspaceHostAgentHomeConsumerOptions {
+  readonly filesystem: WorkspaceHostAgentHomeFilesystem;
+  readonly materialRoot: string;
+  readonly workspaceHome: string;
+  readonly workspaceUser?: string;
+  readonly workspaceGroup?: string;
+}
+
+export interface WorkspaceHostAgentHomeConsumerEvidence {
+  readonly family: WorkspaceHostAgentHomeFamily;
+  readonly generation: number;
+  readonly present: boolean;
+  readonly home: string;
+}
+
+function compareBytes(left: Buffer, right: Buffer): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+/**
+ * Installs and verifies the three native agent credential files from delivered material.
+ *
+ * The active record is committed LAST. A fresh initializer process therefore sees either the
+ * previous complete generation or the new complete generation, never a process-local half-state.
+ * Generation checks make an old revoke harmless after a newer rotation has won the race.
+ */
+export class WorkspaceHostAgentHomeConsumer {
+  private readonly filesystem: WorkspaceHostAgentHomeFilesystem;
+  private readonly materialRoot: string;
+  private readonly workspaceHome: string;
+  private readonly workspaceUser?: string;
+  private readonly workspaceGroup?: string;
+
+  constructor(options: WorkspaceHostAgentHomeConsumerOptions) {
+    this.filesystem = options.filesystem;
+    this.materialRoot = options.materialRoot;
+    this.workspaceHome = requireExplicitWorkspaceHostHome(
+      options.workspaceHome,
+    );
+    if (
+      (options.workspaceUser && !options.workspaceGroup) ||
+      (!options.workspaceUser && options.workspaceGroup)
+    ) {
+      throw new WorkspaceHostAgentHomeBundleError(
+        "workspaceUser and workspaceGroup must be supplied together",
+      );
+    }
+    this.workspaceUser = options.workspaceUser;
+    this.workspaceGroup = options.workspaceGroup;
+  }
+
+  private async readState(): Promise<WorkspaceHostAgentHomeState | null> {
+    const raw = await this.filesystem.readFileIfPresent(
+      workspaceHostAgentHomeStatePath(this.materialRoot),
+    );
+    return raw === null ? null : parseWorkspaceHostAgentHomeState(raw);
+  }
+
+  private async own(path: string): Promise<void> {
+    if (
+      this.workspaceUser &&
+      this.workspaceGroup &&
+      this.filesystem.setOwnership
+    ) {
+      await this.filesystem.setOwnership(
+        path,
+        this.workspaceUser,
+        this.workspaceGroup,
+      );
+    }
+  }
+
+  private async ensureHomeLayout(): Promise<void> {
+    for (const directory of workspaceHostAgentHomeDirectories(
+      this.workspaceHome,
+    )) {
+      await this.filesystem.ensureDirectory(directory);
+      await this.own(directory);
+    }
+  }
+
+  async install(
+    family: WorkspaceHostAgentHomeFamily,
+    generation: number,
+    material: Buffer,
+  ): Promise<WorkspaceHostAgentHomeConsumerEvidence> {
+    if (!WORKSPACE_HOST_AGENT_HOME_FAMILIES.includes(family)) {
+      throw new WorkspaceHostAgentHomeStateError(
+        `unsupported agent-home family '${family}'`,
+      );
+    }
+    if (!Number.isSafeInteger(generation) || generation < 1) {
+      throw new WorkspaceHostAgentHomeStateError(
+        "agent-home generation must be a positive safe integer",
+      );
+    }
+    const bundle = parseWorkspaceHostAgentHomeBundle(material);
+    const current = await this.readState();
+    if (current && current.generation > generation) {
+      throw new WorkspaceHostAgentHomeStateError(
+        `agent-home generation ${generation} is older than active generation ${current.generation}`,
+        { family, generation },
+      );
+    }
+    if (
+      current &&
+      current.generation === generation &&
+      (current.family !== family || current.home !== this.workspaceHome)
+    ) {
+      throw new WorkspaceHostAgentHomeStateError(
+        `agent-home generation ${generation} is already active for another family or home`,
+        { family, generation },
+      );
+    }
+
+    await this.ensureHomeLayout();
+    const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+    for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
+      const existing = await this.filesystem.readFileIfPresent(paths[label]);
+      const bytes = bundle.files[label];
+      if (existing === null || !compareBytes(existing, bytes)) {
+        await this.filesystem.writePrivateFile(paths[label], bytes);
+      }
+      await this.own(paths[label]);
+    }
+    // State is the commit marker and is intentionally written after every native file succeeds.
+    await this.filesystem.ensureDirectory(join(this.materialRoot, "active"));
+    await this.filesystem.writePrivateFile(
+      workspaceHostAgentHomeStatePath(this.materialRoot),
+      encodeWorkspaceHostAgentHomeState(family, generation, this.workspaceHome),
+    );
+    return { family, generation, present: true, home: this.workspaceHome };
+  }
+
+  async verify(
+    family: WorkspaceHostAgentHomeFamily,
+    generation: number,
+    material: Buffer,
+  ): Promise<WorkspaceHostAgentHomeConsumerEvidence> {
+    const bundle = parseWorkspaceHostAgentHomeBundle(material);
+    const current = await this.readState();
+    if (
+      !current ||
+      current.family !== family ||
+      current.generation !== generation ||
+      current.home !== this.workspaceHome
+    ) {
+      throw new WorkspaceHostAgentHomeStateError(
+        `agent-home generation ${generation} is not the active installed generation`,
+        { family, generation },
+      );
+    }
+    const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+    for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
+      const bytes = await this.filesystem.readFileIfPresent(paths[label]);
+      if (
+        bytes === null ||
+        current.files[label] !== paths[label] ||
+        !compareBytes(bytes, bundle.files[label])
+      ) {
+        throw new WorkspaceHostAgentHomeStateError(
+          `agent-home file '${label}' is absent, stale, or points outside the explicit home`,
+          { family, generation },
+        );
+      }
+    }
+    return { family, generation, present: true, home: this.workspaceHome };
+  }
+
+  async revoke(
+    family: WorkspaceHostAgentHomeFamily,
+    generation: number,
+  ): Promise<WorkspaceHostAgentHomeConsumerEvidence> {
+    const current = await this.readState();
+    // A stale revoke is deliberately a no-op: a newer generation owns these same paths now.
+    if (
+      !current ||
+      current.family !== family ||
+      current.generation !== generation
+    ) {
+      return { family, generation, present: false, home: this.workspaceHome };
+    }
+    const paths = workspaceHostAgentHomePaths(current.home);
+    for (const path of Object.values(paths))
+      await this.filesystem.removePath(path);
+    await this.filesystem.removePath(
+      workspaceHostAgentHomeStatePath(this.materialRoot),
+    );
+    return { family, generation, present: false, home: current.home };
+  }
+
+  async verifyRevoked(
+    family: WorkspaceHostAgentHomeFamily,
+    generation: number,
+  ): Promise<WorkspaceHostAgentHomeConsumerEvidence> {
+    const current = await this.readState();
+    if (current?.family === family && current.generation === generation) {
+      throw new WorkspaceHostAgentHomeStateError(
+        `agent-home generation ${generation} is still active after revocation`,
+        { family, generation },
+      );
+    }
+    return { family, generation, present: false, home: this.workspaceHome };
+  }
+}
