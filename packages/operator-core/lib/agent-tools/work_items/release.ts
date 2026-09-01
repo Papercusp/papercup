@@ -26,12 +26,48 @@ import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { readOutbox } from '../coordination/messages';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { clampText, softText } from '../limits';
+import { readEventConditionReachability } from '../../external-condition-reachability';
+import type { DurableParkReleaseContract } from '../../work-items-durable-park-audit';
 
 const RELEASE_REASON_MAX_CHARS = 500;
 const releaseReasonSchema = () =>
   softText(RELEASE_REASON_MAX_CHARS)
     .optional()
     .describe('Optional audit/park reason — auto-truncated to 500 chars if longer.');
+
+const claimHoldReleaseSchema = z
+  .object({
+    condition: z.string().min(1).max(1000).describe('the concrete condition that permits this durable park to be reconsidered'),
+    trigger: z.string().min(1).max(300).describe('the exact events:await key that signals the condition may have changed'),
+    owner: z.string().min(1).max(200).optional().describe('accountable condition owner/source; defaults to the parker'),
+  })
+  .strict();
+
+type ClaimHoldReleaseInput = z.infer<typeof claimHoldReleaseSchema>;
+
+/** Resolve, rather than trust, the release condition's live event status. A fired
+ * latch is already satisfied; an unregistered/unmeasured key is blocked, never
+ * guessed unreachable from age or prose. */
+async function buildClaimHoldReleaseContract(
+  input: ClaimHoldReleaseInput,
+  defaultOwner: string,
+): Promise<DurableParkReleaseContract> {
+  const reachability = await readEventConditionReachability(input.trigger);
+  return {
+    condition: input.condition.trim(),
+    owner: input.owner?.trim() || defaultOwner,
+    trigger: input.trigger.trim(),
+    reachability:
+      reachability.basis === 'fired'
+        ? 'satisfied'
+        : reachability.verdict === 'reachable'
+          ? 'reachable'
+          : reachability.verdict === 'impossible'
+            ? 'unreachable'
+            : 'blocked',
+    evidence: reachability.evidence,
+  };
+}
 
 /**
  * A completion assertion is intentionally a narrow, advisory signal. It is not
