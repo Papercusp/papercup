@@ -2610,6 +2610,16 @@ export default defineTool({
         'send many DISTINCT messages at once — each { to, summary, expects, harness?, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? }; a top-level `harness` is the default for items that omit it — `expects` is required on EVERY item',
       ),
   })),
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      to: z.unknown().optional(),
+      msg_id: z.string().optional(),
+      error: z.string().optional(),
+      partial: z.boolean().optional(),
+      deliveryFailureWarning: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const idempotencyKey =
