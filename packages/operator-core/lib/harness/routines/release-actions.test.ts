@@ -2825,6 +2825,41 @@ describe('P-303: signed gate-verdict producer', () => {
     expect(inserted[0].verdictId).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('uses the final attempt per file so a later pass supersedes a historical failure', async () => {
+    const { base, inserted } = deps({
+      readTestRuns: async () => [
+        {
+          id: 41,
+          file_path: 'packages/core/src/retried.test.ts',
+          status: 'fail',
+          duration_ms: 30,
+          finished_at: '2026-09-01T00:00:00.000Z',
+        },
+        {
+          id: 42,
+          file_path: 'packages/core/src/retried.test.ts',
+          status: 'pass',
+          duration_ms: 7,
+          finished_at: '2026-09-01T00:00:01.000Z',
+        },
+      ],
+    });
+
+    const result = await publishSignedGateVerdicts(
+      target,
+      { reason: 'up-to-date', green: true, candidate, runId: 'run-1' },
+      base,
+    );
+
+    expect(result).toEqual({ published: 1, skipped: 1 });
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].signed).toMatchObject({
+      shard_id: '@p/core::unit',
+      verdict: 'pass',
+      duration_ms: 7,
+    });
+  });
+
   it('does not turn skipped or cancelled rows into a signed pass', async () => {
     const { base, inserted } = deps({
       readTestRuns: async () => [{ file_path: 'packages/core/src/core.test.ts', status: 'skip', duration_ms: 12 }],
