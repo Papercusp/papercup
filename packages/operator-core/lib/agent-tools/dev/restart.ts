@@ -568,6 +568,10 @@ export default defineTool({
     // budget changes what the confirmed call would DO, so a preview that cannot see it
     // cannot answer the only question a preview is asked (see gitSyncPreflightBlocks).
     const gitSyncDrainSec = Math.max(0, Math.trunc(args.git_sync_drain_sec ?? 0));
+    // The target set is the single source of truth for whether this restart can
+    // affect git-sync. In particular, staging (:3170) is not a git-sync host and
+    // must not even enter the workspace-wide barrier path.
+    const gitSyncSensitive = isGitSyncSensitiveTarget(target);
 
     // Dry run — ctx-free, takes no lock, drains nobody.
     if (!args.confirm) {
@@ -606,7 +610,9 @@ export default defineTool({
       // here is what prevents the confirm call from being made at all — strictly better than
       // refusing that call afterwards. Read-only; never blocks the dry run.
       const preview = await checkGateCollision(target, args.override_gate_collision === true);
-      const gitSyncPreview = await checkGitSyncCollision(target, args.override_git_sync_collision === true);
+      const gitSyncPreview = gitSyncSensitive
+        ? await checkGitSyncCollision(target, args.override_git_sync_collision === true)
+        : null;
       // EI-18661647550414959: same reasoning as the gate-collision preview above — the dry
       // run is where the decision is actually made, so "this tree cannot boot" belongs HERE,
       // where it costs nothing, not only in the refusal afterwards.
@@ -626,7 +632,7 @@ export default defineTool({
         ...(isGateSensitiveTarget(target)
           ? { gate_collision: { kind: preview.kind, would_block: preview.blocked, ...preview.detail } }
           : {}),
-        ...(isGitSyncSensitiveTarget(target)
+        ...(gitSyncPreview
           ? {
               git_sync_collision: {
                 kind: gitSyncPreview.kind,
@@ -642,7 +648,7 @@ export default defineTool({
             }
           : {}),
         note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} confirm:true ALONE is not enough — the real restart also needs the enablement gate: pass authorize:true + a short \`reason\` (≤300 chars) in the same call, or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process. Without it the call is REFUSED outright (ok:false, nothing drained).${
-          gitSyncPreview.blocked
+          gitSyncPreview?.blocked
             ? gitSyncDrainSec > 0
               ? ` ℹ A git-sync operation shares this cgroup, but you passed git_sync_drain_sec:${gitSyncDrainSec} — on that path the cgroup preflight is ADVISORY and the workspace-wide \`git-sync\` barrier arbitrates instead (fires hold it only ~5-10s). This preview reserves nothing; the confirmed call can still refuse with drain_timeout, which is transient and side-effect-free — retry rather than abandon.`
               : ` ⚠ ${gitSyncPreview.note} On a merely BUSY host the supported way through is git_sync_drain_sec (up to ${GIT_SYNC_RESTART_BARRIER_DRAIN_SEC}s) — WAIT for the drain. override_git_sync_collision is for a WEDGED host: it SIGKILLs an in-flight commit and strands a peer's uncommitted work.`
@@ -734,7 +740,9 @@ export default defineTool({
     // inside this unit, systemctl restart would SIGKILL its commit and orphan the
     // lease. This covers both scheduled bg-host fires and manual :3070/:3170
     // fires, unlike a target-name-only bg-host check.
-    const gitSync = await checkGitSyncCollision(target, args.override_git_sync_collision === true);
+    const gitSync = gitSyncSensitive
+      ? await checkGitSyncCollision(target, args.override_git_sync_collision === true)
+      : null;
     // EI-21930094737784126: this preflight is a CGROUP PROXY ("is a git-sync process
     // inside this unit?"), not the authoritative signal. On bg-host the git-sync worker
     // IS the host process, so the proxy is ~always true while the barrier LOCK it stands
@@ -742,7 +750,7 @@ export default defineTool({
     // it to ADVISORY and let the barrier below arbitrate — that is the whole difference
     // between a lever that fires and one that refuses 20/20. With no budget it stays a
     // hard refusal, so the default path is unchanged.
-    if (gitSyncPreflightBlocks(gitSync.blocked, gitSyncDrainSec)) {
+    if (gitSync && gitSyncPreflightBlocks(gitSync.blocked, gitSyncDrainSec)) {
       return json({
         ok: false,
         target,
@@ -1048,7 +1056,7 @@ export default defineTool({
           gateCollision: isGateSensitiveTarget(target)
             ? { kind: gate.kind, overridden: gate.overridden, runElapsedSec: gate.detail.runElapsedSec }
             : null,
-          gitSyncCollision: isGitSyncSensitiveTarget(target)
+          gitSyncCollision: gitSync
             ? {
                 kind: gitSync.kind,
                 overridden: gitSync.overridden,
@@ -1096,7 +1104,7 @@ export default defineTool({
           ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
           ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
           ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
-          ...(gitSync.overridden ? { gitSyncCollisionOverridden: { kind: gitSync.kind, ...gitSync.detail } } : {}),
+          ...(gitSync?.overridden ? { gitSyncCollisionOverridden: { kind: gitSync.kind, ...gitSync.detail } } : {}),
           ...(gitSyncBarrier?.acquired === true
             ? {
                 gitSyncRestartBarrier: {
@@ -1121,7 +1129,7 @@ export default defineTool({
             target === 'bg-host'
               ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
               : ''
-          }${gitSync.overridden || gitSync.kind === 'probe-failed' || gitSync.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}`,
+          }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}`,
         });
       },
     ).catch(async (error) => {
