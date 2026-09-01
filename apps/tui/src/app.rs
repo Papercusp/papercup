@@ -1368,6 +1368,34 @@ pub struct SessionBrowser {
     pub transcript_loading: bool,
     pub transcript_error: Option<String>,
     pub full_transcript: bool,
+    /// Armed by the Sessions `n` launch: a bounded refetch burst that picks up
+    /// the PSU-registered session without an unbounded poll.
+    pub launch_refresh: Option<LaunchRefresh>,
+}
+
+/// The bounded post-launch refresh schedule for the Sessions destination
+/// (`App::on_tick`). Ticks arrive every 250ms, so `GAPS` refetches at ~2s,
+/// ~8s, ~20s and ~40s after the PSU pane opened, then stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchRefresh {
+    /// Index into `GAPS` of the gap currently being waited out.
+    pub step: usize,
+    /// Ticks left before the next refetch fires.
+    pub ticks_until_next: u32,
+}
+
+impl LaunchRefresh {
+    /// Gaps between successive refetches, in 250ms ticks.
+    pub const GAPS: [u32; 4] = [8, 24, 48, 80];
+}
+
+impl Default for LaunchRefresh {
+    fn default() -> Self {
+        Self {
+            step: 0,
+            ticks_until_next: Self::GAPS[0],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2177,7 +2205,7 @@ impl App {
         Self {
             should_quit: false,
             status:
-                "pui · Agent Chat · s session · m model · e effort · a account · [/] pot · ? help"
+                "pui · Agent Chat · s Sessions · l conversation · m model · e effort · a account · [/] pot · ? help"
                     .to_string(),
             // D-031 / P-019: Agent Chat is the product front door. `title()`
             // remains Operator only as the stable persistence identity.
@@ -3771,38 +3799,17 @@ impl App {
         self.account_rows = rows;
     }
 
-    /// Open the native agent/role/session picker. Existing PG-backed sessions
-    /// and new-role rows share the existing generic picker overlay.
-    pub fn open_agent_session_picker(&mut self) {
+    /// Open the conversation picker: the EXISTING PG-backed Agent Chat
+    /// conversations, nothing else. It deliberately synthesises no "new
+    /// <role> · <backend> session" rows — the old picker built a role ×
+    /// backend Cartesian product out of the model configuration and prior
+    /// chat rows, which leaked internal roles (kettle, doc-steward, …) and
+    /// duplicated PSU's launcher. New SU sessions are launched by the real
+    /// PSU picker from the Sessions destination (`launch_new_su_session`,
+    /// pui-psu-exact-launch-and-task-latency-2026-09-01 D-001/D-003).
+    pub fn open_conversation_picker(&mut self) {
         use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
-        let mut roles = BTreeSet::from(["operator".to_string()]);
-        if let Some(agent) = &self.operator_config.agent {
-            roles.extend(agent.config.models.keys().cloned());
-        }
-        roles.extend(self.agent_chat_summaries.iter().map(|s| s.role.clone()));
-
-        // New rows are explicitly paired with a backend.  The backend is part
-        // of the durable launch request, not a process-local preference that
-        // could silently change when `/settings/agent` changes.
-        let picker_harness = self.harness.clone();
-        let mut options: Vec<PickerOption> = roles
-            .into_iter()
-            .flat_map(|role| {
-                let role_harness = picker_harness.clone();
-                crate::su_session::SuSessionBackend::ALL
-                    .into_iter()
-                    .map(move |backend| PickerOption {
-                        id: format!("new:{backend}:{role}"),
-                        label: format!("New {role} · {} session", backend.label()),
-                        hint: Some(format!(
-                            "Create a durable {} SU session in pot {} on first send.",
-                            backend.label(),
-                            role_harness
-                        )),
-                        disabled: false,
-                    })
-            })
-            .collect();
+        let mut options: Vec<PickerOption> = Vec::new();
         options.extend(self.agent_chat_summaries.iter().map(|chat| {
             let title = chat
                 .title
@@ -3821,7 +3828,7 @@ impl App {
                 .map(|entry| entry.reconciliation.to_string())
                 .unwrap_or_else(|| "legacy chat".to_string());
             PickerOption {
-                id: format!("session:{}", chat.id),
+                id: format!("chat:{}", chat.id),
                 label: format!(
                     "{}{} · {}{} · {} turn{}",
                     if active { "● " } else { "" },
@@ -3838,7 +3845,7 @@ impl App {
                 disabled: false,
             }
         }));
-        self.session_picker = Some(SessionPicker::new(PickerAxis::Session, options));
+        self.session_picker = Some(SessionPicker::new(PickerAxis::Conversation, options));
     }
 
     /// Open the model picker over the SERVER'S tier menu (`/api/agent-config`:
@@ -3943,39 +3950,8 @@ impl App {
             }
             Ok((id, label)) => {
                 match axis {
-                    crate::session_config::PickerAxis::Session => {
-                        if let Some(new_id) = id.strip_prefix("new:") {
-                            let mut parts = new_id.splitn(2, ':');
-                            let (backend, role) = match (parts.next(), parts.next()) {
-                                (Some(backend), Some(role)) => {
-                                    let backend = match backend {
-                                        "claude" => crate::su_session::SuSessionBackend::Claude,
-                                        "codex" => crate::su_session::SuSessionBackend::Codex,
-                                        "omp" => crate::su_session::SuSessionBackend::Omp,
-                                        _ => crate::su_session::SuSessionBackend::Claude,
-                                    };
-                                    (backend, role)
-                                }
-                                // Compatibility with old persisted picker ids.
-                                (Some(role), None) => (
-                                    self.su_backend
-                                        .unwrap_or(crate::su_session::SuSessionBackend::Claude),
-                                    role,
-                                ),
-                                _ => (crate::su_session::SuSessionBackend::Claude, "operator"),
-                            };
-                            self.agent_chat_role = role.to_string();
-                            self.su_session = None;
-                            self.su_backend = Some(backend);
-                            self.reset_agent_chat_binding();
-                            self.su_backend = Some(backend);
-                            self.session_note = Some(format!(
-                                "new {} {} SU session selected in {} — it opens on send",
-                                backend.label(),
-                                self.agent_chat_role,
-                                self.harness
-                            ));
-                        } else if let Some(chat_id) = id.strip_prefix("session:") {
+                    crate::session_config::PickerAxis::Conversation => {
+                        if let Some(chat_id) = id.strip_prefix("chat:") {
                             let role = self
                                 .agent_chat_summaries
                                 .iter()
@@ -4900,6 +4876,58 @@ impl App {
         PaneSpec::new(argv).titled(format!("pui · {agent}"))
     }
 
+    /// The ONE way PUI starts a new SU session: the real PSU interactive
+    /// picker, in a workbench pane. Role is fixed to `su` and `--tui=pui`
+    /// marks the caller origin so PSU hides its recursive PUI destination
+    /// (pui-psu-exact-launch-and-task-latency-2026-09-01 D-001/D-002). PUI
+    /// passes NO backend/model/effort/account/mode/carry — those menus are
+    /// PSU's, and this argv is asserted verbatim by the D-002 test.
+    pub fn new_su_session_spec() -> PaneSpec {
+        let argv = vec![
+            "psu".to_string(),
+            "--role=su".to_string(),
+            "--tui=pui".to_string(),
+        ];
+        PaneSpec::new(argv).titled("psu · new SU session")
+    }
+
+    /// Sessions-owned `n` (D-003): open the PSU picker pane, record it in the
+    /// crew roster like every other launch, and arm a bounded refresh burst so
+    /// the Sessions list adopts the session as soon as PSU registers it —
+    /// the interactive picker takes as long as the human takes, so a single
+    /// fixed delay would miss it while an unbounded poll is the anti-pattern.
+    fn launch_new_su_session(&mut self) -> Action {
+        let spec = Self::new_su_session_spec();
+        self.record_launch(&spec);
+        self.session_browser.launch_refresh = Some(LaunchRefresh::default());
+        self.push_notif(Notif {
+            level: "info".into(),
+            message: format!("⏎ new SU session · {} (pick backend in the pane)", spec.argv.join(" ")),
+            harness: None,
+            ts: None,
+        });
+        Action::Launch(spec)
+    }
+
+    /// 250ms Tick: drive the post-launch Sessions refresh burst, if armed. Each
+    /// due step refetches the browser once and re-arms the next, longer gap;
+    /// the burst ends on its own after `LaunchRefresh::GAPS`.
+    fn on_tick(&mut self) -> Action {
+        let Some(refresh) = self.session_browser.launch_refresh.as_mut() else {
+            return Action::None;
+        };
+        if refresh.ticks_until_next > 0 {
+            refresh.ticks_until_next -= 1;
+            return Action::None;
+        }
+        refresh.step += 1;
+        match LaunchRefresh::GAPS.get(refresh.step) {
+            Some(gap) => refresh.ticks_until_next = *gap,
+            None => self.session_browser.launch_refresh = None,
+        }
+        self.refetch_session_browser()
+    }
+
     /// Build the resume pane spec for a roster entry — `psu --resume <id>` (the
     /// adv_sessions row id; psu resolves the row, cds to its cwd, and resumes the
     /// EXACT agent/session). `None` when the entry carries no launch record to
@@ -5535,6 +5563,9 @@ impl App {
             KeyCode::Char('h') | KeyCode::Left => Some(self.cycle_session_browser_facet(-1)),
             KeyCode::Char('l') | KeyCode::Right => Some(self.cycle_session_browser_facet(1)),
             KeyCode::Char('r') => Some(self.refetch_session_browser()),
+            // New-session launch belongs to Sessions (D-003) and runs the REAL
+            // PSU interactive picker (D-001/D-002) — never a PUI-owned menu.
+            KeyCode::Char('n') => Some(self.launch_new_su_session()),
             KeyCode::Esc if !self.session_browser.query.is_empty() => {
                 self.session_browser.query.clear();
                 self.session_browser.sel = 0;
@@ -6643,7 +6674,7 @@ impl App {
                 self.publish_active_plan();
                 action
             }
-            Event::Tick => Action::None,
+            Event::Tick => self.on_tick(),
             Event::Plans(p) => {
                 self.set_plans(p);
                 self.publish_active_plan();
@@ -8819,8 +8850,13 @@ impl App {
                 self.chat_composing = true;
                 Action::Render
             }
-            KeyCode::Char('s') if self.tab == Tab::Operator => {
-                self.open_agent_session_picker();
+            // D-003 (pui-psu-exact-launch-and-task-latency-2026-09-01):
+            // navigation is literal — lowercase `s` is the `s:Sessions`
+            // mnemonic on EVERY destination, Agent Chat included, so it falls
+            // through to `Tab::from_switch_key` below. Switching Agent Chat
+            // between existing conversations lives on `l` instead.
+            KeyCode::Char('l') if self.tab == Tab::Operator => {
+                self.open_conversation_picker();
                 Action::Render
             }
             // Model picker for the chat pane (P-005 final lane, WI-41189): which
@@ -11112,14 +11148,14 @@ mod tests {
             updated_at: "2026-08-25T01:00:00Z".into(),
             archived_at: None,
         }];
-        a.open_agent_session_picker();
+        a.open_conversation_picker();
         let idx = a
             .session_picker
             .as_ref()
             .unwrap()
             .options
             .iter()
-            .position(|option| option.id == "session:chat-review")
+            .position(|option| option.id == "chat:chat-review")
             .unwrap();
         a.session_picker.as_mut().unwrap().sel = idx;
         assert_eq!(
@@ -11173,7 +11209,7 @@ mod tests {
     }
 
     fn select_session_option(a: &mut App, option_id: &str) -> Action {
-        a.open_agent_session_picker();
+        a.open_conversation_picker();
         let idx = a
             .session_picker
             .as_ref()
@@ -11195,7 +11231,7 @@ mod tests {
             crate::su_session::SuSessionReconciliation::Attached,
         )];
         assert_eq!(
-            select_session_option(&mut a, "session:chat-attached"),
+            select_session_option(&mut a, "chat:chat-attached"),
             Action::AttachSuSession {
                 harness: "papercup".into(),
                 chat_id: "chat-attached".into(),
@@ -11226,7 +11262,7 @@ mod tests {
             let mut a = App::new();
             a.agent_chat_summaries = vec![chat_summary_for("chat-x")];
             a.su_session_inventory = vec![inventory_row_for("chat-x", reconciliation)];
-            let action = select_session_option(&mut a, "session:chat-x");
+            let action = select_session_option(&mut a, "chat:chat-x");
             assert!(
                 matches!(action, Action::LoadAgentChat { .. }),
                 "reconciliation {reconciliation:?} must NOT attach, got {action:?}"
@@ -11240,37 +11276,125 @@ mod tests {
         let mut a = App::new();
         a.agent_chat_summaries = vec![chat_summary_for("chat-legacy")];
         a.su_session_inventory = vec![];
-        let action = select_session_option(&mut a, "session:chat-legacy");
+        let action = select_session_option(&mut a, "chat:chat-legacy");
         assert!(
             matches!(action, Action::LoadAgentChat { .. }),
             "a chat with no inventory row must load, got {action:?}"
         );
     }
 
+    // --- pui-psu-exact-launch-and-task-latency-2026-09-01 P-002 ---
+    //
+    // PSU is the sole launcher UI (D-001): PUI's picker lists EXISTING
+    // conversations only and never synthesises "new <role> · <backend>" rows
+    // out of prior chat roles / model configuration (the leak that surfaced
+    // kettle and doc-steward as launchable roles).
     #[test]
-    fn new_session_picker_requires_an_explicit_su_backend() {
+    fn conversation_picker_synthesises_no_new_session_rows() {
         let mut a = App::new();
-        a.open_agent_session_picker();
-        let options = &a.session_picker.as_ref().unwrap().options;
-        assert!(options
-            .iter()
-            .any(|option| option.id == "new:claude:operator"));
-        assert!(options
-            .iter()
-            .any(|option| option.id == "new:codex:operator"));
-        assert!(options.iter().any(|option| option.id == "new:omp:operator"));
-
-        let idx = options
-            .iter()
-            .position(|option| option.id == "new:codex:operator")
-            .unwrap();
-        a.session_picker.as_mut().unwrap().sel = idx;
-        assert_eq!(a.commit_session_picker(), Action::Render);
+        let mut kettle = chat_summary_for("chat-kettle");
+        kettle.role = "kettle".into();
+        let mut steward = chat_summary_for("chat-steward");
+        steward.role = "doc-steward".into();
+        a.agent_chat_summaries = vec![kettle, steward];
+        a.open_conversation_picker();
+        let picker = a.session_picker.as_ref().expect("picker opens");
         assert_eq!(
-            a.su_backend,
-            Some(crate::su_session::SuSessionBackend::Codex)
+            picker.axis,
+            crate::session_config::PickerAxis::Conversation
         );
-        assert_eq!(a.agent_chat_role, "operator");
+        assert_eq!(
+            picker.options.len(),
+            2,
+            "exactly one row per existing conversation, no role × backend product: {:?}",
+            picker.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            picker.options.iter().all(|o| o.id.starts_with("chat:")),
+            "every row is an existing conversation: {:?}",
+            picker.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            !picker
+                .options
+                .iter()
+                .any(|o| o.id.starts_with("new:") || o.label.starts_with("New ")),
+            "no launcher rows in PUI"
+        );
+    }
+
+    /// D-003: navigation is literal. The `s:Sessions` mnemonic reaches Sessions
+    /// from Agent Chat too — the old picker binding shadowed it there.
+    #[test]
+    fn lowercase_s_reaches_sessions_from_agent_chat() {
+        let mut a = App::new();
+        assert_eq!(a.tab, Tab::Operator, "Agent Chat is the front door");
+        a.update(key('s', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Sessions, "`s` must navigate, not open a picker");
+        assert!(a.session_picker.is_none());
+    }
+
+    /// The conversation switcher moved to `l` so it cannot shadow a mnemonic.
+    #[test]
+    fn lowercase_l_opens_the_conversation_picker_on_agent_chat() {
+        let mut a = App::new();
+        a.agent_chat_summaries = vec![chat_summary_for("chat-one")];
+        assert_eq!(a.update(key('l', KeyModifiers::NONE)), Action::Render);
+        assert_eq!(a.tab, Tab::Operator);
+        let picker = a.session_picker.as_ref().expect("conversation picker opens");
+        assert_eq!(picker.options[0].id, "chat:chat-one");
+    }
+
+    /// D-002: Sessions owns new-session launch and it IS the real PSU picker —
+    /// role pinned to `su`, origin `--tui=pui`, and nothing else on the argv
+    /// (a backend/model/effort/account/mode flag here would be PUI re-growing
+    /// a launcher menu PSU already owns).
+    #[test]
+    fn sessions_n_launches_the_real_psu_picker_with_su_role_and_pui_origin() {
+        let mut a = App::new();
+        a.tab = Tab::Sessions;
+        let action = a.update(key('n', KeyModifiers::NONE));
+        let Action::Launch(spec) = action else {
+            panic!("expected Action::Launch, got {action:?}");
+        };
+        assert_eq!(spec.argv, vec!["psu", "--role=su", "--tui=pui"]);
+        assert_eq!(spec, App::new_su_session_spec());
+        assert_eq!(a.launched.len(), 1, "recorded in the crew roster like every launch");
+        assert_eq!(
+            a.session_browser.launch_refresh,
+            Some(LaunchRefresh::default()),
+            "the bounded refresh burst is armed"
+        );
+        assert!(a
+            .notifs
+            .iter()
+            .any(|n| n.message.contains("psu --role=su --tui=pui")));
+    }
+
+    /// The post-launch refresh burst refetches the Sessions list on the
+    /// `LaunchRefresh::GAPS` schedule and then STOPS — bounded, not a poll.
+    #[test]
+    fn launch_refresh_burst_refetches_sessions_on_schedule_then_stops() {
+        let mut a = App::new();
+        a.tab = Tab::Sessions;
+        a.update(key('n', KeyModifiers::NONE));
+        let mut ticks = 0u32;
+        let mut fires = 0u32;
+        while a.session_browser.launch_refresh.is_some() {
+            ticks += 1;
+            assert!(ticks < 1_000, "the burst must end on its own");
+            match a.update(Event::Tick) {
+                Action::None => {}
+                Action::FetchSessionBrowser { .. } => fires += 1,
+                other => panic!("unexpected tick action {other:?}"),
+            }
+        }
+        let expected_ticks: u32 =
+            LaunchRefresh::GAPS.iter().sum::<u32>() + LaunchRefresh::GAPS.len() as u32;
+        assert_eq!(fires, LaunchRefresh::GAPS.len() as u32);
+        assert_eq!(ticks, expected_ticks);
+        // Idle afterwards: a Tick with no burst armed is a no-op.
+        assert_eq!(a.update(Event::Tick), Action::None);
     }
 
     #[test]
@@ -11955,14 +12079,14 @@ mod tests {
             "chat-1",
             crate::su_session::SuSessionReconciliation::Attached,
         )];
-        app.open_agent_session_picker();
+        app.open_conversation_picker();
         let idx = app
             .session_picker
             .as_ref()
             .unwrap()
             .options
             .iter()
-            .position(|option| option.id == "session:chat-1")
+            .position(|option| option.id == "chat:chat-1")
             .unwrap();
         app.session_picker.as_mut().unwrap().sel = idx;
         assert!(matches!(
@@ -15067,7 +15191,7 @@ mod tests {
     fn selecting_a_chat_holds_it_unclassified_until_its_class_arrives() {
         let mut a = App::new();
         a.agent_chat_summaries = vec![chat_summary_for("chat-x")];
-        let action = select_session_option(&mut a, "session:chat-x");
+        let action = select_session_option(&mut a, "chat:chat-x");
         assert!(matches!(action, Action::LoadAgentChat { .. }), "{action:?}");
         assert_eq!(
             a.pui_runtime_class,
