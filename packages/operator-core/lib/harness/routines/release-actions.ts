@@ -935,11 +935,12 @@ export async function publishSignedGateVerdicts(
     const registry = await loadHarnessRegistry(target.workspaceId, { fresh: true });
     const entry = registry.projects.find((project) => project.slug === target.installSlug);
     if (!entry?.path) return { published: 0, skipped: 0, reason: 'registry-unreadable' };
+    const entryPath = entry.path;
 
     const manifestResult = await (deps.buildShardManifestAtSha
-      ? deps.buildShardManifestAtSha(entry.path, stagingSha)
+      ? deps.buildShardManifestAtSha(entryPath, stagingSha)
       : importedBuildManifest(
-          entry.path,
+          entryPath,
           stagingSha,
           undefined,
           async (gitlinkPath) => {
@@ -947,8 +948,8 @@ export async function publishSignedGateVerdicts(
             // submodules already hold the ODBs needed to read committed workspace
             // package.json files. Resolve only descendants of that checkout; an
             // absent/uninitialized submodule remains explicitly unreadable below.
-            const repoPath = path.resolve(entry.path, gitlinkPath);
-            const root = `${path.resolve(entry.path)}${path.sep}`;
+            const repoPath = path.resolve(entryPath, gitlinkPath);
+            const root = `${path.resolve(entryPath)}${path.sep}`;
             return repoPath.startsWith(root) && existsSync(repoPath) ? { repoPath } : null;
           },
         )).catch(() => null);
