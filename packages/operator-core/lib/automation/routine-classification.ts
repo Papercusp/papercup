@@ -610,6 +610,18 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:p2p-perf-tier1': { spend: 'none', why: 'Nightly p2p bench' },
   'system:p2p-perf-tier2': { spend: 'none', why: 'Weekly p2p bench' },
   'system:wake-brain': { spend: 'none', why: 'Retired tombstone — the handler is a no-op' },
+  'system:oddsmith-paper-cycle': {
+    spend: 'none',
+    why: 'Runs a bounded PAPER-mode market-making cycle script (npm run paper-cycle); no agent or model call',
+  },
+  'system:oddsmith-error-triage-ingest': {
+    spend: 'none',
+    why: 'Runs the deterministic error-triage ingest CLI; no agent or model call',
+  },
+  'system:oddsmith-error-triage-autofix': {
+    spend: 'llm',
+    why: 'Launches a hardened headless Claude agent to fix open error classes when any exist',
+  },
 };
 
 /**

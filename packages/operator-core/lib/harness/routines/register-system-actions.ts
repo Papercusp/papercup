@@ -699,6 +699,17 @@ import './project-history-refresh-action';
 // canonical system-action seam but intentionally has NO seeded cadence. The
 // purpose-built plans:audit-unshipped tool fires the same implementation on demand.
 import './unshipped-plans-audit-action';
+// scheduling-and-liveness-source-of-truth-2026-08-31 P-005: `system:oddsmith-paper-cycle`,
+// `system:oddsmith-error-triage-ingest`, `system:oddsmith-error-triage-autofix` — the
+// durable DBOS replacements for three Unix crontab entries that ran outside the routines
+// pause/status/liveness machinery entirely. Each self-gates to the oddsmith harness
+// (installSlug check) and throws on a genuine failure instead of the hand-rolled
+// cron-alarm.sh streak-file alarm the crontab wrappers used — the routines engine's own
+// last_error/last_error_at bookkeeping (routines-workflow.ts) now covers it. Seeded by
+// seed-oddsmith-cron-routines.ts.
+import './oddsmith-paper-cycle-action';
+import './oddsmith-error-triage-ingest-action';
+import './oddsmith-error-triage-autofix-action';
 // EI-21921833535413808: `system:account-capacity-reprobe` — a walled account whose upstream
 // window actually reset (or was never really full — `usageWalled` is a THRESHOLD CHECK on a
 // projection, not an observed refusal) had NOTHING to re-ask upstream: a walled account is
