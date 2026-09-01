@@ -277,7 +277,10 @@ export function resolverSpawnOutcome(result: SpawnConsoleResult, resolverOwner: 
  * Launch the resolver. Best-effort by design: every failure path returns a
  * reason rather than throwing, so the caller can record it on the run.
  */
-async function launchResolver(
+/** Shared supervised launcher used by the owner route and the durable scheduled
+ * resolver. Keeping this seam here means scheduled starts and click starts use
+ * the exact same command, brief, child-exit supervision and failure handling. */
+export async function launchResolver(
   runId: string,
   itemCount: number,
   harness: string | null,
