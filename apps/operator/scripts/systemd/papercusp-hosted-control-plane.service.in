@@ -30,7 +30,20 @@ Environment=PATH=@NODE_DIR@:%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/lo
 # Source order matters: the operator's .env.local (database URLs) first, then the
 # hosted env file, then the profile pins exported LAST so a stale port/profile
 # hint in either file can never redirect this unit off the hosted surface.
-ExecStart=/usr/bin/bash -c 'set -a; [ -f .env.local ] && . ./.env.local; [ -f "@HOSTED_ENV_FILE@" ] && . "@HOSTED_ENV_FILE@"; set +a; export PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane PAPERCUSP_USE_EMBEDDED_PG=0 PAPERCUSP_HONO_PORT=@PORT@ PAPERCUSP_BIND_HOST=127.0.0.1 PAPERCUSP_BACKGROUND_WORKERS=0; exec npx tsx bin/serve.ts'
+#
+# PAPERCUSP_ENV_OPERATOR_ID is load-bearing (serve.ts WI-3287 / EI-11342): it
+# scopes the cold-start lock to operator.lock.env-hosted-control-plane, makes
+# this process a request-only sibling that NEVER writes the primary's
+# ~/.papercusp/operator.json discovery record, and pins the fixed port instead
+# of the primary's sticky-port memory. Without it this unit would collide with
+# (or hijack the discovery of) the desktop/primary operator on the same $HOME.
+#
+# serve.ts with PAPERCUSP_USE_EMBEDDED_PG=0 requires HARNESS_ADMIN_DATABASE_URL
+# explicitly; the operator's .env.local carries the same endpoint as DATABASE_URL,
+# so it is derived at exec time instead of copying a DB credential into a second
+# file (`$$` is systemd escaping — bash receives a literal `$`). The app-role URL
+# resolves from that pin (libs/papercusp/libs/db/src/connection.ts, WI-7424).
+ExecStart=/usr/bin/bash -c 'set -a; [ -f .env.local ] && . ./.env.local; [ -f "@HOSTED_ENV_FILE@" ] && . "@HOSTED_ENV_FILE@"; set +a; export HARNESS_ADMIN_DATABASE_URL="$${HARNESS_ADMIN_DATABASE_URL:-$$DATABASE_URL}" PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane PAPERCUSP_ENV_OPERATOR_ID=hosted-control-plane PAPERCUSP_USE_EMBEDDED_PG=0 PAPERCUSP_HONO_PORT=@PORT@ PAPERCUSP_BIND_HOST=127.0.0.1 PAPERCUSP_BACKGROUND_WORKERS=0; exec npx tsx bin/serve.ts'
 Restart=on-failure
 RestartSec=3s
 TimeoutStartSec=180s

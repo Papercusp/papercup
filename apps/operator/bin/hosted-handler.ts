@@ -7,6 +7,7 @@ import {
   type HostedRuntimeDependencies,
 } from "@papercusp/operator-core/lib/endpoint-route/hosted-runtime";
 import type { AssembledHostedControlPlane } from "@papercusp/operator-core/lib/endpoint-route/hosted-control-plane";
+import { resolveHostedSecretRef } from "@papercusp/operator-core/lib/auth/hosted/secret-ref";
 import { createSpaRoutes } from "./host-spa";
 import { WebSocketServer } from "ws";
 import type { IncomingMessage } from "node:http";
@@ -112,7 +113,15 @@ export async function createHostedHandlerFromEnvironment(
   dependencies: HostedRuntimeDependencies = {},
 ): Promise<HostedHandler> {
   const configuration = readHostedRuntimeConfiguration(env);
-  const plane = await createHostedRuntime(configuration, dependencies);
+  // This process owns the full operator graph, so it is the ONE place the
+  // encrypted-store secret resolver (`integration:NAME` → operator_integration_
+  // credentials) is composed in. The runtime modules themselves default to the
+  // generic env:/file: resolver so the portal's esbuild prebundle of
+  // hosted-auth-runtime.ts never inherits operator-state-pg (EI-22091008218242870).
+  const plane = await createHostedRuntime(configuration, {
+    resolveSecret: resolveHostedSecretRef,
+    ...dependencies,
+  });
   const spa = createSpaRoutes({
     kind: "hosted",
     controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,

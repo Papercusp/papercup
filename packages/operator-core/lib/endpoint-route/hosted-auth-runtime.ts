@@ -28,7 +28,7 @@ import {
 } from '../auth/hosted/service-adapters';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import { createWorkOSHostedIdentityProvider } from '../auth/hosted/workos-provider';
-import { resolveHostedSecretRef } from '../auth/hosted/secret-ref';
+import { resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
 import {
   HOSTED_AUTH_ROUTES,
   createHostedAuthRoutes,
@@ -156,9 +156,16 @@ export async function createHostedAuthRuntime(
   const runService = dependencies.runService ?? withHostedServiceContext;
   await assertHostedServicePosture(runService);
 
-  // Default resolver understands env:/file: AND integration:NAME (the encrypted
-  // integration store) — see auth/hosted/secret-ref.ts. Tests inject their own.
-  const resolveSecret = dependencies.resolveSecret ?? resolveHostedSecretRef;
+  // Default = the generic env:/file: resolver ONLY. This module is esbuild-
+  // prebundled by the portal (PORTAL_HOSTED_AUTH_RUNTIME_PACKAGE_ROOT); importing
+  // the encrypted-store resolver (auth/hosted/secret-ref.ts → integration-
+  // credentials → operator-state-pg → sync/events engine) here grew that cone
+  // from 596 to 9,087 modules and broke every standalone build
+  // (EI-22091008218242870). A composition that wants `integration:NAME`
+  // references injects resolveHostedSecretRef via dependencies.resolveSecret —
+  // see apps/operator/bin/hosted-handler.ts. hosted-auth-runtime.bundle-cone.test.ts
+  // guards the cone.
+  const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
   const runTenant = dependencies.runTenant ?? withTenantContext;
   const sessionCookieSecret = await resolveSecret(configuration.hostedSessionCookieSecretRef);
   const sessionStore = new HostedServiceSessionStore(runService);

@@ -1,0 +1,70 @@
+/**
+ * Bundle-cone guard for the portal-prebundled hosted-auth runtime.
+ *
+ * `hosted-auth-runtime.ts` is esbuild-prebundled by the Cloud Portal
+ * (PORTAL_HOSTED_AUTH_RUNTIME_PACKAGE_ROOT). One relative import added on
+ * 2026-09-01 (secret-ref.ts → integration-credentials.ts → operator-state-pg.ts)
+ * grew that cone from 596 to 9,087 modules and broke every standalone portal
+ * build with unresolvable @opentelemetry/* and .node natives
+ * (EI-22091008218242870). This test walks the STATIC relative-import graph of
+ * the runtime inside operator-core and fails the moment any of the heavy
+ * operator substrate modules become reachable again.
+ */
+import { readFileSync, existsSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const ROOT = resolve(__dirname, '..');
+const ENTRY = resolve(__dirname, 'hosted-auth-runtime.ts');
+
+/** Modules that must NEVER be reachable from the prebundled hosted-auth runtime. */
+const FORBIDDEN = [
+  'operator-state-pg.ts',
+  'integration-credentials.ts',
+  'auth/hosted/secret-ref.ts',
+  'sync-sse.ts',
+  'endpoint-route/routes/index.ts',
+] as const;
+
+const IMPORT_RE = /(?:^|\n)\s*(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
+
+function resolveRelative(fromFile: string, spec: string): string | null {
+  if (!spec.startsWith('.')) return null;
+  const base = resolve(dirname(fromFile), spec);
+  const candidates = [base, `${base}.ts`, `${base}.tsx`, resolve(base, 'index.ts')];
+  for (const candidate of candidates) {
+    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+  }
+  return null;
+}
+
+function walk(entry: string): Map<string, string> {
+  const seen = new Map<string, string>(); // file → first importer
+  const queue: Array<[string, string]> = [[entry, '<entry>']];
+  while (queue.length > 0) {
+    const [file, importer] = queue.shift()!;
+    if (seen.has(file)) continue;
+    seen.set(file, importer);
+    const source = readFileSync(file, 'utf8');
+    for (const match of source.matchAll(IMPORT_RE)) {
+      const spec = match[1] ?? match[2];
+      if (!spec) continue;
+      const target = resolveRelative(file, spec);
+      if (target && target.startsWith(ROOT) && !seen.has(target)) queue.push([target, file]);
+    }
+  }
+  return seen;
+}
+
+describe('hosted-auth-runtime bundle cone', () => {
+  it('never reaches the operator substrate (operator-state-pg / integration store / sync engine / route registry)', () => {
+    const cone = walk(ENTRY);
+    const offenders = FORBIDDEN.map((suffix) => {
+      const hit = [...cone.keys()].find((file) => file.endsWith(`/${suffix}`));
+      return hit ? `${suffix} via ${cone.get(hit)}` : null;
+    }).filter((entry): entry is string => entry !== null);
+    expect(offenders, `forbidden modules reachable from hosted-auth-runtime.ts: ${offenders.join('; ')}`).toEqual([]);
+    // Sanity: the walk actually saw the runtime's own neighbourhood.
+    expect([...cone.keys()].some((file) => file.endsWith('/auth/hosted/workos-provider.ts'))).toBe(true);
+  });
+});

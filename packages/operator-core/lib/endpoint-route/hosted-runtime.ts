@@ -26,7 +26,7 @@ import {
   WorkOsWebhookReceiptStore,
   type WorkOsWebhookReceiptSink,
 } from '../auth/hosted/workos-webhook-intake';
-import { resolveHostedSecretRef } from '../auth/hosted/secret-ref';
+import { resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
 import {
   assembleHostedControlPlane,
   type AssembledHostedControlPlane,
@@ -200,9 +200,12 @@ export async function createHostedRuntime(
   const runService = dependencies.runService ?? withHostedServiceContext;
   await assertHostedServicePosture(runService);
 
-  // Default resolver understands env:/file: AND integration:NAME (the encrypted
-  // integration store) — see auth/hosted/secret-ref.ts. Tests inject their own.
-  const resolveSecret = dependencies.resolveSecret ?? resolveHostedSecretRef;
+  // Default = the generic env:/file: resolver. The encrypted-store resolver
+  // (`integration:NAME`, auth/hosted/secret-ref.ts) is injected by the process
+  // composition that owns the full operator graph — apps/operator/bin/hosted-
+  // handler.ts — never defaulted here, so a bundler prebundling a hosted runtime
+  // never inherits operator-state-pg (EI-22091008218242870).
+  const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
   const runTenant = dependencies.runTenant ?? withTenantContext;
   const sessionCookieSecret = await resolveSecret(configuration.hostedSessionCookieSecretRef);
 
