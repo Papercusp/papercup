@@ -38,7 +38,13 @@ vi.mock('../../gateway-control/control-harness', () => ({ runControlMutation: co
 vi.mock('../../release-checkpoint-config', () => ({
   readQualificationAdmission: vi.fn(async () => ({ status: 'clear' as const })),
 }));
-vi.mock('../../release/checkpoint-serializer-authority', () => ({
+// P-004: partial mock via importOriginal. This module also owns
+// CHECKPOINT_QUIESCENCE_PAUSE_MARKER, which release-pause-ttl.ts imports as the ONE
+// definition of the serializer quiescence hold (never a hand-copied literal). A
+// whole-module replacement here silently deletes that constant, and the failure
+// surfaces far away, inside routines:list's pause projection.
+vi.mock('../../release/checkpoint-serializer-authority', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
   readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none' as const, reason: 'routine-not-paused' as const })),
 }));
 vi.mock('../../coord/gate-ownership', async (orig) => ({
@@ -501,7 +507,7 @@ describe('routines:list', () => {
 
   it('P-004: reports the auto-resume deadline on a release-group pause', async () => {
     const pausedAtMs = Date.parse('2026-08-31T10:00:00.000Z');
-    rows.push([
+    sqlMock.mockResolvedValue([
       {
         install_slug: 'papercusp',
         name: 'green-checkpoint',
@@ -524,7 +530,7 @@ describe('routines:list', () => {
 
   it('P-004: applies the default release TTL to a LEGACY pause that carries no expiry', async () => {
     const pausedAtMs = Date.parse('2026-08-31T10:00:00.000Z');
-    rows.push([
+    sqlMock.mockResolvedValue([
       {
         install_slug: 'papercusp',
         name: 'green-checkpoint',
