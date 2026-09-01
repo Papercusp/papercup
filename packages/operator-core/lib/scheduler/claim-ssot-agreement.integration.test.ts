@@ -162,6 +162,13 @@ const seedAssignment = (slug: string, itemId: string, assignee: string) =>
            (workspace_id, harness_slug, plan_slug, item_id, assignee_name,
             assigned_by_user, assigned_ts)
          VALUES (${WS}, ${H}, ${slug}, ${itemId}, ${assignee}, 'test-leader', now())`;
+const seedRouteDecision = (slug: string, itemId: string) =>
+  db.sql`INSERT INTO harness_shared.plan_decisions
+           (workspace_id, harness_slug, plan_slug, decision_id, seq, title, body, item_refs)
+         VALUES (${WS}, ${H}, ${slug}, 'D-001', 1,
+                 'Owner-directed AUTO and self-only execution route',
+                 'This session implements the plan itself. No fleet or subagent handoff is authorized.',
+                 ARRAY[${itemId}]::text[])`;
 const seedPlanLinkedIssue = (id: string, planSlug: string, itemId: string) =>
   seed(id, { kind: 'task', payload: { plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: H } } });
 
@@ -288,6 +295,9 @@ beforeAll(async () => {
   // while its owner is between claim leases. Migration 1072 follows 1070 and wraps its v19
   // public floor as v20, so applying the real migration in chain order proves both additions compose.
   await db.sql.unsafe(readMigration('1072-plan-assignment-claim-floor.sql')).simple();
+  // WI-41737: a normalized D-NNN self-only/direct route decision reserves the referenced
+  // linked item even when no live lease or durable per-item assignment exists.
+  await db.sql.unsafe(readMigration('1081-plan-route-decision-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -433,6 +443,11 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seedPlan('assigned-plan', 'ready');
     await seedPlanLinkedIssue('WI-ASSIGNED-PLAN', 'assigned-plan', 'P-ASSIGNED');
     await seedAssignment('assigned-plan', 'P-ASSIGNED', 'su-route-owner');
+    // 11d. A ready plan with no lease/assignment is normally free, but a recorded
+    // self-only route decision is durable ownership and reserves the referenced item.
+    await seedPlan('decision-reserved-plan', 'ready');
+    await seedPlanLinkedIssue('WI-DECISION-RESERVED', 'decision-reserved-plan', 'P-DIRECT');
+    await seedRouteDecision('decision-reserved-plan', 'P-DIRECT');
     // Ordinary draft is the shipped FREE control: without a live lease/assignment it has no
     // occupant and must not starve generic backlog (migration 920 remained a draft experiment).
     await seedPlan('draft-plan', 'draft');
