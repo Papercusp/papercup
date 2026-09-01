@@ -316,13 +316,20 @@ agent.** When a specific agent owns what's blocking you (their lane, their code,
 their in-flight migration is the thing that's stuck), `coord:send` **them**
 directly with `wake:'required'` — do NOT ask a *second* agent to "coordinate" or
 "relay to" the owner. A relay-through-a-middleman adds a hop, depends on the
-middleman actually re-waking the owner, delays the fix, and HIDES the `woken:0`
-signal that would have told you the owner is dead. Go one hop to the owner and
-VERIFY pickup; fall back to a relay, a respawn, or doing it yourself only AFTER the
-direct wake MISSES (`woken:0` / `recipient_dead` / `recipient_absent`) — which also
-means the owner isn't running, so stop waiting on them and pick a LIVE driver
-(`coord:presence → sessionState:'live'` + recent `lastActiveSecAgo`). "I handed it
-off" only counts if the handoff woke a live owner — verify, don't assume.
+middleman actually re-waking the owner, delays the fix, and HIDES the miss
+signal. Go one hop to the owner and VERIFY pickup — reading the SPECIFIC field,
+not the coarse ones: a bare `woken:0` / `recipient_absent` is set for EVERY miss
+and does NOT by itself mean the owner is dead. Check the sub-field the result
+carries: `recipient_dead` = genuinely `ended`, no scheduled fire → NOW stop
+waiting, relay, respawn, or do it yourself. `recipient_alive_not_wakeable` =
+confirmed alive (`coord:presence → sessionState:'live'`), just no live
+inbox-wake watcher registered at that instant (mid-turn) → do NOT relaunch or
+reassign on this alone — the message still landed in their inbox; retry the
+wake shortly. `recipient_dormant_scheduled` = an armed loop with a known next
+fire → deferred, not lost. And `woken:1`/`queued>0` is not pickup-confirmed
+either — a parked session can accept a wake and never take a turn, so confirm
+real pickup from a later `lastActiveSecAgo` drop or a reply, never the count
+alone. "I handed it off" only counts once pickup is verified this way.
 
 **Asked to yield? Checkpoint, then end the turn.** A cooperative yield arrives
 as a high-priority `yield` line in your `[coord+N]` block: finish the atomic
