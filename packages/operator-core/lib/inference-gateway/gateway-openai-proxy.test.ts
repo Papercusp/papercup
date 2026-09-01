@@ -546,6 +546,7 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       codexCliRun: cliRun,
       codexOAuthProxy: true,
       fetchImpl,
+      requestAbsorbMs: 0,
       selfHeal: { enabled: false },
     });
     port = await gw.listen(0);
@@ -895,6 +896,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
         res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'weekly cap' } }));
       },
       [codexAcct('cdx-solo')],
+      { requestAbsorbMs: 0 },
     );
     const before = Date.now();
     const res = await postResponses({ model: 'gpt-x', input: 'hi' }, { [OWNER_HEADER]: 'su-bearer-stall-test' });
@@ -913,6 +915,95 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
     expect(mine!.soonestResetAt).toBeGreaterThan(before + 3_600_000);
   });
 
+  it('OAuth outer ladder waits out a short throttle and resumes the same request to a 200 stream', async () => {
+    const home = await makeCodexHome('chatgpt-a');
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(JSON.stringify({ error: { message: 'brief burst' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '20ms' },
+        });
+      }
+      return new Response('data: [DONE]\n\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(
+        cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' })),
+      ),
+      codexOAuthProxy: true,
+      fetchImpl,
+      requestAbsorbMs: 0,
+      internalRetryDeadlineMs: 2_000,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const res = await postResponses(
+      { model: 'gpt-5.5', input: 'recover me', stream: true },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toBe(2);
+    expect(await res.text()).toContain('[DONE]');
+  });
+
+  it('OAuth absorb releases the provider admission slot while waiting, then re-enters and succeeds', async () => {
+    const home = await makeCodexHome('chatgpt-a');
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      if (calls <= 2) {
+        return new Response(JSON.stringify({ error: { message: 'pool burst' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '80ms' },
+        });
+      }
+      return new Response('data: [DONE]\n\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(
+        cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' })),
+      ),
+      codexOAuthProxy: true,
+      fetchImpl,
+      requestAbsorbMs: 300,
+      internalRetryDeadlineMs: 1,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const pending = postResponses(
+      { model: 'gpt-5.5', input: 'absorb me', stream: true },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    const observedUntil = Date.now() + 500;
+    while (calls < 2 && Date.now() < observedUntil) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(calls).toBeGreaterThanOrEqual(2);
+    const stats = (await (await ask('/stats')).json()) as { codexAdmission: { running: number } };
+    expect(stats.codexAdmission.running).toBe(0);
+
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(calls).toBe(3);
+    expect(await res.text()).toContain('[DONE]');
+  });
+
   it('a short upstream retry-after passes through unchanged (only the multi-hour horizon is capped)', async () => {
     await bootCodex(
       (_req, res) => {
@@ -920,11 +1011,67 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
         res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'burst' } }));
       },
       [codexAcct('cdx-solo')],
+      { requestAbsorbMs: 0, internalRetryDeadlineMs: 1 },
     );
     const res = await postResponses({ model: 'gpt-x', input: 'hi' });
     expect(res.status).toBe(429);
     expect(res.headers.get('retry-after')).toBe('7');
     expect(res.headers.get(RETRIES_EXHAUSTED_HEADER)).toMatch(/^\d+$/);
+  });
+
+  it('bearer outer ladder waits out a short throttle and resumes the same request to a 200', async () => {
+    let calls = 0;
+    await bootCodex(
+      (_req, res) => {
+        calls += 1;
+        if (calls === 1) {
+          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '20ms' });
+          res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'brief burst' } }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ id: 'recovered', ok: true }));
+      },
+      [codexAcct('cdx-solo')],
+      { requestAbsorbMs: 0, internalRetryDeadlineMs: 2_000 },
+    );
+
+    const res = await postResponses({ model: 'gpt-x', input: 'recover me' });
+    expect(res.status).toBe(200);
+    expect(calls).toBe(2);
+    expect((await res.json()) as { ok?: boolean }).toMatchObject({ ok: true });
+  });
+
+  it('bearer absorb releases the provider admission slot while waiting, then re-enters and succeeds', async () => {
+    let calls = 0;
+    await bootCodex(
+      (_req, res) => {
+        calls += 1;
+        if (calls <= 2) {
+          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '80ms' });
+          res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'pool burst' } }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ id: 'absorbed', ok: true }));
+      },
+      [codexAcct('cdx-solo')],
+      // The 1ms slot-hold deadline spends the wait rung immediately; the still-open
+      // 300ms absorb budget must park OUTSIDE the provider lane before attempt 3.
+      { requestAbsorbMs: 300, internalRetryDeadlineMs: 1 },
+    );
+
+    const pending = postResponses({ model: 'gpt-x', input: 'absorb me' });
+    const observedUntil = Date.now() + 500;
+    while (calls < 2 && Date.now() < observedUntil) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(calls).toBeGreaterThanOrEqual(2);
+    const stats = (await (await ask('/stats')).json()) as { codexAdmission: { running: number } };
+    expect(stats.codexAdmission.running).toBe(0);
+
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(calls).toBe(3);
+    expect((await res.json()) as { ok?: boolean }).toMatchObject({ ok: true });
   });
 });
 
@@ -1613,6 +1760,32 @@ describe('codex cli-exec bridge — attempt ladder (P-005 characterization)', ()
     expect(seen).toEqual(['cli-a']);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cli-a');
     expect(gw!.stats().codex.failovers).toBe(0);
+  });
+
+  it('a terminal cli-exec usage wall is shaped as 429 and attributed to the stall-waker', async () => {
+    await bootCliBridge({
+      accounts: ['cli-walled'],
+      run: async () => {
+        throw new Error("codex exited 1: You've hit your usage limit · resets 3am");
+      },
+    });
+
+    const res = await postResponses(
+      { model: 'gpt-5.4', input: 'hi', stream: false },
+      { [ACCOUNT_HEADER]: 'cli-walled', [ACCOUNT_PIN_HEADER]: 'hard', [OWNER_HEADER]: 'su-cli-stall-test' },
+    );
+    expect(res.status).toBe(429);
+    expect(res.headers.get(RETRIES_EXHAUSTED_HEADER)).toMatch(/^\d+$/);
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cli-walled');
+    const body = (await res.json()) as { error?: { type?: string }; gateway?: boolean };
+    expect(body.error?.type).toBe('rate_limit_error');
+    expect(body.gateway).toBe(true);
+
+    const stalls = (await (await ask('/admin/stalls?since=0')).json()) as {
+      stalls: Array<{ ownerId: string; accountId: string }>;
+    };
+    expect(stalls.stalls).toContainEqual(expect.objectContaining({ ownerId: 'su-cli-stall-test', accountId: 'cli-walled' }));
   });
 
   it('an AUTH-DEAD account is quarantined and not re-chosen on the NEXT request (EI-21618978789879488)', async () => {

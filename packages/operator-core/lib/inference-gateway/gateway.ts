@@ -122,6 +122,7 @@ import {
   codexCliResponsesBody,
   extractResponsesInputText,
   isCodexAuthFailure,
+  isCodexRateLimitFailure,
   parseBridgeModel,
   runCodexCliCompletion,
   type CodexCliAccount,
@@ -5629,6 +5630,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       responseCommitted: () => sseOpen,
     });
     let served: CodexCliSyntheticResponse | null = null;
+    let attemptsSeen = 0;
+    let lastFailureDetail = '';
     try {
       // THE INVERSION THIS LANE DEPENDS ON, and the reason the kernel needed no
       // change to host it. The kernel commits a response only once an attempt has
@@ -5684,6 +5687,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // this seam: this transport commits its response head BEFORE the kernel call below.
           run: (context, task) => kernelAdmission.run(context, task),
           observeAttempt: ({ context, error }) => {
+            attemptsSeen = context.attempt;
             const account = context.route.accountId ?? cli.accountId;
             // Follow the attempt, exactly as the old loop's `cli = nextCli` did: the
             // terminal 502 must report the account LAST tried, not the first candidate.
@@ -5691,9 +5695,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // The CLI home encapsulates its own credential — there is no token to
             // resolve — so the auth stage stays the zero-width seam it was.
             if (!error) return;
-            codexUpstreamErrors++;
-            recordOwnerOutcome(routing.ownerId, 'upstream_error', { account, detail: 'cli-bridge' });
-            log('error', `inference-gateway: codex-cli bridge failed on '${account}': ${error.message}`);
+            lastFailureDetail = error.message;
+            if (isCodexRateLimitFailure(error.message)) {
+              codexUpstream429++;
+              providerAdmission.recordThrottle('codex');
+              recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429, detail: 'cli-bridge' });
+              log('warn', `inference-gateway: codex-cli bridge rate-limited on '${account}': ${error.message}`);
+            } else {
+              codexUpstreamErrors++;
+              recordOwnerOutcome(routing.ownerId, 'upstream_error', { account, detail: 'cli-bridge' });
+              log('error', `inference-gateway: codex-cli bridge failed on '${account}': ${error.message}`);
+            }
             // THE ONE HOOK THAT FIRES ON EVERY ATTEMPT. Credential death must park
             // the account even on the LAST attempt, when no retry remains and the
             // kernel therefore never consults `selectFailover`
@@ -5793,12 +5805,31 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const message = detail.startsWith('inference-gateway: codex-cli bridge failed')
         ? detail
         : `inference-gateway: codex-cli bridge failed: ${detail}`;
+      const rateLimited = isCodexRateLimitFailure(lastFailureDetail || detail);
+      const rateShape = rateLimited
+        ? shapeTerminalThrottle({
+            attempts: attemptsSeen,
+            retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+            retryAfter: {
+              resetAt: null,
+              fallbackSec: LOADSHED_RETRY_AFTER_SEC,
+              capS: BEE_RETRY_AFTER_CAP_S,
+            },
+          })
+        : null;
+      if (rateLimited && routing.ownerId) {
+        recordStall(routing.ownerId, cli.accountId, Date.now() + 30_000);
+      }
       if (!res.headersSent) {
         sendJson(
           res,
-          502,
-          { type: 'error', error: { type: 'api_error', message }, gateway: true },
-          { [ROUTED_ACCOUNT_HEADER]: cli.accountId },
+          rateLimited ? 429 : 502,
+          {
+            type: 'error',
+            error: { type: rateLimited ? 'rate_limit_error' : 'api_error', message },
+            gateway: true,
+          },
+          { ...(rateShape?.headers ?? {}), [ROUTED_ACCOUNT_HEADER]: cli.accountId },
         );
       } else if (sseOpen && !res.writableEnded) {
         // The status line is already committed, so the failure has to travel in-band.
@@ -5814,7 +5845,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         markRequestGatewayError(req);
         stageSpan?.endStage('stream');
         res.end(
-          `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message }, gateway: true })}\n\ndata: [DONE]\n\n`,
+          `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: rateLimited ? 'rate_limit_error' : 'api_error', message }, gateway: true, ...(rateShape ? { retry_after: rateShape.retryAfterSec, retries_exhausted: attemptsSeen } : {}) })}\n\ndata: [DONE]\n\n`,
         );
       } else {
         res.destroy();
@@ -5982,6 +6013,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const toKernelResponseBody = (web: Response['body']): CodexOAuthFetchResponse['body'] => {
       if (!web) return null;
       const node = Readable.fromWeb(web as Parameters<typeof Readable.fromWeb>[0]);
+      // Caller-side recovery deliberately throws from downstream.start before
+      // relay. The async iterator carries that rejection to the kernel; consume
+      // the parallel EventEmitter error so it cannot become process-unhandled.
+      node.on('error', () => undefined);
       const iterable = node as unknown as AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void };
       iterable.cancel = () => {
         node.destroy();
@@ -5989,7 +6024,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return iterable;
     };
 
-    const kernelAdapter = createCodexOAuthKernelAdapter({
+    const makeKernelAdapter = () => createCodexOAuthKernelAdapter({
       // D-010: the account was resolved by `proxyOpenAi` BEFORE this handler was
       // entered, and `AccountPool.active()` advances. The adapter replays it and
       // never selects an initial account itself.
@@ -6036,6 +6071,43 @@ export function createInferenceGateway(deps: GatewayDeps) {
       },
     });
 
+    type OAuthThrottleIntercept = {
+      action: 'wait' | 'absorb';
+      waitMs: number;
+      backoffMs: number;
+      resetAt: number | null;
+      accountId: string;
+    };
+    const recovery = {
+      transientWaitedMs: 0,
+      retryDeadlineAt: Date.now() + internalRetryDeadlineMs,
+      absorbDeadlineAt: absorbDeadlineForRequest(req, codexTierMap),
+    };
+    const INTERCEPT_OAUTH_THROTTLE = new Error('codex OAuth: outer recovery intercepted before relay');
+    const interception: { taken: OAuthThrottleIntercept | null } = { taken: null };
+    const takeOAuthIntercept = (): OAuthThrottleIntercept | null => {
+      const taken = interception.taken;
+      interception.taken = null;
+      return taken;
+    };
+    let attemptsUsed = 0;
+    let attemptsThisPass = 0;
+    let continuationActive = false;
+    const runOAuthRecovery = async (): Promise<void> => {
+      continuationActive = false;
+      interception.taken = null;
+      attemptsThisPass = 0;
+      // A resumed pass starts from the pool's CURRENT best account instead of
+      // blindly re-holding the account that just exhausted. Hard pins remain strict.
+      if (attemptsUsed > 0 && !routing.hardPin && codexCliPool) {
+        try {
+          const candidateId = codexCliPool.active().accountId;
+          cli = codexCliAccounts().find((account) => account.accountId === candidateId) ?? cli;
+        } catch {
+          /* all accounts still exhausted — the adapter will make the truthful terminal decision */
+        }
+      }
+      const kernelAdapter = makeKernelAdapter();
     try {
       await executeGatewayRequestKernel({
         request: {
@@ -6076,7 +6148,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // this seam: this transport commits its response head BEFORE the kernel call below.
           run: (context, task) => kernelAdmission.run(context, task),
           observeAttempt: ({ context, response, error }) => {
-            attemptsSeen = context.attempt;
+            attemptsThisPass = context.attempt;
+            attemptsSeen = attemptsUsed + context.attempt;
             const account = context.route.accountId ?? lastAccountId;
             // A same-account re-attempt (refreshed token, sibling IP) changes the
             // ROUTE KEY but is not a failover — `rotateCli` only counted account
@@ -6146,6 +6219,45 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // confirm → un-wedge → capacity-gated wake recovery (stall-waker.ts).
             if (status === 429) {
               const parsed = parseCodexRateReset(metadata.headers);
+              const now = Date.now();
+              const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
+              const decision = decideThrottleRecovery({
+                status,
+                retryIntent: true,
+                lastExhaustResetAt: ladderResetAt,
+                state: {
+                  transientWaitedMs: recovery.transientWaitedMs,
+                  retryDeadlineAt: recovery.retryDeadlineAt,
+                  absorbDeadlineAt: recovery.absorbDeadlineAt,
+                  headersSent: res.headersSent,
+                },
+                budgets: {
+                  waitCapMs: ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+                  transientTotalWaitBudgetMs: TRANSIENT_TOTAL_WAIT_BUDGET_MS,
+                  overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
+                },
+                now,
+              });
+              if (decision.action === 'wait') {
+                interception.taken = {
+                  action: 'wait',
+                  waitMs: decision.waitMs,
+                  backoffMs: 0,
+                  resetAt: parsed.resetAt,
+                  accountId: metadata.accountId,
+                };
+                throw INTERCEPT_OAUTH_THROTTLE;
+              }
+              if (decision.action === 'absorb') {
+                interception.taken = {
+                  action: 'absorb',
+                  waitMs: 0,
+                  backoffMs: decision.backoffMs,
+                  resetAt: parsed.resetAt,
+                  accountId: metadata.accountId,
+                };
+                throw INTERCEPT_OAUTH_THROTTLE;
+              }
               if (routing.ownerId) {
                 recordStall(routing.ownerId, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
               }
@@ -6293,6 +6405,43 @@ export function createInferenceGateway(deps: GatewayDeps) {
         },
       });
     } catch (error) {
+      const taken = takeOAuthIntercept();
+      // As on the Claude and bearer lanes, the flag survives kernel error
+      // normalization while thrown-error identity deliberately does not.
+      if (taken) {
+        attemptsUsed += attemptsThisPass;
+        continuationActive = true;
+        if (taken.action === 'wait') {
+          recovery.transientWaitedMs += taken.waitMs;
+          log(
+            'warn',
+            `inference-gateway: Codex OAuth pool transiently throttled → wait ${taken.waitMs}ms + retry (wait-budget ${recovery.transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`,
+          );
+          await waitForCodexRecovery(res, taken.waitMs, reqAbort.signal);
+          return runOAuthRecovery();
+        }
+        if (!kernelAdmission.park) {
+          throw new Error('inference-gateway: codex OAuth absorb requires cooperative lane admission');
+        }
+        const now = Date.now();
+        const remainingMs = Math.max(0, recovery.absorbDeadlineAt - now);
+        const capacityWaitMs = taken.resetAt
+          ? Math.max(0, taken.resetAt - now)
+          : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
+        const waitMs = Math.min(remainingMs, capacityWaitMs);
+        recovery.transientWaitedMs = 0;
+        log(
+          'warn',
+          `inference-gateway: Codex OAuth absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms, then re-enter (${remainingMs}ms budget left)`,
+        );
+        return kernelAdmission.park(
+          async () => {
+            await waitForCodexRecovery(res, waitMs, reqAbort.signal);
+            recovery.retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
+          },
+          runOAuthRecovery,
+        );
+      }
       endCacheProbe();
       const failure =
         error instanceof GatewayRequestKernelError
@@ -6381,10 +6530,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
         { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
       );
     } finally {
-      endCacheProbe();
-      req.off('aborted', onReqAborted);
-      res.off('close', onResClose);
+      if (!continuationActive) {
+        endCacheProbe();
+        req.off('aborted', onReqAborted);
+        res.off('close', onResClose);
+      }
     }
+    };
+    await runOAuthRecovery();
   }
 
   /**
@@ -6558,6 +6711,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const toKernelResponseBody = (web: Response['body']): CodexBearerFetchResponse['body'] => {
       if (!web) return null;
       const node = Readable.fromWeb(web as Parameters<typeof Readable.fromWeb>[0]);
+      // See the OAuth twin: the outer ladder intercepts before relay by
+      // throwing from downstream.start, which also surfaces as a Node stream
+      // error event while the kernel receives the iterator rejection.
+      node.on('error', () => undefined);
       const iterable = node as unknown as AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void };
       iterable.cancel = () => {
         node.destroy();
@@ -6872,7 +7029,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
     } catch (error) {
       const taken = takeBearerIntercept();
-      if (error === INTERCEPT_BEARER_THROTTLE && taken) {
+      // The kernel normalizes a thrown downstream.start error before it reaches
+      // this catch, so identity is not stable. The dedicated flag is written
+      // only by our interception seam and is the authoritative discriminator.
+      if (taken) {
         attemptsUsed += attemptsThisPass;
         continuationActive = true;
         if (taken.action === 'wait') {
