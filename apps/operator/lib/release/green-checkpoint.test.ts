@@ -120,6 +120,8 @@ import {
   SETUP_TREE_TIMEOUT_MS,
   SETUP_TREE_HARD_TIMEOUT_MS,
   formatGatePromotionTrailer,
+  formatGateHeldByNote,
+  formatGateFailureShapeNote,
   recordOrchestratorLine,
   resetOrchestratorLog,
   renderOrchestratorTranscript,
@@ -8148,6 +8150,29 @@ describe("checkpointFailureSignature (P-012 dedup, SPA-build folded in)", () => 
   });
 });
 
+describe("GATE_FAILURE_SHAPE (EI-19971472409393390)", () => {
+  it("formats the measured aggregate as a stable machine-greppable line", () => {
+    const shape = {
+      count: 6,
+      deterministic: 6,
+      timeout: 0,
+      unclassified: 0,
+      maxLoadavgPerCore: 0.4,
+    };
+    expect(formatGateFailureShapeNote(shape)).toBe(
+      "GATE_FAILURE_SHAPE count=6 deterministic=6 timeout=0 maxLoadavgPerCore=0.40 unclassified=0",
+    );
+    expect(
+      formatGateHeldByNote(["lib/cell-access-parity.test.ts"], {
+        postSuiteMeasured: false,
+        failureShape: shape,
+      }),
+    ).toContain(
+      "GATE_HELD_BY count=1 attribution=attributed truncated=false postSuite=not-measured entries=[\"lib/cell-access-parity.test.ts\"]\nGATE_FAILURE_SHAPE count=6 deterministic=6 timeout=0 maxLoadavgPerCore=0.40 unclassified=0",
+    );
+  });
+});
+
 describe("summarizeSuiteOutput (de-noised held-gate tail)", () => {
   it("drops npm error boilerplate, keeps FAIL + assertion signal", () => {
     const out = [
@@ -9580,6 +9605,36 @@ describe("attemptFlakeAbsorption (orchestration — injected isolation runner)",
   // guard: it must absorb a file that fails once then passes on retry, and it must NEVER
   // absorb a file that keeps failing across every retry (no weakening of the fail-safe).
   describe("isolation retry hardening (ambient-load resilience, never weakens fail-safe)", () => {
+    it("surfaces a measured failure-shape aggregate for final deterministic isolation failures", async () => {
+      const out = await attemptFlakeAbsorption(
+        [
+          ">>> @papercusp/operator-core :: npm run test",
+          " FAIL  lib/cell-access-parity.test.ts > registry parity",
+          ">>> @papercusp/operator-core FAILED",
+        ].join("\n"),
+        async ({ workspace, file }) => ({
+          workspace,
+          file,
+          passed: false,
+          hasAssertionSignature: true,
+          durationMs: 11_307,
+        }),
+        undefined,
+        {
+          retryMax: 0,
+          loadPerCore: () => 0.4,
+        },
+      );
+      expect(out.absorbedToGreen).toBe(false);
+      expect(out.failureShape).toEqual({
+        count: 1,
+        deterministic: 1,
+        timeout: 0,
+        unclassified: 0,
+        maxLoadavgPerCore: 0.4,
+      });
+    });
+
     it("a file that FAILS on attempt 1 but PASSES on retry is absorbed to green (transient ambient-load blip)", async () => {
       const attempts: Record<string, number> = {};
       const isolationRun = async ({
