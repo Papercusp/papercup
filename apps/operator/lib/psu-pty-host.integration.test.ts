@@ -1150,6 +1150,12 @@ describe('carry-respawn STALENESS guard — a message held too long by the busy 
         env: {
           ...process.env,
           PAPERCUSP_SID: ownerId,
+          // Keep this fixture hermetic when the suite runs inside a live psu
+          // session. Ambient identity/configuration must not rewrite the
+          // handoff contract this test is asserting.
+          PAPERCUSP_ADV_SESSION_ID: '42',
+          CODEX_HOME: '/tmp/codex-home-for-handoff',
+          PAPERCUSP_AGENT: 'codex',
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the busy gate must NOT defer/drop here
@@ -1322,6 +1328,9 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
         env: {
           ...process.env,
           PAPERCUSP_SID: ownerId,
+          PAPERCUSP_ADV_SESSION_ID: '42',
+          CODEX_HOME: '/tmp/codex-home-for-handoff',
+          PAPERCUSP_AGENT: 'codex',
           TERM: 'xterm-256color',
           // The shim's advertisement. Without it the host must NOT exit — see the
           // control below, which is the safety-critical half of this pair. The
@@ -1330,6 +1339,7 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
           PAPERCUSP_PSU_REEXEC_PPID: String(process.ppid),
         },
         ownerId,
+        advSessionId: 42,
         io,
         bridgeTty: false,
         // The file on disk moved on after this process loaded it — the live
