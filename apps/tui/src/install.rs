@@ -328,7 +328,11 @@ pub fn operator_install_freshness(
     endpoint: &str,
 ) -> OperatorInstallFreshness {
     match operator_sha.map(str::trim).filter(|sha| !sha.is_empty()) {
-        Some(sha) if sha == installed_sha => OperatorInstallFreshness {
+        // The operator identity endpoint intentionally exposes `git rev-parse
+        // --short HEAD`, while the installer manifest records the exact 40-char
+        // source SHA. Treat a strict prefix match as the same commit in either
+        // direction; an equal-length value still has to match exactly.
+        Some(sha) if sha_identity_matches(installed_sha, sha) => OperatorInstallFreshness {
             status: InstallFreshnessStatus::Ok,
             detail: format!("installed source {installed_sha} matches the selected operator"),
             repair: None,
@@ -352,6 +356,15 @@ pub fn operator_install_freshness(
             )),
         },
     }
+}
+
+fn sha_identity_matches(installed_sha: &str, operator_sha: &str) -> bool {
+    if installed_sha.is_empty() || operator_sha.is_empty() {
+        return false;
+    }
+    installed_sha == operator_sha
+        || (installed_sha.len() < operator_sha.len() && operator_sha.starts_with(installed_sha))
+        || (operator_sha.len() < installed_sha.len() && installed_sha.starts_with(operator_sha))
 }
 
 pub fn age_label(epoch: Option<u64>) -> String {
@@ -608,6 +621,26 @@ mod tests {
         let repair = stale.repair.expect("stale install has a repair command");
         assert!(repair.contains("PUI_OPERATOR='https://operator.example:9443'"));
         assert!(repair.contains(INSTALL_COMMAND));
+
+        let short_remote = operator_install_freshness(
+            "c3bd839379f7461b04a6376f91892c58c48ef9b8",
+            Some("c3bd839379"),
+            "http://127.0.0.1:3170",
+        );
+        assert!(short_remote.is_ok());
+        let short_local = operator_install_freshness(
+            "c3bd839379",
+            Some("c3bd839379f7461b04a6376f91892c58c48ef9b8"),
+            "http://127.0.0.1:3170",
+        );
+        assert!(short_local.is_ok());
+
+        let same_prefix_but_different = operator_install_freshness(
+            "c3bd839379f7461b04a6376f91892c58c48ef9b8",
+            Some("c3bd839379f7461b04a6376f91892c58c48ef9b9"),
+            "http://127.0.0.1:3170",
+        );
+        assert!(!same_prefix_but_different.is_ok());
 
         let unknown = operator_install_freshness("build-a", None, "https://operator.example:9443");
         assert_eq!(unknown.status.label(), "ERROR");
