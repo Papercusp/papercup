@@ -6,15 +6,18 @@
  * they sit on opposite sides of a package boundary. `apps/operator/lib/release/green-checkpoint.ts`
  * EMITS them; `packages/operator-core/lib/release-checkpoint-launch.ts` PARSES them back out
  * of a log. operator-core is the lower layer and must not import from apps/operator, and the
- * literal must not be duplicated — this file already has a cautionary sibling in
- * `GREEN_CHECKPOINT_RESULT_MARKER`, whose hand-synced copy in release-actions.ts carries a
- * "MUST stay in sync" comment. A third hand-synced pair would be worse than the boundary.
+ * literals must not be duplicated. This leaf also owns `GREEN_CHECKPOINT_RESULT_MARKER`,
+ * which is emitted by the apps/operator CLI and parsed by two operator-core readers across
+ * the same package boundary.
  *
  * So the constants live HERE, at the bottom, and green-checkpoint.ts imports and re-exports
  * them by relative path (the same cross-tree reach it already uses for
  * `../../../../scripts/lib/vitest-summary.mjs`). Deliberately ZERO imports of its own, so
  * pulling it into the gate orchestrator's hot path cannot drag a dependency graph along.
  */
+
+/** The wire marker immediately preceding every terminal green-checkpoint result JSON object. */
+export const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
 
 /** The tag every orchestrator narration line carries on stdout. */
 export const ORCHESTRATOR_STDOUT_TAG = '[green-checkpoint]';
