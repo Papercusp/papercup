@@ -1,4 +1,8 @@
 import { isAbsolute, join, normalize } from "node:path";
+import {
+  withWorkspaceHostCredentialFilesystemLock,
+  workspaceHostCredentialFamilyLockPath,
+} from "./workspace-host-credential-delivery";
 
 /** The sealed material format installed into one workspace user's native agent homes. */
 export const WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION =
@@ -46,6 +50,10 @@ export interface WorkspaceHostAgentHomeFilesystem {
   pathExists(path: string): Promise<boolean>;
   /** Optional because hermetic doubles need not model uid/gid; production provides it. */
   setOwnership?(path: string, owner: string, group: string): Promise<void>;
+  /** Return the lstat kind without following symlinks; production uses this to reject redirection. */
+  pathKind?(path: string): Promise<"missing" | "directory" | "file" | "symlink" | "other">;
+  /** Optional cross-process critical section shared with credential delivery. */
+  withExclusiveLock?<T>(path: string, task: () => Promise<T>): Promise<T>;
 }
 
 export class WorkspaceHostAgentHomeStateError extends Error {
@@ -412,11 +420,36 @@ export class WorkspaceHostAgentHomeConsumer {
       this.workspaceHome,
     )) {
       await this.filesystem.ensureDirectory(directory);
+      if (this.filesystem.pathKind) {
+        const kind = await this.filesystem.pathKind(directory);
+        if (kind !== "directory") {
+          throw new WorkspaceHostAgentHomeStateError(
+            `workspace agent-home directory '${directory}' is not a real directory`,
+          );
+        }
+      }
       await this.own(directory);
     }
   }
 
-  async install(
+  private lockPath(family: WorkspaceHostAgentHomeFamily): string {
+    return workspaceHostCredentialFamilyLockPath(this.materialRoot, family);
+  }
+
+  private async withLock<T>(
+    family: WorkspaceHostAgentHomeFamily,
+    task: () => Promise<T>,
+    lockHeld = false,
+  ): Promise<T> {
+    if (lockHeld) return await task();
+    return await withWorkspaceHostCredentialFilesystemLock(
+      this.filesystem,
+      this.lockPath(family),
+      task,
+    );
+  }
+
+  private async installUnlocked(
     family: WorkspaceHostAgentHomeFamily,
     generation: number,
     material: Buffer,
@@ -458,6 +491,16 @@ export class WorkspaceHostAgentHomeConsumer {
       if (existing === null || !compareBytes(existing, bytes)) {
         await this.filesystem.writePrivateFile(paths[label], bytes);
       }
+      // Check the final path without following a user-created symlink before changing ownership.
+      if (this.filesystem.pathKind) {
+        const kind = await this.filesystem.pathKind(paths[label]);
+        if (kind !== "file") {
+          throw new WorkspaceHostAgentHomeStateError(
+            `workspace agent-home file '${label}' is not a regular file`,
+            { family, generation },
+          );
+        }
+      }
       await this.own(paths[label]);
     }
     // State is the commit marker and is intentionally written after every native file succeeds.
@@ -469,74 +512,124 @@ export class WorkspaceHostAgentHomeConsumer {
     return { family, generation, present: true, home: this.workspaceHome };
   }
 
+  async install(
+    family: WorkspaceHostAgentHomeFamily,
+    generation: number,
+    material: Buffer,
+    options: { readonly lockHeld?: boolean } = {},
+  ): Promise<WorkspaceHostAgentHomeConsumerEvidence> {
+    return await this.withLock(
+      family,
+      () => this.installUnlocked(family, generation, material),
+      options.lockHeld === true,
+    );
+  }
+
   async verify(
     family: WorkspaceHostAgentHomeFamily,
     generation: number,
     material: Buffer,
+    options: { readonly lockHeld?: boolean } = {},
   ): Promise<WorkspaceHostAgentHomeConsumerEvidence> {
-    const bundle = parseWorkspaceHostAgentHomeBundle(material);
-    const current = await this.readState();
-    if (
-      !current ||
-      current.family !== family ||
-      current.generation !== generation ||
-      current.home !== this.workspaceHome
-    ) {
-      throw new WorkspaceHostAgentHomeStateError(
-        `agent-home generation ${generation} is not the active installed generation`,
-        { family, generation },
-      );
-    }
-    const paths = workspaceHostAgentHomePaths(this.workspaceHome);
-    for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
-      const bytes = await this.filesystem.readFileIfPresent(paths[label]);
-      if (
-        bytes === null ||
-        current.files[label] !== paths[label] ||
-        !compareBytes(bytes, bundle.files[label])
-      ) {
-        throw new WorkspaceHostAgentHomeStateError(
-          `agent-home file '${label}' is absent, stale, or points outside the explicit home`,
-          { family, generation },
-        );
-      }
-    }
-    return { family, generation, present: true, home: this.workspaceHome };
+    return await this.withLock(
+      family,
+      async () => {
+        const bundle = parseWorkspaceHostAgentHomeBundle(material);
+        const current = await this.readState();
+        if (
+          !current ||
+          current.family !== family ||
+          current.generation !== generation ||
+          current.home !== this.workspaceHome
+        ) {
+          throw new WorkspaceHostAgentHomeStateError(
+            `agent-home generation ${generation} is not the active installed generation`,
+            { family, generation },
+          );
+        }
+        const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+        for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
+          if (this.filesystem.pathKind) {
+            const kind = await this.filesystem.pathKind(paths[label]);
+            if (kind !== "file") {
+              throw new WorkspaceHostAgentHomeStateError(
+                `agent-home file '${label}' is absent, stale, or points outside the explicit home`,
+                { family, generation },
+              );
+            }
+          }
+          const bytes = await this.filesystem.readFileIfPresent(paths[label]);
+          if (
+            bytes === null ||
+            current.files[label] !== paths[label] ||
+            !compareBytes(bytes, bundle.files[label])
+          ) {
+            throw new WorkspaceHostAgentHomeStateError(
+              `agent-home file '${label}' is absent, stale, or points outside the explicit home`,
+              { family, generation },
+            );
+          }
+        }
+        return { family, generation, present: true, home: this.workspaceHome };
+      },
+      options.lockHeld === true,
+    );
   }
 
   async revoke(
     family: WorkspaceHostAgentHomeFamily,
     generation: number,
+    options: { readonly lockHeld?: boolean } = {},
   ): Promise<WorkspaceHostAgentHomeConsumerEvidence> {
-    const current = await this.readState();
-    // A stale revoke is deliberately a no-op: a newer generation owns these same paths now.
-    if (
-      !current ||
-      current.family !== family ||
-      current.generation !== generation
-    ) {
-      return { family, generation, present: false, home: this.workspaceHome };
-    }
-    const paths = workspaceHostAgentHomePaths(current.home);
-    for (const path of Object.values(paths))
-      await this.filesystem.removePath(path);
-    await this.filesystem.removePath(
-      workspaceHostAgentHomeStatePath(this.materialRoot),
+    return await this.withLock(
+      family,
+      async () => {
+        const current = await this.readState();
+        // A malformed/tampered state that names another canonical home is never a reason for a
+        // root consumer to remove files there. Fail closed instead of treating it as a stale no-op.
+        if (current && current.home !== this.workspaceHome) {
+          throw new WorkspaceHostAgentHomeStateError(
+            "active agent-home state names a different workspace home",
+            { family: current.family, generation: current.generation },
+          );
+        }
+        // A stale revoke is deliberately a no-op: a newer generation owns these same paths now.
+        if (
+          !current ||
+          current.family !== family ||
+          current.generation !== generation
+        ) {
+          return { family, generation, present: false, home: this.workspaceHome };
+        }
+        const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+        for (const path of Object.values(paths)) await this.filesystem.removePath(path);
+        await this.filesystem.removePath(
+          workspaceHostAgentHomeStatePath(this.materialRoot),
+        );
+        return { family, generation, present: false, home: this.workspaceHome };
+      },
+      options.lockHeld === true,
     );
-    return { family, generation, present: false, home: current.home };
   }
 
   async verifyRevoked(
     family: WorkspaceHostAgentHomeFamily,
     generation: number,
+    options: { readonly lockHeld?: boolean } = {},
   ): Promise<WorkspaceHostAgentHomeConsumerEvidence> {
-    const current = await this.readState();
-    if (current?.family === family && current.generation === generation) {
-      throw new WorkspaceHostAgentHomeStateError(
-        `agent-home generation ${generation} is still active after revocation`,
-        { family, generation },
-      );
-    }
-    return { family, generation, present: false, home: this.workspaceHome };
+    return await this.withLock(
+      family,
+      async () => {
+        const current = await this.readState();
+        if (current?.family === family && current.generation === generation) {
+          throw new WorkspaceHostAgentHomeStateError(
+            `agent-home generation ${generation} is still active after revocation`,
+            { family, generation },
+          );
+        }
+        return { family, generation, present: false, home: this.workspaceHome };
+      },
+      options.lockHeld === true,
+    );
   }
 }
