@@ -31,11 +31,7 @@ import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
-import type {
-  BulkResolverCarryMode,
-  LaunchAgentBackend,
-  ModelEffort,
-} from '../agent-config-constants';
+import type { BulkResolverCarryMode, LaunchAgentBackend, ModelEffort } from '../agent-config-constants';
 import {
   bulkAutomationSnapshot,
   canonicalDispositionForRow,
@@ -49,6 +45,7 @@ import {
   normalizeBulkAutomationPolicy,
 } from './bulk-dispositions';
 import { readStandingBulkAutomationPolicy } from './automation-policy';
+import { deliverUnattendedRunOwnerDigest, UNATTENDED_BULK_REQUESTER } from './bulk-run-owner-digest';
 
 /** Lifecycle of a run. `review` means the agent is done and the owner has
  *  recommendations waiting; `complete` means nothing is left to act on. */
@@ -74,13 +71,7 @@ export const DEFAULT_RUN_KIND: BulkRunKind = 'inbox-resolve';
 /** Per-item terminal disposition. `pending` is the pre-report state — an item
  *  still carrying it when a run ends was never reached (Requirement 2 makes
  *  that visible rather than silently absent). */
-export type BulkItemOutcome =
-  | 'pending'
-  | 'auto_resolved'
-  | 'recommended'
-  | 'skipped'
-  | 'failed'
-  | 'dismissed';
+export type BulkItemOutcome = 'pending' | 'auto_resolved' | 'recommended' | 'skipped' | 'failed' | 'dismissed';
 
 /** Non-terminal phases — a run in one of these is still the pane's current run. */
 export const ACTIVE_PHASES: readonly BulkRunPhase[] = ['pending', 'running', 'review'] as const;
@@ -360,9 +351,7 @@ interface RawRunRow {
 function mapRun(r: RawRunRow): BulkRunRow {
   const launchSnapshot = asObject(r.launch_snapshot) as BulkRunLaunchSnapshot;
   if (launchSnapshot.automationPolicy) {
-    launchSnapshot.automationPolicy = normalizeBulkAutomationPolicy(
-      launchSnapshot.automationPolicy,
-    );
+    launchSnapshot.automationPolicy = normalizeBulkAutomationPolicy(launchSnapshot.automationPolicy);
   }
   return {
     runId: r.run_id,
@@ -375,9 +364,7 @@ function mapRun(r: RawRunRow): BulkRunRow {
     seedRefs: asStringArray(r.seed_refs),
     filterSnapshot: asObject(r.filter_snapshot) as BulkRunFilterSnapshot,
     launchSnapshot,
-    automationPolicy: normalizeBulkAutomationPolicy(
-      asObject(r.automation_policy) as Partial<BulkAutomationPolicy>,
-    ),
+    automationPolicy: normalizeBulkAutomationPolicy(asObject(r.automation_policy) as Partial<BulkAutomationPolicy>),
     totalItems: Number(r.total_items ?? 0),
     autoResolved: Number(r.auto_resolved ?? 0),
     recommended: Number(r.recommended ?? 0),
@@ -431,9 +418,7 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
     itemId: r.item_id,
   });
   const hasPersistedRecommendation =
-    r.recommendation_kind != null &&
-    r.recommendation_label != null &&
-    r.recommendation_rationale != null;
+    r.recommendation_kind != null && r.recommendation_label != null && r.recommendation_rationale != null;
   const recommendation = hasPersistedRecommendation
     ? {
         kind: r.recommendation_kind!,
@@ -465,8 +450,7 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
     error: r.error,
     decidedAt: iso(r.decided_at),
     disposition: canonical.disposition,
-    legacyDisposition:
-      rawDisposition && rawDisposition !== canonical.disposition ? rawDisposition : null,
+    legacyDisposition: rawDisposition && rawDisposition !== canonical.disposition ? rawDisposition : null,
     recommendation,
     recommendationKind: r.recommendation_kind ?? recommendation?.kind ?? null,
     recommendationLabel: r.recommendation_label ?? recommendation?.label ?? null,
@@ -513,11 +497,7 @@ async function recomputeCounters(sql: BulkSql, runId: string, workspaceId: strin
   `;
 }
 
-async function recomputeCleanupCounters(
-  sql: BulkSql,
-  runId: string,
-  workspaceId: string,
-): Promise<void> {
+async function recomputeCleanupCounters(sql: BulkSql, runId: string, workspaceId: string): Promise<void> {
   await sql`
     UPDATE harness_shared.attention_bulk_runs r
        SET auto_resolved = c.auto_resolved,
@@ -602,7 +582,8 @@ export async function executeBulkRunAction<T>(input: {
        FOR UPDATE
     `;
     const run = runRows[0] ? mapRun(runRows[0]) : null;
-    if (!run) return { actionResult: null, item: null, run: null, refused: { reason: 'run_not_found' as const, phase: null } };
+    if (!run)
+      return { actionResult: null, item: null, run: null, refused: { reason: 'run_not_found' as const, phase: null } };
     if (input.resolverOwner && run.resolverOwner !== input.resolverOwner) {
       return {
         actionResult: null,
@@ -891,6 +872,23 @@ export async function getActiveRun(
 }
 
 /**
+ * P-010's one pass-ending delivery seam.  Run mutation stays authoritative even
+ * when notification rails are unavailable; replay is safe because the digest
+ * derives deterministic inbox/attention keys from runId.
+ */
+async function deliverPassDigest(run: BulkRunRow | null): Promise<void> {
+  if (!run || run.runKind !== 'inbox-resolve' || run.requestedBy !== UNATTENDED_BULK_REQUESTER) return;
+  try {
+    await deliverUnattendedRunOwnerDigest(run, await getRunItems(run.runId, run.workspaceId));
+  } catch (error) {
+    console.warn(
+      `[bulk-run-store] unattended owner digest failed for ${run.runId}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+/**
  * Move a run's phase. `started_at` is stamped on the first transition into
  * `running` and `finished_at` on any terminal phase, so duration is derivable
  * without the caller tracking it.
@@ -917,7 +915,11 @@ export async function setRunPhase(input: {
      WHERE workspace_id = ${ws} AND run_id = ${input.runId}
     RETURNING ${sql.unsafe(RUN_COLUMNS)}
   `;
-  return rows[0] ? mapRun(rows[0]) : null;
+  const run = rows[0] ? mapRun(rows[0]) : null;
+  if (run && ['review', 'complete', 'failed'].includes(run.phase)) {
+    await deliverPassDigest(run);
+  }
+  return run;
 }
 
 /**
@@ -954,7 +956,9 @@ export async function failRunIfExecuting(input: {
             OR resolver_owner = ${input.resolverOwner ?? null})
     RETURNING ${sql.unsafe(RUN_COLUMNS)}
   `;
-  return rows[0] ? mapRun(rows[0]) : null;
+  const run = rows[0] ? mapRun(rows[0]) : null;
+  await deliverPassDigest(run);
+  return run;
 }
 
 /**
@@ -1136,15 +1140,24 @@ export async function resumeReviewRun(input: {
        WHERE workspace_id = ${ws} AND run_id = ${input.runId}
       RETURNING ${tx.unsafe(RUN_COLUMNS)}
     `;
-    const preservedOutcomes = current.runKind === 'plan-cleanup'
-      ? Number((await tx<Array<{ count: number | string }>>`
+    const preservedOutcomes =
+      current.runKind === 'plan-cleanup'
+        ? Number(
+            (
+              await tx<Array<{ count: number | string }>>`
           SELECT COUNT(*)::int AS count FROM harness_shared.plan_cleanup_run_findings
            WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND outcome <> 'pending'
-        `)[0]?.count ?? 0)
-      : Number((await tx<Array<{ count: number | string }>>`
+        `
+            )[0]?.count ?? 0,
+          )
+        : Number(
+            (
+              await tx<Array<{ count: number | string }>>`
           SELECT COUNT(*)::int AS count FROM harness_shared.attention_bulk_run_items
            WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND outcome <> 'pending'
-        `)[0]?.count ?? 0);
+        `
+            )[0]?.count ?? 0,
+          );
     return {
       ok: true as const,
       run: mapRun(resumedRows[0]!),
@@ -1423,10 +1436,7 @@ export async function reclassifyLegacySkipped(input: {
  * recommended, skipped, failed and never-reached rows all remain review work
  * until the owner resolves, retries, or explicitly dismisses them.
  */
-export async function getPendingReviewItems(
-  runId: string,
-  workspaceId?: string,
-): Promise<BulkRunItemRow[]> {
+export async function getPendingReviewItems(runId: string, workspaceId?: string): Promise<BulkRunItemRow[]> {
   const items = await getRunItems(runId, workspaceId);
   return items.filter((i) => i.outcome !== 'auto_resolved' && i.outcome !== 'dismissed');
 }
@@ -1573,9 +1583,7 @@ export function deriveSettleOutcome(input: {
 }): { phase: BulkRunPhase; refusedReason: string | null } {
   const { runKind, outcomes, everReportedLife } = input;
   const terminal =
-    runKind === 'plan-cleanup'
-      ? ['auto_applied', 'accepted', 'dismissed']
-      : ['auto_resolved', 'dismissed'];
+    runKind === 'plan-cleanup' ? ['auto_applied', 'accepted', 'dismissed'] : ['auto_resolved', 'dismissed'];
   const awaitingOwner = outcomes.some((o) => !terminal.includes(o));
   const recordedNothing = outcomes.length === 0;
 
@@ -1612,7 +1620,7 @@ export async function settleRunPhase(input: {
 }): Promise<BulkRunRow | null> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
-  return await sql.begin(async (tx) => {
+  const run = await sql.begin(async (tx) => {
     const locked = await tx<RawRunRow[]>`
       SELECT ${tx.unsafe(RUN_COLUMNS)}
         FROM harness_shared.attention_bulk_runs
@@ -1662,6 +1670,8 @@ export async function settleRunPhase(input: {
     `;
     return rows[0] ? mapRun(rows[0]) : null;
   });
+  await deliverPassDigest(run);
+  return run;
 }
 
 /* ── P-002: the watchdog's two reads and its one write ────────────────────────
@@ -1786,10 +1796,7 @@ export async function readWatchdogRunRows(input?: {
 }
 
 /** Recompute one run's stored counters from its own rows, whichever table holds them. */
-export async function reconcileRunCounters(
-  runId: string,
-  workspaceId?: string,
-): Promise<void> {
+export async function reconcileRunCounters(runId: string, workspaceId?: string): Promise<void> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
   const run = await getRun(runId, ws);
