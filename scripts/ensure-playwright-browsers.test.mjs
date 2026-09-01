@@ -12,6 +12,7 @@ import {
 
 const chromiumRevision = expectedBrowserRevision('chromium');
 const headlessShellRevision = expectedBrowserRevision('chromium-headless-shell');
+const ffmpegRevision = expectedBrowserRevision('ffmpeg');
 
 test('detects an installed browser by its completion sentinel', () => {
   const cache = mkdtempSync(join(tmpdir(), 'pw-cache-'));
@@ -26,7 +27,7 @@ test('isolated missing cache runs injected installer without network', () => {
     ...process.env,
     HOME: cache,
     PLAYWRIGHT_BROWSERS_PATH: cache,
-    PLAYWRIGHT_INSTALL_COMMAND: `node -e "const fs=require('fs'); for (const dir of ['chromium-${chromiumRevision}','chromium_headless_shell-${headlessShellRevision}']) { fs.mkdirSync('${cache}/'+dir,{recursive:true}); fs.writeFileSync('${cache}/'+dir+'/INSTALLATION_COMPLETE','') }"`,
+    PLAYWRIGHT_INSTALL_COMMAND: `node -e "const fs=require('fs'); for (const dir of ['chromium-${chromiumRevision}','chromium_headless_shell-${headlessShellRevision}','ffmpeg-${ffmpegRevision}']) { fs.mkdirSync('${cache}/'+dir,{recursive:true}); fs.writeFileSync('${cache}/'+dir+'/INSTALLATION_COMPLETE','') }"`,
   };
   const result = ensurePlaywrightBrowsers({ env });
   assert.equal(result.ranInstall, true);
@@ -35,8 +36,14 @@ test('isolated missing cache runs injected installer without network', () => {
 
 test('ready cache is idempotent and does not invoke installer', () => {
   const cache = mkdtempSync(join(tmpdir(), 'pw-cache-'));
-  mkdirSync(join(cache, `chromium-${chromiumRevision}`), { recursive: true });
-  writeFileSync(join(cache, `chromium-${chromiumRevision}`, 'INSTALLATION_COMPLETE'), '');
+  for (const dir of [
+    `chromium-${chromiumRevision}`,
+    `chromium_headless_shell-${headlessShellRevision}`,
+    `ffmpeg-${ffmpegRevision}`,
+  ]) {
+    mkdirSync(join(cache, dir), { recursive: true });
+    writeFileSync(join(cache, dir, 'INSTALLATION_COMPLETE'), '');
+  }
   const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: cache };
   const result = ensurePlaywrightBrowsers({ env, run: () => { throw new Error('installer should not run'); } });
   assert.equal(result.ranInstall, false);
@@ -47,7 +54,10 @@ test('chromium without its headless shell is not a healthy Playwright install', 
   mkdirSync(join(cache, `chromium-${chromiumRevision}`), { recursive: true });
   writeFileSync(join(cache, `chromium-${chromiumRevision}`, 'INSTALLATION_COMPLETE'), '');
   const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: cache };
-  assert.deepEqual(missingPlaywrightBrowsers({ env }), ['chromium-headless-shell']);
+  assert.deepEqual(missingPlaywrightBrowsers({ env }), [
+    'chromium-headless-shell',
+    'ffmpeg',
+  ]);
 });
 
 test('stale browser revision fails the installed-registry health check', () => {
@@ -55,5 +65,9 @@ test('stale browser revision fails the installed-registry health check', () => {
   mkdirSync(join(cache, 'chromium-stale'), { recursive: true });
   writeFileSync(join(cache, 'chromium-stale', 'INSTALLATION_COMPLETE'), '');
   const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: cache };
-  assert.deepEqual(missingPlaywrightBrowsers({ env }), ['chromium']);
+  assert.deepEqual(missingPlaywrightBrowsers({ env }), [
+    'chromium',
+    'chromium-headless-shell',
+    'ffmpeg',
+  ]);
 });

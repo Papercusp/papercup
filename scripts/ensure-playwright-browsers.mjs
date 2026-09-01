@@ -27,7 +27,7 @@ export function requiredBrowsers(env = process.env) {
   // Playwright's `chromium` project launches chromium-headless-shell in headless
   // mode. Checking only the full Chromium bundle therefore produces a false
   // healthy result when disk reclamation deletes the headless-shell directory.
-  return (env.PLAYWRIGHT_BROWSERS || 'chromium,chromium-headless-shell')
+  return (env.PLAYWRIGHT_BROWSERS || 'chromium,chromium-headless-shell,ffmpeg')
     .split(',')
     .map((name) => name.trim())
     .filter(Boolean);
