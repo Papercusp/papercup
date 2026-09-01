@@ -8,8 +8,10 @@ export function isCodexModelDenied(model: any): boolean;
  * list.  Empty/omitted input is intentionally resolved here (rather than at a
  * caller's CLI default) so a fresh CODEX_HOME cannot fall through models_cache.
  * Reasoning suffixes are preserved for callers that split them into config.
+ * @param {string | null | undefined} [model] optional model spec; omission uses
+ * the managed safe default.
  */
-export function resolveCodexModel(model: any): string;
+export function resolveCodexModel(model?: string | null | undefined): string;
 /**
  * Render the root model settings that must survive a model-less resume.  The
  * model id and effort are separated because Codex's TOML schema accepts the
@@ -261,8 +263,10 @@ export const CODEX_DENIED_MODEL_IDS: readonly string[];
  * list.  Empty/omitted input is intentionally resolved here (rather than at a
  * caller's CLI default) so a fresh CODEX_HOME cannot fall through models_cache.
  * Reasoning suffixes are preserved for callers that split them into config.
+ * @param {string | null | undefined} [model] optional model spec; omission uses
+ * the managed safe default.
  */
-export function assertCodexModelAllowed(model: any): string;
+export function assertCodexModelAllowed(model?: string | null | undefined): string;
 /**
  * Codex models officially documented with a 1,050,000-token context window
  * that Papercusp exposes as selectors. The configured value is deliberately

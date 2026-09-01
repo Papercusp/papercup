@@ -360,6 +360,7 @@ fn tls_marker_in_chain(err: &reqwest::Error) -> bool {
     false
 }
 
+#[derive(Clone)]
 pub struct HttpClient {
     base: String, // operator httpUrl, no trailing slash
     token: Option<String>,
