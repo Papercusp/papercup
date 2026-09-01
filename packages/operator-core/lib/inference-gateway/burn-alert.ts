@@ -122,7 +122,7 @@ async function stateBurnWall(
       key: factKey(accountId),
       ...(ws ? { workspaceId: ws } : {}),
       retractedBy: FACT_CREATED_BY,
-      reason: `burn verdict recovered to none (was ${transition.from})`,
+      reason: `burn verdict recovered to none — no wall asserted (was ${transition.from})`,
     }).catch(() => {});
     const { broadcastSevereEventResolved } = await import('../severe-event-broadcast');
     await broadcastSevereEventResolved({

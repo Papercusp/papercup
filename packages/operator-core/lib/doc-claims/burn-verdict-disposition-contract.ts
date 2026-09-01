@@ -86,6 +86,13 @@ export interface BurnVerdictString {
   readonly line: number;
   /** The literal, clipped — enough to identify it in a violation without dumping the file. */
   readonly excerpt: string;
+  /**
+   * The UNTRUNCATED literal, for allowlist matching only. Matching on `excerpt` looks equivalent
+   * and is not: a 120-char clip silently drops the tail of a long tool description, so an
+   * allowlist entry naming a phrase near its end matches nothing and the entry reads as stale
+   * while the violation it covers stays live — a guard failing in both directions at once.
+   */
+  readonly literal: string;
   /** Why it was flagged as a verdict statement: a literal action word, or an interpolated one. */
   readonly via: 'literal-action' | 'interpolated-action';
   readonly carriesDisposition: boolean;
@@ -119,11 +126,17 @@ const DISPOSITION_MARKERS = [
   /renderBurnVerdictLabel\s*\(/,
   /renderPoolBurnLabel\s*\(/,
   /\b(?:transition|verdict|burn)\w*\.label\b/i,
+  // Interpolating a binding NAMED `label` / `*Label`. This is the one marker that rests on a
+  // naming convention rather than the text itself, and it is deliberate: `${label}` is how a
+  // renderer's output actually reaches a log line, and a textual guard has no other way to see
+  // that the disposition is present at runtime. The convention is what makes it legible — the
+  // renderer-derived fields (`BurnTransition.label`, `PoolBurnAggregate.label`) are named `label`
+  // precisely so a local bound from one keeps the name.
+  /\$\{[^}]*\b\w*[Ll]abel\b[^}]*\}/,
   /measured[- ]wall/i,
   /pacing[- ]projection/i,
   /pacing policy/i,
   /no wall asserted/i,
-  /USAGE-WALLED/,
 ] as const;
 
 export function carriesDisposition(window: string): boolean {
@@ -131,11 +144,25 @@ export function carriesDisposition(window: string): boolean {
 }
 
 /**
- * A literal action word inside a string. `shed`/`throttle` in their verdict senses — including the
- * participles a log line reaches for ("shedding effective agent concurrency") — plus the rendered
- * wall. Word-bounded so `shedule`-style neighbours and identifiers cannot trip it.
+ * A literal action word inside a string: `shed`/`throttle` and the participles a message reaches
+ * for ("shedding effective agent concurrency"). Word-bounded so identifiers cannot trip it.
+ *
+ * `usage-walled` is deliberately ABSENT. It names the measurement, not the ambiguous action — a
+ * string saying "3 accounts are usage-walled" has already stated its own basis, so triggering on
+ * it would flag four capacity-rollup sentences whose only repair is to repeat themselves. The
+ * class this guard exists for is `THROTTLE`/`SHED`, where the action is visible and the basis is
+ * not.
  */
-const LITERAL_ACTION = /\b(?:shed|sheds|shedding|throttle|throttles|throttled|throttling|usage-walled)\b/i;
+const LITERAL_ACTION = /\b(?:shed|sheds|shedding|throttle|throttles|throttled|throttling)\b/i;
+
+/**
+ * A literal action word is only a VERDICT STATEMENT when the string is prose for a reader. A
+ * standalone `'shed'` is a VALUE — a union member, a comparison operand, an assigned action — and
+ * flagging those would bury the real findings under every type declaration in the domain, which is
+ * how a guard gets silenced wholesale. Whitespace is the cheap, robust discriminator: this
+ * codebase has no one-word reader-facing messages.
+ */
+const PROSE = /\s/;
 
 /**
  * An interpolation of an action-bearing expression: `${action}`, `${v.action}`, `${lastBurn}`,
@@ -151,7 +178,9 @@ const STRING_LITERALS = /`(?:[^`\\]|\\.)*`|'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)
 const TYPE_DECL = /\bexport\s+interface\s+([A-Za-z0-9_]+)\s*(?:extends\s+[^{]+)?\{|\binterface\s+([A-Za-z0-9_]+)\s*(?:extends\s+[^{]+)?\{/g;
 
 const ACTION_TYPED_FIELD = /:\s*BurnAction\b/;
-const DISPOSITION_TYPED_FIELD = /\bdisposition\s*\??\s*:\s*BurnDisposition\b/;
+/** Any field whose NAME ends in `disposition` and whose TYPE is `BurnDisposition` — so a persisted
+ *  stamp may call itself `lastBurnDisposition` without inventing an exemption. */
+const DISPOSITION_TYPED_FIELD = /\b\w*[Dd]isposition\s*\??\s*:\s*BurnDisposition\b/;
 
 /** Blank comments while preserving offsets, so an index into the result maps back to a line. */
 function strippedSource(source: string): string {
@@ -234,14 +263,14 @@ export function findBurnVerdictStrings(file: string, source: string): BurnVerdic
   while ((m = STRING_LITERALS.exec(stripped)) !== null) {
     const literal = m[0];
     const interpolated = INTERPOLATED_ACTION.test(literal);
-    // A literal action word is only a verdict when it is PROSE for a reader. Checking the
-    // interpolation first keeps `${action}` classified as what it is even when the surrounding
-    // sentence also spells an action out.
-    if (!interpolated && !LITERAL_ACTION.test(literal)) continue;
+    // Checking the interpolation first keeps `${action}` classified as what it is even when the
+    // surrounding sentence also spells an action out.
+    if (!interpolated && !(LITERAL_ACTION.test(literal) && PROSE.test(literal.slice(1, -1)))) continue;
     out.push({
       file,
       line: lineOf(stripped, m.index),
       excerpt: literal.length > 120 ? `${literal.slice(0, 117)}...` : literal,
+      literal,
       via: interpolated ? 'interpolated-action' : 'literal-action',
       carriesDisposition: carriesDisposition(enclosingBlock(stripped, m.index)),
     });
@@ -255,12 +284,12 @@ export function judgeBurnDispositionContract(
   allowlist: readonly AllowedBareVerdict[],
 ): BurnDispositionVerdict {
   const allowed = (s: BurnVerdictString): AllowedBareVerdict | undefined =>
-    allowlist.find((a) => a.file === s.file && s.excerpt.includes(a.match));
+    allowlist.find((a) => a.file === s.file && s.literal.includes(a.match));
 
   const bareCarriers = carriers.filter((c) => !c.carriesDisposition);
   const bareStrings = strings.filter((s) => !s.carriesDisposition && !allowed(s));
   const missing = allowlist.filter(
-    (a) => !strings.some((s) => s.file === a.file && s.excerpt.includes(a.match)),
+    (a) => !strings.some((s) => s.file === a.file && s.literal.includes(a.match)),
   );
 
   const violations: string[] = [];

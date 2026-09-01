@@ -463,39 +463,56 @@ export function aggregatePoolBurn(rows: readonly PoolBurnRow[]): PoolBurnAggrega
   };
   for (const r of rows) if (r.action !== 'none') dispositionCounts[r.disposition] += 1;
 
-  const finish = (action: BurnAction, reason: string): PoolBurnAggregate => {
-    const disposition: BurnDisposition =
-      action === 'none'
-        ? 'no-verdict'
-        : (DISPOSITION_STRENGTH.find((d) => dispositionCounts[d] > 0) ?? 'no-verdict');
+  /** The strongest disposition any CONTRIBUTING account asserted — see the field's docs. */
+  const restsOn = (): BurnDisposition =>
+    DISPOSITION_STRENGTH.find((d) => dispositionCounts[d] > 0) ?? 'no-verdict';
+
+  const finish = (
+    decided: Pick<PoolBurnAggregate, 'action' | 'disposition' | 'reason'>,
+  ): PoolBurnAggregate => {
     const base = {
-      action,
+      ...decided,
       total,
       counts,
-      disposition,
       // Nothing is being asserted, so nothing contributed to it — never report a stale tally
       // beside a `none` verdict.
-      dispositionCounts: action === 'none' ? { 'measured-wall': 0, 'pacing-projection': 0, 'no-verdict': 0 } : dispositionCounts,
+      dispositionCounts:
+        decided.action === 'none'
+          ? { 'measured-wall': 0, 'pacing-projection': 0, 'no-verdict': 0 }
+          : dispositionCounts,
     };
-    return { ...base, reason, label: renderPoolBurnLabel(base) };
+    return { ...base, label: renderPoolBurnLabel(base) };
   };
 
+  // Each branch states its own disposition beside its own action, for the reason P-001 gives at
+  // the per-account level: stamp it where the action is DECIDED, never re-derive it afterwards
+  // from a second predicate that can disagree with the branch that ran.
   if (total === 0) {
-    return finish('none', 'no accounts in pool — governor stands down (never act on missing data)');
+    return finish({
+      action: 'none',
+      disposition: 'no-verdict',
+      reason: 'no accounts in pool — governor stands down (never act on missing data)',
+    });
   }
   if (counts.shed === total) {
-    return finish('shed', `all ${total} account(s) shed — nowhere to route; cut fleet concurrency`);
+    return finish({
+      action: 'shed',
+      disposition: restsOn(),
+      reason: `all ${total} account(s) shed — nowhere to route; cut fleet concurrency`,
+    });
   }
   if (counts.none === 0) {
-    return finish(
-      'throttle',
-      `every account is burning (${counts.throttle} throttle, ${counts.shed} shed of ${total}) — spreading cannot relieve the pool; slow the fleet`,
-    );
+    return finish({
+      action: 'throttle',
+      disposition: restsOn(),
+      reason: `every account is burning (${counts.throttle} throttle, ${counts.shed} shed of ${total}) — spreading cannot relieve the pool; slow the fleet`,
+    });
   }
-  return finish(
-    'none',
-    `${counts.none} of ${total} account(s) have headroom or no verdict — selection can route around the burn`,
-  );
+  return finish({
+    action: 'none',
+    disposition: 'no-verdict',
+    reason: `${counts.none} of ${total} account(s) have headroom or no verdict — selection can route around the burn`,
+  });
 }
 
 function fmtRate(rate: number): string {

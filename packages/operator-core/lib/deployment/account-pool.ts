@@ -245,6 +245,14 @@ export interface AccountRateState {
    * (treated as 'none' by the transition diff — never an alarm by itself).
    */
   lastBurnAction?: BurnAction;
+  /**
+   * P-005 — what the stamped {@link lastBurnAction} RESTED ON when it was written: a measured
+   * provider wall vs this system pacing itself off a projection. Stamped from the SAME verdict
+   * that decided the action, in the same write, so the persisted row can never state an action
+   * whose basis a reader has to guess (`accounts:list` returns these rows verbatim).
+   * `undefined` = stamped before this field existed, or never evaluated.
+   */
+  lastBurnDisposition?: BurnDisposition;
 }
 
 export interface AccountPool {
@@ -559,7 +567,12 @@ export function recordAccountWindow(
       // detect a verdict TRANSITION (the never-silent stated wall) by diffing before/after. The
       // reading is fresh by construction (`utilizationAt = now`), so the stale gate never
       // interferes at write time.
-      rate.lastBurnAction = accountBurnVerdict(rate, now).action;
+      const stamped = accountBurnVerdict(rate, now);
+      rate.lastBurnAction = stamped.action;
+      // P-005: the stamp is a persisted VERDICT, and `accounts:list` hands the raw row to readers.
+      // An action stored without its basis is the same omission the reader-contract forbids on
+      // every other surface — and it is free to keep here, from the very verdict that decided it.
+      rate.lastBurnDisposition = stamped.disposition;
       return { ...a, rate };
     }),
   };

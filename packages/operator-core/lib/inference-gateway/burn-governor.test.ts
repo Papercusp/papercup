@@ -20,6 +20,7 @@ import {
   DEFAULT_BURN_POLICY,
   accountBurnSamples,
   aggregatePoolBurn,
+  renderPoolBurnLabel,
   estimateBurnRatePerHr,
   evaluateAccountBurn,
   evaluateBurn,
@@ -698,37 +699,121 @@ describe('lastBurnAction stamping + accountBurnTransition — the leg-c write se
 });
 
 describe('aggregatePoolBurn — the pool verdict for the concurrency lever (leg b)', () => {
+  /** A burning account whose verdict rests on a MEASURED provider wall. */
+  const walled = { action: 'shed' as const, disposition: 'measured-wall' as const };
+  /** A burning account the governor is PACING off a projection — it still serves. */
+  const pacedShed = { action: 'shed' as const, disposition: 'pacing-projection' as const };
+  const pacedThrottle = { action: 'throttle' as const, disposition: 'pacing-projection' as const };
+  const healthy = { action: 'none' as const, disposition: 'no-verdict' as const };
+
   it('empty pool → none (never act on missing data)', () => {
     const agg = aggregatePoolBurn([]);
     expect(agg.action).toBe('none');
     expect(agg.total).toBe(0);
     expect(agg.reason).toContain('no accounts');
+    expect(agg.disposition).toBe('no-verdict');
   });
 
   it('all shed → shed (nowhere to route)', () => {
-    const agg = aggregatePoolBurn(['shed', 'shed', 'shed']);
+    const agg = aggregatePoolBurn([pacedShed, pacedShed, pacedShed]);
     expect(agg.action).toBe('shed');
     expect(agg.counts).toEqual({ none: 0, throttle: 0, shed: 3 });
     expect(agg.reason).toContain('nowhere to route');
   });
 
   it('every account throttle-or-shed (zero none) → throttle (spreading cannot relieve)', () => {
-    const agg = aggregatePoolBurn(['throttle', 'shed', 'throttle']);
+    const agg = aggregatePoolBurn([pacedThrottle, pacedShed, pacedThrottle]);
     expect(agg.action).toBe('throttle');
     expect(agg.counts).toEqual({ none: 0, throttle: 2, shed: 1 });
     expect(agg.reason).toContain('slow the fleet');
   });
 
   it('all throttle → throttle', () => {
-    const agg = aggregatePoolBurn(['throttle', 'throttle']);
+    const agg = aggregatePoolBurn([pacedThrottle, pacedThrottle]);
     expect(agg.action).toBe('throttle');
     expect(agg.counts).toEqual({ none: 0, throttle: 2, shed: 0 });
   });
 
   it('a single none account stands the lever down — even beside universal shed', () => {
-    const agg = aggregatePoolBurn(['shed', 'shed', 'none']);
+    const agg = aggregatePoolBurn([pacedShed, pacedShed, healthy]);
     expect(agg.action).toBe('none');
     expect(agg.reason).toContain('route around');
     expect(agg.counts).toEqual({ none: 1, throttle: 0, shed: 2 });
+  });
+
+  describe('disposition — what the POOL verdict rests on (P-005)', () => {
+    it('an all-projection pool says so: SHED that is not a measured wall', () => {
+      // The reading the fleet-concurrency lever's log line used to destroy. Every account is
+      // still serving; the governor is pacing us, and reporting this as "at capacity" is the
+      // exact misread D-001 forbids.
+      const agg = aggregatePoolBurn([pacedShed, pacedShed]);
+      expect(agg.disposition).toBe('pacing-projection');
+      expect(agg.dispositionCounts).toEqual({
+        'measured-wall': 0,
+        'pacing-projection': 2,
+        'no-verdict': 0,
+      });
+      expect(agg.label).toContain('not a measured wall');
+      expect(agg.label).toContain('SHED');
+    });
+
+    it('one measured wall beside projections wins — strongest, never a majority vote', () => {
+      // Softening this to 'pacing-projection' because most siblings are projections would tell a
+      // reader to keep sending traffic at an account whose window is genuinely exhausted.
+      const agg = aggregatePoolBurn([walled, pacedShed, pacedShed]);
+      expect(agg.disposition).toBe('measured-wall');
+      expect(agg.dispositionCounts).toEqual({
+        'measured-wall': 1,
+        'pacing-projection': 2,
+        'no-verdict': 0,
+      });
+      // The mix survives the collapse — the strongest-wins answer never destroys the counts.
+      expect(agg.label).toContain('1 account(s) measured-walled');
+      expect(agg.label).toContain('2 pacing projection(s)');
+    });
+
+    it('a healthy account casts no vote on what the burn rests on', () => {
+      // 'no-verdict' is the ABSENCE of an assertion; counting it would dilute a real wall toward
+      // "nothing is measured".
+      const agg = aggregatePoolBurn([walled, walled, healthy, healthy]);
+      expect(agg.action).toBe('none'); // a route with headroom stands the lever down
+      expect(agg.disposition).toBe('no-verdict'); // ...and nothing is being asserted
+      expect(agg.dispositionCounts).toEqual({
+        'measured-wall': 0,
+        'pacing-projection': 0,
+        'no-verdict': 0,
+      });
+      expect(agg.label).toBe('NONE (no wall asserted)');
+    });
+
+    it('every branch stamps a disposition — including the ones that assert nothing', () => {
+      for (const rows of [[], [healthy], [pacedShed, pacedShed], [walled, pacedThrottle]]) {
+        const agg = aggregatePoolBurn(rows);
+        expect(agg.disposition).toBeTruthy();
+        expect(agg.label).toBe(renderPoolBurnLabel(agg));
+      }
+    });
+  });
+});
+
+describe('renderPoolBurnLabel — the ONE pool-verdict rendering (P-005)', () => {
+  it('leads with the disposition, like its per-account sibling', () => {
+    expect(
+      renderPoolBurnLabel({
+        action: 'shed',
+        disposition: 'pacing-projection',
+        dispositionCounts: { 'measured-wall': 0, 'pacing-projection': 3, 'no-verdict': 0 },
+      }),
+    ).toBe('SHED (pacing projection, not a measured wall; 3 account(s) projected, 0 measured)');
+  });
+
+  it('names the measured half AND the projected half when they are mixed', () => {
+    expect(
+      renderPoolBurnLabel({
+        action: 'throttle',
+        disposition: 'measured-wall',
+        dispositionCounts: { 'measured-wall': 2, 'pacing-projection': 1, 'no-verdict': 0 },
+      }),
+    ).toBe('THROTTLE (measured wall; 2 account(s) measured-walled, 1 pacing projection(s))');
   });
 });
