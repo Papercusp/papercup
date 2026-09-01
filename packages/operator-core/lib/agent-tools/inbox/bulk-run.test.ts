@@ -683,6 +683,40 @@ describe('inbox:bulk-run-act authority boundary', () => {
     expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
   });
 
+  it.each(['L0', 'L1', 'L2'] as const)(
+    'scheduled resolver keeps protected standing-approval never-auto at %s',
+    async (level) => {
+      // P-011: the scheduled path must share the same permanent floor as the
+      // owner-triggered path. `standing-approval` is the protected
+      // system-control category; even L2 + a low confidence floor cannot let
+      // an unattended resolver grant or dismiss it.
+      h.readStandingBulkAutomationPolicy.mockResolvedValue({ level, minConfidence: 'low' });
+      h.getRunItems.mockResolvedValue([
+        {
+          ...item,
+          kind: 'standing-approval',
+          ref: { kind: 'standing-approval', capability: 'harness:write', targetHarness: 'sheets' },
+        },
+      ]);
+
+      const result = body(
+        await bulkRunAct.handler(
+          {
+            runId: run.runId,
+            itemId: item.itemId,
+            actionId: 'grant',
+            rationale: 'Protected decisions remain owner-controlled.',
+            confidenceLevel: 'high',
+          },
+          { workspaceId: run.workspaceId } as never,
+        ),
+      );
+
+      expect(result).toMatchObject({ ok: false, refused: 'automation_policy', reason: 'never-auto' });
+      expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+    },
+  );
+
   it('dispatches through the shared map and joins the required audit to the store transaction', async () => {
     const tx = { transaction: 'bulk-act' };
     h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => {
