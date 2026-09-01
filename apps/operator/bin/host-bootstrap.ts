@@ -2132,10 +2132,15 @@ export function runBootstrap(): void {
         // tier owns no schedules). Non-fatal — a query/arm failure must not block boot.
         if (!utilityHostEnabled()) {
           try {
-            const { armEphemeralExecutor, productionEphemeralExecutorDeps } = await import(
+            const {
+              armEphemeralExecutor,
+              productionEphemeralExecutorDeps,
+              startEphemeralRoutineInvalidationSync,
+            } = await import(
               '@papercusp/operator-core/lib/dbos/ephemeral-executor'
             );
             await armEphemeralExecutor(productionEphemeralExecutorDeps());
+            await startEphemeralRoutineInvalidationSync();
           } catch (err) {
             console.warn('[ephemeral-executor] arm failed (non-fatal):', err instanceof Error ? err.message : err);
           }
