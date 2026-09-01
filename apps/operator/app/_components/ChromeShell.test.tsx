@@ -283,13 +283,19 @@ describe('ChromeShell', () => {
     expect(screen.queryByTestId('op-chat')).toBeNull();
   });
 
-  it('keeps the Papercup chat dock when /adv is framed by the portal (the root composes Accounts beside it)', () => {
+  it('renders CONTENT ONLY when /adv is framed by the portal — no header, no Papercup chat dock, even with the chat flag ON', () => {
+    // cloud-portal-extract-remaining-papercusp-panes-2026-09-01 P-002: the
+    // portal hosts the Papercup chat (from /portal-panes/chat) and the
+    // steering sidebar (from /portal-panes/steering) as its OWN outer
+    // sidebars, so a portal-embedded /adv must not mount a second chat dock
+    // beside them. The flag is ON here to prove it is the embed branch, not
+    // the flag, that keeps the dock out.
     pathname = '/adv';
     search = 'portalEmbed=1&portalTheme=light';
-    operatorChatSidebarFlag = false;
+    operatorChatSidebarFlag = true;
     const { container } = render(<ChromeShell />);
 
-    expect(screen.getByTestId('op-chat')).toBeTruthy();
+    expect(screen.queryByTestId('op-chat')).toBeNull();
     expect(container.querySelector('.pc-header')).toBeNull();
     expect(screen.queryByText('OPS')).toBeNull();
   });

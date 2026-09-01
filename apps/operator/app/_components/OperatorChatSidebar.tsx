@@ -595,7 +595,10 @@ export function OperatorChatSidebar({ faces = [], docked = false }: { faces?: re
   // the already-tracked `renderedWidth` (the same value the sidebar's own
   // inline style + the CSS container query respond to), not a separate
   // ResizeObserver.
-  const audienceModeOverflow = renderedWidth < AUDIENCE_MODE_OVERFLOW_WIDTH;
+  // A docked pane renders at '100%' of a portal-owned frame, so there is no
+  // numeric width to compare against; the CSS container query alone drives
+  // the audience-mode collapse there.
+  const audienceModeOverflow = typeof renderedWidth === 'number' && renderedWidth < AUDIENCE_MODE_OVERFLOW_WIDTH;
   const [audienceMenuOpen, setAudienceMenuOpen] = useState(false);
 
   return (
