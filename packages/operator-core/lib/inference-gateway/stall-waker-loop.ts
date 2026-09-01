@@ -281,10 +281,22 @@ let waker: StallWaker | null = null;
 // EI-2432: the loop's only prior signal was `console.log` buried in the operator's
 // stdout — an agent (even su, full access) could not confirm it was running,
 // its poll cadence, or its recent activity without grepping host logs. Track a
-// small in-process summary (this loop lives in the OPERATOR process — same
-// process as every agent-tool handler — so a `dev:*` tool reads it directly, no
-// cross-process hop to the standalone gateway sidecar needed) and expose it via
-// {@link getStallWakerStatus}.
+// small in-process summary and expose it via {@link getStallWakerStatus}.
+//
+// EI-22054545312178322: the claim this comment used to make — "this loop lives in
+// the OPERATOR process — same process as every agent-tool handler — so a `dev:*`
+// tool reads it directly, no cross-process hop needed" — is FALSE under the
+// dedicated-bg-host topology. `ensureStallWakerLoop` boot-starts ONLY on the host
+// with `PAPERCUSP_BACKGROUND_WORKERS=1` (host-bootstrap.ts), which today is
+// `papercup-bg-host` alone — :3070/:3170 are both request-only and never boot-start
+// it. An agent-tool call is served by :3070/:3170, a SEPARATE process from bg-host,
+// so THIS module-scope state answers only "is the loop running IN WHATEVER PROCESS
+// HANDLED THIS CALL" — reading it directly from a request-only host silently
+// reports `running:false` while bg-host's copy is genuinely ticking (WI-2054656).
+// `dev:stall_waker_status`'s handler is the one that knows how to read this
+// correctly (it federates to bg-host when the local copy is not running) — this
+// function itself stays a pure, honest LOCAL read; do not "fix" it by reaching
+// across processes from in here.
 let startedAt: number | null = null;
 let boundWorkspaceId: string | null = null;
 let tickCount = 0;
@@ -341,10 +353,11 @@ export function stopStallWakerLoop(): void {
   boundWorkspaceId = null;
 }
 
-/** Observability snapshot (EI-2432) — running?, since when, poll cadence, last-tick health, and the
- *  waker's live counters, without grepping operator stdout. `running:false` when the loop was never
- *  started (gateway off / no spawn yet) or was stopped; every other field is `null`/0 in that case. */
-export function getStallWakerStatus(): {
+/** The shape {@link getStallWakerStatus} returns — named + exported (EI-22054545312178322)
+ *  so a cross-process reader (schedule-federation.ts's sibling probe, the `/internal/managed-timers`
+ *  route, `dev:stall_waker_status`'s handler) can type a REMOTE process's snapshot the same way as
+ *  a local one, instead of re-declaring this shape by hand at every call site. */
+export interface StallWakerStatus {
   running: boolean;
   workspaceId: string | null;
   startedAt: number | null;
@@ -359,7 +372,14 @@ export function getStallWakerStatus(): {
   wokenTotal: number;
   droppedTotal: number;
   unwedgedTotal: number;
-} {
+}
+
+/** Observability snapshot (EI-2432) — running?, since when, poll cadence, last-tick health, and the
+ *  waker's live counters, without grepping operator stdout. `running:false` when the loop was never
+ *  started (gateway off / no spawn yet) or was stopped; every other field is `null`/0 in that case.
+ *  LOCAL to whichever process calls it — see the file-header note above `startedAt` for why a
+ *  request-only host's own reading of this function is not production truth. */
+export function getStallWakerStatus(): StallWakerStatus {
   return {
     running: timer !== null,
     workspaceId: boundWorkspaceId,
