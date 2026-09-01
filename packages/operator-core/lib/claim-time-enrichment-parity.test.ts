@@ -49,7 +49,7 @@ const LEG_IMPLEMENTATION: Record<ClaimTimeEnrichmentLeg, string> = {
   authorship: 'getClaimTimeAuthorshipRevalidationHint',
   planContradiction: 'getClaimTimePlanItemContradiction',
   behaviorContract: 'getClaimTimeBehaviorContract',
-  pathHints: 'getClaimTimeStalePathHints',
+  pathHints: 'getClaimTimeStalePathAdvisory',
   planItemLanded: 'getClaimTimePlanItemLanded',
   siblingPathOverlap: 'getClaimTimeSiblingPathOverlap',
   sourceCitation: 'getClaimTimeSourceCitation',

@@ -44,7 +44,7 @@
  */
 
 
-import type { ClaimTimeStalePathHint } from './stale-path-hints-claim-port';
+import type { ClaimTimeStalePathHint, ClaimTimeStalePathRef } from './stale-path-hints-claim-port';
 
 /**
  * The registry. Order is the order the guards were added; it carries no meaning
@@ -137,6 +137,9 @@ export interface ClaimTimeEnrichment {
    */
   pathHints?: ClaimTimeStalePathHint[];
   pathHintsNote?: string;
+  /** EI-20049758099997696: unresolved repo-relative paths cited in title/summary. */
+  stalePathRefs?: ClaimTimeStalePathRef[];
+  stalePathRefsNote?: string;
   /**
    * EI-18713141708830049: the plan item this row belongs to is still NON-terminal
    * while a SIBLING work-item on the same item has already settled — "the tree says
@@ -435,14 +438,11 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
       // pot/* being the measured instance); without this resolution the claimant's
       // literal affected-path check fails into a repository-wide fallback search.
       // Needs a work-item payload — a bare plan-item claim carries none.
-      runLeg('pathHints', Boolean(wi?.payload), async () => {
+      runLeg('pathHints', Boolean(wi?.payload || wi?.title || wi?.summary), async () => {
         const m = await import('./stale-path-hints-claim-port');
-        const hints = await m.getClaimTimeStalePathHints({ payload: wi?.payload });
-        // `stalePathHintsNote` returns string | null; ClaimTimeEnrichment's
-        // optional field is `string | undefined`, and a null would be spread
-        // onto the result as a present-but-null key. Coerce so an absent note
-        // is genuinely absent.
-        return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) ?? undefined } : null;
+        return m.getClaimTimeStalePathAdvisory({
+          workItem: wi,
+        });
       }),
 
       // EI-18713141708830049: the MIRROR of the planContradiction leg above — the plan

@@ -691,8 +691,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       // nothing.
       import('../../stale-path-hints-claim-port')
         .then(async (m) => {
-          const hints = await m.getClaimTimeStalePathHints({ payload: workItem.payload });
-          return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
+          return m.getClaimTimeStalePathAdvisory({ workItem });
         })
         .catch(() => null),
       // EI-18713141708830049: the MIRROR of the planContradiction hint above — the linked
