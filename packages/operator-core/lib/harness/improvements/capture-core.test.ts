@@ -2911,3 +2911,148 @@ describe('captureImprovement — keyless SYSTEM-filer bug folds onto its open ex
     expect(res.created).toBe(true);
   });
 });
+
+/**
+ * WI-2140701 (b) — goal provenance through the CAPTURE door.
+ *
+ * Until this leg existed every row minted through improvements:capture carried
+ * goal_id NULL (only work_items:create stamped), so a goal steward's own filings
+ * were invisible to its goal's "what belongs to me" view and spend rollup. The
+ * stamp itself is verified against real SQL in
+ * agent-tools/work_items/goal-provenance-stamp.integration.test.ts; THIS pins the
+ * seam: when it is called, with what identity, and that a throw is recorded
+ * rather than raised.
+ */
+describe('captureImprovement — goal provenance stamp (WI-2140701 (b))', () => {
+  type StampCall = { item: { id: string; harness?: string | null }; workspaceId: string; ownerId: string };
+  function stamping(
+    impl: (call: StampCall) => Promise<string | null>,
+    opts: Parameters<typeof deps>[0] = {},
+  ) {
+    const calls: StampCall[] = [];
+    const d = deps(opts);
+    d.stampGoalProvenance = async (item, workspaceId, ownerId) => {
+      const call = { item, workspaceId, ownerId };
+      calls.push(call);
+      return impl(call);
+    };
+    return { d, calls };
+  }
+
+  it('stamps a freshly-minted row with the creator goal and surfaces goalId on the result', async () => {
+    const { d, calls } = stamping(async () => 'work-on-everything-070565');
+    const res = await captureImprovement(
+      {
+        title: 'Goal steward finding: drain fleet dead',
+        kind: 'bug',
+        scope: 'harness:papercusp',
+        createdBy: 'su-holder',
+        workspaceId: 'papercusp-workspace',
+      },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(res.goalId).toBe('work-on-everything-070565');
+    expect(res.goalStampError).toBeUndefined();
+    expect(calls).toEqual([
+      {
+        item: { id: 'EI-100', harness: 'papercusp' },
+        workspaceId: 'papercusp-workspace',
+        ownerId: 'su-holder',
+      },
+    ]);
+  });
+
+  it('passes a null harness for an operator-scope row (the stamp keys on workspace instead)', async () => {
+    const { d, calls } = stamping(async () => null);
+    const res = await captureImprovement(
+      { title: 'Operator-scope finding', kind: 'change', scope: 'operator', createdBy: 'su-x', workspaceId: 'ws' },
+      d,
+    );
+    expect(res.created).toBe(true);
+    // A creator under no goal: the stamp declined, and the result carries neither field.
+    expect(res.goalId).toBeUndefined();
+    expect(res.goalStampError).toBeUndefined();
+    expect(calls[0]?.item).toEqual({ id: 'EI-100', harness: null });
+  });
+
+  it('RECORDS a stamp failure on the result (and warns) — never fails the capture', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { d } = stamping(async () => {
+        throw new Error('column "goal_id" does not exist');
+      });
+      const res = await captureImprovement(
+        { title: 'Finding under a broken stamp', kind: 'bug', createdBy: 'su-x', workspaceId: 'ws' },
+        d,
+      );
+      expect(res.ok).toBe(true);
+      expect(res.created).toBe(true);
+      expect(res.goalId).toBeUndefined();
+      expect(res.goalStampError).toBe('column "goal_id" does not exist');
+      // EI-20075667133396690: a stamp that THREW must be distinguishable from one that
+      // DECLINED — the warning is the operator-visible half of that distinction.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('goal provenance stamp failed for EI-100');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips the stamp — no call at all — without a concrete workspace or a creator', async () => {
+    const noWorkspace = stamping(async () => 'g');
+    await captureImprovement({ title: 'No workspace', kind: 'bug', createdBy: 'su-x' }, noWorkspace.d);
+    expect(noWorkspace.calls).toEqual([]);
+
+    const noCreator = stamping(async () => 'g');
+    await captureImprovement({ title: 'No creator', kind: 'bug', workspaceId: 'ws' }, noCreator.d);
+    expect(noCreator.calls).toEqual([]);
+  });
+
+  it('never stamps a PROMOTED prior row — a re-capture by a goal agent cannot re-home it', async () => {
+    // Same fixture shape as the P-013 probation promotion above: a second independent
+    // reporter promotes the prior observation IN PLACE, so no row is minted.
+    const key = 'repeated-tool-error:coord:send:caller:invalid-args-body-must-be';
+    const probation = (reporter: string) => ({
+      state: 'probation' as const,
+      class: 'caller',
+      watchdogKey: key,
+      correlationFingerprint: 'coord:send|invalid_args|42|body|codex-1.2|invalid-args-body-must-be',
+      intendedKind: 'change' as const,
+      reporters: [reporter],
+    });
+    const prior = existing({
+      id: 'EI-PROBATION',
+      title: 'coord:send rejected a valid body',
+      kind: 'change',
+      severity: 'nit',
+      payload: { lane: 'observation', watchdogKey: key, toolFailureProbation: probation('su-a') },
+    });
+    const { d, calls } = stamping(async () => 'work-on-everything-070565');
+    d.findIssuesByWatchdogKeys = async () => [prior];
+    d.updateIssuePatch = async (_id, patch) => existing({ ...prior, ...patch });
+    d.mergeIssuePayload = async (_id, patch, opts) => {
+      const payload = { ...(prior.payload as Record<string, unknown>), ...patch };
+      for (const k of opts?.unset ?? []) delete payload[k];
+      return existing({ ...prior, kind: 'change', severity: 'minor', payload });
+    };
+    d.tagIssue = async () => {};
+    d.untagIssue = async () => {};
+    const res = await captureImprovement(
+      {
+        title: 'coord:send rejected a valid body',
+        kind: 'change',
+        lane: 'observation',
+        watchdogKey: key,
+        createdBy: 'su-goal-agent',
+        workspaceId: 'ws',
+        payloadExtra: { toolFailureProbation: probation('su-goal-agent') },
+      },
+      d,
+    );
+    expect(res).toMatchObject({ created: false, reason: 'promoted', issue: { id: 'EI-PROBATION' } });
+    expect(d.created).toHaveLength(0);
+    expect(calls).toEqual([]);
+    expect(res.goalId).toBeUndefined();
+  });
+});

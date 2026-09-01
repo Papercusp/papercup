@@ -1056,6 +1056,10 @@ export default defineTool({
                 }
               : undefined,
           createdBy: id.ownerId,
+          // WI-2140701 (b): the concrete workspace the goal-provenance stamp resolves
+          // the creator's goal in — same resolution as every other workspace-keyed
+          // side effect in this handler.
+          workspaceId: resolveConcreteWorkspaceId(id.workspaceId, ctxWorkspace),
           // Fresh agent change/feature captures are born outside the claimable pool. The
           // core parks them blocked before this wrapper performs the post-create review
           // enrollment, closing the durable-create → review race.

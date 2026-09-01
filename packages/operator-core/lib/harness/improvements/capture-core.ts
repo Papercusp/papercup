@@ -199,6 +199,18 @@ export interface CaptureImprovementInput {
   evidenceAt?: string;
   createdBy?: string;
   /**
+   * The CONCRETE workspace the created row lives in (WI-2140701 (b)).
+   *
+   * Read by exactly one leg: the goal-provenance stamp. `stampGoalProvenance`
+   * resolves the creator's goal from SESSION CONTEXT keyed on (workspace, owner),
+   * so without a concrete workspace a freshly-minted row keeps `goal_id = NULL`
+   * and the goal it was filed under cannot see it. The tool layer resolves this
+   * the same way it does for every other workspace-keyed side effect; omit it
+   * (PG-free callers, tests) and the stamp is skipped as not-applicable, never
+   * as an error.
+   */
+  workspaceId?: string;
+  /**
    * Atomically CLAIM the created item for this agent id, in the SAME create (WI-5950).
    *
    * The persona tells every agent to file the moment it notices something AND to hold a
@@ -477,6 +489,14 @@ export interface CaptureImprovementResult {
   reviewState?: 'blocked';
   /** A committed capture whose review lifecycle could not complete. */
   agentReviewFailure?: AgentReviewFailure;
+  /**
+   * WI-2140701 (b): the goal this freshly-minted row was stamped with from the
+   * creator's session context — present only on a `created: true` result whose
+   * creator runs under a goal. Same field, same semantics as work_items:create.
+   */
+  goalId?: string;
+  /** Set when the goal stamp THREW (recorded, never raised — see CaptureDeps.stampGoalProvenance). */
+  goalStampError?: string;
   hint?: string;
 }
 
@@ -490,6 +510,19 @@ export interface CaptureDeps {
    * A checkpoint failure must never lose the capture itself.
    */
   setCheckpoint?: (workItemId: string, checkpoint: string) => Promise<void>;
+  /**
+   * Stamp a freshly-minted row's `goal_id` from the creator's session context
+   * (WI-2140701 (b)). Defaults to the shared `goals/provenance-stamp` — the same
+   * function work_items:create uses — loaded lazily so the PG-free core never
+   * statically pulls the org pool. Returns the goal id written, or null when the
+   * creator runs under no goal. A throw is RECORDED on the result as
+   * `goalStampError`, never raised: losing provenance must not fail a capture.
+   */
+  stampGoalProvenance?: (
+    item: { id: string; harness?: string | null },
+    workspaceId: string,
+    ownerId: string,
+  ) => Promise<string | null>;
   /** Load a rubric's criteria for the P-014a scorecard-completeness gate + the P-002
    *  rating-value gate (criterion/rubric ratingScale). OPTIONAL — the gate falls back to
    *  the real getRubric; injectable so tests can stub it (or omit it → PG-free tests skip
@@ -606,6 +639,12 @@ const defaultDeps: CaptureDeps = {
     if ('error' in result) throw new Error(result.error);
   },
   setWorkItemStateWithAliasInfo: defaultSetWorkItemStateWithAliasInfo,
+  // Lazy for the same reason as linkIssues: the stamp reaches the org pool and
+  // the mode store, and this core is imported by pure/vitest paths.
+  stampGoalProvenance: async (item, workspaceId, ownerId) => {
+    const { stampGoalProvenance } = await import('../../goals/provenance-stamp');
+    return stampGoalProvenance(item, workspaceId, ownerId);
+  },
 };
 
 function reviewFailureMessage(error: unknown): string {
@@ -2448,6 +2487,32 @@ export async function captureImprovement(
     };
   }
 
+  // ── Goal provenance (WI-2140701 (b)) ─────────────────────────────────────
+  // Stamp goal_id from the creator's SESSION CONTEXT, exactly as work_items:create
+  // does. Until this leg existed every row minted through this door carried
+  // goal_id NULL, so a goal steward's own filings were invisible to its goal's
+  // "what belongs to me" view and spend rollup. A DECORATION: best-effort, and a
+  // throw is RECORDED rather than raised — the row exists, and failing a capture
+  // because provenance could not be written is worse than losing the attribution.
+  // Only a NEW row is stamped: a coalesced/promoted prior row keeps whatever
+  // attribution it already has (or none), so a re-capture by a goal agent can
+  // never re-home somebody else's item.
+  let goalStamp: string | undefined;
+  let goalStampError: string | undefined;
+  if (input.workspaceId && input.createdBy && deps.stampGoalProvenance) {
+    try {
+      const stamped = await deps.stampGoalProvenance(
+        { id: issue.id, harness: harnessFromScope(issue.scope) ?? harnessFromScope(input.scope) },
+        input.workspaceId,
+        input.createdBy,
+      );
+      if (stamped) goalStamp = stamped;
+    } catch (e) {
+      goalStampError = e instanceof Error ? e.message : String(e);
+      console.warn(`[improvements:capture] goal provenance stamp failed for ${issue.id}:`, goalStampError);
+    }
+  }
+
   return {
     ok: true,
     created: true,
@@ -2463,5 +2528,7 @@ export async function captureImprovement(
     ...(agentReviewFailure ? { agentReviewFailure } : {}),
     ...(linkedTo ? { linkedTo } : {}),
     ...(alreadyDecided.length ? { alreadyDecided } : {}),
+    ...(goalStamp ? { goalId: goalStamp } : {}),
+    ...(goalStampError ? { goalStampError } : {}),
   };
 }

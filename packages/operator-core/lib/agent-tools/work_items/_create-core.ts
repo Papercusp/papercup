@@ -31,7 +31,9 @@ import type { DedupCandidateStamp } from './dedup-candidates-stamp';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getOrgPg } from '@papercusp/db-org';
-import { resolveGoalContext } from '../../modes/goal-context';
+// The goal-provenance stamp is SHARED with improvements:capture (WI-2140701 (b)):
+// every door that mints a work-item row stamps goal_id the same way.
+import { stampGoalProvenance } from '../../goals/provenance-stamp';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
 import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
@@ -308,47 +310,6 @@ export async function selectExplicitRepoPathRoot(
  * Create ONE work-item, applying the mirror-guard + workspace resolution + hive-scope
  * gate, then the createWorkItem call (incl. the atomic create+claim). Never throws.
  */
-/**
- * Stamp a freshly-created work-item with the goal its creator is running.
- *
- * Returns the goal id when a stamp was written, `null` in every
- * not-applicable case — no workspace in scope, no owner, or the creator is
- * attached to no goal at all. NONE of those are errors: most work on this fleet
- * is not goal work, so a silent null is the common and correct outcome.
- *
- * `resolveGoalContext` is deliberately the only read here. Resolving the goal
- * any other way — an argument, a plan lookup, a guess from the harness — would
- * re-introduce exactly the self-report this mechanism replaces.
- *
- * It reads the RESOLVED context rather than the creator's goal-mode subject
- * (goal-mode-hardening-2026-08-10 P-002, D-008). The mode subject alone answers
- * only for the agent RUNNING the goal, so every item created by an agent that
- * goal spawned stamped NULL: the goal agent's own handful of items counted and
- * the fleet doing the work was invisible to the spend meter. The resolver adds
- * the inherited leg without giving descendants GOAL mode.
- */
-async function stampGoalProvenance(
-  workItem: WorkItem,
-  workspaceId: string | undefined,
-  ownerId: string | undefined,
-): Promise<string | null> {
-  if (!workspaceId || workspaceId === '*' || !ownerId) return null;
-  const goalId = await resolveGoalContext(workspaceId, ownerId);
-  if (!goalId) return null;
-  const { sql } = getOrgPg();
-  // Keyed on (harness_slug, feature_id) — the table's own identity, the same
-  // pair `createWorkItem`'s ON CONFLICT uses. Never clobbers an existing stamp:
-  // an item explicitly attributed elsewhere outranks the ambient session mode.
-  await sql`
-    UPDATE harness_shared.work_items
-       SET goal_id = ${goalId}
-     WHERE feature_id = ${workItem.id}
-       AND harness_slug = ${workItem.harness}
-       AND goal_id IS NULL
-  `;
-  return goalId;
-}
-
 function workItemOccurrenceEvidence(
   args: CreateOneWorkItemArgs,
   similarOpen: readonly SemanticDupeCandidate[] | undefined,
