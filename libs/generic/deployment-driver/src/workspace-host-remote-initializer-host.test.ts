@@ -458,7 +458,7 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
       agentProbeRunner: runner,
       now: () => NOW,
     }).host;
-    await host.probeAgentAuthentication();
+    await host.probeAgentVerification();
     for (const invocation of invocations) {
       expect(invocation.env).toEqual({
         HOME: "/home/papercusp-workspace",
