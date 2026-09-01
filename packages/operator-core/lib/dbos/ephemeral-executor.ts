@@ -89,6 +89,8 @@ interface ArmedEphemeral {
 let armed: Map<string, ArmedEphemeral> | null = null;
 let heartbeatHandle: ManagedHandle | null = null;
 let liveDeps: EphemeralExecutorDeps | null = null;
+let invalidationSubscription: { close: () => void } | null = null;
+let invalidationListenHookStop: (() => void) | null = null;
 
 const logWith = (deps: EphemeralExecutorDeps, msg: string): void =>
   (deps.log ?? ((m: string) => console.log(`[ephemeral-executor] ${m}`)))(msg);
@@ -159,6 +161,71 @@ export function syncEphemeralRoutine(spec: EphemeralRoutineSpec): void {
   armed.set(spec.id, armOne(spec, liveDeps));
 }
 
+function sameSpec(a: EphemeralRoutineSpec, b: EphemeralRoutineSpec): boolean {
+  return (
+    a.id === b.id &&
+    a.workspaceId === b.workspaceId &&
+    a.installSlug === b.installSlug &&
+    a.name === b.name &&
+    a.targetRole === b.targetRole &&
+    a.intervalSec === b.intervalSec &&
+    JSON.stringify(a.payloadTemplate) === JSON.stringify(b.payloadTemplate) &&
+    JSON.stringify(a.triggerConfig) === JSON.stringify(b.triggerConfig)
+  );
+}
+
+/**
+ * Reconcile the live timer set with durable routine rows. Unchanged timers keep
+ * their original deadline; only added/changed rows re-arm and removed/paused rows
+ * disarm. This is the cross-process consumer for routines:set's existing
+ * `automation.catalog` invalidation and the reconnect catch-up path.
+ */
+export async function refreshEphemeralExecutor(): Promise<{ synced: number; unarmed: number }> {
+  if (!armed || !liveDeps) return { synced: 0, unarmed: 0 };
+  const fresh = await liveDeps.list();
+  const byId = new Map(fresh.map((spec) => [spec.id, spec]));
+  let synced = 0;
+  let unarmed = 0;
+
+  for (const [id, current] of [...armed.entries()]) {
+    const next = byId.get(id);
+    if (!next) {
+      current.handle.stop();
+      armed.delete(id);
+      unarmed += 1;
+      continue;
+    }
+    if (sameSpec(current.spec, next)) continue;
+    current.handle.stop();
+    armed.set(id, armOne(next, liveDeps));
+    synced += 1;
+  }
+  for (const next of fresh) {
+    if (armed.has(next.id)) continue;
+    armed.set(next.id, armOne(next, liveDeps));
+    synced += 1;
+  }
+  if (synced > 0 || unarmed > 0) logWith(liveDeps, `refreshed timers: synced=${synced} unarmed=${unarmed}`);
+  return { synced, unarmed };
+}
+
+/** Start the existing sync-invalidation bus consumer in the bg-host process. */
+export async function startEphemeralRoutineInvalidationSync(): Promise<void> {
+  if (invalidationSubscription) return;
+  const { registerInvalidationListenHook, subscribe } = await import('../sync-sse');
+  const refresh = async (): Promise<void> => {
+    try {
+      await refreshEphemeralExecutor();
+    } catch (e) {
+      console.warn('[ephemeral-executor] invalidation refresh failed (non-fatal):', e instanceof Error ? e.message : e);
+    }
+  };
+  invalidationListenHookStop = registerInvalidationListenHook(refresh);
+  invalidationSubscription = await subscribe((event) => {
+    if (event.name === 'automation.catalog') void refresh();
+  });
+}
+
 /** Stop + drop ONE ephemeral routine's timer (event-driven disarm on delete/pause). */
 export function unarmEphemeralRoutine(routineId: string): void {
   if (!armed) return;
@@ -180,6 +247,10 @@ export function disarmEphemeralExecutor(): void {
     heartbeatHandle = null;
   }
   liveDeps = null;
+  invalidationSubscription?.close();
+  invalidationSubscription = null;
+  invalidationListenHookStop?.();
+  invalidationListenHookStop = null;
 }
 
 /** Whether the executor is currently armed on this host (tests / introspection). */

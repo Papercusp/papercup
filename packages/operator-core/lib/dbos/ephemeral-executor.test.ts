@@ -17,6 +17,7 @@ import {
   disarmEphemeralExecutor,
   ephemeralExecutorArmed,
   armedEphemeralIds,
+  refreshEphemeralExecutor,
   syncEphemeralRoutine,
   unarmEphemeralRoutine,
   type EphemeralExecutorDeps,
@@ -142,6 +143,29 @@ describe('tick → fire + durable liveness', () => {
 });
 
 describe('event-driven sync / unarm / disarm', () => {
+  it('diff-refresh re-arms only changed/added rows and disarms removed rows', async () => {
+    installFakeRegistry();
+    let rows = [spec({ id: 'a', intervalSec: 5, triggerConfig: { interval_sec: 5 } })];
+    const { deps } = mkDeps({ list: async () => rows });
+    await armEphemeralExecutor(deps);
+    expect(ticks).toHaveLength(1);
+
+    expect(await refreshEphemeralExecutor()).toEqual({ synced: 0, unarmed: 0 });
+    expect(ticks).toHaveLength(1); // unchanged timer kept its original deadline
+
+    rows = [
+      spec({ id: 'a', intervalSec: 60, triggerConfig: { interval_sec: 60 } }),
+      spec({ id: 'b', intervalSec: 7, triggerConfig: { interval_sec: 7 } }),
+    ];
+    expect(await refreshEphemeralExecutor()).toEqual({ synced: 2, unarmed: 0 });
+    expect(armedEphemeralIds().sort()).toEqual(['a', 'b']);
+    expect(ticks.slice(-2).map((tick) => tick.ms).sort((a, b) => a - b)).toEqual([7_000, 60_000]);
+
+    rows = [spec({ id: 'b', intervalSec: 7, triggerConfig: { interval_sec: 7 } })];
+    expect(await refreshEphemeralExecutor()).toEqual({ synced: 0, unarmed: 1 });
+    expect(armedEphemeralIds()).toEqual(['b']);
+  });
+
   it('syncEphemeralRoutine re-arms one routine in place; unarmEphemeralRoutine drops it', async () => {
     installFakeRegistry();
     const { deps } = mkDeps({ list: async () => [spec({ id: 'a' })] });
