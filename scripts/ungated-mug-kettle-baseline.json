@@ -1,6 +1,6 @@
 {
   "$comment": "BASELINE for lint:no-ungated-mug-kettle (plan retire-mug-kettle-su-only-2026-08-09, P-016). --list is read-only; --reseed writes atomically and requires --reason when the measured unique entry set shrinks.",
-  "generatedAt": "2026-08-12T05:37:30.410Z",
+  "generatedAt": "2026-09-01T20:11:28.157Z",
   "plan": "retire-mug-kettle-su-only-2026-08-09",
   "item": "P-016",
   "rule": "SHRINK-ONLY. This records the UNGATED mug/kettle/cup surface as it existed when the retirement landed, so the guard can fail on the NEXT ungated addition without demanding a retrofit of ~150 pre-existing sites. NEVER append to it to silence a new finding - gate the new site instead. An entry that disappears is GOOD (that surface was retired or gated); prune it.",
@@ -26,7 +26,6 @@
     "flag|MUG_CAPACITY_DISPATCH|libs/flags/src/types.ts",
     "flag|MUG_CARD_INTERCEPTION|libs/flags/src/types.ts",
     "flag|MUG_FULL_AUTONOMY|libs/flags/src/types.ts",
-    "flag|MUG_KETTLE_SYSTEM|libs/flags/src/types.ts",
     "flag|MUG_TIER_SELECTION|libs/flags/src/types.ts",
     "flag|OVERWATCH|libs/flags/src/types.ts",
     "flag|PER_POT_LEARNING_LOOPS|libs/flags/src/types.ts",
@@ -59,8 +58,6 @@
     "role-door|spawn|packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
     "spawn-role|cup|packages/operator-core/lib/agent-tools/fleet/place_batch.ts",
     "spawn-role|cup|packages/operator-core/lib/agent-tools/pot/pause.ts",
-    "spawn-role|cup|packages/operator-core/lib/agent-tools/scheduler/get_next.ts",
-    "spawn-role|cup|packages/operator-core/lib/agent-tools/scheduler/set_claim_spec.ts",
     "spawn-role|cup|packages/operator-core/lib/events/await/wake-executor-fresh-context.ts",
     "spawn-role|cup|packages/operator-core/lib/external-bench/hive-backlog-live.ts",
     "spawn-role|cup|packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
@@ -75,13 +72,11 @@
     "spawn-role|cup|packages/operator-core/lib/pot/placement-watchdog.ts",
     "spawn-role|cup|packages/operator-core/lib/pot/soak-report.ts",
     "spawn-role|cup|packages/operator-core/lib/pot/throughput.ts",
-    "spawn-role|kettle|apps/operator/app/settings/agent/page.tsx",
     "spawn-role|kettle|packages/operator-core/lib/agent-tools/autonomy/decide.ts",
     "spawn-role|kettle|packages/operator-core/lib/fleet/operator-spawn.ts",
     "spawn-role|kettle|packages/operator-core/lib/harness/improvements/watchdog.ts",
     "spawn-role|kettle|packages/operator-core/lib/llm-testing/scenarios/overwatch/OW01-nudge-not-replace.ts",
     "spawn-role|kettle|packages/operator-core/lib/llm-testing/scenarios/overwatch/OW02-observe-not-idea.ts",
-    "spawn-role|mug|apps/operator/app/settings/agent/page.tsx",
     "spawn-role|mug|packages/operator-core/lib/blueprint/launch-blueprint.ts",
     "spawn-role|mug|packages/operator-core/lib/dbos/durable-spawn.ts",
     "spawn-role|mug|packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
@@ -130,7 +125,6 @@
     "tool|pot:wake|packages/operator-core/lib/agent-tools/pot/wake.ts",
     "ui|AdvNowRunning|apps/operator-vite/src/components/adv/AdvNowRunning.tsx",
     "ui|AdvPotBar|apps/operator-vite/src/components/adv/AdvPotBar.tsx",
-    "ui|LeftSidebar|apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx",
     "ui|PlanRail|apps/operator/app/admin/plans/PlanRail.tsx",
     "ui|PotBeaconToggle|apps/operator/app/adv/harnesses/PotBeaconToggle.tsx",
     "ui|PotContentPanel|apps/operator/app/adv/harnesses/PotContentPanel.tsx",
@@ -174,14 +168,17 @@
     "wake|withinWakeFloor|packages/operator-core/lib/pot/wake.ts"
   ],
   "lastReseed": {
-    "at": "2026-08-12T05:37:30.410Z",
-    "reason": "Current HEAD 7d42330f measured the census at 166 unique entries; reviewed and intentionally pruned the three stale keys reported by the guard after retirement/gating changes.",
-    "previousEntryCount": 169,
-    "nextEntryCount": 166,
+    "at": "2026-09-01T20:11:28.157Z",
+    "reason": "EI-22050938303232651: shrink-only prune — 6 baseline entry points no longer exist (surface retired); no new ungated entries (guard green at HEAD before reseed)",
+    "previousEntryCount": 160,
+    "nextEntryCount": 154,
     "removedEntries": [
-      "flag|MUG_WARM_SESSION|libs/flags/src/types.ts",
-      "role-door|durable-spawn|packages/operator-core/lib/dbos/durable-spawn.ts",
-      "spawn-role|cup|packages/operator-core/lib/modes/registry.ts"
+      "flag|MUG_KETTLE_SYSTEM|libs/flags/src/types.ts",
+      "spawn-role|cup|packages/operator-core/lib/agent-tools/scheduler/get_next.ts",
+      "spawn-role|cup|packages/operator-core/lib/agent-tools/scheduler/set_claim_spec.ts",
+      "spawn-role|kettle|apps/operator/app/settings/agent/page.tsx",
+      "spawn-role|mug|apps/operator/app/settings/agent/page.tsx",
+      "ui|LeftSidebar|apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx"
     ],
     "addedEntries": []
   }
