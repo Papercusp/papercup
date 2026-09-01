@@ -22,7 +22,19 @@ import { getOrgPg } from '@papercusp/db-org';
 import { withPgRetry } from '../../pg-transient-retry';
 import { getBuildInfo } from '../../build-info';
 
-export type PipelineEventKind = 'git_sync' | 'merge_resolver' | 'content_fixer' | 'green_checkpoint' | 'deploy' | 'release_fixer';
+export type PipelineEventKind =
+  | 'git_sync'
+  | 'merge_resolver'
+  | 'content_fixer'
+  | 'green_checkpoint'
+  /** P-001 (gate-verdict-liveness): the per-fire ledger ANCHOR — one row per gate tick/launch,
+   *  written BEFORE any outcome exists. Deliberately a distinct kind: consumers of
+   *  'green_checkpoint' treat "newest row" as "an outcome happened" (the watchdog's
+   *  verdict-less clock among them), so anchors must never ride that stream. Admitted by the
+   *  DB CHECK once migration 1054 applies; until then inserts best-effort warn-and-noop. */
+  | 'green_checkpoint_fire'
+  | 'deploy'
+  | 'release_fixer';
 
 function db(sql?: Sql): Sql {
   return sql ?? (getOrgPg().sql as unknown as Sql);
