@@ -34,6 +34,11 @@ import {
   contextUsagePct,
 } from './inbox-context-usage';
 import { readCueAuthority } from '../cue-authority';
+import {
+  fleetParkOffersResumePath,
+  resolveFleetParkResumePath,
+  type FleetParkResumePath,
+} from '../../../fleet-park-resume-path';
 
 /** The envelope fields the interrupt classifier reads — structural, so the gate
  *  keeps no import edge to the coordination core types (CoordEnvelope satisfies it). */
@@ -59,6 +64,23 @@ export interface FleetWindDownLoopEndAuthorizationInputs {
   fleetControlState: string | null | undefined;
   /** Cues read from the member's current inbox window. */
   cues: readonly FleetWindDownCueLike[] | null | undefined;
+  /**
+   * WI-2034563: does this fleet's park directive publish a way BACK — a declared
+   * latching resume gate, or a deadline that has not passed?
+   *
+   * `true` WITHDRAWS the authorization, and that is the whole point: a park that
+   * expects its capacity back is the one shape where a wake-less stop is not
+   * compliance but stranding. Measured 2026-09-01, ~23 of 45 members of one fleet
+   * ended their loops on exactly this exception and sat unreachable for 2.5-6h with
+   * 37 claims still held. Such a member must park on the gate instead — and once it
+   * does, it never reaches this predicate at all, because the parked-await read
+   * upstream already clears the wake-less guard.
+   *
+   * Positive-finding-only, deliberately: `false`/`null`/`undefined` leave the
+   * historical behaviour untouched. Every pre-mig-1065 wind-down carries no gate and
+   * no deadline, so no fleet parked today is wedged by this rule.
+   */
+  parkOffersResumePath?: boolean | null;
 }
 
 /**
@@ -74,6 +96,10 @@ export function isFleetWindDownLoopEndAuthorized(
   if (inputs.activeClaimPresent !== false) return false;
   const fleet = typeof inputs.currentFleet === 'string' ? inputs.currentFleet.trim() : '';
   if (!fleet || inputs.fleetControlState !== 'winding-down') return false;
+  // WI-2034563: a park with a live way back is a STAND-BY, not a shutdown. The
+  // member is expected to hold the gate, not to disappear; authorizing a wake-less
+  // stop here is what produced the stranding this exception was never meant to cause.
+  if (inputs.parkOffersResumePath === true) return false;
   if (!inputs.cues?.length) return false;
 
   return inputs.cues.some((cue) => {
@@ -156,7 +182,36 @@ export async function readFleetWindDownLoopEndAuthorization(args: {
       currentFleet,
       fleetControlState: fleet?.controlState ?? null,
       cues: inbox,
+      parkOffersResumePath: fleetParkOffersResumePath(resolveFleetParkResumePath(fleet, Date.now())),
     });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WI-2034563: the member-facing detail behind a withdrawn wind-down authorization —
+ * WHICH fleet parked them and WHICH key to await. Read only on the refusal path, so
+ * an ordinary loop:end never pays for it.
+ *
+ * Returns null when the member is in no fleet, the fleet is not parked, or any leg
+ * fails: a refusal must still be able to explain itself in general terms rather than
+ * turning a read miss into an error.
+ */
+export async function readFleetParkResumePathForOwner(args: {
+  ownerId: string;
+  workspaceId: string;
+}): Promise<{ fleet: string; path: FleetParkResumePath } | null> {
+  try {
+    const [{ fetchPresenceFleet }, { getFleet }] = await Promise.all([
+      import('../presence-fleet'),
+      import('../../../agent-fleets-store'),
+    ]);
+    const fleetSlug = (await fetchPresenceFleet([args.ownerId])).get(args.ownerId)?.fleetSlug ?? null;
+    if (!fleetSlug) return null;
+    const record = await getFleet(args.workspaceId, fleetSlug);
+    const path = resolveFleetParkResumePath(record, Date.now());
+    return path.parked ? { fleet: fleetSlug, path } : null;
   } catch {
     return null;
   }

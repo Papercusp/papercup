@@ -145,6 +145,7 @@ import type { FleetCampaign } from './fleet-campaign';
 import { computeMemberIdleVerdict, summariseIdleCauses } from '../../fleet-member-idle-verdict';
 import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
+import { buildPolicyParkedCapacity, resolveFleetParkResumePath } from '../../fleet-park-resume-path';
 import { listWorkItems, WORK_ITEMS_MAX_LIMIT, type WorkItem } from '../../work-items';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
 import {
@@ -3839,9 +3840,30 @@ export async function buildLeaderBrief(
             criticalContext: members.filter((member) => member.contextPressure === 'critical').length,
           },
   }).snapshot;
+  // ── WI-2034563 / P-008 leg (c): policy-parked capacity ────────────────────
+  // The third hole behind the 2026-09-01 incident. Headcount reported the fleet
+  // UNDER-STRENGTH while ~23 of its 45 members were alive, authorized, and simply
+  // parked by the leader's own directive — and the natural response to
+  // under-strength is to RELAUNCH, which buys nothing and costs a seat. Nothing in
+  // this brief named the directive doing the parking, so there was no way to tell
+  // parked capacity from missing capacity.
+  //
+  // Counted over the same canonical LIVE roster `headcount.current` is attested
+  // from, so the two numbers describe one population. A failed roster read leaves
+  // the row absent rather than reporting a fabricated zero — "0 parked" and "we
+  // could not count" must never look alike here.
+  const policyParked =
+    headcountCurrentResult.value == null || fleetRecordResult.value === undefined
+      ? undefined
+      : buildPolicyParkedCapacity({
+          fleet,
+          liveMembers: headcountCurrentResult.value.length,
+          path: resolveFleetParkResumePath(fleetRecordResult.value, Date.now()),
+        });
   const summary = {
     fleet,
     members: members.length,
+    ...(policyParked ? { policyParked } : {}),
     // P-010: what `members` (and every count below it, all of which are filters
     // OVER the same list) is a count OF. Without this the number is only
     // comparable to itself: the same fleet read 11 / 11 / 14 / 8 / 9 across
