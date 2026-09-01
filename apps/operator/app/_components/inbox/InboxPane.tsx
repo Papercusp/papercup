@@ -66,6 +66,7 @@ import {
 import {
   ArrowUpDown,
   ChevronDown,
+  ChevronLeft,
   ClipboardList,
   ChevronRight,
   Inbox as InboxIcon,
@@ -378,7 +379,23 @@ function InboxExpandedDetail({
   );
 }
 
-export default function InboxPane() {
+/**
+ * How the pane lays out its list and the selected item's detail
+ * (portal-work-two-pane-2026-09-01 D-001).
+ *  - `stack` — the chat-sidebar disclosure: the detail expands inline under
+ *    its row. The default, and the sidebar's layout is unchanged by it.
+ *  - `split` — list on the left, the selected item's detail in a right-hand
+ *    aside. Used only by the operator-vite `/inbox` full-page route the cloud
+ *    portal embeds. Selection is the same `?opcis` either way.
+ */
+export type InboxPaneLayout = "stack" | "split";
+
+export default function InboxPane({
+  layout = "stack",
+}: {
+  layout?: InboxPaneLayout;
+} = {}) {
+  const split = layout === "split";
   const {
     items,
     loading,
@@ -560,6 +577,11 @@ export default function InboxPane() {
   const lastScrolledSel = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const masterRef = useRef<HTMLElement | null>(null);
+  // Split mode's detail column — the focus landmark InboxExpandedDetail falls
+  // back to when the aside's subtree is passively removed (at narrow widths the
+  // list column is display:none while an item is selected, so the master
+  // section is not a safe target there).
+  const asideRef = useRef<HTMLElement | null>(null);
 
   // Resolve selection against the SCOPED feed, not the filtered list. The
   // selected row is admitted below even when a deep link's tier/kind/search
@@ -676,8 +698,76 @@ export default function InboxPane() {
     }
   }, [sel, visible, rowVirtualizer]);
 
+  // The selected row's detail — OtherDetail plus the `?opcid` discussion. In
+  // stack mode it renders inline under its row (the sidebar disclosure); in
+  // split mode the SAME subtree renders once in the aside, so the row's
+  // `aria-controls` keeps resolving to `inbox-expanded-<id>` wherever it lives.
+  const renderExpandedDetail = (i: AttentionItem) => {
+    const discussion = (() => {
+      const workItemId = attentionWorkItemId(i);
+      const harnessMatches =
+        !discussionTarget.harness ||
+        discussionTarget.harness === i.harnessSlug;
+      if (
+        !workItemId ||
+        !i.harnessSlug ||
+        discussionTarget.id !== workItemId ||
+        !harnessMatches
+      ) {
+        return null;
+      }
+      return (
+        <WorkItemDiscussion
+          harnessSlug={i.harnessSlug}
+          workItemId={workItemId}
+          title={i.title}
+          onClose={() => {
+            // The discussion's focused Close button is about to unmount.
+            // Return to a surviving element before clearing the URL so focus
+            // never falls to <body> (including report-originated handoffs):
+            // the selected row in stack mode; in split mode the aside, which
+            // keeps hosting the item's detail (and the row may be hidden at
+            // narrow widths).
+            const row = document.getElementById(`inbox-row-${i.id}`);
+            (split ? (asideRef.current ?? row) : row)?.focus({
+              preventScroll: true,
+            });
+            void setDiscussionRef(null);
+          }}
+          focusWhenInteractive
+        />
+      );
+    })();
+    return (
+      <InboxExpandedDetail
+        itemId={i.id}
+        landmarkRef={split ? asideRef : masterRef}
+      >
+        <OtherDetail
+          key={i.id}
+          item={i}
+          actionsPlacement="after-body"
+          onResolved={onResolved}
+          onDiscuss={onDiscuss}
+          onNavigate={onNavigate}
+        />
+        {discussion}
+      </InboxExpandedDetail>
+    );
+  };
+
+  // `data-has-selection` is presence-only: the narrow-width split CSS swaps
+  // which column is shown on it (list without a selection, detail with one).
+  // The `op-inbox__column` wrapper is display:contents in stack mode, so the
+  // sidebar's box tree is unchanged; in split mode it is the left (list) column.
   return (
-    <div className="op-inbox" data-testid="inbox-tab">
+    <div
+      className={`op-inbox${split ? " op-inbox--split" : ""}`}
+      data-testid="inbox-tab"
+      data-layout={layout}
+      data-has-selection={split && selectedItem ? "" : undefined}
+    >
+      <div className="op-inbox__column">
       {/* tabIndex -1 (never tab-reachable): the stable landmark
           InboxExpandedDetail returns keyboard focus to when a passively removed
           row leaves no surviving row button. The pane styles focus rings with
@@ -1050,53 +1140,9 @@ export default function InboxPane() {
                         onDiscuss={() => void onDiscuss(i)}
                       />
                     ) : null}
-                    {isSel ? (
-                      <InboxExpandedDetail
-                        itemId={i.id}
-                        landmarkRef={masterRef}
-                      >
-                        <OtherDetail
-                          key={i.id}
-                          item={i}
-                          actionsPlacement="after-body"
-                          onResolved={onResolved}
-                          onDiscuss={onDiscuss}
-                          onNavigate={onNavigate}
-                        />
-                        {(() => {
-                          const workItemId = attentionWorkItemId(i);
-                          const harnessMatches =
-                            !discussionTarget.harness ||
-                            discussionTarget.harness === i.harnessSlug;
-                          if (
-                            !workItemId ||
-                            !i.harnessSlug ||
-                            discussionTarget.id !== workItemId ||
-                            !harnessMatches
-                          ) {
-                            return null;
-                          }
-                          return (
-                            <WorkItemDiscussion
-                              harnessSlug={i.harnessSlug}
-                              workItemId={workItemId}
-                              title={i.title}
-                              onClose={() => {
-                                // The discussion's focused Close button is about to
-                                // unmount. Return to this surviving selected row
-                                // before clearing the URL so focus never falls to
-                                // <body> (including report-originated handoffs).
-                                document
-                                  .getElementById(`inbox-row-${i.id}`)
-                                  ?.focus({ preventScroll: true });
-                                void setDiscussionRef(null);
-                              }}
-                              focusWhenInteractive
-                            />
-                          );
-                        })()}
-                      </InboxExpandedDetail>
-                    ) : null}
+                    {/* Stack mode: the disclosure opens under its row. Split
+                        mode renders the same subtree in the aside instead. */}
+                    {isSel && !split ? renderExpandedDetail(i) : null}
                   </div>
                 </div>
               );
@@ -1116,6 +1162,42 @@ export default function InboxPane() {
           </button>
         </div>
       </section>
+      </div>
+
+      {split ? (
+        <aside
+          ref={asideRef}
+          tabIndex={-1}
+          className="op-inbox__aside"
+          data-testid="inbox-aside"
+          aria-label="Selected inbox item"
+        >
+          {selectedItem ? (
+            <>
+              {/* Shown by CSS at narrow widths only, where the list column is
+                  hidden while an item is selected — this is the way back. */}
+              <button
+                type="button"
+                className="op-inbox__aside-back"
+                data-testid="inbox-aside-back"
+                onClick={() => void setSel(null)}
+              >
+                <ChevronLeft size={14} aria-hidden="true" />
+                Back to list
+              </button>
+              {renderExpandedDetail(selectedItem)}
+            </>
+          ) : (
+            <div
+              className="op-inbox__aside-empty"
+              data-testid="inbox-aside-empty"
+            >
+              <InboxIcon size={22} aria-hidden="true" />
+              <span>Select an item to read and answer it here</span>
+            </div>
+          )}
+        </aside>
+      ) : null}
 
       <SessionChatModal
         sessionOwnerId={chatOwner}

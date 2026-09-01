@@ -716,6 +716,108 @@
   transform: translateY(-1px);
 }
 
+/* ── layout="split" (portal-work-two-pane-2026-09-01 D-001) ───────────────
+   List left, the selected item's detail in a right-hand aside. Used ONLY by
+   the operator-vite /inbox full-page route the cloud portal embeds; the chat
+   sidebar stays in stack mode. In stack mode the column wrapper is
+   display:contents, so the sidebar's box tree is exactly what it was. */
+.op-inbox__column {
+  display: contents;
+}
+.op-inbox--split {
+  display: grid;
+  grid-template-columns: minmax(380px, 37%) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  padding: 0;
+}
+.op-inbox--split .op-inbox__column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  border-right: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+.op-inbox__aside {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 22px 22px;
+  outline: none;
+  background: color-mix(
+    in srgb,
+    var(--bg-2, rgba(0, 0, 0, 0.18)) 40%,
+    transparent
+  );
+}
+/* The aside hosts the same drawer subtree a stack row does; flatten the
+   drawer chrome — here it IS the page's detail column, not a row's drawer. */
+.op-inbox__aside .op-inbox__detail {
+  padding: 0;
+  border-top: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.op-inbox__aside .pc-items__detail-body {
+  padding: 8px 0 4px;
+}
+.op-inbox__aside .pc-items__action {
+  flex: 0 1 auto;
+  min-width: 120px;
+}
+.op-inbox__aside-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--fg-mute, #8a8a91);
+  font-size: 13px;
+  text-align: center;
+}
+.op-inbox__aside-back {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  min-height: 30px;
+  margin-bottom: 12px;
+  padding: 0 10px 0 6px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg, #e5e7eb);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.op-inbox__aside-back:hover {
+  background: color-mix(in srgb, var(--fg, #e5e7eb) 6%, transparent);
+}
+/* Narrow: one column at a time. With a selection the detail fills the page
+   (and the Back button appears); without one the list does. */
+@media (max-width: 900px) {
+  .op-inbox--split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .op-inbox--split .op-inbox__column {
+    border-right: 0;
+  }
+  .op-inbox--split[data-has-selection] .op-inbox__column {
+    display: none;
+  }
+  .op-inbox--split:not([data-has-selection]) .op-inbox__aside {
+    display: none;
+  }
+  .op-inbox--split .op-inbox__aside-back {
+    display: inline-flex;
+  }
+}
+
 @container op-chat (max-width: 420px) {
   .op-inbox__chips {
     flex-wrap: nowrap;
