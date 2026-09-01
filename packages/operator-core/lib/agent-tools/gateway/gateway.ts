@@ -117,6 +117,7 @@ export const gatewayStatusTool = defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({}),
+  result: z.object({ value: z.unknown().optional(), writer: z.unknown().optional() }).passthrough(),
   async handler() {
     try {
       const r = await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) });
