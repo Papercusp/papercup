@@ -29,6 +29,7 @@ import {
   type Gateway429Shape,
 } from './gateway';
 import { parseCodexRateLimitHeaders } from './codex-oauth-proxy';
+import { parseProviderReset } from './provider-reset';
 import type { LocalBackend, LocalBackendHealth, LocalBackendPool } from './local-backend-pool';
 import type { DbHealthSnapshot } from './db-health';
 import {
@@ -457,36 +458,7 @@ function headerNumber(headers: Record<string, string | undefined>, ...names: str
   return undefined;
 }
 
-/** Parse OpenAI's reset dialect as either a duration, epoch seconds, epoch ms, or ISO date. */
-export function parseProviderReset(raw: string | undefined, nowMs: number): number | undefined {
-  const value = raw?.trim();
-  if (!value) return undefined;
-  // Parse numeric forms before Date.parse.  Date.parse accepts surprising
-  // legacy spellings such as "10" (interpreting it as a calendar date), which
-  // would turn a ten-second retry into a timestamp years in the past.
-  if (/^\d+(?:\.\d+)?$/.test(value)) {
-    const n = Number(value);
-    if (!finite(n)) return undefined;
-    // Values above 10^11 are already epoch milliseconds.  Large values above
-    // the current epoch in seconds are epoch seconds; small values are seconds
-    // from now (OpenAI commonly sends `1s`, but some builds send bare seconds).
-    if (n >= 100_000_000_000) return n;
-    if (n >= 1_000_000_000) return n * 1_000;
-    return nowMs + Math.max(0, n) * 1_000;
-  }
-  let seconds = 0;
-  let matchedDuration = false;
-  for (const match of value.matchAll(/(\d+(?:\.\d+)?)\s*([smhd])/gi)) {
-    matchedDuration = true;
-    const amount = Number(match[1]);
-    const unit = match[2]!.toLowerCase();
-    if (!finite(amount)) continue;
-    seconds += amount * (unit === 's' ? 1 : unit === 'm' ? 60 : unit === 'h' ? 3_600 : 86_400);
-  }
-  if (matchedDuration) return finite(seconds) ? nowMs + Math.max(0, seconds) * 1_000 : undefined;
-  const iso = Date.parse(value);
-  return Number.isNaN(iso) ? undefined : iso;
-}
+export { parseProviderReset };
 
 function parseCodexReset(raw: string | undefined, nowMs: number): number | undefined {
   const value = raw?.trim();
