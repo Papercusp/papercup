@@ -319,7 +319,13 @@ export default defineTool({
         repairQueue: inspected.diagnostic,
       });
     }
-    if (!inspected.diagnostic.retireAllowed) {
+    // A broad liveness read can fail-soft to `null` while the exact terminal pair is still
+    // durable. Let the transaction-scoped retire helper recheck that case; keep the other safety
+    // refusals (live fixer, active reservation, unsafe phase) fail-closed at the read boundary.
+    if (
+      !inspected.diagnostic.retireAllowed &&
+      inspected.diagnostic.retireRefusal !== 'liveness-unknown'
+    ) {
       return json({
         ok: false,
         op: 'retire',
@@ -343,7 +349,39 @@ export default defineTool({
     }
 
     const result = await retireFrozenCandidateRepairQueue(inspected.target, inspected.queue);
-    const currentFixerAlive = await inspectFixerLiveness(result.current);
+    const currentFixerAlive =
+      result.fixerAlive !== undefined ? result.fixerAlive : await inspectFixerLiveness(result.current);
+    const currentDiagnostic = result.current
+      ? diagnoseFrozenCandidateRepairQueue(result.current, {
+          nowMs: Date.now(),
+          fixerAlive: currentFixerAlive,
+        })
+      : null;
+    // The transaction may refuse after taking the routine-row lock because its authoritative
+    // liveness/identity differs from the preflight read. This is a safety refusal, not a storage
+    // CAS miss, and must remain visible as such so callers do not retry a live/unknown fixer.
+    if (!result.retired && result.refusal && result.refusal !== 'identity-mismatch') {
+      return json({
+        ok: false,
+        op: 'retire',
+        retired: false,
+        refused: true,
+        reason: result.refusal,
+        target: inspected.target,
+        repairQueue: currentDiagnostic,
+      });
+    }
+    if (!result.retired && result.refusal === 'identity-mismatch') {
+      return json({
+        ok: false,
+        op: 'retire',
+        retired: false,
+        refused: true,
+        reason: 'exact_queue_identity_mismatch',
+        target: inspected.target,
+        repairQueue: currentDiagnostic,
+      });
+    }
     const casMiss = !result.retired;
     const identity = readIdentity(ctx);
     const auditRecorded = await recordAudit(identity.ownerId, {
@@ -365,12 +403,7 @@ export default defineTool({
       reason: casMiss ? 'cas-miss' : undefined,
       target: inspected.target,
       auditRecorded,
-      current: result.current
-        ? diagnoseFrozenCandidateRepairQueue(result.current, {
-            nowMs: Date.now(),
-            fixerAlive: currentFixerAlive,
-          })
-        : null,
+      current: currentDiagnostic,
     });
   },
 });

@@ -24,6 +24,58 @@ export const RELEASE_FIXER_NO_TURN_PHASE = 'green-checkpoint-release-fixer-no-tu
 
 /** Keep the legacy task-to-spawn temporal join deliberately narrow. */
 const LEGACY_TASK_LINK_SKEW_SEC = 5;
+type ReleaseFixerSql = Pick<postgres.Sql, 'unsafe'>;
+
+interface TerminalReleaseFixerEvidence {
+  spawnTerminal: boolean;
+  taskScopeEnded: boolean;
+}
+
+/**
+ * Recover the one liveness fact that is safe to derive after the broad liveness query fails.
+ *
+ * The normal probe intentionally has several joins and host/PID checks, so a transient catalog
+ * or connection failure must remain `null` for ordinary rows. A terminal spawned-agent row plus
+ * an exact terminal task_ledger scope is different: those two durable rows are the handoff's
+ * completion record and are enough to prove that THIS fixer cannot still be running. Keeping this
+ * fallback narrow prevents a query failure from turning into a false death while eliminating the
+ * false `null` observed during queue retirement (EI-22026318885195355).
+ */
+async function readTerminalReleaseFixerEvidence(
+  sql: ReleaseFixerSql,
+  spawnId: string,
+): Promise<TerminalReleaseFixerEvidence | null> {
+  try {
+    const rows = (await sql.unsafe(
+      `SELECT EXISTS (
+                SELECT 1
+                  FROM harness_shared.spawned_agents sa
+                 WHERE sa.spawn_id = $1
+                   AND sa.status NOT IN ('running','restarting')
+              ) AS spawn_terminal,
+              EXISTS (
+                SELECT 1
+                  FROM harness_shared.spawned_agents sa
+                  JOIN harness_shared.task_ledger tl
+                    ON tl.workspace_id = sa.workspace_id
+                   AND tl.class = 'agent-session'
+                   AND tl.launched_by = 'orchestrator:release-fixer'
+                   AND tl.detail->>'spawnRecordId' = sa.spawn_id
+                   AND tl.state NOT IN ('pending','running')
+                 WHERE sa.spawn_id = $1
+              ) AS task_scope_ended`,
+      [spawnId],
+    )) as Array<{ spawn_terminal?: boolean; task_scope_ended?: boolean }>;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      spawnTerminal: row.spawn_terminal === true,
+      taskScopeEnded: row.task_scope_ended === true,
+    };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * A launch-blueprint row should reach /invoke admission (PID/session/output/tool pickup)
@@ -145,7 +197,7 @@ export async function recordReleaseFixerNoTurnEscalation(
  * therefore fail closed to null.
  */
 export async function releaseFixerSpawnAlive(
-  sql: postgres.Sql,
+  sql: ReleaseFixerSql,
   spawnId: string | null | undefined,
 ): Promise<boolean | null> {
   if (!spawnId) return null;
@@ -178,6 +230,18 @@ export async function releaseFixerSpawnAlive(
                    AND tl.state NOT IN ('pending','running')
                    AND tl.detail->>'spawnRecordId' = sa.spawn_id
               ) AS task_scope_ended
+              ,(
+                sa.status NOT IN ('running','restarting')
+                AND EXISTS (
+                  SELECT 1
+                    FROM harness_shared.task_ledger tl
+                   WHERE tl.workspace_id = sa.workspace_id
+                     AND tl.class = 'agent-session'
+                     AND tl.launched_by = 'orchestrator:release-fixer'
+                     AND tl.state NOT IN ('pending','running')
+                     AND tl.detail->>'spawnRecordId' = sa.spawn_id
+                )
+              ) AS terminal_fixer_evidence
               ,(
                 (
                   sa.status IN ('running','restarting')
@@ -236,6 +300,7 @@ export async function releaseFixerSpawnAlive(
       spawn_lease_live?: boolean;
       live_task_scope?: boolean;
       task_scope_ended?: boolean;
+      terminal_fixer_evidence?: boolean;
       task_scope_progress_eligible?: boolean;
       launch_pickup_eligible?: boolean;
       legacy_task_candidate_count?: number | string;
@@ -258,7 +323,10 @@ export async function releaseFixerSpawnAlive(
     // was never refreshed after the fixer died at launch stays inside the grace
     // window below) — a pid-reuse false-alive can only mislead the checks that
     // follow, never this one, because it is keyed on the exact spawn id.
-    if (row.task_scope_ended) return false;
+    // A terminal launch and its exact task scope are durable completion evidence. Evaluate this
+    // before any PID/heartbeat fallback so a reused PID or stale heartbeat cannot resurrect a
+    // fixer that the task reconciler has already closed.
+    if (row.terminal_fixer_evidence || row.task_scope_ended) return false;
 
     const taskScopeProgressEligible = row.task_scope_progress_eligible === true;
     if (row.live_task_scope && taskScopeProgressEligible) return true;
@@ -305,7 +373,11 @@ export async function releaseFixerSpawnAlive(
     }
     return true;
   } catch {
-    return null;
+    // A transient failure in the broad probe used to oscillate a terminal fixer between false and
+    // null. Re-read only the durable terminal pair: if it is present, false is still provable;
+    // otherwise preserve the fail-closed unknown result for all less-conclusive shapes.
+    const terminal = await readTerminalReleaseFixerEvidence(sql, spawnId);
+    return terminal?.spawnTerminal === true && terminal.taskScopeEnded === true ? false : null;
   }
 }
 
