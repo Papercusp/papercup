@@ -189,6 +189,25 @@ describe('GOAL mode STANDING clause (work-on-everything-goal-2026-08-23 P-008)',
   });
 });
 
+describe('GOAL mode owner-report floor (WI-2140700) — the obligation lives in the every-wake contract', () => {
+  const goal = modeById('goal');
+
+  it('names the concrete floor, the orient field, and the every-wake-first ordering', () => {
+    expect(goal).not.toBeNull();
+    // The floor is stated as a number the holder can act on, not "a standing cadence".
+    expect(goal!.contract).toMatch(/standing goal may not go 60 minutes without an\s+owner-facing report/);
+    expect(goal!.contract).toMatch(/an outcome goal: 4 hours/);
+    // The per-wake read is the orient field the watchdog's own arithmetic projects.
+    expect(goal!.contract).toContain('modes.ownerReport');
+    expect(goal!.contract).toMatch(/EVERY WAKE,\s+FIRST, before any other work/);
+    expect(goal!.contract).toMatch(/`overdue` or `due-now`/);
+    // The four elements are the ones the rail measures and the skeleton hands back.
+    expect(goal!.contract).toMatch(/MOVED \/ COST \/ OWNER-WALLED \/ KILLED/);
+    // coord:send to ['human'] is named as a measured rail (WI-2091959 made it one).
+    expect(goal!.contract).toMatch(/coord:send\s+to \['human'\]/);
+  });
+});
+
 describe('GOAL mode DAG addendum (goal-dag-shared-substrate-2026-08-18 P-006)', () => {
   const goal = modeById('goal');
 
