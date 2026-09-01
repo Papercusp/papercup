@@ -130,7 +130,9 @@ export async function resolveAcceptanceGraderEligibility(params: {
         code: 'grader_in_implementer_lineage',
         error:
           `grader '${callerId}' is in acceptance-rubric author '${implementer}'s spawn/rebind lineage — ` +
-          'a related session cannot supply the independent grading; launch or assign a lineage-independent grader',
+          'a related session cannot supply the independent grading; recruit an existing unrelated live session via ' +
+          'coord:presence/coord:dispatch, or use an unassigned grading work-item for scheduler pull — never launch a ' +
+          'grader from this lineage',
       },
     };
   }

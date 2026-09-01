@@ -766,6 +766,10 @@ describe('emitScorecard', () => {
       code: 'grader_in_implementer_lineage',
       error: expect.stringContaining('spawn/rebind lineage'),
     });
+    expect((r as { error?: string }).error).toContain('existing unrelated live session');
+    expect((r as { error?: string }).error).toContain('unassigned grading work-item');
+    expect((r as { error?: string }).error).toContain('never launch a grader from this lineage');
+    expect((r as { error?: string }).error).not.toContain('launch or assign a lineage-independent grader');
     expect(captureM).not.toHaveBeenCalled();
   });
 
@@ -1307,6 +1311,12 @@ describe('acceptance-grader eligibility is answerable BEFORE the grading work (E
         refusal: { code: 'grader_in_implementer_lineage' },
       },
     });
+    const refusal = (preflight as {
+      graderEligibility?: { refusal?: { error?: string } };
+    }).graderEligibility?.refusal;
+    expect(refusal?.error).toContain('existing unrelated live session');
+    expect(refusal?.error).toContain('unassigned grading work-item');
+    expect(refusal?.error).toContain('never launch a grader from this lineage');
     await expect(
       emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-relative' }),
     ).resolves.toMatchObject({ ok: false, code: 'grader_in_implementer_lineage' });
