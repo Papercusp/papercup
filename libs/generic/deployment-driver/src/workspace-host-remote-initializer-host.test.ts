@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   WorkspaceHostOperationError,
+  WorkspaceHostGitCredentialBindingRegistry,
   WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT,
   createProductionWorkspaceHostRemoteInitializerDeps,
   type WorkspaceHostCommandInput,
@@ -60,6 +61,40 @@ class RecordingSystem implements WorkspaceHostSystem {
   }
   async readFileIfPresent(path: string) {
     return this.files.get(path) ?? null;
+  }
+}
+
+class PausingRecordingSystem extends RecordingSystem {
+  private pausePath: string | null = null;
+  private didPause = false;
+  private markPaused: (() => void) | undefined;
+  private releasePause: (() => void) | undefined;
+  readonly paused: Promise<void>;
+
+  constructor() {
+    super();
+    this.paused = new Promise<void>((resolve) => {
+      this.markPaused = resolve;
+    });
+  }
+
+  pauseRemovalAt(path: string): void {
+    this.pausePath = path;
+  }
+
+  release(): void {
+    this.releasePause?.();
+  }
+
+  override async removePath(path: string): Promise<void> {
+    if (!this.didPause && path === this.pausePath) {
+      this.didPause = true;
+      this.markPaused?.();
+      await new Promise<void>((resolve) => {
+        this.releasePause = resolve;
+      });
+    }
+    await super.removePath(path);
   }
 }
 
@@ -280,6 +315,57 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
 
     system.present.add("/workspaces/repository/.git");
     await rotated.host.cloneRepository({
+      repositoryUrl: "https://github.com/papercupai/private-canary.git",
+      visibility: "private",
+      destination: "repository",
+      credentialChannel: "git",
+    });
+    expect(system.commands.at(-1)?.env?.GIT_CONFIG_VALUE_0).toBe(
+      `store --file=${generation8Path}`,
+    );
+  });
+
+  it("serializes a racing stale Git revoke before a newer cross-process bind", async () => {
+    const system = new PausingRecordingSystem();
+    const first = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+    place(system, MATERIAL_PATH, Buffer.from(AUTHORIZATION_MATERIAL));
+    await first.credentials.run("bind", gitBinding());
+    system.pauseRemovalAt(
+      WorkspaceHostGitCredentialBindingRegistry.statePath(MATERIAL_ROOT),
+    );
+
+    const staleRevoke = first.credentials.run("revoke", gitBinding());
+    await system.paused;
+    const generation8Path = workspaceHostCredentialMaterialPath(
+      MATERIAL_ROOT,
+      "git-short-lived-delegation",
+      8,
+    );
+    place(system, generation8Path, Buffer.from("https://git-user:rotated@github.com"));
+    const newer = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+    let newerFinished = false;
+    const newerBind = newer.credentials
+      .run("bind", gitBinding("2026-08-26T23:00:00.000Z", 8))
+      .then(() => {
+        newerFinished = true;
+      });
+    await Promise.resolve();
+    expect(newerFinished).toBe(false);
+
+    system.release();
+    await Promise.all([staleRevoke, newerBind]);
+    system.present.add("/workspaces/repository/.git");
+    await newer.host.cloneRepository({
       repositoryUrl: "https://github.com/papercupai/private-canary.git",
       visibility: "private",
       destination: "repository",
