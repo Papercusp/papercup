@@ -29,16 +29,17 @@
  * would pass on a host where nobody had ever signed in, which is the precise failure the canary
  * exists to catch.
  */
-import { spawn as nodeSpawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { spawn as nodeSpawn } from "node:child_process";
+import { createHash } from "node:crypto";
 
-import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
+import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
 
 export const WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION =
-  'papercusp-workspace-host-agent-authentication-v1';
+  "papercusp-workspace-host-agent-authentication-v1";
 
-export const WORKSPACE_HOST_CANARY_AGENTS = ['claude', 'codex', 'omp'] as const;
-export type WorkspaceHostCanaryAgent = (typeof WORKSPACE_HOST_CANARY_AGENTS)[number];
+export const WORKSPACE_HOST_CANARY_AGENTS = ["claude", "codex", "omp"] as const;
+export type WorkspaceHostCanaryAgent =
+  (typeof WORKSPACE_HOST_CANARY_AGENTS)[number];
 
 /**
  * How a probe's extracted subject may be published.
@@ -47,7 +48,7 @@ export type WorkspaceHostCanaryAgent = (typeof WORKSPACE_HOST_CANARY_AGENTS)[num
  * promise the caller can make on a tool's behalf. Everything else digests, because we cannot
  * know whether an arbitrary agent CLI prints a full email, an org name, or a key prefix.
  */
-export type WorkspaceHostAgentSubjectDisclosure = 'redacted' | 'digest';
+export type WorkspaceHostAgentSubjectDisclosure = "redacted" | "digest";
 
 export interface WorkspaceHostAgentAuthenticationProbeSpec {
   readonly agent: WorkspaceHostCanaryAgent;
@@ -90,33 +91,34 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES: Readonly<
   Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentAuthenticationProbeSpec>
 > = {
   claude: {
-    agent: 'claude',
-    command: 'claude',
-    args: ['auth', 'status'],
-    endpoint: 'https://api.anthropic.com',
+    agent: "claude",
+    command: "claude",
+    args: ["auth", "status"],
+    endpoint: "https://api.anthropic.com",
     // An email, or an account/organization identifier, whichever the status line reports.
     // The separator class deliberately EXCLUDES alphanumerics: a `\D`-style separator matches
     // letters, so a greedy run would swallow the subject itself and capture only its tail.
     subjectPattern: SUBJECT_PATTERN,
-    subjectDisclosure: 'digest',
+    subjectDisclosure: "digest",
   },
   codex: {
-    agent: 'codex',
-    command: 'codex',
-    args: ['login', 'status'],
-    endpoint: 'https://api.openai.com',
+    agent: "codex",
+    command: "codex",
+    args: ["login", "status"],
+    endpoint: "https://api.openai.com",
     subjectPattern: SUBJECT_PATTERN,
-    subjectDisclosure: 'digest',
+    subjectDisclosure: "digest",
   },
   omp: {
-    agent: 'omp',
-    command: 'omp',
-    args: ['usage', '--json', '--redact'],
-    endpoint: 'papercusp-omp-broker',
+    agent: "omp",
+    command: "omp",
+    args: ["usage", "--json", "--redact"],
+    endpoint: "papercusp-omp-broker",
     // `--redact` already reduces account ids to a shortest-unique prefix, so the captured value
     // is publishable as-is; this reads the first account id out of the JSON report.
-    subjectPattern: /"(?:account|accountId|account_id)"\s*:\s*"([^"\\]{1,120})"/,
-    subjectDisclosure: 'redacted',
+    subjectPattern:
+      /"(?:account|accountId|account_id)"\s*:\s*"([^"\\]{1,120})"/,
+    subjectDisclosure: "redacted",
   },
 };
 
@@ -140,7 +142,9 @@ export interface WorkspaceHostAgentProbeOutcome {
 }
 
 export interface WorkspaceHostAgentProbeRunner {
-  run(invocation: WorkspaceHostAgentProbeInvocation): Promise<WorkspaceHostAgentProbeOutcome>;
+  run(
+    invocation: WorkspaceHostAgentProbeInvocation,
+  ): Promise<WorkspaceHostAgentProbeOutcome>;
 }
 
 export interface WorkspaceHostAgentProbeProcess {
@@ -177,14 +181,20 @@ export function buildWorkspaceHostAgentProbeProcess(
     !WORKSPACE_HOST_PROBE_ACCOUNT.test(invocation.runAsUser) ||
     invocation.runAsUser === "root"
   ) {
-    throw new Error("agent authentication probe runAsUser must be a non-root Linux account");
+    throw new Error(
+      "agent authentication probe runAsUser must be a non-root Linux account",
+    );
   }
   if (!invocation.env) {
-    throw new Error("agent authentication probe runAsUser requires a complete environment");
+    throw new Error(
+      "agent authentication probe runAsUser requires a complete environment",
+    );
   }
   const environment = Object.entries(invocation.env).map(([key, value]) => {
     if (!WORKSPACE_HOST_PROBE_ENV_NAME.test(key) || /\0/.test(value)) {
-      throw new Error("agent authentication probe environment is not safe for env -i");
+      throw new Error(
+        "agent authentication probe environment is not safe for env -i",
+      );
     }
     return `${key}=${value}`;
   });
@@ -225,12 +235,12 @@ export interface WorkspaceHostAgentAuthenticationEvidence {
 }
 
 export type WorkspaceHostAgentProbeFailureReason =
-  | 'non-zero-exit'
-  | 'no-authenticated-subject'
-  | 'probe-error';
+  | "non-zero-exit"
+  | "no-authenticated-subject"
+  | "probe-error";
 
 export function workspaceHostAgentSubjectDigest(subject: string): string {
-  return createHash('sha256').update(subject).digest('hex').slice(0, 16);
+  return createHash("sha256").update(subject).digest("hex").slice(0, 16);
 }
 
 /**
@@ -244,7 +254,9 @@ export function workspaceHostAgentSubjectDigest(subject: string): string {
 export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProbeRunner {
   constructor(private readonly spawnImpl: typeof nodeSpawn = nodeSpawn) {}
 
-  run(invocation: WorkspaceHostAgentProbeInvocation): Promise<WorkspaceHostAgentProbeOutcome> {
+  run(
+    invocation: WorkspaceHostAgentProbeInvocation,
+  ): Promise<WorkspaceHostAgentProbeOutcome> {
     return new Promise((resolve, reject) => {
       let processInput: WorkspaceHostAgentProbeProcess;
       try {
@@ -253,11 +265,15 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
         reject(error);
         return;
       }
-      const child = this.spawnImpl(processInput.command, [...processInput.args], {
-        stdio: ["ignore", "pipe", "pipe"],
-        ...(processInput.env ? { env: { ...processInput.env } } : {}),
-      });
-      let stdout = '';
+      const child = this.spawnImpl(
+        processInput.command,
+        [...processInput.args],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          ...(processInput.env ? { env: { ...processInput.env } } : {}),
+        },
+      );
+      let stdout = "";
       let bytes = 0;
       let settled = false;
 
@@ -270,18 +286,24 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
 
       const timer = setTimeout(() => {
         finish(() => {
-          child.kill('SIGKILL');
-          reject(new Error(`agent authentication probe timed out after ${invocation.timeoutMs}ms`));
+          child.kill("SIGKILL");
+          reject(
+            new Error(
+              `agent authentication probe timed out after ${invocation.timeoutMs}ms`,
+            ),
+          );
         });
       }, invocation.timeoutMs);
 
-      child.stdout?.on('data', (chunk: Buffer | string) => {
-        const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      child.stdout?.on("data", (chunk: Buffer | string) => {
+        const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
         bytes += Buffer.byteLength(text);
         if (bytes > MAX_PROBE_OUTPUT_BYTES) {
           finish(() => {
-            child.kill('SIGKILL');
-            reject(new Error('agent authentication probe produced too much output'));
+            child.kill("SIGKILL");
+            reject(
+              new Error("agent authentication probe produced too much output"),
+            );
           });
           return;
         }
@@ -290,9 +312,11 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
       // stderr is drained so the child never blocks on a full pipe, and discarded so it cannot
       // reach evidence by any route.
       child.stderr?.resume();
-      child.on('error', (error) => finish(() => reject(error)));
-      child.on('close', (code) =>
-        finish(() => resolve({ exitCode: typeof code === 'number' ? code : 1, stdout })),
+      child.on("error", (error) => finish(() => reject(error)));
+      child.on("close", (code) =>
+        finish(() =>
+          resolve({ exitCode: typeof code === "number" ? code : 1, stdout }),
+        ),
       );
     });
   }
@@ -335,7 +359,7 @@ export async function probeWorkspaceHostAgentAuthentication(
       authenticated: false,
       exitStatus: -1,
       observedAt: now().toISOString(),
-      failure: 'probe-error',
+      failure: "probe-error",
     };
   }
 
@@ -346,7 +370,7 @@ export async function probeWorkspaceHostAgentAuthentication(
       authenticated: false,
       exitStatus: outcome.exitCode,
       observedAt,
-      failure: 'non-zero-exit',
+      failure: "non-zero-exit",
     };
   }
 
@@ -358,7 +382,7 @@ export async function probeWorkspaceHostAgentAuthentication(
       authenticated: false,
       exitStatus: outcome.exitCode,
       observedAt,
-      failure: 'no-authenticated-subject',
+      failure: "no-authenticated-subject",
     };
   }
 
@@ -368,7 +392,7 @@ export async function probeWorkspaceHostAgentAuthentication(
     exitStatus: outcome.exitCode,
     observedAt,
     subjectDigest: workspaceHostAgentSubjectDigest(subject),
-    ...(spec.subjectDisclosure === 'redacted' ? { subject } : {}),
+    ...(spec.subjectDisclosure === "redacted" ? { subject } : {}),
   };
   assertWorkspaceHostSecretIsolation(
     evidence,
@@ -414,9 +438,12 @@ export async function probeWorkspaceHostAgents(
   > = {};
   for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
     const spec =
-      input.probes?.[agent] ?? DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES[agent];
+      input.probes?.[agent] ??
+      DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES[agent];
     if (spec.agent !== agent) {
-      throw new Error(`agent probe for '${agent}' declares agent '${spec.agent}'`);
+      throw new Error(
+        `agent probe for '${agent}' declares agent '${spec.agent}'`,
+      );
     }
     agents[agent] = await probeWorkspaceHostAgentAuthentication({
       spec,
@@ -438,6 +465,9 @@ export async function probeWorkspaceHostAgents(
     ),
     agents: complete,
   };
-  assertWorkspaceHostSecretIsolation(report, 'workspaceHost.agentAuthentication.report');
+  assertWorkspaceHostSecretIsolation(
+    report,
+    "workspaceHost.agentAuthentication.report",
+  );
   return report;
 }

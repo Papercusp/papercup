@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest";
 
 import {
   WorkspaceHostOperationError,
@@ -16,21 +16,22 @@ import {
 import {
   buildWorkspaceHostCredentialReference,
   buildWorkspaceHostCredentialRevocationReference,
-} from './workspace-host-credential-namespace';
+} from "./workspace-host-credential-namespace";
 import { workspaceHostCredentialMaterialPath } from "./workspace-host-credential-delivery";
 import type {
   WorkspaceHostAgentProbeInvocation,
   WorkspaceHostAgentProbeRunner,
 } from "./workspace-host-agent-authentication";
 
-const MATERIAL_ROOT = '/credentials';
+const MATERIAL_ROOT = "/credentials";
 const MATERIAL_PATH = workspaceHostCredentialMaterialPath(
   MATERIAL_ROOT,
   "git-short-lived-delegation",
   7,
 );
-const AUTHORIZATION_MATERIAL = 'https://git-user:private-token-value@github.com';
-const NOW = new Date('2026-08-26T22:00:00.000Z');
+const AUTHORIZATION_MATERIAL =
+  "https://git-user:private-token-value@github.com";
+const NOW = new Date("2026-08-26T22:00:00.000Z");
 const AGENT_FIELDS = { hostId: "host-1", agentSet: "claude-codex-omp" };
 
 class RecordingSystem implements WorkspaceHostSystem {
@@ -40,7 +41,7 @@ class RecordingSystem implements WorkspaceHostSystem {
 
   async run(input: WorkspaceHostCommandInput) {
     this.commands.push(input);
-    return { exitCode: 0, stdout: '', stderr: '' };
+    return { exitCode: 0, stdout: "", stderr: "" };
   }
   async ensureDirectory(path: string) {
     this.present.add(path);
@@ -161,7 +162,7 @@ function fixture() {
   const system = new RecordingSystem();
   const deps = createProductionWorkspaceHostRemoteInitializerDeps({
     system,
-    workspaceRoot: '/workspaces',
+    workspaceRoot: "/workspaces",
     credentialMaterialRoot: MATERIAL_ROOT,
     now: () => NOW,
   });
@@ -346,7 +347,11 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
       "git-short-lived-delegation",
       8,
     );
-    place(system, generation8Path, Buffer.from("https://git-user:rotated@github.com"));
+    place(
+      system,
+      generation8Path,
+      Buffer.from("https://git-user:rotated@github.com"),
+    );
     const newer = createProductionWorkspaceHostRemoteInitializerDeps({
       system,
       workspaceRoot: "/workspaces",

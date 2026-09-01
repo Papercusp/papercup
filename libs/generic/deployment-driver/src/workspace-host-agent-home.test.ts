@@ -1,14 +1,20 @@
+import { mkdtemp, mkdir, readFile, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
   WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
   WorkspaceHostAgentHomeConsumer,
+  encodeWorkspaceHostAgentHomeState,
   encodeWorkspaceHostAgentHomeBundle,
   parseWorkspaceHostAgentHomeBundle,
   workspaceHostAgentHomePaths,
   workspaceHostAgentHomeStatePath,
   type WorkspaceHostAgentHomeFilesystem,
 } from "./workspace-host-agent-home";
+import { NodeWorkspaceHostSystem } from "./workspace-host-remote-initializer-host";
 
 const files = {
   claude: Buffer.from(
@@ -73,6 +79,40 @@ class MemoryAgentHomeFilesystem implements WorkspaceHostAgentHomeFilesystem {
     group: string,
   ): Promise<void> {
     this.ownership.push({ path, owner, group });
+  }
+}
+
+class PausingAgentHomeFilesystem extends MemoryAgentHomeFilesystem {
+  private releasePause: (() => void) | undefined;
+  private markPaused: (() => void) | undefined;
+  readonly paused: Promise<void>;
+  private pausePath: string | null = null;
+  private didPause = false;
+
+  constructor() {
+    super();
+    this.paused = new Promise<void>((resolve) => {
+      this.markPaused = resolve;
+    });
+  }
+
+  pauseRemovalAt(path: string): void {
+    this.pausePath = path;
+  }
+
+  release(): void {
+    this.releasePause?.();
+  }
+
+  override async removePath(path: string): Promise<void> {
+    if (!this.didPause && path === this.pausePath) {
+      this.didPause = true;
+      this.markPaused?.();
+      await new Promise<void>((resolve) => {
+        this.releasePause = resolve;
+      });
+    }
+    await super.removePath(path);
   }
 }
 
@@ -239,6 +279,95 @@ describe("workspace-host sealed agent-home bundle", () => {
     ).resolves.toMatchObject({ present: false });
     for (const path of Object.values(workspaceHostAgentHomePaths(HOME))) {
       expect(filesystem.files.has(path)).toBe(false);
+    }
+  });
+
+  it("serializes a stale revoke against a newer install across fresh consumers", async () => {
+    const filesystem = new PausingAgentHomeFilesystem();
+    await consumer(filesystem).install(
+      "agent-encrypted-reference",
+      1,
+      encodeWorkspaceHostAgentHomeBundle(files),
+    );
+    filesystem.pauseRemovalAt(workspaceHostAgentHomePaths(HOME).claude);
+
+    const staleRevoke = consumer(filesystem).revoke(
+      "agent-encrypted-reference",
+      1,
+    );
+    await filesystem.paused;
+    let newerFinished = false;
+    const newerInstall = consumer(filesystem)
+      .install(
+        "agent-encrypted-reference",
+        2,
+        encodeWorkspaceHostAgentHomeBundle(rotated),
+      )
+      .then(() => {
+        newerFinished = true;
+      });
+    await Promise.resolve();
+    expect(newerFinished).toBe(false);
+
+    filesystem.release();
+    await Promise.all([staleRevoke, newerInstall]);
+    await expect(
+      consumer(filesystem).verify(
+        "agent-encrypted-reference",
+        2,
+        encodeWorkspaceHostAgentHomeBundle(rotated),
+      ),
+    ).resolves.toMatchObject({ generation: 2, present: true });
+  });
+
+  it("refuses a valid-looking active state for a different explicit home before revoke", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    const otherHome = "/home/another-workspace";
+    filesystem.files.set(
+      workspaceHostAgentHomeStatePath(ROOT),
+      encodeWorkspaceHostAgentHomeState(
+        "agent-encrypted-reference",
+        1,
+        otherHome,
+      ),
+    );
+    const otherPath = workspaceHostAgentHomePaths(otherHome).claude;
+    filesystem.files.set(otherPath, Buffer.from("do-not-remove"));
+
+    await expect(
+      consumer(filesystem).revoke("agent-encrypted-reference", 1),
+    ).rejects.toThrow(/different workspace home/);
+    expect(filesystem.files.get(otherPath)?.toString()).toBe("do-not-remove");
+  });
+
+  it("rejects a symlinked native directory before privileged material can follow it", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "agent-home-symlink-"));
+    try {
+      const home = join(temporary, "home");
+      const trap = join(temporary, "trap");
+      await mkdir(home, { mode: 0o700 });
+      await mkdir(trap, { mode: 0o700 });
+      await symlink(trap, join(home, ".claude"));
+      const guarded = new WorkspaceHostAgentHomeConsumer({
+        filesystem: new NodeWorkspaceHostSystem(),
+        materialRoot: join(temporary, "credentials"),
+        workspaceHome: home,
+      });
+
+      await expect(
+        guarded.install(
+          "agent-encrypted-reference",
+          1,
+          encodeWorkspaceHostAgentHomeBundle(files),
+        ),
+      ).rejects.toThrow(/symlink|not a real directory/);
+      await expect(
+        readFile(join(trap, ".credentials.json")),
+      ).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
     }
   });
 });
