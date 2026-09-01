@@ -4,6 +4,7 @@ import {
   HARD_CAP,
   budgetViolations,
   type NamedToolWeight,
+  type PromptWeightBreakdown,
 } from './tool-guidance-budget';
 
 export interface ToolWeightRow {
@@ -15,6 +16,10 @@ export interface ToolWeightRow {
   overHardCap: boolean;
   grandfathered: boolean;
   cutAtLeast: number | null;
+  /** Per-field split of `weight` — which field to cut, not just how much
+   *  (EI-19418721410168539). Absent when the caller supplied bare
+   *  `{ name, weight }` weights (a fixture) rather than the live catalog. */
+  breakdown?: PromptWeightBreakdown;
 }
 
 export interface ToolWeightCliArgs {
@@ -72,6 +77,7 @@ export function measureToolWeights(
         overHardCap,
         grandfathered,
         cutAtLeast: violation?.cutAtLeast ?? null,
+        ...(tool.breakdown === undefined ? {} : { breakdown: tool.breakdown }),
       };
     });
 }
@@ -109,6 +115,16 @@ export function formatToolWeightReport(
       status = `OK; ${BUDGET - row.weight} chars of headroom`;
     }
     lines.push(`${row.name}: ${row.weight} chars (${status})`);
+    // EI-19418721410168539: the total alone tells a trimmer HOW MUCH to cut but
+    // not WHICH field to cut, which is what made trims guesswork. Every field is
+    // printed even at 0, so the columns stay fixed-shape and greppable.
+    if (row.breakdown) {
+      const b = row.breakdown;
+      lines.push(
+        `  description ${b.description} · when ${b.when} · notWhen ${b.notWhen} · ` +
+          `chaining ${b.chaining} · byRole ${b.byRole}`,
+      );
+    }
   }
   if (options.selector !== undefined && rows.length === 0) {
     lines.push(`No runtime-projected tool named ${options.selector}`);

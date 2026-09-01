@@ -70,26 +70,63 @@ export const ALLOW_OVER_BUDGET = new Set<string>([]);
 
 type GuidanceShape = ProjectedTool['guidance'];
 
+/** The per-field split of a tool's prompt weight, so a trimmer sees WHICH field
+ *  is heavy instead of only that the total is too big (EI-19418721410168539).
+ *  `seeAlso` is deliberately ABSENT: it is not summed into the weight, and
+ *  adding it here would make a correct green read as a breach. */
+export interface PromptWeightBreakdown {
+  description: number;
+  when: number;
+  notWhen: number;
+  chaining: number;
+  /** when+notWhen+chaining summed across EVERY role — one aggregated line. */
+  byRole: number;
+  /** The weight itself: exactly the sum of the fields above. */
+  total: number;
+}
+
 /** description + every guidance field (incl. per-role) — the exact string weight
- *  a tool contributes to the assembled system prompt. */
-export function promptWeight(tool: { description?: string; guidance?: GuidanceShape }): number {
+ *  a tool contributes to the assembled system prompt, split per field.
+ *
+ *  This is the ONE place the summed field list lives; `promptWeight()` returns
+ *  `.total` rather than re-adding them, so the scalar and the breakdown cannot
+ *  drift apart into a second copy of the formula. */
+export function promptWeightBreakdown(tool: {
+  description?: string;
+  guidance?: GuidanceShape;
+}): PromptWeightBreakdown {
   const g = tool.guidance ?? {};
   const byRole = Object.values(g.byRole ?? {}).reduce(
     (acc, r) => acc + (r.when?.length ?? 0) + (r.notWhen?.length ?? 0) + (r.chaining?.length ?? 0),
     0,
   );
-  return (
-    (tool.description?.length ?? 0) +
-    (g.when?.length ?? 0) +
-    (g.notWhen?.length ?? 0) +
-    (g.chaining?.length ?? 0) +
-    byRole
-  );
+  const description = tool.description?.length ?? 0;
+  const when = g.when?.length ?? 0;
+  const notWhen = g.notWhen?.length ?? 0;
+  const chaining = g.chaining?.length ?? 0;
+  return {
+    description,
+    when,
+    notWhen,
+    chaining,
+    byRole,
+    total: description + when + notWhen + chaining + byRole,
+  };
+}
+
+/** description + every guidance field (incl. per-role) — the exact string weight
+ *  a tool contributes to the assembled system prompt. Derived from
+ *  `promptWeightBreakdown()` so the two can never disagree. */
+export function promptWeight(tool: { description?: string; guidance?: GuidanceShape }): number {
+  return promptWeightBreakdown(tool).total;
 }
 
 export interface NamedToolWeight {
   name: string;
   weight: number;
+  /** Per-field split of `weight`. Optional so every existing producer of a
+   *  `{ name, weight }` literal (tests, fixtures) keeps compiling. */
+  breakdown?: PromptWeightBreakdown;
 }
 
 /**
@@ -121,7 +158,10 @@ export function namedToolWeights(catalog?: readonly ProjectedTool[]): NamedToolW
   const tools = catalog ?? listAllProjectedTools();
   if (catalog === undefined) assertLiveCatalogSane(tools);
   return tools
-    .map((t) => ({ name: t.expose?.mcp?.name ?? '(unexposed)', weight: promptWeight(t) }))
+    .map((t) => {
+      const breakdown = promptWeightBreakdown(t);
+      return { name: t.expose?.mcp?.name ?? '(unexposed)', weight: breakdown.total, breakdown };
+    })
     .filter((t) => t.name !== '(unexposed)');
 }
 
