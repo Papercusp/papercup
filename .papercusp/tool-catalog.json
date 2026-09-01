@@ -9760,7 +9760,7 @@
           "POST"
         ]
       },
-      "description": "Runtime status of the stall-waker poll loop that auto-wakes bees stalled on a rate-limited account. Returns { running, workspaceId, startedAt, pollMs, idleSilenceMs, tickCount, lastTickAt, lastTickOk, lastTickError, pendingCount, breadcrumbCount, wokenTotal, droppedTotal, unwedgedTotal }. `running:false` means the loop never started (gateway off / no spawn yet) or was stopped. Reads the operator's in-process singleton — no gateway HTTP call.",
+      "description": "Runtime status of the stall-waker poll loop that auto-wakes bees stalled on a rate-limited account. Returns { running, workspaceId, startedAt, pollMs, idleSilenceMs, tickCount, lastTickAt, lastTickOk, lastTickError, pendingCount, breadcrumbCount, wokenTotal, droppedTotal, unwedgedTotal, source }. `running:false` means the loop never started (gateway off / no spawn yet) or was stopped anywhere reachable. Reads the calling process's own in-process singleton first (source:'local'); if that reads not-running, federates to sibling processes on the box (source:'<sibling label>', e.g. 'bg-host:3271') so a call served by a request-only host (:3070/:3170) still finds the loop's real home in bg-host instead of falsely reporting it stopped.",
       "capabilities": [
         "intel:read"
       ],
