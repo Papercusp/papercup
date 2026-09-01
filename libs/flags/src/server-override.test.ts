@@ -26,6 +26,16 @@ import { FLAGS, FLAG_DEFAULTS, type FlagKey } from './types';
 const KEY = FLAGS.TESTING; // default false — a visible flip target
 const ENV_KEY = `PAPERCUSP_FLAG_${KEY.toUpperCase().replace(/-/g, '_')}`;
 
+// A second, ARBITRARY override key — the clear-all test needs *some* flag other
+// than KEY, never a particular one. Derived from the registry rather than naming
+// a flag, so retiring any single flag can no longer strand this test: it used to
+// pin FLAGS.POT_CONTROL, which was deleted once its consumers went away
+// (EI-20112620689800573).
+const OTHER_KEY = (Object.keys(FLAG_DEFAULTS) as FlagKey[]).find((k) => k !== KEY);
+if (!OTHER_KEY) {
+  throw new Error('flag registry exposes fewer than 2 flags — this suite needs a second key');
+}
+
 function makeFakeStore(initial: Partial<Record<FlagKey, boolean>> = {}) {
   const map: Partial<Record<FlagKey, boolean>> = { ...initial };
   let loads = 0;
@@ -109,14 +119,14 @@ describe('flag override store', () => {
     // The "Full testing" / per-flag toggles pin flags on as stored overrides;
     // leaving testing mode must clear them so flags return to bundled defaults
     // (flag-testing-toggle-clears-overrides 2026-06-18).
-    const { store, map } = makeFakeStore({ [KEY]: true, [FLAGS.POT_CONTROL]: true });
+    const { store, map } = makeFakeStore({ [KEY]: true, [OTHER_KEY]: true });
     initFlagOverrideStore(store);
     expect(await getFlag(KEY, 'u')).toBe(true); // override active (shadows default)
 
     const cleared = await clearAllFlagOverrides();
-    expect([...cleared].sort()).toEqual([FLAGS.POT_CONTROL, KEY].sort());
+    expect([...cleared].sort()).toEqual([OTHER_KEY, KEY].sort());
     expect(map[KEY]).toBeUndefined();
-    expect(map[FLAGS.POT_CONTROL]).toBeUndefined();
+    expect(map[OTHER_KEY]).toBeUndefined();
     expect(await getFlag(KEY, 'u')).toBe(FLAG_DEFAULTS[KEY]); // back to default
   });
 

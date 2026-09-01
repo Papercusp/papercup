@@ -32,7 +32,6 @@
     "flag|PER_POT_LEARNING_LOOPS|libs/flags/src/types.ts",
     "flag|PER_POT_RELEASE_GATE|libs/flags/src/types.ts",
     "flag|POT_AGENT_TABS|libs/flags/src/types.ts",
-    "flag|POT_CONTROL|libs/flags/src/types.ts",
     "flag|POT_FROM_GITHUB_URL|libs/flags/src/types.ts",
     "flag|POT_MEMBERSHIP_ENFORCEMENT|libs/flags/src/types.ts",
     "flag|POT_PLACEMENT_WATCHDOG|libs/flags/src/types.ts",
