@@ -37,31 +37,33 @@
  *  to `{}`, not only `true`), OMP's cache held it verbatim, and the request OMP
  *  built for Ollama carried `detail: true` → the Go parser 400-killed the turn. */
 const ANNOTATION_ONLY_KEYS = new Set([
-  'description',
-  'title',
-  'default',
-  'examples',
-  'deprecated',
-  'readOnly',
-  'writeOnly',
-  '$comment',
+  "description",
+  "title",
+  "default",
+  "examples",
+  "deprecated",
+  "readOnly",
+  "writeOnly",
+  "$comment",
 ]);
 
 /** True for a sub-schema that accepts anything (no `type`, no structural or
  *  combinator keyword) — the object-form twins of the boolean schema `true`. */
 function isUnconstrainedSchema(v: unknown): v is Record<string, unknown> {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
   return Object.keys(v).every((k) => ANNOTATION_ONLY_KEYS.has(k));
 }
 
 /** Rewrite an unconstrained object schema to the same OMP-collapse-proof shape
  *  as `boolToSchema(true)`, preserving its annotations (description wins over
  *  the generic placeholder). */
-function unconstrainedToSchema(s: Record<string, unknown>): Record<string, unknown> {
+function unconstrainedToSchema(
+  s: Record<string, unknown>,
+): Record<string, unknown> {
   return {
     ...boolToSchema(true),
     ...s, // keep the original description/default/etc.
-    type: 'object',
+    type: "object",
     additionalProperties: true,
   };
 }
@@ -88,7 +90,43 @@ function boolToSchema(b: boolean): Record<string, unknown> {
   // carries `type`. Narrows z.unknown()/z.any() from "any JSON value" to "any object" —
   // an acceptable trade for every current caller (all pass object payloads here) against
   // "the whole catalog 400s on every turn".
-  return b ? { type: 'object', additionalProperties: true, description: 'matches any object value' } : { not: {} };
+  return b
+    ? {
+        type: "object",
+        additionalProperties: true,
+        description: "matches any object value",
+      }
+    : { not: {} };
+}
+
+function jsonPointerSegment(value: string): string {
+  return value.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function recursiveReferenceToSchema(): Record<string, unknown> {
+  // OMP resolves ordinary `$ref` nodes while flattening `anyOf` for Ollama, but a self-reference
+  // is the cycle boundary: it collapses that node to the boolean schema `true`. Ollama's Go
+  // decoder rejects the boolean before runtime validation ever sees the request. Keep the outer
+  // recursive grammar intact and replace only the cycle edge with a typed object; the tool's own
+  // validator remains authoritative for deeper payloads.
+  return {
+    type: "object",
+    additionalProperties: true,
+    description: "recursive object validated by the tool",
+  };
+}
+
+function isActiveReference(
+  value: unknown,
+  activeDefinitionRefs: ReadonlySet<string>,
+): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return (
+    entries.length === 1 &&
+    entries[0]?.[0] === "$ref" &&
+    activeDefinitionRefs.has(String(entries[0]?.[1]))
+  );
 }
 
 /**
@@ -96,38 +134,78 @@ function boolToSchema(b: boolean): Record<string, unknown> {
  * positions. Returns a new value; the input is not mutated. Non-object
  * input (incl. a top-level boolean) is returned as-is.
  */
-export function sanitizeToolSchema<T>(node: T): T {
+function sanitizeToolSchemaNode<T>(
+  node: T,
+  activeDefinitionRefs: ReadonlySet<string>,
+): T {
   if (Array.isArray(node)) {
-    return node.map((n) => sanitizeToolSchema(n)) as unknown as T;
+    return node.map((n) =>
+      sanitizeToolSchemaNode(n, activeDefinitionRefs),
+    ) as unknown as T;
   }
-  if (!node || typeof node !== 'object') return node;
+  if (!node || typeof node !== "object") return node;
 
   const src = node as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(src)) {
-    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+    if (
+      key === "$defs" &&
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+    ) {
+      out[key] = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(
+          ([definitionName, definition]) => {
+            const ref = `#/$defs/${jsonPointerSegment(definitionName)}`;
+            return [
+              definitionName,
+              sanitizeToolSchemaNode(
+                definition,
+                new Set([...activeDefinitionRefs, ref]),
+              ),
+            ];
+          },
+        ),
+      );
+    } else if (
+      key === "properties" &&
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+    ) {
       const props: Record<string, unknown> = {};
-      for (const [propName, propSchema] of Object.entries(value as Record<string, unknown>)) {
+      for (const [propName, propSchema] of Object.entries(
+        value as Record<string, unknown>,
+      )) {
         props[propName] =
-          typeof propSchema === 'boolean'
+          typeof propSchema === "boolean"
             ? boolToSchema(propSchema)
-            : isUnconstrainedSchema(propSchema)
-              ? unconstrainedToSchema(propSchema)
-              : sanitizeToolSchema(propSchema);
+            : isActiveReference(propSchema, activeDefinitionRefs)
+              ? recursiveReferenceToSchema()
+              : isUnconstrainedSchema(propSchema)
+                ? unconstrainedToSchema(propSchema)
+                : sanitizeToolSchemaNode(propSchema, activeDefinitionRefs);
       }
       out[key] = props;
-    } else if (key === 'items') {
+    } else if (key === "items") {
       out[key] =
-        typeof value === 'boolean'
+        typeof value === "boolean"
           ? boolToSchema(value)
-          : isUnconstrainedSchema(value)
-            ? unconstrainedToSchema(value)
-            : sanitizeToolSchema(value);
+          : isActiveReference(value, activeDefinitionRefs)
+            ? recursiveReferenceToSchema()
+            : isUnconstrainedSchema(value)
+              ? unconstrainedToSchema(value)
+              : sanitizeToolSchemaNode(value, activeDefinitionRefs);
     } else {
       // Recurse (so nested properties/items are reached) but do NOT
       // objectify booleans elsewhere — notably additionalProperties.
-      out[key] = sanitizeToolSchema(value);
+      out[key] = sanitizeToolSchemaNode(value, activeDefinitionRefs);
     }
   }
   return out as unknown as T;
+}
+
+export function sanitizeToolSchema<T>(node: T): T {
+  return sanitizeToolSchemaNode(node, new Set());
 }

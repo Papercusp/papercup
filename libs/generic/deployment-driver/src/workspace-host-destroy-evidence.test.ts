@@ -38,9 +38,9 @@ function initialization(): WorkspaceHostInitializationCanaryEvidence {
     repository: { visibility: "private", cloned: true },
     channels,
     agents: {
-      claude: { authenticated: true },
-      codex: { authenticated: true },
-      omp: { authenticated: true },
+      claude: { ready: true, verificationKind: "authenticated-account" },
+      codex: { ready: true, verificationKind: "authenticated-account" },
+      omp: { ready: true, verificationKind: "local-inference" },
     },
     backupRestore: {
       authorizationMaterial: "excluded",

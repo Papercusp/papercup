@@ -2,7 +2,7 @@ import {
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
   buildWorkspaceHostInitializationCanaryEvidence,
   validateWorkspaceHostInitializationCanary,
-  type WorkspaceHostAgentAuthenticationReport,
+  type WorkspaceHostAgentVerificationReport,
   type WorkspaceHostCredentialChannel,
   type WorkspaceHostCredentialLifecyclePlan,
   type WorkspaceHostCredentialLifecycleReceipt,
@@ -120,9 +120,7 @@ export function deriveWorkspaceHostCanaryChannelObservations(
 
       const observed = observations.get(step.channel);
       if (!observed) {
-        problems.push(
-          `run ${runIndex} ('${action}') reported step '${step.id}' on unknown channel '${step.channel}'`,
-        );
+        problems.push(`run ${runIndex} ('${action}') reported step '${step.id}' on unknown channel '${step.channel}'`);
         continue;
       }
 
@@ -179,7 +177,7 @@ export interface AssembleWorkspaceHostCanaryEvidenceInput {
   readonly hostId: string;
   readonly observedAt: string;
   readonly repository: { readonly visibility: 'public' | 'private'; readonly cloned: boolean };
-  readonly agents: WorkspaceHostAgentAuthenticationReport;
+  readonly agents: WorkspaceHostAgentVerificationReport;
   /** Completed lifecycle runs, in the order they were executed. */
   readonly lifecycleRuns: readonly WorkspaceHostCanaryLifecycleRun[];
   readonly backupRestore: {
