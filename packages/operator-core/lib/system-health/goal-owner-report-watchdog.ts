@@ -11,8 +11,9 @@
  * structural > detector > prose — this is the detector tier, with the D-016 floor
  * discipline below keeping it from decaying into decoration).
  *
- * THE INSTRUMENT reads the same rails the contract names, so a compliant owner is
- * never nagged and no self-report is trusted:
+ * THE INSTRUMENT reads the rails the contract names PLUS the to-human channel
+ * holders demonstrably use, so a compliant owner is never nagged and no
+ * self-report is trusted:
  *  - `coord_event_log` surface='escalations' rows whose body `from` is the owner —
  *    coord:escalate is the contract's primary reporting rail, and openEscalation
  *    stamps the raising identity server-side;
@@ -20,10 +21,18 @@
  *    the notifyAttention rail records no author column (WI-36644 made it an audit
  *    trail, not an attribution surface), so attribution rides on the payload when
  *    the call site provided it. This leg can only SUPPRESS an alarm, so a call
- *    site that omitted the ids degrades toward a (deduped) nudge, never a miss.
- * A report by any OTHER channel (a coord:send the owner chose instead) is not
- * measured — the nudge teaches the contract's rail rather than chasing every
- * channel an agent might improvise on.
+ *    site that omitted the ids degrades toward a (deduped) nudge, never a miss;
+ *  - `coord_event_log` surface='messages' rows FROM the owner whose `to` array
+ *    includes 'human' — a `coord:send { to: ['human'] }` IS an owner report in
+ *    substance. The original design deliberately excluded it ("the nudge teaches
+ *    the contract's rail"), and WI-2091959 measured what that bought: the
+ *    everything-goal holder's four real owner reports ALL rode to-human sends
+ *    while only the two rails above were measured, so a compliant-by-send holder
+ *    read as silent — a false-silence that any floor tightening would have
+ *    amplified into a nag loop. Counting the channel kills the false-silence;
+ *    the nudge skeleton still names the contract's rail.
+ * A report by other channels an agent might improvise on (a work-item comment,
+ * a plan note) remains unmeasured.
  *
  * EXACTLY ONE CLASSIFIER SPEAKS PER GOAL (the family rule): this one fires ONLY on
  * a goal whose owner is POSITIVELY alive. A dead / unresolved owner is
@@ -86,12 +95,49 @@ export const GOAL_OWNER_REPORT_MEASURED_HEALTHY_CADENCE_MS = 2.5 * 3600_000;
 export const GOAL_OWNER_REPORT_MEASURED_FAILURE_SILENCE_MS = 5 * 3600_000;
 
 /**
+ * THE STANDING-GOAL CADENCE FLOOR (WI-2091959 — D-016 re-litigation 2026-09-01):
+ * a STANDING (stewardship) goal — `goals.standing = true` — carries a TIGHTER
+ * reporting expectation than an outcome goal. Its holder is a perpetual steward:
+ * there is no goal-met event the owner could wait for, so report cadence is the
+ * owner's ONLY window into the goal, and silence is the failure mode itself.
+ *
+ * Why 1 hour — the measured basis (goal-mode-e2e stewardship cards
+ * EI-22039635271337633 and EI-22058120037739249 grading the everything-goal
+ * holder, silences corrected per the WI-2094390 audit erratum): compliant
+ * reporting ran at ≤14min gaps (04:11:39 → 04:25:38 → 04:28:42Z); the graded
+ * failures were silences of 2h14m (04:28:42 → 06:42:34Z) and 1h07m
+ * (06:42:34 → 07:50Z) on an actively-working holder — BOTH rated
+ * owner-steering-and-reporting FAIL, and both sat BELOW the 4h outcome floor by
+ * design. 1h is strictly ABOVE the measured healthy cadence (a compliant
+ * steward is never nagged) and strictly BELOW the smaller measured failure
+ * (both graded breaches would have been caught). The guard suite pins both
+ * inequalities plus standing < outcome.
+ */
+export const GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS = 3600_000;
+
+/** The measured healthy STANDING cadence (ms) — the max gap between the graded
+ *  holder's compliant reports. The standing floor must stay strictly ABOVE it. */
+export const GOAL_OWNER_REPORT_STANDING_MEASURED_HEALTHY_CADENCE_MS = 14 * 60_000;
+
+/** The SMALLER measured STANDING failure silence (ms) — 1h07m; the standing
+ *  floor must stay AT-OR-BELOW it so both graded breaches are caught. */
+export const GOAL_OWNER_REPORT_STANDING_MEASURED_FAILURE_SILENCE_MS = 67 * 60_000;
+
+/**
  * D-016's consequence clause: past this date the guard suite FAILS until whoever
- * finds it re-litigates the 4h floor against current evidence (rubric trends,
+ * finds it re-litigates BOTH floors against current evidence (rubric trends,
  * scorecard cadence data) and bumps this date with an updated WHY above. A floor
  * that can never demand review is a comment.
+ *
+ * Re-litigated 2026-09-01 (WI-2091959, was 2026-09-17): two stewardship cards
+ * measured standing-goal silences of 2h14m/1h07m rated FAIL below the 4h floor
+ * → the floor SPLIT by goal kind (1h standing, above). The 4h outcome floor
+ * stands unchanged — no new outcome-goal evidence contradicted WI-39348's
+ * measurements. Same evidence drove the to-human rail widening (see the
+ * instrument doc): rails first, so the tighter floor never nags a
+ * compliant-by-send holder.
  */
-export const GOAL_OWNER_REPORT_REVIEW_BY = '2026-09-17';
+export const GOAL_OWNER_REPORT_REVIEW_BY = '2026-10-01';
 
 /** True when `reviewBy` (an ISO date) is strictly before `now`. Exported for the
  *  guard test so the comparison the test runs is the one shipped here. */
@@ -118,8 +164,11 @@ export interface GoalOwnerReportRowLike {
   /** Grace baseline: GREATEST(goal created_at, mode set_at) — no report is
    *  expected before the goal existed or before this owner took it on. */
   baselineTsMs: number;
-  /** Newest report on either measured rail, or null when neither has one. */
+  /** Newest report on any measured rail, or null when none has one. */
   lastReportTsMs: number | null;
+  /** `goals.standing` — a standing (stewardship) goal is judged against the
+   *  tighter standing floor (WI-2091959). */
+  standing: boolean;
 }
 
 /** One overdue verdict. */
@@ -130,6 +179,10 @@ export interface GoalOwnerReportAlert {
   /** The timestamp silence is measured FROM (last report, floored at baseline). */
   referenceTsMs: number;
   silentMs: number;
+  /** The floor this row was judged against (standing vs outcome) — carried so
+   *  the escalation/nudge text states the bound that actually applied. */
+  floorMs: number;
+  standing: boolean;
 }
 
 /**
@@ -137,24 +190,30 @@ export interface GoalOwnerReportAlert {
  * never earlier than the baseline — a report that PREDATES this goal/mode
  * registration proves nothing about it, and a freshly-taken goal earns the full
  * grace window before its first nudge. Strictly-greater comparison: silence
- * exactly AT the floor is not yet past it.
+ * exactly AT the floor is not yet past it. The floor is per-row: a standing
+ * goal is judged against the standing floor (WI-2091959), an outcome goal
+ * against the original.
  */
 export function findOverdueReports(
   rows: readonly GoalOwnerReportRowLike[],
   nowMs: number,
   maxSilenceMs: number = GOAL_OWNER_REPORT_MAX_SILENCE_MS,
+  standingMaxSilenceMs: number = GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS,
 ): GoalOwnerReportAlert[] {
   const out: GoalOwnerReportAlert[] = [];
   for (const row of rows) {
+    const floorMs = row.standing ? standingMaxSilenceMs : maxSilenceMs;
     const referenceTsMs = Math.max(row.baselineTsMs, row.lastReportTsMs ?? row.baselineTsMs);
     const silentMs = nowMs - referenceTsMs;
-    if (silentMs > maxSilenceMs) {
+    if (silentMs > floorMs) {
       out.push({
         workspaceId: row.workspaceId,
         goalId: row.goalId,
         agentId: row.agentId,
         referenceTsMs,
         silentMs,
+        floorMs,
+        standing: row.standing,
       });
     }
   }
@@ -213,6 +272,7 @@ function makeReadGoalModeOwners(sql: Sql): GoalOwnerReportSweepDeps['readGoalMod
         workspace_id: string;
         goal_id: string;
         owner_id: string;
+        standing: boolean;
         baseline_ts_ms: string;
         last_report_ts_ms: string | null;
       }[]
@@ -220,8 +280,9 @@ function makeReadGoalModeOwners(sql: Sql): GoalOwnerReportSweepDeps['readGoalMod
       SELECT m.workspace_id,
              m.subject AS goal_id,
              m.owner_id,
+             g.standing,
              (extract(epoch FROM GREATEST(g.created_at, m.set_at)) * 1000)::bigint AS baseline_ts_ms,
-             (extract(epoch FROM GREATEST(er.last_escalation_ts, an.last_attention_ts)) * 1000)::bigint AS last_report_ts_ms
+             (extract(epoch FROM GREATEST(er.last_escalation_ts, an.last_attention_ts, hm.last_human_msg_ts)) * 1000)::bigint AS last_report_ts_ms
         FROM harness_shared.agent_modes m
         JOIN harness_shared.goals g
           ON g.id = m.subject AND g.workspace_id = m.workspace_id AND g.status = 'active'
@@ -238,11 +299,24 @@ function makeReadGoalModeOwners(sql: Sql): GoalOwnerReportSweepDeps['readGoalMod
            WHERE a.workspace_id = m.workspace_id
              AND (a.data->>'goalId' = m.subject OR a.data->>'ownerId' = m.owner_id)
         ) an ON true
+        LEFT JOIN LATERAL (
+          -- WI-2091959: a coord:send addressed to 'human' is an owner report in
+          -- substance — the graded holder's four real reports all rode this
+          -- channel while it went unmeasured, reading as silence. Containment
+          -- (@>) also matches a multi-recipient send that includes 'human'.
+          SELECT max(h.ts) AS last_human_msg_ts
+            FROM harness_shared.coord_event_log h
+           WHERE h.workspace_id = m.workspace_id
+             AND h.surface = 'messages'
+             AND h.body->>'from' = m.owner_id
+             AND h.body->'to' @> '["human"]'::jsonb
+        ) hm ON true
        WHERE m.mode = 'goal' AND m.subject IS NOT NULL`;
     return rows.map((r) => ({
       workspaceId: r.workspace_id,
       goalId: r.goal_id,
       agentId: r.owner_id,
+      standing: r.standing,
       baselineTsMs: Number(r.baseline_ts_ms),
       lastReportTsMs: r.last_report_ts_ms === null ? null : Number(r.last_report_ts_ms),
     }));
@@ -251,15 +325,19 @@ function makeReadGoalModeOwners(sql: Sql): GoalOwnerReportSweepDeps['readGoalMod
 
 async function defaultEscalate(alert: GoalOwnerReportAlert): Promise<{ coalesced: boolean }> {
   const silentHours = Math.round((alert.silentMs / 3600_000) * 10) / 10;
+  const floorLabel = alert.standing
+    ? `${alert.floorMs / 3600_000}h — the STANDING-goal steward cadence (WI-2091959)`
+    : `${alert.floorMs / 3600_000}h`;
   const result = await openEscalation(WATCHDOG_IDENTITY, {
     severity: 'advisory',
     summary:
       `Goal-mode owner ${alert.agentId} is report-silent on active goal '${alert.goalId}' — ` +
-      `past the cadence floor with no coord:escalate / notifyAttention report`,
+      `past the cadence floor with no report on any measured rail (coord:escalate / ` +
+      `notifyAttention / coord:send to human)`,
     body:
       `Session ${alert.agentId}, registered in GOAL mode on active goal '${alert.goalId}' ` +
       `(workspace ${alert.workspaceId}), has produced no owner report for ~${silentHours}h ` +
-      `(floor: ${GOAL_OWNER_REPORT_MAX_SILENCE_MS / 3600_000}h; last reference ` +
+      `(floor: ${floorLabel}; last reference ` +
       `${new Date(alert.referenceTsMs).toISOString()}).\n\n` +
       `The GOAL contract's reporting clause: "REPORT on a standing cadence via ` +
       `coord:escalate / notifyAttention: what moved, what it cost, what is owner-walled, ` +
@@ -268,7 +346,7 @@ async function defaultEscalate(alert: GoalOwnerReportAlert): Promise<{ coalesced
       `then 5h of silence including at goal-met.\n\n` +
       `Remedy (subject ${alert.agentId}): send the report now on the contract's rail — ` +
       `the directed wake accompanying this escalation carries the skeleton. A report on ` +
-      `either measured rail clears the condition; this escalation coalesces (never ` +
+      `any measured rail clears the condition; this escalation coalesces (never ` +
       `re-wakes) until then.`,
     meta: {
       // WI-7353: the signature carries NO duration or timestamp — one silence,
