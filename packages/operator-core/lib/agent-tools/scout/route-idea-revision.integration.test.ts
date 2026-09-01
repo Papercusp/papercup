@@ -48,7 +48,7 @@ describe('blender:route-idea revision spine', () => {
       createdBy: 'su-originator',
     } as EngineerIssue;
     const deps = {
-      createPlanDraft: (input) =>
+      createPlanDraft: (input: Parameters<RouteIdeaDeps['createPlanDraft']>[0]) =>
         createScoutPlanDraft({ ...input, date: '2026-09-01' }),
       recordRoutedIdea: vi.fn(async () => undefined),
       getIssue: vi.fn(async () => issue),

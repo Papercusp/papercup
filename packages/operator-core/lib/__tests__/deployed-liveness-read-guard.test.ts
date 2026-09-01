@@ -7,14 +7,8 @@
  * cannot quietly reintroduce the git/process conflation.
  */
 import { describe, expect, it } from 'vitest';
-import {
-  ALLOWLIST,
-  BASELINE,
-  findOffenders,
-  findUngroundedReads,
-  isExcluded,
-  readsDeployedWithoutServingEvidence,
-} from '../../../../scripts/check-no-deployed-liveness-read.mjs';
+// @ts-expect-error — plain .mjs guard script has no declaration file.
+import { ALLOWLIST, BASELINE, findOffenders, findUngroundedReads, isExcluded, readsDeployedWithoutServingEvidence } from '../../../../scripts/check-no-deployed-liveness-read.mjs';
 
 describe('check-no-deployed-liveness-read predicate', () => {
   it('flags a direct positions.deployed process conclusion', () => {
