@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   FLEET_ADMISSION_BLOCK_ROW_CAP,
+  admissionBlockResolvedByLeaderClaim,
   dedupeAdmissionBlocks,
   filterCurrentFleetAdmissionBlocks,
   filterCurrentAdmissionBlocks,
@@ -15,6 +16,7 @@ import {
   type FleetAdmissionBlock,
 } from './fleet-scope-admission-blocks';
 import { detectFleetAdmissionTransitions } from '../../fleet-transition-events';
+import type { FleetDependencyEscape } from '../../scheduler/fleet-scope-admission';
 
 const META = { msgId: 'msg-1', atMs: 1_700_000_000_000 };
 
@@ -227,6 +229,179 @@ describe('filterCurrentAdmissionBlocks', () => {
       throw new Error('ledger unavailable');
     };
     await expect(filterCurrentAdmissionBlocks([historical], { isTargetTerminal })).resolves.toEqual([historical]);
+  });
+});
+
+// A well-formed three-route dependency escape (see `asDependencyEscape`), reused
+// across the leader-claim tests below. `dependency.id` matches `block.itemId`
+// (the leader claims the DEPENDENCY, not the refused member's own item).
+const LEADER_CLAIM_ESCAPE: FleetDependencyEscape = {
+  kind: 'dependency_escape',
+  dependency: { id: 'WI-blocker', kind: 'issue' },
+  blockedHeldItems: [{ id: 'WI-held', kind: 'change', harness: 'papercusp' }],
+  blockedHeldItemIds: ['WI-held'],
+  member: 'su-b0971',
+  ownershipPreserved: true,
+  routes: [
+    {
+      kind: 'spec_widen',
+      calls: [
+        { tool: 'scheduler:set_claim_spec', args: {} },
+        { tool: 'scheduler:set_claim_spec', args: {} },
+      ],
+    },
+    {
+      kind: 'outside_lane_placement',
+      substitute: { liveNonMemberAssignee: 'su-other' },
+      calls: [
+        { tool: 'work_items:claim', args: {} },
+        { tool: 'work_items:claim', args: {} },
+      ],
+    },
+    { kind: 'leader_claim', calls: [{ tool: 'work_items:claim', args: {} }] },
+  ],
+};
+
+describe('admissionBlockResolvedByLeaderClaim (EI-22066839645010639)', () => {
+  const escapedBlock = block({ itemId: 'WI-blocker', member: 'su-b0971', dependencyEscape: LEADER_CLAIM_ESCAPE });
+
+  it('resolves true once the dependency is claimed by the fleet\'s registered leader', async () => {
+    await expect(
+      admissionBlockResolvedByLeaderClaim(escapedBlock, 'acceptance', 'ws-1', 'papercusp', {
+        resolveFleetLeader: async (fleetSlug, workspaceId) => {
+          expect(fleetSlug).toBe('acceptance');
+          expect(workspaceId).toBe('ws-1');
+          return 'su-leader';
+        },
+        resolveDependencyAssignee: async (dependencyId, harness) => {
+          expect(dependencyId).toBe('WI-blocker');
+          expect(harness).toBe('papercusp');
+          return 'su-leader';
+        },
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it.each([
+    ['no fleetSlug', null, 'ws-1'],
+    ['no workspaceId', 'acceptance', null],
+  ])('fails open when the fleet identity is incomplete (%s)', async (_label, fleetSlug, workspaceId) => {
+    await expect(
+      admissionBlockResolvedByLeaderClaim(escapedBlock, fleetSlug, workspaceId, 'papercusp', {
+        resolveFleetLeader: async () => 'su-leader',
+        resolveDependencyAssignee: async () => 'su-leader',
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('fails open when the block carries no (or a malformed) dependency escape', async () => {
+    await expect(
+      admissionBlockResolvedByLeaderClaim(block({ itemId: 'WI-plain' }), 'acceptance', 'ws-1', 'papercusp', {
+        resolveFleetLeader: async () => 'su-leader',
+        resolveDependencyAssignee: async () => 'su-leader',
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('fails open when the fleet leader cannot be resolved', async () => {
+    await expect(
+      admissionBlockResolvedByLeaderClaim(escapedBlock, 'acceptance', 'ws-1', 'papercusp', {
+        resolveFleetLeader: async () => null,
+        resolveDependencyAssignee: async () => 'su-leader',
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('resolves false when the dependency is unassigned or assigned to someone else', async () => {
+    await expect(
+      admissionBlockResolvedByLeaderClaim(escapedBlock, 'acceptance', 'ws-1', 'papercusp', {
+        resolveFleetLeader: async () => 'su-leader',
+        resolveDependencyAssignee: async () => null,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      admissionBlockResolvedByLeaderClaim(escapedBlock, 'acceptance', 'ws-1', 'papercusp', {
+        resolveFleetLeader: async () => 'su-leader',
+        resolveDependencyAssignee: async () => 'su-someone-else',
+      }),
+    ).resolves.toBe(false);
+  });
+
+  // The default (`?? currentFleetLeaderOwnerId` / `?? currentDependencyAssignee`)
+  // path is intentionally NOT exercised here: it opens a real DB connection, which
+  // is precisely what adding `resolveDependencyAssignee` as a seam exists to make
+  // unnecessary for unit coverage. That path is the integration suite's job.
+});
+
+describe('filterCurrentAdmissionBlocks — leader-claim dependency escape (EI-22066839645010639)', () => {
+  it('drops a dependency-escape block once the fleet leader has directly claimed the blocking dependency', async () => {
+    const historical = [block({ itemId: 'WI-blocker', member: 'su-b0971', dependencyEscape: LEADER_CLAIM_ESCAPE })];
+    // Deliberately nonterminal: the leader is ACTIVELY WORKING the dependency
+    // (the whole point of EI-22066839645010639), not done with it. The terminal
+    // check alone must not be what clears this block.
+    const isTargetTerminal = async () => false;
+
+    const current = await filterCurrentAdmissionBlocks(historical, {
+      harness: 'papercusp',
+      isTargetTerminal,
+      fleetSlug: 'acceptance',
+      workspaceId: 'ws-1',
+      resolveFleetLeader: async () => 'su-leader',
+      resolveDependencyAssignee: async () => 'su-leader',
+    });
+
+    expect(current).toEqual([]);
+    // Mirrors the terminal-check regression above: a fresh sweep snapshot starts
+    // at zero, and the resolved escape must not manufacture a false 0->1 edge
+    // after a restart's snapshot reset (the exact symptom EI-22066839645010639
+    // reported — it re-fired 0->N on every restart even though the leader had
+    // already exercised the documented leader_claim route).
+    expect(
+      detectFleetAdmissionTransitions(new Map([['acceptance', 0]]), [
+        { fleetSlug: 'acceptance', blockedCount: current.length },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('retains the block when the dependency is claimed by someone OTHER than the fleet leader', async () => {
+    const live = block({ itemId: 'WI-blocker', member: 'su-b0971', dependencyEscape: LEADER_CLAIM_ESCAPE });
+    await expect(
+      filterCurrentAdmissionBlocks([live], {
+        harness: 'papercusp',
+        isTargetTerminal: async () => false,
+        fleetSlug: 'acceptance',
+        workspaceId: 'ws-1',
+        resolveFleetLeader: async () => 'su-leader',
+        resolveDependencyAssignee: async () => 'su-someone-else',
+      }),
+    ).resolves.toEqual([live]);
+  });
+
+  it('retains the block when no fleetSlug/workspaceId is threaded through (a caller that has not migrated)', async () => {
+    const live = block({ itemId: 'WI-blocker', member: 'su-b0971', dependencyEscape: LEADER_CLAIM_ESCAPE });
+    await expect(
+      filterCurrentAdmissionBlocks([live], {
+        harness: 'papercusp',
+        isTargetTerminal: async () => false,
+        // no fleetSlug/workspaceId supplied
+        resolveFleetLeader: async () => 'su-leader',
+        resolveDependencyAssignee: async () => 'su-leader',
+      }),
+    ).resolves.toEqual([live]);
+  });
+
+  it('retains an ordinary refusal with no dependency escape (never a leader-claim candidate)', async () => {
+    const live = block({ itemId: 'WI-plain' }); // dependencyEscape: null (default)
+    await expect(
+      filterCurrentAdmissionBlocks([live], {
+        harness: 'papercusp',
+        isTargetTerminal: async () => false,
+        fleetSlug: 'acceptance',
+        workspaceId: 'ws-1',
+        resolveFleetLeader: async () => 'su-leader',
+        resolveDependencyAssignee: async () => 'su-leader',
+      }),
+    ).resolves.toEqual([live]);
   });
 });
 

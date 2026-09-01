@@ -113,6 +113,17 @@ export type FleetAdmissionBlockLeaderResolver = (
   workspaceId: string,
 ) => Promise<string | null>;
 
+/**
+ * Resolves a dependency work-item's CURRENT assignee ownerId, or null when the
+ * item is absent/unassigned. Test seam for `admissionBlockResolvedByLeaderClaim`
+ * so it (and `filterCurrentAdmissionBlocks`) is unit-testable without a live DB
+ * for `getWorkItem` (EI-22066839645010639).
+ */
+export type FleetAdmissionDependencyAssigneeResolver = (
+  dependencyId: string,
+  harness: string | null,
+) => Promise<string | null>;
+
 export interface FetchFleetAdmissionBlocksOptions {
   nowMs?: number;
   lookbackMs?: number;
@@ -135,6 +146,12 @@ export interface FetchFleetAdmissionBlocksOptions {
    * the documented `leader_claim` route.
    */
   resolveFleetLeader?: FleetAdmissionBlockLeaderResolver;
+  /**
+   * Test seam; production reads the dependency work-item's current assignee via
+   * `getWorkItem` (EI-22066839645010639). Paired with `resolveFleetLeader` to
+   * decide whether the fleet leader has already claimed the blocking dependency.
+   */
+  resolveDependencyAssignee?: FleetAdmissionDependencyAssigneeResolver;
   /**
    * Authoritative post-liveness member ids from fleet:leader-brief. When supplied,
    * refusals from dead/removed members are historical noise and are dropped. An
@@ -301,6 +318,12 @@ async function currentFleetLeaderOwnerId(fleetSlug: string, workspaceId: string)
   return record?.leaderOwnerId?.trim() || null;
 }
 
+async function currentDependencyAssignee(dependencyId: string, harness: string | null): Promise<string | null> {
+  const { getWorkItem } = await import('../../work-items');
+  const item = await getWorkItem(dependencyId, harness ?? undefined);
+  return item?.assignee?.trim() || null;
+}
+
 /**
  * Revalidate a dependency-escape block against whether the fleet's LEADER has
  * already exercised the documented `leader_claim` route — directly claiming the
@@ -328,16 +351,18 @@ export async function admissionBlockResolvedByLeaderClaim(
   fleetSlug: string | null,
   workspaceId: string | null,
   harness: string | null,
-  opts: { resolveFleetLeader?: FleetAdmissionBlockLeaderResolver } = {},
+  opts: {
+    resolveFleetLeader?: FleetAdmissionBlockLeaderResolver;
+    resolveDependencyAssignee?: FleetAdmissionDependencyAssigneeResolver;
+  } = {},
 ): Promise<boolean> {
   if (!fleetSlug || !workspaceId) return false;
   const dependencyId = block.dependencyEscape?.dependency.id?.trim();
   if (!dependencyId) return false;
   const leaderOwnerId = await (opts.resolveFleetLeader ?? currentFleetLeaderOwnerId)(fleetSlug, workspaceId);
   if (!leaderOwnerId) return false;
-  const { getWorkItem } = await import('../../work-items');
-  const item = await getWorkItem(dependencyId, harness ?? undefined);
-  return item != null && item.assignee === leaderOwnerId;
+  const assignee = await (opts.resolveDependencyAssignee ?? currentDependencyAssignee)(dependencyId, harness);
+  return assignee != null && assignee === leaderOwnerId;
 }
 
 /**
@@ -347,7 +372,10 @@ export async function admissionBlockResolvedByLeaderClaim(
  */
 export async function filterCurrentAdmissionBlocks(
   blocks: readonly FleetAdmissionBlock[],
-  opts: Pick<FetchFleetAdmissionBlocksOptions, 'harness' | 'isTargetTerminal' | 'resolveFleetLeader'> & {
+  opts: Pick<
+    FetchFleetAdmissionBlocksOptions,
+    'harness' | 'isTargetTerminal' | 'resolveFleetLeader' | 'resolveDependencyAssignee'
+  > & {
     fleetSlug?: string | null;
     workspaceId?: string | null;
   } = {},
@@ -362,6 +390,7 @@ export async function filterCurrentAdmissionBlocks(
       if (terminal) return null;
       const resolvedByLeader = await admissionBlockResolvedByLeaderClaim(block, fleetSlug, workspaceId, harness, {
         resolveFleetLeader: opts.resolveFleetLeader,
+        resolveDependencyAssignee: opts.resolveDependencyAssignee,
       }).catch(() => false);
       return resolvedByLeader ? null : block;
     }),
@@ -487,6 +516,7 @@ export async function readFleetAdmissionBlocks(
         fleetSlug,
         workspaceId: ws,
         resolveFleetLeader: opts.resolveFleetLeader,
+        resolveDependencyAssignee: opts.resolveDependencyAssignee,
       }),
     };
   } catch {
