@@ -667,7 +667,6 @@ import './dev/service_health';
 import './supervision/annotate-pause';
 import './dev/rate_governor_status';
 import './dev/stall_waker_status';
-import './dev/worker_chunk_loop_metrics';
 import './db/migrate';
 import './db/check_drift';
 import './db/migrations';
@@ -894,6 +893,7 @@ import './sessions/digest';
 // the future attention adapter (P-005) wraps. gate-watch-action.ts (the
 // transcript-watcher pull path) self-registers via register-system-actions.ts.
 import './sessions/ingest-gate-event';
+import './sessions/record-prompt-origin';
 import './sessions/list-pending-gates';
 // hud-session-display-names-2026-08-31 P-007: the agent half of the rename
 // write path (the human half is POST /api/adv/sessions/rename).
@@ -962,6 +962,9 @@ import './learning/set-scout-budget';
 // self-learning-public-release-readiness P-011 — Blender-pane arming bridge (both spend-gating layers):
 import './gym/arm';
 import './learning/governor-arm';
+// resource-governor-admission-ledger-2026-09-01 P-005 / D-008 — guarded
+// status → exact-CAS legacy-writer retirement on the existing cutover store.
+import './operator/resource-governor-cutover';
 import './learning/set-pot-scope';
 // live-configurability-audit-2026-06-20 P-018 — runtime per-(tool,role) quota overrides:
 import './quota/set-tool';
