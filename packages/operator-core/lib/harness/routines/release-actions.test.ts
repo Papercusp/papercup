@@ -2327,6 +2327,33 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(Object.keys(d.checkpointEvidence as object).sort()).toEqual(['integrationRoot', 'logPath', 'runId']);
   });
 
+  it('P-009: buildCheckpointDetail persists the repair-tick legs measurement bounded, with leg names', () => {
+    const d = buildCheckpointDetail({
+      reason: 'repair-in-progress',
+      green: null,
+      candidate: 'a'.repeat(40),
+      repairTickLegs: {
+        head: 'd'.repeat(40),
+        atMs: 5,
+        ok: false,
+        failingSignatures: ['lint:tsc'],
+        legs: [{ id: 'lint:tsc', status: 'fail', durationMs: 7.9, outputTail: 'x'.repeat(600) }],
+      },
+    });
+    // The hold tick's ledger row must carry the LEG NAMES (test_runs structurally cannot),
+    // bounded exactly like every sibling detail block.
+    expect(d.repairTickLegs).toMatchObject({
+      head: 'd'.repeat(12),
+      atMs: 5,
+      ok: false,
+      failingSignatures: ['lint:tsc'],
+    });
+    const legs = (d.repairTickLegs as { legs: Array<Record<string, unknown>> }).legs;
+    expect(legs).toHaveLength(1);
+    expect(legs[0]).toMatchObject({ id: 'lint:tsc', status: 'fail', durationMs: 7 });
+    expect((legs[0].outputTail as string).length).toBe(500);
+  });
+
   it('WI-39944: buildCheckpointDetail preserves the bounded repair-queue identity needed by durable readers', () => {
     const d = buildCheckpointDetail({
       reason: 'not-green',

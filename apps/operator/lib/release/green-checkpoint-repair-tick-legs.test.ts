@@ -1,0 +1,197 @@
+/**
+ * P-009 (gate-verdict-liveness-and-repair-reliability-2026-08-31) — repair-tick cheap legs.
+ *
+ * While a frozen repair queue is `awaiting-fixer`, a cron tick renders NO suite verdict for
+ * hours; before P-009, every such hold also stamped `failingTestsMeasured:false`, and the
+ * non-test legs (tsc/lint) were structurally invisible to test_runs — the exact staleness
+ * that sent agents chasing stale failing names (D-001). These tests pin the two CLI-side
+ * halves in `green-checkpoint.ts`:
+ *
+ *   · `measureRepairTickLegs` — the MEASUREMENT: every registry leg runs (no short-circuit;
+ *     a first-failure floor would defeat the point), per-GATE-ID records, and an honest
+ *     `null` when results cannot be attributed to the requested head.
+ *   · `augmentWithRepairTickLegs` — the ONE choke point downstream of every hold-return
+ *     site: attaches the measurement to exactly the `repair-in-progress` + `awaiting-fixer`
+ *     result shape, additively and fail-safe.
+ *
+ * The routine-side consumption (ledger persist + gate_health refresh) is pinned in
+ * packages/operator-core/lib/harness/routines/release-actions*.test.ts.
+ */
+import { describe, expect, it, vi } from "vitest";
+import { createFrozenCandidateQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import {
+  augmentWithRepairTickLegs,
+  measureRepairTickLegs,
+  NON_TEST_GATE_SCRIPTS,
+  type CheckpointResult,
+  type RepairTickLegs,
+} from "./green-checkpoint";
+
+const HEAD = "a".repeat(40);
+const OTHER = "b".repeat(40);
+
+function makeIo(overrides: Partial<Parameters<typeof measureRepairTickLegs>[0]> = {}) {
+  return {
+    setupTree: vi.fn(async () => undefined),
+    resolveHead: vi.fn(async () => HEAD),
+    runScript: vi.fn(async (_script: string) => ({ code: 0, tail: "" })),
+    log: vi.fn(),
+    now: () => 1_000,
+    ...overrides,
+  };
+}
+
+function awaitingFixerQueue() {
+  return {
+    ...createFrozenCandidateQueue({
+      candidate: OTHER,
+      base: null,
+      worktreePath: "/tmp/repair-worktree",
+      nowMs: 1_000,
+      failingTests: ["a/one.test.ts"],
+    }),
+    phase: "awaiting-fixer" as const,
+    repairHead: HEAD,
+  };
+}
+
+function holdResult(overrides: Partial<CheckpointResult> = {}): CheckpointResult {
+  return {
+    advanced: false,
+    candidate: OTHER,
+    from: null,
+    green: null,
+    reason: "repair-in-progress",
+    summary: "held",
+    repairQueue: awaitingFixerQueue(),
+    ...overrides,
+  };
+}
+
+describe("measureRepairTickLegs", () => {
+  it("runs EVERY leg with no short-circuit and reports the complete failing set", async () => {
+    const runScript = vi.fn(async (script: string) => {
+      if (script === "s2a") return { code: 1, tail: "boom" };
+      if (script === "s3") throw new Error("spawn failed");
+      return { code: 0, tail: "" };
+    });
+    const io = makeIo({ runScript });
+    const measured = await measureRepairTickLegs(io, HEAD, {
+      a: ["s1"],
+      b: ["s2a", "s2b"],
+      c: ["s3"],
+    });
+    expect(measured).not.toBeNull();
+    // Every script ran despite the mid-registry failure AND the throw — a measurement,
+    // not a rescue: the value IS the complete failing set.
+    expect(runScript.mock.calls.map((c) => c[0])).toEqual(["s1", "s2a", "s2b", "s3"]);
+    expect(measured!.legs).toEqual([
+      { id: "a", status: "pass", durationMs: 0 },
+      { id: "b", status: "fail", durationMs: 0, outputTail: expect.stringContaining("s2a: exit 1") },
+      { id: "c", status: "errored", durationMs: 0, outputTail: expect.stringContaining("spawn failed") },
+    ]);
+    expect(measured!.failingSignatures).toEqual(["b", "c"]);
+    expect(measured!.ok).toBe(false);
+    expect(measured!.head).toBe(HEAD);
+  });
+
+  it("reports ok with no outputTail noise when every leg passes", async () => {
+    const io = makeIo();
+    const measured = await measureRepairTickLegs(io, HEAD, { a: ["s1"], b: ["s2"] });
+    expect(measured).toMatchObject({ ok: true, failingSignatures: [] });
+    for (const leg of measured!.legs) {
+      expect(leg.status).toBe("pass");
+      expect(leg).not.toHaveProperty("outputTail");
+    }
+  });
+
+  it("returns null on a head mismatch — results must never be attributed to a sha the tree is not at", async () => {
+    const io = makeIo({ resolveHead: vi.fn(async () => OTHER) });
+    const measured = await measureRepairTickLegs(io, HEAD, { a: ["s1"] });
+    expect(measured).toBeNull();
+    expect(io.runScript).not.toHaveBeenCalled();
+    expect(io.log).toHaveBeenCalledWith(expect.stringContaining("head mismatch"));
+  });
+
+  it("returns null when setup fails, without running any script", async () => {
+    const io = makeIo({
+      setupTree: vi.fn(async () => {
+        throw new Error("fetch failed");
+      }),
+    });
+    const measured = await measureRepairTickLegs(io, HEAD, { a: ["s1"] });
+    expect(measured).toBeNull();
+    expect(io.runScript).not.toHaveBeenCalled();
+    expect(io.log).toHaveBeenCalledWith(expect.stringContaining("setup failed"));
+  });
+});
+
+describe("augmentWithRepairTickLegs", () => {
+  const measured: RepairTickLegs = {
+    head: HEAD,
+    atMs: 1_000,
+    ok: false,
+    failingSignatures: ["lint:tsc"],
+    legs: [{ id: "lint:tsc", status: "fail", durationMs: 5 }],
+  };
+
+  it("attaches the measurement on an awaiting-fixer repair hold, asking for the full registry at repairHead", async () => {
+    const runRepairTickLegs = vi.fn(async () => measured);
+    const log = vi.fn();
+    const result = await augmentWithRepairTickLegs(holdResult(), { runRepairTickLegs, log });
+    expect(runRepairTickLegs).toHaveBeenCalledWith(HEAD, Object.keys(NON_TEST_GATE_SCRIPTS));
+    expect(result.repairTickLegs).toEqual(measured);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("FAILING lint:tsc"));
+  });
+
+  it("does nothing for a non-hold reason", async () => {
+    const runRepairTickLegs = vi.fn(async () => measured);
+    const base = holdResult({ reason: "not-green", green: false });
+    const result = await augmentWithRepairTickLegs(base, { runRepairTickLegs, log: vi.fn() });
+    expect(runRepairTickLegs).not.toHaveBeenCalled();
+    expect(result).toBe(base);
+  });
+
+  it("does nothing when the queue is past awaiting-fixer (verification owns the next measurement)", async () => {
+    const runRepairTickLegs = vi.fn(async () => measured);
+    const queue = { ...awaitingFixerQueue(), phase: "ready-to-verify" as const };
+    const base = holdResult({ repairQueue: queue });
+    const result = await augmentWithRepairTickLegs(base, { runRepairTickLegs, log: vi.fn() });
+    expect(runRepairTickLegs).not.toHaveBeenCalled();
+    expect(result).toBe(base);
+  });
+
+  it("does nothing when the dep is absent (stubs/older deps keep exact current behaviour)", async () => {
+    const base = holdResult();
+    const result = await augmentWithRepairTickLegs(base, { log: vi.fn() });
+    expect(result).toBe(base);
+    expect(result.repairTickLegs).toBeUndefined();
+  });
+
+  it("measures exactly once per tick — an auto-refire re-entry must not re-measure", async () => {
+    const runRepairTickLegs = vi.fn(async () => measured);
+    const base = holdResult({ repairTickLegs: measured });
+    const result = await augmentWithRepairTickLegs(base, { runRepairTickLegs, log: vi.fn() });
+    expect(runRepairTickLegs).not.toHaveBeenCalled();
+    expect(result).toBe(base);
+  });
+
+  it("leaves the result untouched when the measurement is null (unmeasured, never green)", async () => {
+    const runRepairTickLegs = vi.fn(async () => null);
+    const base = holdResult();
+    const result = await augmentWithRepairTickLegs(base, { runRepairTickLegs, log: vi.fn() });
+    expect(result).toBe(base);
+    expect(result.repairTickLegs).toBeUndefined();
+  });
+
+  it("swallows a thrown measurement — the hold verdict must never break on a leg run", async () => {
+    const runRepairTickLegs = vi.fn(async () => {
+      throw new Error("worktree busy");
+    });
+    const log = vi.fn();
+    const base = holdResult();
+    const result = await augmentWithRepairTickLegs(base, { runRepairTickLegs, log });
+    expect(result).toBe(base);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("measurement failed"));
+  });
+});
