@@ -604,6 +604,26 @@ export default defineTool({
       }
     };
 
+    // EI-19418245218824265: does the TREE already cite this item's own id? Every other
+    // leg here reads the ROW, so all of them are silent for an item implemented by an
+    // agent who never claimed it — the row is then indistinguishable from never-started.
+    // Advisory only: a citation can be a reference rather than an implementation.
+    const sourceCitationFor = async (
+      wi: { id?: string } | null,
+    ): Promise<{ sourceCitation: unknown; sourceCitationWarning: string } | null> => {
+      if (!wi?.id) return null;
+      try {
+        const m = await import('../../source-citation-claim-port');
+        const hint = await m.getClaimTimeSourceCitation({ workItemId: wi.id });
+        const warning = m.sourceCitationWarning(hint, wi.id);
+        return hint && warning
+          ? { sourceCitation: hint, sourceCitationWarning: warning }
+          : null;
+      } catch {
+        return null;
+      }
+    };
+
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
@@ -630,6 +650,7 @@ export default defineTool({
         pathHintsResult,
         planItemLandedResult,
         siblingPathOverlapResult,
+        sourceCitationResult,
       ] = await Promise.all([
         planDecisionsFor(wiOf(claimed)),
         priorAttemptsFor(wiOf(claimed)),
@@ -641,6 +662,7 @@ export default defineTool({
         pathHintsFor(wiOf(claimed)),
         planItemLandedFor(wiOf(claimed)),
         siblingPathOverlapFor(wiOf(claimed)),
+        sourceCitationFor(wiOf(claimed)),
       ]);
       return {
         content: [
@@ -661,6 +683,7 @@ export default defineTool({
               ...(pathHintsResult ?? {}),
               ...(planItemLandedResult ?? {}),
               ...(siblingPathOverlapResult ?? {}),
+              ...(sourceCitationResult ?? {}),
             }),
           },
         ],
@@ -703,6 +726,7 @@ export default defineTool({
           pathHintsResult,
           planItemLandedResult,
           siblingPathOverlapResult,
+          sourceCitationResult,
         ] = await Promise.all([
           planDecisionsFor(wiOf(c)),
           priorAttemptsFor(wiOf(c)),
@@ -714,6 +738,7 @@ export default defineTool({
           pathHintsFor(wiOf(c)),
           planItemLandedFor(wiOf(c)),
           siblingPathOverlapFor(wiOf(c)),
+          sourceCitationFor(wiOf(c)),
         ]);
         return {
           ...c,
@@ -729,6 +754,7 @@ export default defineTool({
           ...(pathHintsResult ?? {}),
           ...(planItemLandedResult ?? {}),
           ...(siblingPathOverlapResult ?? {}),
+          ...(sourceCitationResult ?? {}),
         };
       }),
     );

@@ -55,13 +55,37 @@
  */
 
 import type { AttentionActionId, AttentionKind } from './types';
-import { NAVIGATE_ACTION_IDS } from './types';
 
 export type TerminalDispositionClass = 'source-mutating' | 'acknowledgement' | 'none';
+
+/**
+ * The delegation axis for an attention disposition (P-005).
+ *
+ * This is deliberately a three-way partition rather than a boolean.  A
+ * `delegable` disposition may be handled by the Queen once its category and
+ * confidence gates pass; `owner-by-right` is the owner's judgement even when
+ * the Queen is armed; and `never-auto` is a permanent floor (signals,
+ * autonomy-widening grants, and protected surfaces).  Keeping this on the
+ * existing terminal policy means terminal class and authority cannot drift in
+ * separate per-kind registries.
+ */
+export const ATTENTION_DELEGATIONS = [
+  'delegable',
+  'owner-by-right',
+  'never-auto',
+] as const;
+export type AttentionDelegation = (typeof ATTENTION_DELEGATIONS)[number];
+
+/** Runtime guard for persisted/configured authority values in downstream items. */
+export function isAttentionDelegation(value: unknown): value is AttentionDelegation {
+  return typeof value === 'string' && ATTENTION_DELEGATIONS.includes(value as AttentionDelegation);
+}
 
 export interface AttentionTerminalPolicy {
   /** Which class of terminal disposition is CORRECT for this kind. */
   class: TerminalDispositionClass;
+  /** Who may apply the disposition under the authority ladder (P-005). */
+  authority: AttentionDelegation;
   /** Why — the judgment the class encodes. Read by the audit test's failure message. */
   why: string;
 }
@@ -81,69 +105,98 @@ export const ACKNOWLEDGEMENT_ACTION_IDS: ReadonlySet<AttentionActionId> = new Se
 export const ATTENTION_TERMINAL_POLICY: Record<AttentionKind, AttentionTerminalPolicy> = {
   'plan-item': {
     class: 'source-mutating',
+    authority: 'owner-by-right',
     why: 'The card is a plan document item; mark-done/drop writes plans:set-status, so the item stops being needs-human at the source.',
   },
   'coord-escalation': {
     class: 'source-mutating',
+    authority: 'delegable',
     why: 'coord:resolve closes the escalation row and (best-effort) delivers the owner pick back to the asker.',
   },
   'coord-message': {
     class: 'source-mutating',
+    authority: 'delegable',
     why: 'coord:ack marks the message acknowledged on its own row.',
   },
   'smoke-fail': {
     class: 'acknowledgement',
+    authority: 'never-auto',
     why: 'Derived from a smoke-test RESULT. The operator cannot make a past run pass; acknowledging records that the failure was seen. Fixing it is engineering work with its own work-item, not an inbox disposition.',
   },
   'operator-report': {
     class: 'acknowledgement',
+    authority: 'never-auto',
     why: 'A status report from an operator turn — nothing to mutate; the triage record IS the disposition (its long-standing behaviour, now named).',
   },
   improvement: {
     class: 'source-mutating',
+    authority: 'delegable',
     why: 'Dismiss writes improvements:triage { decision:"reject" }, closing the idea at its source so the recall matcher reports it already decided.',
   },
   'standing-approval': {
     class: 'source-mutating',
+    authority: 'never-auto',
     why: 'Grant/dismiss writes the standing-approval decision; the candidate stops being pending.',
   },
   conversation: {
     class: 'source-mutating',
+    authority: 'delegable',
     why: 'conversations:resolve sets the row resolved and captures the accepted answer for the next asker.',
   },
   'scout-grade': {
     class: 'acknowledgement',
+    authority: 'delegable',
     why: 'A rollup NUDGE over ungraded ideas — grading is optional feedback, so there is no per-item source state an inbox action should mutate. Dismissing records that the owner declined the nudge.',
   },
   'work-item-needs-human': {
     class: 'source-mutating',
+    authority: 'owner-by-right',
     why: 'The card is a live work_items row gated on status=needs-human (feature family) or payload.needsOwnerAction/needsHuman (issue family). Resolve clears that gate and returns the item to the agents; Drop closes it. An acknowledgement here would hide the card while the agent stays blocked — the exact EI-21675115869134466 failure.',
   },
   'owner-wall': {
     class: 'source-mutating',
-    why: 'A work-item-backed wall clears the same owner gate as work-item-needs-human. A loop-carry-note wall has no operator-writable row, so it degrades to the acknowledgement branch by ref shape, not by kind.',
+    authority: 'never-auto',
+    why: 'A wall names a capability only the owner can supply. A work-item-backed wall clears the same owner gate as work-item-needs-human; a loop-carry-note wall has no operator-writable row and degrades to acknowledgement by ref shape. Neither is an agent judgement the ladder may manufacture.',
   },
   'dark-flag-ratification': {
     class: 'acknowledgement',
+    authority: 'owner-by-right',
     why: 'Derived from the static DARK_FLAGS allowlist compiled into libs/flags. NOTHING an operator writes at runtime can remove the entry — graduating a flag is a source edit + a shrink of a shrink-only allowlist. Confirming it stays dark is therefore the only honest terminal, and it is a real owner decision, not a hide.',
   },
   'blocked-session': {
     class: 'source-mutating',
+    authority: 'delegable',
     why: 'An open session_pending_gates row; closing the gate is exactly what the watcher/hook does when the ask clears.',
   },
   'work-item-blocked': {
     class: 'source-mutating',
+    authority: 'never-auto',
     why: 'A live blocked work_items row — Drop closes it with the caller rationale as completion evidence rather than leaving a permanently blocked row in the alert feed.',
   },
   'decision-owed': {
     class: 'acknowledgement',
+    authority: 'never-auto',
     why: 'A mechanical heuristic over ALREADY-CLOSED ask gates with no matching plans:add-decision. Recording the decision is separate deliberate work (the navigate action); dismissing records the honest verdict that no decision was owed.',
   },
 };
 
+/**
+ * Backwards-compatible public name for the authority map, now DERIVED from the
+ * one per-kind policy table instead of maintained as a second registry.
+ */
+export const ATTENTION_KIND_AUTHORITY: Record<AttentionKind, AttentionDelegation> =
+  Object.fromEntries(
+    Object.entries(ATTENTION_TERMINAL_POLICY).map(([kind, policy]) => [kind, policy.authority]),
+  ) as Record<AttentionKind, AttentionDelegation>;
+
 /** The policy for a kind, or `null` when the string is not a known AttentionKind. */
 export function terminalPolicyFor(kind: string): AttentionTerminalPolicy | null {
   return (ATTENTION_TERMINAL_POLICY as Record<string, AttentionTerminalPolicy | undefined>)[kind] ?? null;
+}
+
+/** The delegation rung for a kind, or `null` for an unknown kind. */
+export function delegationFor(kind: string): AttentionDelegation | null {
+  return terminalPolicyFor(kind)?.authority ?? null;
 }
 
 /**
@@ -153,10 +206,4 @@ export function terminalPolicyFor(kind: string): AttentionTerminalPolicy | null 
  */
 export function isAcknowledgementKind(kind: string): boolean {
   return terminalPolicyFor(kind)?.class === 'acknowledgement';
-}
-
-/** True when `id` ends the item (i.e. is not a navigate id). Kept here so the
- *  audit and the dispatcher agree on the same predicate. */
-export function isTerminalActionId(id: string): boolean {
-  return !NAVIGATE_ACTION_IDS.has(id as AttentionActionId);
 }

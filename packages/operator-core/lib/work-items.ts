@@ -177,6 +177,7 @@ import {
   mergeIssuePayload,
   planItemSourceFromPayloadPatch,
   markIssueProgress,
+  recordWorkItemReleaseCooldown,
   type EngineerIssue,
   type ListIssuesFilter,
 } from './issues-engineer';
@@ -5131,13 +5132,29 @@ export function issueCooldownExclusionSql(
   cooldownSec: number = releaseCooldownSec(),
   graceSec: number = filingGraceSec(),
 ) {
-  const releaseLeg =
+  const legacyReleaseLeg =
     assignee && cooldownSec > 0
       ? sql`(wi.last_released_by IS NULL
              OR wi.last_released_by <> ${assignee}
              OR wi.last_released_at IS NULL
              OR wi.last_released_at < now() - make_interval(secs => ${cooldownSec}))`
       : sql`TRUE`;
+  // Migration 1055: the legacy columns are a compatibility fallback, while the
+  // keyed sidecar preserves cooldowns for every releasing agent independently.
+  // Both predicates must pass so a peer release cannot erase this caller's row.
+  const sidecarReleaseLeg =
+    assignee && cooldownSec > 0
+      ? sql`NOT EXISTS (
+          SELECT 1
+            FROM harness_shared.work_item_release_cooldowns rc
+           WHERE rc.workspace_id = wi.workspace_id
+             AND rc.harness_slug = wi.harness_slug
+             AND rc.feature_id = wi.feature_id
+             AND rc.agent_id = ${assignee}
+             AND rc.released_at >= now() - make_interval(secs => ${cooldownSec})
+        )`
+      : sql`TRUE`;
+  const releaseLeg = sql`(${legacyReleaseLeg} AND ${sidecarReleaseLeg})`;
   const filingGraceLeg =
     assignee && graceSec > 0
       ? sql`(wi.payload -> '_ei' ->> 'created_by' IS NULL
@@ -5217,19 +5234,34 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
   //    WHERE item_kind IN ('feature','chunk') GROUP BY status;
   const states = opts.states ?? ['open'];
   const cooldown = releaseCooldownSec();
+  const releaseCooldownFloor =
+    opts.cooldownAssignee && cooldown > 0
+      ? sql`(
+          (
+            last_released_by IS NULL
+            OR last_released_by <> ${opts.cooldownAssignee}
+            OR last_released_at IS NULL
+            OR last_released_at < now() - make_interval(secs => ${cooldown})
+          )
+          AND NOT EXISTS (
+            SELECT 1
+              FROM harness_shared.work_item_release_cooldowns rc
+             WHERE rc.workspace_id = harness_shared.harness_features_consolidated.workspace_id
+               AND rc.harness_slug = harness_shared.harness_features_consolidated.harness_slug
+               AND rc.feature_id = harness_shared.harness_features_consolidated.feature_id
+               AND rc.agent_id = ${opts.cooldownAssignee}
+               AND rc.released_at >= now() - make_interval(secs => ${cooldown})
+          )
+        )`
+      : sql`TRUE`;
   return sql`
     harness_slug = ${opts.harness}
     AND workspace_id = ${opts.workspaceId}
-    -- Release-cooldown floor (mig 485 / EI-6956): NULL-safe — rows never released, or
-    -- released by someone else, or released long enough ago, all pass.
-    AND ${
-      opts.cooldownAssignee && cooldown > 0
-        ? sql`(last_released_by IS NULL
-        OR last_released_by <> ${opts.cooldownAssignee}
-        OR last_released_at IS NULL
-        OR last_released_at < now() - make_interval(secs => ${cooldown}))`
-        : sql`TRUE`
-    }
+    -- Release-cooldown floor (mig 485 / EI-6956 + migration 1055): retain the
+    -- legacy single-stamp fallback and AND the keyed per-agent sidecar anti-join.
+    -- Rows released by another agent remain eligible for this caller; a peer can
+    -- no longer overwrite this caller's cooldown in the shared row stamp.
+    AND ${releaseCooldownFloor}
     -- Built-in placeable kinds + any generic-kind datatype that opted into placement
     -- (the 'hive-placement' tag — frontierPlacementKindClause). DARK until a datatype opts in.
     AND ${frontierPlacementKindClause(sql, opts.workspaceId)}
@@ -8114,6 +8146,14 @@ export async function releaseWorkItem(
        AND (${opts.expectedAssignee ?? null}::text IS NULL OR taken_by IS NULL OR taken_by = ${opts.expectedAssignee ?? null})
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
   const released = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  if (released && wasClaimed && wi.assignee && wi.harness) {
+    await recordWorkItemReleaseCooldown({
+      workspaceId: activeWorkspaceId(),
+      harnessSlug: wi.harness,
+      featureId: released.id,
+      agentId: wi.assignee,
+    });
+  }
   await emitReleased(released);
   if (released) await retireLifecycleBindingsForWorkItem(released);
   return released;

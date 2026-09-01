@@ -1,0 +1,9 @@
+{
+  "actor": "su-2c668538-bced-4d50-bf3e-154a8da74f06",
+  "feature_id": "F-FIX-052",
+  "field": "__created",
+  "id": 970,
+  "new_value": "{\"id\":\"F-FIX-052\",\"title\":\"The scheduler oracle is authoritative for pull eligibility; a terminal receipt being unassigned does not clear the…\",\"sourceIssueId\":\"EI-22008144432543083\"}",
+  "old_value": "null",
+  "ts": 1788226102390
+}

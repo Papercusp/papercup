@@ -46,11 +46,17 @@ import {
   type TerminalAttentionItem,
 } from './terminal-action-dispatch';
 import {
+  ATTENTION_DELEGATIONS,
   ATTENTION_TERMINAL_POLICY,
-  isTerminalActionId,
+  isAttentionDelegation,
   terminalPolicyFor,
 } from './terminal-coverage';
-import { ATTENTION_KIND_AUTHORITY, type AttentionItem, type AttentionKind } from './types';
+import {
+  ATTENTION_KIND_AUTHORITY,
+  isTerminalActionId,
+  type AttentionItem,
+  type AttentionKind,
+} from './types';
 
 /** One representative item per kind, built by the REAL adapters — never a
  *  hand-written literal, which would let the fixture drift from what the reader
@@ -247,6 +253,26 @@ describe('P-003 terminal-action coverage audit', () => {
           `re-classify it rather than leaving the map lying`,
       ).toBe(false);
     }
+  });
+});
+
+describe('P-005 delegation-axis audit', () => {
+  it('derives the public authority map from the one terminal-policy registry', () => {
+    expect(ATTENTION_KIND_AUTHORITY).toEqual(
+      Object.fromEntries(
+        Object.entries(ATTENTION_TERMINAL_POLICY).map(([kind, policy]) => [kind, policy.authority]),
+      ),
+    );
+    expect(new Set(Object.values(ATTENTION_KIND_AUTHORITY))).toEqual(
+      new Set(ATTENTION_DELEGATIONS),
+    );
+  });
+
+  it('CONTROL: rejects a deliberately invalid fourth authority rung', () => {
+    expect(isAttentionDelegation('delegable')).toBe(true);
+    expect(isAttentionDelegation('owner-by-right')).toBe(true);
+    expect(isAttentionDelegation('never-auto')).toBe(true);
+    expect(isAttentionDelegation('auto-if-confident')).toBe(false);
   });
 });
 

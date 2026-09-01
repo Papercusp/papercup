@@ -26,6 +26,17 @@ vi.mock('./work-item-plan-contradiction', () => ({
 vi.mock('./agent-tools/plans/behavior-contract-resolver', () => ({
   resolveWorkItemBehaviorContract: behaviorContractResolver,
 }));
+// EI-19418245218824265. Unlike the row-reading legs — which return null here because
+// the fixture row is empty — this one reads the TREE, so it answers from repo content
+// no fixture controls. Unmocked it runs a real `git grep` for the synthetic id, and
+// `WI-1` is a SUBSTRING of every real `WI-1234`/`WI-19418…` in the tree, so it returns
+// hundreds of chars of unrelated hits and the "every leg is empty" premise below is
+// silently false. Mocked for the same reason as the seven above; the port's own
+// behaviour is tested against injected deps in `source-citation-claim-port.test.ts`.
+vi.mock('./source-citation-claim-port', () => ({
+  getClaimTimeSourceCitation: vi.fn(async () => null),
+  sourceCitationWarning: vi.fn(() => null),
+}));
 
 import { buildClaimTimeEnrichment } from './claim-time-enrichment';
 

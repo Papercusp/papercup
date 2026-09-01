@@ -78,6 +78,13 @@ export const CLAIM_TIME_ENRICHMENT_LEGS = [
   // measured instance of the duplicate-filing class was plan-less, so the plan-linked
   // legs are structurally silent for exactly the population that suffers it.
   'siblingPathOverlap',
+  // EI-19418245218824265: the tree already CITES this item's own id — an
+  // implementation usually names the item it closed. The ten legs above all read
+  // the ROW (checkpoint, release history, terminal state, plan, siblings); this is
+  // the first that reads the TREE, which is the only place the evidence exists when
+  // the implementer never CLAIMED the row. That row is byte-indistinguishable from
+  // never-started, so every other leg is structurally silent for it.
+  'sourceCitation',
 ] as const;
 
 export type ClaimTimeEnrichmentLeg = (typeof CLAIM_TIME_ENRICHMENT_LEGS)[number];
@@ -149,6 +156,16 @@ export interface ClaimTimeEnrichment {
    */
   siblingPathOverlap?: unknown;
   siblingPathOverlapWarning?: string;
+  /**
+   * EI-19418245218824265 — evidence paths in the tree that name this item's own id.
+   *
+   * Absent for BOTH "nothing cites it" and "the probe could not run": the port
+   * collapses those to `null` on purpose, because rendering the second as a claim
+   * about the tree is the false negative the underlying Scout probe exists to
+   * prevent. Saying nothing asserts nothing.
+   */
+  sourceCitation?: unknown;
+  sourceCitationWarning?: string;
   /**
    * P-013 — what this claim's context actually contained, and what it did not.
    *
@@ -312,6 +329,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     pathHintsEntry,
     planItemLandedEntry,
     siblingPathOverlapEntry,
+    sourceCitationEntry,
   ] = await Promise.all([
       // What OTHERS ruled that governs this item. Available from either a
       // work-item payload stamp or an explicit plan pointer.
@@ -471,6 +489,17 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
         const warning = m.siblingPathOverlapWarning(hint, workItemId);
         return hint && warning ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning } : null;
       }),
+      // EI-19418245218824265: does the TREE already cite this id? Needs nothing but
+      // the id — no payload, no plan, no row history — which is exactly why it still
+      // fires for the population every other leg is blind to (implemented by someone
+      // who never claimed the row). One `git grep`, already timeout- and buffer-bounded
+      // by the searcher it reuses, and fail-open to silence.
+      runLeg('sourceCitation', workItemId, async (workItemId) => {
+        const m = await import('./source-citation-claim-port');
+        const hint = await m.getClaimTimeSourceCitation({ workItemId });
+        const warning = m.sourceCitationWarning(hint, workItemId);
+        return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;
+      }),
     ]);
 
   const context = {
@@ -484,6 +513,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     ...(pathHintsEntry ?? {}),
     ...(planItemLandedEntry ?? {}),
     ...(siblingPathOverlapEntry ?? {}),
+    ...(sourceCitationEntry ?? {}),
   };
 
   return { ...context, enrichmentDelivery: summarizeDelivery(outcomes, context) };

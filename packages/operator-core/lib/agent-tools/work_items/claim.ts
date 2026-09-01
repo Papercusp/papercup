@@ -593,6 +593,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       pathHintsResult,
       planItemLanded,
       siblingPathOverlapResult,
+      sourceCitationResult,
     ] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
@@ -727,6 +728,20 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             : null;
         })
         .catch(() => null),
+      // EI-19418245218824265: the tree already cites this id. The only hint here that
+      // reads the TREE rather than the row, so it is the only one that fires when the
+      // implementer never claimed the row — the row then looks never-started to all
+      // the others. Advisory: a citation can be a reference, not an implementation.
+      import('../../source-citation-claim-port')
+        .then(async (m) => {
+          const id = workItem.id ?? it.id;
+          const hint = await m.getClaimTimeSourceCitation({ workItemId: id });
+          const warning = m.sourceCitationWarning(hint, id);
+          return hint && warning
+            ? { sourceCitation: hint, sourceCitationWarning: warning }
+            : null;
+        })
+        .catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     // A named assignee means the warning is being read by the dispatching caller, not the
@@ -805,6 +820,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             : {}),
           ...(pathHintsResult ?? {}),
           ...(siblingPathOverlapResult ?? {}),
+          ...(sourceCitationResult ?? {}),
         }
       : {
           ok: true,
@@ -851,6 +867,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             : {}),
           ...(pathHintsResult ?? {}),
           ...(siblingPathOverlapResult ?? {}),
+          ...(sourceCitationResult ?? {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.

@@ -1,5 +1,5 @@
 /**
- * work-items-issue-release-cooldown.integration.test.ts — migration 499: the issue-family
+ * work-items-issue-release-cooldown.integration.test.ts — migration 499 + 1055: the issue-family
  * release-cooldown floor, mirroring the feature family's (mig 485 / EI-6956).
  *
  * ROOT CAUSE (confirmed live 2026-07-04, backlog-drain fleet, on real work-items WI-652 /
@@ -11,7 +11,8 @@
  * cooldown provenance, and `claimNextIssueWorkItem` never read one as a floor — so the very
  * next self-select call from the SAME agent re-claimed the SAME top-ranked item, forever,
  * whenever it was still the oldest/highest-ranked eligible row (the generalized form of the
- * observed WI-652/WI-2381 "ping-pong").
+ * observed WI-652/WI-2381 "ping-pong"). Migration 1055 closes the remaining multi-agent
+ * overwrite hole by retaining one keyed sidecar row per releasing agent.
  *
  * Proves against real Postgres (testcontainer; Docker required):
  *   • releasing a CLAIMED issue-family item stamps last_released_by/at on the base row
@@ -20,6 +21,7 @@
  *   • claimNextWorkItem's issue tier SKIPS a row released by the SAME assignee within the
  *     cooldown window, serving a sibling instead;
  *   • a DIFFERENT assignee is NOT cooldown-excluded (the floor is per-releasing-claimant);
+ *   • a second peer release does not erase the first peer's sidecar cooldown;
  *   • once the cooldown window elapses, the SAME assignee can claim it again;
  *   • diagnoseClaimNextMiss's issue-ready count honors the same floor (no false "ready").
  *
@@ -29,6 +31,9 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
@@ -51,6 +56,13 @@ const H = 'papercup';
 const WS = 'default';
 let db: FreshPgDb;
 
+const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
+const readMigration = (name: string) =>
+  readFileSync(resolve(SQL_DIR, name), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
+    .join('\n');
+
 async function seedIssue(id: string, opts: { createdTs?: number; takenBy?: string | null } = {}) {
   await db.sql`
     INSERT INTO harness_shared.work_items
@@ -66,11 +78,15 @@ async function readCooldownCols(id: string): Promise<{ takenBy: string | null; l
   return { takenBy: r?.taken_by ?? null, lastReleasedBy: r?.last_released_by ?? null, lastReleasedAt: r?.last_released_at ?? null };
 }
 
-/** Push a row's last_released_at back beyond the cooldown window (simulate elapsed time). */
+/** Push legacy and sidecar release timestamps back beyond the cooldown window. */
 async function backdateRelease(id: string, secondsAgo: number) {
   await db.sql`
     UPDATE harness_shared.work_items
        SET last_released_at = now() - make_interval(secs => ${secondsAgo})
+     WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+  await db.sql`
+    UPDATE harness_shared.work_item_release_cooldowns
+       SET released_at = now() - make_interval(secs => ${secondsAgo})
      WHERE workspace_id = ${WS} AND feature_id = ${id}`;
 }
 
@@ -80,13 +96,26 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  // releaseWorkItem retires lifecycle-bound awaits and emits a claim-released
+  // event. Keep this focused fixture on the same minimal coordination schema as
+  // the release/lifecycle integration suites so missing event tables cannot hide
+  // the cooldown assertions.
+  for (const migration of [
+    '163-await-event-subscriptions.sql',
+    '175-watch-floor-coalesce-cols.sql',
+    '541-predicate-watches.sql',
+    '632-event-key-fire-latch.sql',
+    '871-lifecycle-bound-watches.sql',
+  ]) {
+    await db.sql.unsafe(readMigration(migration)).simple();
+  }
   await ensureCoordCapabilityTables(db.sql);
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_release_cooldowns, harness_shared.work_item_deps`;
   setFlagOverridesForTest({
     [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
     [FLAGS.SCHEDULER_MAINTAINED_READY]: false,
@@ -143,6 +172,29 @@ describe('claimNextWorkItem SKIPS an issue-family item within ITS OWN release co
 
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-2' });
     expect(got?.id).toBe('WI-cool-c');
+  });
+
+  it('keeps independent cooldowns when a peer releases the same item afterward (migration 1055)', async () => {
+    await seedIssue('WI-cool-peer', { createdTs: 100, takenBy: 'bee-1' });
+    await wi.releaseWorkItem('WI-cool-peer', { harness: H });
+
+    // Let a second agent take and release the same row. The legacy stamp now names
+    // bee-2, but the sidecar must retain bee-1's still-live cooldown as well.
+    const peerClaim = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-2' });
+    expect(peerClaim?.id).toBe('WI-cool-peer');
+    await wi.releaseWorkItem('WI-cool-peer', { harness: H });
+
+    const cooldowns = await db.sql<{ agent_id: string }[]>`
+      SELECT agent_id
+        FROM harness_shared.work_item_release_cooldowns
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-cool-peer'
+       ORDER BY agent_id`;
+    expect(cooldowns.map((row) => row.agent_id)).toEqual(['bee-1', 'bee-2']);
+
+    // The first releaser remains excluded even though the peer's later release
+    // overwrote the single-valued legacy stamp.
+    const firstReleaserRetry = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-1' });
+    expect(firstReleaserRetry).toBeNull();
   });
 
   it('once the cooldown window elapses, the SAME assignee can claim it again', async () => {

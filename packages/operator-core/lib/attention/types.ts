@@ -18,6 +18,12 @@
 import { type Importance, IMPORTANCE_LEVELS, type RiskTier, riskTierRank } from '@papercusp/plan-parser';
 import type { ReportBlock } from '@papercusp/chat-protocol';
 import { type AutonomyCategory, isProtectedCategory } from '../autonomy/categories';
+import {
+  ATTENTION_KIND_AUTHORITY,
+  type AttentionDelegation,
+} from './terminal-coverage';
+
+export { ATTENTION_KIND_AUTHORITY, type AttentionDelegation } from './terminal-coverage';
 
 export type AttentionKind =
   | 'plan-item'
@@ -145,30 +151,12 @@ export type Authorizer = 'you' | 'queen-eligible' | null;
 export type WhyGated = 'protected' | 'owner-only' | 'unarmed' | 'above-ceiling' | null;
 
 /**
- * The decision AUTHORITY of each attention kind's disposition — `owner` when the
- * disposition is the owner's by right (ratify a needs-human plan item; grant a
- * standing approval), else `system` (a disposition the Queen could in principle
- * own). Mirrors the B-04 action-surface audit's per-disposition `authority`
- * (../autonomy/action-surface). The category ({@link ATTENTION_KIND_CATEGORY})
- * governs the ceiling; this governs owner-by-right. Drives {@link deriveAuthorization}.
+ * The decision AUTHORITY of each attention kind's disposition is the
+ * three-rung {@link AttentionDelegation} partition exported as
+ * {@link ATTENTION_KIND_AUTHORITY}. Its source is the existing
+ * `ATTENTION_TERMINAL_POLICY` table: terminal class and delegation authority are
+ * two independent axes on one total per-kind policy, never parallel registries.
  */
-export const ATTENTION_KIND_AUTHORITY: Record<AttentionKind, 'owner' | 'system'> = {
-  'plan-item': 'owner', // ratify a needs-human item / milestone gate
-  'coord-escalation': 'system', // resolve a blocker/question escalation
-  'coord-message': 'system', // ack / dismiss an inbox message
-  'smoke-fail': 'system', // ungoverned signal (category null)
-  'operator-report': 'system', // ungoverned status report (category null)
-  'improvement': 'system', // triage / promote a human-routed improvement
-  'standing-approval': 'owner', // grant standing auto-dispatch — autonomy-widening, owner-only
-  'conversation': 'system', // answer an open agent question
-  'scout-grade': 'system', // grade routed Scout ideas
-  'work-item-needs-human': 'owner', // ratify a needs-human work-item — same owner-by-right disposition as a needs-human plan item
-  'owner-wall': 'owner', // clear a registered owner-gated blocker — by definition only the owner can
-  'dark-flag-ratification': 'owner', // the CLAUDE.md dark-flag policy requires the OWNER to ratify/flip these specifically
-  'blocked-session': 'system', // answering the mirrored ask is queen-eligible in principle, same as 'conversation'
-  'work-item-blocked': 'system', // ungoverned alert signal (category null) — mirrors 'smoke-fail'
-  'decision-owed': 'system', // a nudge to the conversing agent, not an owner-authority disposition
-};
 
 /** The gating fields {@link deriveAuthorization} stamps onto an item. */
 export interface AttentionAuthorization {
@@ -186,10 +174,11 @@ export interface AttentionAuthorization {
  * activity, handled, ungoverned signals) is `{ whyGated: null, authorizer: null }`.
  *
  * Mirrors the decider's hard gates, coarsened to item granularity (D-005):
- *   PROTECTED category          → protected / you
- *   owner-authority disposition → owner-only / you
- *   category null (fail-safe)   → owner-only / you  (never auto an unmapped decision)
- *   else (system, non-protected, queen-eligible):
+ *   never-auto disposition      → protected / you
+ *   owner-by-right disposition  → owner-only / you
+ *   category null (fail-safe)   → protected / you
+ *   protected category fallback → protected / you
+ *   else (delegable, non-protected, queen-eligible):
  *     ¬armed                    → unarmed
  *     armed                     → above-ceiling
  */
@@ -198,12 +187,14 @@ export function deriveAuthorization(
   armed: boolean,
 ): AttentionAuthorization {
   if (!item.needsHuman) return { whyGated: null, authorizer: null };
+  const authority: AttentionDelegation = ATTENTION_KIND_AUTHORITY[item.kind];
   const category = item.category ?? attentionCategory(item.kind);
-  if (category == null) return { whyGated: 'owner-only', authorizer: 'you' };
-  if (isProtectedCategory(category)) return { whyGated: 'protected', authorizer: 'you' };
-  if (ATTENTION_KIND_AUTHORITY[item.kind] === 'owner') {
+  if (authority === 'never-auto') return { whyGated: 'protected', authorizer: 'you' };
+  if (authority === 'owner-by-right') {
     return { whyGated: 'owner-only', authorizer: 'you' };
   }
+  if (category == null) return { whyGated: 'protected', authorizer: 'you' };
+  if (isProtectedCategory(category)) return { whyGated: 'protected', authorizer: 'you' };
   if (!armed) return { whyGated: 'unarmed', authorizer: 'queen-eligible' };
   return { whyGated: 'above-ceiling', authorizer: 'queen-eligible' };
 }
@@ -314,6 +305,11 @@ export const NAVIGATE_ACTION_IDS: ReadonlySet<AttentionActionId> =
 /** True when `id` only opens a sub-surface — i.e. resolves nothing. */
 export function isNavigateAction(id: string): boolean {
   return NAVIGATE_ACTION_IDS.has(id as AttentionActionId);
+}
+
+/** True when `id` ends an attention item rather than opening a sub-surface. */
+export function isTerminalActionId(id: string): boolean {
+  return !isNavigateAction(id);
 }
 
 export interface AttentionAction {

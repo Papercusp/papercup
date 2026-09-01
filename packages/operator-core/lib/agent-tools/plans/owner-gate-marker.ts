@@ -85,7 +85,11 @@ export function findAnchoredOwnerGateMarker(text: string | null | undefined): st
   if (!text) return null;
   const trimmed = text.trim();
   for (const marker of OWNER_GATE_MARKERS) {
-    const anchored = new RegExp(`(?:^|[([])\\s*${escapeRegExp(marker)}\\s*[:\\)])`, 'i');
+    // Keep the opening delimiters and closing delimiters as separate escaped
+    // alternatives. The former `[([])` shape looked plausible but leaves the
+    // generated expression unbalanced (`Unmatched ')'`) before it can inspect
+    // any item text.
+    const anchored = new RegExp(`(?:^|\\(|\\[)\\s*${escapeRegExp(marker)}\\s*(?::|\\)|\\])`, 'i');
     if (anchored.test(trimmed)) return marker;
   }
   return null;

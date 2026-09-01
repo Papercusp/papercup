@@ -2823,6 +2823,43 @@ export async function markIssueProgress(id: string): Promise<boolean> {
   }
 }
 
+/**
+ * Record a release in the keyed cooldown sidecar (migration 1055).
+ *
+ * The legacy work_items columns can retain only one releasing agent. This write
+ * is deliberately best-effort so a runtime that starts before migration 1055 can
+ * still release using the legacy stamp; the claim floors retain that stamp as a
+ * compatibility fallback. The INSERT derives harness_slug from the base row so
+ * operator-scoped and harness-scoped issue encodings cannot diverge from readers.
+ */
+export async function recordWorkItemReleaseCooldown(opts: {
+  workspaceId: string;
+  harnessSlug: string;
+  featureId: string;
+  agentId: string;
+}): Promise<void> {
+  const agentId = opts.agentId.trim();
+  const harnessSlug = opts.harnessSlug.trim();
+  if (!agentId || !harnessSlug) return;
+  try {
+    const { sql } = getOrgPg();
+    await sql`
+      INSERT INTO harness_shared.work_item_release_cooldowns
+        (workspace_id, harness_slug, feature_id, agent_id, released_at)
+      SELECT workspace_id, harness_slug, feature_id, ${agentId}, now()
+       FROM harness_shared.work_items
+       WHERE workspace_id = ${opts.workspaceId}
+         AND harness_slug = ${harnessSlug}
+         AND feature_id = ${opts.featureId}
+      ON CONFLICT (workspace_id, harness_slug, feature_id, agent_id) DO UPDATE
+        SET released_at = EXCLUDED.released_at`;
+  } catch {
+    // Migration 1055 may not yet be applied on an older runtime. The legacy
+    // columns were written by the same release, so the reader still has a safe
+    // compatibility floor until the sidecar is available.
+  }
+}
+
 export async function releaseIssue(
   id: string,
   opts: { expectedAssignee?: string } = {},
@@ -2832,9 +2869,14 @@ export async function releaseIssue(
   // EI-6480: capture the prior assignee BEFORE clearing it, so we can clean up that owner's
   // stale per-Hive claim lease below — else the just-freed issue stays lease-poisoned (reads
   // unclaimed yet fails lease arbitration for every new claimer) until the lease TTL lapses.
-  const prev = await sql<{ assignee: string | null }[]>`
-    SELECT assignee FROM harness_shared.engineer_issues WHERE workspace_id = ${ws} AND issue_id = ${id}`;
-  const formerAssignee = prev[0]?.assignee ?? null;
+  const prev = await sql<{ taken_by: string | null; harness_slug: string | null }[]>`
+    SELECT taken_by, harness_slug
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${ws}
+       AND feature_id = ${id}
+       AND item_kind IN ('bug', 'change', 'task')`;
+  const formerAssignee = prev[0]?.taken_by ?? null;
+  const formerHarnessSlug = prev[0]?.harness_slug ?? null;
   // EI-7588: when `expectedAssignee` is given (the work_items:release TOOL's holder guard),
   // the UPDATE itself only touches the row when it is unclaimed OR already held by the
   // expected caller — atomic compare-and-release, no fetch-then-write race. A row held by
@@ -2862,6 +2904,14 @@ export async function releaseIssue(
      RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
+  if (formerAssignee && formerHarnessSlug) {
+    await recordWorkItemReleaseCooldown({
+      workspaceId: ws,
+      harnessSlug: formerHarnessSlug,
+      featureId: id,
+      agentId: formerAssignee,
+    });
+  }
   // Direct issue release callers (outside work_items:release) must retire the
   // same cached goal as the unified release path. Compare before clearing so a
   // delayed release cannot erase a newer goal claimed by this owner.

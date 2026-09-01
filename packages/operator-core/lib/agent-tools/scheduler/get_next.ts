@@ -658,6 +658,12 @@ export function assembleSchedulerClaimResult(legs: {
    */
   siblingPathOverlap?: unknown;
   siblingPathOverlapWarning?: unknown;
+  /**
+   * EI-19418245218824265: the tree already cites this item's own id — the signal
+   * every row-based leg above is blind to when the implementer never claimed the row.
+   */
+  sourceCitation?: unknown;
+  sourceCitationWarning?: unknown;
   planDecisions?: readonly unknown[] | null;
   planDecisionsNote?: string | null;
   priorAttemptBrief?: unknown;
@@ -748,6 +754,12 @@ export function assembleSchedulerClaimResult(legs: {
       ? {
           siblingPathOverlap: legs.siblingPathOverlap,
           siblingPathOverlapWarning: legs.siblingPathOverlapWarning,
+        }
+      : {}),
+    ...(legs.sourceCitation
+      ? {
+          sourceCitation: legs.sourceCitation,
+          sourceCitationWarning: legs.sourceCitationWarning,
         }
       : {}),
     ...(legs.premises ? { premises: legs.premises, premisesNote: legs.premisesNote } : {}),
@@ -1480,6 +1492,10 @@ export default defineTool({
       siblingPathOverlap: unknown;
       siblingPathOverlapWarning: string;
     } | null;
+    let sourceCitationHint = null as {
+      sourceCitation: unknown;
+      sourceCitationWarning: string;
+    } | null;
 
     const enrichSuccessfulClaim = async (): Promise<void> => {
       // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
@@ -1571,7 +1587,7 @@ export default defineTool({
           sourcePlanSlug?: string | null;
           sourcePlanItemIds?: string[] | null;
         };
-        [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint, siblingPathOverlapHint] =
+        [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint, siblingPathOverlapHint, sourceCitationHint] =
           await Promise.all([
             import('../../plan-decisions-claim-port')
               .then(async (m) => {
@@ -1687,6 +1703,22 @@ export default defineTool({
                     const warning = m.siblingPathOverlapWarning(hint, wi.id as string);
                     return hint && warning
                       ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning }
+                      : null;
+                  })
+                  .catch(() => null)
+              : Promise.resolve(null),
+            // EI-19418245218824265: the only leg that reads the TREE. Needs nothing but
+            // the id, so it still fires for an item implemented by an agent who never
+            // claimed the row — the shape all ten row-based legs are silent for.
+            wi?.id
+              ? import('../../source-citation-claim-port')
+                  .then(async (m) => {
+                    const hint = await m.getClaimTimeSourceCitation({
+                      workItemId: wi.id as string,
+                    });
+                    const warning = m.sourceCitationWarning(hint, wi.id as string);
+                    return hint && warning
+                      ? { sourceCitation: hint, sourceCitationWarning: warning }
                       : null;
                   })
                   .catch(() => null)
@@ -1830,6 +1862,8 @@ export default defineTool({
           planItemLandedWarning: planItemLandedHint?.planItemLandedWarning,
           siblingPathOverlap: siblingPathOverlapHint?.siblingPathOverlap,
           siblingPathOverlapWarning: siblingPathOverlapHint?.siblingPathOverlapWarning,
+          sourceCitation: sourceCitationHint?.sourceCitation,
+          sourceCitationWarning: sourceCitationHint?.sourceCitationWarning,
           behaviorContract: behaviorContractHint?.behaviorContract,
           behaviorContractNote: behaviorContractHint?.behaviorContractNote,
           pathHints: pathHintsHint?.pathHints,
