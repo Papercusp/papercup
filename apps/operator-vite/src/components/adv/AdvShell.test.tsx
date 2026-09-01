@@ -57,12 +57,17 @@ const nuqsState: Record<string, unknown> = {
   max: 'off',
 };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
+const routeState = { pathname: '/adv', search: '' };
 vi.mock('nuqs', () => ({
   ...nuqsParsers,
   useQueryState: (key: string) => {
     nuqsSetters[key] ??= vi.fn(async () => {});
     return [nuqsState[key], nuqsSetters[key]];
   },
+}));
+vi.mock('@/lib/router-compat/navigation', () => ({
+  usePathname: () => routeState.pathname,
+  useSearchParams: () => new URLSearchParams(routeState.search),
 }));
 
 // Live harnessProjects.lite registry list (P-010). The tests seed `projectRows`
@@ -221,13 +226,15 @@ function stubProjects(rows: unknown[] = PROJECTS, opts: { fail?: boolean } = {})
 /** Render the shell and wait for the strip to mount (so effects have flushed).
  *  The anchor used to be a selector <option> — the selector lives in AdvPotBar
  *  now, so the strip itself is the shell's own first paint. */
-async function renderShell() {
+async function renderShell({ expectTabs = true }: { expectTabs?: boolean } = {}) {
   const utils = render(
     <AdvShell>
       <div data-testid="tab-body" />
     </AdvShell>,
   );
-  await waitFor(() => expect(screen.getByRole('tab', { name: 'overview' })).toBeTruthy());
+  if (expectTabs) {
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'overview' })).toBeTruthy());
+  }
   return utils;
 }
 
@@ -259,6 +266,10 @@ beforeEach(() => {
   nuqsState.create = false;
   nuqsState.share = false;
   nuqsState.max = 'off';
+  routeState.pathname = '/adv';
+  routeState.search = '';
+  // AdvShell reads the router compatibility hooks; the default test location
+  // is the ordinary non-embedded operator route.
   fullscreenElement = null;
   requestFullscreenSpy.mockClear();
   exitFullscreenSpy.mockClear();
@@ -274,6 +285,31 @@ afterEach(() => {
 });
 
 describe('AdvShell — strip + header', () => {
+  it('keeps only Overview, HUD, Learning, and Work in a portal-embedded Papercusp frame', async () => {
+    routeState.search = '?portalEmbed=1&portalTheme=light';
+    await renderShell();
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent?.trim())).toEqual([
+      'overview', 'hud', 'work', 'learning',
+    ]);
+    expect(screen.queryByRole('button', { name: 'More sections' })).toBeNull();
+  });
+
+  it('keeps a dedicated extracted-tab embed body without restoring any Papercusp tab chrome', async () => {
+    routeState.search = '?portalEmbed=1&portalTheme=light&tab=workflows';
+    nuqsState.tab = 'workflows';
+    await renderShell({ expectTabs: false });
+    expect(nuqsSetters.tab).not.toHaveBeenCalled();
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(document.querySelector('.pc-advshell__header')).toBeNull();
+  });
+
+  it('normalizes a stale non-portal tab deep link to Overview in the cloud embed', async () => {
+    routeState.search = '?portalEmbed=1&portalTheme=light&tab=docs';
+    nuqsState.tab = 'docs';
+    await renderShell();
+    expect(nuqsSetters.tab).toHaveBeenCalledWith('overview');
+  });
+
   it('renders ONLY the promoted tabs as real strip tabs (D-001 option C), with NO title bar above them', async () => {
     await renderShell();
     // Owner ask 2026-07-27: "remove the whole ADVANCED ORCHESTRATION / HUD bar so

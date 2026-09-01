@@ -283,7 +283,7 @@ describe('ChromeShell', () => {
     expect(screen.queryByTestId('op-chat')).toBeNull();
   });
 
-  it('keeps only the Papercup chat dock when /adv is framed by the portal', () => {
+  it('keeps the Papercup chat dock when /adv is framed by the portal (the root composes Accounts beside it)', () => {
     pathname = '/adv';
     search = 'portalEmbed=1&portalTheme=light';
     operatorChatSidebarFlag = false;

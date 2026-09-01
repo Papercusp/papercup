@@ -46,6 +46,8 @@ import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-
 import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
+import { usePathname, useSearchParams } from '@/lib/router-compat/navigation';
+import { isPortalEmbedLocation } from '@papercusp/operator-core/lib/portal-embed';
 import { CATEGORICAL } from '@/app/harness/theme';
 // PotsRunningPill ("▶ N POT running") was the first pill in this strip until
 // 2026-08-10, when it was deleted by owner directive ([owner 2026-08-10]
@@ -66,6 +68,41 @@ import './adv-header-pills.css';
 // mount the same BrainstormFull surface.
 const ADV_TAB_IDS = ['overview', 'hud', 'brainstorm', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'history', 'git', 'stats', 'testing', 'plans', 'workflows', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
+
+/**
+ * Tabs that remain inside the cloud portal's embedded Papercusp destination.
+ * Plans, Inbox, Workflows, and Brainstorm have dedicated portal rail entries;
+ * the owner explicitly retained only Overview, HUD, Learning, and Work here.
+ * Canonical IDs stay in ADV_TAB_IDS so ordinary operator URLs and the dedicated
+ * embedded destinations keep rendering their existing content.
+ */
+export const PORTAL_EMBED_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
+  'overview',
+  'hud',
+  'learning',
+  'harnesses',
+]);
+
+/**
+ * Content-only destinations that the outer portal rail owns. They stay
+ * renderable when their dedicated iframe URL is active, but never reappear as
+ * Papercusp tabs inside that frame.
+ */
+export const PORTAL_EMBED_ADV_CONTENT_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
+  ...PORTAL_EMBED_ADV_TAB_IDS,
+  'workflows',
+  'brainstorm',
+]);
+
+/** Resolve a stale extracted-tab deep link to the retained cloud landing tab. */
+export function portalEmbedAdvTab(tab: AdvTabId, embedded: boolean): AdvTabId {
+  return embedded && !PORTAL_EMBED_ADV_CONTENT_IDS.has(tab) ? 'overview' : tab;
+}
+
+/** Resolve an embedded tab to the retained cloud-portal surface. */
+export function portalEmbedAdvTabs<T extends { id: AdvTabId }>(tabs: readonly T[], embedded: boolean): T[] {
+  return embedded ? tabs.filter((tab) => PORTAL_EMBED_ADV_TAB_IDS.has(tab.id)) : [...tabs];
+}
 
 /**
  * /adv shell — TSR mirror of apps/operator/app/adv/_components/AdvShell.tsx.
@@ -428,6 +465,9 @@ export function useAdvScope(): AdvScope {
  * bodies (AdvPotBar).
  */
 export default function AdvShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname() ?? '';
+  const searchParams = useSearchParams();
+  const portalEmbed = isPortalEmbedLocation(pathname, searchParams.toString());
   const [activeTab, setActiveTab] = useQueryState(
     'tab',
     // Overview is the default landing surface (Brief 23 /
@@ -435,6 +475,10 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     // parser in routes/adv/index.tsx.
     parseAsStringEnum<AdvTabId>([...ADV_TAB_IDS]).withDefault('overview'),
   );
+  const renderedActiveTab = portalEmbedAdvTab(activeTab, portalEmbed);
+  useEffect(() => {
+    if (renderedActiveTab !== activeTab) void setActiveTab(renderedActiveTab);
+  }, [activeTab, renderedActiveTab, setActiveTab]);
   // Tab strip overflows on narrow viewports. Only scroll into view when
   // the active tab is actually clipped — otherwise we'd scroll AWAY from
   // tabs the user can already see (the first wrong version of this
@@ -444,7 +488,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const list = tablistRef.current;
     if (!list) return;
-    const trigger = list.querySelector<HTMLElement>(`.pc-advshell__tab--${activeTab}`);
+    const trigger = list.querySelector<HTMLElement>(`.pc-advshell__tab--${renderedActiveTab}`);
     if (!trigger) return;
     const listRect = list.getBoundingClientRect();
     const tabRect = trigger.getBoundingClientRect();
@@ -457,7 +501,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     } catch {
       /* best effort */
     }
-  }, [activeTab]);
+  }, [renderedActiveTab]);
   // Tab-strip overflow indicator (owner ask 2026-06-15 #1): when tabs overflow a
   // narrow window they were silently clipped with no affordance. Track which
   // side is scrolled-away so the render can fade that edge + show a scroll
@@ -752,16 +796,22 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   // "pick a {pot} from the dropdown" prompt — restoring the empty-state the old
   // snap-back used to swallow (owner ask 2026-06-17). Appended only when the
   // active tab isn't already a workspace tab in the strip.
-  const activeTabDef = ADV_TABS.find((tab) => tab.id === activeTab);
+  const activeTabDef = ADV_TABS.find((tab) => tab.id === renderedActiveTab);
   const visibleTabs =
-    allMode && activeTabDef && !baseVisibleTabs.some((tab) => tab.id === activeTab)
+    allMode && activeTabDef && !baseVisibleTabs.some((tab) => tab.id === renderedActiveTab)
       ? [...baseVisibleTabs, activeTabDef]
       : baseVisibleTabs;
+  const embedVisibleTabs = portalEmbedAdvTabs(visibleTabs, portalEmbed);
+  // Dedicated Workflow Editor and Brainstorm portal destinations still render
+  // their canonical body, but must not grow a second Papercusp tab strip around
+  // that extracted surface. The four retained tabs get the strip; extracted
+  // bodies are reached from the outer portal rail instead.
+  const showTabChrome = !portalEmbed || PORTAL_EMBED_ADV_TAB_IDS.has(renderedActiveTab);
 
   // D-001 (owner decision, option C): only Overview + HUD render as real strip
   // tabs; everything else lives behind the More menu (moreOpen).
-  const { primary: primaryTabs, secondary: secondaryTabs } = splitPrimarySecondary(visibleTabs);
-  const isSecondaryTabActive = secondaryTabs.some((tab) => tab.id === activeTab);
+  const { primary: primaryTabs, secondary: secondaryTabs } = splitPrimarySecondary(embedVisibleTabs);
+  const isSecondaryTabActive = secondaryTabs.some((tab) => tab.id === renderedActiveTab);
   const [moreOpen, setMoreOpen] = useState(false);
 
   // Mitigation (b): pin the last few visited secondary tabs at the top of the
@@ -770,16 +820,16 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     typeof window === 'undefined' ? [] : parseRecentSecondaryTabs(window.localStorage.getItem(recentSecondaryTabsKey())),
   );
   useEffect(() => {
-    if (PRIMARY_ADV_TAB_IDS.has(activeTab)) return;
+    if (portalEmbed || PRIMARY_ADV_TAB_IDS.has(renderedActiveTab)) return;
     setRecentSecondaryTabs((prev) => {
-      if (prev[0] === activeTab) return prev;
-      const next = pushRecentSecondaryTab(prev, activeTab);
+      if (prev[0] === renderedActiveTab) return prev;
+      const next = pushRecentSecondaryTab(prev, renderedActiveTab);
       if (typeof window !== 'undefined') {
         window.localStorage.setItem(recentSecondaryTabsKey(), JSON.stringify(next));
       }
       return next;
     });
-  }, [activeTab]);
+  }, [renderedActiveTab, portalEmbed]);
 
   // ── Discord-parity keyboard handlers (discord-shortcuts 2026-06-06) ──────
   // Alt+↑/↓ cycles the visible tab strip (Discord's prev/next channel);
@@ -790,9 +840,9 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   // win while /adv is mounted and the fallbacks cover every other route.
   const navKeyOpts = { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] as const };
   const cycleTab = (dir: 1 | -1) => {
-    const idx = visibleTabs.findIndex((tab) => tab.id === activeTab);
-    const next = visibleTabs[(idx + dir + visibleTabs.length) % visibleTabs.length];
-    if (next && next.id !== activeTab) void setActiveTab(next.id);
+    const idx = embedVisibleTabs.findIndex((tab) => tab.id === renderedActiveTab);
+    const next = embedVisibleTabs[(idx + dir + embedVisibleTabs.length) % embedVisibleTabs.length];
+    if (next && next.id !== renderedActiveTab) void setActiveTab(next.id);
   };
   useShortcutAction('goto.prevTab', () => cycleTab(-1), navKeyOpts);
   useShortcutAction('goto.nextTab', () => cycleTab(1), navKeyOpts);
@@ -853,7 +903,8 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     // no way to tell the operator UI from /onboarding, so it measured the wrong
     // screen for its entire existence. Renaming this testid breaks that suite.
     <div className="pc-advshell" data-testid="operator-shell">
-      <header className="pc-advshell__header">
+      {showTabChrome && (
+        <header className="pc-advshell__header">
         {/* The tab strip is the TOPMOST chrome (owner ask 2026-07-27). What used
             to sit above it — the "ADVANCED ORCHESTRATION / <title>" copy and the
             pot cluster + status pills — is gone from here: the copy was a second
@@ -861,7 +912,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
             inside each pot-scoped tab body (AdvPotBar), where the scope it sets
             is actually the scope you are looking at. */}
         <Tabs.Root
-          value={activeTab}
+          value={renderedActiveTab}
           onValueChange={(value) => void setActiveTab(value as AdvTabId)}
           className="pc-advshell__tabs"
           data-of-left={tabOverflow.left ? '' : undefined}
@@ -922,7 +973,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
                 groups={SECONDARY_TAB_GROUPS}
                 tabs={secondaryTabs}
                 recentIds={recentSecondaryTabs}
-                activeTab={activeTab}
+                activeTab={renderedActiveTab}
                 onSelect={(id) => {
                   void setActiveTab(id);
                   setMoreOpen(false);
@@ -1010,11 +1061,12 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
               would point at a content panel that never mounts (a dangling
               idref axe flags as critical). Render hidden, force-mounted
               Content stubs so the referenced ids exist and resolve. */}
-          {visibleTabs.map((t) => (
+          {embedVisibleTabs.map((t) => (
             <Tabs.Content key={t.id} value={t.id} forceMount style={{ display: 'none' }} />
           ))}
         </Tabs.Root>
-      </header>
+        </header>
+      )}
       <CreateHarnessPicker
         open={createOpen}
         // Opening only: the picker CLOSES itself via a single atomic useQueryStates

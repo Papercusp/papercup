@@ -56,7 +56,7 @@ import PlanDashboardHost from '@/app/_components/plans/PlanDashboardHost';
 import PlanCleanupReportHost from '@/app/_components/plans/PlanCleanupReportHost';
 import InboxBulkReportHost from '@/app/_components/inbox/InboxBulkReportHost';
 import { usePathname, useSearchParams } from '@/lib/router-compat/navigation';
-import { isChromelessPath, isPortalEmbedLocation } from '@papercusp/operator-core/lib/chromeless-routes';
+import { isChromelessPath, isPortalEmbedLocation, routeHasSteeringSidebar } from '@papercusp/operator-core/lib/chromeless-routes';
 import { PortalEmbedThemeBridge } from '@/app/_components/PortalEmbedThemeBridge';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
 // (desktop UI part A). Mounted here — inside RootSyncProvider, at the router
@@ -265,10 +265,13 @@ function RootComponent() {
                   (its open/tab/selection state is URL-backed) + RootSyncProvider
                   (its panels use useSyncQuery); docked via
                   body.has-left-sidebar. Papercup chat mounts after it as the
-                  middle pane. Skipped
+                  middle pane. It remains present inside portal-embedded /adv so
+                  the Accounts-first steering surface stays beside Papercup Chat;
+                  focused /plans and /inbox embeds still self-suppress because
+                  LeftSidebar treats chromeless routes as bare documents. Skipped
                   while the WSL onboarding gate is blocking (WI-2749 item
                   #2) — see useWslGateBlocking. */}
-              {!portalEmbed && !wslGateBlocking && (
+              {routeHasSteeringSidebar(pathname) && !wslGateBlocking && (
                 <Suspense fallback={null}>
                   <LeftSidebar />
                 </Suspense>

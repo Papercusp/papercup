@@ -89,6 +89,8 @@ import {
   judgeVerdictlessDeath,
   DEFAULT_VERDICTLESS_GRACE_MS,
   decideVerdictlessRefire,
+  readGateFireOwnerWall,
+  resolveVerdictlessRefireEpisode,
   type CheckpointEvidence,
 } from './green-stall-watchdog';
 // Imported, never restated: the re-fire tests enumerate the REAL abort table, so adding a
@@ -2710,5 +2712,267 @@ describe('decideVerdictlessRefire — D-006: detection does not authorize actuat
       decideVerdictlessRefire({ ...base, ownerWallActive: true, abortStatus: 'cancelled' }),
     ];
     for (const a of arms) expect(a.detail.length).toBeGreaterThan(20);
+  });
+});
+
+describe('readGateFireOwnerWall (D-003 — the owner wall is a REAL signal, fail-closed)', () => {
+  type WallReader = Parameters<typeof readGateFireOwnerWall>[0];
+  const reader = (v: unknown): WallReader => (async () => v) as unknown as WallReader;
+  const held = { status: 'held', hold: { governingRef: 'D-080' } };
+  const clear = { status: 'clear' };
+
+  it('EITHER hold scope reads as an ACTIVE wall, naming its governingRef', async () => {
+    await expect(readGateFireOwnerWall(reader(held), reader(clear))).resolves.toEqual({
+      active: true,
+      detail: 'qualification hold: D-080',
+    });
+    await expect(readGateFireOwnerWall(reader(clear), reader(held))).resolves.toEqual({
+      active: true,
+      detail: 'manual-run hold: D-080',
+    });
+  });
+
+  it('a held scope with no attribution still walls (unattributed)', async () => {
+    await expect(readGateFireOwnerWall(reader({ status: 'held' }), reader(clear))).resolves.toEqual({
+      active: true,
+      detail: 'qualification hold: unattributed',
+    });
+  });
+
+  it('both scopes clear ⇒ no wall', async () => {
+    await expect(readGateFireOwnerWall(reader(clear), reader(clear))).resolves.toEqual({
+      active: false,
+      detail: null,
+    });
+  });
+
+  it('a FAILED read is an ACTIVE wall (fail-closed), never a cleared one', async () => {
+    const throwing = (async () => {
+      throw new Error('config unreadable');
+    }) as unknown as WallReader;
+    const wall = await readGateFireOwnerWall(throwing, reader(clear));
+    expect(wall.active).toBe(true);
+    expect(wall.detail).toContain('fail-closed');
+    expect(wall.detail).toContain('config unreadable');
+  });
+});
+
+describe('resolveVerdictlessRefireEpisode (D-003 — the durable episode budget and its reset rule)', () => {
+  const fresh = { attempts: 0, lastAttemptStatus: null, lastAttemptAtMs: null };
+
+  it('absent or malformed state reads as a FRESH episode — never as spent budget', () => {
+    expect(resolveVerdictlessRefireEpisode(null, NOW)).toEqual(fresh);
+    expect(resolveVerdictlessRefireEpisode(undefined, NOW)).toEqual(fresh);
+    expect(resolveVerdictlessRefireEpisode({}, NOW)).toEqual(fresh);
+    expect(resolveVerdictlessRefireEpisode({ verdictlessRefire: null }, NOW)).toEqual(fresh);
+    expect(resolveVerdictlessRefireEpisode({ verdictlessRefire: { attempts: Number.NaN } }, NOW)).toEqual(fresh);
+    // attempts without a lastAttemptAtMs anchor cannot be aged against a verdict — fresh
+    expect(resolveVerdictlessRefireEpisode({ verdictlessRefire: { attempts: 2 } }, NOW)).toEqual(fresh);
+  });
+
+  it('a valid stored episode is carried when no newer verdict has landed', () => {
+    expect(
+      resolveVerdictlessRefireEpisode(
+        { verdictlessRefire: { attempts: 2, lastAttemptStatus: 'cancelled', lastAttemptAtMs: NOW - H } },
+        NOW - 2 * H,
+      ),
+    ).toEqual({ attempts: 2, lastAttemptStatus: 'cancelled', lastAttemptAtMs: NOW - H });
+  });
+
+  it('a verdict of ANY colour landing AFTER the last attempt ends the episode (fresh budget)', () => {
+    expect(
+      resolveVerdictlessRefireEpisode(
+        { verdictlessRefire: { attempts: 3, lastAttemptStatus: 'cancelled', lastAttemptAtMs: NOW - 2 * H } },
+        NOW - H,
+      ),
+    ).toEqual(fresh);
+  });
+});
+
+describe('checkGreenStall D-006 actuation (gate-verdict-liveness-and-repair-reliability-2026-08-31 D-003)', () => {
+  // A status the taxonomy itself says is transient — picked from the REAL table so a
+  // reclassification there is reported by the premise test instead of silently changing
+  // what these sweep tests exercise.
+  const transientStatus: string =
+    RECORDED_INCONCLUSIVE_STATUSES.find((s) => classifyGateAbort(s) === 'transient') ?? 'cancelled';
+
+  it('premise: the chosen abort status really is transient in the live taxonomy', () => {
+    expect(classifyGateAbort(transientStatus)).toBe('transient');
+  });
+
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    readRoutineEngineLivenessMock.mockResolvedValue({ stale: false });
+    resolveCheckpointRoutingMock.mockResolvedValue({ root: '/DEFAULT', extraEnv: {}, clearEnv: [] });
+    isCheckpointRunLockHeldCheapMock.mockReturnValue({ held: false, elapsedSec: null });
+    readCheckpointRunPhaseCheapMock.mockReturnValue(null);
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+    readRoutineEngineLivenessMock.mockReset();
+    resolveCheckpointRoutingMock.mockReset();
+    isCheckpointRunLockHeldCheapMock.mockReset();
+    readCheckpointRunPhaseCheapMock.mockReset();
+  });
+
+  /** A FIRING gate whose every run dies before writing a verdict: recent fire, 4h-old verdict. */
+  function makeVerdictlessSql(
+    opts: {
+      installSlug?: string;
+      verdictlessRefire?: { attempts?: number; lastAttemptStatus?: string | null; lastAttemptAtMs?: number | null } | null;
+      watchdogAlerted?: boolean;
+    } = {},
+  ) {
+    const now = Date.now();
+    const row = {
+      install_slug: opts.installSlug ?? 'papercusp',
+      workspace_id: 'papercusp-workspace',
+      last_fired_ms: now - 30 * 60_000, // fired recently — NOT fireStale (the verdictless limb requires that)
+      last_verdict_ms: now - 4 * H, // no verdict of ANY kind in 4h ⇒ verdictless (grace 3h)
+      gh: {
+        lastGreenAt: now - 4 * H, // < 12h ⇒ verdictStale stays false; this isolates the verdictless limb
+        watchdogAlerted: opts.watchdogAlerted ?? false,
+        inconclusive: { status: transientStatus },
+        verdictlessRefire: opts.verdictlessRefire ?? null,
+      },
+    };
+    const calls: unknown[][] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push([text, ...values]);
+      if (text.includes('FROM harness_shared.routines')) return Promise.resolve([row]);
+      return Promise.resolve(Object.assign([], { count: 1 }));
+    }) as unknown as import('postgres').Sql;
+    /** Episode persistence: the ONE write whose interpolated value carries "verdictlessRefire". */
+    const episodeWrites = () =>
+      calls
+        .flatMap((c) => c.filter((v): v is string => typeof v === 'string' && v.includes('"verdictlessRefire"')))
+        .map((v) => JSON.parse(v) as { verdictlessRefire: Record<string, unknown> });
+    return { sql, calls, episodeWrites };
+  }
+
+  const wallClear = async () => ({ active: false, detail: null });
+  const wallHeld = async () => ({ active: true, detail: 'manual-run hold: D-080' });
+  const home = { refireHomeSlug: 'papercusp' };
+
+  it('ACTUATES: wall clear + transient abort + fresh budget ⇒ launches once and persists attempt 1', async () => {
+    const launch = vi.fn().mockResolvedValue({ launched: true, unit: 'papercusp-checkpoint-test.service' });
+    const { sql, episodeWrites } = makeVerdictlessSql();
+    await checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch });
+    expect(launch).toHaveBeenCalledTimes(1);
+    const writes = episodeWrites();
+    expect(writes).toHaveLength(1);
+    expect(writes[0].verdictlessRefire).toEqual({
+      attempts: 1,
+      lastAttemptStatus: transientStatus,
+      lastAttemptAtMs: expect.any(Number),
+    });
+  });
+
+  it('actuation runs UPSTREAM of the one-shot watchdogAlerted gate: an already-alarmed episode still recovers', async () => {
+    const launch = vi.fn().mockResolvedValue({ launched: true, unit: 'u' });
+    const { sql, episodeWrites } = makeVerdictlessSql({ watchdogAlerted: true });
+    const out = await checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(episodeWrites()).toHaveLength(1);
+    expect(out.alarmed).toEqual([]); // the alarm stays one-shot; only the bounded recovery re-evaluates
+  });
+
+  it('wall HELD ⇒ no launch, no attempt burned', async () => {
+    const launch = vi.fn();
+    const { sql, episodeWrites } = makeVerdictlessSql();
+    await checkGreenStall(sql, { ...home, readGateFireWall: wallHeld, launchCheckpoint: launch });
+    expect(launch).not.toHaveBeenCalled();
+    expect(episodeWrites()).toHaveLength(0);
+  });
+
+  it('a bare sweep (no wall reader wired) is fail-closed: never launches even with a launcher wired', async () => {
+    const launch = vi.fn();
+    const { sql, episodeWrites } = makeVerdictlessSql();
+    await checkGreenStall(sql, { ...home, launchCheckpoint: launch });
+    expect(launch).not.toHaveBeenCalled();
+    expect(episodeWrites()).toHaveLength(0);
+  });
+
+  it('a wall reader that THROWS is fail-closed: no launch, no attempt burned', async () => {
+    const launch = vi.fn();
+    const { sql, episodeWrites } = makeVerdictlessSql();
+    await checkGreenStall(sql, {
+      ...home,
+      readGateFireWall: async () => {
+        throw new Error('wall read blew up');
+      },
+      launchCheckpoint: launch,
+    });
+    expect(launch).not.toHaveBeenCalled();
+    expect(episodeWrites()).toHaveLength(0);
+  });
+
+  it('a non-home install stays advisory (home-scoped): no launch, no attempt burned', async () => {
+    const launch = vi.fn();
+    const { sql, episodeWrites } = makeVerdictlessSql({ installSlug: 'oddsmith' });
+    await checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch });
+    expect(launch).not.toHaveBeenCalled();
+    expect(episodeWrites()).toHaveLength(0);
+  });
+
+  it('cooldown (recent prior attempt) ⇒ no launch, no attempt burned', async () => {
+    const launch = vi.fn();
+    const { sql, episodeWrites } = makeVerdictlessSql({
+      verdictlessRefire: { attempts: 1, lastAttemptStatus: 'some-earlier-status', lastAttemptAtMs: Date.now() - 10 * 60_000 },
+    });
+    await checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch });
+    expect(launch).not.toHaveBeenCalled();
+    expect(episodeWrites()).toHaveLength(0);
+  });
+
+  it('a REPRODUCED abort (same status as the previous attempt) ⇒ no launch, no attempt burned', async () => {
+    const launch = vi.fn();
+    const { sql, episodeWrites } = makeVerdictlessSql({
+      verdictlessRefire: { attempts: 1, lastAttemptStatus: transientStatus, lastAttemptAtMs: Date.now() - 2 * H },
+    });
+    await checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch });
+    expect(launch).not.toHaveBeenCalled();
+    expect(episodeWrites()).toHaveLength(0);
+  });
+
+  it('a spent budget (max attempts) ⇒ no launch, no attempt burned', async () => {
+    const launch = vi.fn();
+    const { sql, episodeWrites } = makeVerdictlessSql({
+      verdictlessRefire: { attempts: 3, lastAttemptStatus: 'some-earlier-status', lastAttemptAtMs: Date.now() - 2 * H },
+    });
+    await checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch });
+    expect(launch).not.toHaveBeenCalled();
+    expect(episodeWrites()).toHaveLength(0);
+  });
+
+  it('a REFUSED launch (launched:false) burns no attempt', async () => {
+    const launch = vi.fn().mockResolvedValue({ launched: false, reason: 'run-lock held' });
+    const { sql, episodeWrites } = makeVerdictlessSql();
+    await checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(episodeWrites()).toHaveLength(0);
+  });
+
+  it('a THROWN launch is non-fatal and burns no attempt', async () => {
+    const launch = vi.fn().mockRejectedValue(new Error('systemd-run unavailable'));
+    const { sql, episodeWrites } = makeVerdictlessSql();
+    await expect(
+      checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch }),
+    ).resolves.toBeTruthy();
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(episodeWrites()).toHaveLength(0);
+  });
+
+  it('a newer verdict RESETS the episode: spent budget no longer blocks the next verdict-less death', async () => {
+    const launch = vi.fn().mockResolvedValue({ launched: true, unit: 'u' });
+    // attempts:3 (spent) but the newest verdict (4h ago) is NEWER than the last attempt (6h ago)
+    const { sql, episodeWrites } = makeVerdictlessSql({
+      verdictlessRefire: { attempts: 3, lastAttemptStatus: transientStatus, lastAttemptAtMs: Date.now() - 6 * H },
+    });
+    await checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(episodeWrites()[0]?.verdictlessRefire).toMatchObject({ attempts: 1 });
   });
 });
