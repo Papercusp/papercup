@@ -24,7 +24,11 @@ import {
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
-import { ensureCoordCapabilityTables, PgEntitySubscriptionStore, PgLinkStore } from '@papercusp/coordination/capabilities';
+import {
+  ensureCoordCapabilityTables,
+  PgEntitySubscriptionStore,
+  PgLinkStore,
+} from '@papercusp/coordination/capabilities';
 // WI-38339: the canonical terminal union the notTerminal filter derives from — imported
 // so the drift guard below compares against the SOURCE, not a copy of it.
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
@@ -38,9 +42,7 @@ const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
 const readMigration = (f: string) =>
   readFileSync(resolve(SQL_DIR, f), 'utf8')
     .split('\n')
-    .filter(
-      (line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line),
-    )
+    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
     .join('\n');
 
 const COORD_EVENT_LOG_DDL = `
@@ -73,8 +75,13 @@ vi.mock('./promote-issue', async () => {
   return {
     ...actual,
     mintFixFeatureRow: async (_p: unknown, issue: { id: string; title: string }) => ({
-      id: 'F-FIX-001', title: issue.title, claims: [], status: 'todo' as const, attempts: 0 as const,
-      sourceIssueId: issue.id, notes: '',
+      id: 'F-FIX-001',
+      title: issue.title,
+      claims: [],
+      status: 'todo' as const,
+      attempts: 0 as const,
+      sourceIssueId: issue.id,
+      notes: '',
     }),
   };
 });
@@ -139,7 +146,11 @@ beforeAll(async () => {
   // base table; ALTER TABLE on a view).
   links = new PgLinkStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
   blockingLinks = createBlockingEdgeReader(links);
-  subscriptions = new PgEntitySubscriptionStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
+  subscriptions = new PgEntitySubscriptionStore({
+    getSql: () => db.sql,
+    ensureSchema: async () => {},
+    workspaceId: 'default',
+  });
 }, 90_000);
 
 afterAll(async () => {
@@ -255,7 +266,9 @@ describe('per-family state normalization (EI-24)', () => {
     const task = await wi.createWorkItem({ kind: 'task', title: 't', harness: 'papercup' });
     expect((await wi.setWorkItemState(task.id, 'done', { by: 'agA', completionRef: 'test' }))?.state).toBe('done');
     expect((await wi.setWorkItemState(task.id, 'todo', { by: 'agA' }))?.state).toBe('open');
-    expect((await wi.setWorkItemState(task.id, 'dropped', { by: 'agA', completionRef: 'test' }))?.state).toBe('dropped');
+    expect((await wi.setWorkItemState(task.id, 'dropped', { by: 'agA', completionRef: 'test' }))?.state).toBe(
+      'dropped',
+    );
   });
 
   it('an unmappable issue-family state is a TYPED refusal naming the valid set — never a raw PG CHECK error', async () => {
@@ -267,9 +280,13 @@ describe('per-family state normalization (EI-24)', () => {
 
   it("feature-family stores the unified enum directly: 'done'/'dropped' pass through as-is, and folds legacy phase spellings onto it ('validating'→'wip') (work-item-status-full-unify P-003)", async () => {
     const f = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup' });
-    expect((await wi.setWorkItemState(f.id, 'done', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('done');
+    expect(
+      (await wi.setWorkItemState(f.id, 'done', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state,
+    ).toBe('done');
     expect((await wi.setWorkItemState(f.id, 'validating', { harness: 'papercup', by: 'agA' }))?.state).toBe('wip');
-    expect((await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('dropped');
+    expect(
+      (await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state,
+    ).toBe('dropped');
   });
 
   // EI-7125 / WI-2573: an issue-family 'blocked' request used to silently alias to 'open'
@@ -375,11 +392,14 @@ describe('C2 — setWorkItemState invalid-state rejection (per-family asymmetry)
   // item out of dispatch). The pipeline's raw-SQL phase writes still bypass this path.
   it('feature-family REJECTS a truly-unknown agent-set state with the valid set (GAP 5 typo guard)', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
-    await expect(wi.setWorkItemState(feat.id, 'some-novel-pipeline-phase', { harness: 'papercup' }))
-      .rejects.toThrow(/cannot take state 'some-novel-pipeline-phase' — valid: .*in_progress/);
+    await expect(wi.setWorkItemState(feat.id, 'some-novel-pipeline-phase', { harness: 'papercup' })).rejects.toThrow(
+      /cannot take state 'some-novel-pipeline-phase' — valid: .*in_progress/,
+    );
     // unchanged in the DB (still open — the unified claimable entry state) — not dropped into a non-dispatchable limbo.
-    expect((await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status)
-      .toBe('open');
+    expect(
+      (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0]
+        .status,
+    ).toBe('open');
   });
 
   it('feature-family NORMALIZES a separator/case drift typo to the unified token (In-Progress → wip)', async () => {
@@ -390,7 +410,10 @@ describe('C2 — setWorkItemState invalid-state rejection (per-family asymmetry)
 
   it('a trusted restore (allowNonCanonical) bypasses the guard — feature only', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
-    const after = await wi.setWorkItemState(feat.id, 'some-raw-pipeline-phase', { harness: 'papercup', allowNonCanonical: true });
+    const after = await wi.setWorkItemState(feat.id, 'some-raw-pipeline-phase', {
+      harness: 'papercup',
+      allowNonCanonical: true,
+    });
     expect(after?.state).toBe('some-raw-pipeline-phase');
   });
 
@@ -398,7 +421,9 @@ describe('C2 — setWorkItemState invalid-state rejection (per-family asymmetry)
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     await expect(wi.setWorkItemState(bug.id, 'gibberish')).rejects.toThrow(/cannot take state 'gibberish'/);
-    await expect(wi.setWorkItemState(feat.id, 'gibberish', { harness: 'papercup' })).rejects.toThrow(/cannot take state 'gibberish'/);
+    await expect(wi.setWorkItemState(feat.id, 'gibberish', { harness: 'papercup' })).rejects.toThrow(
+      /cannot take state 'gibberish'/,
+    );
   });
 });
 
@@ -417,7 +442,8 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
     );
     // unchanged in the DB (still open — the unified claimable entry state) — a rejected gate must not half-apply the write.
     expect(
-      (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status,
+      (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0]
+        .status,
     ).toBe('open');
   });
 
@@ -639,7 +665,10 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
 
   it('skipCompletionGate (WI-1404 watchdog/system-sweep bypass) allows a bare terminal flip, but it MUST NOT write a terminal_owner/terminal_completion_ref pair — the whole point is that this flip stays DISTINGUISHABLE from a genuine completion', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
-    const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'watchdog-auto-close', skipCompletionGate: true });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'watchdog-auto-close',
+      skipCompletionGate: true,
+    });
     expect(after?.state).toBe('done');
     // `by` alone (no completionRef) is exactly the watchdog dedup shape — C-1 requires
     // BOTH, so this must NOT read back as a genuine completion.
@@ -719,9 +748,9 @@ describe('EI-7422 — reopen-a-terminally-completed-item guard', () => {
   it('REJECTS reopening a genuinely-completed feature into a non-terminal status without force', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemState(feat.id, 'passed', { harness: 'papercup', by: 'agA', completionRef: 'shipped' });
-    await expect(
-      wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup', by: 'agB' }),
-    ).rejects.toThrow(/already terminally completed/);
+    await expect(wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup', by: 'agB' })).rejects.toThrow(
+      /already terminally completed/,
+    );
     expect((await wi.getWorkItem(feat.id, 'papercup'))?.state).toBe('done');
   });
 
@@ -764,12 +793,20 @@ describe('EI-7422 — reopen-a-terminally-completed-item guard', () => {
 // These tests pin the inverse property the audits actually rest on — a second terminal
 // write must not silently destroy the first.
 describe('EI-18736669939338784 — second-terminal-close must not clobber the first', () => {
-  const RICH = { verifiedHow: 'integration' as const, testsRun: 'vitest work-items.integration.test.ts', testResult: '7/7 green' };
+  const RICH = {
+    verifiedHow: 'integration' as const,
+    testsRun: 'vitest work-items.integration.test.ts',
+    testResult: '7/7 green',
+  };
   // The WI-6112 shape exactly: an evidence object that is PRESENT but insufficient
   // (verifiedHow with nothing behind it — see isSufficientEvidence).
   const THIN = { verifiedHow: 'unit' as const };
 
-  const attestations = async (table: 'engineer_issues' | 'harness_features_consolidated', idCol: string, id: string) => {
+  const attestations = async (
+    table: 'engineer_issues' | 'harness_features_consolidated',
+    idCol: string,
+    id: string,
+  ) => {
     const [row] = await db.sql<{ a: unknown }[]>`
       SELECT payload->'_completionAttestations' AS a
         FROM harness_shared.${db.sql.unsafe(table)}
@@ -815,9 +852,17 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
 
   it('does NOT downgrade the terminal STATE either — the second silent loss on WI-6112', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
-    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'done properly', completionEvidence: RICH });
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'done properly',
+      completionEvidence: RICH,
+    });
     // agB closes it as 'closed' (→ the unified 'dropped'), a DIFFERENT terminal meaning.
-    await wi.setWorkItemState(bug.id, 'closed', { by: 'agB', completionRef: 'stale, closing', completionEvidence: THIN });
+    await wi.setWorkItemState(bug.id, 'closed', {
+      by: 'agB',
+      completionRef: 'stale, closing',
+      completionEvidence: THIN,
+    });
     const after = await wi.getWorkItem(bug.id);
     expect(after?.state).toBe('done'); // NOT flipped to 'dropped' behind agA's back
     expect(after?.terminalOwner).toBe('agA');
@@ -825,7 +870,11 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
 
   it('a STRICTLY RICHER second close DOES become authoritative — and archives the record it replaced rather than deleting it', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
-    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'closed as stale', completionEvidence: THIN });
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'closed as stale',
+      completionEvidence: THIN,
+    });
 
     const conflicts: string[] = [];
     const after = await wi.setWorkItemState(bug.id, 'resolved', {
@@ -874,7 +923,10 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
   it('two closes with EQUALLY sufficient evidence: the FIRST still stands (a tie is not a licence to overwrite)', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemState(bug.id, 'resolved', {
-      by: 'agA', completionRef: 'A', completionEvidence: RICH, completionAuthority: 'committed',
+      by: 'agA',
+      completionRef: 'A',
+      completionEvidence: RICH,
+      completionAuthority: 'committed',
     });
     const after = await wi.setWorkItemState(bug.id, 'resolved', {
       by: 'agB',
@@ -900,7 +952,7 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
     expect(await attestations('engineer_issues', 'issue_id', bug.id)).toBeNull();
   });
 
-  it('{ force: true } still overwrites — a deliberate correction of someone else\'s wrong completion', async () => {
+  it("{ force: true } still overwrites — a deliberate correction of someone else's wrong completion", async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'A', completionEvidence: RICH });
     const after = await wi.setWorkItemState(bug.id, 'resolved', {
@@ -953,10 +1005,16 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
   it('the guard is family-agnostic — a feature is protected identically', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemState(feat.id, 'passed', {
-      harness: 'papercup', by: 'agA', completionRef: 'shipped', completionEvidence: RICH,
+      harness: 'papercup',
+      by: 'agA',
+      completionRef: 'shipped',
+      completionEvidence: RICH,
     });
     const after = await wi.setWorkItemState(feat.id, 'passed', {
-      harness: 'papercup', by: 'agB', completionRef: 'also done', completionEvidence: THIN,
+      harness: 'papercup',
+      by: 'agB',
+      completionRef: 'also done',
+      completionEvidence: THIN,
     });
     expect(after?.terminalOwner).toBe('agA');
     expect(after?.terminalCompletionEvidence).toEqual(RICH);
@@ -1033,10 +1091,13 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
   // completion CREDIT, and (since these callers pass neither) NULLing the ref and
   // authority alongside it. The exemption is about the ATTESTATION mechanism; it was
   // never a decision that a sweep should own an agent's completion.
-  it('a system close (skipCompletionGate) is NOT reshaped into an attestation — but (WI-6218) it does not take the first closer\'s credit either', async () => {
+  it("a system close (skipCompletionGate) is NOT reshaped into an attestation — but (WI-6218) it does not take the first closer's credit either", async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'A', completionEvidence: RICH });
-    const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'watchdog-auto-close', skipCompletionGate: true });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'watchdog-auto-close',
+      skipCompletionGate: true,
+    });
     // Unchanged: outside the second-close machinery, so no attestation is filed.
     expect(after?.state).toBe('done');
     expect(await attestations('engineer_issues', 'issue_id', bug.id)).toBeNull();
@@ -1073,9 +1134,9 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
       itemId: 'P-9',
       effectiveStatus: 'blocked',
     });
-    await expect(
-      wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' }),
-    ).rejects.toThrow(/a-plan#P-9.*STILL.*effectively 'blocked'/s);
+    await expect(wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' })).rejects.toThrow(
+      /a-plan#P-9.*STILL.*effectively 'blocked'/s,
+    );
     // Rejected write must not half-apply.
     expect((await wi.getWorkItem(feat.id, 'papercup'))?.state).toBe('blocked');
   });
@@ -1159,9 +1220,7 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
       effectiveStatus: 'blocked',
     });
     // never left 'todo' -> 'in_progress': the guard only fires on blocked -> non-blocked.
-    await expect(
-      wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup', by: 'agA' }),
-    ).resolves.toBeTruthy();
+    await expect(wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup', by: 'agA' })).resolves.toBeTruthy();
   });
 
   // EI-13715 fast-follow #3 (WI-5492): item #3 from the original report, left
@@ -1289,9 +1348,7 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
       effectiveStatus: 'blocked',
     });
     // open -> in_progress: neither state is settled, so isCompletingTransition is false.
-    await expect(
-      wi.setWorkItemState(bug.id, 'in_progress', { harness: 'papercup', by: 'agA' }),
-    ).resolves.toBeTruthy();
+    await expect(wi.setWorkItemState(bug.id, 'in_progress', { harness: 'papercup', by: 'agA' })).resolves.toBeTruthy();
   });
 });
 
@@ -1327,7 +1384,11 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
     // Dedup: a feature auto-dropped via skipCompletionGate (no completionRef) — must NOT
     // be counted as genuine even though it carries a `by`.
     const dedupFeat = await wi.createWorkItem({ kind: 'feature', title: 'dedup feat', harness, createdBy: 'agA' });
-    await wi.setWorkItemState(dedupFeat.id, 'deprecated', { harness, by: 'watchdog-auto-close', skipCompletionGate: true });
+    await wi.setWorkItemState(dedupFeat.id, 'deprecated', {
+      harness,
+      by: 'watchdog-auto-close',
+      skipCompletionGate: true,
+    });
 
     // Dedup: a bug auto-resolved by the hygiene sweep via skipCompletionGate.
     const dedupBug = await wi.createWorkItem({ kind: 'bug', title: 'dedup bug', harness, createdBy: 'agA' });
@@ -1376,14 +1437,31 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
   });
 
   it('is scoped to the one harness asked about — a genuine completion in a DIFFERENT harness never leaks in', async () => {
-    const other = await wi.createWorkItem({ kind: 'feature', title: 'other-harness feat', harness: 'other-harness', createdBy: 'agA' });
+    const other = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'other-harness feat',
+      harness: 'other-harness',
+      createdBy: 'agA',
+    });
     await wi.setWorkItemState(other.id, 'passed', { harness: 'other-harness', by: 'agA', completionRef: 'shipped' });
 
     const stats = await wi.getCompletionIntegrityStats('papercup');
-    expect(stats).toEqual({ harness: 'papercup', terminalTotal: 0, genuineCompletions: 0, dedupOrUnverified: 0, gateJudged: 0 });
+    expect(stats).toEqual({
+      harness: 'papercup',
+      terminalTotal: 0,
+      genuineCompletions: 0,
+      dedupOrUnverified: 0,
+      gateJudged: 0,
+    });
 
     const otherStats = await wi.getCompletionIntegrityStats('other-harness');
-    expect(otherStats).toEqual({ harness: 'other-harness', terminalTotal: 1, genuineCompletions: 1, dedupOrUnverified: 0, gateJudged: 0 });
+    expect(otherStats).toEqual({
+      harness: 'other-harness',
+      terminalTotal: 1,
+      genuineCompletions: 1,
+      dedupOrUnverified: 0,
+      gateJudged: 0,
+    });
   });
 });
 
@@ -1400,7 +1478,9 @@ describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempote
     const r2 = (await wi.resolveWorkItemRef(f2.id, 'papercup'))!;
 
     expect(await wi.linkWorkItem(f1.id, r2, 'blocks', { by: 'agA', harness: 'papercup' })).toEqual({ ok: true });
-    await expect(wi.linkWorkItem(f2.id, r1, 'blocks', { by: 'agA', harness: 'papercup' })).rejects.toThrow(/dependency cycle/);
+    await expect(wi.linkWorkItem(f2.id, r1, 'blocks', { by: 'agA', harness: 'papercup' })).rejects.toThrow(
+      /dependency cycle/,
+    );
 
     const out1 = await blockingLinks.listOut({ kind: 'feature', ref: `papercup#${f1.id}` });
     const out2 = await blockingLinks.listOut({ kind: 'feature', ref: `papercup#${f2.id}` });
@@ -1433,8 +1513,18 @@ describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempote
   });
 
   it('stores issue blocks edges canonically in work_item_deps so scheduler readiness sees them', async () => {
-    const blocker = await wi.createWorkItem({ kind: 'bug', title: 'dependency blocker', harness: 'papercup', createdBy: 'agA' });
-    const blocked = await wi.createWorkItem({ kind: 'bug', title: 'dependency target', harness: 'papercup', createdBy: 'agA' });
+    const blocker = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'dependency blocker',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const blocked = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'dependency target',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     const blockedRef = { kind: 'issue', ref: blocked.id } as const;
 
     expect(await wi.linkWorkItem(blocker.id, blockedRef, 'blocks', { by: 'agA' })).toEqual({ ok: true });
@@ -1457,12 +1547,19 @@ describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempote
 describe('WI-4119 — followBlockers derived subscriptions', () => {
   it('follows blockers added before or after subscribe, removes the derived edge on unlink, and preserves a direct follow', async () => {
     const blocker = await wi.createWorkItem({ kind: 'bug', title: 'blocker', harness: 'papercup', createdBy: 'agA' });
-    const dependent = await wi.createWorkItem({ kind: 'bug', title: 'dependent', harness: 'papercup', createdBy: 'agA' });
+    const dependent = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'dependent',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     const dependentRef = { kind: 'issue', ref: dependent.id } as const;
     const blockerRef = { kind: 'issue', ref: blocker.id } as const;
 
     await wi.linkWorkItem(blocker.id, dependentRef, 'blocks', { by: 'agA' });
-    expect(await wi.subscribeWorkItem('watcher', dependent.id, 'digest', { followBlockers: true })).toEqual({ ok: true });
+    expect(await wi.subscribeWorkItem('watcher', dependent.id, 'digest', { followBlockers: true })).toEqual({
+      ok: true,
+    });
     const afterSubscribe = await subscriptions.listSubscriptions('watcher');
     expect(afterSubscribe.find((row) => row.target_ref === `issue:${blocker.id}`)).toMatchObject({
       follow_blockers: false,
@@ -1480,14 +1577,26 @@ describe('WI-4119 — followBlockers derived subscriptions', () => {
 
     await wi.subscribeWorkItem('watcher-2', dependent.id, 'full', { followBlockers: true });
     await wi.linkWorkItem(blocker.id, dependentRef, 'blocks', { by: 'agA' });
-    expect((await subscriptions.listSubscriptions('watcher-2')).find((row) => row.target_ref === `issue:${blocker.id}`)).toMatchObject({
+    expect(
+      (await subscriptions.listSubscriptions('watcher-2')).find((row) => row.target_ref === `issue:${blocker.id}`),
+    ).toMatchObject({
       derived_from: dependentRef,
     });
   });
 
   it('removes all generated follows when the blocker settles', async () => {
-    const blocker = await wi.createWorkItem({ kind: 'bug', title: 'settling blocker', harness: 'papercup', createdBy: 'agA' });
-    const dependent = await wi.createWorkItem({ kind: 'bug', title: 'dependent', harness: 'papercup', createdBy: 'agA' });
+    const blocker = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'settling blocker',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const dependent = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'dependent',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     const dependentRef = { kind: 'issue', ref: dependent.id } as const;
     await wi.linkWorkItem(blocker.id, dependentRef, 'blocks', { by: 'agA' });
     await wi.subscribeWorkItem('watcher', dependent.id, 'full', { followBlockers: true });
@@ -1518,7 +1627,7 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
 
     // B's claim on the held item FAILS (atomic compare-and-claim — one winner), observe still A.
     expect(await wi.claimWorkItem(bug.id, 'B')).toBeNull();
-    expect((await wi.observeWorkItem(bug.id))).toMatchObject({ available: false, claimedBy: 'A' });
+    expect(await wi.observeWorkItem(bug.id)).toMatchObject({ available: false, claimedBy: 'A' });
 
     // A releases → available again, no holder.
     expect((await wi.releaseWorkItem(bug.id))?.assignee).toBeNull();
@@ -1712,14 +1821,23 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
   // blocked rows keep their status. work-item-status-full-unify P-004/P-005: the requeue
   // target is the unified claimable token 'open' (was 'todo').
   it('releasing a mid-flight (in_progress) feature resets status → open (P-003 / status-unify)', async () => {
-    const feat = await wi.createWorkItem({ kind: 'feature', title: 'mid-flight', harness: 'papercup', createdBy: 'agA' });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'mid-flight',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     expect((await wi.claimWorkItem(feat.id, 'agA'))?.assignee).toBe('agA');
     await wi.setWorkItemState(feat.id, 'in_progress');
-    const before = (await db.sql`SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
+    const before = (
+      await db.sql`SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`
+    )[0];
     expect(before.status).toBe('wip');
 
     await wi.releaseWorkItem(feat.id);
-    const after = (await db.sql`SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
+    const after = (
+      await db.sql`SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`
+    )[0];
     expect(after.status).toBe('open');
     expect(after.taken_by).toBeNull();
     // …and it's observable as available again.
@@ -1727,11 +1845,18 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
   });
 
   it('releasing a TERMINAL (passed) feature keeps it terminal — not resurrected to todo (P-003)', async () => {
-    const feat = await wi.createWorkItem({ kind: 'feature', title: 'done-feat', harness: 'papercup', createdBy: 'agA' });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'done-feat',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     await wi.claimWorkItem(feat.id, 'agA');
     await wi.setWorkItemState(feat.id, 'passed', { by: 'agA', completionRef: 'test' });
     await wi.releaseWorkItem(feat.id);
-    const after = (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
+    const after = (
+      await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`
+    )[0];
     expect(after.status).toBe('done');
   });
 
@@ -1747,7 +1872,9 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
     expect(firstClaim?.lastProgressAt).toBeNull();
     // A different agent CANNOT steal the held bug — the claim is refused (null), holder unchanged.
     expect(await wi.claimWorkItem(bug.id, 'B')).toBeNull();
-    expect((await db.sql`SELECT assignee FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].assignee).toBe('A');
+    expect(
+      (await db.sql`SELECT assignee FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].assignee,
+    ).toBe('A');
     // The holder re-claiming its own bug is idempotent (not a refusal), and a
     // claim remains distinct from real work: it must not fabricate progress.
     const reclaimed = await wi.claimWorkItem(bug.id, 'A');
@@ -1758,7 +1885,14 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
 
 describe('unified work_items surface (real PG)', () => {
   it('create dispatches by kind + mints kind-INDEPENDENT WI ids (D-002/D-008)', async () => {
-    const bug = await wi.createWorkItem({ kind: 'bug', title: 'shop freezes', summary: 'in firefox', severity: 'major', harness: 'papercup', createdBy: 'agA' });
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'shop freezes',
+      summary: 'in firefox',
+      severity: 'major',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     expect(bug.id).toBe('WI-1');
     expect(bug.kind).toBe('bug');
     expect(bug.family).toBe('issue');
@@ -1766,20 +1900,37 @@ describe('unified work_items surface (real PG)', () => {
     expect(bug.severity).toBe('major');
 
     // Next id is WI-2 regardless of the next kind — ONE id space across kind-tables.
-    const feat = await wi.createWorkItem({ kind: 'feature', title: 'add export', harness: 'papercup', createdBy: 'agA' });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'add export',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     expect(feat.id).toBe('WI-2');
     expect(feat.family).toBe('feature');
     expect(feat.state).toBe('open'); // work-item-status-full-unify: fresh feature lands at the unified claimable token
 
-    const change = await wi.createWorkItem({ kind: 'change', title: 'make it bigger', harness: 'papercup', createdBy: 'agA' });
+    const change = await wi.createWorkItem({
+      kind: 'change',
+      title: 'make it bigger',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     expect(change.id).toBe('WI-3');
     expect(change.kind).toBe('change');
     expect(change.family).toBe('issue');
 
     // The bug + change landed in engineer_issues with their kind; the feature in hfc.
-    const issueRows = await db.sql<{ issue_id: string; kind: string }[]>`SELECT issue_id, kind FROM harness_shared.engineer_issues ORDER BY issue_id`;
-    expect(issueRows.map((r) => [r.issue_id, r.kind])).toEqual([['WI-1', 'bug'], ['WI-3', 'change']]);
-    const featRows = await db.sql<{ feature_id: string; item_kind: string }[]>`SELECT feature_id, item_kind FROM harness_shared.harness_features_consolidated`;
+    const issueRows = await db.sql<
+      { issue_id: string; kind: string }[]
+    >`SELECT issue_id, kind FROM harness_shared.engineer_issues ORDER BY issue_id`;
+    expect(issueRows.map((r) => [r.issue_id, r.kind])).toEqual([
+      ['WI-1', 'bug'],
+      ['WI-3', 'change'],
+    ]);
+    const featRows = await db.sql<
+      { feature_id: string; item_kind: string }[]
+    >`SELECT feature_id, item_kind FROM harness_shared.harness_features_consolidated`;
     expect(featRows).toEqual([{ feature_id: 'WI-2', item_kind: 'feature' }]);
   });
 
@@ -1798,7 +1949,12 @@ describe('unified work_items surface (real PG)', () => {
     expect(pRow.source_plan_slug).toBe('queen-steering-panel-2026-06-15');
 
     // An unplanned feature ⇒ NULL (no plan provenance; not gated by the plan filter).
-    const unplanned = await wi.createWorkItem({ kind: 'feature', title: 'no plan', harness: 'papercup', createdBy: 'agA' });
+    const unplanned = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'no plan',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     const [uRow] = await db.sql<{ source_plan_slug: string | null }[]>`
       SELECT source_plan_slug FROM harness_shared.harness_features_consolidated WHERE feature_id = ${unplanned.id}`;
     expect(uRow.source_plan_slug).toBeNull();
@@ -1815,10 +1971,12 @@ describe('unified work_items surface (real PG)', () => {
       sourcePlanItemIds: ['P-001', ' P-002', ''],
     });
     expect(task.family).toBe('issue');
-    const [taskProvenance] = await db.sql<{
-      source_plan_slug: string | null;
-      source_plan_item_ids: string[] | null;
-    }[]>`
+    const [taskProvenance] = await db.sql<
+      {
+        source_plan_slug: string | null;
+        source_plan_item_ids: string[] | null;
+      }[]
+    >`
       SELECT source_plan_slug, source_plan_item_ids
         FROM harness_shared.work_items
        WHERE feature_id = ${task.id}
@@ -1839,10 +1997,14 @@ describe('unified work_items surface (real PG)', () => {
     const unrelatedRef = 'other-plan#P-999';
     const src = wi.workItemObjectRef(feature);
 
-    await wi.mergeWorkItemPayload(feature.id, {
-      plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: 'papercup' },
-      keep: 'yes',
-    }, { harness: 'papercup' });
+    await wi.mergeWorkItemPayload(
+      feature.id,
+      {
+        plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: 'papercup' },
+        keep: 'yes',
+      },
+      { harness: 'papercup' },
+    );
     await db.sql`
       UPDATE harness_shared.harness_features_consolidated
          SET source_plan_slug = ${planSlug},
@@ -1858,17 +2020,15 @@ describe('unified work_items surface (real PG)', () => {
         ('default', ${src.kind}, ${src.ref}, 'plan_item', ${planRef}, 'implements', 'agA', now()),
         ('default', ${src.kind}, ${src.ref}, 'plan_item', ${unrelatedRef}, 'relates', 'agA', now())`;
 
-    const returned = await wi.mergeWorkItemPayload(
-      feature.id,
-      {},
-      { harness: 'papercup', unset: ['plan_item'] },
-    );
+    const returned = await wi.mergeWorkItemPayload(feature.id, {}, { harness: 'papercup', unset: ['plan_item'] });
 
-    const [row] = await db.sql<{
-      payload: Record<string, unknown> | null;
-      source_plan_slug: string | null;
-      source_plan_item_ids: string[] | null;
-    }[]>`
+    const [row] = await db.sql<
+      {
+        payload: Record<string, unknown> | null;
+        source_plan_slug: string | null;
+        source_plan_item_ids: string[] | null;
+      }[]
+    >`
       SELECT payload, source_plan_slug, source_plan_item_ids
         FROM harness_shared.harness_features_consolidated
        WHERE workspace_id = 'default'
@@ -1902,11 +2062,13 @@ describe('unified work_items surface (real PG)', () => {
       createdBy: 'agA',
     });
     const read = async () => {
-      const rows = await db.sql<{
-        payload: Record<string, unknown> | null;
-        source_plan_slug: string | null;
-        source_plan_item_ids: string[] | null;
-      }[]>`
+      const rows = await db.sql<
+        {
+          payload: Record<string, unknown> | null;
+          source_plan_slug: string | null;
+          source_plan_item_ids: string[] | null;
+        }[]
+      >`
         SELECT payload, source_plan_slug, source_plan_item_ids
           FROM harness_shared.harness_features_consolidated
          WHERE workspace_id = 'default'
@@ -1915,9 +2077,13 @@ describe('unified work_items surface (real PG)', () => {
       return rows[0]!;
     };
 
-    const first = await wi.mergeWorkItemPayload(feature.id, {
-      plan_item: { plan_slug: 'plan-a', item_id: 'P-004', harness_slug: 'papercup' },
-    }, { harness: 'papercup' });
+    const first = await wi.mergeWorkItemPayload(
+      feature.id,
+      {
+        plan_item: { plan_slug: 'plan-a', item_id: 'P-004', harness_slug: 'papercup' },
+      },
+      { harness: 'papercup' },
+    );
     expect(await read()).toMatchObject({
       payload: { plan_item: { plan_slug: 'plan-a', item_id: 'P-004' } },
       source_plan_slug: 'plan-a',
@@ -1925,9 +2091,13 @@ describe('unified work_items surface (real PG)', () => {
     });
     expect(first).toMatchObject({ sourcePlanSlug: 'plan-a', sourcePlanItemIds: ['P-004'] });
 
-    const repointed = await wi.mergeWorkItemPayload(feature.id, {
-      plan_item: { plan_slug: 'plan-b', item_id: 'P-010', harness_slug: 'papercup' },
-    }, { harness: 'papercup' });
+    const repointed = await wi.mergeWorkItemPayload(
+      feature.id,
+      {
+        plan_item: { plan_slug: 'plan-b', item_id: 'P-010', harness_slug: 'papercup' },
+      },
+      { harness: 'papercup' },
+    );
     expect(await read()).toMatchObject({
       payload: { plan_item: { plan_slug: 'plan-b', item_id: 'P-010' } },
       source_plan_slug: 'plan-b',
@@ -1941,9 +2111,9 @@ describe('unified work_items surface (real PG)', () => {
   });
 
   it('rejects new chunk creation but keeps explicitly reconstructed historical rows readable', async () => {
-    await expect(
-      wi.createWorkItem({ kind: 'chunk', title: 'new public chunk', harness: 'papercup' }),
-    ).rejects.toThrow(/kind 'chunk' is deprecated.*cannot be created/i);
+    await expect(wi.createWorkItem({ kind: 'chunk', title: 'new public chunk', harness: 'papercup' })).rejects.toThrow(
+      /kind 'chunk' is deprecated.*cannot be created/i,
+    );
 
     const historical = await wi.createWorkItem({
       kind: 'chunk',
@@ -1963,7 +2133,9 @@ describe('unified work_items surface (real PG)', () => {
       state: 'done',
     });
     expect((await wi.listWorkItems({ harness: 'papercup' })).map((item) => item.id)).not.toContain(historical.id);
-    expect((await wi.listWorkItems({ harness: 'papercup', kind: 'chunk' })).map((item) => item.id)).toContain(historical.id);
+    expect((await wi.listWorkItems({ harness: 'papercup', kind: 'chunk' })).map((item) => item.id)).toContain(
+      historical.id,
+    );
   });
 
   it('get resolves across both kind-tables', async () => {
@@ -1975,7 +2147,12 @@ describe('unified work_items surface (real PG)', () => {
   });
 
   it('list MERGES across kinds; default hides chunks; parent lists chunks (D-004)', async () => {
-    const feat = await wi.createWorkItem({ kind: 'feature', title: 'parent feat', harness: 'papercup', createdBy: 'agA' });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'parent feat',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     await wi.createWorkItem({ kind: 'bug', title: 'a bug', harness: 'papercup', createdBy: 'agA' });
     const chunk = await wi.createWorkItem({
       kind: 'chunk',
@@ -2054,24 +2231,48 @@ describe('unified work_items surface (real PG)', () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const { blockers } = wi.updateExternalBlockerHistory(
       {},
-      { kind: 'human', capability: 'credential', ref: 'credential:test', summary: 'Provide test credential', nextVerb: 'provide credential' },
+      {
+        kind: 'human',
+        capability: 'credential',
+        ref: 'credential:test',
+        summary: 'Provide test credential',
+        nextVerb: 'provide credential',
+      },
       'agA',
     );
-    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA', payload: { externalBlockers: blockers } });
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'b',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { externalBlockers: blockers },
+    });
     expect((await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' }))?.state).toBe('wip');
     expect((await wi.setWorkItemState(bug.id, 'needs_human'))?.state).toBe('needs-human');
     expect((await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'test' }))?.state).toBe('done');
-    expect((await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status).toBe('wip');
-    expect((await db.sql`SELECT state FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].state).toBe('done');
+    expect(
+      (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0]
+        .status,
+    ).toBe('wip');
+    expect((await db.sql`SELECT state FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].state).toBe(
+      'done',
+    );
   });
 
   it('updateWorkItem adopts and clears goal attribution for both families (WI-37892)', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'existing bug', harness: 'papercup', createdBy: 'agA' });
-    const feature = await wi.createWorkItem({ kind: 'feature', title: 'existing feature', harness: 'papercup', createdBy: 'agA' });
+    const feature = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'existing feature',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
 
     const bugAdopted = await wi.updateWorkItem(bug.id, { goal: 'goal-existing' }, 'agA', { harness: 'papercup' });
     expect(bugAdopted).toMatchObject({ ok: true, item: { id: bug.id, goalId: 'goal-existing' } });
-    const featureAdopted = await wi.updateWorkItem(feature.id, { goal: 'goal-existing' }, 'agA', { harness: 'papercup' });
+    const featureAdopted = await wi.updateWorkItem(feature.id, { goal: 'goal-existing' }, 'agA', {
+      harness: 'papercup',
+    });
     expect(featureAdopted).toMatchObject({ ok: true, item: { id: feature.id, goalId: 'goal-existing' } });
 
     const stored = await db.sql<{ feature_id: string; goal_id: string | null }[]>`
@@ -2084,7 +2285,9 @@ describe('unified work_items surface (real PG)', () => {
 
     const cleared = await wi.updateWorkItem(bug.id, { goal: null }, 'agA', { harness: 'papercup' });
     expect(cleared).toMatchObject({ ok: true, item: { id: bug.id, goalId: null } });
-    expect((await db.sql`SELECT goal_id FROM harness_shared.work_items WHERE feature_id = ${bug.id}`)[0].goal_id).toBeNull();
+    expect(
+      (await db.sql`SELECT goal_id FROM harness_shared.work_items WHERE feature_id = ${bug.id}`)[0].goal_id,
+    ).toBeNull();
   });
 
   it('claim/release dispatch: feature → taken_by; issue → assignee', async () => {
@@ -2094,7 +2297,10 @@ describe('unified work_items surface (real PG)', () => {
     const claimedBug = await wi.claimWorkItem(bug.id, 'agC');
     expect(claimedBug?.assignee).toBe('agC');
     expect(claimedBug?.takenAt).not.toBeNull();
-    expect((await db.sql`SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].taken_by).toBe('agB');
+    expect(
+      (await db.sql`SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0]
+        .taken_by,
+    ).toBe('agB');
     const [claimedBugRow] = await db.sql<{ assignee: string | null; assigned_at: Date | null }[]>`
       SELECT assignee, assigned_at FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`;
     expect(claimedBugRow.assignee).toBe('agC');
@@ -2133,12 +2339,21 @@ describe('unified work_items surface (real PG)', () => {
     // filter excludes it), even when claimed — markFeatureProgress owns that row instead.
     await wi.claimWorkItem(feat.id, 'agB', { harness: 'papercup' });
     expect(await wi.markIssueProgress(feat.id)).toBe(false);
-    expect((await db.sql`SELECT last_progress_at FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].last_progress_at).toBeNull();
+    expect(
+      (
+        await db.sql`SELECT last_progress_at FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`
+      )[0].last_progress_at,
+    ).toBeNull();
   });
 
   it('cross-kind blocking: a bug blocks a feature via one canonical dependency edge (D-003)', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'blocker', harness: 'papercup', createdBy: 'agA' });
-    const feat = await wi.createWorkItem({ kind: 'feature', title: 'blocked feat', harness: 'papercup', createdBy: 'agA' });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'blocked feat',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     const dst = await wi.resolveWorkItemRef(feat.id, 'papercup');
     expect(dst).toEqual({ kind: 'feature', ref: `papercup#${feat.id}` });
     const res = await wi.linkWorkItem(bug.id, dst!, 'blocks', { by: 'agA' });
@@ -2185,7 +2400,12 @@ describe('unified work_items surface (real PG)', () => {
 
   it('reads a feature comment from the active workspace used by the writer', async () => {
     h.activeWorkspace = 'papercusp-workspace';
-    const feat = await wi.createWorkItem({ kind: 'feature', title: 'scoped feature', harness: 'papercup', createdBy: 'agA' });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'scoped feature',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
 
     const post = await wi.commentWorkItem(feat.id, 'active workspace comment', 'agB', { harness: 'papercup' });
     expect(post?.body).toBe('active workspace comment');
@@ -2202,8 +2422,20 @@ describe('unified work_items surface (real PG)', () => {
   });
 
   it('search (cross-kind FTS): matches title/body across both kind-tables', async () => {
-    await wi.createWorkItem({ kind: 'bug', title: 'firefox freeze', summary: 'shop hangs', harness: 'papercup', createdBy: 'agA' });
-    await wi.createWorkItem({ kind: 'feature', title: 'export to csv', summary: 'add a download', harness: 'papercup', createdBy: 'agA' });
+    await wi.createWorkItem({
+      kind: 'bug',
+      title: 'firefox freeze',
+      summary: 'shop hangs',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    await wi.createWorkItem({
+      kind: 'feature',
+      title: 'export to csv',
+      summary: 'add a download',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     await wi.createWorkItem({ kind: 'feature', title: 'unrelated thing', harness: 'papercup', createdBy: 'agA' });
 
     const freeze = await wi.searchWorkItems('firefox');
@@ -2219,7 +2451,12 @@ describe('unified work_items surface (real PG)', () => {
   });
 
   it('search excludes retired chunks by default but an explicit chunk read remains available', async () => {
-    const parent = await wi.createWorkItem({ kind: 'feature', title: 'grimbex parent', harness: 'papercup', createdBy: 'agA' });
+    const parent = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'grimbex parent',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     await wi.createWorkItem({
       kind: 'chunk',
       title: 'grimbex chunk',
@@ -2485,9 +2722,7 @@ describe('unified work_items surface (real PG)', () => {
       semantic: true,
       embedderResolver: boom,
     });
-    expect(second.legs.semantic.blocked).toMatch(
-      /query embedder warmup failed.*sidecar_required_unavailable/s,
-    );
+    expect(second.legs.semantic.blocked).toMatch(/query embedder warmup failed.*sidecar_required_unavailable/s);
     expect(second.legs.degraded).toBe(true);
     expect(second.retry).toBeUndefined();
   });
@@ -2508,7 +2743,10 @@ describe('unified work_items surface (real PG)', () => {
     // the page entirely. Seed exactly that: many foreign, one local.
     for (let i = 0; i < 12; i++) {
       await wi.createWorkItem({
-        kind: 'bug', title: `krellon overflow ${i}`, harness: 'other-pot', createdBy: 'agA',
+        kind: 'bug',
+        title: `krellon overflow ${i}`,
+        harness: 'other-pot',
+        createdBy: 'agA',
       });
     }
     await wi.createWorkItem({ kind: 'bug', title: 'krellon overflow local', harness: 'papercup', createdBy: 'agA' });
@@ -2529,7 +2767,11 @@ describe('unified work_items surface (real PG)', () => {
 describe('WI-4405 — includeObservations / admissibleOnly parity on the read paths', () => {
   it('listWorkItems EXCLUDES a lane:observation row by default (EI-10422 parity)', async () => {
     const obs = await wi.createWorkItem({
-      kind: 'bug', title: 'scorecard obs', harness: 'papercup', createdBy: 'agA', payload: { lane: 'observation' },
+      kind: 'bug',
+      title: 'scorecard obs',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { lane: 'observation' },
     });
     const real = await wi.createWorkItem({ kind: 'bug', title: 'real bug', harness: 'papercup', createdBy: 'agA' });
 
@@ -2540,7 +2782,11 @@ describe('WI-4405 — includeObservations / admissibleOnly parity on the read pa
 
   it('listWorkItems { includeObservations: true } includes it', async () => {
     const obs = await wi.createWorkItem({
-      kind: 'bug', title: 'scorecard obs 2', harness: 'papercup', createdBy: 'agA', payload: { lane: 'observation' },
+      kind: 'bug',
+      title: 'scorecard obs 2',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { lane: 'observation' },
     });
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'bug', includeObservations: true });
     expect(list.some((w) => w.id === obs.id)).toBe(true);
@@ -2548,15 +2794,28 @@ describe('WI-4405 — includeObservations / admissibleOnly parity on the read pa
 
   it('listWorkItems { admissibleOnly: true } ALWAYS excludes it, even alongside includeObservations:true (an observation is never claimable)', async () => {
     const obs = await wi.createWorkItem({
-      kind: 'bug', title: 'scorecard obs 3', harness: 'papercup', createdBy: 'agA', payload: { lane: 'observation' },
+      kind: 'bug',
+      title: 'scorecard obs 3',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { lane: 'observation' },
     });
-    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'bug', admissibleOnly: true, includeObservations: true });
+    const list = await wi.listWorkItems({
+      harness: 'papercup',
+      kind: 'bug',
+      admissibleOnly: true,
+      includeObservations: true,
+    });
     expect(list.some((w) => w.id === obs.id)).toBe(false);
   });
 
   it('countWorkItems mirrors the same default-exclude / includeObservations parity', async () => {
     await wi.createWorkItem({
-      kind: 'bug', title: 'count obs', harness: 'papercup', createdBy: 'agA', payload: { lane: 'observation' },
+      kind: 'bug',
+      title: 'count obs',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { lane: 'observation' },
     });
     await wi.createWorkItem({ kind: 'bug', title: 'count real', harness: 'papercup', createdBy: 'agA' });
 
@@ -2567,7 +2826,11 @@ describe('WI-4405 — includeObservations / admissibleOnly parity on the read pa
 
   it('searchWorkItems EXCLUDES a lane:observation hit by default; includeObservations:true includes it', async () => {
     await wi.createWorkItem({
-      kind: 'bug', title: 'zephyrion scorecard note', summary: 'a reflection', harness: 'papercup', createdBy: 'agA',
+      kind: 'bug',
+      title: 'zephyrion scorecard note',
+      summary: 'a reflection',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { lane: 'observation' },
     });
     await wi.createWorkItem({ kind: 'bug', title: 'zephyrion real bug', harness: 'papercup', createdBy: 'agA' });
@@ -2590,10 +2853,18 @@ describe('WI-4405 — includeObservations / admissibleOnly parity on the read pa
 describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql floors', () => {
   it('listWorkItems { admissibleOnly: true } EXCLUDES a _claimHold feature row', async () => {
     const held = await wi.createWorkItem({
-      kind: 'feature', title: 'held feature', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'held feature',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { _claimHold: true },
     });
-    const real = await wi.createWorkItem({ kind: 'feature', title: 'free feature', harness: 'papercup', createdBy: 'agA' });
+    const real = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'free feature',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
 
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
     expect(list.some((w) => w.id === held.id)).toBe(false);
@@ -2610,10 +2881,18 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
                  VALUES ('default', 'papercup', 'wi-5343-plan', 'active')`;
     const reserved = await wi.createWorkItem({
-      kind: 'feature', title: 'lane feature', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'lane feature',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: 'wi-5343-plan', item_id: 'P-1' } },
     });
-    const free = await wi.createWorkItem({ kind: 'feature', title: 'unlaned feature', harness: 'papercup', createdBy: 'agA' });
+    const free = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'unlaned feature',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
 
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
     expect(list.some((w) => w.id === reserved.id)).toBe(false);
@@ -2624,7 +2903,10 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
                  VALUES ('default', 'papercup', 'wi-5343-plan-2', 'active')`;
     const reserved = await wi.createWorkItem({
-      kind: 'feature', title: 'lane feature 2', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'lane feature 2',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: 'wi-5343-plan-2', item_id: 'P-1' } },
     });
     // The only unclaimed feature is the lane-reserved one — a self-select claim must find nothing.
@@ -2639,7 +2921,10 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
                  VALUES ('default', 'papercup', 'wi-5343-ready-plan', 'ready')`;
     const item = await wi.createWorkItem({
-      kind: 'feature', title: 'ready-lane feature', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'ready-lane feature',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: 'wi-5343-ready-plan', item_id: 'P-1' } },
     });
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
@@ -2652,7 +2937,10 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
                  VALUES ('default', 'papercup', ${planSlug}, 'draft')`;
     const item = await wi.createWorkItem({
-      kind: 'feature', title: 'draft lifecycle lane feature', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'draft lifecycle lane feature',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: planSlug, item_id: 'P-1' } },
     });
 
@@ -2667,7 +2955,10 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
                  VALUES ('default', 'papercup', ${planSlug}, ${status})`;
     const item = await wi.createWorkItem({
-      kind: 'feature', title: `${status} lifecycle lane feature`, harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: `${status} lifecycle lane feature`,
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: planSlug, item_id: 'P-1' } },
     });
 
@@ -2680,7 +2971,10 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status)
                  VALUES ('default', 'papercup', 'wi-5343-done-plan', 'ready', 'done')`;
     const item = await wi.createWorkItem({
-      kind: 'feature', title: 'done-operation lane feature', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'done-operation lane feature',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: 'wi-5343-done-plan', item_id: 'P-1' } },
     });
 
@@ -2702,7 +2996,10 @@ describe('EI-19409397800537963 — the reserved-plan-lane floor keys on op_statu
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status)
                  VALUES ('default', 'papercup', 'ei-19409397-started', 'ready', 'started')`;
     const reserved = await wi.createWorkItem({
-      kind: 'feature', title: 'started-lane feature', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'started-lane feature',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: 'ei-19409397-started', item_id: 'P-1' } },
     });
 
@@ -2718,7 +3015,10 @@ describe('EI-19409397800537963 — the reserved-plan-lane floor keys on op_statu
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status)
                  VALUES ('default', 'papercup', 'ei-19409397-paused', 'ready', 'paused')`;
     const paused = await wi.createWorkItem({
-      kind: 'feature', title: 'owner-paused lane feature', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'owner-paused lane feature',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: 'ei-19409397-paused', item_id: 'P-1' } },
     });
 
@@ -2731,7 +3031,10 @@ describe('EI-19409397800537963 — the reserved-plan-lane floor keys on op_statu
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
                  VALUES ('default', 'papercup', 'ei-19409397-active-null-op', 'active')`;
     const reserved = await wi.createWorkItem({
-      kind: 'feature', title: 'lifecycle-active lane feature', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'lifecycle-active lane feature',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: 'ei-19409397-active-null-op', item_id: 'P-1' } },
     });
 
@@ -2746,7 +3049,10 @@ describe('EI-19409397800537963 — the reserved-plan-lane floor keys on op_statu
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status)
                  VALUES ('other-ws', 'papercup', 'ei-19409397-cross-tenant', 'ready', 'started')`;
     const local = await wi.createWorkItem({
-      kind: 'feature', title: 'cross-tenant lane feature', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'cross-tenant lane feature',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: 'ei-19409397-cross-tenant', item_id: 'P-1' } },
     });
 
@@ -2817,7 +3123,10 @@ describe('WI-38258 — a per-run instance plan does not reserve its own minted i
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, template_slug)
                  VALUES ('default', 'papercup', 'wi-38258-tpl@run-1786557604333', 'active', 'wi-38258-tpl')`;
     const minted = await wi.createWorkItem({
-      kind: 'feature', title: 'scheduled-run minted item', harness: 'papercup', createdBy: 'system:plan-run',
+      kind: 'feature',
+      title: 'scheduled-run minted item',
+      harness: 'papercup',
+      createdBy: 'system:plan-run',
       payload: { plan_item: { plan_slug: 'wi-38258-tpl@run-1786557604333', item_id: 'P-001' } },
     });
 
@@ -2830,7 +3139,10 @@ describe('WI-38258 — a per-run instance plan does not reserve its own minted i
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status, template_slug)
                  VALUES ('default', 'papercup', 'wi-38258-tpl@run-1786557604334', 'active', 'started', 'wi-38258-tpl')`;
     const driven = await wi.createWorkItem({
-      kind: 'feature', title: 'driven instance item', harness: 'papercup', createdBy: 'system:plan-run',
+      kind: 'feature',
+      title: 'driven instance item',
+      harness: 'papercup',
+      createdBy: 'system:plan-run',
       payload: { plan_item: { plan_slug: 'wi-38258-tpl@run-1786557604334', item_id: 'P-001' } },
     });
 
@@ -2847,10 +3159,13 @@ describe('WI-38258 — a per-run instance plan does not reserve its own minted i
 // plan-lane-reserved rows and a denominator that didn't (undercounts-as-overcounts).
 // Also threads admissibleOnly into countWorkItems' countIssues() call, which the
 // underlying function already supported but countWorkItems never passed through.
-describe('WI-5512 — countWorkItems mirrors listWorkItems\' admissibleOnly floors (list/count parity)', () => {
+describe("WI-5512 — countWorkItems mirrors listWorkItems' admissibleOnly floors (list/count parity)", () => {
   it('countWorkItems { admissibleOnly: true } EXCLUDES a _claimHold feature row from the total', async () => {
     await wi.createWorkItem({
-      kind: 'feature', title: 'held feature (count)', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'held feature (count)',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { _claimHold: true },
     });
     await wi.createWorkItem({ kind: 'feature', title: 'free feature (count)', harness: 'papercup', createdBy: 'agA' });
@@ -2869,10 +3184,18 @@ describe('WI-5512 — countWorkItems mirrors listWorkItems\' admissibleOnly floo
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
                  VALUES ('default', 'papercup', 'wi-5512-plan', 'active')`;
     await wi.createWorkItem({
-      kind: 'feature', title: 'lane feature (count)', harness: 'papercup', createdBy: 'agA',
+      kind: 'feature',
+      title: 'lane feature (count)',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { plan_item: { plan_slug: 'wi-5512-plan', item_id: 'P-1' } },
     });
-    await wi.createWorkItem({ kind: 'feature', title: 'unlaned feature (count)', harness: 'papercup', createdBy: 'agA' });
+    await wi.createWorkItem({
+      kind: 'feature',
+      title: 'unlaned feature (count)',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
 
     const admissibleCount = await wi.countWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
     const plainCount = await wi.countWorkItems({ harness: 'papercup', kind: 'feature' });
@@ -2882,7 +3205,10 @@ describe('WI-5512 — countWorkItems mirrors listWorkItems\' admissibleOnly floo
 
   it('countWorkItems { admissibleOnly: true } also EXCLUDES a _claimHold ISSUE-family (bug) row from the total', async () => {
     await wi.createWorkItem({
-      kind: 'bug', title: 'held bug (count)', harness: 'papercup', createdBy: 'agA',
+      kind: 'bug',
+      title: 'held bug (count)',
+      harness: 'papercup',
+      createdBy: 'agA',
       payload: { _claimHold: true },
     });
     await wi.createWorkItem({ kind: 'bug', title: 'free bug (count)', harness: 'papercup', createdBy: 'agA' });
@@ -2902,7 +3228,13 @@ describe('WI-5512 — countWorkItems mirrors listWorkItems\' admissibleOnly floo
 // gap). General: any agent id; self-assign = own id. Honored for BOTH families.
 describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', () => {
   it('feature-family: create-with-assignee stamps taken_by + taken_at in one write; returns it claimed', async () => {
-    const wiItem = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA', assignee: 'bee-7' });
+    const wiItem = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'f',
+      harness: 'papercup',
+      createdBy: 'agA',
+      assignee: 'bee-7',
+    });
     // The returned item is already owned (no second claim call happened).
     expect(wiItem.assignee).toBe('bee-7');
     expect(wiItem.state).toBe('open'); // work-item-status-full-unify: fresh feature lands at the unified claimable token
@@ -2913,7 +3245,13 @@ describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', 
   });
 
   it('feature-family: NO race window — a competitor cannot claim/steal the just-created item', async () => {
-    const wiItem = await wi.createWorkItem({ kind: 'feature', title: 'owned', harness: 'papercup', createdBy: 'agA', assignee: 'bee-7' });
+    const wiItem = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'owned',
+      harness: 'papercup',
+      createdBy: 'agA',
+      assignee: 'bee-7',
+    });
     // A competing named claim on the already-held item is refused (atomic compare-and-claim).
     expect(await wi.claimWorkItem(wiItem.id, 'bee-other', { harness: 'papercup' })).toBeNull();
     // …and claim_next (the self-select path) never returns it — it was never in the unclaimed pool.
@@ -2923,7 +3261,14 @@ describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', 
   });
 
   it('issue-family: create-with-assignee+assignedBy stamps assignee + assigned_by + assigned_at atomically', async () => {
-    const task = await wi.createWorkItem({ kind: 'task', title: 'delegated', harness: 'papercup', createdBy: 'mug', assignee: 'bee-3', assignedBy: 'mug' });
+    const task = await wi.createWorkItem({
+      kind: 'task',
+      title: 'delegated',
+      harness: 'papercup',
+      createdBy: 'mug',
+      assignee: 'bee-3',
+      assignedBy: 'mug',
+    });
     expect(task.family).toBe('issue');
     expect(task.assignee).toBe('bee-3');
     expect(task.assignedBy).toBe('mug'); // the durable delegator
@@ -2936,14 +3281,32 @@ describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', 
   });
 
   it('self-assign (assignee = own id) works for both families', async () => {
-    const feat = await wi.createWorkItem({ kind: 'feature', title: 'self-feat', harness: 'papercup', createdBy: 'su-me', assignee: 'su-me' });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'self-feat',
+      harness: 'papercup',
+      createdBy: 'su-me',
+      assignee: 'su-me',
+    });
     expect(feat.assignee).toBe('su-me');
-    const bug = await wi.createWorkItem({ kind: 'bug', title: 'self-bug', harness: 'papercup', createdBy: 'su-me', assignee: 'su-me', assignedBy: 'su-me' });
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'self-bug',
+      harness: 'papercup',
+      createdBy: 'su-me',
+      assignee: 'su-me',
+      assignedBy: 'su-me',
+    });
     expect(bug.assignee).toBe('su-me');
   });
 
   it('omitting assignee leaves the item UNCLAIMED (the default is unchanged)', async () => {
-    const feat = await wi.createWorkItem({ kind: 'feature', title: 'unclaimed', harness: 'papercup', createdBy: 'agA' });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'unclaimed',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
     expect(feat.assignee).toBeNull();
     const [row] = await db.sql<{ taken_by: string | null }[]>`
       SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id = ${feat.id}`;
@@ -2953,7 +3316,13 @@ describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', 
   });
 
   it('a blank/whitespace assignee is treated as "no assign" (lands unclaimed)', async () => {
-    const feat = await wi.createWorkItem({ kind: 'feature', title: 'blank', harness: 'papercup', createdBy: 'agA', assignee: '   ' });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'blank',
+      harness: 'papercup',
+      createdBy: 'agA',
+      assignee: '   ',
+    });
     expect(feat.assignee).toBeNull();
     const [row] = await db.sql<{ taken_by: string | null }[]>`
       SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id = ${feat.id}`;
@@ -3193,7 +3562,9 @@ describe('WI-38339 work-item shape filters', () => {
     expect(ids(fromPlan)).toEqual([feature.id, issue.id].sort());
     expect(await wi.listWorkItems({ harness: H, sourcePlanSlug: 'a-different-plan' })).toEqual([]);
     expect(await wi.countWorkItems({ harness: H, sourcePlanSlug: slug })).toBe(2);
-    expect(Object.values(await wi.countWorkItemsByState({ harness: H, sourcePlanSlug: slug })).reduce((a, b) => a + b, 0)).toBe(2);
+    expect(
+      Object.values(await wi.countWorkItemsByState({ harness: H, sourcePlanSlug: slug })).reduce((a, b) => a + b, 0),
+    ).toBe(2);
   });
 });
 
@@ -3218,9 +3589,7 @@ describe('WI-42508 pre-serialization list projection', () => {
     expect(full.find((row) => row.id === issue.id)?.payload).toMatchObject({ checkpoint });
 
     const reads = await Promise.all(
-      Array.from({ length: 12 }, () =>
-        wi.listWorkItems({ harness: H, includeBody: false, includePayload: false }),
-      ),
+      Array.from({ length: 12 }, () => wi.listWorkItems({ harness: H, includeBody: false, includePayload: false })),
     );
     for (const rows of reads) {
       expect(rows.map((row) => row.id).sort()).toEqual([feature.id, issue.id].sort());
