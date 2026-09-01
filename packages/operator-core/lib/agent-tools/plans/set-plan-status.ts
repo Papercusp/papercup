@@ -238,6 +238,21 @@ export function applyPlanStatusBody(
 }
 
 /**
+ * Whether the acceptance gate must run before a lifecycle write.
+ *
+ * A caller that supplies expectedCurrent:'shipped' is performing the
+ * idempotent terminal-Now repair pass (WI-38303), not entering the shipped
+ * state.  The CAS guard is enforced inside the plan lock, so skipping the
+ * preflight here is safe: a plan that is not already shipped simply refuses
+ * with `unexpected_status` and is never mutated.  Without this distinction a
+ * repair replay needlessly evaluates the completion gate (and may launch an
+ * acceptance grader) for every already-shipped plan in the corpus.
+ */
+export function shouldEvaluateAcceptanceGate(status: string, expectedCurrent?: string): boolean {
+  return status === 'shipped' && expectedCurrent !== 'shipped';
+}
+
+/**
  * WI-38047 / D-015: best-effort caller ownerId for the no-self-ratification guard.
  * `resolveAgentIdentity` THROWS on an unattributable ctx — the guard then FAILS OPEN
  * (null ownerId ⇒ no originator comparison), which is exactly the rule D-012 set for
@@ -342,7 +357,7 @@ export default defineTool({
         // the WRITE below is what makes it permanent, so the record has to
         // survive the branch that produced it.
         let forcedPast: ForcedPastRecord | undefined;
-        if (status === 'shipped') {
+        if (shouldEvaluateAcceptanceGate(status, args.expectedCurrent)) {
           const gate = await evaluatePlanAcceptanceGate(slug, args.force ? { force: args.force } : undefined);
           if (gate.forcedPast) {
             const actor = resolveAgentIdentity(ctx);

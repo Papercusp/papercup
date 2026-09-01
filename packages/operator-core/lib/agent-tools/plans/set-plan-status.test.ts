@@ -6,6 +6,7 @@ import {
   normalizePlanStatus,
   flipPlanFrontmatterStatus,
   launchAcceptanceGraderForGate,
+  shouldEvaluateAcceptanceGate,
 } from './set-plan-status';
 import setPlanStatusTool from './set-plan-status';
 
@@ -80,6 +81,21 @@ describe('set-plan-status expectedCurrent vocabulary', () => {
       expectedCurrent: 'awaiting-acceptance',
     });
     expect(parsed.success).toBe(true);
+  });
+});
+
+describe('set-plan-status terminal repair gate (WI-38303)', () => {
+  it('skips the completion gate for an explicit shipped→shipped repair replay', () => {
+    expect(shouldEvaluateAcceptanceGate('shipped', 'shipped')).toBe(false);
+  });
+
+  it('keeps the completion gate for a real transition into shipped', () => {
+    expect(shouldEvaluateAcceptanceGate('shipped', 'ready')).toBe(true);
+    expect(shouldEvaluateAcceptanceGate('shipped')).toBe(true);
+  });
+
+  it('never applies the completion gate to non-shipped targets', () => {
+    expect(shouldEvaluateAcceptanceGate('superseded')).toBe(false);
   });
 });
 
