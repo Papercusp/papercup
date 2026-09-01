@@ -16,7 +16,7 @@
     "bg-raised-high":   { "$value": "#2E2C29", "$type": "color" },
     "fg":               { "$value": "#ECE9E2", "$type": "color", "$description": "Portal dark ink" },
     "fg-dim":           { "$value": "#C9C4BA", "$type": "color" },
-    "fg-mute":          { "$value": "#9B968C", "$type": "color" },
+    "fg-mute":          { "$value": "#ABA79E", "$type": "color", "$description": "AA-safe muted copy on layered portal surfaces" },
     "border-muted":     { "$value": "rgba(201, 196, 186, 0.09)", "$type": "color" },
     "border":           { "$value": "rgba(201, 196, 186, 0.17)", "$type": "color" },
     "border-strong":    { "$value": "rgba(201, 196, 186, 0.31)", "$type": "color" },
