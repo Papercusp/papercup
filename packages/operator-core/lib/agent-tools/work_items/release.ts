@@ -198,6 +198,9 @@ const itemSpec = z.object({
     .boolean()
     .optional()
     .describe('per-item claim-hold override (else the batch `claimHold` default)'),
+  claimHoldRelease: claimHoldReleaseSchema
+    .optional()
+    .describe('typed release condition required when the effective claimHold is true'),
   force: z.boolean().optional().describe('per-item override of the batch `force` default'),
   reason: releaseReasonSchema().describe('per-item override of the batch `reason` (required when force clears a peer\'s claim)'),
 });
@@ -206,9 +209,9 @@ export default defineTool({
   name: 'work_items:release',
   profile: 'engineer',
   description:
-    'Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent\'s live claim (`{ ok:false, error:"not_holder", holder }` per item); `force:true` is a CHECKED override (WI-4198), not a bypass — non-live holder / queen / the holder\'s fleet leader only, requires `reason`, audited + notifies holder and owner (full rules on the `force` arg); anything else refuses with `force_unauthorized`. A voluntary release records a short re-claim cooldown. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) — a park (you + `reason` recorded) that SURVIVES your session ending, unlike a hold_open lease; still claimable by id; `claimHold:false` clears it.',
+    'Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent\'s live claim (`{ ok:false, error:"not_holder", holder }` per item); `force:true` is a CHECKED override (WI-4198), not a bypass — non-live holder / queen / the holder\'s fleet leader only, requires `reason`, audited + notifies holder and owner (full rules on the `force` arg); anything else refuses with `force_unauthorized`. A voluntary release records a short re-claim cooldown. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and requires `claimHoldRelease:{condition,trigger,owner?}`; the writer resolves reachability/evidence from the event ledger. The park survives your session ending, remains claimable by id, and `claimHold:false` clears it.',
   guidance: {
-    when: 'You claimed work-item(s) but are no longer working them. Add claimHold:true when the item must NOT be opportunistically re-claimed by the next self-selecting agent (a recurring do-not-pick-up ticket) — plain release lets it re-surface immediately.',
+    when: 'You claimed work-item(s) but are no longer working them. Add claimHold:true plus claimHoldRelease when the item must NOT be opportunistically re-claimed until a named event condition changes — plain release lets it re-surface immediately.',
     notWhen: 'A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force: force is for reclaiming a dead/stuck agent\'s item, never for clearing a peer\'s in-flight claim.',
     chaining: 'work_items:claim → … → work_items:release.',
     seeAlso: [
@@ -232,6 +235,9 @@ export default defineTool({
         .describe(
           'default claim-hold for the inline id / every id in `ids` (both families): true excludes the item from claim_next/scheduler:get_next self-select until cleared; false clears a prior hold.',
         ),
+      claimHoldRelease: claimHoldReleaseSchema
+        .optional()
+        .describe('default typed release condition for claimHold:true; reachability/evidence are resolved by the writer'),
       force: z
         .boolean()
         .optional()
@@ -244,14 +250,33 @@ export default defineTool({
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id } for one, or { ids:[…] } / items:[{ id }] for many',
+    })
+    .superRefine((a, ctx) => {
+      const effective = a.items?.length
+        ? a.items.map((item, index) => ({
+            hold: item.claimHold ?? a.claimHold,
+            release: item.claimHoldRelease ?? a.claimHoldRelease,
+            path: ['items', index, 'claimHoldRelease'] as (string | number)[],
+          }))
+        : [{ hold: a.claimHold, release: a.claimHoldRelease, path: ['claimHoldRelease'] as (string | number)[] }];
+      for (const entry of effective) {
+        if (entry.hold === true && !entry.release) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: entry.path,
+            message:
+              'claimHold:true requires claimHoldRelease { condition, trigger, owner? }; durable parks must declare a typed re-evaluation contract',
+          });
+        }
+      }
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const list = args.items?.length
       ? args.items
       : args.ids?.length
-        ? args.ids.map((id) => ({ id, harness: args.harness, claimHold: args.claimHold, force: args.force, reason: args.reason }))
-        : [{ id: args.id as string, harness: args.harness, claimHold: args.claimHold, force: args.force, reason: args.reason }];
+        ? args.ids.map((id) => ({ id, harness: args.harness, claimHold: args.claimHold, claimHoldRelease: args.claimHoldRelease, force: args.force, reason: args.reason }))
+        : [{ id: args.id as string, harness: args.harness, claimHold: args.claimHold, claimHoldRelease: args.claimHoldRelease, force: args.force, reason: args.reason }];
     const env = await runBulk(
       list,
       async (it) => {
@@ -261,6 +286,11 @@ export default defineTool({
         const reason = clampText(rawReason, RELEASE_REASON_MAX_CHARS);
         const reasonTruncated = typeof rawReason === 'string' && rawReason.length > RELEASE_REASON_MAX_CHARS;
         const reasonDisclosure = reasonTruncated ? { reasonTruncated: true as const } : {};
+        const claimHold = it.claimHold ?? args.claimHold;
+        const claimHoldReleaseInput = it.claimHoldRelease ?? args.claimHoldRelease;
+        const releaseContract = claimHold === true && claimHoldReleaseInput
+          ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId)
+          : undefined;
         // WI-4198: force is a CHECKED override, not a bypass. Before releasing,
         // identify the holder; a cross-holder force must pass the authority/liveness
         // guard, carry a reason, and leave an audit + notification trail.
@@ -531,7 +561,6 @@ export default defineTool({
                 `state) so this finished work is not re-dispatched.`,
             }
           : {};
-        const claimHold = it.claimHold ?? args.claimHold;
         // EI-16289: a checkpoint/reason records WHY a holder put work down, but a plain
         // release does not make that disposition sticky — it applies only the short
         // same-agent cooldown and leaves the row immediately self-selectable by every
@@ -553,7 +582,8 @@ export default defineTool({
                   `Plain release left '${it.id}' self-selectable by other agents immediately (only your own short ` +
                   `re-claim cooldown was applied). ${releaseCheckpoint ? 'Its checkpoint remains resume context, not a queue disposition.' : 'Its release reason was recorded, but does not change selectability.'} ` +
                   `If this means "defer / not now / do not self-select", apply the durable disposition now with ` +
-                  `work_items:release { id:'${it.id}', claimHold:true, reason:'<unpark condition>' }; that follow-up ` +
+                  `work_items:release { id:'${it.id}', claimHold:true, reason:'<unpark condition>', ` +
+                  `claimHoldRelease:{ condition:'<what changes>', trigger:'<exact event key>' } }; that follow-up ` +
                   `works while the item is unassigned. If this is an ordinary handoff, no action is needed.`,
               }
             : {};
@@ -579,6 +609,7 @@ export default defineTool({
           harness,
           parkedBy: ident.ownerId,
           parkedReason: reason,
+          ...(releaseContract ? { releaseContract } : {}),
         });
         // EI-21966077123218777: `setWorkItemClaimHold` returns null from TWO different
         // places — it located no row (the `feature_id` + `harness` filter matched nothing)
@@ -620,6 +651,7 @@ export default defineTool({
           ...stranding,
           ...completion,
           claimHold: held?.applicable ? held.hold : undefined,
+          claimHoldRelease: held?.applicable && claimHold ? releaseContract : undefined,
           ...claimHoldFailure,
           ...reasonDisclosure,
         };

@@ -217,6 +217,35 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
       });
     });
 
+    it('persists the typed release contract with the durable park and removes it on explicit unpark', async () => {
+      await seedFeatureInWorkspace('WI-release-contract', 'ws-real');
+      h.activeWs = 'ws-other';
+      const releaseContract = {
+        condition: 'deployment finishes',
+        owner: 'release-owner',
+        trigger: 'deploy:ready:staging',
+        reachability: 'reachable' as const,
+        evidence: 'catalogued producer is live',
+      };
+
+      await wi.setWorkItemClaimHold('WI-release-contract', true, {
+        harness: H,
+        parkedBy: 'su-x',
+        parkedReason: 'wait for deploy',
+        releaseContract,
+      });
+      expect(await payloadInWorkspace('WI-release-contract', 'ws-real')).toMatchObject({
+        _claimHold: true,
+        claim_hold_by: 'su-x',
+        claim_hold_release: releaseContract,
+      });
+
+      await wi.setWorkItemClaimHold('WI-release-contract', false, { harness: H });
+      const cleared = await payloadInWorkspace('WI-release-contract', 'ws-real');
+      expect(cleared).not.toHaveProperty('_claimHold');
+      expect(cleared).not.toHaveProperty('claim_hold_release');
+    });
+
     it('a scheduler self-select then EXCLUDES the (now correctly) held item', async () => {
       await seedFeatureInWorkspace('WI-ws-held', 'ws-real', 100); // oldest — would be served first
       await seedFeatureInWorkspace('WI-ws-free', 'ws-real', 200);

@@ -23,6 +23,17 @@ vi.mock('../../work-items', () => ({
   commentWorkItem: vi.fn(),
 }));
 
+const reachabilityM = vi.hoisted(() => vi.fn(async () => ({
+  verdict: 'reachable' as const,
+  basis: 'live-resolver' as const,
+  authoritative: true,
+  evidence: 'catalogued producer is live',
+  checkedAt: '2026-09-01T12:00:00.000Z',
+})));
+vi.mock('../../external-condition-reachability', () => ({
+  readEventConditionReachability: reachabilityM,
+}));
+
 // WI-5974: a voluntary/authorized release auto-resolves any pending release request —
 // mocked here so existing tests (no pending request on any item) are unaffected, and the
 // dedicated describe block below pins the wiring itself.
@@ -71,6 +82,7 @@ vi.mock('../coordination/messages', () => ({ sendMessage: sendMessageM }));
 
 type Out = { data: any };
 const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
+const parse = (args: unknown) => (tool.args as { parse: (value: unknown) => unknown }).parse(args);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -80,6 +92,13 @@ beforeEach(() => {
   releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null);
   commentM.mockResolvedValue({ id: 'post-1' } as never);
   sendMessageM.mockResolvedValue({} as never);
+  reachabilityM.mockResolvedValue({
+    verdict: 'reachable',
+    basis: 'live-resolver',
+    authoritative: true,
+    evidence: 'catalogued producer is live',
+    checkedAt: '2026-09-01T12:00:00.000Z',
+  });
   releaseM.mockImplementation(async (id: string) => ({ id, assignee: null }) as never);
   holdM.mockImplementation(async (id: string, hold: boolean) => ({ id, harness: null, hold, applicable: true }) as never);
 });
@@ -451,6 +470,48 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     // every ephemeral agent's park boomerang back into scheduler:get_next.
     expect(holdM).toHaveBeenCalledWith('WI-1', true, { harness: undefined, parkedBy: 'me', parkedReason: 'umbrella item' });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', claimHold: true });
+  });
+
+  it('requires a typed release contract for every claimHold:true park', () => {
+    expect(() => parse({ id: 'WI-1', claimHold: true, reason: 'wait for deploy' })).toThrow(
+      /claimHoldRelease.*typed re-evaluation contract/,
+    );
+    expect(() => parse({
+      id: 'WI-1',
+      claimHold: true,
+      reason: 'wait for deploy',
+      claimHoldRelease: { condition: 'deployment finishes', trigger: 'deploy:ready:staging' },
+    })).not.toThrow();
+  });
+
+  it('derives reachability evidence and persists the typed claim_hold_release contract with the park', async () => {
+    const b = await body({
+      id: 'WI-1',
+      claimHold: true,
+      reason: 'wait for deploy',
+      claimHoldRelease: {
+        condition: 'deployment finishes',
+        trigger: 'deploy:ready:staging',
+        owner: 'release-owner',
+      },
+    });
+    expect(reachabilityM).toHaveBeenCalledWith('deploy:ready:staging');
+    expect(holdM).toHaveBeenCalledWith('WI-1', true, {
+      harness: undefined,
+      parkedBy: 'me',
+      parkedReason: 'wait for deploy',
+      releaseContract: {
+        condition: 'deployment finishes',
+        owner: 'release-owner',
+        trigger: 'deploy:ready:staging',
+        reachability: 'reachable',
+        evidence: 'catalogued producer is live',
+      },
+    });
+    expect(b.results[0].claimHoldRelease).toMatchObject({
+      trigger: 'deploy:ready:staging',
+      reachability: 'reachable',
+    });
   });
 
   it('claimHold:false clears a prior hold', async () => {
