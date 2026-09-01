@@ -1841,6 +1841,125 @@ export const GOAL_PORTFOLIO_THROUGHPUT_CELL: CellSpec = {
    */
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * capacity-signal-clarity-and-fleet-capacity-repair-2026-09-01 P-004 — "ARE WE AT
+ * CAPACITY?" IS ONE READ, AND IT NAMES WHICH TERM BINDS.
+ *
+ * ── THE GAP, MEASURED ──────────────────────────────────────────────────────────
+ *
+ * The audit behind this plan found the question answered by four surfaces that could
+ * not agree, because each saw one leg: `accounts:status` (quota), `gateway:status`
+ * (admission), `fleet:capacity` (both, but publishing only THAT you are stuck), and
+ * the burn governor (a PACING PROJECTION that reads exactly like a wall in prose).
+ * A reader who got "at capacity" could not tell whether to WAIT for a provider reset,
+ * RAISE a self-imposed clamp, CHANGE a pacing policy, or look at the box — four
+ * different actions, three of them wasted.
+ *
+ * `capacityVerdict.binding` is the answer, and this cell is its one canonical door.
+ *
+ * ── WHY THE HEADLINE IS NULLABLE WHEN ITS TYPE IS `boolean` ────────────────────
+ *
+ * `atCapacity` is never literally null. It is declared nullable anyway, for exactly
+ * the reason this file's opening docblock gives about `positions.deployed`: the
+ * resolver CAN fail into a default. A gateway that did not answer, or a pool whose
+ * readings are all stale, yields `atCapacity: false` — byte-identical to an honest
+ * "nothing is binding". Type totality is not the question axis 2 asks. So every
+ * unmeasured leg is named in `capacityUnknown`, and that is the hoist.
+ *
+ * ── ⚠ WHY `host` IS NOT IN THE CODE MAP ───────────────────────────────────────
+ *
+ * `CapacityBinding` has five members and this cell declares FOUR. The resolver reads
+ * the account pool and the gateway; neither measures CPU/memory/PSI, so it can never
+ * honestly emit `host`. Declaring the fifth code would advertise semantics the read
+ * can never deliver — the same emptiness `assessment-codes-empty` rejects, one member
+ * at a time. The host question is carried by a POINTER to `host.memoryPressure`
+ * instead, which is what a pointer is for: not a claim about this cell's reading, just
+ * "the question you are about to ask next is answered THERE".
+ */
+export const CAPACITY_VERDICT_CELL: CellSpec = {
+  cell: 'capacity.verdict',
+  registeredOn: '2026-09-01',
+  owner: 'capacity-signal-clarity-and-fleet-capacity-repair-2026-09-01',
+
+  headline: 'capacityVerdict.atCapacity',
+
+  /** Axis 3. PER-PROVIDER: a claude wall is not evidence about codex, which is the
+   *  interleaving defect P-002 fixed one level down. Read with `as: 'claude' | 'codex'`. */
+  callerRelativity: { kind: 'parameter', param: 'provider' },
+
+  nullable: true,
+  unknownHoist: 'capacityUnknown',
+
+  assessment: {
+    path: 'capacityVerdict.binding',
+    codes: {
+      'usage-wall': {
+        meaning:
+          'A PROVIDER wall: usage windows are exhausted (or accounts are rate-paused) and no account can serve on a fresh reading. Check atCapacity for whether every reading was fresh — when it is false, some rows are stale and could still serve.',
+        safeAction:
+          'HOLD placements and wait for a usage window to reset, or route to another provider. Do NOT raise admission and do NOT change pacing — neither can relieve a provider wall. If atCapacity is false, run accounts:probe-capacity before declaring the pool exhausted or escalating.',
+      },
+      'admission-concurrency': {
+        meaning:
+          'OUR OWN door: the gateway is holding the lane at zero spare dispatch slots while the accounts themselves can serve. Nothing is walled — we are limiting ourselves.',
+        safeAction:
+          'Raise the admission window, or wait for in-flight work to drain and re-read — this clears on its own as requests complete. Do NOT wait for a provider reset and do NOT escalate to the owner; there is no provider fault here.',
+      },
+      'pacing-policy': {
+        meaning:
+          "This system pacing ITSELF off the burn governor's projected exhaustion. NOTHING is measurably walled, and no provider reset is coming because there is nothing to reset.",
+        safeAction:
+          'Decide whether to accept the burn or change the pacing policy. Do NOT wait it out and do NOT report a provider wall — treating a pacing projection as a measured wall is the specific error this cell exists to prevent.',
+      },
+      none: {
+        meaning:
+          'No term is measurably binding this provider. ⚠ Read capacityUnknown before acting: when it is non-empty this means "no measured blocker", NOT "measured clear".',
+        safeAction:
+          'Place work when capacityUnknown is empty. When it is not, treat the read as partial — refresh the named leg (accounts:probe-capacity for the pool, re-read for the gateway) before relying on it to size a launch.',
+      },
+    },
+    evidence: ['capacityVerdict.evidence', 'capacityVerdict.reason', 'capacityUnknown'],
+  },
+
+  provenance: {
+    obtainedBy:
+      'deriveCapacityVerdict() merging the P-002 per-provider account rollup (poolVerdictByProvider) with the gateway admission snapshot (buildCapacityReport), both already resolved inside one fleet:capacity dispatch',
+    liveExercised: true,
+    evidence:
+      "Exercised end-to-end through fleet:capacity on the staging operator (:3170, restarted onto current source) against the live claude pool at 2026-09-01T05:07Z, and THE LIVE READ CAUGHT A REAL DEFECT that fixtures had not. The pool read serviceable=0, walledFresh=6, pacing=1, unknown=1 of 7 with dispatchBudget=6. The first implementation gated its wall branch on `pool.atCapacity && binding==='usage-wall'`; atCapacity was correctly false (one stale row could still serve), so it fell through every branch and answered binding:'none' — \"no term is measurably binding\" — with six accounts measurably walled. That is the exact false-green this plan exists to remove. The fix separates the two questions (binding = which term, atCapacity = fully measured or not) and the live reading is pinned as the first case in capacity-verdict.test.ts so it cannot regress.",
+  },
+
+  resolver: 'deriveCapacityVerdict() @ packages/operator-core/lib/fleet/capacity-verdict.ts',
+
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'fleet:capacity', path: 'capacityVerdict.atCapacity' },
+
+  /**
+   * P-021 — the raw headline flips on every transient admission zero (in-flight work
+   * draining moves dispatchBudget through 0 routinely), but the question this cell exists
+   * to answer is WHICH TERM BINDS, and that moves only when the situation actually changes
+   * kind — a pool going walled, a clamp taking over, pacing engaging. Subscribers want the
+   * kind-change, not every flap of the boolean.
+   */
+  materiality: {
+    path: 'capacityVerdict.binding',
+    why: 'atCapacity flips whenever in-flight work transiently fills the admission window, which on a busy fleet is constant churn carrying no news. The binding term changes only when the REMEDY changes — which is the whole reason to be woken.',
+  },
+
+  pointers: [
+    {
+      cell: 'host.memoryPressure',
+      when: 'binding is "none" (or the clamp is not explained by the provider) and placements are still failing or slow',
+      answers:
+        'whether the BOX is the constraint. This cell reads the account pool and the gateway only; it never measures CPU/memory/PSI, so it can neither report nor rule out a host bottleneck — it is the one member of the CapacityBinding vocabulary this resolver deliberately cannot emit.',
+    },
+  ],
+
+  shape:
+    '{ capacityVerdict: { provider, atCapacity: boolean, binding: "usage-wall"|"admission-concurrency"|"pacing-policy"|"none", evidence: [{ signal, value, writer, means }], reason, unknown: string[] }, capacityUnknown: string[] }',
+};
+
 /** Every built-in cell, in registration order. */
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,

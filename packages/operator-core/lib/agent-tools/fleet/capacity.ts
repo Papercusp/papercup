@@ -26,7 +26,8 @@ import {
 } from '../../fleet/capacity-dispatch';
 import { activeWorkspaceId } from '../../workspace-registry';
 import type { AccountProvider } from '../../deployment/account-pool';
-import type { AccountStatusRow } from '../../deployment/account-pool-store';
+import type { AccountStatusRow, ProviderPoolVerdict } from '../../deployment/account-pool-store';
+import { deriveCapacityVerdict } from '../../fleet/capacity-verdict';
 import { advSessionsByCoordOwner } from '../../adv-sessions';
 import { listFleetRosterDiagnosed } from '../../fleet/fleet-roster';
 import { resolveAgentIdentity, deriveFleetMembership, type AgentIdentity } from '../coordination/identity';
@@ -428,7 +429,11 @@ async function readCapacityForProvider(
   preloadedRows?: AccountStatusRow[],
 ): Promise<ProviderCapacityReading> {
   const hr = await fetchGatewayHeadroom({ timeoutMs: 1500, provider });
-  const accountAvailability = await readProviderAvailability(provider, args.account, preloadedRows);
+  // P-004: fetch the account rows ONCE and feed BOTH consumers — the existing availability
+  // cross-check and the canonical per-provider verdict below. Without this the verdict would
+  // re-read the pool and could disagree with the availability leg rendered beside it.
+  const rows = preloadedRows ?? (await readAccountRowsForVerdict());
+  const accountAvailability = await readProviderAvailability(provider, args.account, rows);
   const tierMap = parsePriorityTierMap(process.env.GATEWAY_PRIORITY_MAP);
   const report = buildCapacityReport(hr, {
     clampArmed,
@@ -449,6 +454,21 @@ async function readCapacityForProvider(
         blindAccounts: accountAvailability.blindCount ?? null,
       }
     : null;
+  // P-004 — THE CANONICAL VERDICT. `poolExhausted`/`verdict` above say THAT the lane is
+  // stuck; neither says WHICH TERM binds it, so a reader could not tell a provider wall
+  // from our own admission clamp from a burn PACING PROJECTION. `capacityVerdict` merges
+  // both legs into one answer whose `binding` names the remedy. Derived from the SAME `rows`
+  // and the SAME report, so it cannot disagree with the fields beside it.
+  const capacityVerdict = deriveCapacityVerdict({
+    provider,
+    pool: await poolVerdictFor(rows, provider),
+    admission: {
+      reachable: report.reachable,
+      blind: report.blind,
+      dispatchBudget: report.dispatchBudget,
+      inFlight: report.inFlight,
+    },
+  });
   return {
     provider,
     model: args.model ?? null,
@@ -460,7 +480,38 @@ async function readCapacityForProvider(
         : 'unknown',
     ...report,
     accountPool,
+    capacityVerdict,
+    // The RESULT-level unknown channel the `capacity.verdict` cell hoists (axis 2). A caller
+    // who reads only `capacityVerdict.atCapacity` still cannot miss an unmeasured leg.
+    capacityUnknown: capacityVerdict.unknown,
   };
+}
+
+/** Read the account rows for the canonical verdict. Fail-safe: a read failure yields
+ *  `undefined`, which the verdict reports as an UNMEASURED pool leg rather than a clear one. */
+async function readAccountRowsForVerdict(): Promise<AccountStatusRow[] | undefined> {
+  try {
+    const { accountStatus } = await import('../../deployment/account-pool-store');
+    return await accountStatus(activeWorkspaceId());
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The P-002 rollup for ONE provider, off rows already in hand.
+ *
+ * Returns `null` — never a synthesised empty rollup — when the rows could not be read or the
+ * provider has none. `deriveCapacityVerdict` reports a null pool as an UNMEASURED leg; a
+ * zero-filled stand-in would read as a measured-clear pool, which is the fail-open direction.
+ */
+async function poolVerdictFor(
+  rows: AccountStatusRow[] | undefined,
+  provider: AccountProvider,
+): Promise<ProviderPoolVerdict | null> {
+  if (!rows) return null;
+  const { poolVerdictByProvider } = await import('../../deployment/account-pool-store');
+  return poolVerdictByProvider(rows).find((v) => v.provider === provider) ?? null;
 }
 
 export default defineTool({
