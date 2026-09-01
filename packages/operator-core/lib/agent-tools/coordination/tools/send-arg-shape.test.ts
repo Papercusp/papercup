@@ -83,6 +83,58 @@ describe('EI-20223353810864057 — primary coord:send guidance names required su
   });
 });
 
+describe('EI-22053112169401275 — basedOn is declared output-only on every send form', () => {
+  const trace = [
+    { ref: 'work-item:WI-9001', via: 'work_items:get', readAt: '2026-07-27T12:00:00.000Z' },
+  ];
+
+  it('documents basedOn as output-only in description, guidance, and both schemas', () => {
+    const description = String((sendTool as { description?: unknown }).description ?? '');
+    const when = String(((sendTool as { guidance?: { when?: unknown } }).guidance?.when ?? ''));
+    const topLevelSchema = z.toJSONSchema(sendTool.args) as {
+      properties?: { basedOn?: { description?: string } };
+    };
+    const itemSchema = z.toJSONSchema(itemSpec) as {
+      properties?: { basedOn?: { description?: string } };
+    };
+
+    for (const text of [
+      description,
+      when,
+      topLevelSchema.properties?.basedOn?.description,
+      itemSchema.properties?.basedOn?.description,
+    ]) {
+      expect(text ?? '').toMatch(/OUTPUT-ONLY/i);
+      expect(text ?? '').toMatch(/auto-derived/i);
+      expect(text ?? '').toMatch(/omit/i);
+    }
+  });
+
+  it('refuses authored basedOn with a targeted correction on the single form', () => {
+    const args = { to: ['peer'], summary: 'hi', expects: 'none', basedOn: trace };
+    const msg = refusal(args);
+
+    expect(paths(args)).toContain('basedOn');
+    expect(msg).toMatch(/OUTPUT-ONLY/i);
+    expect(msg).toMatch(/auto-derives/i);
+    expect(msg).toMatch(/omit `basedOn`/);
+  });
+
+  it('refuses authored basedOn with the same correction on an items[] entry', () => {
+    const args = { items: [{ to: ['peer'], summary: 'hi', expects: 'none', basedOn: trace }] };
+    const msg = refusal(args);
+
+    expect(paths(args)).toContain('items.0.basedOn');
+    expect(msg).toMatch(/OUTPUT-ONLY/i);
+    expect(msg).toMatch(/omit `basedOn`/);
+  });
+
+  it('keeps both valid send forms unchanged when basedOn is omitted', () => {
+    expect(sendTool.args.safeParse({ to: ['peer'], summary: 'hi', expects: 'none' }).success).toBe(true);
+    expect(sendTool.args.safeParse({ items: [{ to: ['peer'], summary: 'hi', expects: 'none' }] }).success).toBe(true);
+  });
+});
+
 describe('EI-21335862819188804 — section-only fields name their body home', () => {
   it('full dispatch turns a misplaced couldNotDetermine into an actionable correction', async () => {
     const projected = lookupByMcpName('coord:send');

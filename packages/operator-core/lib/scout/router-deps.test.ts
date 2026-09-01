@@ -94,12 +94,12 @@ describe('buildCapturePort', () => {
     expect(input.scope).toBe('operator');
   });
 
-  it('on a duplicate decline, attributes to the EXISTING item (created:false)', async () => {
+  it('on a coalesced burst, attributes to the EXISTING item (created:false — the surviving non-create path, P-002)', async () => {
     const fake = vi.fn(
       async (_input: CaptureImprovementInput): Promise<CaptureImprovementResult> => ({
         ok: true,
         created: false,
-        reason: 'likely-duplicate',
+        reason: 'coalesced',
         possibleDuplicates: [{ id: 'EI-7', title: 'dup', state: 'open', severity: 'minor', similarity: 0.9 }],
       }),
     );

@@ -17,10 +17,12 @@ const createdResult = (id: string): CaptureImprovementResult => ({
   possibleDuplicates: [],
 });
 
+// P-002 (silent-intake, D-001): the decline is retired; the surviving
+// created:false path is the burst coalesce — same not-filed shape.
 const declinedResult: CaptureImprovementResult = {
   ok: true,
   created: false,
-  reason: 'likely-duplicate',
+  reason: 'coalesced',
   possibleDuplicates: [{ id: 'EI-9', title: 't', state: 'open', severity: 'minor', similarity: 0.8 }],
 };
 

@@ -789,4 +789,65 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
       ).toBe(false);
     }
   });
+
+  // ── WI-1105109 — freeze-and-converge is the STANDARD main-greening procedure ──
+  //
+  // [owner 2026-08-30T07:22Z, OWNER-interactive] "How can we make sure another
+  // agent uses the frozen candidate system next and doesn't retire it like you did.
+  // This should be our standard main greening procedure."
+  //
+  // The mechanism (P-013 / D-007, converge-frozen-candidate-by-fix-only-admission-
+  // 2026-08-27) is already correct and already default-ON. What was missing is
+  // anything that stops it being quietly turned OFF — and this flag's own comment in
+  // types.ts states the consequence precisely: turning it off "restores the pre-D-001
+  // re-cut-at-tip stream — the treadmill D-007 diagnosed, where each new cut re-admits
+  // the whole sweep and imports breakage faster than fixes land." On a tree where ~100
+  // agents commit continuously that is not a degraded mode, it is a gate that stops
+  // converging at all. So the default is load-bearing and gets a guard.
+  //
+  // Verified 2026-09-01: BEFORE this test, `grep -rl RELEASE_FREEZE_AND_CONVERGE_DEFAULT
+  // --include=*.test.ts` matched 0 files, while the same grep for DARK_FLAGS matched 48
+  // — i.e. the absence was real, not a broken search.
+  it("RELEASE_FREEZE_AND_CONVERGE_DEFAULT stays default-ON and never goes dark (WI-1105109)", () => {
+    const key = FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT;
+
+    expect(
+      FLAG_DEFAULTS[key],
+      "freeze-and-converge is the standard main-greening procedure — default-OFF " +
+        "restores the re-cut-at-tip treadmill (D-007)",
+    ).toBe(true);
+    expect(
+      DARK_FLAGS.has(key),
+      `${key} must NOT be in DARK_FLAGS — it is the already-deployed behaviour`,
+    ).toBe(false);
+
+    // INDEPENDENT PIN, deliberately a raw string literal — the same device as
+    // PRE_INVERSION_DEFAULT_OFF above. Reading the default only through the FLAGS
+    // constant would keep passing if the flag were RENAMED, because the guard would
+    // silently follow the rename and re-assert the property about a different key.
+    // Pinning the wire value makes a rename fail HERE, where the reason is written
+    // down, instead of somewhere downstream at gate time.
+    const WIRE_KEY = "papercusp-release-freeze-and-converge-default";
+    expect(
+      (ALL_FLAG_KEYS as readonly string[]).includes(WIRE_KEY),
+      `the freeze-and-converge flag must keep the wire key '${WIRE_KEY}' — a rename ` +
+        "silently detaches every override and re-cut guard that names it",
+    ).toBe(true);
+    expect(key as string).toBe(WIRE_KEY);
+    expect(
+      FLAG_DEFAULTS[WIRE_KEY as keyof typeof FLAG_DEFAULTS],
+      "resolved through the wire literal, independently of the FLAGS constant",
+    ).toBe(true);
+
+    // FALSIFIABILITY CONTROL. Every assertion above is `toBe(true)`, so if the
+    // derivation were broken in the direction that matters — FLAG_DEFAULTS resolving
+    // truthy for everything — they would ALL still pass and this guard would be
+    // decorative. A known default-OFF flag proves the same lookup can still return
+    // false, so a green here means the mechanism discriminated rather than agreed.
+    expect(
+      FLAG_DEFAULTS[FLAGS.GMAIL_AUTO_SEND],
+      "control: a known owner-authority dark flag must still resolve default-OFF — " +
+        "if this flips true, FLAG_DEFAULTS is broken and the assertions above are vacuous",
+    ).toBe(false);
+  });
 });

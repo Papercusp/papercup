@@ -119,11 +119,13 @@ describe('dream accepted-insight sink', () => {
     });
   });
 
-  it('attributes a deduped dream to the existing improvement without dropping its own idea row', async () => {
+  it('attributes a coalesced dream to the existing improvement without dropping its own idea row', async () => {
+    // P-002 (silent-intake, D-001): the search-first decline is retired, so the
+    // surviving created:false path is the burst COALESCE — same attribution shape.
     const d = deps(
       captured({
         created: false,
-        reason: 'likely-duplicate',
+        reason: 'coalesced',
         issue: undefined,
         possibleDuplicates: [
           { id: 'EI-existing', title: 'Existing guard', state: 'open', severity: 'minor', similarity: 0.94 },
@@ -134,7 +136,7 @@ describe('dream accepted-insight sink', () => {
     await expect(sinkDreamInsight(input(), d.value)).resolves.toMatchObject({
       sunk: true,
       created: false,
-      captureReason: 'likely-duplicate',
+      captureReason: 'coalesced',
       ideaId: 'dream:DR-42',
       workItemId: 'EI-existing',
       routedRef: 'wi:EI-existing',

@@ -220,8 +220,8 @@ describe('promoteToolSequences — filing without a human in the loop', () => {
     expect(second.calls.map((c) => c.watchdogKey).sort()).toEqual(first.calls.map((c) => c.watchdogKey).sort());
   });
 
-  it('counts a declined duplicate as COALESCED, not filed', async () => {
-    const spy = captureSpy(() => ({ created: false, reason: 'likely-duplicate' }));
+  it('counts a coalesced duplicate as COALESCED, not filed (P-002: coalesce is the surviving non-create path)', async () => {
+    const spy = captureSpy(() => ({ created: false, reason: 'coalesced' }));
     const res = await promoteToolSequences(fakeSql(TWO_GRADUATES), opts, { capture: spy.capture });
 
     expect(res.filed).toEqual([]);

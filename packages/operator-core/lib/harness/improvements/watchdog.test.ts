@@ -1772,10 +1772,12 @@ describe('runWatchdogTick — captures through the shared core', () => {
     expect((bare[0] as { findingClass?: string }).findingClass).toBeUndefined();
   });
 
-  it('counts declined open-duplicates instead of re-filing (cross-tick dedup)', async () => {
-    const { capture } = captureRecorder([{ created: false, reason: 'likely-duplicate' }]);
+  it('counts verdict-annotated duplicate filings (P-002: the dedup verdict rides the created row)', async () => {
+    const { capture } = captureRecorder([
+      { created: true, issue: { id: 'EI-9', payload: { dedupVerdict: 'likely-duplicate' } } as never },
+    ]);
     const res = await runTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => [sig({ key: 'x' })], capture, recordTick: noopRecord });
-    expect(res.captured).toHaveLength(0);
+    expect(res.captured).toEqual(['EI-9']);
     expect(res.declinedDuplicates).toBe(1);
   });
 
@@ -2014,17 +2016,17 @@ describe('runWatchdogTick — self-escalation through the shared core (P-002)', 
     }
   });
 
-  it('an OPEN-duplicate self-escalation is not re-filed (dedup across ticks)', async () => {
+  it('a coalesced self-escalation is not re-listed (P-002: coalesce is the surviving non-create path)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const { capture } = captureRecorder({ created: false, reason: 'likely-duplicate' });
+      const { capture } = captureRecorder({ created: false, reason: 'coalesced' });
       const res = await runTick('ws', { failStreakToEscalate: 3 }, { readKeyDups: noKeyDups, pruneTicks: noPrune,
         collectors: [throwingCollector],
         capture,
         recordTick: async () => {},
         readRecentTicks: async () => priorFails(3),
       });
-      expect(res.selfEscalations).toEqual([]); // declined as an open duplicate
+      expect(res.selfEscalations).toEqual([]); // coalesced onto the open duplicate
     } finally {
       warn.mockRestore();
     }
