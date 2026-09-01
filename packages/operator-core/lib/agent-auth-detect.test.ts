@@ -28,6 +28,7 @@ import {
   codexSignedIn,
   ompSignedIn,
   ompAuthStatus,
+  safeCredentialShape,
   githubSignedIn,
   anyAgentSignedIn,
   readClaudeKeychainOAuthBundle,
@@ -204,6 +205,71 @@ describe('ompAuthStatus', () => {
     expect(ompAuthStatus('/home/u', 1000)).toEqual({
       present: true, provider: null, authType: null, expiresAt: null, accessExpired: false, hasRefresh: false,
     });
+  });
+});
+
+describe('safeCredentialShape', () => {
+  it('summarizes strings by type and length, while retaining finite numeric metadata', () => {
+    const hiddenValue = ['opaque', 'refresh', 'material'].join('-');
+    const shape = safeCredentialShape({
+      anthropic: {
+        token: {
+          access: hiddenValue,
+          refresh: hiddenValue,
+          expires: 1_700_000_000_000,
+        },
+      },
+    });
+
+    expect(shape.anthropic).toEqual({
+      type: 'object',
+      fields: {
+        token: {
+          type: 'object',
+          fields: {
+            access: { type: 'string', length: hiddenValue.length },
+            refresh: { type: 'string', length: hiddenValue.length },
+            expires: { type: 'number', value: 1_700_000_000_000 },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(shape)).not.toContain(hiddenValue);
+  });
+
+  it('gates on value type rather than treating a field name as safe metadata', () => {
+    const hiddenValue = ['name', 'collision'].join('-');
+    const shape = safeCredentialShape({
+      refresh: hiddenValue,
+      expires: hiddenValue,
+      refreshCount: 3,
+    });
+
+    expect(shape).toEqual({
+      refresh: { type: 'string', length: hiddenValue.length },
+      expires: { type: 'string', length: hiddenValue.length },
+      refreshCount: { type: 'number', value: 3 },
+    });
+    expect(JSON.stringify(shape)).not.toContain(hiddenValue);
+  });
+
+  it('does not invoke accessors and terminates on cyclic objects', () => {
+    let invoked = false;
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    Object.defineProperty(circular, 'secret', {
+      enumerable: true,
+      get() {
+        invoked = true;
+        return 'should-not-be-read';
+      },
+    });
+
+    expect(safeCredentialShape(circular)).toEqual({
+      self: { type: 'circular' },
+      secret: { type: 'accessor' },
+    });
+    expect(invoked).toBe(false);
   });
 });
 

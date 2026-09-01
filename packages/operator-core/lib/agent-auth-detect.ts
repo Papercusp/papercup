@@ -231,6 +231,121 @@ export function ompSignedIn(): boolean {
 }
 
 /**
+ * A value-type-only view of an in-memory credential object for diagnostics.
+ *
+ * This deliberately has no field-name allowlist: names such as `refresh` are
+ * not evidence that a value is safe to print. String values are represented by
+ * their type and length only; finite numbers are the sole values retained
+ * because credential expiry metadata is numeric. Arrays are summarized by
+ * length, and nested objects are shaped recursively. Accessors and cycles are
+ * represented without invoking or traversing them.
+ */
+export type SafeCredentialMetadata =
+  | { type: 'string'; length: number }
+  | { type: 'number'; value?: number }
+  | { type: 'boolean' }
+  | { type: 'undefined' }
+  | { type: 'bigint' }
+  | { type: 'symbol' }
+  | { type: 'function' }
+  | { type: 'null' }
+  | { type: 'array'; length: number; truncated?: boolean }
+  | { type: 'object'; fields: SafeCredentialShape; truncated?: boolean }
+  | { type: 'accessor' }
+  | { type: 'circular' };
+
+export interface SafeCredentialShape {
+  [field: string]: SafeCredentialMetadata;
+}
+
+const MAX_SAFE_CREDENTIAL_SHAPE_DEPTH = 8;
+
+function safeCredentialValue(
+  value: unknown,
+  seen: WeakSet<object>,
+  depth: number,
+): SafeCredentialMetadata {
+  if (value === null) return { type: 'null' };
+  switch (typeof value) {
+    case 'string':
+      return { type: 'string', length: value.length };
+    case 'number':
+      return Number.isFinite(value) ? { type: 'number', value } : { type: 'number' };
+    case 'boolean':
+      return { type: 'boolean' };
+    case 'undefined':
+      return { type: 'undefined' };
+    case 'bigint':
+      return { type: 'bigint' };
+    case 'symbol':
+      return { type: 'symbol' };
+    case 'function':
+      return { type: 'function' };
+    case 'object':
+      if (Array.isArray(value)) {
+        try {
+          return {
+            type: 'array',
+            length: value.length,
+            ...(depth >= MAX_SAFE_CREDENTIAL_SHAPE_DEPTH ? { truncated: true } : {}),
+          };
+        } catch {
+          return { type: 'array', length: 0, truncated: true };
+        }
+      }
+      if (seen.has(value)) return { type: 'circular' };
+      if (depth >= MAX_SAFE_CREDENTIAL_SHAPE_DEPTH) {
+        return { type: 'object', fields: {}, truncated: true };
+      }
+      seen.add(value);
+      const fields = safeCredentialObject(value, seen, depth + 1);
+      seen.delete(value);
+      return { type: 'object', fields };
+    default:
+      return { type: 'undefined' };
+  }
+}
+
+function safeCredentialObject(
+  value: object,
+  seen: WeakSet<object>,
+  depth: number,
+): SafeCredentialShape {
+  const shape: SafeCredentialShape = {};
+  let fields: string[];
+  try {
+    fields = Object.keys(value);
+  } catch {
+    return shape;
+  }
+  for (const field of fields) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, field);
+    } catch {
+      shape[field] = { type: 'accessor' };
+      continue;
+    }
+    // Reading an accessor could execute arbitrary code or expose a secret.
+    if (!descriptor || !('value' in descriptor)) {
+      shape[field] = { type: 'accessor' };
+      continue;
+    }
+    shape[field] = safeCredentialValue(descriptor.value, seen, depth);
+  }
+  return shape;
+}
+
+export function safeCredentialShape(value: unknown): SafeCredentialShape {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const seen = new WeakSet<object>();
+  seen.add(value);
+  const shape = safeCredentialObject(value, seen, 0);
+  seen.delete(value);
+  return shape;
+}
+
+/**
  * OMP (pi) auth DETAIL — beyond mere file existence. A present `auth.json` with
  * an EXPIRED OAuth access token reads as "signed in" to `ompSignedIn()` but pi
  * may fail real Anthropic calls with "No API key found" (observed: a stale token
@@ -272,8 +387,12 @@ export function ompAuthStatus(home: string = homedir(), now: number = Date.now()
     if (!entry || typeof entry !== 'object') return { ...empty, present: true };
     const authType = typeof entry.type === 'string' ? entry.type : null;
     const tok = (entry.token && typeof entry.token === 'object' ? entry.token : null) as Record<string, unknown> | null;
-    const expiresAt = tok && typeof tok.expires === 'number' ? tok.expires : null;
-    const hasRefresh = Boolean(tok && typeof tok.refresh === 'string' && tok.refresh);
+    const tokenShape = tok ? safeCredentialShape(tok) : {};
+    const expiresAt =
+      tokenShape.expires?.type === 'number' && 'value' in tokenShape.expires
+        ? tokenShape.expires.value ?? null
+        : null;
+    const hasRefresh = tokenShape.refresh?.type === 'string' && tokenShape.refresh.length > 0;
     return {
       present: true,
       provider,
