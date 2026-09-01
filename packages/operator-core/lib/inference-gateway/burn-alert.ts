@@ -20,6 +20,7 @@
  * it (the write is the durable half).
  */
 import type { AccountPool, BurnTransition } from '../deployment/account-pool';
+import { renderBurnVerdictLabel, type BurnVerdict } from './burn-governor';
 
 const FACT_TTL_SEC = 6 * 3600;
 const FACT_CREATED_BY = 'system:burn-governor';
@@ -39,22 +40,27 @@ export async function recordAccountWindowWithBurnAlert(
   now: number,
   ws?: string,
 ): Promise<{ pool: AccountPool; transition: BurnTransition | null }> {
-  const [{ updateAccountPool }, { recordAccountWindow, accountBurnTransition }] = await Promise.all([
-    import('../deployment/account-pool-store'),
-    import('../deployment/account-pool'),
-  ]);
+  const [{ updateAccountPool }, { recordAccountWindow, accountBurnTransition, accountBurnVerdict }] =
+    await Promise.all([import('../deployment/account-pool-store'), import('../deployment/account-pool')]);
   let transition: BurnTransition | null = null;
   let action: 'none' | 'throttle' | 'shed' | undefined;
+  let verdict: BurnVerdict | null = null;
   const pool = await updateAccountPool((p) => {
     const next = recordAccountWindow(p, accountId, w, now);
     // Captured inside the mutator so the diff sees the exact pre-write row the transaction
     // read (a snapshot loaded before the txn could race a peer's write). On a txn retry the
     // capture re-runs and the final attempt wins.
     transition = accountBurnTransition(p, next, accountId, now);
-    action = next.accounts.find((a) => a.id === accountId)?.rate.lastBurnAction ?? undefined;
+    const row = next.accounts.find((a) => a.id === accountId);
+    action = row?.rate.lastBurnAction ?? undefined;
+    // The verdict BEHIND that stamped action, from the same authority `recordAccountWindow`
+    // stamped it with (the reading is fresh by construction, so the stale gate cannot interfere).
+    // Captured for the message writers so they can state the DISPOSITION — a pacing projection
+    // vs a measured wall — without a second evaluation that could disagree (P-001).
+    verdict = row ? accountBurnVerdict(row.rate, now) : null;
     return next;
   }, ws);
-  await stateBurnWall(accountId, action, transition, ws).catch(() => {});
+  await stateBurnWall(accountId, action, verdict, transition, ws).catch(() => {});
   return { pool, transition };
 }
 
@@ -71,6 +77,7 @@ export async function recordAccountWindowWithBurnAlert(
 async function stateBurnWall(
   accountId: string,
   action: 'none' | 'throttle' | 'shed' | undefined,
+  verdict: BurnVerdict | null,
   transition: BurnTransition | null,
   ws?: string,
 ): Promise<void> {
@@ -78,13 +85,25 @@ async function stateBurnWall(
   const burning = action === 'throttle' || action === 'shed';
   if (!burning && !transition) return; // healthy and unchanged — nothing to state
 
+  // P-001: EVERY surface leads with the DISPOSITION, from the one renderer, so a reader can
+  // never inherit a pacing projection as a measured capacity wall.
+  const label = verdict ? renderBurnVerdictLabel(verdict) : `${action.toUpperCase()} (disposition unavailable)`;
+  const projected = verdict?.disposition === 'pacing-projection';
+
   if (burning) {
-    const reason = transition?.reason ?? '';
+    const reason = verdict?.reason ?? transition?.reason ?? '';
     const { assertFact } = await import('../agent-facts/store');
     await assertFact({
       scope: 'workspace',
       key: factKey(accountId),
-      body: `Account '${accountId}' burn verdict ${action.toUpperCase()}${reason ? ` — ${reason}` : ''} (burn governor WI-41147; verify: accounts:status).`,
+      body:
+        `Account '${accountId}' burn ${label}${reason ? ` — ${reason}` : ''}.` +
+        (projected
+          ? ` THIS IS PAPERCUSP PACING ITSELF, NOT A PROVIDER WALL: the account still serves requests right now,` +
+            ` and the verdict is a projection of where its 7d window is heading. Do not read it as "we are at capacity",` +
+            ` and do not remedy it by throttling the fleet.`
+          : ` The provider's own 7d meter is exhausted — this account cannot serve until its window resets.`) +
+        ` (burn governor WI-41147; verify: accounts:status → rows[].burn.disposition.)`,
       createdBy: FACT_CREATED_BY,
       ttlSec: FACT_TTL_SEC,
       ...(ws ? { workspaceId: ws } : {}),
@@ -115,13 +134,20 @@ async function stateBurnWall(
 
   const { broadcastSevereEvent } = await import('../severe-event-broadcast');
   await broadcastSevereEvent({
-    summary: `account '${accountId}' burn verdict ${transition.to.toUpperCase()} (was ${transition.from}): ${transition.reason}`,
+    summary: `account '${accountId}' burn ${transition.label} (was ${transition.from}): ${transition.reason}`,
     body:
-      `The burn governor (WI-41147) projects this account's rolling 7-day window exhausts on its current trajectory. ` +
-      `Verdict: ${transition.to} — ${transition.reason}\n` +
+      (projected
+        ? `PACING POLICY, NOT A MEASURED WALL. The burn governor (WI-41147) PROJECTS this account's rolling ` +
+          `7-day window exhausts on its current trajectory — the account is serviceable right now and the ` +
+          `provider has walled nothing. Do not report this as "at capacity", and do not remedy it by ` +
+          `throttling the fleet.\n`
+        : `MEASURED WALL. The provider's own rolling 7-day meter reads exhausted — this is an observation, ` +
+          `not a projection: the account cannot serve until its window resets.\n`) +
+      `Verdict: ${transition.label} — ${transition.reason}\n` +
       `Selection already ${transition.to === 'shed' ? 'refuses' : 'deprioritizes'} this account while the verdict stands; ` +
       `the pool-aggregate lever sheds fleet concurrency if EVERY account is burning. ` +
-      `Verify with accounts:status (rows[].burn); accounts:probe-capacity refreshes a stale projection.`,
+      `Verify with accounts:status (rows[].burn — read .disposition before acting); ` +
+      `accounts:probe-capacity refreshes a stale projection.`,
     category: 'account-burn',
     conditionKey: factKey(accountId),
     // Edge-triggered by construction: this emitter alarms on the TRANSITION and stays silent

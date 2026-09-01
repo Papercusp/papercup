@@ -39,6 +39,24 @@ export interface BurnSample {
 
 export type BurnAction = 'none' | 'throttle' | 'shed';
 
+/**
+ * What the verdict's `action` actually RESTS ON — the field that stops a reader inheriting a
+ * pacing POLICY as a measured capacity wall (P-001, plan
+ * capacity-signal-clarity-and-fleet-capacity-repair-2026-09-01).
+ *
+ *  - `measured-wall`      — the provider's own meter says the window is exhausted
+ *                           (`utilization7d >= BURN_EXHAUSTED_UTIL`). A MEASUREMENT.
+ *  - `pacing-projection`  — the action derives from a least-squares PROJECTION of when the
+ *                           window would exhaust. A POLICY choice about pacing, not a wall the
+ *                           provider has imposed: the account is still serviceable right now.
+ *  - `no-verdict`         — no action is being asserted (healthy, no data, or stale-gated).
+ *
+ * Stamped at the branch that decides the action (never re-derived by a second predicate), because
+ * the two are not independently recoverable: the stale gate returns `none` on a reading that may
+ * itself be at/over 1.0, so `utilization7d >= 1` is NOT a sound test for "a wall was measured".
+ */
+export type BurnDisposition = 'measured-wall' | 'pacing-projection' | 'no-verdict';
+
 export interface BurnPolicy {
   /** Only samples within this lookback from `now` feed the rate fit (default 3h). */
   lookbackMs: number;
@@ -78,8 +96,41 @@ export interface BurnVerdict {
    */
   exhaustsBeforeReset: boolean;
   action: BurnAction;
+  /**
+   * The freshest 7d utilization the verdict was computed from, or null when never observed —
+   * echoed onto the verdict so every writer can state the BASIS beside the action without
+   * re-fetching (and without a second reader guessing which reading it was). Note this is the
+   * raw reading, NOT recoverable from `headroomFraction`, which clamps at 0 above the wall.
+   */
+  utilization7d: number | null;
+  /** What `action` rests on — a measured wall vs a pacing projection. Never omitted (P-001). */
+  disposition: BurnDisposition;
   /** Always populated — the human-readable WHY behind `action` (never silent throttling). */
   reason: string;
+}
+
+/**
+ * The ONE rendering of a burn verdict for any human- or agent-facing surface (the standing
+ * `account-burn:<id>` fact, the severe-event broadcast, status prose). Every writer calls this
+ * instead of composing its own string, so the disposition can never be present on one surface and
+ * missing on another.
+ *
+ * It LEADS with the disposition because that is the part readers were losing: a `throttle`/`shed`
+ * derived from a projection is this system pacing itself, and an agent that reads it as "the
+ * provider walled us" reaches for the wrong remedy (see the plan's D-001 — never remedy a pacing
+ * verdict by throttling the fleet).
+ */
+export function renderBurnVerdictLabel(v: BurnVerdict): string {
+  const util =
+    v.utilization7d === null || !Number.isFinite(v.utilization7d) ? 'unknown' : v.utilization7d.toFixed(2);
+  if (v.disposition === 'measured-wall') return `USAGE-WALLED (measured; util7d ${util})`;
+  if (v.disposition === 'pacing-projection') {
+    const basis = v.exhaustsBeforeReset
+      ? 'projected exhaustion before reset'
+      : 'projected exhaustion inside the imminent horizon, no usable window reset';
+    return `${v.action.toUpperCase()} (pacing projection, not a measured wall; util7d ${util}, ${basis})`;
+  }
+  return `${v.action.toUpperCase()} (no wall asserted; util7d ${util})`;
 }
 
 export interface BurnInput {
@@ -174,6 +225,8 @@ export function evaluateBurn(input: BurnInput, policy: BurnPolicy = DEFAULT_BURN
       projectedExhaustionAt: null,
       exhaustsBeforeReset: false,
       action: 'none',
+      utilization7d: null,
+      disposition: 'no-verdict',
       reason: 'no 7d utilization reading — no verdict (never act on missing data)',
     };
   }
@@ -188,6 +241,9 @@ export function evaluateBurn(input: BurnInput, policy: BurnPolicy = DEFAULT_BURN
       projectedExhaustionAt: now,
       exhaustsBeforeReset: resetUsable,
       action: 'shed',
+      utilization7d: u,
+      // The provider's own meter says the window is spent — this one IS a measurement.
+      disposition: 'measured-wall',
       reason: `7d window already exhausted (utilization ${u.toFixed(2)})${
         resetUsable ? ` — resets in ${fmtDurationMs(resetAt - now)}` : ' — reset unknown'
       }`,
@@ -201,6 +257,8 @@ export function evaluateBurn(input: BurnInput, policy: BurnPolicy = DEFAULT_BURN
       projectedExhaustionAt: null,
       exhaustsBeforeReset: false,
       action: 'none',
+      utilization7d: u,
+      disposition: 'no-verdict',
       reason: 'insufficient burn history to estimate a rate — no verdict (never act on missing data)',
     };
   }
@@ -212,6 +270,8 @@ export function evaluateBurn(input: BurnInput, policy: BurnPolicy = DEFAULT_BURN
       projectedExhaustionAt: null,
       exhaustsBeforeReset: false,
       action: 'none',
+      utilization7d: u,
+      disposition: 'no-verdict',
       reason: `7d window flat or decaying (${fmtRate(rate)}/hr) — headroom is not shrinking`,
     };
   }
@@ -231,6 +291,10 @@ export function evaluateBurn(input: BurnInput, policy: BurnPolicy = DEFAULT_BURN
       projectedExhaustionAt,
       exhaustsBeforeReset,
       action: 'shed',
+      utilization7d: u,
+      // Derived from the PROJECTION, not from a wall the provider imposed: the account is still
+      // serviceable right now — this is us choosing not to spend into the wall.
+      disposition: 'pacing-projection',
       reason: `${trajectory}, BEFORE the window resets (in ${fmtDurationMs(resetAt! - now)}) and inside the ${fmtDurationMs(policy.imminentHorizonMs)} imminent horizon`,
     };
   }
@@ -241,6 +305,8 @@ export function evaluateBurn(input: BurnInput, policy: BurnPolicy = DEFAULT_BURN
       projectedExhaustionAt,
       exhaustsBeforeReset,
       action: 'throttle',
+      utilization7d: u,
+      disposition: 'pacing-projection',
       reason: `${trajectory}, BEFORE the window resets (in ${fmtDurationMs(resetAt! - now)}) — prefer other accounts`,
     };
   }
@@ -251,6 +317,8 @@ export function evaluateBurn(input: BurnInput, policy: BurnPolicy = DEFAULT_BURN
       projectedExhaustionAt,
       exhaustsBeforeReset: false,
       action: 'throttle',
+      utilization7d: u,
+      disposition: 'pacing-projection',
       reason: `${trajectory} with no usable window reset ${
         resetAt !== undefined ? '(observed reset is in the past — stale)' : '(never observed)'
       } — prefer other accounts`,
@@ -262,6 +330,8 @@ export function evaluateBurn(input: BurnInput, policy: BurnPolicy = DEFAULT_BURN
     projectedExhaustionAt,
     exhaustsBeforeReset: false,
     action: 'none',
+    utilization7d: u,
+    disposition: 'no-verdict',
     reason: resetUsable
       ? `${trajectory}, AFTER the window resets (in ${fmtDurationMs(resetAt! - now)}) — the reset relieves first`
       : `${trajectory} — outside the ${fmtDurationMs(policy.imminentHorizonMs)} imminent horizon`,

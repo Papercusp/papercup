@@ -16,7 +16,13 @@
  * scale-out reaction) lives in `account-pool-store.ts`, so this core stays
  * exhaustively unit-testable with no fixtures.
  */
-import { evaluateAccountBurn, type BurnAction, type BurnVerdict } from '../inference-gateway/burn-governor';
+import {
+  evaluateAccountBurn,
+  renderBurnVerdictLabel,
+  type BurnAction,
+  type BurnDisposition,
+  type BurnVerdict,
+} from '../inference-gateway/burn-governor';
 
 /**
  * Per-account upstream egress binding — per-account IP routing (D-003). Each registered Claude Max
@@ -566,6 +572,14 @@ export interface BurnTransition {
   to: BurnAction;
   /** The verdict's stated WHY at the moment of transition (never silent). */
   reason: string;
+  /**
+   * What the new action RESTS ON at the moment of transition — carried on the transition itself
+   * so every downstream writer (the standing fact, the severe-event broadcast) states it without
+   * re-evaluating the verdict (P-001).
+   */
+  disposition: BurnDisposition;
+  /** The one canonical rendering of the new verdict — `renderBurnVerdictLabel` (P-001). */
+  label: string;
 }
 
 /**
@@ -587,7 +601,16 @@ export function accountBurnTransition(
   const from: BurnAction = b.rate.lastBurnAction ?? 'none';
   const to: BurnAction = aft.rate.lastBurnAction ?? 'none';
   if (from === to) return null;
-  return { accountId: id, from, to, reason: accountBurnVerdict(aft.rate, now).reason };
+  // ONE evaluation feeds reason + disposition + label, so the three can never disagree.
+  const verdict = accountBurnVerdict(aft.rate, now);
+  return {
+    accountId: id,
+    from,
+    to,
+    reason: verdict.reason,
+    disposition: verdict.disposition,
+    label: renderBurnVerdictLabel(verdict),
+  };
 }
 
 /**
@@ -756,6 +779,12 @@ export function accountBurnVerdict(rate: AccountRateState, now: number): BurnVer
       projectedExhaustionAt: null,
       exhaustsBeforeReset: false,
       action: 'none',
+      utilization7d:
+        rate.utilization7d !== undefined && Number.isFinite(rate.utilization7d) ? rate.utilization7d : null,
+      // The gate stands the governor DOWN — it asserts no wall of its own even when the stale
+      // reading it carries sits at/over 1.0. That is precisely why `disposition` is stamped at
+      // the deciding branch rather than re-derived from `utilization7d` by a reader (P-001).
+      disposition: 'no-verdict',
       reason:
         at === undefined
           ? 'usage window never observed — burn governor stands down'
