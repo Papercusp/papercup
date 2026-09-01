@@ -11,6 +11,8 @@ import { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './spec-test-ade
 export type PlanSpecQualityGateCode =
   | 'spec_quality_failed'
   | 'spec_quality_scorecard_missing'
+  | 'spec_quality_scorecard_grading_audit_pending'
+  | 'spec_quality_scorecard_grading_audit_failed'
   | 'spec_quality_unavailable';
 
 export interface PlanSpecQualityGateVerdict {
@@ -43,7 +45,14 @@ function acceptedRating(value: unknown): boolean {
   return typeof rating === 'string' && ['pass', 'waived', 'not-applicable'].includes(rating.toLowerCase());
 }
 
-function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult): boolean {
+/**
+ * Every scorecard test EXCEPT the P-013 grade-the-grader audit stamp — deliberately
+ * split from {@link scorecardMatches} so a card that fails ONLY on a pending/failed
+ * audit can still be recognised and reported precisely, instead of collapsing into
+ * the same "no scorecard was ever emitted" verdict as a card that never existed
+ * (EI-22068670622018218: the two look identical to a caller once merged).
+ */
+function scorecardStructurallyExact(card: ScorecardRow, evaluation: PlanSpecQualityResult): boolean {
   const expectedFingerprint = scorecardEvidenceFingerprint({
     rubricRef: SPEC_QUALITY_RUBRIC_REF,
     ratings: evaluation.ratings,
@@ -60,10 +69,16 @@ function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult)
     !card.retracted &&
     !card.supersededBy &&
     card.provisional === undefined &&
-    card.gradingAudit?.state !== 'pending' &&
-    card.gradingAudit?.state !== 'failed' &&
     card.evidenceFingerprint === expectedFingerprint &&
     Object.values(card.ratings).every(acceptedRating)
+  );
+}
+
+function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult): boolean {
+  return (
+    scorecardStructurallyExact(card, evaluation) &&
+    card.gradingAudit?.state !== 'pending' &&
+    card.gradingAudit?.state !== 'failed'
   );
 }
 
@@ -147,6 +162,8 @@ export async function evaluatePlanSpecQualityGate(
   }
 
   try {
+    let pendingAudit: { card: ScorecardRow; evaluation: PlanSpecQualityResult } | undefined;
+    let failedAudit: { card: ScorecardRow; evaluation: PlanSpecQualityResult } | undefined;
     for (const evaluation of passing) {
       const cards = await listCards({
         rubricRef: SPEC_QUALITY_RUBRIC_REF,
@@ -167,6 +184,70 @@ export async function evaluatePlanSpecQualityGate(
           candidates,
         };
       }
+      // Not accepted — but distinguish "exact card exists, still audit-pending/failed"
+      // from "no exact card was ever emitted" so the refusal can name the real next
+      // step instead of pointing back at scorecards:emit, which the caller already ran.
+      if (!pendingAudit) {
+        const pending = cards.find(
+          (card) => scorecardStructurallyExact(card, evaluation) && card.gradingAudit?.state === 'pending',
+        );
+        if (pending) pendingAudit = { card: pending, evaluation };
+      }
+      if (!failedAudit) {
+        const failed = cards.find(
+          (card) => scorecardStructurallyExact(card, evaluation) && card.gradingAudit?.state === 'failed',
+        );
+        if (failed) failedAudit = { card: failed, evaluation };
+      }
+    }
+    // Prefer reporting the pending case: a card can only be 'failed' after having been
+    // 'pending' first, and a fresh re-emit (the failed-audit remedy) always resets to
+    // pending, so a caller who has both is already mid-repair — the pending stamp is
+    // the one to act on next.
+    if (pendingAudit) {
+      return {
+        satisfied: false,
+        applicable: true,
+        mode: 'enforced',
+        planSlug: input.planSlug,
+        specSetHash: pendingAudit.evaluation.specSetHash,
+        classRef: pendingAudit.evaluation.classRef,
+        scorecardId: pendingAudit.card.issueId,
+        code: 'spec_quality_scorecard_grading_audit_pending',
+        wouldBlock: ['exact-specSetHash-scorecard-grading-audit-pending'],
+        candidates,
+        message:
+          `Plan '${input.planSlug}' has an exact terminal ${SPEC_QUALITY_RUBRIC_REF} scorecard ` +
+          `(${pendingAudit.card.issueId}) for exact specSetHash ${pendingAudit.evaluation.specSetHash}, but it ` +
+          "does not yet satisfy this gate: P-013 grade-the-grader stamps every terminal standard-rubric card " +
+          "'gradingAudit.state: pending' until a NON-AUTHOR independently audits it, and this gate only accepts " +
+          'an audited (or audit-exempt) card. Have a DIFFERENT agent settle it — ' +
+          `scorecards:emit { rubricRef:'grading-integrity', terminal:true, subject:{ kind:'scorecard', ` +
+          `ref:'${pendingAudit.card.issueId}' }, ratings:{...} } — then retry plans:start. Re-running ` +
+          'plans:evaluate-spec-quality / scorecards:emit yourself files a duplicate pending card and does not ' +
+          'settle this one (self-audits are refused).',
+      };
+    }
+    if (failedAudit) {
+      return {
+        satisfied: false,
+        applicable: true,
+        mode: 'enforced',
+        planSlug: input.planSlug,
+        specSetHash: failedAudit.evaluation.specSetHash,
+        classRef: failedAudit.evaluation.classRef,
+        scorecardId: failedAudit.card.issueId,
+        code: 'spec_quality_scorecard_grading_audit_failed',
+        wouldBlock: ['exact-specSetHash-scorecard-grading-audit-failed'],
+        candidates,
+        message:
+          `Plan '${input.planSlug}' has an exact terminal ${SPEC_QUALITY_RUBRIC_REF} scorecard ` +
+          `(${failedAudit.card.issueId}) for exact specSetHash ${failedAudit.evaluation.specSetHash}, but its ` +
+          'independent P-013 grading-integrity audit FAILED it, so it cannot satisfy this gate. Re-run ' +
+          `plans:evaluate-spec-quality { slug:'${input.planSlug}', classRef:'${failedAudit.evaluation.classRef}' }, ` +
+          'repair whatever the audit flagged, then emit a fresh scorecard through scorecards:emit for a new ' +
+          'grading-integrity audit.',
+      };
     }
   } catch (error) {
     return {

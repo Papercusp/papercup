@@ -60,6 +60,29 @@ function matchingCard(clauses: SpecClauseRevision[]): ScorecardRow {
   };
 }
 
+function auditPendingCard(clauses: SpecClauseRevision[]): ScorecardRow {
+  return {
+    ...matchingCard(clauses),
+    issueId: 'EI-quality-card-pending',
+    gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-08-20T00:03:00.000Z' },
+  };
+}
+
+function auditFailedCard(clauses: SpecClauseRevision[]): ScorecardRow {
+  return {
+    ...matchingCard(clauses),
+    issueId: 'EI-quality-card-failed',
+    gradingAudit: {
+      state: 'failed',
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-08-20T00:03:00.000Z',
+      auditIssueId: 'EI-audit-card',
+      auditor: 'auditor',
+      auditedAt: '2026-08-20T00:04:00.000Z',
+    },
+  };
+}
+
 function matchingCardWithInstrumentSnapshots(clauses: SpecClauseRevision[]): ScorecardRow {
   const evaluation = evaluatePlanSpecQuality({
     planSlug: 'quality-plan',
@@ -161,6 +184,60 @@ describe('evaluatePlanSpecQualityGate', () => {
       scorecardId: 'EI-quality-card',
       wouldBlock: [],
     });
+  });
+
+  it('reports the grading-audit-pending prerequisite instead of "scorecard missing" (EI-22068670622018218)', async () => {
+    const clauses = [clause()];
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      { listClauses: vi.fn(async () => clauses), listCards: vi.fn(async () => [auditPendingCard(clauses)]) },
+    );
+
+    expect(result).toMatchObject({
+      satisfied: false,
+      applicable: true,
+      mode: 'enforced',
+      code: 'spec_quality_scorecard_grading_audit_pending',
+      scorecardId: 'EI-quality-card-pending',
+      wouldBlock: ['exact-specSetHash-scorecard-grading-audit-pending'],
+    });
+    expect(result.message).toContain('grading-integrity');
+    expect(result.message).toContain('EI-quality-card-pending');
+  });
+
+  it('reports the grading-audit-failed verdict distinctly from a pending one', async () => {
+    const clauses = [clause()];
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      { listClauses: vi.fn(async () => clauses), listCards: vi.fn(async () => [auditFailedCard(clauses)]) },
+    );
+
+    expect(result).toMatchObject({
+      satisfied: false,
+      applicable: true,
+      mode: 'enforced',
+      code: 'spec_quality_scorecard_grading_audit_failed',
+      scorecardId: 'EI-quality-card-failed',
+      wouldBlock: ['exact-specSetHash-scorecard-grading-audit-failed'],
+    });
+  });
+
+  it('still reports plain "missing" when no exact card exists at all, pending or not', async () => {
+    const clauses = [clause()];
+    const staleClauses = [clause({ currentRevision: 2, revision: 2, contentHash: 'sha256:spec-two' })];
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      {
+        listClauses: vi.fn(async () => staleClauses),
+        // A pending card exists, but for a DIFFERENT (superseded) specSetHash — its
+        // subjectRef will not match staleClauses' evaluation, so listCards (scoped by
+        // subjectRef) returns nothing for the current evaluation and the generic
+        // missing verdict must still apply.
+        listCards: vi.fn(async () => [auditPendingCard(clauses)]),
+      },
+    );
+
+    expect(result).toMatchObject({ satisfied: false, code: 'spec_quality_scorecard_missing' });
   });
 
   it('invalidates an older card after a semantic clause revision', async () => {
