@@ -236,6 +236,15 @@ fn print_cli_version(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> 
     }
 }
 
+/// Whether this process owns the pending-workbench-launch → native-pane transition.
+///
+/// `pui workbench` materializes its primary full TUI as `pui hud`, so `hud` is a
+/// launch-capable mode even though it is spelled as a subcommand. The pinned data
+/// boards remain non-reactive; otherwise every board races to open the same pane.
+fn reactive_launch_mode(subcommand: Option<&str>) -> bool {
+    matches!(subcommand, None | Some("hud") | Some("dock-driver"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Subcommand dispatch — bare `pui` opens the full workbench (the UX a human
@@ -407,10 +416,11 @@ async fn main() -> Result<()> {
     // interactive pane per new local launch, appended to the dock's stack.
     let dock_agent_panes = subcommand.as_deref() == Some("dock-driver");
     // EI-358: only launch-capable modes react to pending workbench launches —
-    // the full TUI (no subcommand) and the dock-driver. Board panes
-    // (wake/prompt/mail/work/network/hive) must never open launch panes.
+    // the full TUI (bare or the workbench's explicit `pui hud`) and the
+    // dock-driver. Board panes (wake/prompt/mail/work/network/hive) must never
+    // open launch panes.
     // Races among the capable modes are settled by claim-then-open.
-    let reactive_launch_panes = matches!(subcommand.as_deref(), None | Some("dock-driver"));
+    let reactive_launch_panes = reactive_launch_mode(subcommand.as_deref());
     // The dock-driver is the only mode with the driver-only surfaces (frame
     // tabs, the regroup repair, the Fleet roster's glyph/badge columns).
     let hive_agent_tabs = subcommand.as_deref() == Some("dock-driver");
@@ -5611,6 +5621,27 @@ async fn refetch_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workbench_hud_is_a_reactive_launch_owner_but_board_panes_are_not() {
+        for mode in [None, Some("hud"), Some("dock-driver")] {
+            assert!(
+                reactive_launch_mode(mode),
+                "{mode:?} must consume pending workbench launches"
+            );
+        }
+        for mode in [
+            Some("wake-pane"),
+            Some("prompt-pane"),
+            Some("mail-pane"),
+            Some("work-pane"),
+            Some("network-pane"),
+            Some("hive-pane"),
+            Some("context-pane"),
+        ] {
+            assert!(!reactive_launch_mode(mode), "{mode:?} is a read-only board");
+        }
+    }
 
     /// EI-7028: pinned dock panes must not refetch the fat plans/attention
     /// payloads their one tab never renders — 8+ panes × ~1.6MB per
