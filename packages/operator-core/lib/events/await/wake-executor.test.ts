@@ -21,6 +21,7 @@ import {
   defaultSpawnDetached,
   type ExecuteWakeDeps,
 } from './wake-executor';
+import { CRASH_RESUME_ADVISORY_MARKER } from './crash-resume-advisory';
 import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
 // EI-20489286325396940: `wakeSummaryHeadline` (with `payloadIsTimeout`) lives in
 // timeout-fallback.ts, not wake-executor.ts — it is imported BY wake-executor and
@@ -2459,6 +2460,63 @@ describe('executeWake — the liveness ladder', () => {
       expect.objectContaining({ sourceKind: 'omp', sessionId: threadId }),
     );
     expect(calls).toEqual(['collect', 'rematerialize', 'collect', 'spawn']);
+  });
+
+  it('R4 (P-004): claude headless resume prompt carries the crash-resume advisory AFTER the wake text', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({ alive: vi.fn(() => false), spawnDetached }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    const [, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
+    const prompt = args[args.length - 1];
+    expect(prompt).toContain(CRASH_RESUME_ADVISORY_MARKER);
+    // Appended AFTER the original wake text — the base text stays a byte-identical prefix.
+    expect(prompt.indexOf('lock:grant:t-1')).toBeGreaterThan(-1);
+    expect(prompt.indexOf(CRASH_RESUME_ADVISORY_MARKER)).toBeGreaterThan(prompt.indexOf('lock:grant:t-1'));
+  });
+
+  it('R4 (P-004): omp headless resume `-p` text carries the crash-resume advisory too', async () => {
+    const spawnDetached = vi.fn(() => 2468);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' }) }),
+      deps({
+        getSession: vi.fn(async () => session({ agent: 'omp', sessionId: null, ompThreadId: 'th-1' })) as never,
+        alive: vi.fn(() => false),
+        spawnDetached,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    const [, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
+    expect(args[args.length - 1]).toContain(CRASH_RESUME_ADVISORY_MARKER);
+  });
+
+  it('R4 (P-004): in-place pty inject stays byte-identical — NO advisory (the process did not die)', async () => {
+    const write = vi.fn(() => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({ findPty: vi.fn(() => ({ id: 'pty-7' })) as never, write: write as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    const [, buf] = write.mock.calls[0] as unknown as [string, Buffer];
+    expect(buf.toString()).toContain('lock:grant:t-1');
+    expect(buf.toString()).not.toContain(CRASH_RESUME_ADVISORY_MARKER);
+  });
+
+  it('R4 (P-004): in-place psu-host socket inject stays byte-identical — NO advisory', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+      }),
+    );
+    expect(out).toMatchObject({ kind: 'delivered' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toContain('lock:grant:t-1');
+    expect(msg.data).not.toContain(CRASH_RESUME_ADVISORY_MARKER);
   });
 
   it('exited omp with no transcript after archive recovery → inbox fallback, never a doomed resume', async () => {
