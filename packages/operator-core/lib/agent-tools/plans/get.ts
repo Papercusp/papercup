@@ -1026,7 +1026,13 @@ export default defineTool({
                 items: parsed.items,
                 storedStatus: status,
                 signals: {
-                  workspaceId: DEFAULT_WORKSPACE_ID,
+                  // EI-22103498805895390: scope the signal lookups to the PLAN
+                  // ROW's workspace, not the legacy 'default' constant — the
+                  // acceptance-rubric lookup filters harness_plans by
+                  // workspace_id, so a plan under any other workspace read
+                  // rubricActive:false while `acceptanceRubric` (resolved
+                  // below from the same row) was populated.
+                  workspaceId: row.workspaceId ?? DEFAULT_WORKSPACE_ID,
                   planSlug: row.planSlug,
                   planUpdatedAt: row.updatedAt,
                   linkedWorkItemUpdatedAt,
