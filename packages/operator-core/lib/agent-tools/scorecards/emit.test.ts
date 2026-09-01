@@ -23,6 +23,20 @@ describe('dedicated acceptance judge lifecycle', () => {
     expect(COORD_ROLES).not.toContain('judge');
   });
 
+  it('documents that author acceptance calls still require schema-complete ratings', () => {
+    const args = scorecardEmitTool.args as {
+      shape?: { acceptance?: { description?: string } };
+    };
+    const acceptanceDescription = args.shape?.acceptance?.description ?? '';
+    expect(acceptanceDescription).toMatch(/ratings field remains schema-required/i);
+    expect(String(scorecardEmitTool.description)).toMatch(
+      /Every emit, including the author acceptance call, still requires schema-complete ratings/i,
+    );
+    expect(JSON.stringify(scorecardEmitTool.guidance)).toMatch(
+      /author acceptance still supplies schema-complete ratings/i,
+    );
+  });
+
   it('kills every live headless task for the exact acceptance-rubric label prefix', async () => {
     const list = vi.fn(async () => [
       task('task-a', 'acceptance-grader:rubric-a:abc123'),
