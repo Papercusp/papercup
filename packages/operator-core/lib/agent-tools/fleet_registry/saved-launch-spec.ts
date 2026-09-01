@@ -64,7 +64,7 @@ export interface SavedFleetLaunchSpecRequest {
   role?: string;
   brief?: string;
   launchContext?: string;
-  contextSize?: 'trimmed';
+  contextSize?: 'trimmed' | 'steward';
   compactionLimit?: number;
   extraArgs?: readonly string[];
   /** A homogeneous saved profile cannot be silently reconstructed per member. */

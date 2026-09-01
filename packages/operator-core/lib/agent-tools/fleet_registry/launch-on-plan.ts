@@ -300,7 +300,7 @@ export function persistedFleetLaunchProfileConflicts(
     role?: string;
     brief?: string;
     launchContext?: string;
-    contextSize?: 'trimmed';
+    contextSize?: 'trimmed' | 'steward';
     compactionLimit?: number;
     extraArgs?: string[];
     members?: readonly unknown[];

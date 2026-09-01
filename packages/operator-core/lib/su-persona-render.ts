@@ -241,7 +241,7 @@ export interface SuLaunchSpecRecord {
    *  `buildSuLaunchSpec` (any unrecognised value falls back to 'engineer'). Making
    *  it a union HERE would be stricter than the value's own source. */
   profile: string;
-  contextSize: 'trimmed';
+  contextSize: 'trimmed' | 'steward';
   personaTier: 'full' | 'fleet' | null;
   model: string | null;
   planSlug: string | null;
