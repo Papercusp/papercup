@@ -636,8 +636,15 @@ const invoke = defineTool({
     // spawned_agents id as spawnRecordId. Thread that exact id into the child so
     // tool_invocations can join back to the same row. A tracked hive/overwatch
     // launch owns a distinct coord identity, so its hiveSpawnId keeps precedence.
+    // EI-22019512930234742: mcp-call and coordination tools identify the caller
+    // from PAPERCUSP_SID before PAPERCUSP_SPAWN_ID. Bind both to the same
+    // route-owned identity so a child cannot invent a per-process owner.
+    const childOwnerId = hiveSpawnId ?? spawnRecordId;
+    if (childOwnerId) {
+      env.PAPERCUSP_SID = childOwnerId;
+      env.PAPERCUSP_SPAWN_ID = childOwnerId;
+    }
     if (hiveSpawnId) {
-      env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
       if (nativeSessionId) env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
       // Codex ALWAYS gets the durable-CODEX_HOME key (resume-by-row-id), even now
       // that it ALSO carries a native session id — the id is the transcript/roster
@@ -647,8 +654,6 @@ const invoke = defineTool({
       if (routeBackend === 'codex' && advSessionRowId != null) {
         env.PAPERCUSP_CODEX_SESSION_KEY = String(advSessionRowId);
       }
-    } else if (spawnRecordId) {
-      env.PAPERCUSP_SPAWN_ID = spawnRecordId;
     }
     // queen-brief-cache-assembly B-03 (P-006) → moved to THIS route (WI-682): the
     // Queen's wake brief (ranked survey floor + carry-note + the @role:queen

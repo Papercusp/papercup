@@ -336,7 +336,10 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       expect.objectContaining({
         projectDir: repairWorktree,
         stateDir: `${repairWorktree}/.papercusp`,
-        extraEnv: expect.objectContaining({ PAPERCUSP_SPAWN_ID: spawnRecordId }),
+        extraEnv: expect.objectContaining({
+          PAPERCUSP_SID: spawnRecordId,
+          PAPERCUSP_SPAWN_ID: spawnRecordId,
+        }),
       }),
     );
     expect(spawnMock).toHaveBeenCalledWith(
@@ -376,6 +379,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     );
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv?.PAPERCUSP_SPAWN_ID).toMatch(/^s-\d+-[0-9a-f]+$/);
+    expect(arg?.extraEnv?.PAPERCUSP_SID).toBe(arg?.extraEnv?.PAPERCUSP_SPAWN_ID);
     expect(arg?.extraEnv?.PAPERCUSP_SPAWN_ID).not.toBe(spawnRecordId);
     expect(heartbeatSpawns).toHaveBeenCalledWith(expect.anything(), [spawnRecordId], expect.any(Map));
     expect(spawnMock).toHaveBeenCalledWith(
@@ -570,9 +574,11 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv).toMatchObject({
       PAPERCUSP_CODEX_SESSION_KEY: '77',
+      PAPERCUSP_SID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
       PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
       PAPERCUSP_NATIVE_SESSION_ID: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
+    expect(arg?.extraEnv?.PAPERCUSP_SID).toBe(arg?.extraEnv?.PAPERCUSP_SPAWN_ID);
     // The route records both disposition and the explicit no-signal evidence.
     expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0, 'self', { signal: null });
   });
@@ -591,9 +597,11 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     }));
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv).toMatchObject({
+      PAPERCUSP_SID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
       PAPERCUSP_NATIVE_SESSION_ID: expect.stringMatching(/[0-9a-f-]{36}/),
       PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
     });
+    expect(arg?.extraEnv?.PAPERCUSP_SID).toBe(arg?.extraEnv?.PAPERCUSP_SPAWN_ID);
     // The route records both disposition and the explicit no-signal evidence.
     expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0, 'self', { signal: null });
   });
