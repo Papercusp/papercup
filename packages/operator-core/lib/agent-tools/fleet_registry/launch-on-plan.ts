@@ -1822,10 +1822,10 @@ export default defineTool({
       ),
     profile: z.string().optional().describe('psu --profile: launch profile name for each member.'),
     contextSize: z
-      .literal('trimmed')
+      .enum(['trimmed', 'steward'])
       .optional()
       .describe(
-        "psu --context-size for EVERY member. Only 'trimmed' is effective: it seeds the growable core tool surface, while tools:find/tools:invoke retain reachability to the full catalog.",
+        "psu --context-size for EVERY member. 'trimmed' seeds the growable core tool surface; 'steward' (WI-2140338, explicit opt-in) adds the steward verb families for goal-holder/steward lanes. Both stay growable — tools:find/tools:invoke retain reachability to the full catalog.",
       ),
     compactionLimit: z
       .number()
