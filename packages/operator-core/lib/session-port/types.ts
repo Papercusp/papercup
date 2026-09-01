@@ -69,7 +69,7 @@ export interface PortableSessionPort {
     account: string;
     contextWindow: number;
     availableInputTokens: number;
-    contextSize: 'full' | 'trimmed' | null;
+    contextSize: 'full' | 'trimmed' | 'steward' | null;
   };
   fidelity: 'full' | 'summary-tail';
   versions: {

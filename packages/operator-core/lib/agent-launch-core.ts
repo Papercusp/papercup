@@ -601,7 +601,7 @@ export interface MemberSpec {
   effort?: string;
   account?: string;
   carry?: 'warm' | 'cold';
-  contextSize?: 'trimmed';
+  contextSize?: 'trimmed' | 'steward';
   compactionLimit?: number;
   role?: string;
   agent?: string;
