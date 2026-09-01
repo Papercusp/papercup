@@ -4,6 +4,7 @@ import {
   assessFleetHeadcountGovernor,
   computeHeadcountDeficit,
   FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT,
+  FLEET_HEADCOUNT_BULK_WAVE_SIZE,
   governorVerdictForAssessment,
   nextHeadcountBackoff,
   resolveProductiveCapacityFloor,
@@ -241,6 +242,70 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     expect(assessment.productiveMemberCount).toBeGreaterThan(
       assessment.workerReadyMemberIds.length,
     );
+  });
+
+  // WI-2034624, the SECOND transaction-scoped throttle. Sizing the deficit
+  // correctly is not enough on its own: the productive-capacity floor also read
+  // only this transaction's attestations, so a fleet rebuilt entirely from prior
+  // transactions still refilled ONE canary per probe — the "allowance 1-2 per
+  // capacity probe" observed on the incident fleet. Demonstrated execution is
+  // stronger proof of productive capacity than a recorded boot attestation.
+  it('evidences the productive-capacity floor from execution when this transaction recorded none', () => {
+    const live = ['su-prior-a', 'su-prior-b', 'su-prior-c'];
+    const current = transaction([], {
+      openedMemberIds: [],
+      verifiedMemberIds: [],
+      unconfirmedMemberIds: [],
+      // This transaction opened nobody: every live member predates it.
+      workerReadyMemberIds: [],
+      workerAttestations: [],
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+
+    expect(assessFleetHeadcountGovernor({
+      target: 9,
+      productiveCapacityFloor: 2,
+      liveMemberIds: live,
+      executingMemberIds: new Set(live),
+      transaction: current,
+      now: 20_000,
+    })).toMatchObject({
+      productiveMemberCount: 3,
+      workerReadyMemberIds: [],
+      deficit: 6,
+      action: 'spawn',
+      // A bounded wave, NOT the one-canary trickle: `spawnCount: 1` here is the
+      // throttle regressing.
+      spawnCount: Math.min(6, FLEET_HEADCOUNT_BULK_WAVE_SIZE),
+      reason: expect.stringContaining('productive-capacity floor is evidenced'),
+    });
+  });
+
+  // The floor must still REFUSE to admit a merely-live process as proof: the
+  // legacy fallback counts live seats, and letting that satisfy the floor would
+  // hand a bounded wave to a fleet that has proven nothing.
+  it('refuses to evidence the floor from the legacy live-roster fallback', () => {
+    expect(assessFleetHeadcountGovernor({
+      target: 9,
+      productiveCapacityFloor: 2,
+      liveMemberIds: ['su-legacy-a', 'su-legacy-b', 'su-legacy-c'],
+      executingMemberIds: null,
+      transaction: null,
+      now: 20_000,
+    })).toMatchObject({
+      headcountBasis: { kind: 'legacy-live-roster-fallback' },
+      productiveMemberCount: 3,
+      action: 'spawn',
+      spawnCount: 1,
+      reason: expect.stringContaining('floor is not yet evidenced'),
+    });
   });
 
   it('keeps the one-canary guard while unverified seats coexist with an unproven productive floor', () => {

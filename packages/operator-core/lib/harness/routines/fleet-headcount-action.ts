@@ -230,7 +230,23 @@ export function assessFleetHeadcountGovernor(args: {
     };
   }
   if (deficit > 0) {
-    const floorMet = workerReadyMemberIds.length >= productiveCapacityFloor;
+    // WI-2034624: the floor asks "has this fleet PROVEN it can run a productive
+    // member?", and the count above is no longer the only proof. Left scoped to
+    // the current transaction's attestations it stays the SECOND transaction-
+    // scoped throttle: a fleet whose members all came from prior transactions
+    // has an empty `workerReadyMemberIds`, so even with the deficit now sized
+    // correctly it would refill one canary at a time forever. Recent agent-origin
+    // execution is strictly stronger evidence of the same thing — a member that
+    // is DEMONSTRABLY TAKING TURNS has proven productive capacity more directly
+    // than a recorded boot-time attestation ever did. The legacy live-roster
+    // fallback is deliberately NOT admitted: a live process is not proof of
+    // productivity, which is the distinction this floor exists to draw.
+    const attestedExecuting = headcountMeasurement.basis.kind === 'agent-origin-execution-attested'
+      ? headcountMeasurement.basis.executingMembers ?? 0
+      : 0;
+    const floorMet =
+      workerReadyMemberIds.length >= productiveCapacityFloor ||
+      attestedExecuting >= productiveCapacityFloor;
     const hasUnverifiedSeats = unverifiedMemberIds.length > 0;
     return {
       ...common,
