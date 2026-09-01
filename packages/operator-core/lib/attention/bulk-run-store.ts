@@ -84,6 +84,28 @@ export type BulkItemOutcome = 'pending' | 'auto_resolved' | 'recommended' | 'ski
  */
 export const BULK_ITEM_REVERSAL_WINDOW_HOURS = DEFAULT_TRIPWIRE_WINDOW_HOURS;
 
+/** One extension kind in the existing autonomy revert-executor vocabulary. */
+export const ATTENTION_BULK_ITEM_REVERT_HANDLE_KIND = 'attention-bulk-item' as const;
+
+/**
+ * The per-item row is the immutable compensation receipt: it owns the source
+ * ref, action id, rationale and outcome. Pointing at it keeps the tripwire
+ * handle small and prevents those fields drifting across two audit records.
+ */
+export function attentionBulkItemRevertHandle(input: {
+  workspaceId: string;
+  runId: string;
+  itemId: string;
+}): RevertHandle {
+  return {
+    kind: ATTENTION_BULK_ITEM_REVERT_HANDLE_KIND,
+    version: 1,
+    workspaceId: input.workspaceId,
+    runId: input.runId,
+    itemId: input.itemId,
+  };
+}
+
 /** Non-terminal phases — a run in one of these is still the pane's current run. */
 export const ACTIVE_PHASES: readonly BulkRunPhase[] = ['pending', 'running', 'review'] as const;
 
@@ -288,9 +310,6 @@ export interface BulkOutcomeReport {
   consulted?: boolean;
   consultReply?: string | null;
   error?: string | null;
-  /** REQUIRED at runtime when outcome is auto_resolved. Metadata-only reports
-   *  must never manufacture an irreversible terminal result without an undo. */
-  revertHandle?: RevertHandle | null;
   /** Canonical typed disposition. Required for new non-terminal reports; old
    *  callers may omit it and retain legacy outcome semantics. */
   disposition?: BulkDispositionKind | null;
@@ -591,12 +610,7 @@ export async function executeBulkRunAction<T>(input: {
    * replacement, so a late prior resolver cannot act on the new generation. */
   resolverOwner?: string | null;
   workspaceId?: string;
-  /**
-   * The effect and its compensation handle are one result. Making the handle a
-   * required return value prevents a future terminal dispatcher from adding a
-   * source mutation while forgetting the owner undo contract.
-   */
-  execute: () => Promise<{ actionResult: T; revertHandle: RevertHandle }>;
+  execute: () => Promise<T>;
   /**
    * REQUIRED, not optional. The audit write joins this transaction, so a
    * failure rolls the run outcome back instead of reporting a clean, unaudited
@@ -667,9 +681,13 @@ export async function executeBulkRunAction<T>(input: {
       };
     }
 
-    const execution = await input.execute();
+    const actionResult = await input.execute();
     const revertHandle = serializedRevertHandle(
-      execution.revertHandle,
+      attentionBulkItemRevertHandle({
+        workspaceId: ws,
+        runId: input.runId,
+        itemId: input.itemId,
+      }),
       `executeBulkRunAction(${input.runId}/${input.itemId})`,
     );
     // No `?.` — the audit is part of the success contract (see the type above).
@@ -708,7 +726,7 @@ export async function executeBulkRunAction<T>(input: {
        WHERE workspace_id = ${ws} AND run_id = ${input.runId}
     `;
     return {
-      actionResult: execution.actionResult,
+      actionResult,
       item: updatedRows[0] ? mapItem(updatedRows[0]) : null,
       run: afterRows[0] ? mapRun(afterRows[0]) : null,
       refused: null,
@@ -865,6 +883,86 @@ export async function getRunItems(runId: string, workspaceId?: string): Promise<
      ORDER BY position ASC
   `;
   return rows.map(mapItem);
+}
+
+export type BulkRunItemReversalRefusal =
+  | 'item_not_found'
+  | 'not_auto_resolved'
+  | 'missing_revert_handle'
+  | 'unsupported_revert_handle'
+  | 'already_reverted'
+  | 'window_expired';
+
+/**
+ * Run one compensation under the item-row lock, then append its result to the
+ * immutable audit row. Database time decides the deadline; client clocks never
+ * get to extend the owner window. The callback receives the caller-owned SQL
+ * transaction so DB-backed compensations can join the same success boundary.
+ */
+export async function executeBulkRunItemReversal<T>(input: {
+  runId: string;
+  itemId: string;
+  workspaceId?: string;
+  execute: (
+    item: BulkRunItemRow,
+    sql: TransactionSql,
+  ) => Promise<{ result: T; note: string }>;
+}): Promise<{
+  result: T | null;
+  item: BulkRunItemRow | null;
+  refused: BulkRunItemReversalRefusal | null;
+}> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  return await sql.begin(async (tx) => {
+    const rows = await tx<Array<RawItemRow & { reversal_open: boolean }>>`
+      SELECT ${tx.unsafe(ITEM_COLUMNS)},
+             COALESCE(reversal_window_until > now(), false) AS reversal_open
+        FROM harness_shared.attention_bulk_run_items
+       WHERE workspace_id = ${ws}
+         AND run_id = ${input.runId}
+         AND item_id = ${input.itemId}
+       FOR UPDATE
+    `;
+    if (!rows[0]) return { result: null, item: null, refused: 'item_not_found' as const };
+
+    const item = mapItem(rows[0]);
+    if (item.outcome !== 'auto_resolved') {
+      return { result: null, item, refused: 'not_auto_resolved' as const };
+    }
+    if (!item.revertHandle) {
+      return { result: null, item, refused: 'missing_revert_handle' as const };
+    }
+    if (item.revertHandle.kind !== ATTENTION_BULK_ITEM_REVERT_HANDLE_KIND) {
+      return { result: null, item, refused: 'unsupported_revert_handle' as const };
+    }
+    if (item.revertedAt) {
+      return { result: null, item, refused: 'already_reverted' as const };
+    }
+    if (!rows[0].reversal_open) {
+      return { result: null, item, refused: 'window_expired' as const };
+    }
+
+    const compensation = await input.execute(item, tx);
+    const note = compensation.note.trim();
+    if (!note) throw new Error('executeBulkRunItemReversal: compensation note must be non-empty');
+
+    const updated = await tx<RawItemRow[]>`
+      UPDATE harness_shared.attention_bulk_run_items
+         SET reverted_at = now(),
+             revert_note = ${note},
+             updated_at = now()
+       WHERE workspace_id = ${ws}
+         AND run_id = ${input.runId}
+         AND item_id = ${input.itemId}
+      RETURNING ${tx.unsafe(ITEM_COLUMNS)}
+    `;
+    return {
+      result: compensation.result,
+      item: updated[0] ? mapItem(updated[0]) : item,
+      refused: null,
+    };
+  });
 }
 
 /**
@@ -1374,7 +1472,10 @@ export async function reportOutcomes(input: {
       const disposition = dispositionForReport(o);
       const revertHandle =
         o.outcome === 'auto_resolved'
-          ? serializedRevertHandle(o.revertHandle, `reportOutcomes(${input.runId}/${o.itemId})`)
+          ? serializedRevertHandle(
+              attentionBulkItemRevertHandle({ workspaceId: ws, runId: input.runId, itemId: o.itemId }),
+              `reportOutcomes(${input.runId}/${o.itemId})`,
+            )
           : null;
       const rows = await tx<{ item_id: string }[]>`
       UPDATE harness_shared.attention_bulk_run_items
@@ -1525,16 +1626,13 @@ export async function markItemAccepted(input: {
   runId: string;
   itemId: string;
   actionId: string;
-  /** The UI action already mutated the source; persist its exact undo handle in
-   *  the same transaction that turns the recommendation into auto_resolved. */
-  revertHandle: RevertHandle;
   note?: string | null;
   workspaceId?: string;
 }): Promise<BulkRunItemRow | null> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
   const revertHandle = serializedRevertHandle(
-    input.revertHandle,
+    attentionBulkItemRevertHandle({ workspaceId: ws, runId: input.runId, itemId: input.itemId }),
     `markItemAccepted(${input.runId}/${input.itemId})`,
   );
   return await sql.begin(async (tx) => {
