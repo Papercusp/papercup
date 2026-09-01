@@ -422,6 +422,37 @@ export async function detectSplitSourceTestPairs(input: {
 /** Backward-compatible provenance for a run that is intentionally diagnostic. */
 export type CheckpointDiagnostic = "candidate-pinned";
 
+/** P-009: one cheap non-test gate leg's result within a repair-tick measurement, keyed by
+ *  its {@link NON_TEST_GATE_SCRIPTS} registry id (the same vocabulary `failingTests` uses
+ *  for leg-shaped entries, so downstream refreshes can match entries mechanically). */
+export interface RepairTickLegRecord {
+  /** The NON_TEST_GATE_SCRIPTS registry key (e.g. `lint:tsc`) — NOT an individual script. */
+  id: string;
+  /** `errored` = a script could not run/execute (spawn failure, throw) — distinct from a
+   *  clean non-zero `fail`, and it still counts as failing for `failingSignatures`. */
+  status: "pass" | "fail" | "errored";
+  durationMs: number;
+  /** Bounded evidence tail, present only when the leg did NOT pass. */
+  outputTail?: string;
+}
+
+/** P-009: the cheap-legs measurement an `awaiting-fixer` hold tick took at repairHead, so
+ *  `failingTests` stays MEASURED during repair instead of `failingTestsMeasured:false` for
+ *  hours (the staleness that sent agents chasing stale names — see D-001), and so non-test
+ *  legs land in the per-fire pipeline_events ledger with their leg names (test_runs is
+ *  structurally test-file-only and cannot record them). */
+export interface RepairTickLegs {
+  /** The VERIFIED head the legs actually ran at (equals the requested repairHead — a
+   *  mismatch aborts the measurement to `null` rather than mislabeling results). */
+  head: string;
+  atMs: number;
+  /** True when every measured leg passed. */
+  ok: boolean;
+  /** Registry ids of every leg that did not pass — complete, not a first-failure floor. */
+  failingSignatures: string[];
+  legs: RepairTickLegRecord[];
+}
+
 export interface CheckpointDeps {
   /**
    * Report forward progress from the real checkpoint process. This is deliberately
@@ -593,6 +624,15 @@ export interface CheckpointDeps {
   ): Promise<{ pass: boolean; summary: string }>;
   /** Run the standard post-suite gate legs at an already-materialized targeted tip. */
   runPostSuiteAtRef?(ref: string): Promise<{ pass: boolean; summary: string }>;
+  /** P-009 (gate-verdict-liveness-and-repair-reliability-2026-08-31): re-measure the cheap
+   *  NON-TEST gate legs ({@link NON_TEST_GATE_SCRIPTS}) at `ref` — the frozen repair queue's
+   *  MOVABLE repairHead — on an `awaiting-fixer` HOLD tick that renders no suite verdict.
+   *  Unlike {@link CheckpointDeps.runGateAtRef} (a rescue: short-circuits on first fail) this
+   *  is a MEASUREMENT: every leg runs, so `failingSignatures` is the complete fresh non-test
+   *  failing set, not a floor. `null` ⇒ the measurement could not honestly attribute results
+   *  to `ref` (setup/head mismatch) — callers must treat that as UNMEASURED, never as green.
+   *  Optional: absent ⇒ hold ticks behave exactly as before (stubs/older deps unaffected). */
+  runRepairTickLegs?(ref: string, gateIds: string[]): Promise<RepairTickLegs | null>;
   /** P-005 / D-008: the root package.json `scripts` map, supplied rather than read, so the
    *  hygiene classifier stays pure and its `gen:X:check` ⇄ `gen:X` pair derivation is testable
    *  against synthetic script sets. Optional: ABSENT ⇒ no hygiene split is computed at all and
@@ -1192,6 +1232,12 @@ export interface CheckpointResult {
   fossilAbandonment?: FrozenCandidateFossilAbandonment;
   /** EI-203121: durable per-leg execution identity, capped by the producer. */
   postSuiteLegs?: PostSuiteLegRecord[];
+  /** P-009: present ONLY on an `awaiting-fixer` repair-in-progress hold — the cheap non-test
+   *  legs this tick re-measured at the queue's repairHead. Deliberately a SIBLING of
+   *  `postSuiteLegs`, never folded into it: those are legs that formed a suite VERDICT, these
+   *  are a hold-tick freshness measurement (conflating them is the WI-39807 class one level
+   *  up). Rides the result marker into the routine's ledger + gate_health writes. */
+  repairTickLegs?: RepairTickLegs;
   /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
    *  launcher stamped the record target into the env. Read by the routine, which then does NOT
    *  record it a second time (that would double-count the red streak). Absent ⇒ the caller records,
@@ -11720,6 +11766,123 @@ async function runGreenCheckpointInner(
 }
 
 /**
+ * P-009: the seam-injected core of the repair-tick cheap-legs measurement, shared by the
+ * real dep (realCheckpointDeps.runRepairTickLegs) and its tests. Every gate id in
+ * `registry` runs — NO short-circuit on failure, because this is a measurement whose
+ * value IS the complete failing set — and a gate id whose scripts split pass/fail
+ * reports the worst status (errored > fail > pass) with their summed duration.
+ *
+ * Returns `null` when the tree could not be verified AT `ref` (setup failure or a head
+ * mismatch after setup): results measured at some other sha must never be attributed to
+ * repairHead — an UNMEASURED tick is honest, a mislabeled one manufactures evidence.
+ */
+export async function measureRepairTickLegs(
+  io: {
+    /** Materialize `ref` in the measurement tree (realCheckpointDeps wires setupTree). */
+    setupTree(ref: string): Promise<unknown>;
+    /** HEAD of that tree after setup, for the attribution check. */
+    resolveHead(): Promise<string>;
+    /** Run one root npm script; non-zero code = fail, throw = errored. */
+    runScript(script: string): Promise<{ code: number; tail: string }>;
+    log(line: string): void;
+    now?: () => number;
+  },
+  ref: string,
+  registry: Record<string, readonly string[]> = NON_TEST_GATE_SCRIPTS,
+): Promise<RepairTickLegs | null> {
+  const now = io.now ?? Date.now;
+  try {
+    await io.setupTree(ref);
+  } catch (e) {
+    io.log(
+      `warn: repair-tick legs setup failed for ${ref.slice(0, 12)}: ${e instanceof Error ? e.message : e}`,
+    );
+    return null;
+  }
+  const verifiedHead = await io.resolveHead().catch(() => "unresolved");
+  if (verifiedHead !== ref) {
+    io.log(
+      `warn: repair-tick legs head mismatch (requested ${ref.slice(0, 12)}, got ${verifiedHead.slice(0, 12)}) — tick stays unmeasured`,
+    );
+    return null;
+  }
+  const legs: RepairTickLegRecord[] = [];
+  for (const [gateId, scripts] of Object.entries(registry)) {
+    const startedAt = now();
+    let worst: RepairTickLegRecord["status"] = "pass";
+    const tails: string[] = [];
+    for (const script of scripts) {
+      try {
+        const r = await io.runScript(script);
+        if (r.code !== 0) {
+          if (worst === "pass") worst = "fail";
+          tails.push(`${script}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`);
+        }
+      } catch (e) {
+        worst = "errored";
+        tails.push(`${script}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    legs.push({
+      id: gateId,
+      status: worst,
+      durationMs: Math.max(0, now() - startedAt),
+      ...(worst === "pass" ? {} : { outputTail: tails.join(" | ").slice(-500) }),
+    });
+  }
+  const failingSignatures = legs
+    .filter((leg) => leg.status !== "pass")
+    .map((leg) => leg.id);
+  return {
+    head: verifiedHead,
+    atMs: now(),
+    ok: failingSignatures.length === 0,
+    failingSignatures,
+    legs,
+  };
+}
+
+/**
+ * P-009: attach the cheap-legs measurement to an `awaiting-fixer` repair hold result, at
+ * the ONE point downstream of every hold-return site (the runGreenCheckpoint boundary).
+ * Strictly additive and fail-safe: any other result shape, a missing dep, a `null`
+ * measurement, or a thrown measurement leaves the result byte-identical to today.
+ */
+export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
+  result: T,
+  deps: Pick<CheckpointDeps, "runRepairTickLegs" | "log">,
+): Promise<T> {
+  if (result.reason !== "repair-in-progress") return result;
+  // A stale-candidate auto-refire recurses runGreenCheckpoint IN-PROCESS, so a bubbled-up
+  // result can pass this boundary more than once — measure exactly once per tick.
+  if (result.repairTickLegs) return result;
+  const queue = result.repairQueue;
+  if (!queue || queue.phase !== "awaiting-fixer" || !deps.runRepairTickLegs) {
+    return result;
+  }
+  try {
+    const measured = await deps.runRepairTickLegs(
+      queue.repairHead,
+      Object.keys(NON_TEST_GATE_SCRIPTS),
+    );
+    if (!measured) return result;
+    deps.log(
+      `P-009 repair-tick legs at ${measured.head.slice(0, 12)}: ` +
+        (measured.ok
+          ? `all ${measured.legs.length} pass`
+          : `FAILING ${measured.failingSignatures.join(", ")}`) +
+        ` (awaiting-fixer hold stays measured)`,
+    );
+    return { ...result, repairTickLegs: measured };
+  } catch (e) {
+    deps.log(
+      `warn: P-009 repair-tick leg measurement failed: ${e instanceof Error ? e.message : e}`,
+    );
+    return result;
+  }
+}
+
+/**
  * Public result boundary. New producers always stamp candidate provenance, while the
  * compatibility `diagnostic` field keeps older recorders fail-closed during version skew.
  */
@@ -11738,7 +11901,7 @@ export async function runGreenCheckpoint(
   const repairIdentity = result.repairQueue
     ? buildFrozenRepairStatusIdentity(result.repairQueue)
     : null;
-  return {
+  const finalResult: CheckpointResult = {
     ...result,
     // P-003 / D-002: a result carrying a repair queue always reserves the generic
     // candidate label for the immutable full-gate pin. repairHead remains explicit;
@@ -11755,6 +11918,10 @@ export async function runGreenCheckpoint(
       ? { fossilAbandonment: innerOpts.fossilAbandonment }
       : {}),
   };
+  // P-009: an `awaiting-fixer` hold tick renders no suite verdict for hours — keep the
+  // cheap non-test legs MEASURED at repairHead so gate_health/failingTests stays fresh
+  // and the hold's ledger row names the failing legs. Additive + fail-safe (see helper).
+  return augmentWithRepairTickLegs(finalResult, deps);
 }
 
 /** Real effect wiring. The heavy bit — runGreen — runs the configured suite in
@@ -16271,6 +16438,44 @@ export function realCheckpointDeps(
         if (r.code !== 0) return { pass: false, summary: summaries.join("; ") };
       }
       return { pass: true, summary: summaries.join("; ") };
+    },
+    // P-009: the repair-tick cheap-legs MEASUREMENT — same tree/setup contract as
+    // runGateAtRef above, but non-short-circuiting with per-gate-id records (see
+    // measureRepairTickLegs for the contract; the hold tick's checkpoint tree is idle,
+    // so materializing repairHead here steps on nothing).
+    async runRepairTickLegs(ref, gateIds) {
+      const registry: Record<string, readonly string[]> = {};
+      for (const id of gateIds) {
+        const scripts = NON_TEST_GATE_SCRIPTS[id];
+        if (scripts) registry[id] = scripts;
+      }
+      const env = buildGreenCheckpointEnv(
+        null,
+        process.env,
+        undefined,
+        cfg.greenCheckpointCapacityMode,
+      );
+      return measureRepairTickLegs(
+        {
+          setupTree: (r) => this.setupTree(r),
+          resolveHead: () => revParse(cfg.checkpointRoot, "HEAD"),
+          runScript: async (script) => {
+            const r = await exec("npm", ["run", script], {
+              cwd: cfg.checkpointRoot,
+              env,
+              allowNonZero: true,
+              ...rescueTaskWatchdogOptions(script, env),
+            });
+            return {
+              code: r.code,
+              tail: (r.stderr || r.stdout).slice(-300),
+            };
+          },
+          log: (line) => console.log(line),
+        },
+        ref,
+        registry,
+      );
     },
     // Deploy-staleness alarm seam (P-005): how old is the deployed pin, and how far does
     // it trail tip? `null` on any git failure ⇒ the alarm simply doesn't fire.
