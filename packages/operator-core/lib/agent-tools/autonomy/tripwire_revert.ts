@@ -16,7 +16,7 @@ export default defineTool({
   profile: 'engineer',
   crossWorkspace: true,
   description:
-    "Owner one-click undo of an auto-decision: trip its tripwire (owner-thumbs-down), revert the action, and demote the category one step. Owner-authority; the strongest counter-signal.",
+    'Owner one-click undo of an auto-decision: trip its tripwire (owner-thumbs-down), revert the action, and demote the category one step. Owner-authority; the strongest counter-signal.',
   capability: 'audit:write',
   guidance: {
     when: 'The owner rejects a recent auto-decision in the settings feed — undo the action + tell the graduation engine this category was too aggressive (demote one step).',
@@ -36,9 +36,7 @@ export default defineTool({
   async handler(args, ctx) {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { activeWorkspaceId } = await import('../../workspace-registry');
-    const { getTripwire, markTripwireTripped, markTripwireReverted } = await import(
-      '../../autonomy/tripwire/store'
-    );
+    const { getTripwire, markTripwireTripped, markTripwireReverted } = await import('../../autonomy/tripwire/store');
     const { getAutonomyCategoryPolicy, setAutonomyPolicy } = await import('../../autonomy/policy-store');
     const { demoteGraduatedLevel } = await import('../../autonomy/tripwire/core');
 
@@ -51,7 +49,12 @@ export default defineTool({
     const row = await getTripwire(sql, ws, args.tripwireId);
     if (!row) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'not_found', tripwireId: args.tripwireId }, null, 2) }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ ok: false, reason: 'not_found', tripwireId: args.tripwireId }, null, 2),
+          },
+        ],
         isError: true,
       };
     }
@@ -78,8 +81,7 @@ export default defineTool({
     const policy = await getAutonomyCategoryPolicy(sql, ws, row.category);
     const from = policy.graduatedLevel;
     const to = demoteGraduatedLevel(from);
-    const pinned =
-      policy.ownerOverride != null && (policy.ownerOverride as { pinned?: unknown }).pinned === true;
+    const pinned = policy.ownerOverride != null && (policy.ownerOverride as { pinned?: unknown }).pinned === true;
     let demoted = false;
     if (!policy.locked && !pinned && to !== from) {
       await setAutonomyPolicy(
@@ -91,10 +93,14 @@ export default defineTool({
       demoted = true;
     }
 
-    // Best-effort revert (the executor is the Queen execution seam — dark today).
-    // Until it is wired, we record the trip + return the revert handle so the
-    // owner can undo manually; once an executor lands here, mark reverted.
-    const reverted = false;
+    // Execute through the same registry the automatic trust scan uses. The
+    // executor is non-throwing by contract: an unsupported/stale handle records
+    // the trip+demotion and returns an honest failed outcome without wedging the
+    // owner's counter-signal.
+    const { executeRevertVia, makeRevertRegistry, defaultRevertHelpers } =
+      await import('../../autonomy/tripwire/revert-executor');
+    const revertOutcome = await executeRevertVia(row, makeRevertRegistry(), defaultRevertHelpers());
+    const reverted = revertOutcome.reverted;
     if (reverted) await markTripwireReverted(sql, ws, row.id, nowMs);
 
     const { notifySyncInvalidate } = await import('../../sync-sse');
@@ -115,12 +121,12 @@ export default defineTool({
               category: row.category,
               tripped: true,
               demoted,
-              demotion: demoted ? { from, to } : { skipped: policy.locked ? 'locked' : pinned ? 'pinned' : 'no-change' },
+              demotion: demoted
+                ? { from, to }
+                : { skipped: policy.locked ? 'locked' : pinned ? 'pinned' : 'no-change' },
               reverted,
               revertHandle: row.revertHandle,
-              note: reverted
-                ? 'action auto-reverted'
-                : 'trip recorded + category demoted; auto-revert executor not wired yet — undo via the revert handle',
+              note: revertOutcome.note,
             },
             null,
             2,
