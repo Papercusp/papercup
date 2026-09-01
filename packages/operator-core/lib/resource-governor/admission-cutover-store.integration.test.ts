@@ -17,6 +17,10 @@ const OVERLAP_GUARD_MIGRATION = readFileSync(
   resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1067-resource-governor-cutover-collision-guard.sql'),
   'utf8',
 );
+const RETIRED_WRITER_GUARD_MIGRATION = readFileSync(
+  resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1076-resource-governor-retired-writer-guard.sql'),
+  'utf8',
+);
 
 const WORKSPACE = 'ws-cutover';
 const NAMESPACE = 'cutover-integration';
@@ -68,6 +72,7 @@ beforeAll(async () => {
     .simple();
   await db.sql.unsafe(MIGRATION).simple();
   await db.sql.unsafe(OVERLAP_GUARD_MIGRATION).simple();
+  await db.sql.unsafe(RETIRED_WRITER_GUARD_MIGRATION).simple();
 }, 60_000);
 
 afterAll(async () => {
@@ -316,33 +321,51 @@ describe('PgAdmissionCutoverQueueStore', () => {
     ).rejects.toThrow(/exists in both/i);
   });
 
-  it('requires an explicit retired-writers watermark and invalidates it if a later legacy row appears', async () => {
+  it('serializes an explicit retired-writers watermark and rejects every later legacy insert', async () => {
     const modern = runtime('cutover', 'retirement-control');
     await modern.governor.admit({ idempotencyKey: 'ledger-control', admissionClass: 'agent' });
     const retiredAtMs = Date.now() + 5_000;
-    await db.sql`
-      INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
-      VALUES (
-        ${`resource_governor_admission_legacy_writers_retired:${WORKSPACE}`},
-        '1',
-        'integration retirement positive control',
-        ${retiredAtMs},
-        ${WORKSPACE}
-      )`;
-    await expect((modern.store as PgAdmissionCutoverQueueStore).readCutoverCensus()).resolves.toMatchObject({
+    const store = modern.store as PgAdmissionCutoverQueueStore;
+    const before = await store.readCutoverCensus();
+    expect(before.legacyNewestCreatedMs).toBeNull();
+    await expect(store.markLegacyWritersRetired(before.legacyNewestCreatedMs, retiredAtMs)).resolves.toMatchObject({
       legacyWritersRetired: true,
+      legacyWritersRetiredAtMs: retiredAtMs,
       legacyActive: 0,
       legacyCreatedAfterRetirement: 0,
       terminalLegacyDeletionReady: true,
     });
 
     const lateLegacy = runtime('legacy', 'late-legacy', { now: () => retiredAtMs + 1_000 });
-    await lateLegacy.governor.admit({ idempotencyKey: 'late-legacy', admissionClass: 'process' });
-    await expect((modern.store as PgAdmissionCutoverQueueStore).readCutoverCensus()).resolves.toMatchObject({
+    await expect(
+      lateLegacy.governor.admit({ idempotencyKey: 'late-legacy', admissionClass: 'process' }),
+    ).rejects.toThrow(/legacy writers are retired|retired.writer.guard/i);
+    await expect(store.readCutoverCensus()).resolves.toMatchObject({
       legacyWritersRetired: true,
+      legacyActive: 0,
+      legacyCreatedAfterRetirement: 0,
+      terminalLegacyDeletionReady: true,
+    });
+  });
+
+  it('refuses to mark retirement from a stale newest-legacy-row census', async () => {
+    const modern = runtime('cutover', 'retirement-cas');
+    await modern.governor.admit({ idempotencyKey: 'ledger-control', admissionClass: 'agent' });
+    const store = modern.store as PgAdmissionCutoverQueueStore;
+    const before = await store.readCutoverCensus();
+    expect(before.legacyNewestCreatedMs).toBeNull();
+
+    await runtime('legacy', 'census-racer', { now: () => Date.now() }).governor.admit({
+      idempotencyKey: 'arrived-after-census',
+      admissionClass: 'process',
+    });
+    await expect(store.markLegacyWritersRetired(before.legacyNewestCreatedMs)).rejects.toThrow(
+      /legacy receipt census changed before retirement/i,
+    );
+    await expect(store.readCutoverCensus()).resolves.toMatchObject({
+      legacyWritersRetired: false,
+      legacyTotal: 1,
       legacyActive: 1,
-      legacyCreatedAfterRetirement: 1,
-      terminalLegacyDeletionReady: false,
     });
   });
 

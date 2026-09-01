@@ -173,6 +173,61 @@ describe('PgAdmissionLedgerQueueStore', () => {
     ]);
   });
 
+  it('reads one complete queue census from the ledger plus bounded legacy overlap', async () => {
+    const clock = { now: 100_000 };
+    const legacyRecord = {
+      schemaVersion: 1,
+      namespace: 'integration',
+      idempotencyKey: 'legacy-active',
+      requestFingerprint: 'legacy-fingerprint',
+      admissionClass: 'process',
+      state: 'queued',
+      priority: 1,
+      enqueuedAtMs: clock.now - 1_000,
+      updatedAtMs: clock.now - 1_000,
+      deadlineAtMs: null,
+      decision: { generation: 0, atMs: clock.now - 1_000, reason: 'legacy-fixture' },
+    };
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, feature_id, payload)
+      VALUES (
+        'ws-ledger',
+        'WI-legacy-active',
+        ${JSON.stringify({ resource_governor: legacyRecord })}::text::jsonb
+      )`;
+
+    const current = instance('census', { now: () => clock.now });
+    const active = await current.governor.admit({ idempotencyKey: 'ledger-active', admissionClass: 'agent' });
+    const terminal = await current.governor.admit({ idempotencyKey: 'ledger-terminal', admissionClass: 'agent' });
+    if (active.kind !== 'queued' || terminal.kind !== 'queued') throw new Error('expected ledger receipts');
+    const claim = await current.driver.leaseReceipt({
+      receiptId: terminal.receipt.receiptId,
+      owner: 'census-worker',
+      ttlMs: 1_000,
+    });
+    if (!claim) throw new Error('expected terminal fixture lease');
+    await current.driver.complete(claim.receiptId, claim.lease.leaseId, 'result:census');
+
+    await expect(current.store.readQueuePopulation(clock.now, 60_000)).resolves.toEqual([
+      {
+        admissionClass: 'agent',
+        depth: 1,
+        oldestAgeMs: 0,
+        arrivals: 2,
+        drained: 1,
+        observedWindowMs: 60_000,
+      },
+      {
+        admissionClass: 'process',
+        depth: 1,
+        oldestAgeMs: 1_000,
+        arrivals: 1,
+        drained: 0,
+        observedWindowMs: 60_000,
+      },
+    ]);
+  });
+
   it('reconciles lease expiry, deadlines, and deadline-less abandonment in bounded passes', async () => {
     const clock = { now: 20_000 };
     const primary = instance('primary', { now: () => clock.now });
