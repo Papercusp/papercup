@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BulkRunRow } from '../attention/bulk-run-store';
-import type { CleanupFinding } from './scanner';
+import { DEFAULT_ENLIST_PLAN_LIMIT, type CleanupFinding } from './scanner';
 import type { CleanupRunFindingRow } from './run-store';
 import { runDeterministicPlanCleanup } from './deterministic-runner';
 
-function run(): BulkRunRow {
+function run(seedRefs: string[] = ['plan-a']): BulkRunRow {
   return {
     runId: 'run-1',
     workspaceId: 'workspace-1',
@@ -13,7 +13,7 @@ function run(): BulkRunRow {
     resolverOwner: null,
     phase: 'pending',
     runKind: 'plan-cleanup',
-    seedRefs: ['plan-a'],
+    seedRefs,
     filterSnapshot: {},
     launchSnapshot: {},
     totalItems: 1,
@@ -30,14 +30,20 @@ function run(): BulkRunRow {
   };
 }
 
-function finding(kind: CleanupFinding['kind'], autoApply: boolean): CleanupFinding {
-  const itemId = kind === 'finish-plan' || kind === 'stale-now' ? null : 'P-001';
-  return {
-    findingId: `${kind}:papercusp/plan-a${itemId ? `#${itemId}` : ''}`,
+function finding(
+  kind: CleanupFinding['kind'],
+  autoApply: boolean,
+  planSlug = 'plan-a',
+): CleanupFinding {
+  const itemId = kind === 'finish-plan' || kind === 'stale-now' || kind === 'enlist-plan'
+    ? null
+    : 'P-001';
+  const value: CleanupFinding = {
+    findingId: `${kind}:papercusp/${planSlug}${itemId ? `#${itemId}` : ''}`,
     kind,
     workspaceId: 'workspace-1',
     harnessSlug: 'papercusp',
-    planSlug: 'plan-a',
+    planSlug,
     itemId,
     target: itemId ?? 'plan-a',
     from: 'todo',
@@ -45,8 +51,18 @@ function finding(kind: CleanupFinding['kind'], autoApply: boolean): CleanupFindi
     confidence: autoApply ? 'provable' : 'recommended',
     autoApply,
     autoApplyBlockedBy: autoApply ? null : 'judgment-call',
-    evidence: [{ kind: 'plan', ref: 'plan-a', note: 'fixture proof' }],
+    evidence: [{ kind: 'plan', ref: planSlug, note: 'fixture proof' }],
   };
+  if (kind === 'enlist-plan') {
+    value.action = {
+      kind: 'enlist-plan',
+      goalId: 'goal-everything',
+      planRef: `plan:papercusp/${planSlug}`,
+      worklist: [],
+      expectedVersion: 0,
+    };
+  }
+  return value;
 }
 
 function rowOf(value: CleanupFinding): CleanupRunFindingRow {
@@ -97,6 +113,50 @@ function storeHarness(rows: CleanupRunFindingRow[]) {
 }
 
 describe('runDeterministicPlanCleanup', () => {
+  it('enforces one run-wide enlistment cap across locked rescans and later passes', async () => {
+    const rows: CleanupRunFindingRow[] = [];
+    const store = storeHarness(rows);
+    const all = Array.from(
+      { length: DEFAULT_ENLIST_PLAN_LIMIT + 1 },
+      (_, index) => finding('enlist-plan', true, `plan-${String(index + 1).padStart(2, '0')}`),
+    );
+    const cleanupRun = run(all.map((candidate) => candidate.planSlug));
+    const scanRun = vi.fn(async (
+      _run: BulkRunRow,
+      planSlugs: readonly string[] = _run.seedRefs,
+      options: { enlistPlanLimit?: number } = {},
+    ) => all
+      .filter((candidate) => planSlugs.includes(candidate.planSlug))
+      .slice(0, Math.max(0, options.enlistPlanLimit ?? DEFAULT_ENLIST_PLAN_LIMIT)));
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    const settle = vi.fn(async () => ({ ...cleanupRun, phase: 'complete' as const }));
+
+    const result = await runDeterministicPlanCleanup({
+      run: cleanupRun,
+      call: vi.fn(),
+      deps: {
+        scanRun,
+        ...store,
+        dispatch,
+        settle,
+        notify: vi.fn(async () => undefined),
+      } as never,
+    });
+
+    expect(result).toMatchObject({
+      needsResolver: false,
+      phase: 'complete',
+      applied: DEFAULT_ENLIST_PLAN_LIMIT,
+      failed: 0,
+    });
+    expect(dispatch).toHaveBeenCalledTimes(DEFAULT_ENLIST_PLAN_LIMIT);
+    expect(result.appliedFindingIds).toEqual(
+      all.slice(0, DEFAULT_ENLIST_PLAN_LIMIT).map((candidate) => candidate.findingId),
+    );
+    expect(result.appliedFindingIds).not.toContain(all.at(-1)?.findingId);
+    expect(scanRun.mock.calls.map((call) => call[2]?.enlistPlanLimit)).toContain(0);
+  });
+
   it('re-scans to a fixed point and finishes without an LLM when every finding is provable', async () => {
     const rows: CleanupRunFindingRow[] = [];
     const store = storeHarness(rows);

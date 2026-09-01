@@ -25,6 +25,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { dispatchCleanupFindingAction } from './action-dispatch';
 import { gatherCleanupInputs } from './gather';
 import {
+  DEFAULT_ENLIST_PLAN_LIMIT,
   scanForCleanupFindings,
   type CleanupFinding,
 } from './scanner';
@@ -41,13 +42,14 @@ import {
 export async function scanCleanupRun(
   run: BulkRunRow,
   planSlugs: readonly string[] = run.seedRefs,
+  options: { enlistPlanLimit?: number } = {},
 ): Promise<CleanupFinding[]> {
   const inputs = await gatherCleanupInputs({
     workspaceId: run.workspaceId,
     harnessSlug: run.harnessSlug ?? operatorHomeHarnessSlug(),
     planSlugs: [...planSlugs],
   });
-  return scanForCleanupFindings(inputs, { nowMs: Date.now() });
+  return scanForCleanupFindings(inputs, { nowMs: Date.now(), ...options });
 }
 
 function unwrapDispatchResult(result: unknown): unknown {
@@ -166,10 +168,11 @@ export async function runDeterministicPlanCleanup(input: {
   let fatalError: string | null = null;
   let authorityRevoked = false;
   let authorityRefusal: CleanupFindingWriteRefusal | null = null;
+  let remainingEnlistments = DEFAULT_ENLIST_PLAN_LIMIT;
 
   for (let pass = 0; pass < maxPasses; pass += 1) {
     passes = pass + 1;
-    const scan = await deps.scanRun(run);
+    const scan = await deps.scanRun(run, run.seedRefs, { enlistPlanLimit: remainingEnlistments });
     const seeded = await deps.seed({
       runId: run.runId,
       findings: scan,
@@ -197,7 +200,9 @@ export async function runDeterministicPlanCleanup(input: {
           findingId: row.findingId,
           workspaceId: run.workspaceId,
           async execute(locked) {
-            const fresh = (await deps.scanRun(run, [locked.planSlug])).find(
+            const fresh = (await deps.scanRun(run, [locked.planSlug], {
+              enlistPlanLimit: remainingEnlistments,
+            })).find(
               (finding) => finding.findingId === locked.findingId,
             );
             if (!fresh) {
@@ -219,6 +224,7 @@ export async function runDeterministicPlanCleanup(input: {
           break;
         }
         appliedFindingIds.push(row.findingId);
+        if (row.kind === 'enlist-plan') remainingEnlistments = Math.max(0, remainingEnlistments - 1);
         terminalized += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -264,7 +270,9 @@ export async function runDeterministicPlanCleanup(input: {
 
   // Final scan catches second-order findings (e.g. item flips make a plan
   // finishable) and classifies every still-pending snapshot row.
-  const finalScan = await deps.scanRun(run);
+  const finalScan = await deps.scanRun(run, run.seedRefs, {
+    enlistPlanLimit: remainingEnlistments,
+  });
   const finalSeed = await deps.seed({
     runId: run.runId,
     findings: finalScan,
