@@ -535,6 +535,31 @@ export default defineTool({
     account: z.string().min(1).max(200).optional().describe('Optional pinned account id. An account-only request resolves its provider from accounts:status.'),
     fleet: z.string().min(1).max(200).optional().describe('Optional named fleet to scope capacity to. Without an explicit backend, a caller in a fleet uses its current live member providers.'),
   }),
+  // Keep the rich, evolving capacity report available as structured content while
+  // publishing the load-bearing verdict fields used by guidance.returns. The
+  // passthrough allows the read-model to grow without a second prose schema.
+  result: z
+    .object({
+      provider: z.string().nullable().optional(),
+      atCapacity: z.boolean().optional(),
+      binding: z.enum(['usage-wall', 'admission-concurrency', 'pacing-policy', 'none']).optional(),
+      evidence: z.array(z.unknown()).optional(),
+      reason: z.string().optional(),
+      unknown: z.array(z.unknown()).optional(),
+      ok: z.boolean().optional(),
+      model: z.string().nullable().optional(),
+      account: z.string().nullable().optional(),
+      verdict: z.string().optional(),
+      capacityVerdict: z.unknown().optional(),
+      capacityUnknown: z.array(z.unknown()).optional(),
+      dispatchBudget: z.number().nullable().optional(),
+      accountPool: z.unknown().nullable().optional(),
+      scope: z.unknown().optional(),
+      providerSource: z.string().optional(),
+      fleet: z.string().optional(),
+      providers: z.array(z.string()).optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const scope = await resolveCapacityScope(args);
     const explicitBackend = Boolean(args.provider || args.model || args.account);
