@@ -92,7 +92,10 @@ async function allocate(args: AllocateArgs = {}): Promise<{
   // sequence. WI-38353's default dedup guard is covered explicitly below;
   // force is required here so the sequence assertions do not get mistaken
   // for multiple agents proposing the same migration work.
-  const res = (await tool.handler({ force: true, ...args } as never, CTX)) as { content: { text: string }[] };
+  const res = (await tool.handler(
+    { name: 'integration-allocation', force: true, ...args } as never,
+    CTX,
+  )) as { content: { text: string }[] };
   return JSON.parse(res.content[0]!.text);
 }
 
@@ -143,6 +146,22 @@ afterAll(async () => {
 });
 
 describe('db:next-migration allocator (§A1)', () => {
+  it('rejects missing or slug-empty names before touching the reservation ledger', async () => {
+    expect(tool.args.safeParse({ force: true }).success).toBe(false);
+    expect(tool.args.safeParse({ name: '!!!', force: true }).success).toBe(false);
+    expect(tool.args.safeParse({ name: 'valid-migration', force: true }).success).toBe(true);
+
+    const before = await rootSql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM harness_shared.migration_reservations`;
+    for (const args of [{ force: true }, { name: '   ', force: true }, { name: '!!!', force: true }]) {
+      const res = (await tool.handler(args as never, CTX)) as { content: { text: string }[] };
+      expect(JSON.parse(res.content[0]!.text)).toMatchObject({ ok: false, error: 'invalid_name' });
+    }
+    const after = await rootSql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM harness_shared.migration_reservations`;
+    expect(after[0]!.n).toBe(before[0]!.n);
+  });
+
   it('two+ CONCURRENT allocations never collide — N parallel calls → N distinct sequential numbers', async () => {
     const N = 12;
     const results = await Promise.all(Array.from({ length: N }, () => allocate()));
@@ -232,7 +251,10 @@ describe('db:next-migration allocator (§A1)', () => {
     // it resolves the stable su fallback and the reservation lands. Run last so
     // it does not perturb the sequential reservation counter the tests above pin.
     const clientlessSu = { isSuperuser: true } as never;
-    const res = (await tool.handler({ force: true } as never, clientlessSu)) as { content: { text: string }[] };
+    const res = (await tool.handler(
+      { name: 'clientless-superuser', force: true } as never,
+      clientlessSu,
+    )) as { content: { text: string }[] };
     const out = JSON.parse(res.content[0]!.text) as {
       ok: boolean;
       number?: number;

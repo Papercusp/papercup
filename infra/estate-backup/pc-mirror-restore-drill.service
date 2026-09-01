@@ -8,6 +8,15 @@ OnFailure=pc-estate-mirror-alert.service
 Type=oneshot
 Nice=15
 IOSchedulingClass=idle
+# Pin the SERVICE ACCOUNT, same reason as pc-estate-mirror.service: the
+# ExecStartPre below runs pc-estate-mirror.sh, which calls gcloud and would
+# otherwise inherit whichever account happens to be active. When the human
+# `super@papercusp.com` token needed reauthentication on 2026-09-01 the mirror
+# died on exactly that call, and this drill was armed to fail the same way on its
+# next fire -- which would have taken the RESTORE PROOF down with the copy, so
+# both the backup and the evidence it is restorable would have been broken by one
+# expiring credential.
+Environment=CLOUDSDK_CORE_ACCOUNT=omp-vertex@active-alcove-504205-q3.iam.gserviceaccount.com
 # Re-read every stored byte against its capture-time manifest BEFORE spending a
 # restore on it. Bit rot is the failure a copy job can never see, because a copy
 # job only ever looks at data it just wrote.

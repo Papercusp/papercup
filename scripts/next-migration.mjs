@@ -78,14 +78,13 @@ function parseArgs(argv) {
 }
 
 function slugify(name) {
-  return (
-    String(name ?? '')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60) || 'TODO-rename'
-  );
+  const slug = String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return slug || null;
 }
 
 function maxNumberOnDisk(dirs) {
@@ -176,6 +175,13 @@ async function main() {
     process.exit(0);
   }
   const slug = slugify(args.name);
+  if (!slug) {
+    console.error(
+      'db:next-migration FAILED — --name is required and must contain at least one letter or digit.',
+    );
+    process.exitCode = 1;
+    return;
+  }
   const reservedBy = args.by || process.env.USER || process.env.LOGNAME || 'cli';
 
   const postgres = (await import('postgres')).default;

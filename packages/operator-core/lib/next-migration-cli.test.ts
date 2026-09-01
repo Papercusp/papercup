@@ -21,10 +21,25 @@
  * hands back the exact rename to arm it.
  */
 import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line import/no-relative-packages
 import { buildAllocationResult } from '../../../scripts/next-migration.mjs';
 
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+
 describe('buildAllocationResult (EI-19366138707071397 — DRAFT-suffix contract)', () => {
+  it('rejects a slug-empty name before opening Postgres', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['scripts/next-migration.mjs', '--name', '!!!'],
+      { cwd: REPO_ROOT, encoding: 'utf8' },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--name is required and must contain at least one letter or digit/);
+  });
+
   it('points `path` at a `.DRAFT`-suffixed write target, never the bare `.sql` name', () => {
     const r = buildAllocationResult({
       next: 740,

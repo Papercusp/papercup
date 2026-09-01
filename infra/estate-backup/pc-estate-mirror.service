@@ -9,6 +9,16 @@ OnFailure=pc-estate-mirror-alert.service
 
 [Service]
 Type=oneshot
+# Pin the SERVICE ACCOUNT explicitly. Without this the script inherits whichever
+# gcloud account happens to be active, which was the human `super@papercusp.com`
+# user credential. On 2026-09-01 its refresh token needed reauthentication, the
+# 01:18 run died with "cannot read <bucket> (gcloud auth?)", and for 33h the only
+# surviving copy of the estate backups was the GCS bucket sitting in the SAME
+# project as the VMs it protects -- exactly the single point of failure this
+# mirror exists to remove. A human OAuth token expiring is not an incident, it is
+# a certainty, so an unattended backup job must never depend on one. The service
+# account is already credentialed on this host and can read the bucket.
+Environment=CLOUDSDK_CORE_ACCOUNT=omp-vertex@active-alcove-504205-q3.iam.gserviceaccount.com
 # The mirror is bulk I/O against a 92%-full disk shared with the whole fleet.
 # It is never the urgent thing on this box, so it yields to everything.
 Nice=15

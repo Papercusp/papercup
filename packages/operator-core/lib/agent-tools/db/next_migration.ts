@@ -78,15 +78,14 @@ function candidateSqlDirs(): string[] {
   return [...dirs];
 }
 
-function slugify(name: string): string {
-  return (
-    name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60) || 'TODO-rename'
-  );
+function slugify(name: string): string | null {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return slug || null;
 }
 
 export default defineTool({
@@ -115,7 +114,11 @@ export default defineTool({
       ),
     name: z
       .string()
-      .optional()
+      .trim()
+      .min(1, 'name is required')
+      .refine((value) => slugify(value) !== null, {
+        message: 'name must contain at least one letter or digit',
+      })
       .describe('Short kebab-case description for the suggested filename, e.g. "add-foo-index".'),
     intent: z
       .string()
@@ -138,13 +141,21 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    const slug = slugify(args.name ?? '');
+    if (!slug) {
+      return json({
+        ok: false,
+        error: 'invalid_name',
+        message:
+          'Migration name is required and must contain at least one letter or digit. Pass name before allocating a number.',
+      });
+    }
     const sqlDirs = candidateSqlDirs();
     if (sqlDirs.length === 0)
       return json({ ok: false, error: 'sql dir (libs/papercusp/libs/db/sql) not found' });
 
     const { ownerLabel } = resolveAgentIdentity(ctx);
     const reservedBy = args.by?.trim() || ownerLabel;
-    const slug = slugify(args.name ?? '');
     const { sql } = getOrgPg();
 
     const allocated = await sql.begin(async (tx) => {

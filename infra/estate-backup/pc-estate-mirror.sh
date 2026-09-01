@@ -481,6 +481,23 @@ PY
     alarm "estate mirror health: ${problems[0]}"
     return 1
   fi
+  # RETRACT the alarm on recovery. pc-estate-mirror-alert.sh WRITES this marker
+  # and nothing anywhere cleared it, so it was a write-only latch: once any run
+  # failed it asserted "the mirror is broken" forever, including inside the triage
+  # text the alert broadcasts fleet-wide. That is worse than no marker, because
+  # agents read its ABSENCE as evidence of health (WI-1038273 did exactly that),
+  # so a stuck marker misleads in the direction of a fault that is already fixed.
+  # An alarm that cannot stand down is a bug in the alarm.
+  if [ -e "$ROOT/ALERT-MIRROR-FAILING" ]; then
+    if rm -f "$ROOT/ALERT-MIRROR-FAILING" 2>/dev/null \
+      || sudo -n rm -f "$ROOT/ALERT-MIRROR-FAILING" 2>/dev/null; then
+      log "cleared ALERT-MIRROR-FAILING (mirror recovered)"
+    else
+      # Never fail the health check over the marker -- a probe that dies while
+      # cleaning up reports a fault that does not exist.
+      log "WARN: mirror healthy but could not clear $ROOT/ALERT-MIRROR-FAILING"
+    fi
+  fi
   log "health OK"
   return 0
 }
