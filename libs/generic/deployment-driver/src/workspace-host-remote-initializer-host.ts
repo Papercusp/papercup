@@ -36,7 +36,7 @@ import { isAbsolute, join } from "node:path";
 import {
   NodeWorkspaceHostAgentProbeRunner,
   probeWorkspaceHostAgents,
-  type WorkspaceHostAgentAuthenticationReport,
+  type WorkspaceHostAgentVerificationReport,
   type WorkspaceHostAgentProbeRunner,
 } from "./workspace-host-agent-authentication";
 import {
@@ -857,7 +857,7 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
    * disclosure policy. A second implementation here would be a second set of those rules to keep
    * in sync, and the one that drifted would be the one nobody was reading.
    */
-  async probeAgentAuthentication(): Promise<WorkspaceHostAgentAuthenticationReport> {
+  async probeAgentVerification(): Promise<WorkspaceHostAgentVerificationReport> {
     return await probeWorkspaceHostAgents({
       runner: this.agentProbeRunner,
       now: this.now,

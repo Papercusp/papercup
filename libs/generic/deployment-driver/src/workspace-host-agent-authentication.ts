@@ -1,15 +1,16 @@
 /**
- * Real, non-interactive authenticated-account probes for the three agents a workspace host is
- * required to have signed in (P-046 / WI-41711).
+ * Real, non-interactive readiness probes for the three agents a workspace host must be able to
+ * execute (P-046 / WI-41711 / D-230).
  *
  * THE GAP THIS CLOSES. `WorkspaceHostInitializationCanaryEvidence.agents` carries
- * `{ claude: { authenticated: true }, codex: {…}, omp: {…} }`, and
- * `validateWorkspaceHostInitializationCanary` checks that those booleans are `true`. Nothing
- * derived them from anything. The type makes `false` unrepresentable, so the validator's agent
+ * `{ claude: { ready: true, verificationKind: … }, … }`, and
+ * `validateWorkspaceHostInitializationCanary` checks that readiness. Nothing originally derived
+ * the old authenticated booleans from anything. The type makes `false` unrepresentable, so the validator's agent
  * check could only ever fail if a caller went out of its way to construct invalid evidence —
  * i.e. a green canary verdict proved nothing at all about whether Claude, Codex or OMP had
- * actually authenticated. This module makes each boolean the OUTPUT of a probe that has to
- * succeed, so the verdict becomes falsifiable.
+ * actually authenticated. This module makes readiness the OUTPUT of a probe that has to succeed,
+ * and records whether the proof was an authenticated account or real local inference, so the
+ * verdict becomes falsifiable without claiming that a no-auth local model is "authenticated".
  *
  * WHAT A PROBE MAY EMIT. Only the four discriminators the receipt contract allows: which
  * account/subject answered, which endpoint was reached, the exit status, and when. Raw stdout
@@ -22,9 +23,9 @@
  * OWN CLI, read from its `--help` rather than assumed:
  *   claude → `auth status`      ("Show authentication status")
  *   codex  → `login status`     ("Show login status")
- *   omp    → `usage --json --redact` ("Show provider usage limits for every authenticated
- *            account"; `--redact` shortens account ids to a unique prefix, which is exactly the
- *            non-secret discriminator this contract wants, produced by the tool itself)
+ *   omp    → first `usage --json --redact` for a hosted account; if no account answers, invoke
+ *            OMP itself non-interactively against loopback Ollama and require a model-produced
+ *            marker. A version check, model listing, or broker registration is not inference.
  * A probe reaches the agent's real authenticated surface; it is not a version check. `--version`
  * would pass on a host where nobody had ever signed in, which is the precise failure the canary
  * exists to catch.
@@ -34,12 +35,16 @@ import { createHash } from "node:crypto";
 
 import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
 
-export const WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION =
-  "papercusp-workspace-host-agent-authentication-v1";
+export const WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION =
+  "papercusp-workspace-host-agent-verification-v2";
 
 export const WORKSPACE_HOST_CANARY_AGENTS = ["claude", "codex", "omp"] as const;
 export type WorkspaceHostCanaryAgent =
   (typeof WORKSPACE_HOST_CANARY_AGENTS)[number];
+
+export type WorkspaceHostAgentVerificationKind =
+  | "authenticated-account"
+  | "local-inference";
 
 /**
  * How a probe's extracted subject may be published.
@@ -50,8 +55,9 @@ export type WorkspaceHostCanaryAgent =
  */
 export type WorkspaceHostAgentSubjectDisclosure = "redacted" | "digest";
 
-export interface WorkspaceHostAgentAuthenticationProbeSpec {
+export interface WorkspaceHostAgentVerificationProbeSpec {
   readonly agent: WorkspaceHostCanaryAgent;
+  readonly verificationKind: WorkspaceHostAgentVerificationKind;
   /** Absolute path (or PATH-resolvable name) of the agent CLI on the host. */
   readonly command: string;
   readonly args: readonly string[];
@@ -63,7 +69,7 @@ export interface WorkspaceHostAgentAuthenticationProbeSpec {
    * with an unknown subject — "exit 0 but unparseable" is the shape a broken or reworded CLI
    * takes, and treating it as success is how an unbacked boolean comes back.
    */
-  readonly subjectPattern: RegExp;
+  readonly proofPattern: RegExp;
   readonly subjectDisclosure: WorkspaceHostAgentSubjectDisclosure;
   readonly timeoutMs?: number;
 }
@@ -84,42 +90,82 @@ const SUBJECT_PATTERN =
 /**
  * The defaults, grounded in each CLI's own documented help output.
  *
- * `subjectPattern` is deliberately permissive about surrounding prose and strict about the shape
+ * `proofPattern` is deliberately permissive about surrounding prose and strict about the shape
  * of the thing it captures, because the prose is what churns between CLI releases.
  */
-export const DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES: Readonly<
-  Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentAuthenticationProbeSpec>
+export const WORKSPACE_HOST_OMP_LOCAL_MODEL = "qwen2.5-coder:0.5b";
+export const WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER =
+  "P046_OMP_LOCAL_INFERENCE_OK";
+
+export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES: Readonly<
+  Record<
+    WorkspaceHostCanaryAgent,
+    readonly WorkspaceHostAgentVerificationProbeSpec[]
+  >
 > = {
-  claude: {
-    agent: "claude",
-    command: "claude",
-    args: ["auth", "status"],
-    endpoint: "https://api.anthropic.com",
-    // An email, or an account/organization identifier, whichever the status line reports.
-    // The separator class deliberately EXCLUDES alphanumerics: a `\D`-style separator matches
-    // letters, so a greedy run would swallow the subject itself and capture only its tail.
-    subjectPattern: SUBJECT_PATTERN,
-    subjectDisclosure: "digest",
-  },
-  codex: {
-    agent: "codex",
-    command: "codex",
-    args: ["login", "status"],
-    endpoint: "https://api.openai.com",
-    subjectPattern: SUBJECT_PATTERN,
-    subjectDisclosure: "digest",
-  },
-  omp: {
-    agent: "omp",
-    command: "omp",
-    args: ["usage", "--json", "--redact"],
-    endpoint: "papercusp-omp-broker",
-    // `--redact` already reduces account ids to a shortest-unique prefix, so the captured value
-    // is publishable as-is; this reads the first account id out of the JSON report.
-    subjectPattern:
-      /"(?:account|accountId|account_id)"\s*:\s*"([^"\\]{1,120})"/,
-    subjectDisclosure: "redacted",
-  },
+  claude: [
+    {
+      agent: "claude",
+      verificationKind: "authenticated-account",
+      command: "claude",
+      args: ["auth", "status"],
+      endpoint: "https://api.anthropic.com",
+      // An email, or an account/organization identifier, whichever the status line reports.
+      // The separator class deliberately EXCLUDES alphanumerics: a `\D`-style separator matches
+      // letters, so a greedy run would swallow the subject itself and capture only its tail.
+      proofPattern: SUBJECT_PATTERN,
+      subjectDisclosure: "digest",
+    },
+  ],
+  codex: [
+    {
+      agent: "codex",
+      verificationKind: "authenticated-account",
+      command: "codex",
+      args: ["login", "status"],
+      endpoint: "https://api.openai.com",
+      proofPattern: SUBJECT_PATTERN,
+      subjectDisclosure: "digest",
+    },
+  ],
+  omp: [
+    {
+      agent: "omp",
+      verificationKind: "authenticated-account",
+      command: "omp",
+      args: ["usage", "--json", "--redact"],
+      endpoint: "papercusp-omp-broker",
+      // `--redact` already reduces account ids to a shortest-unique prefix, so the captured value
+      // is publishable as-is; this reads the first account id out of the JSON report.
+      proofPattern:
+        /"(?:account|accountId|account_id)"\s*:\s*"([^"\\]{1,120})"/,
+      subjectDisclosure: "redacted",
+    },
+    {
+      agent: "omp",
+      verificationKind: "local-inference",
+      command: "omp",
+      args: [
+        "--model",
+        `ollama/${WORKSPACE_HOST_OMP_LOCAL_MODEL}`,
+        "--print",
+        "--no-tools",
+        "--no-session",
+        "--no-extensions",
+        "--no-skills",
+        "--no-rules",
+        "--mode",
+        "text",
+        `Reply with exactly ${WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER} and nothing else.`,
+      ],
+      endpoint: "http://127.0.0.1:11434",
+      proofPattern: new RegExp(
+        `^\\s*(${WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER})\\s*$`,
+      ),
+      subjectDisclosure: "digest",
+      timeoutMs: 180_000,
+    },
+  ],
 };
 
 const DEFAULT_PROBE_TIMEOUT_MS = 60_000;
@@ -218,17 +264,18 @@ export function buildWorkspaceHostAgentProbeProcess(
 }
 
 /** Public, secret-isolated evidence for one agent. */
-export interface WorkspaceHostAgentAuthenticationEvidence {
-  readonly contractVersion: typeof WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION;
+export interface WorkspaceHostAgentVerificationEvidence {
+  readonly contractVersion: typeof WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION;
   readonly agent: WorkspaceHostCanaryAgent;
-  readonly authenticated: boolean;
+  readonly ready: boolean;
+  readonly verificationKind: WorkspaceHostAgentVerificationKind;
   readonly endpoint: string;
   readonly exitStatus: number;
   readonly observedAt: string;
   /** Present only for a `redacted` probe; the tool produced the redaction, not us. */
   readonly subject?: string;
-  /** Always present on a successful probe: a stable, non-reversible account discriminator. */
-  readonly subjectDigest?: string;
+  /** Always present on a successful probe: a stable digest of the parsed proof value. */
+  readonly proofDigest?: string;
   readonly subjectDisclosure: WorkspaceHostAgentSubjectDisclosure;
   /** Populated only on failure, and only with a fixed reason code — never CLI output. */
   readonly failure?: WorkspaceHostAgentProbeFailureReason;
@@ -236,7 +283,7 @@ export interface WorkspaceHostAgentAuthenticationEvidence {
 
 export type WorkspaceHostAgentProbeFailureReason =
   | "non-zero-exit"
-  | "no-authenticated-subject"
+  | "no-verification-proof"
   | "probe-error";
 
 export function workspaceHostAgentSubjectDigest(subject: string): string {
@@ -323,7 +370,7 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
 }
 
 export interface ProbeWorkspaceHostAgentInput {
-  readonly spec: WorkspaceHostAgentAuthenticationProbeSpec;
+  readonly spec: WorkspaceHostAgentVerificationProbeSpec;
   readonly runner: WorkspaceHostAgentProbeRunner;
   readonly now: () => Date;
   readonly env?: Readonly<Record<string, string>>;
@@ -331,13 +378,14 @@ export interface ProbeWorkspaceHostAgentInput {
 }
 
 /** Run one probe and reduce it to publishable evidence. */
-export async function probeWorkspaceHostAgentAuthentication(
+export async function probeWorkspaceHostAgentVerification(
   input: ProbeWorkspaceHostAgentInput,
-): Promise<WorkspaceHostAgentAuthenticationEvidence> {
+): Promise<WorkspaceHostAgentVerificationEvidence> {
   const { spec, runner, now } = input;
   const base = {
-    contractVersion: WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+    contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     agent: spec.agent,
+    verificationKind: spec.verificationKind,
     endpoint: spec.endpoint,
     subjectDisclosure: spec.subjectDisclosure,
   } as const;
@@ -356,7 +404,7 @@ export async function probeWorkspaceHostAgentAuthentication(
     // never surfaced. A caller that needs to debug reads the host's own logs.
     return {
       ...base,
-      authenticated: false,
+      ready: false,
       exitStatus: -1,
       observedAt: now().toISOString(),
       failure: "probe-error",
@@ -367,32 +415,35 @@ export async function probeWorkspaceHostAgentAuthentication(
   if (outcome.exitCode !== 0) {
     return {
       ...base,
-      authenticated: false,
+      ready: false,
       exitStatus: outcome.exitCode,
       observedAt,
       failure: "non-zero-exit",
     };
   }
 
-  const match = spec.subjectPattern.exec(outcome.stdout);
-  const subject = match?.[1]?.trim();
-  if (!subject) {
+  const match = spec.proofPattern.exec(outcome.stdout);
+  const proof = match?.[1]?.trim();
+  if (!proof) {
     return {
       ...base,
-      authenticated: false,
+      ready: false,
       exitStatus: outcome.exitCode,
       observedAt,
-      failure: "no-authenticated-subject",
+      failure: "no-verification-proof",
     };
   }
 
-  const evidence: WorkspaceHostAgentAuthenticationEvidence = {
+  const evidence: WorkspaceHostAgentVerificationEvidence = {
     ...base,
-    authenticated: true,
+    ready: true,
     exitStatus: outcome.exitCode,
     observedAt,
-    subjectDigest: workspaceHostAgentSubjectDigest(subject),
-    ...(spec.subjectDisclosure === "redacted" ? { subject } : {}),
+    proofDigest: workspaceHostAgentSubjectDigest(proof),
+    ...(spec.verificationKind === "authenticated-account" &&
+    spec.subjectDisclosure === "redacted"
+      ? { subject: proof }
+      : {}),
   };
   assertWorkspaceHostSecretIsolation(
     evidence,
@@ -401,19 +452,22 @@ export async function probeWorkspaceHostAgentAuthentication(
   return evidence;
 }
 
-export interface WorkspaceHostAgentAuthenticationReport {
-  readonly contractVersion: typeof WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION;
+export interface WorkspaceHostAgentVerificationReport {
+  readonly contractVersion: typeof WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION;
   readonly observedAt: string;
-  readonly allAuthenticated: boolean;
+  readonly allReady: boolean;
   readonly agents: Readonly<
-    Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentAuthenticationEvidence>
+    Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>
   >;
 }
 
 export interface ProbeWorkspaceHostAgentsInput {
   readonly runner: WorkspaceHostAgentProbeRunner;
   readonly probes?: Partial<
-    Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentAuthenticationProbeSpec>
+    Record<
+      WorkspaceHostCanaryAgent,
+      readonly WorkspaceHostAgentVerificationProbeSpec[]
+    >
   >;
   readonly now?: () => Date;
   /** Exact environment shared by all three sequential probes. */
@@ -431,37 +485,43 @@ export interface ProbeWorkspaceHostAgentsInput {
  */
 export async function probeWorkspaceHostAgents(
   input: ProbeWorkspaceHostAgentsInput,
-): Promise<WorkspaceHostAgentAuthenticationReport> {
+): Promise<WorkspaceHostAgentVerificationReport> {
   const now = input.now ?? (() => new Date());
   const agents: Partial<
-    Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentAuthenticationEvidence>
+    Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>
   > = {};
   for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
-    const spec =
+    const specs =
       input.probes?.[agent] ??
-      DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES[agent];
-    if (spec.agent !== agent) {
-      throw new Error(
-        `agent probe for '${agent}' declares agent '${spec.agent}'`,
-      );
+      DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES[agent];
+    if (specs.length === 0) {
+      throw new Error(`agent '${agent}' has no verification probes`);
     }
-    agents[agent] = await probeWorkspaceHostAgentAuthentication({
-      spec,
-      runner: input.runner,
-      now,
-      ...(input.env ? { env: input.env } : {}),
-      ...(input.runAsUser ? { runAsUser: input.runAsUser } : {}),
-    });
+    for (const spec of specs) {
+      if (spec.agent !== agent) {
+        throw new Error(
+          `agent probe for '${agent}' declares agent '${spec.agent}'`,
+        );
+      }
+      agents[agent] = await probeWorkspaceHostAgentVerification({
+        spec,
+        runner: input.runner,
+        now,
+        ...(input.env ? { env: input.env } : {}),
+        ...(input.runAsUser ? { runAsUser: input.runAsUser } : {}),
+      });
+      if (agents[agent]?.ready) break;
+    }
   }
   const complete = agents as Record<
     WorkspaceHostCanaryAgent,
-    WorkspaceHostAgentAuthenticationEvidence
+    WorkspaceHostAgentVerificationEvidence
   >;
-  const report: WorkspaceHostAgentAuthenticationReport = {
-    contractVersion: WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+  const report: WorkspaceHostAgentVerificationReport = {
+    contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     observedAt: now().toISOString(),
-    allAuthenticated: WORKSPACE_HOST_CANARY_AGENTS.every(
-      (agent) => complete[agent].authenticated,
+    allReady: WORKSPACE_HOST_CANARY_AGENTS.every(
+      (agent) => complete[agent].ready,
     ),
     agents: complete,
   };

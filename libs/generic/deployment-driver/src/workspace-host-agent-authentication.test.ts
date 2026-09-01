@@ -3,11 +3,12 @@ import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES,
+  DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES,
   NodeWorkspaceHostAgentProbeRunner,
+  WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER,
   WORKSPACE_HOST_CANARY_AGENTS,
   buildWorkspaceHostAgentProbeProcess,
-  probeWorkspaceHostAgentAuthentication,
+  probeWorkspaceHostAgentVerification,
   probeWorkspaceHostAgents,
   workspaceHostAgentSubjectDigest,
   type WorkspaceHostAgentProbeInvocation,
@@ -57,50 +58,59 @@ const AUTHENTICATED = {
   },
 } satisfies Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentProbeOutcome>;
 
-describe("workspace-host agent authentication probes", () => {
-  it("uses a real authenticated-account verb for every agent, never a version check", () => {
+describe("workspace-host agent verification probes", () => {
+  it("uses a real account or inference verb for every agent, never a version check", () => {
     for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
-      const spec = DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES[agent];
-      expect(spec.agent).toBe(agent);
-      expect(spec.args.length).toBeGreaterThan(0);
-      // A `--version` probe passes on a host where nobody has ever signed in, which is exactly
-      // the state the canary exists to detect.
-      expect(spec.args).not.toContain("--version");
-      expect(spec.args).not.toContain("-v");
-      expect(spec.endpoint.length).toBeGreaterThan(0);
+      for (const spec of DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES[
+        agent
+      ]) {
+        expect(spec.agent).toBe(agent);
+        expect(spec.args.length).toBeGreaterThan(0);
+        expect(spec.args).not.toContain("--version");
+        expect(spec.args).not.toContain("-v");
+        expect(spec.endpoint.length).toBeGreaterThan(0);
+      }
     }
     expect(
-      DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.claude.args,
+      DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0].args,
     ).toEqual(["auth", "status"]);
     expect(
-      DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.codex.args,
+      DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[0].args,
     ).toEqual(["login", "status"]);
-    expect(DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.omp.args).toEqual(
-      ["usage", "--json", "--redact"],
-    );
+    expect(
+      DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.omp[0].args,
+    ).toEqual(["usage", "--json", "--redact"]);
+    expect(
+      DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.omp[1],
+    ).toMatchObject({
+      verificationKind: "local-inference",
+      command: "omp",
+      endpoint: "http://127.0.0.1:11434",
+    });
   });
 
   it("reports authenticated with only the four permitted discriminators", async () => {
     const runner = new ScriptedRunner({ claude: AUTHENTICATED.claude });
-    const evidence = await probeWorkspaceHostAgentAuthentication({
-      spec: DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.claude,
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
       runner,
       now: NOW,
     });
 
-    expect(evidence.authenticated).toBe(true);
+    expect(evidence.ready).toBe(true);
+    expect(evidence.verificationKind).toBe("authenticated-account");
     expect(evidence.exitStatus).toBe(0);
     expect(evidence.endpoint).toBe("https://api.anthropic.com");
     expect(evidence.observedAt).toBe("2026-08-25T22:30:00.000Z");
-    expect(evidence.subjectDigest).toBe(
+    expect(evidence.proofDigest).toBe(
       workspaceHostAgentSubjectDigest("canary@papercup.ai"),
     );
   });
 
   it("never lets raw stdout or an un-redacted subject reach the evidence", async () => {
     const runner = new ScriptedRunner({ claude: AUTHENTICATED.claude });
-    const evidence = await probeWorkspaceHostAgentAuthentication({
-      spec: DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.claude,
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
       runner,
       now: NOW,
     });
@@ -113,14 +123,60 @@ describe("workspace-host agent authentication probes", () => {
 
   it("publishes the subject verbatim only when the tool itself redacted it", async () => {
     const runner = new ScriptedRunner({ omp: AUTHENTICATED.omp });
-    const evidence = await probeWorkspaceHostAgentAuthentication({
-      spec: DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.omp,
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.omp[0],
       runner,
       now: NOW,
     });
     expect(evidence.subjectDisclosure).toBe("redacted");
     expect(evidence.subject).toBe("can…4f2");
-    expect(evidence.subjectDigest).toBeDefined();
+    expect(evidence.proofDigest).toBeDefined();
+  });
+
+  it("falls back from an empty OMP account report to real loopback local inference", async () => {
+    const invocations: WorkspaceHostAgentProbeInvocation[] = [];
+    const runner: WorkspaceHostAgentProbeRunner = {
+      async run(invocation) {
+        invocations.push(invocation);
+        if (invocation.command === "claude") return AUTHENTICATED.claude;
+        if (invocation.command === "codex") return AUTHENTICATED.codex;
+        if (invocation.args[0] === "usage") {
+          return { exitCode: 0, stdout: JSON.stringify({ reports: [] }) };
+        }
+        return {
+          exitCode: 0,
+          stdout: `${WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER}\n`,
+        };
+      },
+    };
+
+    const report = await probeWorkspaceHostAgents({ runner, now: NOW });
+
+    expect(report.allReady).toBe(true);
+    expect(report.agents.omp).toMatchObject({
+      ready: true,
+      verificationKind: "local-inference",
+      endpoint: "http://127.0.0.1:11434",
+      proofDigest: workspaceHostAgentSubjectDigest(
+        WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER,
+      ),
+    });
+    expect(report.agents.omp.subject).toBeUndefined();
+    expect(invocations.filter((entry) => entry.command === "omp")).toHaveLength(
+      2,
+    );
+    expect(
+      invocations.find(
+        (entry) => entry.command === "omp" && entry.args.includes("--model"),
+      )?.args,
+    ).toContain("--no-session");
+    expect(
+      invocations.find(
+        (entry) => entry.command === "omp" && entry.args.includes("--model"),
+      )?.args,
+    ).toEqual(
+      expect.arrayContaining(["--no-extensions", "--no-skills", "--no-rules"]),
+    );
   });
 
   it("treats a non-zero exit as unauthenticated and records the status", async () => {
@@ -130,12 +186,12 @@ describe("workspace-host agent authentication probes", () => {
         stdout: "Not logged in. Run `claude auth login`.\n",
       },
     });
-    const evidence = await probeWorkspaceHostAgentAuthentication({
-      spec: DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.claude,
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
       runner,
       now: NOW,
     });
-    expect(evidence.authenticated).toBe(false);
+    expect(evidence.ready).toBe(false);
     expect(evidence.exitStatus).toBe(1);
     expect(evidence.failure).toBe("non-zero-exit");
     expect(JSON.stringify(evidence)).not.toContain("claude auth login");
@@ -147,13 +203,13 @@ describe("workspace-host agent authentication probes", () => {
     const runner = new ScriptedRunner({
       claude: { exitCode: 0, stdout: "OK\n" },
     });
-    const evidence = await probeWorkspaceHostAgentAuthentication({
-      spec: DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.claude,
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
       runner,
       now: NOW,
     });
-    expect(evidence.authenticated).toBe(false);
-    expect(evidence.failure).toBe("no-authenticated-subject");
+    expect(evidence.ready).toBe(false);
+    expect(evidence.failure).toBe("no-verification-proof");
   });
 
   it("reduces a thrown probe error to a code, never surfacing the error text", async () => {
@@ -162,24 +218,24 @@ describe("workspace-host agent authentication probes", () => {
         "spawn /opt/papercusp/current/bin/claude ENOENT --token=abc",
       ),
     });
-    const evidence = await probeWorkspaceHostAgentAuthentication({
-      spec: DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.claude,
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
       runner,
       now: NOW,
     });
-    expect(evidence.authenticated).toBe(false);
+    expect(evidence.ready).toBe(false);
     expect(evidence.failure).toBe("probe-error");
     expect(evidence.exitStatus).toBe(-1);
     expect(JSON.stringify(evidence)).not.toContain("ENOENT");
   });
 
-  it("probes all three agents and reports allAuthenticated only when every one passed", async () => {
+  it("probes all three agents and reports allReady only when every one passed", async () => {
     const allGood = new ScriptedRunner({ ...AUTHENTICATED });
     const report = await probeWorkspaceHostAgents({
       runner: allGood,
       now: NOW,
     });
-    expect(report.allAuthenticated).toBe(true);
+    expect(report.allReady).toBe(true);
     expect(Object.keys(report.agents).sort()).toEqual([
       "claude",
       "codex",
@@ -201,9 +257,9 @@ describe("workspace-host agent authentication probes", () => {
       runner: oneBad,
       now: NOW,
     });
-    expect(degraded.allAuthenticated).toBe(false);
-    expect(degraded.agents.codex.authenticated).toBe(false);
-    expect(degraded.agents.claude.authenticated).toBe(true);
+    expect(degraded.allReady).toBe(false);
+    expect(degraded.agents.codex.ready).toBe(false);
+    expect(degraded.agents.claude.ready).toBe(true);
   });
 
   it("refuses a probe spec whose declared agent does not match its slot", async () => {
@@ -212,9 +268,7 @@ describe("workspace-host agent authentication probes", () => {
         runner: new ScriptedRunner({ ...AUTHENTICATED }),
         now: NOW,
         probes: {
-          claude: {
-            ...DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES.codex,
-          },
+          claude: [DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[0]],
         },
       }),
     ).rejects.toThrow(/declares agent 'codex'/);
