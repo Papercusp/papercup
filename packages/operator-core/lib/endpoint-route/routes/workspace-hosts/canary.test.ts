@@ -52,9 +52,9 @@ function resultFixture(adapted = false): WorkspaceHostCanaryRunResult {
       },
     },
     agents: {
-      claude: { authenticated: true as const },
-      codex: { authenticated: true as const },
-      omp: { authenticated: true as const },
+      claude: { ready: true as const, verificationKind: 'authenticated-account' as const },
+      codex: { ready: true as const, verificationKind: 'authenticated-account' as const },
+      omp: { ready: true as const, verificationKind: 'local-inference' as const },
     },
     backupRestore: {
       authorizationMaterial: 'excluded' as const,
