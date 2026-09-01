@@ -2961,14 +2961,39 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   }
 
   const completedAt = Date.now();
-  await writeGitSyncActivity(slug, workspaceId, {
-    active: false,
-    phase: 'complete',
-    started_at: activityStartedAt,
-    updated_at: completedAt,
-    completed_at: completedAt,
-    outcome_status: outcome.status,
-  });
+  try {
+    await writeGitSyncActivity(slug, workspaceId, {
+      active: false,
+      phase: 'complete',
+      started_at: activityStartedAt,
+      updated_at: completedAt,
+      completed_at: completedAt,
+      outcome_status: outcome.status,
+    });
+  } catch (error) {
+    // EI-22053184584978917: the preceding post-legs marker is active, so a
+    // terminal-write failure must not leave this fire looking indefinitely in
+    // flight. Record an explicit terminal error marker before rethrowing so the
+    // routine engine retries the failed tick without a stale `post-legs` state.
+    const failedAt = Date.now();
+    await writeGitSyncActivity(slug, workspaceId, {
+      active: false,
+      phase: 'error',
+      started_at: activityStartedAt,
+      updated_at: failedAt,
+      completed_at: failedAt,
+      outcome_status: outcome.status,
+    }).catch((metadataError) => {
+      // If the metadata store is still unavailable, preserve the original
+      // failure for the retry path and make the fallback failure observable.
+      console.warn(
+        `[git-sync] ${slug}: could not record terminal activity-write failure: ${
+          metadataError instanceof Error ? metadataError.message : String(metadataError)
+        }`,
+      );
+    });
+    throw error;
+  }
 
   // Start only after the queued handoff and terminal activity are both durable.
   // If another process already owns this candidate, leave it alone; a queued
