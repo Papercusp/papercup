@@ -74,7 +74,14 @@ vi.mock('../../release-checkpoint-config', async (orig) => ({
 // an empty result with a numeric `.count` (postgres.js Result shape) so every caller —
 // rows[0]?.gh (→ {}), cleared.count (→ 0, no stall-clear warn), shouldBackOff(null) (→ false,
 // same as the fail-open path) — behaves as the no-prior-state happy path.
-const fakeSql = { unsafe: vi.fn(async (..._a: unknown[]) => Object.assign([] as unknown[], { count: 0 })) };
+const fakeSql = {
+  unsafe: vi.fn(async (..._a: unknown[]) => Object.assign([] as unknown[], { count: 0 })),
+  // The retire path uses a short transaction so the routine-row lock, liveness sample, and
+  // identity CAS are one lifecycle cut. Keep the fake transactional rather than silently
+  // falling back to a non-atomic test path.
+  begin: vi.fn(),
+};
+fakeSql.begin.mockImplementation(async (callback: (tx: typeof fakeSql) => Promise<unknown>) => callback(fakeSql));
 // The postgres.js Result shape `fakeSql.unsafe` resolves to: the rows PLUS a numeric `.count`.
 // Build mock resolutions through this so a stubbed query keeps the real result's shape — a bare
 // array is not assignable to it, and casting the difference away (`as never`) is exactly the
@@ -180,6 +187,7 @@ import {
   retireFrozenCandidateRepairQueue,
   reserveFrozenCandidateRepairFixer,
   renewFrozenCandidateRepairFixerReservation,
+  finalizeFrozenCandidateRepairFixer,
   writeFrozenCandidateRepairQueue,
   type AutoServePlan,
   type DeployEventRow,
@@ -2349,6 +2357,43 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     });
   });
 
+  it('P-003: durable checkpoint detail separates frozenCandidate from a mutable no-suite repairHead', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      // A no-suite verdict may carry the repair head in the legacy candidate field. The
+      // serialized status must replace that compatibility value with the immutable pin.
+      candidate: 'c'.repeat(40),
+      repairQueue: {
+        schemaVersion: 1,
+        phase: 'awaiting-fixer',
+        candidate: 'a'.repeat(40),
+        base: 'b'.repeat(40),
+        repairHead: 'c'.repeat(40),
+        worktreePath: '/tmp/repair',
+        attempts: 1,
+        openedAtMs: 1,
+        updatedAtMs: 2,
+        fixerSpawnId: 'fixer-2',
+        failingTests: ['lib/red.test.ts'],
+      },
+    });
+
+    expect(d).toMatchObject({
+      candidate: 'a'.repeat(12),
+      frozenCandidate: 'a'.repeat(12),
+      repairHead: 'c'.repeat(12),
+      verdictProvenance: {
+        frozenCandidate: 'a'.repeat(12),
+        repairHead: 'c'.repeat(12),
+        phase: 'awaiting-fixer',
+        currentStatus: 'no-suite',
+        frozenCandidateVerdict: 'full-gate-red',
+        repairHeadVerdict: 'not-judged',
+      },
+    });
+  });
+
   it('EI-21763163890991789: buildCheckpointDetail preserves bounded fossil-pin abandonment evidence', () => {
     const d = buildCheckpointDetail({
       reason: 'candidate-fossil',
@@ -2770,34 +2815,49 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
   });
 
   it('retires only the exact inspected queue and returns the replacement on a CAS miss', async () => {
-    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ retired: true }]));
-    await expect(retireFrozenCandidateRepairQueue(target, queue)).resolves.toEqual({
+    const retirableQueue = { ...queue, phase: 'awaiting-fixer' as const };
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ metadata: { repair_queue: retirableQueue } }]))
+      .mockResolvedValueOnce(sqlRows([]))
+      .mockResolvedValueOnce(sqlRows([{ retired: true }]));
+    await expect(retireFrozenCandidateRepairQueue(target, retirableQueue)).resolves.toEqual({
       retired: true,
       current: null,
     });
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       1,
+      expect.stringMatching(/SELECT metadata[\s\S]+target_role = 'system:green-checkpoint'[\s\S]+FOR UPDATE/),
+      ['ws-42', 'my-harness'],
+    );
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      3,
       expect.stringMatching(
-        /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+RETURNING true AS retired/,
+        /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+metadata->'repair_queue'->>'fixerSpawnId'[\s\S]+RETURNING true AS retired/,
       ),
-      ['ws-42', 'my-harness', queue.candidate, queue.repairHead, queue.updatedAtMs],
+      ['ws-42', 'my-harness', retirableQueue.candidate, retirableQueue.repairHead, retirableQueue.updatedAtMs, retirableQueue.fixerSpawnId],
     );
 
-    const replacement = { ...queue, updatedAtMs: 3, repairHead: 'd'.repeat(40) };
-    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([])).mockResolvedValueOnce(sqlRows([{ repair_queue: replacement }]));
-    await expect(retireFrozenCandidateRepairQueue(target, queue)).resolves.toMatchObject({
+    const replacement = { ...retirableQueue, updatedAtMs: 3, repairHead: 'd'.repeat(40) };
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ metadata: { repair_queue: replacement } }]))
+      .mockResolvedValueOnce(sqlRows([{ repair_queue: replacement }]));
+    await expect(retireFrozenCandidateRepairQueue(target, retirableQueue)).resolves.toMatchObject({
       retired: false,
-      current: { updatedAtMs: 3, repairHead: 'd'.repeat(40) },
+      current: { updatedAtMs: replacement.updatedAtMs, repairHead: replacement.repairHead },
     });
   });
 
   it('matches retirement on stable identity when the stored queue has additive fields', async () => {
     const newerQueue = {
       ...queue,
+      phase: 'awaiting-fixer' as const,
       convergenceRounds: [{ round: 1, head: queue.repairHead, failingCount: 1, atMs: 3 }],
       newerCheckpointField: { writtenBy: 'a-newer-build' },
     } as FrozenCandidateRepairQueue & { newerCheckpointField: unknown };
-    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ retired: true }]));
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ metadata: { repair_queue: newerQueue } }]))
+      .mockResolvedValueOnce(sqlRows([]))
+      .mockResolvedValueOnce(sqlRows([{ retired: true }]));
 
     await expect(retireFrozenCandidateRepairQueue(target, newerQueue)).resolves.toEqual({
       retired: true,
@@ -2805,13 +2865,13 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     });
     expect(fakeSql.unsafe).toHaveBeenCalledWith(
       expect.stringMatching(
-        /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)/,
+        /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+metadata->'repair_queue'->>'fixerSpawnId'[\s\S]+RETURNING true AS retired/,
       ),
-      ['ws-42', 'my-harness', queue.candidate, queue.repairHead, queue.updatedAtMs],
+      ['ws-42', 'my-harness', newerQueue.candidate, newerQueue.repairHead, newerQueue.updatedAtMs, newerQueue.fixerSpawnId],
     );
   });
 
-  it('reserves an unassigned fixer with precedence-safe JSONB subtraction', async () => {
+  it('reserves an unassigned fixer with a version-tolerant identity CAS and merge-write', async () => {
     const awaitingQueue: FrozenCandidateRepairQueue = {
       ...queue,
       schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
@@ -2836,8 +2896,52 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
         expiresAtMs: 300_100,
       },
     });
-    const [statement] = fakeSql.unsafe.mock.calls.at(-1)!;
-    expect(statement).toContain("(metadata->'repair_queue') - 'dispatchReservation'");
+    const [statement, params] = fakeSql.unsafe.mock.calls.at(-1)!;
+    // P-008 / EI-21813295393334986: identity CAS (never whole-row jsonb equality) plus a MERGE
+    // over the stored row, so a build-skewed peer's unknown fields neither break the match nor
+    // get dropped by the write.
+    expect(statement).toContain(
+      "COALESCE(NULLIF(metadata->'repair_queue', 'null'::jsonb), '{}'::jsonb) || $3::jsonb",
+    );
+    expect(statement).toContain("metadata->'repair_queue'->>'candidate' = $4");
+    expect(statement).toContain("metadata->'repair_queue'->>'repairHead' = $5");
+    expect(statement).toContain("metadata->'repair_queue'->>'updatedAtMs' = $6");
+    expect(statement).not.toContain("- 'dispatchReservation' = ");
+    expect((params as unknown[]).slice(3)).toEqual([
+      awaitingQueue.candidate,
+      awaitingQueue.repairHead,
+      String(awaitingQueue.updatedAtMs),
+      100,
+    ]);
+  });
+
+  it('reserve CAS matches on identity even when the queue carries additive unknown fields', async () => {
+    const skewedQueue = {
+      ...queue,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+      phase: 'awaiting-fixer' as const,
+      repairHead: queue.candidate,
+      attempts: 0,
+      fixerSpawnId: null,
+      freeRetries: 2,
+      newerBuildField: { writtenBy: 'a-newer-build' },
+    } as FrozenCandidateRepairQueue & { newerBuildField: unknown };
+    fakeSql.unsafe.mockImplementationOnce(async (_query: unknown, params: unknown) => {
+      const reservedQueue = JSON.parse((params as unknown[])[2] as string) as FrozenCandidateRepairQueue;
+      return sqlRows([{ repair_queue: reservedQueue }]);
+    });
+
+    const reserved = await reserveFrozenCandidateRepairFixer(target, skewedQueue, { nowMs: 100 });
+
+    expect(reserved?.dispatchReservation).toMatchObject({ claimedAtMs: 100 });
+    const [, params] = fakeSql.unsafe.mock.calls.at(-1)!;
+    // The CAS params are exactly the three identity fields — the unknown field is not part of
+    // the match, so a build that has never heard of it can still take (and exit) the queue.
+    expect((params as unknown[]).slice(3, 6)).toEqual([
+      skewedQueue.candidate,
+      skewedQueue.repairHead,
+      String(skewedQueue.updatedAtMs),
+    ]);
   });
 
   it('renews only the exact token-bearing reservation', async () => {
@@ -2867,8 +2971,54 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       expiresAtMs: 550_000,
     });
     const [statement, params] = fakeSql.unsafe.mock.calls.at(-1)!;
-    expect(statement).toContain("metadata->'repair_queue' = $4::jsonb");
-    expect((params as unknown[])[3]).toBe(JSON.stringify(reservedQueue));
+    // P-008: token stays the lease authority; identity fields pin the queue generation. The
+    // whole-row equality this replaced could not survive writer/reader build skew.
+    expect(statement).toContain("metadata->'repair_queue'->'dispatchReservation'->>'token' = $7");
+    expect(statement).toContain("metadata->'repair_queue'->>'candidate' = $4");
+    expect(statement).toContain(
+      "COALESCE(NULLIF(metadata->'repair_queue', 'null'::jsonb), '{}'::jsonb) || $3::jsonb",
+    );
+    expect(statement).not.toContain("metadata->'repair_queue' = $4::jsonb");
+    expect((params as unknown[]).slice(3)).toEqual([
+      reservedQueue.candidate,
+      reservedQueue.repairHead,
+      String(reservedQueue.updatedAtMs),
+      'owner-token',
+    ]);
+  });
+
+  it('finalize removes only the reservation via an identity+token CAS merge-write', async () => {
+    const reservedQueue: FrozenCandidateRepairQueue = {
+      ...queue,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+      phase: 'awaiting-fixer',
+      repairHead: queue.candidate,
+      attempts: 0,
+      fixerSpawnId: null,
+      dispatchReservation: { token: 'owner-token', claimedAtMs: 100, expiresAtMs: 300_100 },
+    };
+    fakeSql.unsafe.mockImplementationOnce(async (_query: unknown, params: unknown) => {
+      const finalized = JSON.parse((params as unknown[])[2] as string) as FrozenCandidateRepairQueue;
+      return sqlRows([{ repair_queue: finalized }]);
+    });
+
+    const finalized = await finalizeFrozenCandidateRepairFixer(target, reservedQueue, null, 250_000);
+
+    expect(finalized?.dispatchReservation).toBeUndefined();
+    expect(finalized?.updatedAtMs).toBe(250_000);
+    const [statement, params] = fakeSql.unsafe.mock.calls.at(-1)!;
+    // The serialized payload carries no reservation key, and a jsonb merge cannot delete a
+    // key — the statement must remove it explicitly after the merge.
+    expect(statement).toContain("- 'dispatchReservation'");
+    expect(statement).toContain("metadata->'repair_queue'->'dispatchReservation'->>'token' = $7");
+    const serialized = JSON.parse((params as unknown[])[2] as string) as Record<string, unknown>;
+    expect('dispatchReservation' in serialized).toBe(false);
+    expect((params as unknown[]).slice(3)).toEqual([
+      reservedQueue.candidate,
+      reservedQueue.repairHead,
+      String(reservedQueue.updatedAtMs),
+      'owner-token',
+    ]);
   });
 });
 

@@ -214,4 +214,41 @@ describe('release:repair-queue', () => {
       },
     });
   });
+
+  it('fails closed when a replacement fixer becomes liveness-unknown after the preflight proves the old fixer dead', async () => {
+    const replacement = { ...queue, fixerSpawnId: 'fixer-2', updatedAtMs: 3 };
+    mocks.retire.mockResolvedValueOnce({ retired: false, current: replacement });
+    // The first read authorizes the attempted retirement of the old dead fixer. The second read
+    // observes a replacement whose liveness is unavailable; that must remain a refusal, never a
+    // retry or an inferred death.
+    mocks.alive.mockResolvedValueOnce(false).mockResolvedValueOnce(null);
+
+    const result = body(
+      await tool.handler(
+        {
+          op: 'retire',
+          expectedCandidate: queue.candidate,
+          expectedRepairHead: queue.repairHead,
+          expectedUpdatedAtMs: queue.updatedAtMs,
+          reason: 'terminal incident cleanup',
+          confirm: true,
+        } as never,
+        { role: 'su' } as never,
+      ),
+    );
+
+    expect(mocks.retire).toHaveBeenCalledTimes(1);
+    expect(mocks.alive).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      ok: false,
+      casMiss: true,
+      reason: 'cas-miss',
+      current: {
+        fixerSpawnId: 'fixer-2',
+        fixerAlive: null,
+        retireAllowed: false,
+        retireRefusal: 'liveness-unknown',
+      },
+    });
+  });
 });
