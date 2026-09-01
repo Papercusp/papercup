@@ -118,27 +118,55 @@ say "2. installing probes"
     const groups = { twoLine: [], settled: [], unknown: [] };
     for (const c of P.cards()) {
       const col = [...c.classList]
-        .map(x => x.match(/^hud__card--(.+)$/)?.[1])
+        .map(x => { const m = x.match(/^hud__card--(.+)$/); return m ? m[1] : null; })
         .find(x => x && x !== "entity") || "unknown";
       const group = col === "ready" || col === "done" ? "settled" : (col === "unknown" ? "unknown" : "twoLine");
       groups[group].push(Math.round(c.getBoundingClientRect().height));
     }
     return groups;
   };
-  P.groupSummary = () => Object.fromEntries(Object.entries(P.groupHeights()).map(([name, values]) => {
-    const sorted = [...values].sort((a, b) => a - b);
-    return [name, {
-      cards: values.length,
-      minHeight: sorted.length ? sorted[0] : null,
-      maxHeight: sorted.length ? sorted[sorted.length - 1] : null,
-      medianHeight: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null,
-      distinctHeights: [...new Set(sorted)],
-    }];
-  }));
-  P.hasBothForms = () => {
-    const g = P.groupHeights();
-    return g.twoLine.length >= 1 && g.settled.length >= 1;
+  P.groupSummary = () => {
+    const groups = P.groupHeights();
+    const out = {};
+    for (const name of ["twoLine", "settled", "unknown"]) {
+      const values = groups[name], sorted = [...values].sort((a, b) => a - b);
+      out[name] = {
+        cards: values.length,
+        minHeight: sorted.length ? sorted[0] : null,
+        maxHeight: sorted.length ? sorted[sorted.length - 1] : null,
+        medianHeight: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null,
+        distinctHeights: [...new Set(sorted)],
+      };
+    }
+    return out;
   };
+  // Weighted Plans hides the ready/done columns behind count rails.  Focus a
+  // populated settled rail through the real segmented-filter control so the
+  // one-line form is measured on its own, then return to All.  The helpers are
+  // idempotent because VERIFY_TAURI_POLL may retry the same assertion.
+  P.focusSettled = () => {
+    const group = document.querySelector('[aria-label="Filter plans by column"]');
+    if (!group) return false;
+    const buttons = [...group.querySelectorAll('button')];
+    if (buttons.some(b => b.getAttribute('aria-pressed') === 'true' && /^(Done|Ready)\s/.test(b.textContent.trim()))) return true;
+    const count = b => Number((b.textContent.match(/(\d+)\s*$/) || [])[1] || 0);
+    const pick = buttons.find(b => /^Done\s/.test(b.textContent.trim()) && count(b) > 0)
+      || buttons.find(b => /^Ready\s/.test(b.textContent.trim()) && count(b) > 0);
+    if (!pick) return false;
+    P._settledLabel = pick.textContent.trim().replace(/\s+\d+\s*$/, '');
+    pick.click();
+    return true;
+  };
+  P.focusAll = () => {
+    const group = document.querySelector('[aria-label="Filter plans by column"]');
+    if (!group) return false;
+    const all = [...group.querySelectorAll('button')].find(b => /^All\s/.test(b.textContent.trim()));
+    if (!all) return false;
+    if (all.getAttribute('aria-pressed') !== 'true') all.click();
+    return true;
+  };
+  P.allSettled = () => P.cards().length >= 1 && P.cards().every(c =>
+    [...c.classList].some(x => x === 'hud__card--ready' || x === 'hud__card--done'));
 
   // HEIGHT. Measured against a baseline captured at natural width.
   //
@@ -315,12 +343,12 @@ say "3a. DENSITY AS SHIPPED at the current sha — whole population, ambient lay
 "$POLL" --require '.hud__cardtitle' --require-min 1 \
   --eval 'window.__hudprobe.cards().length >= 1' \
   || fatal "no plan cards to measure"
-# A single aggregate histogram can hide a missing settled-column population.
-# Require both forms to be present before recording the whole-board number;
-# the narrow viewport pass below repeats this guard after the real resize.
-"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hasBothForms()' \
-  || fatal "the live Plans board did not render both ordinary and settled plan-card forms; the density population is incomplete."
+# A single aggregate histogram can hide a missing ordinary population.  The
+# weighted board keeps ready/done behind count rails, so the settled form is
+# measured explicitly below rather than assumed to be present in this view.
 settle
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.groupHeights().twoLine.length >= 1' \
+  || fatal "the live Plans board did not render an ordinary two-line plan-card population"
 "$TAT" eval --pid "$PID" '
 (() => {
   const P = window.__hudprobe, h = P.heights();
@@ -338,6 +366,29 @@ settle
     populations: P.groupSummary(),
   }, null, 1);
 })()'
+
+say "3c. SETTLED FORM — focus a populated ready/done rail and measure it separately"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.focusSettled()' \
+  || fatal "neither the Done nor Ready filter contains a populated settled plan-card column"
+"$POLL" --require '.hud__cardtitle' --require-min 1 \
+  --eval 'window.__hudprobe.allSettled()' \
+  || fatal "the focused settled column did not render settled plan cards"
+settle
+"$TAT" eval --pid "$PID" '
+(() => ({ MEASURE: "density-settled-form",
+  focused: window.__hudprobe._settledLabel || "unknown",
+  viewport: window.innerWidth + "x" + window.innerHeight,
+  populations: window.__hudprobe.groupSummary(),
+  maxHeight: window.__hudprobe.maxHeight(),
+  titlesClamped: window.__hudprobe.titlesClamped(),
+}))()'
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.maxHeight() <= 52' \
+  || fatal "the focused settled plan-card form exceeds the 52px density target"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.focusAll()' \
+  || fatal "could not restore the All plans view after settled-form measurement"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.groupHeights().twoLine.length >= 1' \
+  || fatal "the All plans view did not return after settled-form measurement"
+settle
 
 say "3b. BASELINE at a genuinely ROOMY layout (400/520/400)"
 # Not the ambient layout: see P.TPL. At ~550px the grid is already at its floor,
