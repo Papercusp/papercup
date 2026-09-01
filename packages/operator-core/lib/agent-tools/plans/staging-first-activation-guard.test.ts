@@ -181,6 +181,40 @@ describe('staging-first activation guard', () => {
     expect(stagingFirstActivationProblems(parsed)).toEqual([]);
   });
 
+  it('does not treat explicit no-prerequisite decisions as release-plane gates', () => {
+    const parsed = plan(
+      ['- **P-001** `todo` Exercise the acceptance matrix on staging/current-build.'],
+      `### D-001 — Staging-first acceptance
+Date: 2026-08-27
+P-001 has NO deployed-main prerequisite for non-final acceptance.
+Deployed-main verification is never a prerequisite for closing P-001.
+D-004 excluded deployed-main as a closure prerequisite for P-001.
+Related: P-001`,
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it('does not read a descriptive serving block as blocked work', () => {
+    const parsed = plan(
+      ['- **P-001** `todo` Exercise the acceptance matrix on staging/current-build.'],
+      `### D-001 — Pipeline measurement
+Date: 2026-08-27
+P-001 observed that dev:pipeline_position's own serving block says codeAsOfSource 'deploy'.
+Related: P-001`,
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it('still rejects blocker semantics around deployment', () => {
+    const parsed = plan(['- **P-001** `todo` P-001 is blocked on deployment before continuing implementation.']);
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([
+      expect.objectContaining({ itemId: 'P-001', code: 'non_final_deployed_main_wait' }),
+    ]);
+  });
+
   it('rejects a vague deployed-only label without a concrete staging limitation', () => {
     const parsed = plan(['- **P-001** `todo` Wait for :3070 before closing this deployed-only check.']);
     expect(stagingFirstActivationProblems(parsed)).toHaveLength(1);
