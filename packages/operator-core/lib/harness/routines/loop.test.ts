@@ -931,6 +931,21 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
     });
   });
 
+  it('stamps a canonical work-item anchor into payload_template', async () => {
+    await materializeLoop({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'drive the item',
+      workItem: 'wi-42',
+    });
+    expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({
+      kickoff: 'drive the item',
+      workItem: 'WI-42',
+    });
+  });
+
   it('reads only the strict customWakePrompt marker; legacy rows remain non-custom', async () => {
     const query = vi.fn(async () => [
       {
@@ -942,14 +957,22 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
         // annotation the inferred type requires `customWakePrompt`, which makes the legacy row
         // below — a row that genuinely predates the marker — impossible to express. The point of
         // this test is that such rows exist, so the mock must be able to produce one.
-        payload_template: { kickoff: 'custom wake instruction', customWakePrompt: true } as Record<string, unknown>,
+        payload_template: {
+          kickoff: 'custom wake instruction',
+          customWakePrompt: true,
+          workItem: 'wi-42',
+        } as Record<string, unknown>,
         fire_count: 2,
         armed_at: null,
       },
     ]);
     const sql = transactionalSql(query);
     const facts = await readActiveLoopFacts('o', { sql: sql as never });
-    expect(facts).toMatchObject({ kickoff: 'custom wake instruction', customWakePrompt: true });
+    expect(facts).toMatchObject({
+      kickoff: 'custom wake instruction',
+      customWakePrompt: true,
+      workItem: 'WI-42',
+    });
 
     query.mockResolvedValueOnce([
       {
