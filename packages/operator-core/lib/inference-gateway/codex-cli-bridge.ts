@@ -29,7 +29,7 @@
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
-import { codexContextConfigArgs, normalizeCodexCliModel } from '../model-context-budget.mjs';
+import { codexContextConfigArgs, resolveCodexModel } from '../model-context-budget.mjs';
 import * as os from 'node:os';
 import type { AccountEgress } from '../deployment/account-pool';
 
@@ -70,13 +70,15 @@ const CODEX_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max
  * No/unknown effort suffix → `medium` (codex's own default).
  */
 export function parseBridgeModel(model: string | undefined): { id: string; effort: string } {
-  let m = (model ?? '').trim() || 'gpt-5.5';
+  let m = (model ?? '').trim();
   const slash = m.indexOf('/');
   if (slash > 0) m = m.slice(slash + 1);
-  const chatgpt = /^chatgpt:(.+)$/i.exec(m);
-  if (chatgpt) m = `gpt-${chatgpt[1]}`;
+  // Resolve before splitting effort so omitted requests receive the managed
+  // default and every explicit spelling crosses the Spark deny guard.
+  const resolved = resolveCodexModel(m || undefined);
   let effort = 'medium';
-  const colon = m.lastIndexOf(':');
+  const colon = resolved.lastIndexOf(':');
+  m = resolved;
   if (colon > 0) {
     const suffix = m
       .slice(colon + 1)
@@ -87,7 +89,7 @@ export function parseBridgeModel(model: string | undefined): { id: string; effor
       m = m.slice(0, colon);
     }
   }
-  return { id: normalizeCodexCliModel(m), effort };
+  return { id: m, effort };
 }
 
 export interface CodexCliRunOpts {

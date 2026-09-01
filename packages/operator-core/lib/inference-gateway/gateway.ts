@@ -3543,7 +3543,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
         model('gpt-5.5', 'gpt-5.5', 'Frontier model for complex coding, research, and real-world work.', 12),
         model('gpt-5.4', 'gpt-5.4', 'Strong model for everyday coding.', 11, 272_000, 1_000_000),
         model('gpt-5.4-mini', 'gpt-5.4-mini', 'Small, fast, and cost-efficient model for simpler coding tasks.', 10),
-        model('gpt-5.3-codex-spark', 'gpt-5.3-codex-spark', 'Ultra-fast coding model.', 9, 128_000),
       ],
     };
   }
@@ -5423,6 +5422,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           execution.url,
           kernelAdmission,
           execution.routing,
+          execution.preBody,
         );
         return;
       case 'serveCodexCliBridge':
@@ -5495,7 +5495,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         stageSpan?.endStage('bodyRead');
       }
     }
-    let body: { model?: unknown; input?: unknown; instructions?: unknown; stream?: unknown } = {};
+    let body: { model?: unknown; input?: unknown; instructions?: unknown; stream?: unknown; reasoning?: unknown } = {};
     try {
       body = JSON.parse(bodyBuf.toString('utf8')) as typeof body;
     } catch {
@@ -5513,7 +5513,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // The wire contract this request will actually be served on — not the transport's buffered
     // implementation. This is what arms the `stream`-stage requirement in the span's finish gate.
     stageSpan?.setStreaming(wantsStream);
-    const { id: model, effort } = parseBridgeModel(typeof body.model === 'string' ? body.model : undefined);
+    const parsedBridgeModel = parseBridgeModel(typeof body.model === 'string' ? body.model : undefined);
+    let effort = parsedBridgeModel.effort;
+    if (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) {
+      const requestedEffort = (body.reasoning as Record<string, unknown>).effort;
+      if (typeof requestedEffort === 'string' && /^(minimal|low|medium|high|xhigh|max)$/i.test(requestedEffort.trim())) {
+        effort = requestedEffort.trim().toLowerCase();
+      }
+    }
+    const model = parsedBridgeModel.id;
     stageSpan?.setModel(model);
     const inputText = extractResponsesInputText(body.input);
     if (!inputText.trim()) {
@@ -5856,13 +5864,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
     url: string,
     kernelAdmission: GatewayLaneAdmission,
     routing: CodexLegacyRouting,
+    preBody?: Buffer,
   ) {
     const stageSpan = requestSpan(req);
     stageSpan?.setTransport('oauth-http');
     stageSpan?.beginStage('bodyRead');
     let bodyBuf: Buffer;
     try {
-      bodyBuf = await withPromiseDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`);
+      bodyBuf = preBody ?? await withPromiseDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`);
     } catch {
       try {
         req.destroy();
@@ -6535,6 +6544,65 @@ export function createInferenceGateway(deps: GatewayDeps) {
     kernelAdmission: GatewayLaneAdmission,
   ) {
     const stageSpan = requestSpan(req);
+    // Read and validate the request model before choosing an account or touching
+    // an upstream. The durable admission layer has already buffered this body
+    // for us (`readBody` replays its pre-read buffer), so this is a bounded
+    // policy gate rather than a second socket read. It also makes an omitted
+    // model explicit on the body sent to either bearer or ChatGPT transports.
+    let preBody: Buffer | undefined;
+    if (req.method === 'POST' && url.startsWith('/v1/responses')) {
+      stageSpan?.beginStage('bodyRead');
+      try {
+        preBody = await withPromiseDeadline(readBody(req), requestCeilingMs, 'codex model-policy body read');
+      } catch {
+        req.resume();
+        if (!res.headersSent) {
+          sendJson(res, 503, {
+            type: 'error',
+            error: { type: 'overloaded_error', message: 'inference-gateway: Codex request body read stalled; retry shortly' },
+            gateway: true,
+          });
+        }
+        return;
+      } finally {
+        stageSpan?.endStage('bodyRead');
+      }
+      try {
+        const parsed = JSON.parse(preBody.toString('utf8')) as Record<string, unknown>;
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('request body must be a JSON object');
+        const modelSpec = typeof parsed.model === 'string' ? parsed.model : undefined;
+        // Reuse the bridge parser as the one request-boundary policy seam. It
+        // resolves omitted models, normalizes aliases/effort, and throws on the
+        // retired Spark id before account selection or an upstream call.
+        const parsedModel = parseBridgeModel(modelSpec);
+        parsed.model = parsedModel.id;
+        if (modelSpec == null || parsedModel.id !== modelSpec) {
+          const reasoning =
+            parsed.reasoning && typeof parsed.reasoning === 'object' && !Array.isArray(parsed.reasoning)
+              ? (parsed.reasoning as Record<string, unknown>)
+              : {};
+          const existingEffort = typeof reasoning.effort === 'string' ? reasoning.effort.trim() : '';
+          const existingEffortValid = /^(minimal|low|medium|high|xhigh|max)$/i.test(existingEffort);
+          const modelCarriesEffort = typeof modelSpec === 'string' && /:(minimal|low|medium|high|xhigh|max)$/i.test(modelSpec.trim());
+          parsed.reasoning = {
+            ...reasoning,
+            effort: modelCarriesEffort || !existingEffortValid ? parsedModel.effort : existingEffort.toLowerCase(),
+          };
+        }
+        preBody = Buffer.from(JSON.stringify(parsed), 'utf8');
+        stageSpan?.setModel(parsedModel.id);
+        stageSpan?.setStreaming(parsed.stream === true);
+      } catch (error) {
+        req.resume();
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, {
+          type: 'error',
+          error: { type: 'invalid_request_error', message: `inference-gateway: ${message}` },
+          gateway: true,
+        });
+        return;
+      }
+    }
     const adapter = providerAdapters.codex;
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
     const wantAccountHeader = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
@@ -6620,7 +6688,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const transport = codexOAuthProxyEnabled ? 'oauth-http' : 'cli-exec';
       await executeCodexLegacyTransport(
         legacyExecutorForGatewayTransport(adapter.lane, transport),
-        { req, res, cli, url, routing: { hardPin, pinned: pinnedCli, ownerId: wantOwner } },
+        { req, res, cli, url, preBody, routing: { hardPin, pinned: pinnedCli, ownerId: wantOwner } },
         kernelAdmission,
       );
       return;
@@ -6807,7 +6875,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // buffer (`preReadRequestBodies`). Iterating `req` directly here would
             // send an EMPTY body on every request the spool already drained.
             body: (async function* () {
-              yield await readBody(req);
+              yield preBody ?? await readBody(req);
             })(),
             ownerId: wantOwner ?? null,
             pin: pinnedBearer ? { accountId: pinnedBearer.accountId, mode: hardPin ? 'hard' : 'soft' } : null,

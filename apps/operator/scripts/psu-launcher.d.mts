@@ -3,6 +3,30 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // apps/operator/scripts/psu-launcher.mjs and regenerate.
 /**
+ * Build the public interactive backend choices. PUI is a launcher destination,
+ * not an agent backend, so it is deliberately kept out of AGENTS (the backend
+ * validation set) and added only to this picker. A PUI-originated invocation
+ * filters the destination back out to prevent recursive `pui workbench`
+ * launches.
+ */
+export function agentPickerChoices({ tui }?: {
+    tui?: null | undefined;
+}): {
+    name: string;
+    value: string;
+}[];
+/** Exact command used when the PSU picker selects the PUI destination. */
+export function puiWorkbenchCommand(): {
+    bin: string;
+    args: string[];
+};
+/** Run the PUI workbench command in the current terminal, preserving status. */
+export function launchPuiWorkbench({ spawnImpl, cwd, env, }?: {
+    spawnImpl?: typeof spawnSync | undefined;
+    cwd?: string | undefined;
+    env?: any;
+}): number;
+/**
  * Does `--role=<role>` launch on the SU tier (full engineer playbook + superuser
  * MCP + that role's addendum) rather than via the role-scoped bootstrap? EI-996.
  *
@@ -180,6 +204,7 @@ export function parseArgs(argv: any): {
     kickoffPromptText: null;
     label: null;
     headless: boolean;
+    tui: null;
 };
 /**
  * Guard a provider-specific OMP failure without changing the user's OMP
@@ -2962,6 +2987,8 @@ export function detectBackendBin(agent: any): {
  */
 export function setupReminderLines(stage: any): string[] | null;
 export const AGENTS: string[];
+/** The caller/origin marker used when PUI invokes the real PSU picker. */
+export const PUI_TUI_ORIGIN: "pui";
 /**
  * The side-effect-free CLI reference shown by `psu --help`.
  *
@@ -2969,7 +2996,7 @@ export const AGENTS: string[];
  * discoverable place to document it. The `--` escape hatch remains available
  * for backend-native flags that psu intentionally does not own.
  */
-export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Papercusp superuser session, or use --no-picker for a\nscripted launch.\n\nSession selection:\n  -h, --help                         Show this help and exit\n  --resume[=<id>] [id]               Resume a tracked or native session\n  --fork, --fork-session             Fork the selected session (with --resume)\n  --brain                            Show the retired brain-session message\n\nLaunch context:\n  --agent=<claude|omp|codex>         Backend to launch\n  --role=<role>                      Launch a role-scoped session\n  --workspace=<slug>                 Workspace context\n  --harness=<slug>                   Harness context\n  --feature=<id>                     Feature context\n  --plan=<slug>                      Plan context\n  --no-plan                          Launch without a plan\n  --model=<model[:effort]>           Model and optional effort\n  --profile=<engineer|power>         SU prompt profile\n  --context-size=trimmed|steward     Initial tool seed (steward = core + steward verb families, WI-2140338; legacy full normalizes to trimmed)\n  --compaction-limit=<tokens>        Requested compaction limit\n  --launch-context=<path>            Additional launch brief\n  --kickoff=<text>                   Seed the first user turn\n  --no-kickoff                       Do not seed a scripted first turn\n  --label=<text>                     Label the tracked session\n\nFleet and execution:\n  --fleet=<slug>                     Join an existing fleet\n  --seat=<ref>                       Consume a delegated fleet seat\n  --headless                         Launch without a desktop window\n  --auto, --no-auto                  Set AUTO mode explicitly\n  --mode=drain                       Start in DRAIN mode (implies AUTO)\n  --mode-subject=<text>              DRAIN subject\n  --mode-instructions=<text>         DRAIN instructions\n  --mode-owner-directed              Mark the DRAIN mode owner-directed\n  --carry=<warm|cold>                Fleet carry mode\n  --account=<id|auto|default>        Account routing\n\nLauncher controls:\n  --no-picker                        Skip interactive prompts\n  --add-dir=<dir>                    Add a backend working directory (repeatable)\n  --allow-subagents, --no-subagents Allow or deny Claude subagent tools\n  --yes, -y                          Skip untracked-resume confirmation\n  --force                            Override launch preflight guards\n  --set-claude-token[=<token>]       Store the default Claude OAuth token\n  --clear-claude-token               Clear the stored Claude OAuth token\n  --                                 Forward remaining arguments to the backend\n\nValues may use either --name=value or (where supported) --name value form.\n";
+export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Papercusp superuser session, or use --no-picker for a\nscripted launch.\n\nSession selection:\n  -h, --help                         Show this help and exit\n  --resume[=<id>] [id]               Resume a tracked or native session\n  --fork, --fork-session             Fork the selected session (with --resume)\n  --brain                            Show the retired brain-session message\n\nLaunch context:\n  --agent=<claude|omp|codex>         Backend to launch\n  --tui=<pui>                       Caller origin (PUI hides recursive PUI choice)\n  --role=<role>                      Launch a role-scoped session\n  --workspace=<slug>                 Workspace context\n  --harness=<slug>                   Harness context\n  --feature=<id>                     Feature context\n  --plan=<slug>                      Plan context\n  --no-plan                          Launch without a plan\n  --model=<model[:effort]>           Model and optional effort\n  --profile=<engineer|power>         SU prompt profile\n  --context-size=trimmed|steward     Initial tool seed (steward = core + steward verb families, WI-2140338; legacy full normalizes to trimmed)\n  --compaction-limit=<tokens>        Requested compaction limit\n  --launch-context=<path>            Additional launch brief\n  --kickoff=<text>                   Seed the first user turn\n  --no-kickoff                       Do not seed a scripted first turn\n  --label=<text>                     Label the tracked session\n\nFleet and execution:\n  --fleet=<slug>                     Join an existing fleet\n  --seat=<ref>                       Consume a delegated fleet seat\n  --headless                         Launch without a desktop window\n  --auto, --no-auto                  Set AUTO mode explicitly\n  --mode=drain                       Start in DRAIN mode (implies AUTO)\n  --mode-subject=<text>              DRAIN subject\n  --mode-instructions=<text>         DRAIN instructions\n  --mode-owner-directed              Mark the DRAIN mode owner-directed\n  --carry=<warm|cold>                Fleet carry mode\n  --account=<id|auto|default>        Account routing\n\nLauncher controls:\n  --no-picker                        Skip interactive prompts\n  --add-dir=<dir>                    Add a backend working directory (repeatable)\n  --allow-subagents, --no-subagents Allow or deny Claude subagent tools\n  --yes, -y                          Skip untracked-resume confirmation\n  --force                            Override launch preflight guards\n  --set-claude-token[=<token>]       Store the default Claude OAuth token\n  --clear-claude-token               Clear the stored Claude OAuth token\n  --                                 Forward remaining arguments to the backend\n\nValues may use either --name=value or (where supported) --name value form.\n";
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
  *  (`<`/`>`) so it can never collide with a real plan slug. */
 export const NO_PLAN: "<no-plan>";
@@ -3470,5 +3497,6 @@ export type RunWrapperOptions = {
     onSpawn?: (() => any) | undefined;
     onSpawnFailure?: (() => any) | null | undefined;
 };
+import { spawnSync } from "node:child_process";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 export {};
