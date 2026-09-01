@@ -136,6 +136,11 @@ type StateTable =
   // supervision reconciler (EI-20003974512096022 fixes 1+2 — the same
   // in-memory-amnesia class as 635 above; see the migration's own comment):
   | 'operator_supervision_pause_state'
+  // Migration 1092 — durable per-subject announced-quiesce windows so an ad-hoc
+  // deliberate quiesce (no systemd trace) can suppress the single-primary alarm
+  // the way D-026 already does for the release-cut contract (EI-22040647386284200;
+  // see system-health/announced-quiesce.ts):
+  | 'operator_announced_quiesce_state'
   // Migration 639 — knowledge-pack loop settings (cadence presets, adoption
   // policy, hygiene/delivery knobs; knowledge-pack-settings-2026-07-19 P-001):
   | 'knowledge_pack_config'

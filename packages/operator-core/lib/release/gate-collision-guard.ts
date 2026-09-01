@@ -853,18 +853,31 @@ export interface GitSyncRestartBarrierDeps {
 /**
  * How long the restart barrier drains shared git-sync holders before giving up.
  *
- * MEASURED 2026-08-31 (EI-21930094737784126) rather than guessed: sampling the live
+ * ORIGINALLY MEASURED 2026-08-31 (EI-21930094737784126) at 45s: sampling the live
  * `git-sync` barrier every 5s showed fires holding it for **~5-10 seconds**, arriving
  * in bursts of ~6, with **20 of 40 sampled seconds at zero holders**. `LOCK_TTL_SEC =
  * 600` in git-sync-action.ts is a generous LEASE BOUND, not the work duration — reading
  * it as the wait we would have to outlast is the mistake that made this look unfixable.
  *
- * 45s therefore clears a live burst with wide margin, and it is not merely a timeout:
- * a draining exclusive REFUSES NEW SHARED ACQUIRES, so the sweep stops feeding itself
- * while we wait. That is why draining converges and why polling the cgroup predicate
- * never could — polling races the sweep it is trying to observe.
+ * RE-MEASURED 2026-09-01 (EI-22047168222679674): that baseline went stale as fleet
+ * concurrency grew. A caller who legitimately wanted MORE drain (git_sync_drain_sec:180)
+ * was rejected by the schema max (then 45), and a same-day reproduction at the
+ * then-current 45s cap still surfaced `git_sync_barrier_drain_timeout` with **8 live
+ * shared holders** — above the ~6-holder burst the original sample characterised, and
+ * consistent with more agents now firing git-sync concurrently than on 2026-08-31.
+ * Widened to 120s: still a small fraction of the handler's own ~330s ceiling
+ * (`MAX_DRAIN_SEC + 30`) and of the `LOCK_TTL_SEC = 600` lease bound, but enough
+ * margin to clear a burst roughly 2-3x the original sample without forcing every
+ * merely-busy caller into `override_git_sync_collision` (which SIGKILLs an in-flight
+ * commit and strands a peer's uncommitted work — see the call site's own warning).
+ *
+ * It is not merely a timeout: a draining exclusive REFUSES NEW SHARED ACQUIRES, so the
+ * sweep stops feeding itself while we wait. That is why draining converges and why
+ * polling the cgroup predicate never could — polling races the sweep it is trying to
+ * observe. If this value goes stale again, re-sample `locks:list { resource:'git-sync' }`
+ * over a live window rather than guessing.
  */
-export const GIT_SYNC_RESTART_BARRIER_DRAIN_SEC = 45;
+export const GIT_SYNC_RESTART_BARRIER_DRAIN_SEC = 120;
 
 export type GitSyncRestartBarrierOutcome =
   | {

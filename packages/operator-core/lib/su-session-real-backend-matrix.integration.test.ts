@@ -584,6 +584,99 @@ function completedTools(events: readonly SuSessionEvent[]): { name: string; outp
   return out;
 }
 
+// ── confirmed-provider-429 NOT MEASURED classifier (EI-22038263513758662's
+//    sibling, EI-22041351814211596) ──────────────────────────────────────────
+// Mirrors libs/papercusp-shared/src/agent/turn-error.ts's private RATE_RE
+// (kept as its own local copy on purpose: this test classifies su-session
+// PROTOCOL evidence — a structured `error` event or raw transcript prose —
+// not a raw provider HTTP response, so it should not import production
+// retry/backoff classification logic into a test's skip decision).
+const CONFIRMED_PROVIDER_RATE_LIMIT_RE = /(\b429\b|rate.?limit|too many requests|slow down|temporarily limiting)/i;
+
+/**
+ * Was a starved-turn's evidence a CONFIRMED provider capacity outage, not a
+ * product defect? Two independent channels, weighted by confidence:
+ *
+ *   - a structured `error` event whose message matches — the CLI itself
+ *     classified the failure, so ONE is enough;
+ *   - 'system'-role transcript prose that matches — raw text a backend
+ *     streamed, weaker evidence (a transcript CAN legitimately discuss rate
+ *     limiting without being rate-limited), so it needs to REPEAT before it
+ *     counts. This is the "preserve transient prose false-positive
+ *     boundaries" requirement prior sessions on this item already scoped.
+ *
+ * 'assistant'-role text is deliberately excluded: the agent narrating what a
+ * rate limit is would otherwise be indistinguishable from hitting one.
+ */
+function confirmedProviderRateLimit(events: readonly SuSessionEvent[]): { confirmed: boolean; signals: string[] } {
+  const structured: string[] = [];
+  for (const event of events) {
+    if (event.type === 'error' && CONFIRMED_PROVIDER_RATE_LIMIT_RE.test(event.message)) structured.push(event.message);
+  }
+  const prose = transcriptText(events, 'system').filter((text) => CONFIRMED_PROVIDER_RATE_LIMIT_RE.test(text));
+  return { confirmed: structured.length >= 1 || prose.length >= 2, signals: [...structured, ...prose] };
+}
+
+// Deterministic, no live backend and no ENABLED gate — this is pure evidence
+// classification over synthetic events, so it runs on every `test:file`.
+describe('confirmed-provider-429 NOT MEASURED classifier (EI-22041351814211596)', () => {
+  const session: SuSessionIdentity<'claude'> = {
+    agentChatId: 'fixture-chat', advSessionId: 1, backend: 'claude',
+    nativeSessionId: 'fixture-native', ownerId: 'fixture-owner', workspaceId: 'fixture-ws', harnessSlug: null,
+  };
+  let seq = 0;
+  const base = () => ({ schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION, session, eventId: `evt-${++seq}`, sequence: seq, at: new Date().toISOString() });
+  const errorEvent = (message: string): SuSessionEvent =>
+    ({ ...base(), type: 'error', scope: 'turn', code: 'claude_runtime_error', message, recoverable: true }) as SuSessionEvent;
+  const systemText = (content: string): SuSessionEvent =>
+    ({ ...base(), type: 'transcript', phase: 'delta', turnId: 't1', role: 'system', channel: 'text', content }) as SuSessionEvent;
+  const assistantText = (content: string): SuSessionEvent =>
+    ({ ...base(), type: 'transcript', phase: 'delta', turnId: 't1', role: 'assistant', channel: 'text', content }) as SuSessionEvent;
+
+  it('is not confirmed with no evidence at all', () => {
+    expect(confirmedProviderRateLimit([]).confirmed).toBe(false);
+  });
+
+  it('confirms on a single structured error event carrying a 429 message', () => {
+    const result = confirmedProviderRateLimit([errorEvent('API Error: 429 {"type":"rate_limit_error"}')]);
+    expect(result.confirmed).toBe(true);
+    expect(result.signals).toHaveLength(1);
+  });
+
+  it('confirms on a structured error event using rate-limit prose without a bare 429', () => {
+    expect(confirmedProviderRateLimit([errorEvent('Server is temporarily limiting requests · Rate limited')]).confirmed).toBe(true);
+  });
+
+  it('does NOT confirm on an unrelated structured error event', () => {
+    expect(confirmedProviderRateLimit([errorEvent('invalid_request_error: model does not support effort level')]).confirmed).toBe(false);
+  });
+
+  it('does NOT confirm on a single system-transcript mention (repetition required, no structured evidence)', () => {
+    expect(confirmedProviderRateLimit([systemText('upstream 429, retrying')]).confirmed).toBe(false);
+  });
+
+  it('confirms once a system-transcript rate-limit mention repeats', () => {
+    const result = confirmedProviderRateLimit([systemText('upstream 429, retrying'), systemText('still rate limited, retrying')]);
+    expect(result.confirmed).toBe(true);
+    expect(result.signals).toHaveLength(2);
+  });
+
+  it('never counts assistant-role prose, even repeated, as confirming evidence', () => {
+    const result = confirmedProviderRateLimit([
+      assistantText('A 429 is a rate limit response.'),
+      assistantText('If we hit a rate limit again I will back off.'),
+    ]);
+    expect(result.confirmed).toBe(false);
+    expect(result.signals).toHaveLength(0);
+  });
+
+  it('one structured event plus unrelated system prose still confirms on the structured event alone', () => {
+    const result = confirmedProviderRateLimit([errorEvent('429 Too Many Requests'), systemText('booting agent runtime')]);
+    expect(result.confirmed).toBe(true);
+    expect(result.signals).toHaveLength(1);
+  });
+});
+
 // ── per-leg bookkeeping, so teardown can never leak a real agent ────────────
 interface LiveLeg {
   backend: MatrixBackend;
@@ -1017,6 +1110,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         let sawNonceInToolResult = false;
         let assistantText = '';
         let toolsSeen: { name: string; output: string; isError: boolean }[] = [];
+        let rateLimit: { confirmed: boolean; signals: string[] } = { confirmed: false, signals: [] };
 
         const deadline = Date.now() + TURN_TIMEOUT_MS;
         const stall = createStallWatch();
@@ -1030,6 +1124,8 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           const completed = completedTools(events);
           if (completed.length > toolsSeen.length) toolsSeen = completed;
           if (!sawNonceInToolResult) sawNonceInToolResult = completed.some((tool) => tool.output.includes(nonce));
+          const rl = confirmedProviderRateLimit(events);
+          if (rl.signals.length > rateLimit.signals.length) rateLimit = rl;
           if (sawOwnerEcho && assistantText && sawNonceInToolResult) {
             turnComplete = true;
             break;
@@ -1067,6 +1163,31 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
               'cgroup, so it was stopped too and could not write a transcript. That is an ' +
               'instrument outage, not a backend failure — re-run when the host is not under ' +
               'memory pressure (EI-21903376339103215).',
+          );
+          ctx.skip();
+          return;
+        }
+
+        // ── WAS THIS A CONFIRMED PROVIDER CAPACITY OUTAGE, NOT A PRODUCT
+        //    DEFECT? (EI-22041351814211596) ──────────────────────────────────
+        // Same shape as the stall guard above, and for the same reason: a
+        // starved backend produces exactly the evidence the assertions below
+        // read as "the agent answered without invoking any tool" — zero tool
+        // calls and often no assistant text either. The guard is deliberately
+        // narrow: it fires ONLY when the turn did not complete, zero tools
+        // ran, AND confirmedProviderRateLimit found real evidence (a
+        // structured error event, or repeated rate-limit prose) — never on a
+        // healthy turn that merely mentioned rate limits in passing.
+        if (!turnComplete && toolsSeen.length === 0 && rateLimit.confirmed) {
+          // console.LOG, not warn — see the stall guard's comment above;
+          // vitest-fail-on-console turns an unasserted warn into a hard
+          // failure even on the way to ctx.skip().
+          // eslint-disable-next-line no-console
+          console.log(
+            `[matrix] NOT MEASURED — ${backend} OWNER TURN: ${rateLimit.signals.length} confirmed upstream ` +
+              `rate-limit signal(s) and zero tool calls within its ${TURN_TIMEOUT_MS}ms budget. This is a ` +
+              'credential/capacity outage, not a product defect — re-run once the account has headroom ' +
+              `(EI-22041351814211596). First signal: ${rateLimit.signals[0]?.slice(0, 200) ?? '(none)'}`,
           );
           ctx.skip();
           return;

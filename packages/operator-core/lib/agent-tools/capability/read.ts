@@ -496,7 +496,23 @@ export default defineTool({
 
     if (args.raw) {
       if (slice.length === 0) {
-        return { content: [{ type: 'text' as const, text: '' }] };
+        return {
+          content: [{ type: 'text' as const, text: '' }],
+          // EI-22044192752243601: ordinary/raw text reads return a plain string
+          // `text` body, not JSON — unwrapToolResult's JSON.parse throws on it and
+          // hands a code:run script the raw STRING primitive. A primitive is not a
+          // container, so run-script.ts's field-miss Proxy never wraps it either:
+          // `.content` / `.text` property access on that string silently resolves
+          // to `undefined`, with NO fieldMiss diagnostic and NO thrown error — the
+          // exact silent-clobber shape this bug report is about. Attach the same
+          // data as a real object for code-mode, same pattern as capability:bash.
+          // `body` (never `content`/`text`) deliberately avoids run-script.ts's
+          // ROOT_ENVELOPE_FIELDS — those two names are reserved to make a script's
+          // envelope-shaped guess THROW a loud structured_result_shape error
+          // instead of returning undefined; reusing either name here would let
+          // that exact guess silently "succeed" against the wrong field again.
+          ...(ctx.codeMode ? { structuredContent: { ok: true, file_path: abs, body: '' } } : {}),
+        };
       }
 
       // Reconstruct the exact source span rather than joining a normalized
@@ -508,11 +524,14 @@ export default defineTool({
       const selected = slice.join('\n');
       const endOffset = startOffset + selected.length;
       const hasSourceNewline = text[endOffset] === '\n';
+      const rawBody = text.slice(startOffset, endOffset + (hasSourceNewline ? 1 : 0));
       return {
         content: [{
           type: 'text' as const,
-          text: text.slice(startOffset, endOffset + (hasSourceNewline ? 1 : 0)),
+          text: rawBody,
         }],
+        // EI-22044192752243601 — see the empty-slice branch above for why.
+        ...(ctx.codeMode ? { structuredContent: { ok: true, file_path: abs, body: rawBody } } : {}),
       };
     }
 
@@ -532,6 +551,26 @@ export default defineTool({
 
     return {
       content: [{ type: 'text' as const, text: slice.length === 0 ? `${head}(empty)` : head + numbered + footer }],
+      // EI-22044192752243601: same silent-primitive-fallback bug as the raw branch
+      // above — the ordinary cat -n view is human/model-readable text, not JSON, so
+      // a code:run script reading `.content`/`.text` off it got `undefined` with no
+      // diagnostic. `body` carries the UNDECORATED text (no line-number prefixes,
+      // no header/footer) since that is what a script processing file content
+      // wants, not the display formatting. Field names avoid `content`/`text`
+      // (run-script.ts ROOT_ENVELOPE_FIELDS) for the same reason as the raw branch.
+      ...(ctx.codeMode
+        ? {
+            structuredContent: {
+              ok: true,
+              file_path: abs,
+              body: slice.join('\n'),
+              total_lines: allLines.length,
+              start_line: slice.length === 0 ? null : start + 1,
+              end_line: slice.length === 0 ? null : start + slice.length,
+              has_more: more,
+            },
+          }
+        : {}),
     };
   },
 });

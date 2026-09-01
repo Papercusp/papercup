@@ -53,7 +53,7 @@ export interface PlanAcceptanceGateVerdictRow {
   planSlug: string;
   satisfied: boolean;
   /** Set ⇒ the gate did NOT APPLY. Never render as a pass — nothing was checked. */
-  skipped: 'flag-off' | 'rubric-template-plan' | 'template-instance' | null;
+  skipped: 'flag-off' | 'rubric-template-plan' | 'template-instance' | 'already-shipped' | null;
   /** The EXACT blocker. Unlike the census's reports, this one really does refuse. */
   code: string | null;
   /** The gate's own teaching message for the refusal — rendered verbatim, not summarized. */

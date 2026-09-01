@@ -67,7 +67,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 });
 
 import { tryAcquireResource, tryReleaseResource } from '../locks/su-lock-store';
-import { guardResource } from '../locks/resource-lock-guard';
+import { guardResource, type FenceToken, type GuardOutcome, type GuardSpec } from '../locks/resource-lock-guard';
 import { spawn } from 'node:child_process';
 import { probeServiceStart } from './systemd-service-probe';
 import { preflightRestartTarget } from './restart-preflight';
@@ -79,7 +79,7 @@ import {
   checkGateCollision,
   checkGitSyncCollision,
 } from '../../release/gate-collision-guard';
-import { mockResolvedTyped } from '../../testing/typed-mock';
+import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 const acquireM = vi.mocked(tryAcquireResource);
 const releaseM = vi.mocked(tryReleaseResource);
@@ -1392,5 +1392,59 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (un
     expect(auditUnsafeM).toHaveBeenCalledTimes(1);
     const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
     expect(details).toMatchObject({ target: 'desktop-dev', unit: 'desktop-dev-wrapper' });
+  });
+});
+
+// EI-22040822883429888: guardResource's exclusive drain wait fires spec.onTick every
+// ~5s while draining (resource-acquire-wait.ts), and db:migrate already forwards that
+// into ctx.progress (EI-18769559897594065) so a long-draining MCP call doesn't look
+// indistinguishable from a wedge to the client's idle-timeout watchdog. dev:restart's
+// guardResource call omitted onTick entirely — this locks in the same wiring here.
+describe('dev:restart drain progress -> ctx.progress heartbeat (EI-22040822883429888)', () => {
+  const progressCtx = () => {
+    const progress = vi.fn();
+    return { ctx: { role: 'operator', progress } as never, progress };
+  };
+
+  beforeEach(() => {
+    process.env.PAPERCUSP_ALLOW_DEV_RESTART = '1';
+  });
+
+  it('wires a spec.onTick callback into guardResource that forwards to ctx.progress as a draining-phase tick', async () => {
+    const { ctx, progress } = progressCtx();
+    mockImplementationTyped(guardM, async (spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
+      spec.onTick?.({
+        waited_sec: 12,
+        holders: [{ owner: 'su-peer', owner_label: 'peer', mode: 'shared', status: 'draining' } as never],
+      });
+      return { acquired: true, result: await run(fenceOk(30) as never), lock_id: 'L-test' } as GuardOutcome<unknown>;
+    });
+    await tool.handler({ confirm: true, max_drain_sec: 45 } as never, ctx);
+    expect(progress).toHaveBeenCalled();
+    const draining = progress.mock.calls.map((c) => JSON.parse(c[1] as string)).find((p) => p.phase === 'draining');
+    expect(draining).toMatchObject({ phase: 'draining', elapsed_sec: 12, max_drain_sec: 45, remaining_sec: 33 });
+    expect(draining.holders[0]).toMatchObject({ owner: 'su-peer', mode: 'shared' });
+  });
+
+  it('falls back to the tool default max_drain_sec when the caller does not override it', async () => {
+    const { ctx, progress } = progressCtx();
+    mockImplementationTyped(guardM, async (spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
+      spec.onTick?.({ waited_sec: 10, holders: [] });
+      return { acquired: true, result: await run(fenceOk(32) as never), lock_id: 'L-test' } as GuardOutcome<unknown>;
+    });
+    await tool.handler({ confirm: true } as never, ctx);
+    const draining = progress.mock.calls.map((c) => JSON.parse(c[1] as string)).find((p) => p.phase === 'draining');
+    // 120 mirrors restart.ts's own module-local DEFAULT_DRAIN_SEC (not exported, so
+    // pinned literally here — a change to that constant should fail this assertion).
+    expect(draining).toMatchObject({ phase: 'draining', elapsed_sec: 10, max_drain_sec: 120 });
+  });
+
+  it('does not throw when ctx has no progress function (older transport shape)', async () => {
+    mockImplementationTyped(guardM, async (spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
+      spec.onTick?.({ waited_sec: 5, holders: [] });
+      return { acquired: true, result: await run(fenceOk(31) as never), lock_id: 'L-test' } as GuardOutcome<unknown>;
+    });
+    const out = body(await call({ confirm: true }));
+    expect(out.ok).toBe(true);
   });
 });

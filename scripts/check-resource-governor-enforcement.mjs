@@ -1361,6 +1361,41 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed bypass disposition for scripts/settle-probe.mjs: this probe runs bounded child commands to settle diagnostics and exits; it does not create an independent resident queue.",
   },
+  {
+    path: "apps/operator/lib/release/deploy-parity.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for apps/operator/lib/release/deploy-parity.ts: its only detected start is readRefUnification's promisified execFile('git', ['rev-parse', '--verify', '--quiet', ref]), called twice (local main, origin/main) to observe ref unification after a deploy; both calls are bounded, awaited, and read-only, spawn no worker, and create no independent resident queue — this honesty check must remain runnable while productive capacity is pressured.",
+  },
+  {
+    path: "packages/operator-core/lib/harness/routines/nightly-release-cut-action.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for packages/operator-core/lib/harness/routines/nightly-release-cut-action.ts: the file mixes two kinds of start, and this disposition covers both rather than exempting the heavier one by citing only the lighter. (1) The 30–40 minute detached desktop-release child is started through managedSpawn under runNightlyCut, which is itself gated by the durable harness_shared.routines schedule for system:nightly-release-cut AND a file-based single-flight lock (acquireNightlyLock/releaseNightlyLock) that already refuses a second concurrent cut and carries the child's own runtimeMaxSec/memoryMaxBytes ceilings in the task-manager's durable spawn ledger — a second local Governor receipt for that same admitted, ledgered, single-flight-locked child would double-count capacity already tracked upstream, not exempt it. (2) The remaining execFileSync calls (readDesktopVersionAtSource's git ls-tree/show, and the sourceSha git rev-parse) are separate, cheap, bounded, awaited metadata reads with no independent resident queue of their own.",
+  },
+  {
+    path: "packages/operator-core/lib/release/gate-fire-drill-deps.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/gate-fire-drill-deps.ts: its detected starts are execFileSync('systemctl', ['--user', 'is-active'|'stop', unit]) — a bounded status probe and a bounded control/kill of the drill's own deliberately-launched checkpoint unit — both synchronous, awaited, and read/acted on for release-control metadata; neither spawns a worker or creates an independent resident queue, and the kill leg must remain runnable precisely when capacity is pressured (it is how the drill releases its own admitted test run).",
+  },
+  {
+    path: "packages/operator-core/lib/release/sync-batch-delta-check-deps.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/sync-batch-delta-check-deps.ts: every detected start is the file's own run() wrapper around spawnSync with an explicit per-leg timeout (SYNC_DELTA_TIMEOUTS_MS, 30s–25min) and killSignal:'SIGTERM'; each call is synchronous, bounded, and resolves to the deps contract's undetermined value on any failure rather than a fake result, so no call can wedge the routine tick or leave an independent resident queue behind.",
+  },
+  {
+    path: "scripts/ensure-playwright-browsers.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/ensure-playwright-browsers.mjs: its only detected start is a single spawnSync('npx playwright install <browsers>') installer call, synchronous and awaited to completion before the function returns; it runs at most once per missing-browser check, creates no independent resident queue, and must remain runnable so e2e setup is not itself gated behind admission.",
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [

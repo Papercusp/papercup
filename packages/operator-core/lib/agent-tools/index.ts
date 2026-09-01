@@ -702,6 +702,8 @@ import './fleet_registry/take-leadership';
 import './fleet_registry/wind-down';
 import './fleet_registry/resume';
 import './fleet_registry/pause';
+// WI-2034601 fix 2: the explicit successor-retires-predecessor lifecycle step.
+import './fleet_registry/supersede';
 import './fleet_registry/launch-on-plan';
 import './fleet_registry/headcount-target';
 import './fleet_registry/request-remote-spawn';

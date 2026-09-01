@@ -1183,7 +1183,7 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'host:memory_pressure', path: 'memory.pressure' },
   shape:
-    '{ memory: { pressure: "ok"|"warn"|"crit"|null, measuredAt, ageMs, stale, psiMemorySome60, psiMemoryFull60, cgroupAttribution: { accounting, partial, largestCapturedCgroup: { path, memoryBytes }|null, top[{ path, memoryBytes, swapBytes, directPids, memoryShareOfLargestCapturedCgroup }], throttled: [{ path, memoryBytes, memoryShareOfLargestCapturedCgroup, highEventsCumulative, maxEventsCumulative, oomKillEventsCumulative, subtreeMaxEventsCumulative, subtreeOomKillEventsCumulative, subtreeOnly: true|false|null }]|null }|null, thresholds: { source, psiMemorySomeWarn, psiMemoryFullCrit, staleMs, blindMs }, reasons[], unknown[] }, host: { measuredAt, memFreePct, memTotalGb, psiMemSome60 } }',
+    '{ memory: { pressure: "ok"|"warn"|"crit"|null, measuredAt, ageMs, stale, psiMemorySome60, psiMemoryFull60, cgroupAttribution: { accounting, partial, largestCapturedCgroup: { path, memoryBytes }|null, top[{ path, memoryBytes, swapBytes, anonBytes, fileBytes, slabBytes, directPids, memoryShareOfLargestCapturedCgroup }], throttled: [{ path, memoryBytes, memoryShareOfLargestCapturedCgroup, highEventsCumulative, maxEventsCumulative, oomKillEventsCumulative, subtreeMaxEventsCumulative, subtreeOomKillEventsCumulative, subtreeOnly: true|false|null }]|null }|null, thresholds: { source, psiMemorySomeWarn, psiMemoryFullCrit, staleMs, blindMs }, reasons[], unknown[] }, host: { measuredAt, memFreePct, memTotalGb, psiMemSome60 } }',
 };
 
 /**
@@ -1239,7 +1239,7 @@ export const MEMORY_CGROUP_ATTRIBUTION_CELL: CellSpec = {
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'host:memory_pressure', path: 'memory.cgroupAttribution' },
   shape:
-    '{ memory: { cgroupAttribution: { accounting, partial, largestCapturedCgroup: { path, memoryBytes }|null, throttled: [{ path, memoryBytes, memoryShareOfLargestCapturedCgroup, highEventsCumulative, maxEventsCumulative, oomKillEventsCumulative, subtreeMaxEventsCumulative, subtreeOomKillEventsCumulative, subtreeOnly: true|false|null }]|null, top[{ path, memoryBytes, swapBytes, directPids, memoryShareOfLargestCapturedCgroup }] }|null, pressure: "ok"|"warn"|"crit"|null, unknown[] } }',
+    '{ memory: { cgroupAttribution: { accounting, partial, largestCapturedCgroup: { path, memoryBytes }|null, throttled: [{ path, memoryBytes, memoryShareOfLargestCapturedCgroup, highEventsCumulative, maxEventsCumulative, oomKillEventsCumulative, subtreeMaxEventsCumulative, subtreeOomKillEventsCumulative, subtreeOnly: true|false|null }]|null, top[{ path, memoryBytes, swapBytes, anonBytes, fileBytes, slabBytes, directPids, memoryShareOfLargestCapturedCgroup }] }|null, pressure: "ok"|"warn"|"crit"|null, unknown[] } }',
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -1718,9 +1718,9 @@ export const GOAL_PORTFOLIO_THROUGHPUT_CELL: CellSpec = {
   cell: 'goal.portfolioThroughput',
   registeredOn: '2026-08-31',
   owner: 'goal-mode-drift-guards-2026-08-31',
-  headline: 'data.portfolioThroughput.idleMinutes',
+  headline: 'portfolioThroughput.idleMinutes',
   assessment: {
-    path: 'data.portfolioThroughput.assessment',
+    path: 'portfolioThroughput.assessment',
     codes: {
       placing: {
         meaning:
@@ -1754,10 +1754,10 @@ export const GOAL_PORTFOLIO_THROUGHPUT_CELL: CellSpec = {
       },
     },
     evidence: [
-      'data.portfolioThroughput.actsInWindow',
-      'data.portfolioThroughput.lastActAtMs',
-      'data.portfolioThroughput.lastActTool',
-      'data.portfolioThroughput.measuredOwnerIds',
+      'portfolioThroughput.actsInWindow',
+      'portfolioThroughput.lastActAtMs',
+      'portfolioThroughput.lastActTool',
+      'portfolioThroughput.measuredOwnerIds',
     ],
   },
 
@@ -1770,7 +1770,7 @@ export const GOAL_PORTFOLIO_THROUGHPUT_CELL: CellSpec = {
    * "we looked and found nothing".
    */
   nullable: true,
-  unknownHoist: 'data.portfolioThroughput.unavailable',
+  unknownHoist: 'portfolioThroughput.unavailable',
 
   /**
    * Axis 3. Relative to WHICH GOAL. `param: 'id'` is not a naming choice — it is
@@ -1817,21 +1817,39 @@ export const GOAL_PORTFOLIO_THROUGHPUT_CELL: CellSpec = {
   visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
 
+  /**
+   * ⚠ NO `data.` PREFIX — and this is the one line of this spec that was WRONG as
+   * shipped (EI-22089346495559937). `goals:get`'s handler does return
+   * `{ data: { …, portfolioThroughput } }`, and every path here was declared against
+   * that handler-level shape. But a cell never sees the handler's return value: the
+   * projected-tool dispatcher `readCell` goes through unwraps the `{ data }` envelope
+   * before `valueAtPath` runs, so the payload at the walker is
+   * `{ id, title, …, portfolioThroughput }` — top level. Declared under `data.`, every
+   * read answered `insufficient-data` ("declared path drifted") and every
+   * `state:subscribe` on this cell was un-fireable, while the resolver worked
+   * perfectly — the exact failure `goals:get`'s own comment warns about, one envelope
+   * over. Measured live 2026-09-01 by dispatching `goals:get` through
+   * `dispatchReadOnlyTool` and printing the top-level keys. The sibling cells on
+   * `data:`-returning tools (gate.qualification → `gate.qualification.attemptId`) were
+   * already declared envelope-free; this one now matches them, and
+   * cell-registrations.test.ts pins the rule registry-wide.
+   */
   changeSignal: {
     kind: 'poll',
     tool: 'goals:get',
-    path: 'data.portfolioThroughput.idleMinutes',
+    path: 'portfolioThroughput.idleMinutes',
   },
 
   /** P-021 — see the header. The clock churns every poll; the boolean is the question. */
   materiality: {
-    path: 'data.portfolioThroughput.idle',
+    path: 'portfolioThroughput.idle',
     why: 'idleMinutes is a CLOCK: it advances on every poll by construction, so treating its every change as material would wake a subscriber roughly sixty times an hour to report that a minute had passed. `idle` is the question the cell exists to answer and flips at most a couple of times in a goal\'s life.',
   },
 
   shape:
-    '{ data: { portfolioThroughput: { windowMinutes, actsInWindow, actsPerHour, lastActAtMs, lastActTool, lastActFacet, ' +
-    'idleMinutes, idleAfterMinutes, measuredOwnerIds, holderLiveness, idle, reason, assessment, unavailable } } }',
+    '{ portfolioThroughput: { windowMinutes, actsInWindow, actsPerHour, lastActAtMs, lastActTool, lastActFacet, ' +
+    'idleMinutes, idleAfterMinutes, measuredOwnerIds, holderLiveness, idle, reason, assessment, unavailable } } ' +
+    '(the dispatcher-unwrapped payload — the handler\'s own `{ data: … }` envelope is stripped before any path is walked)',
 
   /**
    * Axis 6 is deliberately ABSENT. Placing work has no stage order — a steward

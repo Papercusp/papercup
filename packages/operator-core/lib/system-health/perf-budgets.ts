@@ -194,6 +194,24 @@ export interface MemoryPressureCgroupAttribution {
     path: string;
     memoryBytes: number;
     swapBytes: number | null;
+    /**
+     * Anonymous (non-file-backed) memory — the slice of `memoryBytes` that is
+     * NOT already reclaimable by the kernel and would only be released by
+     * killing the owning process(es) (or a swap-out). `memoryBytes` also counts
+     * reclaimable page cache (`fileBytes`) and kernel slab (`slabBytes`), so a
+     * cgroup ranked highest by `memoryBytes` alone is routinely one the kernel
+     * can already evict without anyone terminating anything — the ranking
+     * defect this field exists to correct (EI-22040979693735878). `null` means
+     * the capture predates anon/file/slab accounting.
+     */
+    anonBytes: number | null;
+    /** Reclaimable page cache within `memoryBytes` — already evictable by the
+     *  kernel without killing anything, so excluded from "freeable-on-kill"
+     *  ranking. `null` means the capture predates anon/file/slab accounting. */
+    fileBytes: number | null;
+    /** Kernel slab (dentries/inodes/etc.) attributed to this cgroup. `null`
+     *  means the capture predates anon/file/slab accounting. */
+    slabBytes: number | null;
     directPids: number | null;
     /** Fraction of the explicitly named largest captured cgroup level. */
     memoryShareOfLargestCapturedCgroup: number | null;
@@ -450,6 +468,19 @@ function lagReading(s: PerfSignalsV1['signals']): {
   };
 }
 
+/**
+ * The "would actually be freed by killing this cgroup" figure: anon memory when
+ * captured, falling back to raw `memoryBytes` for legacy captures that predate
+ * anon/file/slab accounting. `memoryBytes` is cgroup-v2 `memory.current`, which
+ * also counts reclaimable page cache and kernel slab — memory the kernel can
+ * already evict on its own, with no process terminated. Ranking by that inclusive
+ * total therefore routinely names the cgroup with the biggest reclaimable cache,
+ * not the one actually holding memory pressure hostage (EI-22040979693735878).
+ */
+function freeableOnKillBytes(row: { memoryBytes: number; anonBytes?: number | null }): number {
+  return typeof row.anonBytes === 'number' ? row.anonBytes : row.memoryBytes;
+}
+
 /** Project only safe, bounded cgroup owner fields into the current-state verdict. */
 function summarizeCgroupMemory(
   cgroup: PerfSignalsV1['signals']['cgroupMemory'],
@@ -457,12 +488,15 @@ function summarizeCgroupMemory(
   if (!cgroup || !Array.isArray(cgroup.top)) return null;
   const topRows = [...cgroup.top]
     .filter((row) => typeof row?.path === 'string' && typeof row?.memoryBytes === 'number')
-    .sort((a, b) => b.memoryBytes - a.memoryBytes)
+    .sort((a, b) => freeableOnKillBytes(b) - freeableOnKillBytes(a))
     .slice(0, 8)
     .map((row) => ({
       path: row.path,
       memoryBytes: row.memoryBytes,
       swapBytes: typeof row.swapBytes === 'number' ? row.swapBytes : null,
+      anonBytes: typeof row.anonBytes === 'number' ? row.anonBytes : null,
+      fileBytes: typeof row.fileBytes === 'number' ? row.fileBytes : null,
+      slabBytes: typeof row.slabBytes === 'number' ? row.slabBytes : null,
       directPids: typeof row.directPids === 'number' ? row.directPids : null,
     }));
   const largestCapturedCgroup = topRows[0]
@@ -586,7 +620,10 @@ function withCgroupCpuAttribution(
  * incident had exactly this shape — the alarm reason carried only the raw host PSI
  * number, not which workload owned the memory). The DEEPEST path among the captured
  * rows is the most specific attribution the bounded sample actually reached, which
- * is what a responder needs to go find the real workload. Ties broken by size.
+ * is what a responder needs to go find the real workload. Ties broken by the
+ * anon-aware "freeable-on-kill" figure ({@link freeableOnKillBytes}), falling
+ * back to raw size for legacy captures — not raw `memoryBytes`, which would
+ * re-introduce the same reclaimable-cache ranking defect at the tie-break.
  */
 function mostSpecificCgroupOwner(
   attribution: MemoryPressureCgroupAttribution | null,
@@ -598,7 +635,7 @@ function mostSpecificCgroupOwner(
     if (
       !best ||
       depth(row.path) > depth(best.path) ||
-      (depth(row.path) === depth(best.path) && row.memoryBytes > best.memoryBytes)
+      (depth(row.path) === depth(best.path) && freeableOnKillBytes(row) > freeableOnKillBytes(best))
     ) {
       best = row;
     }
@@ -610,12 +647,15 @@ function mostSpecificCgroupOwner(
  *  reason — the human-actionable half of {@link mostSpecificCgroupOwner}. */
 function formatCgroupOwner(row: MemoryPressureCgroupAttribution['top'][number]): string {
   const gb = (row.memoryBytes / 1024 ** 3).toFixed(2);
+  const anon = row.anonBytes !== null
+    ? `, ${(row.anonBytes / 1024 ** 3).toFixed(2)}GB anon (freeable-on-kill)`
+    : '';
   const swap = row.swapBytes !== null ? `, ${(row.swapBytes / 1024 ** 3).toFixed(2)}GB swap` : '';
   const pids = row.directPids !== null ? `, ${row.directPids} direct pid(s)` : '';
   const share = row.memoryShareOfLargestCapturedCgroup === null
     ? ''
     : `, ${(row.memoryShareOfLargestCapturedCgroup * 100).toFixed(2)}% of largest captured cgroup`;
-  return `${row.path} (${gb}GB${swap}${pids}${share})`;
+  return `${row.path} (${gb}GB${anon}${swap}${pids}${share})`;
 }
 
 /** Append the cgroup-attribution clause to a memory-pressure reason, or an explicit

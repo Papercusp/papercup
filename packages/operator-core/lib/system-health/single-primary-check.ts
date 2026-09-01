@@ -136,6 +136,11 @@ import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-l
 import { activeWorkspaceId } from '../workspace-registry';
 import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
+import { readActiveAnnouncedQuiesce, type AnnouncedQuiesceEvidence } from './announced-quiesce';
+
+/** The `announced-quiesce` subject this guard reads — see announced-quiesce.ts. Any agent
+ *  registers under this exact subject via `supervision:announce-quiesce { subject: 'bg-host' }`. */
+export const ANNOUNCED_QUIESCE_SUBJECT = 'bg-host';
 
 export const SINGLE_PRIMARY_IDENTITY: AgentIdentity = {
   ownerId: 'system:single-primary-guard',
@@ -310,6 +315,7 @@ export function evaluatePrimaryCount(
   count: number | null,
   evidence?: BackgroundActivityEvidence,
   quiescence?: D026QuiescenceEvidence,
+  announcedQuiesce?: AnnouncedQuiesceEvidence,
 ): PrimaryVerdict {
   // WI-7291: the count was NOT READ. This is the absence of evidence, so it can never earn
   // the routine-engine-death text — but it still pages, on the same principle as the
@@ -346,6 +352,27 @@ export function evaluatePrimaryCount(
         evidenceNote: `observed: ${D026_RESTORE_UNIT} active with the detached release cut`,
         summary:
           'background primary intentionally quiesced for the authorized D-026 Corestore release cut (cut + restore units are active). Do NOT start or restart bg-host while the cut-owned Corestore lock is held; wait for the restore leg to finish, then verify the primary and routine fires recover.',
+      };
+    }
+    // EI-22040647386284200: a SECOND, broader suppression signal — a self-reported,
+    // bounded-duration announcement (see announced-quiesce.ts) for an ad-hoc quiesce
+    // (e.g. a manual kill + shell EXIT trap) that leaves no D-026 systemd trace at all.
+    // Weaker evidence than D-026 (self-reported, not systemd-verified) so it is checked
+    // second; still authorized to replace the dangerous "Start the bg-host" instruction,
+    // because the alternative — asserting a crash the announcer explicitly ruled out —
+    // is the exact defect this item was filed for.
+    if (announcedQuiesce?.active) {
+      const untilNote = announcedQuiesce.until ? ` until ${announcedQuiesce.until}` : '';
+      const byNote = announcedQuiesce.by ? ` by ${announcedQuiesce.by}` : '';
+      return {
+        count,
+        ok: false,
+        severity: 'advisory',
+        key: 'no-primary-announced-quiesce',
+        evidenceNote: `observed: an announced quiesce is active for '${announcedQuiesce.subject}'${byNote}${untilNote}`,
+        summary:
+          `background primary intentionally quiesced — an ANNOUNCED maintenance window is active for '${announcedQuiesce.subject}'${byNote}${untilNote}. Reason: ${announcedQuiesce.reason ?? 'not given'}. ` +
+          'Do NOT start or restart bg-host while this window is active (self-reported, not systemd-verified — trust it, but verify with the announcer if anything looks wrong); wait for it to end or expire, then verify the primary and routine fires recover.',
       };
     }
     // The consequence is CHECKED, not asserted — see the header note. Routines still
@@ -634,6 +661,10 @@ export interface PrimaryGuardDeps {
   /** D-026: active cut + restore evidence. Omitted in pure/unit callers; the scheduled
    * live guard wires readD026QuiescenceEvidence explicitly so tests never shell out. */
   d026Quiescence?: () => D026QuiescenceEvidence | Promise<D026QuiescenceEvidence>;
+  /** EI-22040647386284200: the broader, self-reported announced-quiesce evidence (see
+   *  announced-quiesce.ts). Omitted in pure/unit callers, exactly like d026Quiescence
+   *  above; the scheduled live guard wires the real PG-backed reader explicitly. */
+  announcedQuiescence?: () => AnnouncedQuiesceEvidence | Promise<AnnouncedQuiesceEvidence>;
   escalate?: (input: { severity: EscalationSeverity; summary: string; body?: string }) => Promise<unknown>;
   /** Resolve a previously-opened escalation by msg_id (self-clear on recovery). */
   resolve?: (input: { msg_id: string; choice: string; note?: string }) => Promise<unknown>;
@@ -741,7 +772,17 @@ export async function runSinglePrimaryCheck(
       quiescence = undefined;
     }
   }
-  const verdict = evaluatePrimaryCount(count, evidence, quiescence);
+  let announcedQuiesce: AnnouncedQuiesceEvidence | undefined;
+  if (count === 0 && deps.announcedQuiescence) {
+    try {
+      announcedQuiesce = await deps.announcedQuiescence();
+    } catch {
+      // Same fail-closed rule as D-026 above: an unreadable announcement store must
+      // never be read as "quiesced".
+      announcedQuiesce = undefined;
+    }
+  }
+  const verdict = evaluatePrimaryCount(count, evidence, quiescence, announcedQuiesce);
 
   // ── Healthy (exactly one primary): reset hysteresis + self-clear open alarms ──
   if (verdict.ok || !verdict.key) {
@@ -958,6 +999,7 @@ export function startSinglePrimaryGuard(opts: { intervalMs?: number } = {}): { s
         page: defaultPage,
         pageResolved: defaultPageResolved,
         d026Quiescence: readD026QuiescenceEvidence,
+        announcedQuiescence: () => readActiveAnnouncedQuiesce(ANNOUNCED_QUIESCE_SUBJECT, Date.now()),
       }).catch(() => {});
     },
     { category: 'watchdog' },

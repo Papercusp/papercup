@@ -14,9 +14,13 @@ import {
   MODEL_DOWNGRADED_HEADER,
   normalizeGatewayRequestBody,
   resolveGatewayModel,
+  PRIORITY_HEADER,
 } from './gateway';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
+import { createDurableGatewayAdmissionGovernor } from './durable-admission';
+import { MemoryAdmissionQueueStore } from '../resource-governor/memory-admission-queue-store';
+import type { AdmissionRequest, AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import {
   configureScheduledRegistry,
@@ -3633,6 +3637,89 @@ test('[codex parity] a 429 on one Codex account ROTATES to another + retries —
   const body = (await res.json()) as { servedBy: string };
   assert.equal(body.servedBy, 'cdxB', 'the second Codex account actually served it');
   assert.ok(calls.includes('tokA') && calls.includes('tokB'), 'attempted cdxA first, then rotated to cdxB');
+});
+
+test('[EI-22038414992051268] a gateway restart never reuses a fallback idempotency key across DIFFERENT requests', async () => {
+  // Reproduces the real incident: the durable resource-governor queue persists admission
+  // records by (namespace, idempotencyKey) ACROSS a process restart (nothing GC's them on
+  // shutdown), but the FALLBACK idempotencyKey — used whenever a caller omits
+  // x-papercusp-request-id — used to be built ENTIRELY from a process-local sequence counter
+  // that resets to 0 on every `createInferenceGateway()` call. So a fresh process's first
+  // few requests could coin the exact same fallback key as an unrelated pre-restart request
+  // whose durable record was still present, and a genuinely different request under a reused
+  // key is rejected with AdmissionIdempotencyConflictError — surfaced to the caller as a bare
+  // proxy-handler 500 (the reported "608 admission idempotency key ... reused" burst).
+  const store = new MemoryAdmissionQueueStore();
+  const admitted: { idempotencyKey: string }[] = [];
+  function capturingGovernor() {
+    const inner = createDurableGatewayAdmissionGovernor({ store });
+    return {
+      admit: async (request: AdmissionRequest) => {
+        admitted.push({ idempotencyKey: request.idempotencyKey });
+        return inner.admit(request);
+      },
+      release: (context: AdmissionContext, actualDemand?: ResourceDemand) => inner.release(context, actualDemand),
+    };
+  }
+  const fetchImpl = (async () =>
+    new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+  const deps = () => ({
+    pool: createFailoverPool([{ accountId: 'claude1', token: async () => 'c1' }]),
+    codexPool: createFailoverPool([{ accountId: 'cdxA', token: async () => 'tokA' }]),
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    admissionGovernor: capturingGovernor(),
+    selfHeal: { enabled: false },
+  });
+
+  // "Process A" — pre-restart. Its FIRST fallback-keyed request (no x-papercusp-request-id
+  // header) takes local sequence #1.
+  const gwA = createInferenceGateway(deps());
+  const portA = await gwA.listen(0);
+  try {
+    const resA = await fetch(`http://127.0.0.1:${portA}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5', marker: 'request-A-pre-restart' }),
+    });
+    assert.equal(resA.status, 200, 'pre-restart request admits cleanly');
+    await resA.text();
+  } finally {
+    await gwA.close();
+  }
+
+  // "Process B" — post-restart. A FRESH createInferenceGateway() call, so every process-local
+  // sequence counter resets to the SAME starting values A had — but `store` above still holds
+  // A's durable admission record, exactly like production immediately after a restart.
+  const gwB = createInferenceGateway(deps());
+  const portB = await gwB.listen(0);
+  try {
+    // A genuinely DIFFERENT request: a different declared priority feeds a different
+    // `priority` into the admission fingerprint, so if this collided with A's stale record
+    // under the pre-fix scheme, the fingerprint mismatch would throw
+    // AdmissionIdempotencyConflictError and this would come back 500, not 200.
+    const resB = await fetch(`http://127.0.0.1:${portB}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [PRIORITY_HEADER]: 'high' },
+      body: JSON.stringify({ model: 'gpt-5', marker: 'request-B-post-restart' }),
+    });
+    assert.equal(
+      resB.status,
+      200,
+      'post-restart request with a DIFFERENT priority must NOT collide with the pre-restart durable record ' +
+        '(pre-fix: 500 AdmissionIdempotencyConflictError)',
+    );
+    await resB.text();
+  } finally {
+    await gwB.close();
+  }
+
+  assert.equal(admitted.length, 2, 'both requests reached durable admission');
+  assert.notEqual(
+    admitted[0]!.idempotencyKey,
+    admitted[1]!.idempotencyKey,
+    'two different process incarnations must never coin the same fallback idempotency key',
+  );
 });
 
 test('[#0 cache] the passive observer tallies prompt-cache READ/WRITE per account from message_start (a HIT)', async () => {

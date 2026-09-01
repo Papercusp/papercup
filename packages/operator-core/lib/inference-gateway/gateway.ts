@@ -7386,7 +7386,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       lane: opts.lane,
       idempotencyKey:
         (opts.req.headers['x-papercusp-request-id'] as string | undefined)?.trim() ||
-        `gateway:${opts.lane.id}:${requestId}`,
+        `gateway:${opts.lane.id}:${gatewayProcessInstanceId}:${requestId}`,
       ownerId,
       accountId,
       streaming: null,
@@ -7485,7 +7485,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
   ): GatewayAdmissionRequestInput {
     const path = (req.url ?? '/').split('?', 1)[0] || '/';
     const sequence = ++gatewayAdmissionRequestSeq;
-    const idempotencyKey = requestHeader(req, 'x-papercusp-request-id') ?? `gateway:${kind}:${sequence}:${path}`;
+    const idempotencyKey =
+      requestHeader(req, 'x-papercusp-request-id') ??
+      `gateway:${kind}:${gatewayProcessInstanceId}:${sequence}:${path}`;
     const accountId = requestHeader(req, ACCOUNT_HEADER);
     const pinMode = accountId
       ? requestHeader(req, ACCOUNT_PIN_HEADER)?.toLowerCase() === 'hard'

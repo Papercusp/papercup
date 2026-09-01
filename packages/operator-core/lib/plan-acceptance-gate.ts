@@ -29,6 +29,7 @@ import { activeWorkspaceId } from './workspace-registry';
 import { RUBRIC_TEMPLATE_NAME } from './agent-tools/plans/rubric-template';
 import {
   getAcceptanceRubricsForPlan,
+  getRetiredAcceptanceRubricsForPlan,
   getRubric,
   META_ACCEPTANCE_RUBRIC_ID,
   readRubricPlanRevision,
@@ -88,8 +89,17 @@ export type PlanAcceptanceGateCode =
 
 export interface PlanAcceptanceGateVerdict {
   satisfied: boolean;
-  /** Why the gate did not apply (satisfied:true without a graded rubric). */
-  skipped?: 'flag-off' | 'rubric-template-plan' | 'template-instance';
+  /**
+   * Why the gate did not apply (satisfied:true without a graded rubric).
+   *
+   * `already-shipped` (EI-22078741539479611): the plan is ALREADY terminal, so the
+   * pre-ship question has nothing left to decide. Its acceptance rubric retired WITH
+   * the ship (one-shot, by design); re-asking the question would read that retirement
+   * as `acceptance_rubric_missing` and any later peer edit to a cited file as
+   * `audit_coverage_stale` — both prescribing a repair (author a rubric / re-audit)
+   * that re-opens a settled gate.
+   */
+  skipped?: 'flag-off' | 'rubric-template-plan' | 'template-instance' | 'already-shipped';
   /** Why the gate refused (satisfied:false). */
   code?: PlanAcceptanceGateCode;
   /** Teaching message for the refusal — the authoring/grading nudge (P-004). */
@@ -284,9 +294,10 @@ export async function evaluatePlanAcceptanceGate(
         template: string | null;
         template_slug: string | null;
         content: string | null;
+        status: string | null;
       }[]
     >`
-      SELECT plan_slug, harness_slug, template, template_slug, content
+      SELECT plan_slug, harness_slug, template, template_slug, content, status
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
@@ -296,6 +307,37 @@ export async function evaluatePlanAcceptanceGate(
     planContent = row?.content ?? null;
     if (row?.template === RUBRIC_TEMPLATE_NAME) return { satisfied: true, skipped: 'rubric-template-plan' };
     if (row?.template_slug) return { satisfied: true, skipped: 'template-instance' };
+    // EI-22078741539479611: a plan that is ALREADY shipped is past this gate. Every
+    // check below is a PRE-ship question, and asked post-ship each answers wrongly:
+    // shipping auto-retires the acceptance rubric (retireAcceptanceRubricForPlan), so
+    // the rubric family reads `acceptance_rubric_missing`; any later peer edit to a
+    // cited file reads `audit_coverage_stale`. Both say "cannot be marked shipped"
+    // about a plan that IS shipped, and both prescribe a repair — author a rubric,
+    // re-audit — that re-opens a settled gate. Measured live 2026-09-01: a duplicate
+    // acceptance rubric was authored, a BLOCKING grading request went to a peer who
+    // had already graded 7/7, and three successive sessions were told to "carry the
+    // plan to shipped". The write path is unaffected: set-plan-status evaluates this
+    // gate only while the plan is NOT yet shipped (shouldEvaluateAcceptanceGate), so
+    // the early exit cannot weaken a real ship — it only stops the read from lying.
+    if (row?.status === 'shipped') {
+      const retired = await getRetiredAcceptanceRubricsForPlan(planSlug);
+      const rubricId = retired[0]?.rubricId;
+      return {
+        satisfied: true,
+        skipped: 'already-shipped',
+        ...(rubricId ? { rubricId } : {}),
+        message:
+          `plan '${planSlug}' is already shipped — the ship gate is a pre-ship question and does not apply ` +
+          `to a terminal plan. ` +
+          (rubricId
+            ? `Its acceptance rubric '${rubricId}' was retired WITH the ship (one-shot, by design), so ` +
+              `"no active acceptance rubric" here means validated-and-closed, not unvalidated. `
+            : `No acceptance rubric is on record for it (it may predate the gate or have shipped under a waiver). `) +
+          `Do NOT author a replacement acceptance rubric or re-audit to "reconcile" this read — nothing is ` +
+          `pending. To re-validate deliberately, move the plan off shipped first (plans:set-plan-status); ` +
+          `the gate then applies again in full.`,
+      };
+    }
   } catch {
     /* not exempt — fall through to the rubric check */
   }

@@ -2207,6 +2207,53 @@ export function buildAgentActivityLedgerAdvisory(rawSql: string): string | null 
 }
 
 /**
+ * `harness_shared.adv_sessions.ended_at IS NULL` is NOT the liveness oracle
+ * (WI-1447231 / scheduling-and-liveness-source-of-truth-2026-08-31 P-001).
+ *
+ * `ended_at` is written by a session's own COOPERATIVE shutdown path. A session
+ * killed uncleanly — an operator SIGKILL, an OOM, a hard crash — never reaches
+ * that write, so its row keeps `ended_at IS NULL` forever: a zombie that reads
+ * exactly like a live session. The one shared liveness oracle every other
+ * surface derives from is `coord:presence` / `fleet:assignments` sessionState
+ * (`deriveSessionState` in `agent-tools/coordination/presence-wakeability.ts`),
+ * which reconciles heartbeat freshness and wakeability instead of trusting this
+ * raw column — a warm-dead session can read `heartbeatFresh:true,
+ * sessionState:'ended'`, the same one-layer-down mistake this predicate makes.
+ *
+ * MEASURED: the operator was SIGKILLed at 01:32 UTC on 2026-08-31. An agent
+ * read `adv_sessions WHERE ended_at IS NULL` afterward and reported 44 running
+ * agents; the true count was ~12 by sessionState, only 3 of them live — every
+ * session that was mid-turn when the operator died left a permanent zombie row.
+ *
+ * Fires on either direction of the predicate: `IS NULL` reads a row as
+ * "running", `IS NOT NULL` reads it as "ended" — both trust a column an
+ * unclean exit can strand on the wrong side forever, so both are wrong in the
+ * same way and get the same warning.
+ */
+export function buildAdvSessionsLivenessAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => bareTableName(t) === 'adv_sessions')) return null;
+
+  // Identifiers, so match the literal-and-comment-stripped body: a column
+  // named inside a quoted string or a `--` comment is not a predicate.
+  const body = stripSqlLiteralsAndComments(rawSql);
+  if (!/\bended_at\s+IS\s+(?:NOT\s+)?NULL\b/i.test(body)) return null;
+
+  return (
+    '⚠ adv_sessions.ended_at IS NULL/IS NOT NULL is NOT the liveness oracle: `ended_at` is ' +
+    "written by a session's own cooperative shutdown, so a session killed uncleanly (operator " +
+    'SIGKILL, OOM, crash) never writes it and its row reads "running" forever. MEASURED on the ' +
+    '2026-08-31 01:32 UTC operator SIGKILL: this predicate reported 44 running agents where the ' +
+    'true count was ~12 by sessionState (only 3 live). The one shared liveness oracle every other ' +
+    'surface derives from is coord:presence / fleet:assignments sessionState (deriveSessionState in ' +
+    'agent-tools/coordination/presence-wakeability.ts), which reconciles heartbeat freshness and ' +
+    'wakeability instead of trusting this raw column. Use coord:presence for a liveness count; if ' +
+    'you need this table for something ended_at genuinely answers (e.g. a completed session’s ' +
+    'duration), corroborate against sessionState rather than reading the column alone.'
+  );
+}
+
+/**
  * The agent_facts SUPERSESSION advisory (EI-19450552881841590) — two opposite
  * misreadings of one column, in one builder because they are the same defect
  * seen from either side: `superseded_at` does not mean what its neighbours imply.

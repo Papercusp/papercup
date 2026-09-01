@@ -273,6 +273,11 @@ export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
   'watchdog-orphan-superseded',
   'hive-bee-exit',
   'autonomy-revert',
+  // P-009 silent-intake-central-resolution-2026-09-01 (audit R6): the
+  // episode-scoped-operational-reconcile system action's `setIssueState(...,
+  // { skipCompletionGate: true })` closes via this exact `by` identity — see
+  // harness/routines/episode-scoped-operational-reconcile-action.ts.
+  'episode-scoped-operational-reconcile',
 ];
 
 /**

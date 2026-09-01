@@ -25,6 +25,7 @@ import {
   buildSessionTurnPartsJsonAdvisory,
   buildNativeToolAttributionAdvisory,
   buildAgentActivityLedgerAdvisory,
+  buildAdvSessionsLivenessAdvisory,
   buildAgentFactsSupersessionAdvisory,
   buildEventFireWindowAdvisory,
   buildSplitCompletionEvidenceAdvisory,
@@ -370,6 +371,12 @@ export default defineTool({
     // never mentions native tools at all, whose truthful MCP-only answer is then read as the
     // agent's whole activity. Both can fire for one investigation and say different things.
     const agentActivityAdvisory = advisoryOf(() => buildAgentActivityLedgerAdvisory(sql));
+    // WI-1447231: a THIRD liveness misread, one table over. adv_sessions.ended_at is written
+    // only by a session's own cooperative shutdown, so a session an operator SIGKILL cut off
+    // mid-turn never writes it — the row reads "running" forever. Its own builder because the
+    // wrong reading here is a raw column standing in for the derived sessionState oracle, not a
+    // coverage gap (the advisory above) or a misattributed source (the one before it).
+    const advSessionsLivenessAdvisory = advisoryOf(() => buildAdvSessionsLivenessAdvisory(sql));
     // WI-38056: reading ONE of the two completion-evidence surfaces. Its own
     // builder for the usual reason — this one does not warn about the wrong
     // tenant or an empty table, but about a POPULATED table answering
@@ -404,6 +411,7 @@ export default defineTool({
       splitEvidenceAdvisory,
       nativeToolAdvisory,
       agentActivityAdvisory,
+      advSessionsLivenessAdvisory,
       sessionTurnPartsJsonAdvisory,
       corpusNamespaceAdvisory,
     ];

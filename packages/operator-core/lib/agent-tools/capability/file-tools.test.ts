@@ -584,6 +584,101 @@ describe('capability:read', () => {
     expect(message).toContain(homedir());
     expect(message).not.toContain('~');
   });
+
+  // EI-22044192752243601: ordinary and raw:true reads return a plain TEXT body,
+  // not JSON — a code:run script reading `.content` or `.text` off that got a
+  // silent `undefined` (a primitive is never wrapped by run-script.ts's
+  // field-miss Proxy), and an `?? ''` fallback then wrote an empty string over a
+  // tracked file. These pin the fix: a structured, machine-readable twin under
+  // `ctx.codeMode`, using field names that avoid run-script.ts's
+  // ROOT_ENVELOPE_FIELDS (`content`/`text`) so a script's envelope-shaped guess
+  // still throws a loud error instead of silently "succeeding" against the
+  // wrong key.
+  describe('code-mode structuredContent (EI-22044192752243601)', () => {
+    const codeCtx = { ...baseCtx, codeMode: true } as never;
+
+    it('attaches an undecorated body for the default (line-numbered) view', async () => {
+      const f = join(DIR, 'r-codemode-default.txt');
+      writeFileSync(f, 'alpha\nbeta\ngamma\n');
+      const r = (await readTool.handler!({ file_path: f }, codeCtx)) as {
+        content: Array<{ text: string }>;
+        structuredContent?: Record<string, unknown>;
+      };
+
+      // The model-facing text keeps its cat -n decoration — the structured twin
+      // is additive, never a replacement.
+      expect(r.content[0].text).toMatch(/\s+1\talpha/);
+      expect(r.structuredContent).toMatchObject({
+        ok: true,
+        file_path: f,
+        body: 'alpha\nbeta\ngamma',
+        total_lines: 3,
+        start_line: 1,
+        end_line: 3,
+        has_more: false,
+      });
+      // The bug's exact failure shape: `.content` / `.text` must not silently
+      // resolve to something a naive `?? ''` guess would launder into "".
+      expect(r.structuredContent!.content).toBeUndefined();
+      expect(r.structuredContent!.text).toBeUndefined();
+    });
+
+    it('reports has_more and the visible line range on a windowed default read', async () => {
+      const f = join(DIR, 'r-codemode-windowed.txt');
+      writeFileSync(f, Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join('\n'));
+      const r = (await readTool.handler!({ file_path: f, offset: 2, limit: 3 }, codeCtx)) as {
+        structuredContent?: Record<string, unknown>;
+      };
+      expect(r.structuredContent).toMatchObject({
+        body: 'line2\nline3\nline4',
+        total_lines: 10,
+        start_line: 2,
+        end_line: 4,
+        has_more: true,
+      });
+    });
+
+    it('attaches the exact raw span as body for raw:true', async () => {
+      const f = join(DIR, 'r-codemode-raw.txt');
+      writeFileSync(f, 'one\ntwo\nthree\n');
+      const r = (await readTool.handler!({ file_path: f, raw: true }, codeCtx)) as {
+        content: Array<{ text: string }>;
+        structuredContent?: Record<string, unknown>;
+      };
+      // Raw mode's own contract: the text body is the exact source span.
+      expect(r.content[0].text).toBe('one\ntwo\nthree\n');
+      expect(r.structuredContent).toEqual({ ok: true, file_path: f, body: 'one\ntwo\nthree\n' });
+    });
+
+    it('still returns a real object — not a vanished falsy value — for an empty raw window', async () => {
+      const f = join(DIR, 'r-codemode-raw-empty.txt');
+      writeFileSync(f, 'only line\n');
+      // offset past the end of the file: the raw branch's empty-slice path,
+      // one of the three return sites this fix touches.
+      const r = (await readTool.handler!({ file_path: f, raw: true, offset: 5 }, codeCtx)) as {
+        content: Array<{ text: string }>;
+        structuredContent?: Record<string, unknown>;
+      };
+      expect(r.content[0].text).toBe('');
+      // The whole point: an empty BODY must still arrive as a real object a
+      // script can branch on (`result.body === ''`), never as the bare '' string
+      // this bug's `cur.content ?? cur.text ?? ''` fallback could not tell apart
+      // from "the field was never there".
+      expect(typeof r.structuredContent).toBe('object');
+      expect(r.structuredContent).toEqual({ ok: true, file_path: f, body: '' });
+    });
+
+    it('costs a non-code-mode caller nothing on all three affected return sites', async () => {
+      const f = join(DIR, 'r-codemode-gated.txt');
+      writeFileSync(f, 'x\ny\n');
+      const direct = (await readTool.handler!({ file_path: f }, ctx)) as { structuredContent?: unknown };
+      const directRaw = (await readTool.handler!({ file_path: f, raw: true }, ctx)) as { structuredContent?: unknown };
+      const directRawEmpty = (await readTool.handler!({ file_path: f, raw: true, offset: 99 }, ctx)) as { structuredContent?: unknown };
+      expect(direct.structuredContent).toBeUndefined();
+      expect(directRaw.structuredContent).toBeUndefined();
+      expect(directRawEmpty.structuredContent).toBeUndefined();
+    });
+  });
 });
 
 describe('capability:write', () => {

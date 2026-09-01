@@ -3207,6 +3207,95 @@ describe('grep/rg → `| head` false-absence advisory (EI-20041520588565350)', (
 });
 
 /**
+ * EI-22031870119269961 — a double-quoted grep/sed/awk pattern containing an
+ * UNESCAPED $N or ${N} is a live shell expansion, not the literal digits the
+ * pattern almost certainly meant. Positional parameters are normally unset
+ * here, so it silently collapses to "" and the search reports a well-formed
+ * ZERO-MATCH that reads exactly like "the code was rewritten/absent" — the
+ * reported repro was `grep -n "...\$4::jsonb..."` losing its backslash
+ * between JSON authoring and bash execution.
+ */
+describe('double-quoted $N pattern advisory (EI-22031870119269961)', () => {
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-test',
+  });
+
+  const expectDollarDigitAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('double-quoted $N pattern advisory');
+    expect(hso.additionalContext).toContain('ZERO-MATCH');
+  };
+
+  const expectNoDollarDigitAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    if (!out.stdout.trim()) return;
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow');
+    expect(hso.additionalContext ?? '').not.toContain('double-quoted $N pattern advisory');
+  };
+
+  it('fires on the reported repro shape (bare $N, no escape)', () => {
+    expectDollarDigitAdvisory(runGate(bashWithInput({ command: 'grep -n "foo$4::jsonb bar" file.ts' })));
+  });
+
+  it('fires on braced ${N}', () => {
+    expectDollarDigitAdvisory(runGate(bashWithInput({ command: 'grep -n "foo${4}bar" file.ts' })));
+  });
+
+  it.each([
+    ['egrep', 'egrep -n "foo$4bar" file.ts'],
+    ['fgrep', 'fgrep -n "foo$4bar" file.ts'],
+    ['rg', 'rg -n "foo$4bar" file.ts'],
+    ['sed', 'sed -n "s/x/$4/" file.ts'],
+    ['awk', 'awk "{print $4}" file.ts'],
+  ])('fires for %s as well as grep', (_label, command) => {
+    expectDollarDigitAdvisory(runGate(bashWithInput({ command })));
+  });
+
+  it('fires when an escaped backslash precedes a live $N (even backslash-run)', () => {
+    // Bash text is: grep -n "foo\\$4bar" file.ts — TWO backslashes then $4.
+    // `\\` decodes to one literal backslash; the $4 that follows is NOT
+    // escaped by it and stays live.
+    expectDollarDigitAdvisory(runGate(bashWithInput({ command: 'grep -n "foo\\\\$4bar" file.ts' })));
+  });
+
+  it('does not fire when $N is escaped with a single backslash (the safe form)', () => {
+    // Bash text is: grep -n "foo\$4bar" file.ts — ONE backslash then $4,
+    // which bash decodes to the literal characters `$4` — exactly the safe
+    // form this advisory teaches the caller to use.
+    expectNoDollarDigitAdvisory(runGate(bashWithInput({ command: 'grep -n "foo\\$4bar" file.ts' })));
+  });
+
+  it('does not fire when the pattern is single-quoted (always literal)', () => {
+    expectNoDollarDigitAdvisory(runGate(bashWithInput({ command: "grep -n 'foo$4bar' file.ts" })));
+  });
+
+  it('does not fire for a named variable ($BAR, not a digit)', () => {
+    expectNoDollarDigitAdvisory(runGate(bashWithInput({ command: 'grep -n "foo$BARbar" file.ts' })));
+  });
+
+  it('does not fire for a non-search command', () => {
+    expectNoDollarDigitAdvisory(runGate(bashWithInput({ command: 'echo "foo$4bar"' })));
+  });
+
+  it('a deny gate still WINS over the $N pattern advisory', () => {
+    const out = runGate(
+      {
+        tool_name: 'Bash',
+        tool_input: { command: 'crontab -e; grep -n "foo$4bar" apps' },
+        session_id: 's-test',
+      },
+      AGENT,
+    );
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
+
+/**
  * EI-18764990059061608 — background-log-read-race advisory: reading a
  * background job's redirected-to-file output while the job is STILL WRITING
  * it is indistinguishable, at the read call, from the job having finished and

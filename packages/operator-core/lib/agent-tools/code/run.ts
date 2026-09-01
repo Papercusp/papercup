@@ -883,7 +883,7 @@ function projectCodeRunSummaryTextContent(
   path: string,
   options: CodeRunSummaryProjectionOptions,
   stats: CodeRunSummaryProjectionStats,
-): unknown | undefined {
+): unknown[] | undefined {
   if (!Array.isArray(value)) return undefined;
 
   const limit = Math.min(value.length, options.arrayLimit);

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 841,
+  "count": 842,
   "tools": [
     {
       "name": "ablation:report",
@@ -12024,6 +12024,36 @@
       "guidance": {
         "when": "Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.",
         "notWhen": "For the catalog of ALL fleets with availability, use fleet:list.",
+        "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
+      }
+    },
+    {
+      "name": "fleet:supersede",
+      "http": {
+        "path": "/api/agent-tools/fleet/supersede",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Retire a PREDECESSOR fleet in favor of a SUCCESSOR carrying its mission forward: recovers leadership over the predecessor if its registered leader is not live (fleet:take-leadership), then applies a TERMINAL fleet:wind-down (noResumePath:true) so its controlState stops reading 'active' and it stops burning governor ticks / confusing fleet:status readers. Refuses when the named successor does not exist or has no live leader, so you can never strand a predecessor's remaining capacity in favor of a fleet that cannot itself continue the mission. The predecessor keeps its registry row (fleets are never deleted, D-003) — only its control state changes.",
+      "capabilities": [
+        "fleet:supersede"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "A new fleet has taken over an old fleet's mission (same plan/goal, a fresh launch or take-leadership elsewhere) and the old fleet is still controlState='active' with no live members driving it.",
+        "notWhen": "The predecessor still has live members doing real work — wind it down yourself (fleet:wind-down) once it is actually done, or fold it via fleet:take-leadership + keep working it, not supersede. To just pause/resume your OWN fleet, use fleet:wind-down / fleet:pause / fleet:resume directly.",
         "chaining": "Routing ladder: (0) SELF — drive it via plans:launch / plans:set-status. (1) BACKLOG — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:launch-on-plan { name, plan, count }, NOT capability:terminal (it refuses agent launches)."
       }
     },

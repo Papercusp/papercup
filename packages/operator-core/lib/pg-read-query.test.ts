@@ -21,6 +21,7 @@ import {
   buildSessionTurnPartsJsonAdvisory,
   buildNativeToolAttributionAdvisory,
   buildAgentActivityLedgerAdvisory,
+  buildAdvSessionsLivenessAdvisory,
   buildAgentFactsSupersessionAdvisory,
   buildEventFireWindowAdvisory,
   buildEpochUnitAdvisory,
@@ -2329,6 +2330,67 @@ describe('buildAgentActivityLedgerAdvisory — a single-agent ledger window is n
     expect(
       buildAgentActivityLedgerAdvisory(
         `SELECT count(*) FROM ${TI}\n-- was: WHERE coord_owner_id = '${PEER}'\nWHERE status = 'error'`,
+      ),
+    ).toBeNull();
+  });
+});
+
+/**
+ * WI-1447231 / scheduling-and-liveness-source-of-truth-2026-08-31 P-001. The query in the first
+ * case is verbatim in shape the one that caused the incident: a session an operator SIGKILL cut
+ * off mid-turn never wrote `ended_at`, so the raw predicate over-reported running agents 44 vs the
+ * true ~12 by sessionState (only 3 live).
+ */
+describe('buildAdvSessionsLivenessAdvisory — adv_sessions.ended_at is not the liveness oracle', () => {
+  const ADV = 'harness_shared.adv_sessions';
+
+  it('fires on the "IS NULL ⇒ running" read that caused the incident', () => {
+    const advisory = buildAdvSessionsLivenessAdvisory(
+      `SELECT count(*) FROM ${ADV} WHERE ended_at IS NULL`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('NOT the liveness oracle');
+    expect(advisory).toContain('SIGKILL');
+    expect(advisory).toContain('coord:presence');
+    expect(advisory).toContain('sessionState');
+    expect(advisory).toContain('presence-wakeability.ts');
+    // The measured incident numbers, pinned so a later edit can't quietly drop them.
+    expect(advisory).toMatch(/44 running agents/);
+    expect(advisory).toMatch(/~12 by sessionState/);
+  });
+
+  it('fires on the opposite direction too — IS NOT NULL is the same trap read backwards', () => {
+    expect(
+      buildAdvSessionsLivenessAdvisory(`SELECT * FROM ${ADV} WHERE ended_at IS NOT NULL`),
+    ).toBeTruthy();
+  });
+
+  it('fires regardless of case/whitespace in the predicate', () => {
+    expect(
+      buildAdvSessionsLivenessAdvisory(`select * from ${ADV} where ended_at  is  null`),
+    ).toBeTruthy();
+  });
+
+  it('is silent when the table is not adv_sessions', () => {
+    expect(
+      buildAdvSessionsLivenessAdvisory(
+        `SELECT count(*) FROM harness_shared.session_turns WHERE ended_at IS NULL`,
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent on adv_sessions when the query never touches ended_at', () => {
+    expect(
+      buildAdvSessionsLivenessAdvisory(
+        `SELECT session_id, owner FROM ${ADV} WHERE owner = 'su-abc' ORDER BY started_at DESC`,
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent when ended_at appears only in a comment, not a predicate', () => {
+    expect(
+      buildAdvSessionsLivenessAdvisory(
+        `SELECT count(*) FROM ${ADV}\n-- was: WHERE ended_at IS NULL\nWHERE owner = 'su-abc'`,
       ),
     ).toBeNull();
   });

@@ -22,6 +22,13 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
   listFleetClaimSpecCandidates: vi.fn(),
   resolveClaimSpecWorkspace: (ws: string | null | undefined) => (ws && ws !== '*' ? ws : undefined),
 }));
+// EI-21834285144372521: the handler now runs the SAME post-claim plan-lane guard
+// scheduler:get_next uses, read-only, over plan-linked rows in the returned page. Mocked so
+// existing fixtures (WI-B carries plan:'p') keep their pre-fix "claimable" behaviour by
+// default; individual tests below override it to exercise the new exclusion.
+vi.mock('../../scheduler/plan-item-lane-guard', () => ({
+  planItemLaneBlockReason: vi.fn(),
+}));
 const hiveMocks = vi.hoisted(() => ({ potHomeSlugForHarness: vi.fn() }));
 vi.mock('../../hive-federation', () => hiveMocks);
 vi.mock('../coordination/identity', () => ({
@@ -30,11 +37,13 @@ vi.mock('../coordination/identity', () => ({
 
 import { readIssueClaimability } from '../../scheduler/get-next';
 import { resolveFleetClaimSpec, listFleetClaimSpecCandidates } from '../../scheduler/claim-spec-store';
+import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const readM = vi.mocked(readIssueClaimability);
 const recM = vi.mocked(resolveFleetClaimSpec);
 const candM = vi.mocked(listFleetClaimSpecCandidates);
+const laneM = vi.mocked(planItemLaneBlockReason);
 
 const tool = (await import('./claimable')).default;
 
@@ -143,6 +152,7 @@ beforeEach(() => {
   })) as never);
   mockResolvedTyped(recM, null);
   mockResolvedTyped(candM, []);
+  laneM.mockResolvedValue(null);
 });
 
 describe('work_items:claimable handler', () => {
@@ -188,6 +198,49 @@ describe('work_items:claimable handler', () => {
     expect(out.spec).toEqual({ specId: 'default-fixed-ordering', revision: 0, source: 'default' });
     // NEVER claims — no spec record was resolved and no claim mock exists.
     expect(recM).not.toHaveBeenCalled();
+  });
+
+  it('EI-21834285144372521: a plan-linked row the post-claim guard would block is excluded from claimable/rows, the count is corrected, and it is surfaced in ownerGateExcluded — never checked for a plan-less row', async () => {
+    laneM.mockImplementation(async ({ id }: { id?: string }) =>
+      id === 'WI-B'
+        ? { reason: `plan-item p#P-011's plan text marks it owner-gated ("owner-gated")`, planSlug: 'p', itemId: 'P-011', effectiveStatus: 'wip' }
+        : null,
+    );
+
+    const out = await run({ harness: 'papercup' });
+
+    expect(out.claimable.map((r: { id: string }) => r.id)).toEqual(['WI-A', 'WI-C']);
+    expect(out.rows.map((r: { id: string }) => r.id)).toEqual(['WI-A', 'WI-C']);
+    expect(out.returned).toBe(2);
+    expect(out.claimableCount).toBe(2); // breakdown.claimable(3) - 1 excluded
+    expect(out.count).toBe(2);
+    expect(out.ownerGateExcluded).toEqual([
+      { id: 'WI-B', plan: 'p', reason: `plan-item p#P-011's plan text marks it owner-gated ("owner-gated")` },
+    ]);
+    expect(out.note).not.toContain('OVER-count'); // page was not truncated (3 rows < default limit 20)
+    // Only WI-B carries a `plan`; WI-A/WI-C (plan: null) must never even reach the guard —
+    // a cheap prefilter, not a wasted lookup.
+    expect(laneM).toHaveBeenCalledTimes(1);
+    expect(laneM).toHaveBeenCalledWith({ id: 'WI-B', harness: 'papercup', family: 'issue', payload: null });
+  });
+
+  it('EI-21834285144372521: the guard resolving null (default) leaves every row claimable — no false exclusion', async () => {
+    const out = await run({ harness: 'papercup' });
+    // WI-B is the only row carrying `plan`, so it is the only one checked; it resolves null.
+    expect(laneM).toHaveBeenCalledTimes(1);
+    expect(out.claimable.map((r: { id: string }) => r.id)).toEqual(['WI-A', 'WI-B', 'WI-C']);
+    expect(out.claimableCount).toBe(3);
+    expect(out).not.toHaveProperty('ownerGateExcluded');
+  });
+
+  it('EI-21834285144372521: a lookup error from the guard fails OPEN — the row stays claimable, same as no linkage', async () => {
+    laneM.mockRejectedValue(new Error('plan read hiccup'));
+
+    const out = await run({ harness: 'papercup' });
+
+    expect(out.claimable.map((r: { id: string }) => r.id)).toEqual(['WI-A', 'WI-B', 'WI-C']);
+    expect(out.claimableCount).toBe(3);
+    expect(out).not.toHaveProperty('ownerGateExcluded');
   });
 
   it('a single kind narrows the filter to a `= kind` leaf', async () => {

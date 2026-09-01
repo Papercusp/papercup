@@ -1845,6 +1845,154 @@ try:
 except Exception:
     pass  # advisory must never wedge a command
 
+# ── Double-quoted grep/sed/awk $N pattern advisory (EI-22031870119269961) ──
+# A double-quoted grep/egrep/fgrep/rg/sed/awk PATTERN argument containing an
+# unescaped $N or ${N} is a LIVE shell expansion, not the literal digits the
+# pattern almost certainly meant (`grep -n "...\$4::jsonb..."` losing its
+# backslash between JSON authoring and bash execution is the reported case).
+# Positional parameters are normally unset in this execution context, so the
+# expansion silently collapses to "" and the search/substitution goes on to
+# report a well-formed ZERO-MATCH that reads exactly like "the code was
+# rewritten/absent" — a false negative from the INSTRUMENT, not from the
+# search target (same family as the grep-to-head advisory above and the
+# documented `pgrep -q` / `matched=0` false-absence traps).
+#
+# Advisory only, and deliberately narrow: fires only inside a genuine
+# double-quoted span (single quotes are always literal and already safe) of
+# a recognized search/substitute command, and only when the backslash-run
+# immediately before the `$` is EVEN (0, 2, 4, …) — an ODD run means the
+# LAST backslash escapes the `$`, which is the safe, already-correct form
+# this advisory is teaching the caller to use.
+try:
+    if not ADVISORY:
+        _dd_cmd_text = command
+        _DD_NAMES = frozenset(('grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk'))
+
+        def _dd_raw_segments(text):
+            # Same operator set as _scan_shell (;|&(){} + newline), but
+            # returns the RAW substrings (quotes/backslashes intact) instead
+            # of decoded words — _scan_shell's tokenizer decodes `\$` and a
+            # bare `$` to the SAME output, which erases exactly the
+            # escaped-vs-live distinction this advisory needs to keep.
+            segs, i, n, start = [], 0, len(text), 0
+            while i < n:
+                c = text[i]
+                if c == '\\' and i + 1 < n:
+                    i += 2
+                    continue
+                if c == "'":
+                    j = text.find("'", i + 1)
+                    i = n if j == -1 else j + 1
+                    continue
+                if c == '"':
+                    j = i + 1
+                    while j < n:
+                        if text[j] == '\\':
+                            j += 2
+                            continue
+                        if text[j] == '"':
+                            break
+                        j += 1
+                    i = j + 1
+                    continue
+                if c in ';|&(){}\n':
+                    _seg = text[start:i]
+                    if _seg.strip():
+                        segs.append(_seg)
+                    start = i + 1
+                    i += 1
+                    continue
+                i += 1
+            _tail = text[start:n]
+            if _tail.strip():
+                segs.append(_tail)
+            return segs
+
+        def _dd_quoted_spans(text):
+            # Raw inner text of every top-level double-quoted span in `text`
+            # (backslashes intact) — the body this advisory inspects for a
+            # live $N. Single-quoted spans are skipped: they are always
+            # literal in bash and can never be the hazard this covers.
+            spans, i, n = [], 0, len(text)
+            while i < n:
+                c = text[i]
+                if c == "'":
+                    j = text.find("'", i + 1)
+                    i = n if j == -1 else j + 1
+                    continue
+                if c == '"':
+                    j = i + 1
+                    start = j
+                    while j < n:
+                        if text[j] == '\\':
+                            j += 2
+                            continue
+                        if text[j] == '"':
+                            break
+                        j += 1
+                    spans.append(text[start:min(j, n)])
+                    i = j + 1
+                    continue
+                i += 1
+            return spans
+
+        def _dd_has_live_dollar_digit(inner):
+            i, n, bs = 0, len(inner), 0
+            while i < n:
+                c = inner[i]
+                if c == '\\':
+                    bs += 1
+                    i += 1
+                    continue
+                if c == '$' and bs % 2 == 0:
+                    j = i + 1
+                    if j < n and inner[j] == '{':
+                        k = j + 1
+                        while k < n and inner[k].isdigit():
+                            k += 1
+                        if k > j + 1 and k < n and inner[k] == '}':
+                            return True
+                    elif j < n and inner[j].isdigit():
+                        return True
+                bs = 0
+                i += 1
+            return False
+
+        _dd_hit = False
+        for _dd_seg in _dd_raw_segments(_dd_cmd_text):
+            _dd_cmds, _ = _scan_shell(_dd_seg)
+            if not _dd_cmds:
+                continue
+            _dd_words = _dd_cmds[0]
+            _dd_start = _scan_command_start(_dd_words)
+            if _dd_start >= len(_dd_words):
+                continue
+            _dd_name = _dd_words[_dd_start].rsplit('/', 1)[-1]
+            if _dd_name not in _DD_NAMES:
+                continue
+            if any(_dd_has_live_dollar_digit(_span) for _span in _dd_quoted_spans(_dd_seg)):
+                _dd_hit = True
+                break
+
+        if _dd_hit:
+            ADVISORY = (
+                'double-quoted $N pattern advisory (EI-22031870119269961): '
+                'a double-quoted grep/egrep/fgrep/rg/sed/awk argument in this '
+                'command contains an unescaped $N or ${N} — a LIVE shell '
+                'expansion, not the literal digits the pattern almost '
+                'certainly meant. Positional parameters are usually unset '
+                'here, so this silently collapses to an empty string and the '
+                'search/substitution reports a well-formed ZERO-MATCH that '
+                'reads exactly like "the code was rewritten/absent" (same '
+                'false-negative family as the grep-to-head advisory and the '
+                'documented `pgrep -q` / `matched=0` traps). Escape it as '
+                '\\$N to keep the literal characters, or move the pattern '
+                'into single quotes. Advisory only; this command is '
+                'proceeding as issued.'
+            )
+except Exception:
+    pass  # advisory must never wedge a command
+
 # ── Foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592) ───────
 # `cmd | head -N` is a DIFFERENT hazard from the background-pipe exit-code
 # trap above, and it applies in the FOREGROUND too (that advisory only fires

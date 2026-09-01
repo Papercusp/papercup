@@ -26,6 +26,7 @@ import {
   AGENT_GOAL_CELL,
   HOST_MEMORY_PRESSURE_CELL,
   MEMORY_CGROUP_ATTRIBUTION_CELL,
+  GOAL_PORTFOLIO_THROUGHPUT_CELL,
   BUILTIN_CELLS,
   registerBuiltinCells,
 } from './cell-registrations';
@@ -208,6 +209,79 @@ describe('P-007: the four verdict cells', () => {
       'inspect-terminal-evidence',
       'read-release-control',
     ]);
+  });
+
+  /**
+   * EI-22089346495559937 — `goal.portfolioThroughput` shipped with every path declared
+   * under a `data.` prefix, because `goals:get`'s HANDLER returns `{ data: { … } }`. A
+   * cell read never sees the handler's return value: the projected-tool dispatch that
+   * `readCell` goes through hands `valueAtPath` the unwrapped body
+   * (`{ id, …, portfolioThroughput }`), so every read answered `insufficient-data`
+   * ("declared path drifted") and every `state:subscribe` on the cell was un-fireable —
+   * for a resolver that worked perfectly. The plan whose P-002 this cell IS ("make an
+   * idle steward fail loudly") shipped with its instrument unreadable, and the goal it
+   * was written for sat idle-past-threshold for 130 minutes while the cell read unknown.
+   *
+   * Two guards. The specific paths, and the registry-wide rule that no declared path
+   * may begin with `data.` — the sibling cells on `data:`-returning tools
+   * (gate.qualification on dev:pipeline_position) were already envelope-free, so the
+   * rule describes the registry as it actually works rather than a new convention.
+   */
+  describe('EI-22089346495559937: declared paths address the DISPATCHER-unwrapped payload, never the handler envelope', () => {
+    it('goal.portfolioThroughput declares every path envelope-free', () => {
+      expect(validateCellSpec(GOAL_PORTFOLIO_THROUGHPUT_CELL)).toEqual([]);
+      expect(GOAL_PORTFOLIO_THROUGHPUT_CELL.headline).toBe('portfolioThroughput.idleMinutes');
+      expect(GOAL_PORTFOLIO_THROUGHPUT_CELL.changeSignal).toEqual({
+        kind: 'poll',
+        tool: 'goals:get',
+        path: 'portfolioThroughput.idleMinutes',
+      });
+      expect(GOAL_PORTFOLIO_THROUGHPUT_CELL.assessment?.path).toBe('portfolioThroughput.assessment');
+      expect(GOAL_PORTFOLIO_THROUGHPUT_CELL.assessment?.evidence).toEqual([
+        'portfolioThroughput.actsInWindow',
+        'portfolioThroughput.lastActAtMs',
+        'portfolioThroughput.lastActTool',
+        'portfolioThroughput.measuredOwnerIds',
+      ]);
+      expect(GOAL_PORTFOLIO_THROUGHPUT_CELL.unknownHoist).toBe('portfolioThroughput.unavailable');
+      expect(GOAL_PORTFOLIO_THROUGHPUT_CELL.materiality?.path).toBe('portfolioThroughput.idle');
+    });
+
+    /** Every path a spec can declare, so a new path-bearing field cannot slip past the rule. */
+    const declaredPaths = (spec: CellSpec): string[] =>
+      [
+        spec.headline,
+        spec.changeSignal.kind === 'poll' ? spec.changeSignal.path : undefined,
+        spec.assessment?.path,
+        ...(spec.assessment?.evidence ?? []),
+        spec.unknownHoist,
+        spec.materiality?.path,
+      ].filter((p): p is string => typeof p === 'string');
+
+    const envelopePrefixed = (spec: CellSpec): string[] =>
+      declaredPaths(spec).filter((p) => p === 'data' || p.startsWith('data.'));
+
+    it('no built-in cell declares a path under the handler `data.` envelope', () => {
+      // Non-vacuity: the walk must actually see the cell this rule was written for.
+      expect(BUILTIN_CELLS.map((c) => c.cell)).toContain('goal.portfolioThroughput');
+      const offenders = BUILTIN_CELLS.filter((c) => envelopePrefixed(c).length > 0).map((c) => ({
+        cell: c.cell,
+        paths: envelopePrefixed(c),
+      }));
+      expect(offenders).toEqual([]);
+    });
+
+    it('CONTROL: the rule fires on the exact shape that shipped', () => {
+      const asShipped: CellSpec = {
+        ...GOAL_PORTFOLIO_THROUGHPUT_CELL,
+        headline: 'data.portfolioThroughput.idleMinutes',
+        changeSignal: { kind: 'poll', tool: 'goals:get', path: 'data.portfolioThroughput.idleMinutes' },
+      };
+      expect(envelopePrefixed(asShipped)).toEqual([
+        'data.portfolioThroughput.idleMinutes',
+        'data.portfolioThroughput.idleMinutes',
+      ]);
+    });
   });
 
   /**

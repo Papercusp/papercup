@@ -4,7 +4,18 @@
   "compilerOptions": {
     "types": ["node"],
     "allowImportingTsExtensions": true,
-    "noEmit": true
+    "noEmit": true,
+    // WI-212675: root scripts don't author JSX themselves, but the *.ts import
+    // graph reaches operator-core re-export shims (e.g. lib/lazy-with-retry.ts)
+    // that forward named values from @papercusp/sync's root barrel. Resolving
+    // that barrel's type surface requires parsing its sibling SyncProvider.tsx
+    // export regardless of which named export is actually consumed — without
+    // this, tsc refuses to even parse the .tsx module (TS6142). noEmit:true
+    // above means this has zero effect on script output; it only lets
+    // type-checking succeed once resolution crosses into a .tsx file. Matches
+    // the "react-jsx" convention already used by libs/generic/sync and
+    // apps/operator.
+    "jsx": "react-jsx"
   },
   "include": ["**/*.ts"],
   "exclude": ["node_modules"]
