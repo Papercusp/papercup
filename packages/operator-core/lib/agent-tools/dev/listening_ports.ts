@@ -79,6 +79,15 @@ export default defineTool({
       .optional()
       .describe(`Max rows (default ${LISTENING_SOCKETS_DEFAULT_LIMIT}). This host has ~240 listening sockets.`),
   }),
+  result: z
+    .object({
+      sockets: z.unknown().optional(),
+      matched: z.unknown().optional(),
+      totalListening: z.unknown().optional(),
+      truncated: z.unknown().optional(),
+      ownerHidden: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args) {
     try {
       const result = await listListeningSockets({
