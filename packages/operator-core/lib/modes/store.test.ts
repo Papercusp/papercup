@@ -5,7 +5,14 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
-import { setMode, getModes, getModesForOwners, reconcileImpliedModes, RECONCILE_SET_BY } from './store';
+import {
+  setMode,
+  getModes,
+  getModesForOwners,
+  reconcileImpliedModes,
+  clearImpliedModes,
+  RECONCILE_SET_BY,
+} from './store';
 import { MODES, modeById, axisKeyFor, modeIndexMarkdown } from './registry';
 
 interface Row {
@@ -22,6 +29,7 @@ interface Row {
      the column answers "subject: null" to every question, which is
      indistinguishable from the bug where the column is never written. */
   subject: string | null;
+  implied_by: { mode: string; subject: string | null } | null;
   goal_lease_epoch: number | null;
   goal_handoff_from_owner_id: string | null;
   goal_handoff_expires_at: string | null;
@@ -54,6 +62,7 @@ function mockSql() {
         setBy,
         ownerDirected,
         subject,
+        impliedBy,
         callerIsOwnerAuthority,
         expectedOwnerId,
         expectedEpoch,
@@ -77,6 +86,12 @@ function mockSql() {
       const doNothing = text.includes('DO NOTHING');
       if (doNothing && existingRow) return Promise.resolve([]); // PK conflict: no write, no row
       const isGoalElection = text.includes('goal_lease_epoch');
+      const storedImpliedBy =
+        impliedBy == null
+          ? null
+          : typeof impliedBy === 'string'
+            ? (JSON.parse(impliedBy) as { mode: string; subject: string | null })
+            : (impliedBy as { mode: string; subject: string | null });
       const prior = isGoalElection
         ? [...modes.values()]
             .filter(
@@ -133,6 +148,7 @@ function mockSql() {
         owner_directed: Boolean(ownerDirected),
         set_at: '2026-07-05T00:00:00Z',
         subject: subject == null ? null : String(subject),
+        implied_by: storedImpliedBy,
         goal_lease_epoch: isGoalElection ? nextEpoch : (existingRow?.goal_lease_epoch ?? null),
         goal_handoff_from_owner_id: isGoalElection
           ? (prior?.owner_id ?? null)
@@ -162,6 +178,22 @@ function mockSql() {
       const [ws, owner, axis] = vals as string[];
       const row = modes.get(key(ws, owner, axis));
       return Promise.resolve(row ? [{ mode: row.mode }] : []);
+    }
+    if (text.includes("implied_by->>'mode'")) {
+      const [ws, owner, sourceMode, sourceSubject] = vals as [string, string, string, string | null];
+      const deleted: Array<{ axis_key: string; mode: string; owner_directed: boolean }> = [];
+      for (const [modeKey, row] of modes) {
+        if (
+          row.workspace_id === ws &&
+          row.owner_id === owner &&
+          row.implied_by?.mode === sourceMode &&
+          row.implied_by.subject === sourceSubject
+        ) {
+          deleted.push({ axis_key: row.axis_key, mode: row.mode, owner_directed: row.owner_directed });
+          modes.delete(modeKey);
+        }
+      }
+      return Promise.resolve(deleted);
     }
     if (text.includes('DELETE FROM harness_shared.agent_modes')) {
       const [ws, owner, axis] = vals as string[];
@@ -631,7 +663,11 @@ describe('implication cascade (D-003)', () => {
       { mode: 'auto', status: 'set' },
       { mode: 'ideate', status: 'set' },
     ]);
-    expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['auto', 'goal', 'ideate']);
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows.map((r) => r.mode).sort()).toEqual(['auto', 'goal', 'ideate']);
+    expect(rows.find((r) => r.mode === 'auto')?.impliedBy).toEqual({ mode: 'goal', subject: 'g-1' });
+    expect(rows.find((r) => r.mode === 'ideate')?.impliedBy).toEqual({ mode: 'goal', subject: 'g-1' });
+    expect(rows.find((r) => r.mode === 'goal')?.impliedBy).toBeNull();
   });
 
   it('elects one GOAL holder epoch and records a bounded predecessor handoff', async () => {
@@ -870,6 +906,48 @@ describe('implication cascade (D-003)', () => {
     expect(rows.find((r) => r.mode === 'auto')!.subject).toBeNull();
   });
 
+  it('clears only exact derived provenance and preserves an independently chosen posture', async () => {
+    await enterGoal();
+
+    // Re-asserting AUTO explicitly converts the implied row into an independent
+    // posture. Terminal GOAL cleanup must leave it in place.
+    await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: true,
+      reason: 'owner independently chose auto',
+      setBy: ME,
+      sql: m.sql,
+    });
+
+    expect(
+      await clearImpliedModes({
+        workspaceId: WS,
+        ownerId: ME,
+        source: { mode: 'goal', subject: 'different-goal' },
+        reason: 'wrong source must not clear anything',
+        setBy: ME,
+        sql: m.sql,
+      }),
+    ).toEqual([]);
+
+    expect(
+      await clearImpliedModes({
+        workspaceId: WS,
+        ownerId: ME,
+        source: { mode: 'goal', subject: 'g-1' },
+        reason: 'terminal goal cleanup',
+        setBy: 'goal-stop-fanout',
+        sql: m.sql,
+      }),
+    ).toEqual(['ideate']);
+
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows.map((r) => r.mode).sort()).toEqual(['auto', 'goal']);
+    expect(rows.find((r) => r.mode === 'auto')?.impliedBy).toBeNull();
+  });
+
   it('does not forge owner-directed provenance on implied rows', async () => {
     await enterGoal({ ownerDirected: true });
     const rows = await getModes(WS, ME, m.sql);
@@ -971,6 +1049,7 @@ describe('reconcileImpliedModes (WI-37856) — repairs the stored population, no
       goal_lease_epoch: mode === 'goal' ? 1 : null,
       goal_handoff_from_owner_id: null,
       goal_handoff_expires_at: null,
+      implied_by: null,
     });
   };
 

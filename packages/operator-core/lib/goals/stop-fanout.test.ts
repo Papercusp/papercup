@@ -39,6 +39,7 @@ const windDownGoalFleet = vi.hoisted(() =>
 const setMode = vi.hoisted(() =>
   vi.fn(async (): Promise<import('../modes/store').SetModeResult> => ({ ok: true })),
 );
+const clearImpliedModes = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
 const potsForGoal = vi.hoisted(() => vi.fn());
 const sqlRows = vi.hoisted(() => ({
   owners: [] as string[],
@@ -92,7 +93,7 @@ vi.mock('../harness/routines/loop', () => ({
   deactivateLoop,
   loopRoutineName: (ownerId: string) => `loop-${ownerId}`,
 }));
-vi.mock('../modes/store', () => ({ setMode }));
+vi.mock('../modes/store', () => ({ setMode, clearImpliedModes }));
 vi.mock('../agent-tools/fleet_registry/control-core', () => ({ windDownGoalFleet }));
 
 // Imported after the mocks so the module-load install picks them up.
@@ -121,6 +122,7 @@ beforeEach(() => {
   sqlRows.unattributed = 0;
   sqlRows.disarmed = 0;
   sqlRows.drainFleet = null;
+  clearImpliedModes.mockResolvedValue([]);
   potsForGoal.mockResolvedValue([]);
   windDownGoalFleet.mockResolvedValue({
     ok: true,
@@ -434,6 +436,49 @@ describe('tier 3 — GOAL-mode rows on a terminal goal', () => {
     expect(isStopReport(report) && report.modesCleared).toEqual([]);
     expect(isStopReport(report) && report.modesLeftArmed).toEqual([]);
     expect(isStopReport(report) && report.degraded).toBe(false);
+    expect(clearImpliedModes).toHaveBeenCalledWith({
+      sql: expect.anything(),
+      workspaceId: 'ws',
+      ownerId: 'su-attributed',
+      source: { mode: 'goal', subject: 'g1' },
+      reason: 'goal g1 reached a terminal status — retire implied posture rows',
+      setBy: 'su-test',
+    });
+  });
+
+  it('clears implied posture rows only after the terminal GOAL row is cleared', async () => {
+    const callOrder: string[] = [];
+    setMode.mockImplementationOnce(async () => {
+      callOrder.push('goal');
+      return { ok: true };
+    });
+    clearImpliedModes.mockImplementationOnce(async () => {
+      callOrder.push('implied');
+      return ['ideate'];
+    });
+
+    await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status: 'killed',
+      actor: 'su-test',
+    });
+
+    expect(callOrder).toEqual(['goal', 'implied']);
+    expect(clearImpliedModes).toHaveBeenCalledOnce();
+  });
+
+  it('does not clear implied rows when the terminal GOAL clear is refused by the sticky guard', async () => {
+    setMode.mockResolvedValueOnce({ ok: false, stickyConflict: true });
+
+    await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status: 'killed',
+      actor: 'su-test',
+    });
+
+    expect(clearImpliedModes).not.toHaveBeenCalled();
   });
 });
 

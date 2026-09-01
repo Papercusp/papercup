@@ -39,3 +39,5 @@ export function buildAllocationResult({ next, filename, reservedBy, dryRun, cano
     arm_command: string;
     reserved_by: string;
 };
+export { ALLOC_ADVISORY_KEY };
+import { ALLOC_ADVISORY_KEY } from './lib/migration-allocation.mjs';

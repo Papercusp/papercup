@@ -57,6 +57,15 @@ import { resourceLockDomain, workspaceScopedLockDomain } from '../../agent-tools
 // --- mocks (factories only close over these; nothing dereferenced at hoist time) --
 const tryAcquireResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; reason?: string; holders?: unknown[] }> => ({ ok: true }));
 const tryReleaseResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean }> => ({ ok: true }));
+const releaseAllResourcesForOwnerMock = vi.fn(
+  async (_tx: unknown, _coordinationDomain: string, _owner: string) => ({
+    released: 3,
+    exclusiveResources: [],
+    waiters: {},
+  }),
+);
+const heldResourcesByOwner = new Map<string, string[]>();
+const releaseTrace: string[] = [];
 const readResourceQueueMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>) => ({
   holders: [],
   draining: false,
@@ -69,8 +78,36 @@ const clearResourceWaiterMock = vi.fn(
   async (_tx: unknown, _coordinationDomain: string, _resource: string, _owner: string) => undefined,
 );
 vi.mock('../../agent-tools/locks/su-lock-store', () => ({
-  tryAcquireResource: (...a: unknown[]) => tryAcquireResourceMock(a[0], a[1] as Record<string, unknown>),
-  tryReleaseResource: (...a: unknown[]) => tryReleaseResourceMock(a[0], a[1] as Record<string, unknown>),
+  tryAcquireResource: async (...a: unknown[]) => {
+    const opts = a[1] as { owner: string; resource: string };
+    const result = await tryAcquireResourceMock(a[0], opts);
+    if (result.ok) {
+      const held = heldResourcesByOwner.get(opts.owner) ?? [];
+      if (!held.includes(opts.resource)) held.push(opts.resource);
+      heldResourcesByOwner.set(opts.owner, held);
+    }
+    return result;
+  },
+  tryReleaseResource: async (...a: unknown[]) => {
+    const opts = a[1] as { owner: string; resource?: string };
+    if (opts.resource) releaseTrace.push(opts.resource);
+    const result = await tryReleaseResourceMock(a[0], opts);
+    if (opts.resource) {
+      const held = heldResourcesByOwner.get(opts.owner) ?? [];
+      heldResourcesByOwner.set(opts.owner, held.filter((resource) => resource !== opts.resource));
+    }
+    return result;
+  },
+  releaseAllResourcesForOwner: async (...a: unknown[]) => {
+    const owner = a[2] as string;
+    const held = heldResourcesByOwner.get(owner) ?? [];
+    const result = await releaseAllResourcesForOwnerMock(a[0], a[1] as string, owner);
+    // A failed bulk transaction leaves every row intact; only trace the reverse
+    // release order after the mocked transaction commits successfully.
+    releaseTrace.push(...[...held].reverse());
+    heldResourcesByOwner.delete(owner);
+    return result;
+  },
   readResourceQueue: (...a: unknown[]) => readResourceQueueMock(a[0], a[1] as Record<string, unknown>),
   clearResourceExclusiveQueue: (...a: unknown[]) =>
     clearResourceExclusiveQueueMock(a[0], a[1] as string, a[2] as string, a[3] as string),
@@ -103,8 +140,12 @@ const recordingTx: FakeTx = (strings, ...values) => {
  *  cost the commit). Restored in beforeEach. */
 let fakeTxImpl: FakeTx = recordingTx;
 const fakeTx: FakeTx = (strings, ...values) => fakeTxImpl(strings, ...values);
+const workspaceTxnCalls: Array<{ coordinationDomain: string; owner: string }> = [];
 vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
-  inWorkspaceTxn: (_cd: string, _owner: string, fn: (tx: unknown) => unknown) => fn(fakeTx),
+  inWorkspaceTxn: (coordinationDomain: string, owner: string, fn: (tx: unknown) => unknown) => {
+    workspaceTxnCalls.push({ coordinationDomain, owner });
+    return fn(fakeTx);
+  },
 }));
 
 // Harness registry (P-008 gate): configurable per test; default = an eligible
@@ -416,7 +457,7 @@ const escalationClears = (): string[][] =>
   unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL')).map((c) => c.params[3] as string[]);
 
 const releasedResources = (): string[] =>
-  tryReleaseResourceMock.mock.calls.map(([, o]) => (o as { resource: string }).resource);
+  releaseTrace;
 
 const acquiredResources = (): string[] =>
   tryAcquireResourceMock.mock.calls.map(([, o]) => (o as { resource: string }).resource);
@@ -521,6 +562,11 @@ function definitelyDeadPid(): Promise<number> {
 beforeEach(() => {
   tryAcquireResourceMock.mockReset();
   tryReleaseResourceMock.mockReset();
+  releaseAllResourcesForOwnerMock.mockReset();
+  releaseAllResourcesForOwnerMock.mockResolvedValue({ released: 3, exclusiveResources: [], waiters: {} });
+  heldResourcesByOwner.clear();
+  releaseTrace.length = 0;
+  workspaceTxnCalls.length = 0;
   readResourceQueueMock.mockReset();
   readResourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
   clearResourceExclusiveQueueMock.mockReset();
@@ -997,6 +1043,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       sequence.push(`released:${(opts as { resource: string }).resource}`);
       return { ok: true };
     });
+    releaseAllResourcesForOwnerMock.mockImplementation(async () => {
+      sequence.push('released-own-lock-set');
+      return { released: 2, exclusiveResources: [], waiters: {} };
+    });
     emitGitSyncLockRetryEventMock.mockImplementation(() => {
       sequence.push(peerRowLive ? 'retry-event-while-peer-live' : 'retry-event-after-peer-release');
     });
@@ -1009,8 +1059,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(sequence).toEqual([
       'peer-held-refusal',
       'released:libs-papercusp-submodule',
-      'released:git-sync:papercup',
-      'released:git-sync',
+      'released-own-lock-set',
     ]);
     expect(peerRowLive).toBe(true);
     expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
@@ -1270,12 +1319,11 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     );
     const sequence: string[] = [];
     let releaseAttempts = 0;
-    tryReleaseResourceMock.mockImplementation(async (_tx, opts) => {
-      const resource = (opts as { resource: string }).resource;
-      sequence.push(`release:${resource}`);
+    releaseAllResourcesForOwnerMock.mockImplementation(async () => {
+      sequence.push('release-lock-set');
       releaseAttempts += 1;
       if (releaseAttempts === 1) throw contention;
-      return { ok: true };
+      return { released: 3, exclusiveResources: [], waiters: {} };
     });
     emitGitSyncCommittedEventMock.mockImplementation(() => {
       sequence.push('committed-event');
@@ -1284,15 +1332,12 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     await action(ctx);
 
     expect(sequence).toEqual([
-      'release:libs-papercusp-submodule',
-      'release:libs-papercusp-submodule',
-      'release:git-sync:papercup',
-      'release:git-sync',
+      'release-lock-set',
+      'release-lock-set',
       'committed-event',
     ]);
-    expect(tryReleaseResourceMock).toHaveBeenCalledTimes(4);
+    expect(releaseAllResourcesForOwnerMock).toHaveBeenCalledTimes(2);
     expect(releasedResources()).toEqual([
-      'libs-papercusp-submodule',
       'libs-papercusp-submodule',
       'git-sync:papercup',
       'git-sync',
@@ -1336,10 +1381,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       }
       return { ok: true };
     });
-    tryReleaseResourceMock.mockImplementation(async (_tx, opts) => {
-      const { owner } = opts as { owner: string };
+    releaseAllResourcesForOwnerMock.mockImplementation(async (_tx, _cd, owner) => {
       if (owner === activeOwner) activeOwner = null;
-      return { ok: true };
+      return { released: 3, exclusiveResources: [], waiters: {} };
     });
     runGitSyncMock.mockImplementationOnce(async () => {
       firstRunStarted();
@@ -1465,10 +1509,15 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         expect(opts).toMatchObject({ owner: initialOwner, ttlSec: 600 });
       }
       expect(acquiredLockModes().slice(3)).toEqual(['shared', 'exclusive', 'exclusive']);
+      // Initial acquisition uses one transaction per resource. The entire
+      // three-resource heartbeat adds exactly ONE more, not three.
+      expect(workspaceTxnCalls).toHaveLength(4);
 
       finishRun();
       await running;
       expect(releasedResources()).toEqual([...initialResources].reverse());
+      // Cleanup is likewise one owner-scoped bulk transaction.
+      expect(workspaceTxnCalls).toHaveLength(5);
 
       const callsAfterRelease = tryAcquireResourceMock.mock.calls.length;
       expect(heartbeatTimer!.stopped).toBe(true);

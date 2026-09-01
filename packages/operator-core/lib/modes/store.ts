@@ -52,6 +52,12 @@ export interface GoalModeElectionConflict {
   electedEpoch: number | null;
 }
 
+/** The mode transition that caused a derived posture row to exist. */
+export interface ModeImplicationProvenance {
+  mode: string;
+  subject: string | null;
+}
+
 export interface ModeRow {
   workspaceId: string;
   ownerId: string;
@@ -69,8 +75,10 @@ export interface ModeRow {
    * or GRADE's rubric ref fit the same slot, which is why this is not named
    * `goalId` and is not a foreign key. A dangling value must degrade to "no
    * stamp", never to a failed write.
-   */
+  */
   subject: string | null;
+  /** The source mode/subject when this row was inserted by an implication cascade. */
+  impliedBy: ModeImplicationProvenance | null;
   /** GOAL-only effective-holder election fields (migration 1032). */
   goalLeaseEpoch?: number | null;
   goalHandoffFromOwnerId?: string | null;
@@ -165,6 +173,16 @@ function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
 }
 
+function toImpliedBy(value: unknown): ModeImplicationProvenance | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const source = value as { mode?: unknown; subject?: unknown };
+  if (typeof source.mode !== 'string' || source.mode.length === 0) return null;
+  return {
+    mode: source.mode,
+    subject: typeof source.subject === 'string' ? source.subject : null,
+  };
+}
+
 function toRow(r: Record<string, unknown>): ModeRow {
   return {
     workspaceId: String(r.workspace_id),
@@ -176,6 +194,7 @@ function toRow(r: Record<string, unknown>): ModeRow {
     ownerDirected: Boolean(r.owner_directed),
     setAt: r.set_at instanceof Date ? r.set_at.toISOString() : String(r.set_at),
     subject: r.subject == null || r.subject === '' ? null : String(r.subject),
+    impliedBy: toImpliedBy(r.implied_by),
     goalLeaseEpoch:
       r.goal_lease_epoch == null || r.goal_lease_epoch === '' ? null : Number(r.goal_lease_epoch),
     goalHandoffFromOwnerId:
@@ -301,6 +320,7 @@ async function applyImpliedModes(
     modeId: string;
     reason: string;
     setBy: string;
+    subject: string | null;
   },
 ): Promise<ImpliedModeOutcome[]> {
   const out: ImpliedModeOutcome[] = [];
@@ -331,9 +351,10 @@ async function applyImpliedModes(
     try {
       const inserted = await sql`
         INSERT INTO harness_shared.agent_modes
-          (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject)
+          (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject, implied_by)
         VALUES (${o.workspaceId}, ${o.ownerId}, ${axisKey}, ${def.id}, ${reason},
-                ${o.setBy}, ${impliedOwnerDirected}, now(), ${null})
+                ${o.setBy}, ${impliedOwnerDirected}, now(), ${null},
+                ${JSON.stringify({ mode: o.modeId, subject: o.subject })}::jsonb)
         ON CONFLICT (workspace_id, owner_id, axis_key) DO NOTHING
         RETURNING mode`;
       if (inserted.length) {
@@ -370,6 +391,46 @@ async function applyImpliedModes(
     }
   }
   return out;
+}
+
+/**
+ * Remove only posture rows derived from one exact source mode/subject pair.
+ *
+ * A direct mode write clears `implied_by`, so an independently chosen posture
+ * cannot be mistaken for a stale cascade row. Matching the two provenance keys
+ * rather than the whole JSON object leaves room for future provenance fields
+ * without widening the cleanup to unrelated rows.
+ */
+export async function clearImpliedModes(o: {
+  workspaceId: string;
+  ownerId: string;
+  source: ModeImplicationProvenance;
+  reason: string;
+  setBy: string;
+  sql?: Sql;
+}): Promise<string[]> {
+  const sql = pg(o.sql);
+  const rows = await sql<Array<{ axis_key: string; mode: string; owner_directed: boolean }>>`
+    DELETE FROM harness_shared.agent_modes
+    WHERE workspace_id = ${o.workspaceId}
+      AND owner_id = ${o.ownerId}
+      AND implied_by->>'mode' = ${o.source.mode}
+      AND implied_by->>'subject' IS NOT DISTINCT FROM ${o.source.subject}
+    RETURNING axis_key, mode, owner_directed`;
+  for (const row of rows) {
+    await audit(sql, {
+      workspaceId: o.workspaceId,
+      ownerId: o.ownerId,
+      axisKey: String(row.axis_key),
+      oldMode: String(row.mode),
+      newMode: null,
+      reason: o.reason,
+      setBy: o.setBy,
+      ownerDirected: Boolean(row.owner_directed),
+    });
+  }
+  if (rows.length) await notifyAgentOrdersChanged(o.ownerId);
+  return rows.map((row) => String(row.mode));
 }
 
 /**
@@ -444,6 +505,7 @@ export async function reconcileImpliedModes(o: {
         modeId: row.mode,
         reason: `reconciled: '${row.mode}' was already held when its implications were declared`,
         setBy: o.setBy ?? RECONCILE_SET_BY,
+        subject: row.subject,
       })),
     );
   }
@@ -470,6 +532,7 @@ async function writeModeRow(
     setBy: string;
     ownerDirected: boolean;
     subject: string | null;
+    impliedBy: ModeImplicationProvenance | null;
     electGoal: boolean;
     callerIsOwnerAuthority: boolean;
     goalElectionExpectation?: GoalModeElectionExpectation;
@@ -481,13 +544,14 @@ async function writeModeRow(
   if (!o.electGoal || !o.subject) {
     await sql`
       INSERT INTO harness_shared.agent_modes
-        (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject)
+        (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject, implied_by)
       VALUES (${o.workspaceId}, ${o.ownerId}, ${o.axisKey}, ${o.mode}, ${o.reason},
-              ${o.setBy}, ${o.ownerDirected}, now(), ${o.subject})
+              ${o.setBy}, ${o.ownerDirected}, now(), ${o.subject},
+              ${o.impliedBy ? JSON.stringify(o.impliedBy) : null}::jsonb)
       ON CONFLICT (workspace_id, owner_id, axis_key) DO UPDATE SET
         mode = EXCLUDED.mode, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by,
         owner_directed = EXCLUDED.owner_directed, set_at = EXCLUDED.set_at,
-        subject = EXCLUDED.subject`;
+        subject = EXCLUDED.subject, implied_by = EXCLUDED.implied_by`;
     return { election: null, conflict: null };
   }
 
@@ -520,6 +584,7 @@ async function writeModeRow(
              ${o.setBy}::text AS set_by,
              ${o.ownerDirected}::boolean AS owner_directed,
              ${o.subject}::text AS subject,
+             ${o.impliedBy ? JSON.stringify(o.impliedBy) : null}::jsonb AS implied_by,
              ${o.callerIsOwnerAuthority}::boolean AS caller_is_owner_authority,
              ${o.goalElectionExpectation?.ownerId ?? null}::text AS expected_owner_id,
              ${o.goalElectionExpectation?.epoch ?? null}::bigint AS expected_epoch,
@@ -560,9 +625,10 @@ async function writeModeRow(
     inserted AS (
     INSERT INTO harness_shared.agent_modes
       (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject,
-       goal_lease_epoch, goal_handoff_from_owner_id, goal_handoff_expires_at)
+       implied_by, goal_lease_epoch, goal_handoff_from_owner_id, goal_handoff_expires_at)
     SELECT input.workspace_id, input.owner_id, input.axis_key, input.mode, input.reason,
            input.set_by, input.owner_directed, now(), input.subject,
+           input.implied_by,
            next_epoch.epoch, election_auth.elected_owner_id,
            CASE WHEN election_auth.elected_owner_id IS NULL THEN NULL
                 ELSE now() + make_interval(secs => input.handoff_seconds) END
@@ -573,7 +639,8 @@ async function writeModeRow(
     ON CONFLICT (workspace_id, owner_id, axis_key) DO UPDATE SET
       mode = EXCLUDED.mode, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by,
       owner_directed = EXCLUDED.owner_directed, set_at = EXCLUDED.set_at,
-      subject = EXCLUDED.subject, goal_lease_epoch = EXCLUDED.goal_lease_epoch,
+      subject = EXCLUDED.subject, implied_by = EXCLUDED.implied_by,
+      goal_lease_epoch = EXCLUDED.goal_lease_epoch,
       goal_handoff_from_owner_id = EXCLUDED.goal_handoff_from_owner_id,
       goal_handoff_expires_at = EXCLUDED.goal_handoff_expires_at
     RETURNING owner_id, subject, goal_lease_epoch,
@@ -703,7 +770,8 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
     if (
       incumbent.ownerDirected === ownerDirected &&
       incumbent.reason === opts.reason &&
-      incumbent.subject === nextSubject
+      incumbent.subject === nextSubject &&
+      incumbent.impliedBy === null
     ) {
       /* D-003: a NOOP re-entry still cascades, and that is the point — this is
          how a missing implied row gets REPAIRED. An agent whose auto row was
@@ -712,7 +780,7 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
          would naturally make to fix it would be the one call that does nothing. */
       const implied = await applyImpliedModes(sql, {
         workspaceId: opts.workspaceId, ownerId: opts.ownerId, modeId: def.id,
-        reason: opts.reason, setBy: opts.setBy,
+        reason: opts.reason, setBy: opts.setBy, subject: nextSubject,
       });
       if (implied.some((i) => i.status === 'set')) await notifyAgentOrdersChanged(opts.ownerId);
       return { ok: true, noop: true, mode: def, ...(implied.length ? { implied } : {}) };
@@ -728,6 +796,7 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
     setBy: opts.setBy,
     ownerDirected,
     subject: nextSubject,
+    impliedBy: null,
     // A first assignment or a move to ANOTHER goal elects. A reason/sticky
     // refresh on the same subject preserves the existing epoch and cannot
     // silently take sovereignty back from a later successor.
@@ -760,7 +829,7 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
   // UI briefly rendering an agent in GOAL with an empty autonomy axis.
   const implied = await applyImpliedModes(sql, {
     workspaceId: opts.workspaceId, ownerId: opts.ownerId, modeId: def.id,
-    reason: opts.reason, setBy: opts.setBy,
+    reason: opts.reason, setBy: opts.setBy, subject: nextSubject,
   });
   // WI-6974: same as the clear branch — a set / auto-switch / reason-refresh is a
   // real orders change for THIS owner. Both `noop` early-returns above are already

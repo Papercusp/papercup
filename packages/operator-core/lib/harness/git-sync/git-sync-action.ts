@@ -43,6 +43,7 @@ import {
   clearResourceExclusiveQueue,
   clearResourceWaiter,
   readResourceQueue,
+  releaseAllResourcesForOwner,
   tryAcquireResource,
   tryReleaseResource,
   type ResourceAcquireResult,
@@ -837,29 +838,27 @@ async function releaseAll(cd: string, owner: string, acquired: GitSyncLockReques
   // warn) still leaves a row a later tick here can recognise as our orphan and
   // reclaim, instead of one that blocks this host for the full ten minutes.
   gitSyncLockState.inFlight.delete(owner);
-  for (const { resource } of acquired.reverse()) {
-    try {
-      // Releasing a lock takes the same workspace transaction/advisory lock as
-      // acquiring it. A transient 57014/55P03 here used to be swallowed, so the
-      // committed event could fire while the resource remained held until its
-      // ten-minute TTL. Retry the whole transaction with the shared bounded
-      // backoff; retrying the transaction (rather than only the callback) is
-      // required because a timed-out transaction is no longer usable.
-      await acquireWithContentionRetry(() =>
-        inWorkspaceTxn(cd, owner, (tx) =>
-          tryReleaseResource(tx, { coordinationDomain: cd, owner, resource })),
-      );
-    } catch (error) {
-      // A persistent contention or infrastructure fault must not prevent the
-      // remaining resources from being released. Keep the TTL as the final
-      // backstop, but make the missed release visible instead of silently
-      // claiming that the committed path is fully unlocked.
-      console.warn(
-        `[git-sync] lock release failed for ${resource} after ${
-          isWorkspaceContended(error) ? 'contention retries' : 'an infrastructure error'
-        }; lock will expire at TTL (${error instanceof Error ? error.message : String(error)})`,
-      );
-    }
+  if (acquired.length === 0) return;
+  try {
+    // Every fire owns a unique token, so the store's existing owner-scoped bulk
+    // release is exactly this cleanup operation. Use ONE workspace transaction
+    // and ONE DELETE for the whole lock set. The previous per-resource loop took
+    // the workspace advisory lock up to three times per fire; when several fires
+    // settled together, those teardown transactions contended with each other,
+    // routinely outliving the 15s cleanup budget and keeping dev:restart's
+    // exclusive barrier draining for its full 45s (EI-22047168222679674).
+    await acquireWithContentionRetry(() =>
+      inWorkspaceTxn(cd, owner, (tx) => releaseAllResourcesForOwner(tx, cd, owner)),
+    );
+  } catch (error) {
+    // The bulk release is transactional: either every owner-scoped row is gone
+    // or none is. Keep the TTL as the final backstop, but make the missed release
+    // visible instead of claiming that the committed path is fully unlocked.
+    console.warn(
+      `[git-sync] lock-set release failed for ${acquired.map(({ resource }) => resource).join(', ')} after ${
+        isWorkspaceContended(error) ? 'contention retries' : 'an infrastructure error'
+      }; locks will expire at TTL (${error instanceof Error ? error.message : String(error)})`,
+    );
   }
 }
 
@@ -881,11 +880,17 @@ function startLockHeartbeat(
   let inFlight: Promise<void> | null = null;
 
   const refresh = async (): Promise<void> => {
-    for (const { resource, mode } of resources) {
-      try {
-        const result = await acquireWithContentionRetry(() =>
-          inWorkspaceTxn(cd, owner, (tx) =>
-            tryAcquireResource(tx, {
+    try {
+      // Refresh the whole owner-scoped set under ONE workspace transaction.
+      // Apart from cutting three advisory-lock acquisitions to one, this makes
+      // stopLockHeartbeat wait for at most one contention-retry sequence during
+      // cleanup instead of one sequence per resource. That bound is what lets an
+      // exclusive restart drain converge under a multi-fire settle burst.
+      const results = await acquireWithContentionRetry(() =>
+        inWorkspaceTxn(cd, owner, async (tx) => {
+          const refreshed: Array<{ resource: string; result: ResourceAcquireResult }> = [];
+          for (const { resource, mode } of resources) {
+            const result = await tryAcquireResource(tx, {
               coordinationDomain: cd,
               resource,
               mode,
@@ -893,18 +898,23 @@ function startLockHeartbeat(
               ownerLabel: `git-sync:${slug}`,
               reason: `auto-commit ${slug}`,
               ttlSec: LOCK_TTL_SEC,
-            })),
-        );
+            });
+            refreshed.push({ resource, result });
+          }
+          return refreshed;
+        }),
+      );
+      for (const { resource, result } of results) {
         if (!result.ok) {
           console.error(
             `[git-sync] ${slug}: LOST exclusive lock ${resource} during lease refresh (${result.reason ?? 'refused'})`,
           );
         }
-      } catch (e) {
-        console.warn(
-          `[git-sync] ${slug}: lock heartbeat failed for ${resource}: ${e instanceof Error ? e.message : String(e)}`,
-        );
       }
+    } catch (e) {
+      console.warn(
+        `[git-sync] ${slug}: lock-set heartbeat failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   };
 

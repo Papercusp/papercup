@@ -16,9 +16,13 @@
  */
 import { describe, it, expect } from 'vitest';
 import { AGENT_BACKENDS as OPERATOR_BACKENDS } from '../agent-config';
-import { AGENT_BACKENDS as ORCH_BACKENDS } from '@papercusp/orchestrator';
+import {
+  AGENT_BACKENDS as ORCH_BACKENDS,
+  harnessProfile,
+} from '@papercusp/orchestrator';
 import {
   AGENT_BACKENDS as BRAINS_BACKENDS,
+  BACKEND_PROFILES,
   SUBPROCESS_AGENT_BACKENDS as BRAINS_SUBPROCESS,
 } from '@papercusp/papercusp-shared/agent';
 
@@ -41,5 +45,14 @@ describe('AgentBackend sets stay in sync across the submodule boundary', () => {
     expect(OPERATOR_BACKENDS).toContain('codex');
     expect(ORCH_BACKENDS).toContain('codex');
     expect(BRAINS_SUBPROCESS).toContain('codex');
+  });
+
+  it('orchestrator adapter provider/pacing facts conform to the governor profile', () => {
+    for (const backend of ORCH_BACKENDS) {
+      const adapter = harnessProfile(backend);
+      expect({ provider: adapter.provider, selfPacing: adapter.selfPacing }).toEqual(
+        BACKEND_PROFILES[backend],
+      );
+    }
   });
 });

@@ -58,7 +58,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { pausePotState, resumePotState } from '../pot/pause-core';
 import { deactivateLoop, loopRoutineName } from '../harness/routines/loop';
-import { setMode } from '../modes/store';
+import { clearImpliedModes, setMode } from '../modes/store';
 import { windDownGoalFleet } from '../agent-tools/fleet_registry/control-core';
 import { readGoalHolderRows } from './holder';
 
@@ -268,6 +268,20 @@ async function clearGoalModes(
     // is not reported as left-armed. Only a real refusal is.
     if (res.ok) {
       if (!res.noop) modesCleared.push(ownerId);
+      // A terminal stop must also retire posture rows that this GOAL entry
+      // implied. Run this after the source clear (and for a noop, where the
+      // source was already gone) so a sticky refusal never removes overlays
+      // while the GOAL row that justifies them is still active. Matching the
+      // exact source mode + subject preserves direct/independent AUTO and
+      // IDEATE rows and any overlays derived from another goal.
+      await clearImpliedModes({
+        sql,
+        workspaceId,
+        ownerId,
+        source: { mode: 'goal', subject: goalId },
+        reason: `goal ${goalId} reached a terminal status — retire implied posture rows`,
+        setBy: actor ?? 'goal-stop-fanout',
+      });
     } else {
       modesLeftArmed.push(ownerId);
     }
