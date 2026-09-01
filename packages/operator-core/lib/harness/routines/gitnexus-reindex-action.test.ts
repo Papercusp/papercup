@@ -32,6 +32,9 @@ import {
   GITNEXUS_ANALYZE_SEMI_SPACE_MB,
   GITNEXUS_ANALYZE_STACK_KB,
   GITNEXUS_LBUG_MAX_DB_BYTES,
+  GITNEXUS_LBUG_DB_ALERT_RATIO,
+  measureGitnexusDbUsage,
+  decideGitnexusDbHealthUpdate,
   decideReindex,
   readRegistryEntry,
   shouldSkipForHive,
@@ -386,6 +389,67 @@ describe('analyzeEnv — the LadybugDB ceiling pin (P-004)', () => {
     // failing -- this assertion is the tripwire that says so while it is still cheap.
     const measuredDbGib = 3.97;
     expect(GITNEXUS_LBUG_MAX_DB_BYTES / 1024 ** 3).toBeGreaterThan(measuredDbGib * 3);
+  });
+});
+
+describe('LadybugDB capacity telemetry (EI-21044385125018758)', () => {
+  it('measures the promoted DB against the configured ceiling', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-capacity-'));
+    mkdirSync(join(root, '.gitnexus'));
+    writeFileSync(gitnexusDbPaths(root).db, 'x'.repeat(600));
+
+    expect(measureGitnexusDbUsage(root, 1_000)).toEqual({
+      dbBytes: 600,
+      dbMaxBytes: 1_000,
+      dbUtilization: 0.6,
+      dbHeadroomBytes: 400,
+    });
+  });
+
+  it('keeps a missing/unreadable DB in-band unknown instead of reporting zero usage', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-capacity-missing-'));
+    expect(measureGitnexusDbUsage(root, 1_000)).toEqual({
+      dbBytes: null,
+      dbMaxBytes: 1_000,
+      dbUtilization: null,
+      dbHeadroomBytes: null,
+    });
+  });
+
+  it('alerts once on a threshold crossing, rearms below it, and preserves unknown-state alerting', () => {
+    const high = { dbBytes: 600, dbMaxBytes: 1_000, dbUtilization: 0.6, dbHeadroomBytes: 400 };
+    const first = decideGitnexusDbHealthUpdate(GITNEXUS_HEALTH_DEFAULT, high, GITNEXUS_LBUG_DB_ALERT_RATIO);
+    expect(first.shouldAlert).toBe(true);
+    expect(first.next.dbAlerted).toBe(true);
+
+    const repeated = decideGitnexusDbHealthUpdate({ ...GITNEXUS_HEALTH_DEFAULT, ...first.next }, high, 0.6);
+    expect(repeated.shouldAlert).toBe(false);
+
+    const unknown = decideGitnexusDbHealthUpdate(
+      { ...GITNEXUS_HEALTH_DEFAULT, ...first.next },
+      { dbBytes: null, dbMaxBytes: 1_000, dbUtilization: null, dbHeadroomBytes: null },
+      0.6,
+    );
+    expect(unknown.shouldAlert).toBe(false);
+    expect(unknown.next.dbAlerted).toBe(true);
+
+    const low = decideGitnexusDbHealthUpdate(
+      { ...GITNEXUS_HEALTH_DEFAULT, ...first.next },
+      { dbBytes: 500, dbMaxBytes: 1_000, dbUtilization: 0.5, dbHeadroomBytes: 500 },
+      0.6,
+    );
+    expect(low.next.dbAlerted).toBe(false);
+    expect(decideGitnexusDbHealthUpdate({ ...GITNEXUS_HEALTH_DEFAULT, ...low.next }, high, 0.6).shouldAlert).toBe(true);
+  });
+
+  it('wires capacity tracking before cadence skips and refreshes it after a successful analyze', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
+    const first = src.indexOf('await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);');
+    const decision = src.indexOf('const decision = decideReindex(', first);
+    const second = src.indexOf('await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);', first + 1);
+    expect(first).toBeGreaterThan(0);
+    expect(decision).toBeGreaterThan(first);
+    expect(second).toBeGreaterThan(decision);
   });
 });
 

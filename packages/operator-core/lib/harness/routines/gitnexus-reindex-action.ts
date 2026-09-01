@@ -137,6 +137,9 @@ export const GITNEXUS_ANALYZE_STACK_KB = 4_096;
  */
 export const GITNEXUS_LBUG_MAX_DB_BYTES = 16 * 1024 * 1024 * 1024;
 
+/** Alert before the LadybugDB mmap ceiling becomes an outage cliff. */
+export const GITNEXUS_LBUG_DB_ALERT_RATIO = 0.6;
+
 /** Skip when the box is genuinely oversubscribed — load ABOVE 1.5x cores means real run-queue
  *  queueing, and a 4-minute CPU-heavy index is exactly the wrong thing to pile on. (This box
  *  is 128 cores and idles around 0.5/core, so this defers only during a real storm.) */
@@ -830,6 +833,13 @@ export interface GitnexusHealth {
   alerted: boolean;
   lastFailureAt: number | null;
   lastSuccessAt: number | null;
+  /** Latest on-disk LadybugDB size telemetry (optional for pre-monitor rows). */
+  dbBytes?: number | null;
+  dbMaxBytes?: number;
+  dbUtilization?: number | null;
+  dbHeadroomBytes?: number | null;
+  /** Suppresses repeated ceiling alerts until usage falls below the threshold. */
+  dbAlerted?: boolean;
 }
 
 export const GITNEXUS_HEALTH_DEFAULT: GitnexusHealth = {
@@ -838,6 +848,58 @@ export const GITNEXUS_HEALTH_DEFAULT: GitnexusHealth = {
   lastFailureAt: null,
   lastSuccessAt: null,
 };
+
+export interface GitnexusDbUsage {
+  dbBytes: number | null;
+  dbMaxBytes: number;
+  dbUtilization: number | null;
+  dbHeadroomBytes: number | null;
+}
+
+/** Read the real LadybugDB file size; a missing/unreadable index is in-band unknown. */
+export function measureGitnexusDbUsage(
+  root: string,
+  maxBytes: number = GITNEXUS_LBUG_MAX_DB_BYTES,
+): GitnexusDbUsage {
+  const dbMaxBytes = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : GITNEXUS_LBUG_MAX_DB_BYTES;
+  try {
+    const dbBytes = statSync(gitnexusDbPaths(root).db).size;
+    return {
+      dbBytes,
+      dbMaxBytes,
+      dbUtilization: dbBytes / dbMaxBytes,
+      dbHeadroomBytes: Math.max(0, dbMaxBytes - dbBytes),
+    };
+  } catch {
+    return { dbBytes: null, dbMaxBytes, dbUtilization: null, dbHeadroomBytes: null };
+  }
+}
+
+export interface GitnexusDbHealthUpdate {
+  next: Pick<GitnexusHealth, 'dbBytes' | 'dbMaxBytes' | 'dbUtilization' | 'dbHeadroomBytes' | 'dbAlerted'>;
+  shouldAlert: boolean;
+}
+
+/** PURE — one alert when measured usage crosses the configured ceiling ratio. */
+export function decideGitnexusDbHealthUpdate(
+  prev: GitnexusHealth,
+  usage: GitnexusDbUsage,
+  threshold: number,
+): GitnexusDbHealthUpdate {
+  const ratio = Number.isFinite(threshold) ? Math.max(0, threshold) : GITNEXUS_LBUG_DB_ALERT_RATIO;
+  if (usage.dbUtilization == null) {
+    return {
+      next: { ...usage, dbAlerted: prev.dbAlerted === true },
+      shouldAlert: false,
+    };
+  }
+  const above = usage.dbUtilization >= ratio;
+  const shouldAlert = above && prev.dbAlerted !== true;
+  return {
+    next: { ...usage, dbAlerted: above },
+    shouldAlert,
+  };
+}
 
 /** Alert on the 3rd consecutive failure — one bad tick can be a transient timeout; three
  *  in a row (across an hourly cadence, ~3h of silent burn) is a real, durable wedge. */
@@ -863,7 +925,13 @@ export function decideGitnexusHealthUpdate(
 ): GitnexusHealthUpdate {
   if (success) {
     return {
-      next: { consecutiveFailures: 0, alerted: false, lastFailureAt: prev.lastFailureAt, lastSuccessAt: nowMs },
+      next: {
+        ...prev,
+        consecutiveFailures: 0,
+        alerted: false,
+        lastFailureAt: prev.lastFailureAt,
+        lastSuccessAt: nowMs,
+      },
       shouldAlert: false,
       shouldResolve: prev.alerted,
     };
@@ -872,6 +940,7 @@ export function decideGitnexusHealthUpdate(
   const shouldAlert = consecutiveFailures >= threshold && !prev.alerted;
   return {
     next: {
+      ...prev,
       consecutiveFailures,
       alerted: prev.alerted || shouldAlert,
       lastFailureAt: nowMs,
@@ -880,6 +949,59 @@ export function decideGitnexusHealthUpdate(
     shouldAlert,
     shouldResolve: false,
   };
+}
+
+/** Persist capacity telemetry on every tick and alert once per threshold crossing. */
+async function trackGitnexusDbCapacity(
+  ctx: SystemActionCtx,
+  root: string,
+  threshold: number,
+): Promise<void> {
+  const usage = measureGitnexusDbUsage(root);
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = (await sql.unsafe(
+      `SELECT metadata->'gitnexus_health' AS gh FROM harness_shared.routines
+        WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
+      [ctx.installSlug],
+    )) as Array<{ gh: Partial<GitnexusHealth> | null }>;
+    const prev: GitnexusHealth = { ...GITNEXUS_HEALTH_DEFAULT, ...(rows[0]?.gh ?? {}) };
+    const update = decideGitnexusDbHealthUpdate(prev, usage, threshold);
+    const next: GitnexusHealth = { ...prev, ...update.next };
+    await sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
+        WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
+      [ctx.installSlug, JSON.stringify({ gitnexus_health: next })],
+    );
+    if (update.shouldAlert) {
+      const { notifyAttention } = await import('../../attention-notify');
+      const pct = Math.round((usage.dbUtilization ?? 0) * 1000) / 10;
+      const gib = (usage.dbBytes ?? 0) / 1024 ** 3;
+      const capGib = usage.dbMaxBytes / 1024 ** 3;
+      await notifyAttention({
+        kind: 'intervention',
+        title: 'GitNexus LadybugDB is approaching its configured size ceiling',
+        body:
+          `The GitNexus LadybugDB for ${ctx.installSlug} is ${gib.toFixed(2)} GiB / ${capGib.toFixed(0)} GiB ` +
+          `(${pct}% consumed; alert threshold ${Math.round(threshold * 100)}%). ` +
+          'Raise GITNEXUS_LBUG_MAX_DB_BYTES deliberately before analyze reaches the ceiling; it is a virtual-address reservation, not resident memory.',
+        importance: 'urgent',
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.installSlug,
+        data: {
+          dbBytes: usage.dbBytes,
+          dbMaxBytes: usage.dbMaxBytes,
+          dbUtilization: usage.dbUtilization,
+          dbHeadroomBytes: usage.dbHeadroomBytes,
+          threshold,
+        },
+      });
+    }
+  } catch (e) {
+    console.warn(`[gitnexus-reindex] DB capacity tracking failed: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1178,6 +1300,11 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const root = integrationRoot();
   const repoName = typeof cfg.repo_name === 'string' ? cfg.repo_name : GITNEXUS_REPO_NAME;
+  const dbAlertRatio = num(cfg, 'db_alert_ratio', GITNEXUS_LBUG_DB_ALERT_RATIO);
+
+  // Capacity telemetry is cheap and independent of whether this tick elects to run
+  // the expensive analyzer, so record it before the cadence gates (including skips).
+  await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);
 
   const entry = readRegistryEntry(registryPath(), repoName);
   const commitsBehind = entry?.lastCommit ? await countCommitsBehind(root, entry.lastCommit) : null;
@@ -1257,6 +1384,9 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
       console.warn(`[gitnexus-reindex] canary could not run: ${e instanceof Error ? e.message : e}`);
     }
   }
+  // A successful analyze can grow the DB across the threshold during this very tick;
+  // refresh immediately instead of waiting an hour for the next cadence.
+  if (ranClean) await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);
   const success = ranClean && (canary == null || canary.healthy);
 
   if (r.timedOut) {
