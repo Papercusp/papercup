@@ -29,6 +29,7 @@
  *   { op:'accept',  runId, itemId, actionId }   → record an accepted recommendation
  *   { op:'reconcile-item', runId, itemId }       → record a verified hand resolution
  *   { op:'dismiss-item', runId, itemId }         → deliberately dismiss one review row
+ *   { op:'undo-item', runId, itemId }            → execute its bounded compensation handle
  *   { op:'dismiss', runId }                     → close the run without acting
  *
  * `accept` RECORDS ONLY. The resolution itself is dispatched CLIENT-side through
@@ -606,6 +607,34 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       return Response.json({ ok: true, runId, itemId, phase: run?.phase ?? null, accepted: true });
     }
 
+    if (op === 'undo-item') {
+      const itemId = typeof body.itemId === 'string' ? body.itemId.trim() : '';
+      if (!itemId) {
+        return Response.json(
+          { error: { code: 'missing_undo_item_id', message: 'op "undo-item" requires itemId' } },
+          { status: 400 },
+        );
+      }
+      const [{ activeWorkspaceId }, { revertAttentionBulkItemHandle }] = await Promise.all([
+        import('../../../workspace-registry'),
+        import('../../../attention/bulk-run-reversal'),
+      ]);
+      const outcome = await revertAttentionBulkItemHandle({
+        kind: 'attention-bulk-item',
+        workspaceId: activeWorkspaceId(),
+        runId,
+        itemId,
+      });
+      if (!outcome.reverted) {
+        return Response.json(
+          { error: { code: 'undo_refused', message: outcome.note, runId, itemId } },
+          { status: 409 },
+        );
+      }
+      await invalidateBulkRun();
+      return Response.json({ ok: true, runId, itemId, reverted: true, note: outcome.note });
+    }
+
     if (op === 'reconcile-item' || op === 'dismiss-item') {
       const itemId = typeof body.itemId === 'string' ? body.itemId.trim() : '';
       if (!itemId) {
@@ -661,7 +690,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       {
         error: {
           code: 'unknown_op',
-          message: `op must be one of start | stop | restart | resume | accept | reconcile-item | dismiss-item | dismiss (got "${op}")`,
+          message: `op must be one of start | stop | restart | resume | accept | undo-item | reconcile-item | dismiss-item | dismiss (got "${op}")`,
         },
       },
       { status: 400 },
@@ -715,7 +744,7 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   // — `start` (spawns an agent) and `accept` (takes a terminal action on the
   // owner's behalf) — is ACTING, and stays gated. Nothing is lost by gating
   // `accept`: every recommended item remains resolvable by hand in the pane.
-  const STOP_OPS = new Set(['stop', 'dismiss', 'reconcile-item', 'dismiss-item', 'reclassify']);
+  const STOP_OPS = new Set(['stop', 'dismiss', 'undo-item', 'reconcile-item', 'dismiss-item', 'reclassify']);
   if (!STOP_OPS.has(op)) {
     const gated = await gateApiRoute(req, FLAGS.INBOX_BULK_RESOLVE);
     if (gated) return gated;
