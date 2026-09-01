@@ -67,6 +67,20 @@ export default defineTool({
       .optional()
       .describe('Lookback for the usage/$spend aggregation (default 60 minutes).'),
   }),
+  result: z
+    .object({
+      configured: z.unknown().optional(),
+      effective: z.unknown().optional(),
+      evidence: z.unknown().optional(),
+      rootCause: z.unknown().nullable().optional(),
+      nextVerb: z.string().nullable().optional(),
+      config: z.unknown().optional(),
+      fleet: z.unknown().optional(),
+      buckets: z.unknown().optional(),
+      usage: z.unknown().optional(),
+      opusBudget: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args) {
     const status = await buildFleetRateStatus((args.usageWindowMinutes ?? 60) * 60_000);
     return {
