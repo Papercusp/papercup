@@ -1206,6 +1206,20 @@ export function mergeKindIntoClaimSpec(existing: ClaimSpec, kinds: readonly stri
   const flattenAll = (filter: ClaimFilter): ClaimFilter[] =>
     'all' in filter ? filter.all.flatMap(flattenAll) : [filter];
 
+  const referencesPlanFamilyScope = (filter: ClaimFilter): boolean => {
+    if ('field' in filter) return filter.field === 'plan' || filter.field === 'plan_item' || filter.field === 'goal';
+    if ('all' in filter) return filter.all.some(referencesPlanFamilyScope);
+    if ('any' in filter) return filter.any.some(referencesPlanFamilyScope);
+    return referencesPlanFamilyScope(filter.not);
+  };
+
+  const positiveKindValues = (filter: ClaimFilter): string[] | null => {
+    if (!('field' in filter) || filter.field !== 'kind') return null;
+    if (filter.op !== '=' && filter.op !== 'in') return null;
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
+    return values.map(String);
+  };
+
   // The merge is APPLIED REPEATEDLY to the same spec — every relaunch/top-up of a fleet whose leader
   // authored a spec runs it again — so appending unconditionally makes the conjunction grow without
   // bound. Caught on the live `nonp2p-bug-drain` spec 2026-08-09: two launch-on-plan calls carrying
@@ -1241,10 +1255,44 @@ export function mergeKindIntoClaimSpec(existing: ClaimSpec, kinds: readonly stri
   // even when dedupe leaves one clause) — the positiveIdCohortIds extractor above only recognizes
   // positive ID leaves as direct members of a top-level `all`, so collapsing to a bare leaf here
   // would reintroduce the false windDown this function's comment already warns about.
-  const filter =
-    existingFilter && Object.keys(existingFilter).length > 0
-      ? { all: dedupe([...flattenAll(existingFilter), kindLeaf]) }
-      : kindLeaf;
+  let filter: ClaimFilter;
+  if (existingFilter && Object.keys(existingFilter).length > 0) {
+    const flattened = flattenAll(existingFilter);
+    if (referencesPlanFamilyScope(existingFilter)) {
+      // EI-22042825344838662: a plan/goal worklist spans BOTH work-item families.
+      // Relaunches repeatedly merged issue-only claimKinds as NEW `all` siblings,
+      // turning an authored `kind in [bug,change,task,chunk,feature]` envelope into
+      // its issue-only intersection. The live goal-drain spec accumulated three
+      // positive kind leaves and then rejected an allowed pre-promotion P-NNN,
+      // whose synthetic admission subject is correctly kind='feature'.
+      //
+      // Within a positive plan/plan_item/goal scope, kind lists are one DOMAIN
+      // selector and therefore merge by UNION into one canonical leaf. The plan
+      // allowlist and every non-kind sibling (especially the non-P2P fence) remain
+      // AND constraints. Pure kind/backlog lanes retain intersection semantics.
+      const mergedKinds: string[] = [];
+      const withoutKindLeaves: ClaimFilter[] = [];
+      let firstKindIndex = -1;
+      for (const clause of flattened) {
+        const values = positiveKindValues(clause);
+        if (values) {
+          if (firstKindIndex < 0) firstKindIndex = withoutKindLeaves.length;
+          for (const value of values) if (!mergedKinds.includes(value)) mergedKinds.push(value);
+        } else {
+          withoutKindLeaves.push(clause);
+        }
+      }
+      for (const value of kinds) if (!mergedKinds.includes(value)) mergedKinds.push(value);
+      const canonicalKind: ClaimFilter = { field: 'kind', op: 'in', value: mergedKinds };
+      const clauses = [...withoutKindLeaves];
+      clauses.splice(firstKindIndex < 0 ? clauses.length : firstKindIndex, 0, canonicalKind);
+      filter = { all: dedupe(clauses) };
+    } else {
+      filter = { all: dedupe([...flattened, kindLeaf]) };
+    }
+  } else {
+    filter = kindLeaf;
+  }
   // P-010: if the leader-authored spec never pinned `states`, derive it from the merged-in
   // issue-family kinds so the merge doesn't leave the lane at the starving ['todo'] default.
   // A leader-set `states` (spread via `...existing`) is preserved untouched.

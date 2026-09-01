@@ -10,6 +10,7 @@
  * for scope drift could read.
  */
 import { describe, it, expect } from 'vitest';
+import { matchesClaimSpecFilter, type ClaimSpecSubject } from '../../scheduler/claim-spec-match';
 import { mergeKindIntoClaimSpec } from './launch-on-plan';
 
 const KIND_BUG = { field: 'kind', op: 'in', value: ['bug'] };
@@ -23,6 +24,27 @@ const clausesOf = (merged: Record<string, unknown>) =>
 
 const countKindLeaves = (merged: Record<string, unknown>) =>
   clausesOf(merged).filter((c) => c.field === 'kind').length;
+
+const subject = (over: Partial<ClaimSpecSubject>): ClaimSpecSubject => ({
+  id: 'fleet-friction-remediation-2026-08-21#P-006',
+  title: 'Repair claim-spec family collapse',
+  summary: '',
+  kind: 'feature',
+  priority: null,
+  tags: [],
+  paths: [],
+  plan: 'fleet-friction-remediation-2026-08-21',
+  planItem: ['P-006'],
+  fleet: null,
+  age: 0,
+  riskTier: null,
+  redundancy: 1,
+  estCost: null,
+  assignee: null,
+  severity: null,
+  goal: null,
+  ...over,
+});
 
 describe('mergeKindIntoClaimSpec — idempotence', () => {
   it('does not duplicate the kind leaf when merged twice (the reported rev5→rev7 defect)', () => {
@@ -69,6 +91,37 @@ describe('mergeKindIntoClaimSpec — idempotence', () => {
   it('is unaffected for an empty existing filter (kind leaf becomes the whole filter)', () => {
     const merged = mergeKindIntoClaimSpec(spec({}), ['bug']);
     expect((merged.view as { filter: unknown }).filter).toEqual(KIND_BUG);
+  });
+
+  it('canonicalizes plan-scoped kind leaves without collapsing the feature family (EI-220428)', () => {
+    const planAllowlist = {
+      any: [
+        { field: 'plan', op: '=', value: 'fleet-friction-remediation-2026-08-21' },
+        { field: 'goal', op: '=', value: 'work-on-everything-070565' },
+      ],
+    };
+    const broadKinds = { field: 'kind', op: 'in', value: ['bug', 'change', 'task', 'chunk', 'feature'] };
+    const merged = mergeKindIntoClaimSpec(
+      spec({
+        all: [
+          planAllowlist,
+          broadKinds,
+          { field: 'kind', op: 'in', value: ['change', 'task', 'bug'] },
+          { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+          FENCE,
+        ],
+      }),
+      ['bug', 'change', 'task'],
+    );
+
+    expect(countKindLeaves(merged)).toBe(1);
+    expect(clausesOf(merged)).toContainEqual(broadKinds);
+    expect(clausesOf(merged)).toContainEqual(FENCE);
+
+    const filter = (merged.view as { filter: never }).filter;
+    expect(matchesClaimSpecFilter(subject({}), filter)).toBe(true);
+    expect(matchesClaimSpecFilter(subject({ title: 'P2P relay parity repair' }), filter)).toBe(false);
+    expect(matchesClaimSpecFilter(subject({ plan: 'unrelated-plan' }), filter)).toBe(false);
   });
 });
 
