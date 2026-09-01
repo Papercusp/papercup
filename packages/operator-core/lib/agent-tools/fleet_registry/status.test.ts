@@ -10,7 +10,7 @@ const h = vi.hoisted(() => ({
   getCompletionIntegrityStats: vi.fn(),
   fleetEverMembers: vi.fn(),
   resolveAgentIdentity: vi.fn(),
-  agentOriginToolCallOwnersSince: vi.fn(),
+  executingOwnersSince: vi.fn(),
 }));
 
 vi.mock('../../agent-fleets-store', async () => {
@@ -44,7 +44,7 @@ vi.mock('../../fleet/assignments', async () => {
     await vi.importActual<typeof import('../../fleet/assignments')>('../../fleet/assignments');
   return {
     ...actual,
-    agentOriginToolCallOwnersSince: (...a: unknown[]) => h.agentOriginToolCallOwnersSince(...a),
+    executingOwnersSince: (...a: unknown[]) => h.executingOwnersSince(...a),
   };
 });
 vi.mock('../../work-items', () => ({
@@ -134,7 +134,7 @@ beforeEach(() => {
   h.liveFleetMemberIds.mockResolvedValue([]);
   // Matches the real helper: an empty id list short-circuits to an empty Set —
   // a MEASURED zero, never the `null` that means the telemetry leg failed.
-  h.agentOriginToolCallOwnersSince.mockResolvedValue(new Set<string>());
+  h.executingOwnersSince.mockResolvedValue(new Set<string>());
   h.getCompletionIntegrityStats.mockResolvedValue({
     harness: 'papercusp',
     terminalTotal: 10,

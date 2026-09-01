@@ -2,7 +2,7 @@
  * Durable admission adapter for the inference gateway.
  *
  * The gateway's HTTP compatibility seam expects an admitted request before it
- * invokes a provider handler.  The canonical work-item queue deliberately
+ * invokes a provider handler.  The canonical admission ledger deliberately
  * exposes a two-stage lifecycle (enqueue -> lease -> running), so this driver
  * performs those transitions atomically from the gateway's point of view and
  * releases the durable claim when the handler settles.
@@ -21,11 +21,8 @@ import {
   type NormalizedAdmissionRequest,
   type ResourceDemand,
 } from '../resource-governor/admission';
-import {
-  PgWorkItemAdmissionQueueStore,
-  WorkItemAdmissionQueueDriver,
-  type DurableAdmissionQueueStore,
-} from '../resource-governor/queue';
+import { PgAdmissionLedgerQueueStore } from '../resource-governor/admission-ledger-store';
+import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore } from '../resource-governor/queue';
 import { GATEWAY_ADMISSION_BYPASS_REGISTRY, type GatewayAdmissionGovernor } from './admission-context';
 
 const DEFAULT_NAMESPACE = 'inference-gateway';
@@ -35,9 +32,9 @@ const MIN_LEASE_TTL_MS = 5_000;
 const MAX_LEASE_TTL_MS = 30 * 60_000;
 
 export interface DurableGatewayAdmissionOptions {
-  /** Workspace owning the canonical work-item rows. */
+  /** Workspace owning the canonical admission-ledger rows. */
   readonly workspaceId?: string;
-  /** Queue namespace, allowing gateway instances to share the work-item table safely. */
+  /** Queue namespace, allowing gateway instances to share the ledger safely. */
   readonly namespace?: string;
   /** Stable lease owner; defaults to this gateway process. */
   readonly owner?: string;
@@ -81,7 +78,7 @@ export class DurableGatewayAdmissionDriver implements AdmissionDriver {
     const ttl = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
     this.leaseTtlMs = Number.isFinite(ttl) && ttl > 0 ? Math.floor(ttl) : DEFAULT_LEASE_TTL_MS;
     this.#now = options.now ?? (() => Date.now());
-    const store = options.store ?? new PgWorkItemAdmissionQueueStore({ workspaceId: options.workspaceId });
+    const store = options.store ?? new PgAdmissionLedgerQueueStore({ workspaceId: options.workspaceId });
     this.queue = new WorkItemAdmissionQueueDriver(store, {
       namespace: this.namespace,
       now: this.#now,
