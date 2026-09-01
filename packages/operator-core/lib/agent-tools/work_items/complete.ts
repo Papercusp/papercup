@@ -835,10 +835,10 @@ export function workspaceQualifiedCompletionPathHint(
     return undefined;
   }
 
-  const rawWorkspacesRoot = 'workspacesRoot' in probe ? probe.workspacesRoot : workspacesRoot();
-  if (typeof rawWorkspacesRoot !== 'string' || !rawWorkspacesRoot.trim()) return undefined;
-
   try {
+    const rawWorkspacesRoot = 'workspacesRoot' in probe ? probe.workspacesRoot : workspacesRoot();
+    if (typeof rawWorkspacesRoot !== 'string' || !rawWorkspacesRoot.trim()) return undefined;
+
     const root = nodePath.resolve(rawWorkspacesRoot);
     const workspaceDir = nodePath.resolve(root, workspace);
     const appsDir = nodePath.resolve(workspaceDir, '.papercusp', 'apps');
@@ -2948,16 +2948,27 @@ async function completeOne(
   // edited checkout is a registered sibling Hive (SideStage in the measured incident). Only pay
   // the registry lookup on the warning path; then re-evaluate the entire filesChanged set against
   // one candidate checkout root. Any registry failure preserves the original Papercusp verdict.
+  const completionWorkspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
   const unresolvedPaths = initialUnresolvedPaths
     ? unresolvedPathsInCompletion(completionEvidenceForGate, {
         repoRoots: registeredRepoRoots ?? [],
       })
     : undefined;
+  const unresolvedPathDetails = unresolvedPaths?.missing.map((m) => {
+    const pathDescription = m.didYouMean ? `${m.path} (did you mean ${m.didYouMean}?)` : m.path;
+    let workspaceQualifiedPath: string | undefined;
+    try {
+      workspaceQualifiedPath = workspaceQualifiedCompletionPathHint(m.path, completionWorkspaceId);
+    } catch {
+      /* fail-open: this is an advisory repair hint on an already-recorded completion */
+    }
+    return workspaceQualifiedPath
+      ? `${pathDescription} (the exact file exists in an independent app checkout; use absolute path \`${workspaceQualifiedPath}\` when re-calling)`
+      : pathDescription;
+  });
   const unresolvedPathsWarning = unresolvedPaths
     ? `completion for ${it.id} names ${unresolvedPaths.missing.length} \`filesChanged\` path(s) that do NOT ` +
-      `exist in the repo: ${unresolvedPaths.missing
-        .map((m) => (m.didYouMean ? `${m.path} (did you mean ${m.didYouMean}?)` : m.path))
-        .join(', ')}. ` +
+      `exist in the repo: ${unresolvedPathDetails?.join(', ')}. ` +
       `The completion is RECORDED and this changes nothing about it — but a completion record is what a later ` +
       `agent or audit trusts WITHOUT re-checking, so a path that cannot be resolved quietly degrades the durable ` +
       `record. Measured 2026-08-10: an agent filed 12 paths across two closes and 8 were fabricated — an ` +
@@ -2967,7 +2978,8 @@ async function completeOne(
       `not checked out, ignore this. If \`filesChanged\` was a scalar/comma-separated string or any entry ` +
       `contains a prose annotation, re-call work_items:complete with an ARRAY of bare repo-relative paths, ` +
       `for example \`filesChanged: ["path/to/file.ts", "path/to/test.ts"]\`. Otherwise verify the paths on disk ` +
-      `before re-calling.`
+      `before re-calling. For a workspace-qualified \`.papercusp/apps/<app>/...\` entry with an absolute repair ` +
+      `shown above, re-call with an ARRAY containing that absolute filesChanged path instead.`
     : undefined;
 
   // P-006 (frozen-candidate-compliance-enforcement-2026-08-30): this close asserts gate-red
