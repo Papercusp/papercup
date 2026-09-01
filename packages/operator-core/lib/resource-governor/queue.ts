@@ -26,6 +26,9 @@ import {
 } from './admission';
 import type { HealthResource } from './health-analysis';
 
+type ResolveSessionStates = typeof import('../agent-tools/coordination/liveness-oracle').resolveSessionStates;
+type LivenessVerdict = import('../agent-tools/coordination/liveness-oracle').LivenessVerdict;
+
 export const RESOURCE_GOVERNOR_PAYLOAD_KEY = 'resource_governor';
 export const RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION = 1 as const;
 export const RESOURCE_GOVERNOR_PARK_OWNER = 'system:resource-governor';
@@ -219,6 +222,47 @@ interface QueueDbRow {
   taken_by: string | null;
   created_ts: number | string | null;
 }
+
+interface QueueLeaseOwnerDbRow {
+  receipt_id: string | null;
+  lease_id: string | null;
+  owner: string | null;
+}
+
+/** Read-only queue census row consumed by the governor state snapshot. */
+export interface GovernorQueuePopulationObservation {
+  readonly admissionClass: string;
+  readonly depth: number;
+  readonly oldestAgeMs?: number;
+  readonly arrivals: number;
+  readonly drained: number;
+  readonly observedWindowMs: number;
+}
+
+/** The read-only identity needed to safely reclaim one active lease. */
+export interface QueueLeaseOwnerObservation {
+  readonly receiptId: string;
+  readonly leaseId: string;
+  readonly owner: string;
+}
+
+/**
+ * Select only leases whose shared liveness verdict is explicitly `ended`.
+ *
+ * This deliberately does not treat a missing verdict, `suspect`, or a stale
+ * heartbeat as owner death. The liveness oracle's `ended` state is the one
+ * positive death decision this queue can act on; the lease id remains attached
+ * to each result so the later UPDATE is compare-and-release safe if the row
+ * changed while liveness was being read.
+ */
+export function selectEndedLeaseOwners(
+  rows: readonly QueueLeaseOwnerObservation[],
+  verdicts: ReadonlyMap<string, Pick<LivenessVerdict, 'sessionState'>>,
+): QueueLeaseOwnerObservation[] {
+  return rows.filter((row) => verdicts.get(row.owner)?.sessionState === 'ended');
+}
+
+export const GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS = 60_000;
 
 function jsonObject(value: unknown): Record<string, unknown> | null {
   let current = value;
@@ -707,6 +751,8 @@ export interface PgWorkItemAdmissionQueueStoreOptions {
   readonly workspaceId?: string;
   /** Override the no-deadline abandonment dwell. Defaults to GOVERNOR_RECEIPT_ABANDON_MS. */
   readonly abandonAfterMs?: number;
+  /** Injectable shared liveness oracle for owner-death lease reclamation. */
+  readonly resolveSessionStatesFn?: ResolveSessionStates;
 }
 
 /** PostgreSQL implementation backed solely by the canonical work_items table. */
@@ -714,6 +760,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
   private readonly sql: SqlClient;
   private readonly workspaceId: string;
   private readonly abandonAfterMs: number;
+  private readonly resolveSessionStatesFn: ResolveSessionStates | undefined;
 
   constructor(options: PgWorkItemAdmissionQueueStoreOptions = {}) {
     this.sql = options.sql ?? getOrgPg().sql;
@@ -722,6 +769,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
       typeof options.abandonAfterMs === 'number' && Number.isFinite(options.abandonAfterMs) && options.abandonAfterMs > 0
         ? options.abandonAfterMs
         : GOVERNOR_RECEIPT_ABANDON_MS;
+    this.resolveSessionStatesFn = options.resolveSessionStatesFn;
   }
 
   private async transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
