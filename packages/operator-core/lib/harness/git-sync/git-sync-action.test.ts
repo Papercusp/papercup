@@ -292,6 +292,8 @@ let counterRows: Array<{ et: number; lo: string[] | null; ct?: number }> = [];
 /** One-shot setup failures injected at the exact post-lock boundaries under test. */
 let rejectUnsafeAtCall: number | null = null;
 let unsafeCallCount = 0;
+/** One-shot routine activity-write failure keyed by the marker phase under test. */
+let rejectGitSyncActivityPhaseOnce: string | null = null;
 let rejectTemplateOnce: Error | null = null;
 /** Every `sql.unsafe(text, params)` write, in order. */
 const unsafeCalls: Array<{ text: string; params: unknown[] }> = [];
@@ -320,6 +322,19 @@ const fakeSql = Object.assign(
       if (rejectUnsafeAtCall === unsafeCallCount) {
         rejectUnsafeAtCall = null;
         return Promise.reject(new Error('injected setup metadata write failure'));
+      }
+      if (rejectGitSyncActivityPhaseOnce && text.includes('UPDATE harness_shared.routines')) {
+        try {
+          const patch = JSON.parse(String(params[2])) as {
+            git_sync_activity?: { phase?: string };
+          };
+          if (patch.git_sync_activity?.phase === rejectGitSyncActivityPhaseOnce) {
+            rejectGitSyncActivityPhaseOnce = null;
+            return Promise.reject(new Error('injected terminal activity metadata write failure'));
+          }
+        } catch {
+          // Unrelated writes are not candidates for this phase-targeted failure.
+        }
       }
       return Promise.resolve([]);
     },
@@ -605,6 +620,7 @@ beforeEach(() => {
   fakeTxImpl = recordingTx;
   rejectUnsafeAtCall = null;
   unsafeCallCount = 0;
+  rejectGitSyncActivityPhaseOnce = null;
   rejectTemplateOnce = null;
   registryProjects = [{ slug: 'papercup', path: repoDir }];
   ambientRegistryProjects = null;
@@ -800,6 +816,24 @@ describe('P-004 dependency-generation prebuild handoff', () => {
       if (priorToolingRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
       else process.env.PAPERCUSP_INTEGRATION_ROOT = priorToolingRoot;
     }
+  });
+
+  it('records an inactive error marker when the final terminal activity write rejects', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    rejectGitSyncActivityPhaseOnce = 'complete';
+
+    await expect(action(ctx)).rejects.toThrow('injected terminal activity metadata write failure');
+
+    // The failed complete write is followed by the durable error marker, so a
+    // retry cannot mistake the prior post-legs state for an active fire.
+    expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+      active: false,
+      phase: 'error',
+      outcome_status: 'synced',
+      completed_at: expect.any(Number),
+    });
+    expect(enqueueDocSweepMock).not.toHaveBeenCalled();
+    expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
   });
 });
 
