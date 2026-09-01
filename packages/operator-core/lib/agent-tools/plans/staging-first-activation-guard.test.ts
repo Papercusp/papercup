@@ -63,6 +63,36 @@ describe('staging-first activation guard', () => {
     ).toBeNull();
   });
 
+  it('diagnoses exactly which narrow-exception predicate is missing in the refusal detail', () => {
+    // EI-22058383186105579: the caller supplied the full SUBSTANCE of a deployed-only
+    // wait (staging limitation + concrete reason) but not the literal 'deployed-only'
+    // token, and the generic refusal gave no way to see which predicate failed.
+    const problem = stagingFirstBlockerProblem({
+      itemId: 'WI-4',
+      itemText: 'Retire legacy resource-governor receipts.',
+      blockerText:
+        'wait for main deployment before destructive legacy cleanup because staging cannot exercise independently deployed writer vintages',
+      kind: 'runtime',
+    });
+    expect(problem).toEqual(expect.objectContaining({ code: 'non_final_deployed_main_blocker' }));
+    expect(problem!.detail).toContain(`'deployed-only' token: MISSING`);
+    expect(problem!.detail).toContain('staging limitation: present');
+    expect(problem!.detail).toContain('concrete reason: present');
+  });
+
+  it('flags every missing narrow-exception predicate when none are supplied', () => {
+    const problem = stagingFirstBlockerProblem({
+      itemId: 'WI-5',
+      itemText: 'Implement fact-plane fairness.',
+      blockerText: 'wait for main to go green before continuing implementation',
+      kind: 'gate',
+    });
+    expect(problem).toEqual(expect.objectContaining({ code: 'non_final_deployed_main_blocker' }));
+    expect(problem!.detail).toContain(`'deployed-only' token: MISSING`);
+    expect(problem!.detail).toContain('staging limitation: MISSING');
+    expect(problem!.detail).toContain('concrete reason: MISSING');
+  });
+
   it('ignores unrelated runtime blockers even when the item is ordinary implementation', () => {
     expect(
       stagingFirstBlockerProblem({
