@@ -835,6 +835,13 @@ export default defineTool({
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id, checkpoint? } for one, or items:[{ id, checkpoint? }] for many',
     }),
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      results: z.array(z.unknown()).optional(),
+      counts: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const c = ctx as { harnessSlug?: string | null; workspaceId?: string | null; spawnId?: string | null };
