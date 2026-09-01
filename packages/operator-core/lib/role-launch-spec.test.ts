@@ -662,3 +662,99 @@ describe('buildSuLaunchSpec — roleAddendum (EI-996 su-tier role sessions)', ()
     expect((await suSpec('   \n\t  ')).promptText).toBe(baseline.promptText);
   });
 });
+
+// ── WI-2140338: the 'steward' intermediate tool seed ─────────────────────────
+// The steward seed derives exact names from the live projected-tool registry;
+// these tests inject listings (pure fn) and switch the module mock (URL path)
+// so the semantics are deterministic regardless of what the test process has
+// registered.
+describe('stewardSeedToolNames + the steward launch seed (WI-2140338)', () => {
+  const FAKE_LISTINGS = [
+    { name: 'goals:get' },
+    { name: 'goals:tripwires' },
+    { name: 'blender:grade-idea' },
+    { name: 'work_items:checkpoint' },
+    { name: 'coord:orient' }, // already in CORE — must dedupe
+    { name: 'design-phase:validate_spec' }, // NOT a steward family
+    { name: 'templates:list' }, // NOT a steward family
+    { name: 'noColon' }, // pathological: no family separator
+    { name: ':leadingColon' }, // pathological: empty family
+  ];
+
+  beforeEach(() => {
+    stewardMockState.listings = null;
+  });
+
+  it('expands ONLY steward-family names from the listings, on top of CORE + SU_EXTRA', () => {
+    const seed = stewardSeedToolNames(FAKE_LISTINGS);
+    for (const included of ['goals:get', 'goals:tripwires', 'blender:grade-idea', 'work_items:checkpoint']) {
+      expect(seed).toContain(included);
+    }
+    for (const excluded of ['design-phase:validate_spec', 'templates:list', 'noColon', ':leadingColon']) {
+      expect(seed).not.toContain(excluded);
+    }
+    // The spine and the su extras ride along in full.
+    for (const core of CORE_MCP_TOOL_NAMES) expect(seed).toContain(core);
+    for (const extra of SU_EXTRA_MCP_TOOL_NAMES) expect(seed).toContain(extra);
+  });
+
+  it('dedupes against the spine and keeps CORE-first ordering', () => {
+    const seed = stewardSeedToolNames(FAKE_LISTINGS);
+    expect(seed.filter((n) => n === 'coord:orient')).toHaveLength(1);
+    expect(seed.slice(0, CORE_MCP_TOOL_NAMES.length)).toEqual([...CORE_MCP_TOOL_NAMES]);
+    expect(new Set(seed).size).toBe(seed.length);
+  });
+
+  it("su launch with contextSize:'steward' seeds ?tools= with the expanded steward set", async () => {
+    stewardMockState.listings = FAKE_LISTINGS;
+    const spec = await buildLaunchSpec({
+      kind: 'su',
+      agent: 'codex',
+      workspaceId: 'default',
+      operatorBaseUrl: 'http://localhost:3070',
+      contextSize: 'steward',
+    });
+    const u = new URL(spec.mcpUrl);
+    expect(u.searchParams.get('tools')!.split(',')).toEqual(stewardSeedToolNames(FAKE_LISTINGS));
+  });
+
+  it('su launch WITHOUT steward keeps the exact trimmed seed — no drift for existing sessions', async () => {
+    stewardMockState.listings = FAKE_LISTINGS; // present, but must not be consulted
+    const spec = await buildLaunchSpec({
+      kind: 'su',
+      agent: 'claude',
+      workspaceId: 'default',
+      operatorBaseUrl: 'http://localhost:3070',
+    });
+    const u = new URL(spec.mcpUrl);
+    expect(u.searchParams.get('tools')!.split(',')).toEqual([
+      ...CORE_MCP_TOOL_NAMES,
+      ...SU_EXTRA_MCP_TOOL_NAMES,
+    ]);
+  });
+
+  it('an explicit steward request against an unpopulated registry REFUSES loudly (never a silent trimmed downgrade)', async () => {
+    stewardMockState.listings = [{ name: 'design-phase:validate_spec' }]; // zero steward-family names
+    await expect(
+      buildLaunchSpec({
+        kind: 'su',
+        agent: 'codex',
+        workspaceId: 'default',
+        operatorBaseUrl: 'http://localhost:3070',
+        contextSize: 'steward',
+      }),
+    ).rejects.toThrow(/expanded no steward-family names/);
+  });
+
+  it('pipeline roles REFUSE steward — it is an su/goal-holder seed', async () => {
+    await expect(
+      buildRoleLaunchSpec({
+        role: 'worker',
+        workspaceId: 'default',
+        harnessSlug: 'papercup',
+        operatorBaseUrl: 'http://localhost:3070',
+        contextSize: 'steward',
+      }),
+    ).rejects.toThrow(/not a pipeline-role mode/);
+  });
+});
