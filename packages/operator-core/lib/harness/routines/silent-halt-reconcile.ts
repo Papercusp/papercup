@@ -1,0 +1,424 @@
+/**
+ * silent-halt-reconcile — a STANDING reconciler for the autonomous session that went
+ * inert for a reason no code path was executing to notice (WI-35718).
+ *
+ * THE GAP THIS CLOSES. Two point-fixes already page the owner at the moment they silence a
+ * session: `loop-dead-man.ts` on a maxFires/maxDurationSec breach, and `stalled-loops-guard.ts`
+ * on a disarm of a still-reachable session. Both fire only on the specific code path that does
+ * the silencing. A session that goes inert for any OTHER reason — a crashed CLI child, a died
+ * carry-respawn, a wedged host, a dropped socket ack booked as `delivered`, a zero-tool
+ * escalation whose real cause was a provider usage wall — is caught by nothing, because at that
+ * moment there is no executing code to notice. Only a sweep run from OUTSIDE the halted session
+ * can see it.
+ *
+ * WHY THE OWNER, NEVER THE AGENT'S OWN INBOX. Delivery-to-inbox does not wake a session.
+ * `claim-discipline-watch` fired at su-1f7ee244 roughly hourly for the FULL four days it was
+ * inert; every one landed in an inbox nobody would ever read. The system already HELD the signal
+ * and spent it on a dead channel. A watchdog that repeats the same finding at the same agent for
+ * four days without escalating CHANNEL is not a detector, it is a metronome.
+ *
+ * ── THE FIFTH TERM (measured 2026-09-01, before this file was written) ────────────────────────
+ *
+ * WI-35718 states the conjunction and calls it "an unambiguous silently-halted autonomous
+ * agent". Run against live PG it is not unambiguous — as written it selects 4,037 rows:
+ *
+ *   active=false + autonomy posture + no pending await ............ 4,037
+ *   ... AND a coord_presence row exists ............................... 67
+ *   ... AND heartbeat_at fresh (<10m) ................................. 67
+ *   ... AND no pending await (expiry-corrected) ........................ 3   ← true positives
+ *
+ * Two independent collapses, and the first is the term the item omits. 4,091 candidates have NO
+ * presence row at all: presence is reaped, so a mode row beside an inactive loop is the normal
+ * terminal RESIDUE every cleanly-ended session leaves behind forever. Building the conjunction
+ * as filed would page the owner ~4,037 times — the exact metronome failure above, amplified
+ * 4000x, which is why LIVENESS is a required term here and not a refinement:
+ *
+ *     a silently-halted agent is one whose PROCESS IS ALIVE but which produces no turns.
+ *     A reaped presence row means GONE, which is not the same thing and must not page.
+ *
+ * The second collapse (67 → 3) is the item's own `no pending await` term doing real work: 63 of
+ * 67 live sessions hold an await, and an await IS a wake source, so they are correctly silent.
+ *
+ * All three survivors were true positives, and the population is the bug: one had been disarmed
+ * 5,906 minutes — 4.1 DAYS — while its heartbeat was 65 seconds old. That is WI-35718's own
+ * cited failure, live, at the moment this file was written, with nothing in the system due to
+ * notice it.
+ *
+ * WHY REUSE getLoopStatuses. `lastRealTurnAt` is a union over the journal and session_turns'
+ * assistant turns (loop.ts ~line 2000) and has under-reported twice already (WI-6069 and its
+ * follow-up), both times in the direction of a healthy agent reading as dead. This module reads
+ * it through the SAME accessor `loop:status` and `stalled-loops-guard` use rather than
+ * re-deriving it, so a future correction lands here for free and cannot drift into a second,
+ * subtly-different definition of "produced a turn".
+ *
+ * RECURRENCE GUARD. One owner-visible escalation per (owner, disarm epoch), via
+ * `notifyAttention`'s `dedupeKey`. A session that stays halted does not re-page; one that is
+ * re-armed and later halts AGAIN has a new epoch and does page, because that is a new fault.
+ * This is the direct answer to the metronome above.
+ *
+ * SAFETY / FAILURE DIRECTION. Every ambiguity resolves toward SILENCE except one. No presence
+ * row, a stale heartbeat, any pending await, an armed loop, or no autonomy posture all mean "not
+ * my case". The single deliberate exception is inherited from `hasAutonomyPosture`: an UNKNOWN
+ * mode id counts as autonomous, because a spurious page costs one notification while a missed
+ * one costs days.
+ */
+
+import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
+import type { AttentionNotifyInput } from '../../attention-notify';
+import { hasAutonomyPosture } from './loop-dead-man';
+import { getLoopStatuses } from './loop';
+
+/**
+ * A heartbeat older than this means the PROCESS is gone, not halted — the fifth term measured
+ * above. Deliberately generous relative to the ~30s presence beat: a missed beat or two under
+ * load must not be read as death, because reading a live agent as gone is how this module would
+ * stop reporting the very thing it exists to find.
+ */
+export const SILENT_HALT_HEARTBEAT_FRESH_MS = 10 * 60 * 1000;
+
+/**
+ * Floor under the staleness test, whatever the loop's interval. A 60s loop must not page 5
+ * minutes after a disarm that an agent is about to correct itself — most disarms are transient
+ * and self-heal, and the cost of waiting is bounded while the cost of a false page is trust.
+ */
+export const SILENT_HALT_MIN_STALE_MS = 30 * 60 * 1000;
+
+/** Multiple of the loop's own interval that must elapse with no real turn. */
+export const SILENT_HALT_STALE_INTERVALS = 5;
+
+/** Never page about more owners than this in one pass — a mass-halt is ONE incident. */
+export const SILENT_HALT_MAX_PAGES_PER_SWEEP = 5;
+
+export interface SilentHaltInput {
+  /** Loop routine `active`. An ARMED loop is stalled-loops-guard's domain, never this one. */
+  loopActive: boolean;
+  /** Result of `hasAutonomyPosture` over the owner's registered modes. */
+  hasPosture: boolean;
+  /** Un-fired, un-cancelled, un-expired awaits. Any at all is a live wake source. */
+  pendingAwaits: number;
+  /** Age of the presence heartbeat. `null` = no presence row = gone, not halted. */
+  heartbeatAgeMs: number | null;
+  /** Age of the last REAL turn (`lastRealTurnAt`); `null` when none was ever produced. */
+  lastRealTurnAgeMs: number | null;
+  /** How long the loop has been inactive (`active_changed_at`); `null` when unknown. */
+  inactiveForMs: number | null;
+  /** The loop's own cadence, for the interval-relative staleness floor. */
+  intervalSec: number | null;
+}
+
+export interface SilentHaltVerdict {
+  halted: boolean;
+  /** Why it IS a halt — populated only when `halted`. */
+  reason: string | null;
+  /** Why it is NOT — populated only when not `halted`. Every exemption is named, never silent. */
+  exemption: string | null;
+  /** The floor actually applied, so a verdict can be explained without re-deriving it. */
+  staleFloorMs: number;
+}
+
+/**
+ * The pure verdict. Split out from the sweep so the conjunction is testable without PG, and so
+ * the exemption that fired is always nameable — an unexplained silence is indistinguishable
+ * from a broken detector, which is the failure mode this whole module is about.
+ */
+export function evaluateSilentHalt(input: SilentHaltInput): SilentHaltVerdict {
+  const intervalMs =
+    input.intervalSec != null && Number.isFinite(input.intervalSec) && input.intervalSec > 0
+      ? input.intervalSec * 1000
+      : 0;
+  const staleFloorMs = Math.max(SILENT_HALT_MIN_STALE_MS, intervalMs * SILENT_HALT_STALE_INTERVALS);
+  const no = (exemption: string): SilentHaltVerdict => ({ halted: false, reason: null, exemption, staleFloorMs });
+
+  // An ARMED loop that stopped producing turns is a different fault with a different remedy,
+  // owned by stalled-loops-guard. Two modules acting on one signal is how a fleet gets disarmed
+  // twice for one cause.
+  if (input.loopActive) return no('loop-armed (stalled-loops-guard owns this case)');
+
+  // A session with no autonomy posture has a human in front of it who will see the next turn.
+  if (!input.hasPosture) return no('no-autonomy-posture (interactive session)');
+
+  // An await IS a wake source. 63 of 67 live candidates were exempt here — this term, not
+  // liveness, is what separates a waiting agent from a halted one.
+  if (input.pendingAwaits > 0) return no(`pending-await x${input.pendingAwaits} (a live wake source)`);
+
+  // THE FIFTH TERM. No presence row = reaped = long gone. This is the 4,037 → 67 collapse, and
+  // omitting it is what turns this detector into a metronome.
+  if (input.heartbeatAgeMs == null) return no('no-presence-row (session is gone, not halted)');
+  if (input.heartbeatAgeMs > SILENT_HALT_HEARTBEAT_FRESH_MS) {
+    return no(`heartbeat-stale ${Math.round(input.heartbeatAgeMs / 60000)}m (process gone, not halted)`);
+  }
+
+  // Both clocks must clear the floor. A loop disarmed seconds ago is not yet a halt however old
+  // the last turn is, and a turn produced seconds ago is not a halt however long the loop has
+  // been off — either one alone would page an agent that is actively recovering.
+  const turnAge = input.lastRealTurnAgeMs;
+  const inactiveFor = input.inactiveForMs;
+  if (inactiveFor != null && inactiveFor <= staleFloorMs) {
+    return no(`recently-disarmed ${Math.round(inactiveFor / 60000)}m (below floor)`);
+  }
+  if (turnAge != null && turnAge <= staleFloorMs) {
+    return no(`recent-turn ${Math.round(turnAge / 60000)}m (below floor)`);
+  }
+  // Never produced a turn AND never recorded a disarm time: nothing establishes duration, so
+  // there is no evidence of a HALT as opposed to a session that has not started. Fail quiet.
+  if (turnAge == null && inactiveFor == null) {
+    return no('no-duration-evidence (neither a real turn nor a disarm timestamp)');
+  }
+
+  const silentForMs = Math.max(turnAge ?? 0, inactiveFor ?? 0);
+  return {
+    halted: true,
+    reason:
+      `autonomy posture registered, loop INACTIVE for ` +
+      `${inactiveFor != null ? `${Math.round(inactiveFor / 60000)}m` : 'unknown'}, ` +
+      `no pending await, heartbeat fresh (${Math.round(input.heartbeatAgeMs / 1000)}s) but ` +
+      `${turnAge != null ? `no real turn in ${Math.round(turnAge / 60000)}m` : 'no real turn ever recorded'}`,
+    exemption: null,
+    staleFloorMs: silentForMs > 0 ? staleFloorMs : staleFloorMs,
+  };
+}
+
+/** One candidate as read from PG, before the verdict is applied. */
+export interface SilentHaltCandidate {
+  ownerId: string;
+  workspaceId: string;
+  routineId: string;
+  intervalSec: number | null;
+  heartbeatAgeMs: number | null;
+  inactiveForMs: number | null;
+  pendingAwaits: number;
+  modes: Array<{ mode: string }>;
+}
+
+export interface SilentHaltSweepDeps {
+  /** Injectable for tests; defaults to the real candidate read. */
+  readCandidates?: (workspaceId: string, sql: Sql) => Promise<SilentHaltCandidate[]>;
+  /** Injectable for tests; defaults to the shared `getLoopStatuses` accessor. */
+  readLoopStatuses?: typeof getLoopStatuses;
+  /** Injectable for tests; defaults to a dynamically-imported `notifyAttention`. */
+  notify?: (payload: AttentionNotifyInput & { dedupeKey?: string }) => Promise<void>;
+  nowMs?: number;
+}
+
+export interface SilentHaltSweepResult {
+  checked: number;
+  halted: string[];
+  paged: string[];
+  /** ownerId → the named exemption, so a zero-page sweep is explicable rather than mute. */
+  exempt: Record<string, string>;
+  dryRun: boolean;
+  /** True when more halts were found than `SILENT_HALT_MAX_PAGES_PER_SWEEP`. */
+  pageCapReached: boolean;
+}
+
+/**
+ * Read the candidate set. Deliberately CHEAP and broad: it applies only the terms expressible as
+ * a cheap index-friendly predicate and leaves every judgement to `evaluateSilentHalt`, so the
+ * verdict has exactly one home.
+ *
+ * NOTE the `event_awaits` scoping. That table stores every row under the literal
+ * workspace_id='default' (the corpus namespace, hardcoded in search/session-ingest.ts), so it
+ * MUST be joined on `subscriber_id` alone. Filtering it by a real workspace matches zero rows
+ * and silently disables the no-pending-await term while returning a clean, confident result —
+ * measured live while writing this file, and the reason the term is joined this way.
+ */
+async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<SilentHaltCandidate[]> {
+  const rows = await sql<
+    Array<{
+      owner_id: string;
+      workspace_id: string;
+      routine_id: string;
+      interval_sec: number | null;
+      heartbeat_age_ms: string | number | null;
+      inactive_for_ms: string | number | null;
+      pending_awaits: string | number | null;
+      modes: string[] | null;
+    }>
+  >`
+    WITH loops AS (
+      SELECT r.id AS routine_id, r.target_owner_id AS owner_id, r.workspace_id,
+             r.reschedule_interval_sec AS interval_sec, r.active_changed_at
+        FROM harness_shared.routines r
+       WHERE r.name LIKE 'loop-%'
+         AND r.target_owner_id IS NOT NULL
+         AND r.workspace_id = ${workspaceId}
+         AND r.active = false
+    ), awaits AS (
+      SELECT subscriber_id, count(*)::int AS n
+        FROM harness_shared.event_awaits
+       WHERE fired_at IS NULL AND cancelled_at IS NULL
+         AND (expires_ts IS NULL OR expires_ts > now())
+       GROUP BY 1
+    )
+    SELECT l.routine_id, l.owner_id, l.workspace_id, l.interval_sec,
+           round(extract(epoch from (now() - p.heartbeat_at)) * 1000)     AS heartbeat_age_ms,
+           round(extract(epoch from (now() - l.active_changed_at)) * 1000) AS inactive_for_ms,
+           COALESCE(a.n, 0)                                                AS pending_awaits,
+           array_agg(DISTINCT m.mode)                                      AS modes
+      FROM loops l
+      JOIN harness_shared.agent_modes m
+        ON m.owner_id = l.owner_id AND m.workspace_id = l.workspace_id
+      JOIN harness_shared.coord_presence p
+        ON p.owner_id = l.owner_id AND p.workspace_id = l.workspace_id
+      LEFT JOIN awaits a ON a.subscriber_id = l.owner_id
+     WHERE p.heartbeat_at > now() - make_interval(secs => ${SILENT_HALT_HEARTBEAT_FRESH_MS / 1000})
+     GROUP BY l.routine_id, l.owner_id, l.workspace_id, l.interval_sec,
+              p.heartbeat_at, l.active_changed_at, a.n`;
+
+  return rows.map((r) => ({
+    ownerId: r.owner_id,
+    workspaceId: r.workspace_id,
+    routineId: r.routine_id,
+    intervalSec: r.interval_sec == null ? null : Number(r.interval_sec),
+    heartbeatAgeMs: r.heartbeat_age_ms == null ? null : Number(r.heartbeat_age_ms),
+    inactiveForMs: r.inactive_for_ms == null ? null : Number(r.inactive_for_ms),
+    pendingAwaits: Number(r.pending_awaits ?? 0),
+    modes: (r.modes ?? []).filter(Boolean).map((mode) => ({ mode })),
+  }));
+}
+
+/**
+ * Sweep for silently-halted autonomous sessions and page the OWNER once per halt epoch.
+ *
+ * Writes nothing to the loop. Unlike its siblings this module does NOT disarm, re-arm, or
+ * otherwise touch the session: by construction its subjects are already stopped, and the one
+ * thing a halted agent provably cannot do is act on a message. The remedy is a human.
+ */
+export async function sweepSilentHalts(opts: {
+  workspaceId: string;
+  dryRun?: boolean;
+  sql?: Sql;
+  deps?: SilentHaltSweepDeps;
+}): Promise<SilentHaltSweepResult> {
+  const deps = opts.deps ?? {};
+  const sql = opts.sql ?? getOrgPg().sql;
+  const dryRun = opts.dryRun === true;
+  const nowMs = deps.nowMs ?? Date.now();
+
+  const readCandidates = deps.readCandidates ?? defaultReadCandidates;
+  const candidates = await readCandidates(opts.workspaceId, sql);
+
+  const result: SilentHaltSweepResult = {
+    checked: candidates.length,
+    halted: [],
+    paged: [],
+    exempt: {},
+    dryRun,
+    pageCapReached: false,
+  };
+  if (candidates.length === 0) return result;
+
+  // One round-trip for every candidate's lastRealTurnAt, through the SAME accessor loop:status
+  // uses — never a second local derivation of "produced a turn".
+  const readStatuses = deps.readLoopStatuses ?? getLoopStatuses;
+  let statuses: Awaited<ReturnType<typeof getLoopStatuses>>;
+  try {
+    statuses = await readStatuses(
+      candidates.map((c) => c.ownerId),
+      { sql },
+    );
+  } catch (e) {
+    console.warn(
+      `[silent-halt-reconcile] loop-status read failed; sweeping without turn evidence: ` +
+        `${e instanceof Error ? e.message : e}`,
+    );
+    statuses = new Map();
+  }
+
+  const halted: Array<{ candidate: SilentHaltCandidate; verdict: SilentHaltVerdict }> = [];
+  for (const c of candidates) {
+    const status = statuses.get(c.ownerId);
+    const lastRealTurnAt = status?.lastRealTurnAt ?? null;
+    const lastRealTurnAgeMs = lastRealTurnAt ? nowMs - Date.parse(lastRealTurnAt) : null;
+
+    const verdict = evaluateSilentHalt({
+      // Re-read `active` from the status when available: the candidate query and this read are
+      // separate round-trips, and an agent that re-armed in between must not be paged about.
+      loopActive: status?.active === true,
+      hasPosture: hasAutonomyPosture(c.modes),
+      pendingAwaits: c.pendingAwaits,
+      heartbeatAgeMs: c.heartbeatAgeMs,
+      lastRealTurnAgeMs: Number.isFinite(lastRealTurnAgeMs as number) ? lastRealTurnAgeMs : null,
+      inactiveForMs: c.inactiveForMs,
+      intervalSec: c.intervalSec,
+    });
+
+    if (!verdict.halted) {
+      result.exempt[c.ownerId] = verdict.exemption ?? 'unspecified';
+      continue;
+    }
+    result.halted.push(c.ownerId);
+    halted.push({ candidate: c, verdict });
+  }
+
+  if (halted.length === 0 || dryRun) return result;
+
+  // A mass halt is ONE incident (a wedged host, a deploy, an operator restart), not N — page a
+  // bounded sample and name the total, the same reasoning stalled-loops-guard applies to its
+  // fleet-wide broadcast.
+  result.pageCapReached = halted.length > SILENT_HALT_MAX_PAGES_PER_SWEEP;
+  const toPage = halted.slice(0, SILENT_HALT_MAX_PAGES_PER_SWEEP);
+
+  const notify =
+    deps.notify ??
+    (async (payload: AttentionNotifyInput & { dedupeKey?: string }) => {
+      const { notifyAttention } = await import('../../attention-notify');
+      await notifyAttention(payload);
+    });
+
+  for (const { candidate, verdict } of toPage) {
+    // One page per (owner, disarm epoch). A session that STAYS halted never re-pages; one that
+    // is re-armed and halts again gets a new epoch, because that is a genuinely new fault.
+    const epoch = candidate.inactiveForMs != null ? Math.round((nowMs - candidate.inactiveForMs) / 60000) : 'unknown';
+    const dedupeKey = `silent-halt:${candidate.ownerId}:${epoch}`;
+    const inactiveMin = candidate.inactiveForMs != null ? Math.round(candidate.inactiveForMs / 60000) : null;
+
+    try {
+      await notify({
+        kind: 'intervention',
+        title:
+          `Autonomous session ${candidate.ownerId} is alive but has taken no turns` +
+          (inactiveMin != null ? ` for ${inactiveMin}m` : '') +
+          ` — nothing will wake it`,
+        body:
+          `${verdict.reason}.\n\n` +
+          `This session's process is still running (its presence heartbeat is current), it holds a ` +
+          `registered autonomy posture (${candidate.modes.map((m) => m.mode).join(', ')}), and its ` +
+          `engine loop is INACTIVE with no pending events:await. There is therefore no wake source ` +
+          `of any kind pointed at it: a paused loop does not fire, no await will resolve, and the ` +
+          `one warning designed to catch this (coord:orient's wakeSourceLostWarning) is only ever ` +
+          `delivered ON a wake. It will take no further turns, and any plan or work-item it was ` +
+          `advancing stops exactly where it is, until a human acts.\n\n` +
+          `Its own inbox is the wrong channel and is deliberately not used: delivery-to-inbox does ` +
+          `not wake a session, so a message there would be spent on a dead channel.\n\n` +
+          `To bring it back: resume the session and re-arm its loop (loop:arm). If it was stopped ` +
+          `by a bound it should not have had, re-arm without maxFires/maxDurationSec. If it was ` +
+          `stopped by a zero-tool escalation, check for a provider usage wall first — a wall makes ` +
+          `an agent look inert without anything being wrong with it.\n\n` +
+          `Loop routine: ${candidate.routineId}`,
+        importance: 'urgent',
+        workspaceId: candidate.workspaceId,
+        dedupeKey,
+        data: {
+          ownerId: candidate.ownerId,
+          routineId: candidate.routineId,
+          reason: verdict.reason ?? '',
+          modes: candidate.modes.map((m) => m.mode).join(','),
+          inactiveForMin: inactiveMin,
+          totalHalted: halted.length,
+        },
+      });
+      result.paged.push(candidate.ownerId);
+    } catch (e) {
+      // A downed push transport must never turn a successful detection into a thrown routine —
+      // the remaining candidates still deserve their page.
+      console.warn(
+        `[silent-halt-reconcile] owner page failed for ${candidate.ownerId}: ` +
+          `${e instanceof Error ? e.message : e}`,
+      );
+    }
+  }
+
+  return result;
+}
