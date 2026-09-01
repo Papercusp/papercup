@@ -321,45 +321,42 @@ export interface ReportBlockCardProps {
 }
 
 export function ReportBlockCard({ report, renderItemText, onDrillIn, canDrillIn }: ReportBlockCardProps): ReactNode {
+  if (!report.plans.length) return null;
   return (
-    <section className="report-block-card" aria-label={report.title ?? 'Structured report'}>
-      {report.title ? <h4 className="report-block-title">{report.title}</h4> : null}
+    <div className="report-block-card" data-component="report-block" role="group" aria-label={report.title ?? 'Report'}>
+      {report.title ? <div className="report-block-title">{report.title}</div> : null}
       <div className="report-block-plans">
         {report.plans.map((plan, planIndex) => {
           const planStatus = statusGlyph(plan.status);
           return (
-            <section key={`${plan.slug ?? plan.title}:${planIndex}`} className="report-block-plan">
-              <header className="report-block-plan-head">
-                <span className="report-block-status" data-tone={planStatus.tone} aria-label={planStatus.label || 'no status'}>{planStatus.glyph}</span>
+            <div key={`${plan.slug ?? plan.title}:${planIndex}`} className="report-block-plan" data-tone={planStatus.tone}>
+              <div className="report-block-plan-head">
+                <span className="report-block-glyph" data-tone={planStatus.tone} aria-hidden="true" title={planStatus.label || undefined}>{planStatus.glyph}</span>
                 <span className="report-block-plan-title">{plan.title}</span>
-                {plan.slug && plan.slug !== plan.title ? <code className="report-block-plan-slug">{plan.slug}</code> : null}
-              </header>
+                {plan.status ? <span className="report-block-plan-status" data-tone={planStatus.tone}>{plan.status}</span> : null}
+              </div>
               {plan.summary ? <p className="report-block-plan-summary">{plan.summary}</p> : null}
               {plan.items?.length ? (
                 <ul className="report-block-items">
                   {plan.items.map((item, itemIndex) => {
                     const itemStatus = statusGlyph(item.status);
                     const drillable = Boolean(item.ref && onDrillIn && (!canDrillIn || canDrillIn(item.ref)));
-                    const content = (
-                      <>
-                        <span className="report-block-status" data-tone={itemStatus.tone} aria-label={itemStatus.label || 'no status'}>{itemStatus.glyph}</span>
-                        {item.id ? <code className="report-block-item-id">{item.id}</code> : null}
-                        <span className="report-block-item-text">{renderItemText ? renderItemText({ item, plan }) : item.text}</span>
-                      </>
-                    );
                     return (
-                      <li key={`${item.id ?? item.text}:${itemIndex}`} className="report-block-item">
-                        {drillable ? <button type="button" className="report-block-item-action" onClick={() => onDrillIn?.(item.ref!)}>{content}</button> : content}
+                      <li key={`${item.id ?? item.text}:${itemIndex}`} className="report-block-item" data-tone={itemStatus.tone}>
+                        <span className="report-block-glyph" data-tone={itemStatus.tone} aria-hidden="true" title={itemStatus.label || undefined}>{itemStatus.glyph}</span>
+                        {item.id ? <span className="report-block-item-id">{item.id}</span> : null}
+                        {renderItemText ? renderItemText({ item, plan }) : <span className="report-block-item-text">{item.text}</span>}
+                        {drillable ? <button type="button" className="report-block-item-drill" onClick={() => onDrillIn?.(item.ref!)} data-ref={item.ref} aria-label={`Open ${item.ref}`}>Open ↗</button> : null}
                       </li>
                     );
                   })}
                 </ul>
               ) : null}
-            </section>
+            </div>
           );
         })}
       </div>
-    </section>
+    </div>
   );
 }
 

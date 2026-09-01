@@ -100,6 +100,7 @@
     "@papercusp/agent-mcp": "file:../../packages/agent-mcp",
     "@papercusp/backup": "file:../../packages/backup",
     "@papercusp/card-stack": "file:../../libs/generic/card-stack",
+    "@papercusp/chat-cards": "file:../../libs/generic/chat-cards",
     "@papercusp/chat-protocol": "file:../../libs/generic/chat-protocol",
     "@papercusp/coordination": "file:../../packages/coordination",
     "@papercusp/db-org": "file:../../libs/papercusp/libs/db",

@@ -47,6 +47,12 @@ import {
   clearSessionBriefReleasedForFleet,
   markSessionBriefReleased,
 } from '../../session-brief';
+import { buildAnnouncedKey } from '../../events/await/announce-key';
+import {
+  FLEET_PARK_DEFAULT_RESUME_GATE,
+  describeParkResumePath,
+  resolveFleetParkResumePath,
+} from '../../fleet-park-resume-path';
 
 export type FleetControlAction = 'wind-down' | 'resume';
 
@@ -88,8 +94,31 @@ export interface FleetControlResult {
   postControlPending?: boolean;
   /** True when the optional post-flip saga failed before it could return a receipt. */
   postControlDegraded?: boolean;
+  /** WI-2034563: the park directive's declared way back, and — on a resume — whether
+   *  the previously declared gate was actually fired. Absent when neither applies. */
+  resumePath?: FleetControlResumePathReceipt;
   error?: string;
   message?: string;
+}
+
+/** What a control flip did about the park's resume path, reported so a leader never
+ *  has to assume a gate was declared/fired that in fact was not. */
+export interface FleetControlResumePathReceipt {
+  /** The declared, latching gate key (wind-down) or the key that was fired (resume). */
+  gate: string | null;
+  /** wind-down: did the DECLARATION land? A gate is stored on the row only when it did,
+   *  so the registry never advertises a key with no announcement behind it. */
+  declared?: boolean;
+  /** resume: did the emit of the previously declared gate land, and how many awaiters
+   *  did it actually reach? `waiters: 0` means nobody was parked on it. */
+  fired?: boolean;
+  waiters?: number;
+  /** Epoch ms the park is due to lift (wind-down only). */
+  expiresAt?: number | null;
+  /** True when this park was deliberately declared terminal — no gate, by design. */
+  terminal?: boolean;
+  /** Why a gate could not be declared/fired, when one was intended. */
+  warning?: string;
 }
 
 // classifyFleetControlInvoker (the pure authority predicate) now lives in the dependency-free
@@ -104,11 +133,38 @@ export function fleetControlCueText(
   reason: string | null,
   byHandle: string,
   cueMsgId?: string,
+  /** WI-2034563: the park's declared resume path, so the cue can name the exact key
+   *  to await instead of telling every member to stop wake-less. */
+  park?: { gate: string | null; expiresAt: number | null; terminal: boolean } | null,
 ): { summary: string; body: string } {
   if (action === 'wind-down') {
     const ackInstruction = cueMsgId
       ? `ack this exact cue with coord:ack { msg_id: '${cueMsgId}' }`
       : 'ack this exact cue with coord:ack { msg_id }';
+    // WI-2034563: the stop instruction is the part that stranded ~23 members for
+    // 2.5-6h. The old text ended at "loop:end … acknowledgeWakeLessAutonomy:true",
+    // which is a correct way to comply and a guaranteed way to become unreachable:
+    // the loop was the member's only wake source and nothing replaced it. When the
+    // park declares a resume gate, the cue now hands over that exact key FIRST —
+    // copied from the declaration, never retyped — so the member's stop leaves an
+    // await behind and fleet:resume's fire is what wakes it.
+    const stopInstruction = park?.gate
+      ? `Then hand over your wake source BEFORE you stop: register events:await { event: '${park.gate}' } ` +
+        '(copy that key EXACTLY — a retyped key never rendezvouses; it LATCHES, so registering after ' +
+        'the lift still resolves immediately), and only then loop:end. That await IS your way back: ' +
+        'fleet:resume fires this exact key. Do NOT pass acknowledgeWakeLessAutonomy — with the await ' +
+        'registered you will not need it, and using it instead of the await is what leaves you unreachable.'
+      : park?.terminal
+        ? 'Then end any armed loop with loop:end. This park is TERMINAL — no resume is expected, so a ' +
+          'wake-less stop is correct here; if an autonomy-implying mode remains active, retry with ' +
+          'loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }.'
+        : 'Then end any armed loop with loop:end. ⚠ This park declared NO resume gate, so nothing will ' +
+          'wake you once you stop: prefer registering an events:await (or staying armed at a long ' +
+          'interval) over acknowledgeWakeLessAutonomy, and tell the leader which you chose.';
+    const deadline =
+      park?.expiresAt != null
+        ? ` The park is bounded: it is due to lift by ${new Date(park.expiresAt).toISOString()}.`
+        : '';
     return {
       summary: `Fleet ${fleet} WIND-DOWN (typed control cue, by ${byHandle})${reason ? `: ${reason}` : ''}`,
       body:
@@ -116,11 +172,8 @@ export function fleetControlCueText(
         'This is a TYPED, BINDING control cue [system-derived:fleet-control] ' +
         '(registry control_state=winding-down). ' +
         'Finish only the atomic step in hand, then: work_items:checkpoint + release your claims ' +
-        `(or complete with evidence), release your file locks, and end any armed loop with loop:end. ` +
-        'If an autonomy-implying mode remains active without a deliberate independent event await, ' +
-        'retry with loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }; alternatively register an events:await ' +
-        'wake or exit the mode before ending the loop, then ' +
-        `${ackInstruction}. ` +
+        '(or complete with evidence), and release your file locks. ' +
+        `${stopInstruction}${deadline} Finally, ${ackInstruction}. ` +
         'That ack is a LIFECYCLE RECEIPT: it takes only msg_id and carries no free text, so do not ' +
         'attach a summary/note to it. Report your one-line disposition (or a blocker) as a SEPARATE ' +
         "coord:send { expects:'none', summary:'…' } — a plain inject, so like the lifecycle ack it " +
@@ -150,6 +203,19 @@ interface FleetControlPostSagaResult {
   cueMsgId: string | null;
   record?: AgentFleetRecord;
   degraded: boolean;
+  /** WI-2034563: on a resume, the outcome of firing the park's declared gate. */
+  resumeFire?: { gate: string; fired: boolean; waiters?: number; warning?: string };
+}
+
+/** The park directive a wind-down is publishing, threaded through the post-saga so
+ *  the cue text and the reason-stamp rewrite both see the SAME resolved path. The
+ *  rewrite matters: setFleetControlState writes all three park columns on every
+ *  winding-down write, so a refresh that omitted them would silently erase the gate
+ *  moments after declaring it. */
+export interface FleetParkDirectivePlan {
+  gate: string | null;
+  expiresAt: number | null;
+  terminal: boolean;
 }
 
 /**
@@ -189,6 +255,8 @@ async function runFleetControlPostSaga(args: {
   ownerId: string;
   slug: string;
   workspaceId: string;
+  /** WI-2034563: the resume path this wind-down published (null on a resume). */
+  park?: FleetParkDirectivePlan | null;
   opts?: {
     harness?: string | null;
     rigAvailable?: boolean;
@@ -237,7 +305,18 @@ async function runFleetControlPostSaga(args: {
           setFleetControlState(
             args.workspaceId,
             args.slug,
-            { state: ACTION_TO_STATE[args.action], reason: effectiveReason, by: args.ownerId },
+            {
+              state: ACTION_TO_STATE[args.action],
+              reason: effectiveReason,
+              by: args.ownerId,
+              // WI-2034563: RE-SEND the park columns. This refresh is a full write of
+              // every control_* field, so omitting them here would erase the resume
+              // gate declared seconds earlier and hand members back the exact
+              // no-way-back park this work exists to remove.
+              resumeGate: args.park?.gate ?? null,
+              expiresAt: args.park?.expiresAt ?? null,
+              noResumePath: args.park?.terminal === true,
+            },
             undefined,
             args.fleet.leaderOwnerId,
           ),
@@ -351,12 +430,21 @@ async function runFleetControlPostSaga(args: {
           args.slug,
           effectiveReason,
           shortHandle(args.ownerId),
+          undefined,
+          args.park ?? null,
         );
         const env = await sendMessage(args.identity, {
           to: members,
           summary,
           bodyWithMsgId: (cueMsgId) =>
-            fleetControlCueText(args.action, args.slug, effectiveReason, shortHandle(args.ownerId), cueMsgId).body,
+            fleetControlCueText(
+              args.action,
+              args.slug,
+              effectiveReason,
+              shortHandle(args.ownerId),
+              cueMsgId,
+              args.park ?? null,
+            ).body,
           extra: {
             [CUE_AUTHORITY_FIELD]: fleetScopedCueAuthority(args.slug),
             ...(args.action === 'wind-down'

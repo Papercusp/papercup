@@ -68,6 +68,8 @@ function instance(
     sql: db.sql,
     workspaceId: options.workspaceId ?? 'ws-ledger',
     ...(options.abandonAfterMs ? { abandonAfterMs: options.abandonAfterMs } : {}),
+    resolveSessionStatesFn: (async (subjects: readonly { ownerId: string }[]) =>
+      new Map(subjects.map(({ ownerId }) => [ownerId, { sessionState: 'live' as const }]))) as never,
   });
   const driver = new WorkItemAdmissionQueueDriver(store, {
     namespace: 'integration',
