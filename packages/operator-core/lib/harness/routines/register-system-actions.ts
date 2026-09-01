@@ -505,6 +505,10 @@ import './dead-citation-sweep-action';
 // and its BESPOKE_ACTIVE_SEEDS row — the detector's own defect is "an instrument that exists
 // and never fires", so a half-wired registration here would reproduce it verbatim.
 import './durable-escalation-orphan-sweep-action';
+// autonomous-inbox-resolution-2026-08-31 P-004: bounded cross-harness
+// retirement of stale legacy payload.needsHuman attention markers. The action
+// fails closed for every typed owner/capability gate and mutates payload only.
+import './legacy-needs-human-reconcile-action';
 import './work-item-admission-daily-digest-action';
 import './work-item-durable-park-audit-action';
 // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`

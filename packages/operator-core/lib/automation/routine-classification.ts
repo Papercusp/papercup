@@ -527,6 +527,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'One bounded read of harness_shared.engineer_issues plus arithmetic over each emitter\'s own close-time distribution, filing findings via captureImprovement — no spawn/dispatch/wake. Matches dead-citation-sweep: a filed finding can lead a HUMAN or a later triage lane to act, but nothing this fire does bills a turn directly',
   },
+  'system:legacy-needs-human-reconcile': {
+    spend: 'none',
+    why: 'One bounded payload-only reconciliation of retired needsHuman markers against live work-item lifecycle and typed blocker state — no spawn/dispatch/wake',
+  },
   'system:consult-expiry-sweep': {
     spend: 'llm',
     why: 'Expiry emit wakes a hard-blocked parked requester (latched consult:reply key), and a wake bills a turn',

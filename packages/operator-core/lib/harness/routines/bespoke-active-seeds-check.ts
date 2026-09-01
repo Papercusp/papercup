@@ -106,6 +106,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     seedScript: 'seed-durable-escalation-orphan-sweep-routine.ts',
   },
   {
+    name: 'legacy-needs-human-reconcile',
+    seedScript: 'seed-legacy-needs-human-reconcile-routine.ts',
+  },
+  {
     name: 'frozen-candidate-drift-sweep',
     seedScript: 'seed-frozen-candidate-drift-sweep-routine.ts',
   },
