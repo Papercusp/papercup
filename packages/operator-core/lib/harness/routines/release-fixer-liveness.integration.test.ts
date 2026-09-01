@@ -27,7 +27,6 @@ import {
   decideReleaseFixerDispatch,
   retireFrozenCandidateRepairQueue,
 } from './release-actions';
-import { parseFrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
 
 const SPAWNED_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
@@ -308,20 +307,20 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
     };
     await seedSpawn(queue.fixerSpawnId, 'failed', 30, { startedAgoMin: 30 });
     await seedTaskScope(queue.fixerSpawnId, 'exited');
+    // `::text::jsonb` is the repository-standard form for pre-stringified JSON objects. A direct
+    // `::jsonb` cast lets postgres.js serialize the string as a JSONB scalar and would make this
+    // regression fail before it reaches the retire transaction.
     await sql`
       INSERT INTO harness_shared.routines
         (id, workspace_id, install_slug, target_role, metadata)
       VALUES
         ('routine-concurrent-retire', ${target.workspaceId}, ${target.installSlug},
-         'system:green-checkpoint', ${JSON.stringify({ repair_queue: queue })}::jsonb)`;
-    const [before] = await sql<{ metadata: { repair_queue?: unknown } }[]>`
-      SELECT metadata FROM harness_shared.routines
+         'system:green-checkpoint', ${JSON.stringify({ repair_queue: queue })}::text::jsonb)`;
+    const [seed] = await sql<{ candidate: string | null }[]>`
+      SELECT metadata->'repair_queue'->>'candidate' AS candidate
+        FROM harness_shared.routines
        WHERE id = 'routine-concurrent-retire'`;
-    expect(before, `concurrent-retire seed row: ${JSON.stringify(before)}`).toBeDefined();
-    expect(
-      parseFrozenCandidateRepairQueue(before?.metadata.repair_queue),
-      `concurrent-retire seed row: ${JSON.stringify(before)}`,
-    ).not.toBeNull();
+    expect(seed?.candidate).toBe(queue.candidate);
 
     const results = await Promise.all([
       retireFrozenCandidateRepairQueue(target, queue),
