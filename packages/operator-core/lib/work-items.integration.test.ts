@@ -2643,7 +2643,22 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-z' }))?.id).toBe(item.id);
   });
 
-  it.each(['draft', 'paused'] as const)('RESERVES an item on an ordinary lifecycle-%s plan', async (status) => {
+  it('does NOT reserve an item on an ordinary lifecycle-draft plan without a live lease', async () => {
+    const planSlug = 'wi-5343-lifecycle-draft';
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
+                 VALUES ('default', 'papercup', ${planSlug}, 'draft')`;
+    const item = await wi.createWorkItem({
+      kind: 'feature', title: 'draft lifecycle lane feature', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: planSlug, item_id: 'P-1' } },
+    });
+
+    // A draft plan has no active occupant until a plan-item lease is acquired. It must not
+    // starve the general queue (EI-21859942410973983); an explicit lease is covered below.
+    expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-draft' }))?.id).toBe(item.id);
+  });
+
+  it('RESERVES an item on an ordinary lifecycle-paused plan', async () => {
+    const status = 'paused' as const;
     const planSlug = `wi-5343-lifecycle-${status}`;
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
                  VALUES ('default', 'papercup', ${planSlug}, ${status})`;
