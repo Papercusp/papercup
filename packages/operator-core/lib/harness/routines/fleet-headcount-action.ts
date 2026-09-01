@@ -221,15 +221,15 @@ export function assessFleetHeadcountGovernor(args: {
       ...common,
       action: 'spawn',
       actionOwnerId: null,
-      spawnCount: hasUnverifiedSeats
-        ? 1
-        : floorMet
-          ? Math.min(deficit, FLEET_HEADCOUNT_BULK_WAVE_SIZE)
-          : 1,
-      reason: hasUnverifiedSeats
-        ? 'unverified live seats do not satisfy productive headcount; open one canary to avoid an unbounded oversubscription wave'
-        : floorMet
-          ? 'productive-capacity floor is evidenced; a bounded refill wave is safe'
+      spawnCount: floorMet
+        ? Math.min(deficit, FLEET_HEADCOUNT_BULK_WAVE_SIZE)
+        : 1,
+      reason: floorMet
+        ? hasUnverifiedSeats
+          ? 'productive-capacity floor is evidenced; preserve unverified live seats and open a capacity-clamped bounded refill wave'
+          : 'productive-capacity floor is evidenced; a bounded refill wave is safe'
+        : hasUnverifiedSeats
+          ? 'unverified live seats do not satisfy productive headcount and the productive-capacity floor is not yet evidenced; open one canary only'
           : 'productive-capacity floor is not yet evidenced; open one canary only',
     };
   }

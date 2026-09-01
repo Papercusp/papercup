@@ -11,7 +11,13 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { relativizeToRepo, renderStalenessHint, toolSchemaStaleness } from './tool-schema-staleness';
+import {
+  pathStaleness,
+  pathsStalenessHint,
+  relativizeToRepo,
+  renderStalenessHint,
+  toolSchemaStaleness,
+} from './tool-schema-staleness';
 
 const ROOT = '/repo';
 const SRC = '/repo/packages/operator-core/lib/agent-tools/improvements/capture.ts';
@@ -103,6 +109,56 @@ describe('toolSchemaStaleness', () => {
     const refs = git.mock.calls.map((c) => String(c[0][c[0].length - 1]).split(':')[0]);
     expect(refs).toContain('staging');
     expect(refs.some((r) => r.startsWith('origin/'))).toBe(false);
+  });
+});
+
+describe('pathStaleness (capture subject paths)', () => {
+  it('reports the commits touching a path after the serving build', async () => {
+    const git = gitFrom({});
+    git.mockResolvedValueOnce(`${BLOB_B}\n${BLOB_A}`);
+    const verdict = await pathStaleness('packages/operator-core/lib/x.ts', {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git,
+    });
+    expect(verdict).toEqual({
+      state: 'stale',
+      relPath: 'packages/operator-core/lib/x.ts',
+      deployedSha: DEPLOYED,
+      treeRef: 'staging',
+      newerCommits: [BLOB_B, BLOB_A],
+    });
+    expect(git).toHaveBeenCalledWith(['log', '--format=%H', `${DEPLOYED}..staging`, '--', 'packages/operator-core/lib/x.ts']);
+  });
+
+  it('keeps a successful empty range current and git failures unknown', async () => {
+    const current = await pathStaleness('a.ts', {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git: vi.fn(async () => ''),
+    });
+    expect(current.state).toBe('current');
+    const unknown = await pathStaleness('a.ts', {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git: vi.fn(async () => null),
+    });
+    expect(unknown).toEqual({ state: 'unknown', relPath: 'a.ts', reason: 'git-unreadable' });
+  });
+
+  it('renders only positive stale paths and remains bounded', async () => {
+    const git = vi.fn(async (args: string[]) => (String(args.at(-1)) === 'new.ts' ? BLOB_B : ''));
+    const hint = await pathsStalenessHint(['new.ts', 'same.ts'], {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git,
+    });
+    expect(hint).toContain('new.ts');
+    expect(hint).toContain(DEPLOYED);
+    expect(hint).toContain('staging');
+    expect(hint).not.toContain('same.ts');
+    expect(hint!.length).toBeLessThan(600);
+    expect(hint).not.toContain('\n');
   });
 });
 

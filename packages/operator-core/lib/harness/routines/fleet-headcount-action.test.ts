@@ -150,7 +150,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     expect(bulk).toMatchObject({ action: 'spawn', spawnCount: 3, workerReadyMemberIds: ['su-a', 'su-b'] });
   });
 
-  it('uses worker-ready live capacity for the deficit and advances one canary beside unverified seats', () => {
+  it('uses worker-ready live capacity for the deficit and opens a bounded wave once the floor is proven', () => {
     const current = transaction(['su-ready', 'su-unverified-a', 'su-unverified-b'], {
       openedMemberIds: [],
       verifiedMemberIds: ['su-ready'],
@@ -178,8 +178,40 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       deficit: 2,
       headcountBasis: { kind: 'worker-ready-live-intersection' },
       action: 'spawn',
-      spawnCount: 1,
+      spawnCount: 2,
       pruneCandidateIds: [],
+      unverifiedMemberIds: ['su-unverified-a', 'su-unverified-b'],
+    });
+  });
+
+  it('keeps the one-canary guard while unverified seats coexist with an unproven productive floor', () => {
+    const current = transaction(['su-unverified-a', 'su-unverified-b'], {
+      openedMemberIds: [],
+      verifiedMemberIds: [],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: [],
+      workerAttestations: [],
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+
+    expect(assessFleetHeadcountGovernor({
+      target: 8,
+      productiveCapacityFloor: 2,
+      liveMemberIds: ['su-unverified-a', 'su-unverified-b'],
+      transaction: current,
+      now: 20_000,
+    })).toMatchObject({
+      productiveMemberCount: 0,
+      deficit: 8,
+      action: 'spawn',
+      spawnCount: 1,
       unverifiedMemberIds: ['su-unverified-a', 'su-unverified-b'],
     });
   });
@@ -317,7 +349,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       liveMemberIds: ['su-live-ready', 'su-live-unknown'],
       transaction: normalized,
       now: 30_000,
-    })).toMatchObject({ action: 'spawn', spawnCount: 1, pendingOpenedMemberIds: [] });
+    })).toMatchObject({ action: 'spawn', spawnCount: 2, pendingOpenedMemberIds: [] });
   });
 
   it('prunes only after bounded repeated non-ready evidence plus verified agent start', () => {

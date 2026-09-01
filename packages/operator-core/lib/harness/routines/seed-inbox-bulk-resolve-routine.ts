@@ -29,6 +29,8 @@ async function main(): Promise<void> {
       payload_template = EXCLUDED.payload_template,
       tier = EXCLUDED.tier,
       workspace_id = EXCLUDED.workspace_id,
+      -- active intentionally NOT re-applied on conflict: a re-seed must never
+      -- clobber an operator's runtime pause/resume.
       updated_at = now()
   `;
   console.log(

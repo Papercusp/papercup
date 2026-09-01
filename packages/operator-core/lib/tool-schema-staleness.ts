@@ -82,6 +82,24 @@ export type ToolSchemaStaleness =
   | { state: 'current'; relPath: string; deployedSha: string; treeRef: string }
   | { state: 'unknown'; reason: StalenessUnknownReason };
 
+/**
+ * Whether a caller-supplied repository path has commits newer than the build
+ * serving the current request.  This is intentionally a separate type from
+ * ToolSchemaStaleness: a capture's `paths` identify the subject of the report,
+ * while the latter resolves the defining file for a failed tool.
+ */
+export type PathStaleness =
+  | {
+      state: 'stale';
+      relPath: string;
+      deployedSha: string;
+      treeRef: string;
+      /** Commits in the serving-build→tree range that touch this path. */
+      newerCommits: string[];
+    }
+  | { state: 'current'; relPath: string; deployedSha: string; treeRef: string }
+  | { state: 'unknown'; relPath: string; reason: StalenessUnknownReason };
+
 export interface ToolSchemaStalenessDeps {
   /** Resolve a tool name to the absolute file that defined it (tooldef's registry). */
   sourceFileFor: (toolName: string) => string | null;
@@ -98,6 +116,69 @@ export interface ToolSchemaStalenessDeps {
    * object and make an un-pushed (but committed) fix read as absent.
    */
   treeRef?: string;
+}
+
+/**
+ * Read the commit range for one caller-supplied path.  An empty `git log`
+ * result is a measured "no newer commit"; null is an unreadable git result and
+ * must stay UNKNOWN (absence is never a positive verdict).
+ */
+export async function pathStaleness(
+  relPath: string,
+  deps: Pick<ToolSchemaStalenessDeps, 'deployedSha' | 'repoRoot' | 'git'> & { treeRef?: string },
+): Promise<PathStaleness> {
+  const treeRef = deps.treeRef ?? 'staging';
+  if (!relPath || relPath.startsWith('/') || relPath.split('/').some((segment) => segment === '..')) {
+    return { state: 'unknown', relPath, reason: 'source-outside-repo' };
+  }
+  const deployedSha = deps.deployedSha();
+  if (!deployedSha) return { state: 'unknown', relPath, reason: 'build-sha-unknown' };
+  // Keep the repoRoot in the dependency contract even though GitRead is already
+  // bound to it; callers cannot accidentally compare against another checkout.
+  void deps.repoRoot;
+  const commits = await deps.git(['log', '--format=%H', `${deployedSha}..${treeRef}`, '--', relPath]);
+  if (commits === null) return { state: 'unknown', relPath, reason: 'git-unreadable' };
+  const newerCommits = commits.split('\n').map((sha) => sha.trim()).filter(Boolean);
+  return newerCommits.length === 0
+    ? { state: 'current', relPath, deployedSha, treeRef }
+    : { state: 'stale', relPath, deployedSha, treeRef, newerCommits };
+}
+
+/**
+ * Resolve a bounded set of capture paths and render one compact advisory for
+ * paths that moved after the running build.  Unknown/current paths are silent;
+ * a positive hint therefore never claims more than the git read established.
+ */
+export async function pathsStalenessHint(
+  paths: readonly string[],
+  overrides?: Partial<Pick<ToolSchemaStalenessDeps, 'deployedSha' | 'repoRoot' | 'git'>> & { treeRef?: string },
+): Promise<string | null> {
+  if (!paths.length) return null;
+  try {
+    const repoRoot = overrides?.repoRoot ?? integrationRoot();
+    const deps = {
+      repoRoot,
+      deployedSha: overrides?.deployedSha ?? (() => getBuildInfo().sha),
+      git: overrides?.git ?? gitReadForRepo(realGit, repoRoot),
+      treeRef: overrides?.treeRef,
+    };
+    const verdicts = await Promise.all([...new Set(paths)].slice(0, 20).map((p) => pathStaleness(p, deps)));
+    const stale = verdicts.filter((v): v is Extract<PathStaleness, { state: 'stale' }> => v.state === 'stale');
+    if (!stale.length) return null;
+    const shown = stale
+      .slice(0, 4)
+      .map((v) => `\`${v.relPath}\` (${v.newerCommits.length} newer commit${v.newerCommits.length === 1 ? '' : 's'}, tip \`${v.newerCommits[0]}\`)`)
+      .join(', ');
+    const remainder = stale.length > 4 ? ` (+${stale.length - 4} more)` : '';
+    const { deployedSha, treeRef } = stale[0];
+    return (
+      `ⓘ Possible STALE RUNTIME, not an open defect: ${shown}${remainder} have commits newer than ` +
+      `the running build (\`${deployedSha}\`) in \`${treeRef}\`. If this was observed live, ` +
+      'verify the deployed generation before triaging; the behavior may already be fixed in the tree.'
+    );
+  } catch {
+    return null;
+  }
 }
 
 /**

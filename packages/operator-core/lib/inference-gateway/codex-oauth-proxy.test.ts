@@ -20,6 +20,7 @@ import {
   CodexNonStreamAggregateError,
   makeCodexNonStreamUpstreamBody,
   normalizeCodexChatGptResponsesBody,
+  parseCodexRateReset,
   preflightCodexModel,
   jwtExpMs,
   readCodexAuth,
@@ -483,5 +484,121 @@ describe('resolveCodexAccessToken', () => {
   });
   it('throws when there is no usable auth.json', async () => {
     await expect(resolveCodexAccessToken(path.join(home, 'absent'))).rejects.toThrow(/no usable auth.json/);
+  });
+});
+
+describe('parseCodexRateReset — the codex-dialect 429 reset parser (WI-2038027)', () => {
+  const NOW = 1_756_700_000_000;
+
+  it('parks to the weekly wall: an exhausted 10080-min window with reset-after-seconds', () => {
+    const r = parseCodexRateReset(
+      {
+        'x-codex-primary-used-percent': '100',
+        'x-codex-primary-window-minutes': '10080',
+        'x-codex-primary-reset-after-seconds': '86400',
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBe(NOW + 86_400_000);
+    expect(r.transient).toBe(false);
+  });
+
+  it('parks to an exhausted 5h window given as an epoch reset-at', () => {
+    const resetSec = Math.floor(NOW / 1000) + 1800;
+    const r = parseCodexRateReset(
+      {
+        'x-codex-primary-used-percent': '99',
+        'x-codex-primary-window-minutes': '300',
+        'x-codex-primary-reset-at': String(resetSec),
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBe(resetSec * 1000);
+    expect(r.transient).toBe(false);
+  });
+
+  it('both meters walled → the LATER reset wins (the account cannot serve until both clear)', () => {
+    const r = parseCodexRateReset(
+      {
+        'x-codex-primary-used-percent': '100',
+        'x-codex-primary-window-minutes': '300',
+        'x-codex-primary-reset-after-seconds': '1800',
+        'x-codex-secondary-used-percent': '100',
+        'x-codex-secondary-window-minutes': '10080',
+        'x-codex-secondary-reset-after-seconds': '86400',
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBe(NOW + 86_400_000);
+    expect(r.transient).toBe(false);
+  });
+
+  it('healthy windows are pacing, not walls: no reset, transient', () => {
+    const r = parseCodexRateReset(
+      {
+        'x-codex-primary-used-percent': '40',
+        'x-codex-primary-window-minutes': '300',
+        'x-codex-primary-reset-after-seconds': '1800',
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBeNull();
+    expect(r.retryAfterMs).toBeNull();
+    expect(r.transient).toBe(true);
+  });
+
+  it('a bare numeric retry-after fills in when no window is exhausted', () => {
+    const r = parseCodexRateReset({ 'retry-after': '7' }, NOW);
+    expect(r.retryAfterMs).toBe(7000);
+    expect(r.resetAt).toBe(NOW + 7000);
+    expect(r.transient).toBe(true);
+  });
+
+  it('retry-after floors a window-derived reset upward, never shortens it', () => {
+    const r = parseCodexRateReset(
+      {
+        'retry-after': '3600',
+        'x-codex-primary-used-percent': '100',
+        'x-codex-primary-window-minutes': '300',
+        'x-codex-primary-reset-after-seconds': '60',
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBe(NOW + 3_600_000);
+    expect(r.transient).toBe(false);
+  });
+
+  it('a reset at/before now is DROPPED — onExhausted treats a past resetAt as "park five hours"', () => {
+    const r = parseCodexRateReset(
+      {
+        'x-codex-primary-used-percent': '100',
+        'x-codex-primary-window-minutes': '300',
+        'x-codex-primary-reset-at': String(Math.floor(NOW / 1000) - 60),
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBeNull();
+    expect(r.transient).toBe(false);
+  });
+
+  it('the reserve family (x-base-model-inference-*) parses when it is the active bucket', () => {
+    const r = parseCodexRateReset(
+      {
+        'x-codex-active-limit': 'base_model_inference',
+        'x-base-model-inference-primary-used-percent': '100',
+        'x-base-model-inference-primary-window-minutes': '10080',
+        'x-base-model-inference-primary-reset-after-seconds': '43200',
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBe(NOW + 43_200_000);
+    expect(r.transient).toBe(false);
+  });
+
+  it('no rate headers at all → null reset, transient (caller falls back to its short backoff)', () => {
+    const r = parseCodexRateReset({}, NOW);
+    expect(r.resetAt).toBeNull();
+    expect(r.retryAfterMs).toBeNull();
+    expect(r.transient).toBe(true);
   });
 });

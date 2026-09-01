@@ -25,6 +25,7 @@ import {
   ACCOUNT_PIN_HEADER,
   OWNER_HEADER,
   PIN_YIELDED_HEADER,
+  RETRIES_EXHAUSTED_HEADER,
   ROUTED_ACCOUNT_HEADER,
   resolveCodexOAuthNonStreamTimeoutMs,
 } from './gateway';
@@ -830,6 +831,103 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
  * gateway calls `refreshCodexToken(home, auth)` with no `fetchImpl`, so it would
  * otherwise reach the live OpenAI token endpoint.
  */
+describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-2038027)', () => {
+  it('a walled OAuth account forwards a SHAPED 429: codex-dialect reset parsed, retry-after capped, retries-exhausted marked, stall recorded', async () => {
+    const home = await makeCodexHome('chatgpt-a');
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    // A weekly-cap 429 in the dialect the ChatGPT codex backend actually speaks: the reset is
+    // 2h out and there is NO retry-after header. Through the old (anthropic-dialect) parsing this
+    // read as "no reset signal" → the shed would fall to the 5s loadshed floor; the codex parser
+    // reads the wall, so the response must carry the CAPPED 60s retry-after and the stall must
+    // carry the REAL ~2h reset for the stall-waker's capacity gate.
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { message: 'usage limit reached' } }), {
+          status: 429,
+          headers: {
+            'content-type': 'application/json',
+            'x-codex-primary-used-percent': '100',
+            'x-codex-primary-window-minutes': '10080',
+            'x-codex-primary-reset-after-seconds': '7200',
+          },
+        }),
+    ) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(
+        cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' })),
+      ),
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const before = Date.now();
+    const res = await postResponses(
+      { model: 'gpt-5.5', input: 'hi', stream: true },
+      { [ACCOUNT_HEADER]: 'chatgpt-a', [OWNER_HEADER]: 'su-oauth-stall-test' },
+    );
+    expect(res.status).toBe(429);
+    // The 2h wall is far past the bee cap → capped, never the raw multi-hour value and never
+    // the 5s loadshed floor an unparsed-dialect fallback would produce.
+    expect(res.headers.get('retry-after')).toBe('60');
+    expect(res.headers.get(RETRIES_EXHAUSTED_HEADER)).toMatch(/^\d+$/);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+
+    const stalls = (await (await ask('/admin/stalls?since=0')).json()) as {
+      stalls: Array<{ ownerId: string; accountId: string; soonestResetAt: number }>;
+    };
+    const mine = stalls.stalls.find((s) => s.ownerId === 'su-oauth-stall-test');
+    expect(mine).toBeDefined();
+    expect(mine!.accountId).toBe('chatgpt-a');
+    // The stall carries the REAL window reset (~2h out), not the 30s floor — this is what the
+    // stall-waker's capacityBack honors before waking the session.
+    expect(mine!.soonestResetAt).toBeGreaterThan(before + 3_600_000);
+  });
+
+  it('a bearer terminal 429 caps a multi-hour upstream retry-after at the bee cap and records the stall', async () => {
+    await bootCodex(
+      (_req, res) => {
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '21600' });
+        res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'weekly cap' } }));
+      },
+      [codexAcct('cdx-solo')],
+    );
+    const before = Date.now();
+    const res = await postResponses({ model: 'gpt-x', input: 'hi' }, { [OWNER_HEADER]: 'su-bearer-stall-test' });
+    expect(res.status).toBe(429);
+    // 21600s (6h) from upstream → the caller is handed the CAPPED value; the multi-hour horizon
+    // is a ROUTING fact (the stall below), not a client sleep instruction.
+    expect(res.headers.get('retry-after')).toBe('60');
+    expect(res.headers.get(RETRIES_EXHAUSTED_HEADER)).toMatch(/^\d+$/);
+
+    const stalls = (await (await ask('/admin/stalls?since=0')).json()) as {
+      stalls: Array<{ ownerId: string; accountId: string; soonestResetAt: number }>;
+    };
+    const mine = stalls.stalls.find((s) => s.ownerId === 'su-bearer-stall-test');
+    expect(mine).toBeDefined();
+    expect(mine!.accountId).toBe('cdx-solo');
+    expect(mine!.soonestResetAt).toBeGreaterThan(before + 3_600_000);
+  });
+
+  it('a short upstream retry-after passes through unchanged (only the multi-hour horizon is capped)', async () => {
+    await bootCodex(
+      (_req, res) => {
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '7' });
+        res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'burst' } }));
+      },
+      [codexAcct('cdx-solo')],
+    );
+    const res = await postResponses({ model: 'gpt-x', input: 'hi' });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('7');
+    expect(res.headers.get(RETRIES_EXHAUSTED_HEADER)).toMatch(/^\d+$/);
+  });
+});
+
 describe('proxyOpenAi — ChatGPT OAuth 401 refresh-and-retry (uncovered before P-004)', () => {
   /** A fresh, VALID access token that is distinguishable from any other. `freshJwt()`
    *  is deterministic within one second, and the refresh only takes effect when the

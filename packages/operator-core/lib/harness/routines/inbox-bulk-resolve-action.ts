@@ -119,6 +119,7 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
     try {
       const run = await createRun({
         items,
+        workspaceId: ctx.workspaceId,
         requestedBy: 'system:inbox-bulk-resolve',
         automationPolicy: policy,
         launchSnapshot: resolved.effective,
