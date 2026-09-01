@@ -285,6 +285,7 @@ describe('release:deploy — trigger', () => {
             reason: 'hold until repaired checkout is green',
             pausedBy: 'su-release-owner',
             pausedAtMs: Date.parse('2026-08-15T09:07:00Z'),
+            expiresAtMs: null,
           },
           blocked: true,
           blockReason: 'release-trigger is deliberately paused: hold until repaired checkout is green',
