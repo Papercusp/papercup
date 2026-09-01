@@ -152,6 +152,9 @@ describe('P-007: the four verdict cells', () => {
     expect(listCellsUnchecked().map((c) => c.cell)).toEqual([
       // P-016. The first cell here that is about an AGENT rather than the tree.
       'agent.goal',
+      // capacity-signal-clarity-and-fleet-capacity-repair-2026-09-01 P-004: the ONE canonical
+      // "are we at capacity", whose `binding` names WHICH TERM holds the lane back.
+      'capacity.verdict',
       'deploy.3070.sha',
       'gate.greenCheckpoint.candidate',
       // WI-1702869. Own resolver (readGateCandidateFailures) — excluded from

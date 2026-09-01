@@ -1926,7 +1926,7 @@ export const CAPACITY_VERDICT_CELL: CellSpec = {
       'deriveCapacityVerdict() merging the P-002 per-provider account rollup (poolVerdictByProvider) with the gateway admission snapshot (buildCapacityReport), both already resolved inside one fleet:capacity dispatch',
     liveExercised: true,
     evidence:
-      "Exercised end-to-end through fleet:capacity on the staging operator (:3170, restarted onto current source) against the live claude pool at 2026-09-01T05:07Z, and THE LIVE READ CAUGHT A REAL DEFECT that fixtures had not. The pool read serviceable=0, walledFresh=6, pacing=1, unknown=1 of 7 with dispatchBudget=6. The first implementation gated its wall branch on `pool.atCapacity && binding==='usage-wall'`; atCapacity was correctly false (one stale row could still serve), so it fell through every branch and answered binding:'none' — \"no term is measurably binding\" — with six accounts measurably walled. That is the exact false-green this plan exists to remove. The fix separates the two questions (binding = which term, atCapacity = fully measured or not) and the live reading is pinned as the first case in capacity-verdict.test.ts so it cannot regress.",
+      "Exercised end-to-end through fleet:capacity on the staging operator (:3170, restarted onto current source) against the live claude pool at 2026-09-01T05:07Z, and THE LIVE READ CAUGHT A REAL DEFECT that fixtures had not. The pool read serviceable=0, walledFresh=6, pacing=1, unknown=1 of 7 with dispatchBudget=6. The first implementation gated its wall branch on `pool.atCapacity && binding==='usage-wall'`; atCapacity was correctly false (one stale row could still serve), so it fell through every branch and answered binding:'none' — \"no term is measurably binding\" — with six accounts measurably walled. That is the exact false-green this plan exists to remove. The fix separates the two questions (binding = which term, atCapacity = fully measured or not) and the live reading is pinned as the first case in capacity-verdict.test.ts so it cannot regress. Re-verified: the FIXED derivation run against those same measured inputs returns binding:'usage-wall' with atCapacity:false and a reason that names the stale row and says to refresh before declaring the pool exhausted.",
   },
 
   resolver: 'deriveCapacityVerdict() @ packages/operator-core/lib/fleet/capacity-verdict.ts',
@@ -1982,6 +1982,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GOVERNOR_QUEUE_CELL,
   GOVERNOR_RESOURCES_CELL,
   GOVERNOR_RECOVERY_CELL,
+  CAPACITY_VERDICT_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry

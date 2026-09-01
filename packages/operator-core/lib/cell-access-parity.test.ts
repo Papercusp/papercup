@@ -641,7 +641,11 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
       'the built-in visibility census changed. If a cell has adopted a NARROWER visibility that is good news — ' +
         "leg E now exercises an arm of canReadCell's switch it never did before. Update this expectation, and " +
         'check that leg E still asserts something for the newly-narrow cell.',
-    ).toEqual({ workspace: 11, harness: 9 });
+    // workspace 11 → 12: capacity-signal-clarity-and-fleet-capacity-repair-2026-09-01 P-004
+    // registered `capacity.verdict` workspace-visible. "Are we at capacity" is asked by every
+    // placement path in the fleet, so narrowing it would just push callers back onto the
+    // per-surface reads this cell exists to replace.
+    ).toEqual({ workspace: 12, harness: 9 });
     // The census must also stay EXHAUSTIVE. The expectation above names kinds explicitly, so a
     // cell registered under a kind NOT named there would be invisible to it; summing the census
     // back to the registry size is what makes "these are all of them" an assertion rather than
