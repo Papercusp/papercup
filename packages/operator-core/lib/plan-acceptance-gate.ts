@@ -329,6 +329,7 @@ export async function evaluatePlanAcceptanceGate(
   }
 
   const itemGate = await getFlag(FLAGS.PLAN_ITEM_COMPLETION_GATE, 'system').catch(() => true);
+  const gradingRecruitmentTail = new Set<string>();
   if (itemGate) {
     const items = await getPlanItemStatuses(planSlug);
     const unfinished = items.filter((i) => (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(i.status));
@@ -336,6 +337,9 @@ export async function evaluatePlanAcceptanceGate(
       const recruitmentTail =
         opts.gradingRecruitment &&
         unfinishedItemsAreAuditedNonCode(unfinished, await getEffectiveItemAudits(planSlug));
+      if (recruitmentTail) {
+        for (const item of unfinished) gradingRecruitmentTail.add(item.itemId);
+      }
       if (!recruitmentTail) {
         if (force) {
           forcedChecks.push('plan_items_unfinished');
@@ -425,7 +429,10 @@ export async function evaluatePlanAcceptanceGate(
 
         const reasons: string[] = [];
         const { entry, auditSeq } = effective;
-        if ((UNFINISHED_ITEM_STATUSES as readonly string[]).includes(item.status)) {
+        if (
+          (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(item.status) &&
+          !gradingRecruitmentTail.has(item.itemId)
+        ) {
           reasons.push(`status '${item.status}' is unfinished/reopened since audit #${auditSeq}`);
         }
         if (!entry.itemTextHash) {
