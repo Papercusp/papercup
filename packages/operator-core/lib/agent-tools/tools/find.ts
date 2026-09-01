@@ -523,6 +523,20 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
   return text.length <= DISCOVERY_SCHEMA_MAX_CHARS ? text : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
 }
 
+/** Project a registered RESULT schema, including array/scalar-rooted shapes. */
+export function compactOutputSchemaForResult(outputSchema: unknown): string | null {
+  const objectShape = compactSchemaForResult(outputSchema);
+  if (objectShape) return objectShape;
+  if (!outputSchema || typeof outputSchema !== 'object') return null;
+  const shape = schemaShape(outputSchema as JsonSchemaNode, 0);
+  if (shape) return boundedText(shape, DISCOVERY_SCHEMA_MAX_CHARS);
+  try {
+    return boundedText(JSON.stringify(outputSchema), DISCOVERY_SCHEMA_MAX_CHARS);
+  } catch {
+    return null;
+  }
+}
+
 function boundedText(value: string | null, maxChars: number): string | null {
   if (value == null || value.length <= maxChars) return value;
   return `${value.slice(0, maxChars - 1)}…`;
@@ -533,6 +547,7 @@ export interface DiscoveryResultHit {
   description: string | null;
   argSchema: string | null;
   returns: string | null;
+  returnsSource?: 'registered-output-schema' | 'authored-tool-guidance' | null;
   via: string;
 }
 
@@ -578,6 +593,7 @@ export function buildCorpus(): ToolFindCorpus {
   const corpus: ToolDiscoveryEntry[] = [];
   const embedText = new Map<string, string>();
   const returnsByTool = new Map<string, string>();
+  const returnSourcesByTool = new Map<string, 'registered-output-schema' | 'authored-tool-guidance'>();
   const schemaByTool = new Map<string, unknown>();
   for (const tool of listAllProjectedTools()) {
     if (!tool.expose.mcp) continue;
@@ -589,8 +605,15 @@ export function buildCorpus(): ToolFindCorpus {
     // so retain the flattened fallback.
     const discoverySchema = tool.discoveryInputSchema ?? tool.inputSchema;
     const argSchema = schemaToText(discoverySchema);
-    const returns = (tool.guidance as { returns?: string } | undefined)?.returns?.trim();
-    if (returns) returnsByTool.set(name, returns);
+    const schemaReturns = compactOutputSchemaForResult(tool.outputJsonSchema);
+    const authoredReturns = tool.guidance?.returns?.trim();
+    if (schemaReturns) {
+      returnsByTool.set(name, schemaReturns);
+      returnSourcesByTool.set(name, 'registered-output-schema');
+    } else if (authoredReturns) {
+      returnsByTool.set(name, authoredReturns);
+      returnSourcesByTool.set(name, 'authored-tool-guidance');
+    }
     schemaByTool.set(name, discoverySchema);
     // Fold the "when to use" line into the searchable text — it's the richest
     // intent signal for both legs (lexical description weight + the embedding).
@@ -606,7 +629,7 @@ export function buildCorpus(): ToolFindCorpus {
     } as unknown as ToolDiscoveryEntry);
     embedText.set(name, [name, tool.description, when, argSchema].filter(Boolean).join('\n'));
   }
-  const value = { corpus, embedText, returnsByTool, schemaByTool };
+  const value = { corpus, embedText, returnsByTool, returnSourcesByTool, schemaByTool };
   corpusCache = { revision, value };
   return value;
 }
@@ -619,8 +642,10 @@ type DiscoveryScopeContext = {
 type ToolFindCorpus = {
   corpus: ToolDiscoveryEntry[];
   embedText: Map<string, string>;
-  /** EI-10882: name → the tool's declared RESPONSE shape (guidance.returns). */
+  /** name → the derived output schema projection, or authored prose fallback. */
   returnsByTool: Map<string, string>;
+  /** Provenance for returnsByTool; registered schemas always outrank prose. */
+  returnSourcesByTool: Map<string, 'registered-output-schema' | 'authored-tool-guidance'>;
   /** name → raw schema, used to project a compact schema in the response. */
   schemaByTool: Map<string, unknown>;
 };
@@ -759,8 +784,8 @@ export default defineTool({
   name: 'tools:find',
   description:
     'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the ' +
-    'best-matching tool names with their description, ARG schema, and declared RESPONSE shape ' +
-    '(`returns`) — so you can write a code:run batch over a tool without calling it once just to learn ' +
+    'best-matching tool names with their description, ARG schema, and resolved RESPONSE shape ' +
+    '(`returns` + `returnsSource`; registered output schemas outrank authored prose) — so you can write a code:run batch over a tool without calling it once just to learn ' +
     'its field names. ACTIVATION IS ' +
     'CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list ' +
     '(activated:true) and are directly callable; on a full-catalog session there is nothing to expand ' +
@@ -779,7 +804,7 @@ export default defineTool({
       'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
       'materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work.',
     returns:
-      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (the tool\'s declared response shape, or null if it has not declared one), via }], howToCall }',
+      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], howToCall }',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',
@@ -829,7 +854,7 @@ export default defineTool({
       source: PROJECTED_TOOL_REGISTRY_SOURCE,
       revision: projectedToolRegistryRevision(),
     };
-    const { corpus: fullCorpus, embedText, returnsByTool, schemaByTool } = buildCorpus();
+    const { corpus: fullCorpus, embedText, returnsByTool, returnSourcesByTool, schemaByTool } = buildCorpus();
     const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const corpus = await filterCorpusForConfirmedHiveScope(
       fullCorpus,
@@ -866,6 +891,7 @@ export default defineTool({
       argSchema:
         compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
       returns: returnsByTool.get(h.tool) ?? null,
+      returnsSource: returnSourcesByTool.get(h.tool) ?? null,
       via: h.via,
     }));
 

@@ -43,6 +43,7 @@ import toolFind, {
   boundDiscoveryHits,
   buildEmbeddingIndex,
   buildCorpus,
+  compactOutputSchemaForResult,
   compactSchemaForResult,
   DISCOVERY_RESULT_MAX_BYTES,
   filterCorpusForConfirmedHiveScope,
@@ -69,6 +70,7 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
       description: string | null;
       argSchema: string | null;
       returns: string | null;
+      returnsSource: 'registered-output-schema' | 'authored-tool-guidance' | null;
       via: string;
     }>;
     howToCall: string;
@@ -189,6 +191,28 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const text = embedText.get('tools:find');
     expect(text).toContain('tools:find');
     expect(text).toContain('query');
+  });
+
+  it('derives return shapes from registered output schemas before authored prose', () => {
+    const name = 'test:derived-return-shape';
+    defineTool({
+      name,
+      capability: 'test:read',
+      requirePrincipal: false,
+      args: z.object({}),
+      result: z.object({ actual: z.string(), count: z.number().int() }),
+      guidance: { returns: '{ stale_authored_shape }' },
+      handler: async () => ({ data: { actual: 'ok', count: 1 } }),
+    });
+
+    const { returnsByTool, returnSourcesByTool } = buildCorpus();
+    expect(returnsByTool.get(name)).toContain('actual:string');
+    expect(returnsByTool.get(name)).not.toContain('stale_authored_shape');
+    expect(returnSourcesByTool.get(name)).toBe('registered-output-schema');
+    expect(compactOutputSchemaForResult({
+      type: 'array',
+      items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    })).toContain('array{id:string}');
   });
 
   it('uses the raw discovery schema for a release:trace-style path-or-sha union', () => {
@@ -500,6 +524,7 @@ describe('handler — graceful degrade + result shape', () => {
       expect(h).toHaveProperty('description');
       expect(h).toHaveProperty('argSchema'); // null or a string, never missing
       expect(h).toHaveProperty('returns'); // null or a string, never missing
+      expect(h).toHaveProperty('returnsSource');
       expect(h.via).toBe('lexical');
     }
     // howToCall must always name the never-fails dispatch path (tools:invoke) —
@@ -512,6 +537,7 @@ describe('handler — graceful degrade + result shape', () => {
     const self = out.hits.find((h) => h.tool === 'tools:find');
     expect(self?.argSchema).toContain('query');
     expect(self?.returns).toContain('hits: [{ tool, description, argSchema, returns');
+    expect(self?.returnsSource).toBe('authored-tool-guidance');
   });
 
   it('returns null when a matched tool has no declared response shape', async () => {
@@ -523,6 +549,7 @@ describe('handler — graceful degrade + result shape', () => {
     const hit = out.hits.find((candidate) => candidate.tool === undeclared!.tool);
     expect(hit).toBeDefined();
     expect(hit?.returns).toBeNull();
+    expect(hit?.returnsSource).toBeNull();
   });
 });
 
