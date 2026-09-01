@@ -308,3 +308,68 @@ export async function releaseFixerSpawnAlive(
     return null;
   }
 }
+
+/** P-005: classification of a DEAD release-fixer spawn for attempt-refund purposes. */
+export interface DeadReleaseFixerClassification {
+  /**
+   * True when the fixer provably never did any repair work — zero tool invocations
+   * recorded for the spawn (an agent that attempted repair makes tool calls), or no
+   * spawn row at all (the launch was never even recorded). These are the free-retry
+   * classes P-005 names: spawn failures, provider-capacity rejections, permission
+   * faults, first-turn guillotine kills.
+   */
+  infrastructure: boolean;
+  /** Bounded human-readable evidence for the gate log / alarm. */
+  reason: string;
+}
+
+/**
+ * P-005: classify a release-fixer spawn that liveness already judged DEAD. The decisive
+ * predicate is ZERO recorded tool invocations for the spawn id — evidence-based (the same
+ * `tool_invocations` join `releaseFixerSpawnAlive` uses for progress eligibility), covering
+ * every named infrastructure class at once without a fragile error-message taxonomy. The
+ * spawn row's terminal status/error only ENRICH the reason string. Fail-CLOSED: any query
+ * error returns null and the caller must treat the death as a normally-burned attempt —
+ * a refund must never be granted on missing evidence.
+ */
+export async function classifyDeadReleaseFixerSpawn(
+  sql: postgres.Sql,
+  spawnId: string | null | undefined,
+): Promise<DeadReleaseFixerClassification | null> {
+  if (!spawnId) return null;
+  try {
+    const rows = (await sql.unsafe(
+      `SELECT sa.status, sa.error,
+              EXISTS (
+                SELECT 1
+                  FROM harness_shared.tool_invocations ti
+                 WHERE ti.workspace_id = sa.workspace_id
+                   AND ti.spawn_id = sa.spawn_id
+              ) AS worked
+         FROM harness_shared.spawned_agents sa
+        WHERE sa.spawn_id = $1
+        LIMIT 1`,
+      [spawnId],
+    )) as Array<{ status?: string | null; error?: string | null; worked?: boolean }>;
+    const row = rows[0];
+    if (!row) {
+      return {
+        infrastructure: true,
+        reason: 'no spawned_agents row — the launch was never recorded, so no repair work can have happened',
+      };
+    }
+    if (row.worked === true) {
+      return {
+        infrastructure: false,
+        reason: `spawn made tool calls before dying (status=${row.status ?? 'unknown'}) — a real repair attempt`,
+      };
+    }
+    const errorTail = typeof row.error === 'string' && row.error.length > 0 ? ` error: ${row.error.slice(-200)}` : '';
+    return {
+      infrastructure: true,
+      reason: `zero tool invocations recorded (status=${row.status ?? 'unknown'}${errorTail}) — died before doing any repair work`,
+    };
+  } catch {
+    return null; // fail-closed: no refund without evidence
+  }
+}

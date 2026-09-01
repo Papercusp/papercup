@@ -119,10 +119,17 @@ export const governorMaxWaitMs = (): number =>
 /**
  * Release-fixers have a long overall budget for diagnosis, but a launch that
  * never produces its first agent stream must not consume that whole budget.
- * Five minutes leaves room for a cold boot and a queued gateway request while
- * bounding the zero-first-turn failure class observed in EI-209751.
+ *
+ * P-005 (gate-verdict-liveness, D-001): the original 5-minute guard was measured
+ * KILLING healthy launches, not just hung ones — 7 first-turn timeouts at avg 301s
+ * on 2026-08-31, i.e. fixers guillotined seconds past the deadline while a loaded
+ * box (128-core fleet, cold CLI boot + queued gateway admission) was still
+ * starting them, and 130/130 dispatches in the streak window produced nothing.
+ * Fifteen minutes is the role-scoped budget: generous against load-induced slow
+ * boots, still far below invokeTimeoutMs, and the zero-first-turn class remains
+ * bounded (EI-209751) — it just stops eating launches that were about to speak.
  */
-export const RELEASE_FIXER_FIRST_TURN_TIMEOUT_DEFAULT_MS = 5 * 60_000;
+export const RELEASE_FIXER_FIRST_TURN_TIMEOUT_DEFAULT_MS = 15 * 60_000;
 export const releaseFixerFirstTurnTimeoutMs = (): number => {
   const configured = Number(
     process.env.PAPERCUSP_RELEASE_FIXER_FIRST_TURN_TIMEOUT_MS ?? RELEASE_FIXER_FIRST_TURN_TIMEOUT_DEFAULT_MS,

@@ -1456,3 +1456,113 @@ describe('WI-1634331 — shouldResyncRepairWorktree (stale repair-worktree predi
     expect(new Set(reasons).size).toBe(4);
   });
 });
+
+describe('P-005 attempt refunds for unproductive infrastructure fixer deaths', () => {
+  it('refunds the attempt when the dead fixer provably never worked, and the retry is free', () => {
+    const dispatched = markFrozenRepairFixerDispatched(fresh(), { spawnId: 's-1', nowMs: T0 + 1 });
+    expect(dispatched.attempts).toBe(1);
+    const dead = markFrozenRepairFixerDead(dispatched, {
+      spawnId: 's-1',
+      nowMs: T0 + 2,
+      unproductiveInfrastructureDeath: { reason: 'zero tool invocations (status=failed)' },
+    });
+    expect(dead).toMatchObject({ attempts: 0, freeRetries: 1, fixerSpawnId: null });
+    // the refunded queue re-dispatches as attempt 1 — the dead launch never counted
+    expect(decideFrozenCandidateRepairQueue(dead, { nowMs: T0 + 3 })).toMatchObject({
+      kind: 'dispatch-fixer',
+      nextAttempt: 1,
+    });
+  });
+
+  it('a death WITHOUT classification keeps the attempt burned (fail-closed default)', () => {
+    const dispatched = markFrozenRepairFixerDispatched(fresh(), { spawnId: 's-1', nowMs: T0 + 1 });
+    const dead = markFrozenRepairFixerDead(dispatched, { spawnId: 's-1', nowMs: T0 + 2 });
+    expect(dead.attempts).toBe(1);
+    expect(dead.freeRetries).toBeUndefined();
+  });
+
+  it('the refund budget bounds free retries; past it an infrastructure death burns again', () => {
+    const limits = { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxFreeRetries: 1 };
+    let queue = markFrozenRepairFixerDispatched(fresh(), { spawnId: 's-1', nowMs: T0 + 1 }, limits);
+    queue = markFrozenRepairFixerDead(
+      queue,
+      { spawnId: 's-1', nowMs: T0 + 2, unproductiveInfrastructureDeath: { reason: 'no work' } },
+      limits,
+    );
+    expect(queue).toMatchObject({ attempts: 0, freeRetries: 1 });
+    queue = markFrozenRepairFixerDispatched(queue, { spawnId: 's-2', nowMs: T0 + 3 }, limits);
+    queue = markFrozenRepairFixerDead(
+      queue,
+      { spawnId: 's-2', nowMs: T0 + 4, unproductiveInfrastructureDeath: { reason: 'no work' } },
+      limits,
+    );
+    // budget spent: the second infrastructure death is NOT refunded
+    expect(queue).toMatchObject({ attempts: 1, freeRetries: 1 });
+  });
+
+  it('never refunds below zero attempts, even on a hand-built inconsistent queue', () => {
+    const crafted: FrozenCandidateRepairQueue = {
+      ...fresh(),
+      attempts: 0,
+      fixerSpawnId: 'ghost',
+    };
+    const dead = markFrozenRepairFixerDead(crafted, {
+      spawnId: 'ghost',
+      nowMs: T0 + 2,
+      unproductiveInfrastructureDeath: { reason: 'no work' },
+    });
+    expect(dead.attempts).toBe(0);
+    expect(dead.freeRetries).toBeUndefined();
+  });
+
+  it('refunded infrastructure deaths cannot exhaust the attempt budget within the refund window', () => {
+    // three dispatch→infra-death cycles under maxAttempts:3 — with refunds, the queue is
+    // still only 1 attempt deep after the wave that used to exhaust it (D-001: 130/130)
+    let queue = fresh();
+    for (let i = 0; i < 3; i += 1) {
+      queue = markFrozenRepairFixerDispatched(queue, { spawnId: `s-${i}`, nowMs: T0 + 10 + i });
+      queue = markFrozenRepairFixerDead(queue, {
+        spawnId: `s-${i}`,
+        nowMs: T0 + 11 + i,
+        unproductiveInfrastructureDeath: { reason: 'provider capacity' },
+      });
+    }
+    expect(queue).toMatchObject({ attempts: 0, freeRetries: 3 });
+    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 20 })).toMatchObject({
+      kind: 'dispatch-fixer',
+      nextAttempt: 1,
+    });
+  });
+
+  it('parser round-trips freeRetries and drops malformed/zero values as absent', () => {
+    const dispatched = markFrozenRepairFixerDispatched(fresh(), { spawnId: 's-1', nowMs: T0 + 1 });
+    const refunded = markFrozenRepairFixerDead(dispatched, {
+      spawnId: 's-1',
+      nowMs: T0 + 2,
+      unproductiveInfrastructureDeath: { reason: 'no work' },
+    });
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(refunded)))).toMatchObject({
+      freeRetries: 1,
+    });
+    for (const bad of [-1, 1.5, 'two', null, 0]) {
+      const row = { ...JSON.parse(JSON.stringify(refunded)), freeRetries: bad };
+      const parsed = parseFrozenCandidateRepairQueue(row);
+      expect(parsed).not.toBeNull();
+      expect(parsed?.freeRetries).toBeUndefined();
+    }
+    // legacy row (field absent) parses as before
+    const legacy = JSON.parse(JSON.stringify(dispatched));
+    delete legacy.freeRetries;
+    expect(parseFrozenCandidateRepairQueue(legacy)?.freeRetries).toBeUndefined();
+  });
+
+  it('assertLimits rejects a malformed maxFreeRetries when provided', () => {
+    expect(() =>
+      markFrozenRepairFixerDispatched(
+        fresh(),
+        { spawnId: 's-1', nowMs: T0 + 1 },
+        { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxFreeRetries: -1 },
+      ),
+    ).toThrow(/maxFreeRetries/);
+  });
+});

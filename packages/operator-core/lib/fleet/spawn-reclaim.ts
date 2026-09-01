@@ -264,6 +264,19 @@ export function isSpawnProcessAlive(pid: number, kind: 'spawn' | 'launch' = 'spa
 export const RECLAIM_STALE_MS = 5 * 60_000;
 
 /**
+ * P-005 (gate-verdict-liveness): role-scoped stale budget for `release-fixer` rows.
+ * The generic 5-minute window reclaimed 31 live fixers in the 2026-08-31 streak
+ * ("heartbeat>300s"): the launcher's 60s heartbeat `setInterval` starves under
+ * multi-task load (the same starvation P-033 documents for Queen wakes), so a busy
+ * host's healthy fixer drifts past RECLAIM_STALE_MS and is reclaimed mid-repair.
+ * Three heartbeat-misses of headroom (15m) keeps a genuinely-dead host's fixer
+ * reclaimable within one gate cron tick while riding out load-starved beats. The
+ * /proc same-host liveness check still SHORT-CIRCUITS a live process regardless of
+ * threshold; this budget only governs the presumption for rows it cannot probe.
+ */
+export const RELEASE_FIXER_RECLAIM_STALE_MS = 15 * 60_000;
+
+/**
  * Bump `heartbeat_at` for the given live spawnIds (only while still active).
  *
  * `outputAtMs` (liveness-hardening P-008): epoch-ms of the latest stdout/
@@ -680,7 +693,15 @@ export async function reclaimOrphanedSpawns(
            pid, launcher_host, run_id, launcher_boot_id
       FROM harness_shared.spawned_agents
      WHERE status IN ('running', 'restarting')
-       AND heartbeat_at < now() - ${staleSec}::int * interval '1 second'`;
+       -- P-005: release-fixers carry a role-scoped stale budget (see
+       -- RELEASE_FIXER_RECLAIM_STALE_MS) so a load-starved heartbeat cannot get a
+       -- healthy repair reclaimed at ~301s. An explicit staleMs override still
+       -- applies uniformly (tests and targeted sweeps pass their own threshold).
+       AND heartbeat_at < now() - (CASE
+             WHEN ${opts.staleMs == null} AND child_role = 'release-fixer'
+             THEN ${Math.max(1, Math.round(RELEASE_FIXER_RECLAIM_STALE_MS / 1000))}
+             ELSE ${staleSec}
+           END)::int * interval '1 second'`;
   if (candidates.length === 0) {
     // No fresh orphans — but still run the stale-claim backstop: the HISTORIC
     // class (claims whose holder was settled terminal by a pre-fix sweep) must

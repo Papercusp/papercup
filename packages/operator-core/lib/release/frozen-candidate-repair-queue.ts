@@ -109,6 +109,20 @@ export interface FrozenCandidateRepairQueue {
   worktreePath: string;
   /** Number of fixer attempts actually dispatched (not reds observed or suites run). */
   attempts: number;
+  /**
+   * P-005 (gate-verdict-liveness): how many attempt REFUNDS this queue has granted for
+   * fixers that died of INFRASTRUCTURE (spawn failure, provider-capacity rejection,
+   * permission fault, first-turn guillotine — proven by zero recorded tool invocations)
+   * without advancing the repair worktree. Measured 2026-08-31: 130/130 dispatches died
+   * this way, each silently burning one of 3 attempts — repair budgets exhausted by
+   * launches that never did repair. A refunded death is a FREE retry; the refund count is
+   * bounded (maxFreeRetries) so a misclassification can never spin forever, and the
+   * wall-clock budget still terminates the queue regardless. Optional and additive:
+   * legacy rows parse with it absent (reads as 0); an older deployed build's whole-row
+   * write drops it, which only resets the refund bookkeeping — never wedges (the P-008
+   * CAS lesson).
+   */
+  freeRetries?: number;
   openedAtMs: number;
   updatedAtMs: number;
   /** Current/last spawn. A completion from any other spawn is stale and rejected. */
@@ -159,7 +173,21 @@ export interface FrozenRepairQueueLimits {
   /** P-048: how many exhausted pins may be abandoned for a fresh tip cut. 0 disables the
    * escape hatch entirely and preserves the historical permanent hold. */
   maxCandidateEscapes: number;
+  /**
+   * P-005: cap on attempt refunds for unproductive infrastructure fixer deaths (see
+   * FrozenCandidateRepairQueue.freeRetries). OPTIONAL so existing limit constructors are
+   * not stranded; absence applies DEFAULT_FROZEN_REPAIR_MAX_FREE_RETRIES.
+   */
+  maxFreeRetries?: number;
 }
+
+/**
+ * P-005: default refund budget. Six free retries ≈ one hour of ~10-min dispatch cycles —
+ * enough to ride out a transient provider wall or a host restart window, small enough
+ * that a persistently-failing spawn plane exhausts within the queue's 8h wall clock and
+ * pages through the normal exhaustion path instead of churning silently.
+ */
+export const DEFAULT_FROZEN_REPAIR_MAX_FREE_RETRIES = 6;
 
 export type FrozenRepairQueueDecision =
   | {
@@ -543,6 +571,12 @@ function assertLimits(limits: FrozenRepairQueueLimits): void {
   if (!Number.isInteger(limits.maxCandidateEscapes) || limits.maxCandidateEscapes < 0) {
     throw new Error('maxCandidateEscapes must be a non-negative integer');
   }
+  if (
+    limits.maxFreeRetries !== undefined &&
+    (!Number.isInteger(limits.maxFreeRetries) || limits.maxFreeRetries < 0)
+  ) {
+    throw new Error('maxFreeRetries must be a non-negative integer when provided');
+  }
 }
 
 function boundedFailures(values: readonly string[]): string[] {
@@ -719,6 +753,11 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     affectedTestProofGroup: nonBlank(row.affectedTestProofGroup) ? row.affectedTestProofGroup : null,
     worktreePath: row.worktreePath,
     attempts: row.attempts as number,
+    // P-005 refund bookkeeping is observability-adjacent: malformed values read as absent
+    // (0 refunds granted) rather than failing the parse — same rationale as rounds above.
+    ...(Number.isInteger(row.freeRetries) && (row.freeRetries as number) > 0
+      ? { freeRetries: row.freeRetries as number }
+      : {}),
     openedAtMs: row.openedAtMs,
     updatedAtMs: row.updatedAtMs,
     fixerSpawnId: row.fixerSpawnId as string | null,
@@ -1149,10 +1188,23 @@ export function markFrozenRepairFixerDispatched(
   };
 }
 
-/** Persist recovery of a definitively-dead fixer before age/reservation policy runs again. */
+/**
+ * Persist recovery of a definitively-dead fixer before age/reservation policy runs again.
+ *
+ * P-005 refund semantics: when the death is classified as an UNPRODUCTIVE INFRASTRUCTURE
+ * death (`unproductiveInfrastructureDeath` supplied — the fixer never made a tool call:
+ * spawn failure, provider-capacity rejection, permission fault, first-turn guillotine),
+ * the attempt burned at dispatch is REFUNDED so the retry is free — an attempt should
+ * measure a fixer that actually attempted repair, not a launch that died at the door.
+ * The refund is bounded by `limits.maxFreeRetries` (a classification bug must not spin
+ * forever) and the wall-clock budget still terminates the queue regardless. A fixer that
+ * DID work (made tool calls) and then died keeps its burned attempt — losing its edits is
+ * P-006's axis, not this one.
+ */
 export function markFrozenRepairFixerDead(
   queue: FrozenCandidateRepairQueue,
-  input: { spawnId: string; nowMs: number },
+  input: { spawnId: string; nowMs: number; unproductiveInfrastructureDeath?: { reason: string } },
+  limits: FrozenRepairQueueLimits = DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
 ): FrozenCandidateRepairQueue {
   requirePhase(queue, 'awaiting-fixer', 'mark fixer dead');
   assertTimestamp(input.nowMs, 'nowMs');
@@ -1160,8 +1212,14 @@ export function markFrozenRepairFixerDead(
     throw new Error(`stale fixer death for ${input.spawnId}; queue expects ${queue.fixerSpawnId ?? 'none'}`);
   }
   const { dispatchReservation: _reservation, ...withoutReservation } = queue;
+  const maxFreeRetries = limits.maxFreeRetries ?? DEFAULT_FROZEN_REPAIR_MAX_FREE_RETRIES;
+  const refund =
+    input.unproductiveInfrastructureDeath != null &&
+    queue.attempts > 0 &&
+    (queue.freeRetries ?? 0) < maxFreeRetries;
   return {
     ...withoutReservation,
+    ...(refund ? { attempts: queue.attempts - 1, freeRetries: (queue.freeRetries ?? 0) + 1 } : {}),
     fixerSpawnId: null,
     updatedAtMs: input.nowMs,
   };
