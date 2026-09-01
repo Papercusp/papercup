@@ -268,9 +268,7 @@ function nonNegativeDbNumber(value: number | string | null | undefined): number 
 }
 
 /** Map the nullable/stringly PostgreSQL result into the typed lease identity. */
-export function mapQueueLeaseOwnerRows(
-  rows: readonly QueueLeaseOwnerDbRow[],
-): QueueLeaseOwnerObservation[] {
+export function mapQueueLeaseOwnerRows(rows: readonly QueueLeaseOwnerDbRow[]): QueueLeaseOwnerObservation[] {
   return rows.flatMap((row) => {
     const receiptId = row.receipt_id?.trim();
     const leaseId = row.lease_id?.trim();
@@ -321,9 +319,10 @@ export async function readGovernorQueuePopulation(
   observationWindowMs = GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
 ): Promise<GovernorQueuePopulationObservation[]> {
   const observedAtMs = Number.isFinite(nowMs) ? nowMs : Date.now();
-  const windowMs = Number.isFinite(observationWindowMs) && observationWindowMs > 0
-    ? Math.floor(observationWindowMs)
-    : GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS;
+  const windowMs =
+    Number.isFinite(observationWindowMs) && observationWindowMs > 0
+      ? Math.floor(observationWindowMs)
+      : GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS;
   const windowStartMs = observedAtMs - windowMs;
   const rows = await sql<GovernorQueuePopulationDbRow[]>`
     WITH all_governor_rows AS (
@@ -926,7 +925,9 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     this.sql = options.sql ?? getOrgPg().sql;
     this.workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
     this.abandonAfterMs =
-      typeof options.abandonAfterMs === 'number' && Number.isFinite(options.abandonAfterMs) && options.abandonAfterMs > 0
+      typeof options.abandonAfterMs === 'number' &&
+      Number.isFinite(options.abandonAfterMs) &&
+      options.abandonAfterMs > 0
         ? options.abandonAfterMs
         : GOVERNOR_RECEIPT_ABANDON_MS;
     this.resolveSessionStatesFn = options.resolveSessionStatesFn;
@@ -1019,7 +1020,10 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     const resolve =
       this.resolveSessionStatesFn ?? (await import('../agent-tools/coordination/liveness-oracle')).resolveSessionStates;
     try {
-      const verdicts = await resolve(owners.map((ownerId) => ({ ownerId })), { hydratePerId: true, nowMs });
+      const verdicts = await resolve(
+        owners.map((ownerId) => ({ ownerId })),
+        { hydratePerId: true, nowMs },
+      );
       return selectEndedLeaseOwners(active, verdicts);
     } catch (error) {
       // Unknown liveness is never owner death. Keep the lease intact and allow
@@ -1051,17 +1055,20 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     }
     const namespacePredicate =
       namespace === null ? tx`` : tx`AND payload->'resource_governor'->>'namespace' = ${namespace}`;
-    const ended = endedLeaseOwners.length === 0
-      ? []
-      : await tx<QueueDbRow[]>`
+    const ended =
+      endedLeaseOwners.length === 0
+        ? []
+        : await tx<QueueDbRow[]>`
           WITH candidates AS (
             SELECT item.workspace_id, item.harness_slug, item.feature_id, identity.lease_id, identity.owner
               FROM harness_shared.work_items AS item
-              JOIN jsonb_to_recordset(${JSON.stringify(endedLeaseOwners.map((row) => ({
-                receipt_id: row.receiptId,
-                lease_id: row.leaseId,
-                owner: row.owner,
-              })))}::text::jsonb) AS identity(
+              JOIN jsonb_to_recordset(${JSON.stringify(
+                endedLeaseOwners.map((row) => ({
+                  receipt_id: row.receiptId,
+                  lease_id: row.leaseId,
+                  owner: row.owner,
+                })),
+              )}::text::jsonb) AS identity(
                 receipt_id text,
                 lease_id text,
                 owner text

@@ -3318,6 +3318,38 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
   return dedupeInFlight(tickInFlight, ws, () => runSystemHealthTickUncached(ws));
 }
 
+/**
+ * Publish the queue census to the canonical governor snapshot as an optional
+ * health-tick side effect. System-health has no authoritative controller or
+ * recovery decision, so those fields intentionally remain unknown here; the
+ * queue reader is the only durable governor signal this tick owns.
+ *
+ * The bridge is fail-soft in both directions. A census/read failure must not
+ * hide the regular health snapshot, and a snapshot write failure must not make
+ * the tick fail after its in-process cache has been computed.
+ */
+export async function publishGovernorStateSnapshot(
+  workspaceId: string,
+  observedAtMs: number,
+): Promise<void> {
+  try {
+    const [{ readGovernorQueuePopulation }, { GOVERNOR_STATE_MAX_AGE_MS, GovernorStateSnapshotWriter }] =
+      await Promise.all([
+        import('../resource-governor/queue'),
+        import('../resource-governor/state-snapshot'),
+      ]);
+    const queueByClass = await readGovernorQueuePopulation(getOrgPg().sql, workspaceId, observedAtMs);
+    await new GovernorStateSnapshotWriter(workspaceId).publish({
+      observedAtMs,
+      validUntilMs: observedAtMs + GOVERNOR_STATE_MAX_AGE_MS,
+      queueByClass,
+    });
+  } catch {
+    // Governor telemetry is an enrichment leg; a missing/failed leg stays unknown
+    // instead of breaking the health tick or fabricating a healthy zero queue.
+  }
+}
+
 async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
   const localPrev = cache.get(ws) ?? null;
   // Hydrate a cold tick host from the cross-process snapshot before computing the next
@@ -3352,6 +3384,10 @@ async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
       await preserveIncidentCapture('infra-crit');
     }
   } catch { /* incident-capture preservation must never break the tick */ }
+  // EI-219699: make the complete durable queue census visible to the canonical
+  // governor state resolver. No process-local admission/recovery verdict is
+  // available to this health tick, so publish only queue evidence.
+  await publishGovernorStateSnapshot(ws, health.evaluatedAt);
   cache.set(ws, health);
   // P-001 (precompute-sync-reads-phase2): publish the freshly-computed snapshot to
   // the cross-process SHARED store so a reader process that never runs this tick

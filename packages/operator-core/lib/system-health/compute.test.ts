@@ -16,6 +16,9 @@ const {
   sqlMock,
   devDeployStateMock,
   computeNextFireAtMock,
+  readGovernorQueuePopulationMock,
+  GovernorStateSnapshotWriterMock,
+  governorWriterPublishMock,
 } = vi.hoisted(() => ({
   backgroundWorkersEnabledMock: vi.fn(() => false),
   getFlagMock: vi.fn(async () => true),
@@ -35,6 +38,11 @@ const {
     errors: [],
   })),
   computeNextFireAtMock: vi.fn(),
+  readGovernorQueuePopulationMock: vi.fn(async (..._args: unknown[]) => []),
+  GovernorStateSnapshotWriterMock: vi.fn(function () {
+    return { publish: governorWriterPublishMock };
+  }),
+  governorWriterPublishMock: vi.fn(async (..._args: unknown[]) => undefined),
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -57,6 +65,13 @@ vi.mock('../derived-reads/shared-snapshot', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../derived-reads/shared-snapshot')>()),
   readSharedSnapshot: readSharedSnapshotMock,
 }));
+vi.mock('../resource-governor/queue', () => ({
+  readGovernorQueuePopulation: readGovernorQueuePopulationMock,
+}));
+vi.mock('../resource-governor/state-snapshot', () => ({
+  GOVERNOR_STATE_MAX_AGE_MS: 120_000,
+  GovernorStateSnapshotWriter: GovernorStateSnapshotWriterMock,
+}));
 vi.mock('node:fs/promises', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:fs/promises')>()),
   statfs: statfsMock,
@@ -66,7 +81,7 @@ vi.mock('node:os', async (importOriginal) => ({
   homedir: homedirMock,
   tmpdir: tmpdirMock,
 }));
-import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
@@ -78,6 +93,53 @@ import type { HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPane
  *  fields, so these tests need no cast and stay honest if the shape changes. */
 const candidate = (id: string): ImprovementCandidate =>
   ({ id, kind: 'bug', scope: 'operator', title: `candidate ${id}` });
+
+describe('publishGovernorStateSnapshot — queue census bridge (EI-219699)', () => {
+  const observedAtMs = 2_000_000;
+  const queueByClass = [
+    { admissionClass: 'agent', depth: 4, oldestAgeMs: 1_500, arrivals: 6, drained: 2, observedWindowMs: 60_000 },
+    { admissionClass: 'build', depth: 1, arrivals: 2, drained: 3, observedWindowMs: 60_000 },
+  ];
+
+  beforeEach(() => {
+    readGovernorQueuePopulationMock.mockReset().mockResolvedValue(queueByClass);
+    governorWriterPublishMock.mockReset().mockResolvedValue(undefined);
+    GovernorStateSnapshotWriterMock.mockClear();
+  });
+
+  it('publishes the complete queue census while leaving process-local decisions unknown', async () => {
+    await expect(publishGovernorStateSnapshot('ws-governor', observedAtMs)).resolves.toBeUndefined();
+
+    expect(readGovernorQueuePopulationMock).toHaveBeenCalledWith(sqlMock, 'ws-governor', observedAtMs);
+    expect(GovernorStateSnapshotWriterMock).toHaveBeenCalledWith('ws-governor');
+    expect(governorWriterPublishMock).toHaveBeenCalledWith({
+      observedAtMs,
+      validUntilMs: observedAtMs + 120_000,
+      queueByClass,
+    });
+    expect(governorWriterPublishMock.mock.calls[0]?.[0]).not.toHaveProperty('admission');
+    expect(governorWriterPublishMock.mock.calls[0]?.[0]).not.toHaveProperty('recovery');
+    expect(governorWriterPublishMock.mock.calls[0]?.[0]).not.toHaveProperty('health');
+  });
+
+  it('swallows a census failure without attempting a partial snapshot write', async () => {
+    readGovernorQueuePopulationMock.mockRejectedValueOnce(new Error('queue census unavailable'));
+
+    await expect(publishGovernorStateSnapshot('ws-governor', observedAtMs)).resolves.toBeUndefined();
+
+    expect(GovernorStateSnapshotWriterMock).not.toHaveBeenCalled();
+    expect(governorWriterPublishMock).not.toHaveBeenCalled();
+  });
+
+  it('swallows a snapshot write failure so the health tick can still finish', async () => {
+    governorWriterPublishMock.mockRejectedValueOnce(new Error('snapshot store unavailable'));
+
+    await expect(publishGovernorStateSnapshot('ws-governor', observedAtMs)).resolves.toBeUndefined();
+
+    expect(readGovernorQueuePopulationMock).toHaveBeenCalledOnce();
+    expect(governorWriterPublishMock).toHaveBeenCalledOnce();
+  });
+});
 
 describe('hostPressureSampleFromLiveHealth — measured-only projection', () => {
   const reading = (state: 'measured' | 'unknown' | 'stale', value: unknown) => ({ state, value });
