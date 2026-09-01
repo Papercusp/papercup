@@ -86,7 +86,7 @@ import {
   type WorkItem,
 } from '../work-items';
 import { resolveIssuesScopeWorkspace } from '../issues-engineer';
-import { admittedWhereSqlWi, isIssueLocallyClaimableWhereSql } from '../work-items-admission';
+import { admittedWhereSqlWi, isIssueLocallyClaimableWhereSql, stopTheLineExclusionSql } from '../work-items-admission';
 import { trackDetached } from '../detached-imports';
 import {
   agentReviewNormalExclusionSql,
@@ -947,7 +947,7 @@ export const ALL_ISSUE_CLAIM_FLOORS_PASS =
   `AND ok_agent_review AND ok_observation ` +
   `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
   `AND ok_completed AND ok_watchdog_recovery AND ok_rig AND ok_no_blocker ` +
-  `AND ok_cooldown AND ok_origin AND ok_admission`;
+  `AND ok_cooldown AND ok_origin AND ok_admission AND ok_stop_line`;
 
 /**
  * The SHARED inner subquery for issue-family claimability: every candidate issue-family
