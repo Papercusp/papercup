@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Governor } from './admission';
-import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
+import { PgAdmissionCutoverQueueStore } from './admission-cutover-store';
 import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore } from './queue';
 import {
   admissionContextFromEnvironment,
@@ -374,7 +374,7 @@ describe('governed process client lifetime (WI-638180)', () => {
     // process-wide database outage instead of a local teardown.
     await withGovernedProcessRuntime('ws-1', 'ns-1', async (deps) => {
       const store = (deps.driver as unknown as { store: { sql: unknown } }).store;
-      expect(store).toBeInstanceOf(PgAdmissionLedgerQueueStore);
+      expect(store).toBeInstanceOf(PgAdmissionCutoverQueueStore);
       expect(store.sql).toBe(built[0]!.sql);
     });
   });
