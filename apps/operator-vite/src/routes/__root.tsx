@@ -52,7 +52,7 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@papercusp/flags/client';
 import ChromeShellWithChatFaces from '../components/chat-faces/ChatFacesHost';
 import ChatRefPopupHost from '@/app/_components/chat/ChatRefPopupHost';
-import PlanDashboardHost from '@/app/_components/plans/PlanDashboardHost';
+import RoutedPlanDashboardHost from '../components/RoutedPlanDashboardHost';
 import PlanCleanupReportHost from '@/app/_components/plans/PlanCleanupReportHost';
 import InboxBulkReportHost from '@/app/_components/inbox/InboxBulkReportHost';
 import { usePathname, useSearchParams } from '@/lib/router-compat/navigation';
@@ -324,8 +324,11 @@ function RootComponent() {
                             app pane — full width — while the routed page stays
                             mounted underneath (back = clear the param, route
                             state intact). Opened by the op-chat plan sidebar's
-                            row click (P-005); deep-linkable like any nuqs URL. */}
-                        <PlanDashboardHost />
+                            row click (P-005); deep-linkable like any nuqs URL.
+                            Route-aware (portal-work-two-pane-2026-09-01 D-001):
+                            skipped on /plans, whose split PlansPane hosts the
+                            dashboard in its own aside. */}
+                        <RoutedPlanDashboardHost />
                         {/* cleanup-report-flows-2026-08-24 P-007: `?opcln=`
                             remains a strip deep link while the resolver runs,
                             then becomes the grouped report takeover at review. */}

@@ -97,8 +97,30 @@ vi.mock("@papercusp/sync", () => ({
   // PlansPane → PlanDashboardHost (the ?pdash param constant, P-005) →
   // operator-core lazy-with-retry, which RE-EXPORTS from @papercusp/sync — so
   // this mock must supply it or module evaluation throws "lazyWithRetry is not
-  // a function" at collection. The lazy dashboard is never rendered here.
-  lazyWithRetry: () => () => null,
+  // a function" at collection. The lazy dashboard IS rendered by the split
+  // layout's aside (portal-work-two-pane-2026-09-01 P-002), so the stub echoes
+  // the props the aside passes and exposes its `onBack`.
+  lazyWithRetry:
+    () =>
+    (props: {
+      planSlug: string;
+      harnessSlug: string | null;
+      onBack: () => void;
+    }) => (
+      <div
+        data-testid="plan-dashboard-stub"
+        data-plan={props.planSlug}
+        data-harness={props.harnessSlug ?? ""}
+      >
+        <button
+          type="button"
+          data-testid="plan-dashboard-back"
+          onClick={props.onBack}
+        >
+          back
+        </button>
+      </div>
+    ),
   // Branched by queryName: the pane now runs TWO sync queries (advRoster.list
   // + planWorkActivity.list, P-002) — a queryName-blind mock would feed the
   // roster payload to the work-activity join and silently render no ⚒ times.
@@ -623,6 +645,76 @@ describe("PlansPane", () => {
     // And the WI-5547 popup-open perf mark no longer starts here — nothing
     // would ever close it (the dashboard renders no Vditor parse).
     expect(beginInteractionSpy).not.toHaveBeenCalled();
+  });
+
+  /* ── layout="split" (portal-work-two-pane-2026-09-01 P-002 / D-001) ─────
+     The portal's /plans full-page route asks for list + dashboard. The
+     sidebar keeps the stack default, whose DOM must stay exactly as it was. */
+
+  it("stack (the default) renders no aside and no split modifier", () => {
+    planListData.value = { plans: [plan({ slug: "p1" })] };
+    render(<PlansPane />);
+    const root = screen.getByTestId("plans-pane");
+    expect(root.className).toBe("plans-pane");
+    expect(root.getAttribute("data-layout")).toBe("stack");
+    expect(root.hasAttribute("data-has-selection")).toBe(false);
+    expect(screen.queryByTestId("plans-pane-aside")).toBeNull();
+    expect(screen.queryByTestId("plan-dashboard-stub")).toBeNull();
+    // The column wrapper (display:contents in CSS) holds the list.
+    const column = root.querySelector(".plans-pane__column");
+    expect(column?.contains(screen.getByTestId("plans-pane-row-p1"))).toBe(
+      true,
+    );
+  });
+
+  it("split with no ?pdash renders the empty aside and no dashboard", () => {
+    planListData.value = { plans: [plan({ slug: "p1" })] };
+    render(<PlansPane layout="split" />);
+    const root = screen.getByTestId("plans-pane");
+    expect(root.className).toBe("plans-pane plans-pane--split");
+    expect(root.getAttribute("data-layout")).toBe("split");
+    expect(root.hasAttribute("data-has-selection")).toBe(false);
+    const aside = screen.getByTestId("plans-pane-aside");
+    // A focus landmark, never tab-reachable.
+    expect(aside.getAttribute("tabindex")).toBe("-1");
+    expect(aside.contains(screen.getByTestId("plans-pane-aside-empty"))).toBe(
+      true,
+    );
+    expect(screen.queryByTestId("plan-dashboard-stub")).toBeNull();
+    const row = screen.getByTestId("plans-pane-row-p1");
+    expect(row.classList.contains("is-selected")).toBe(false);
+    expect(root.querySelector(".plans-pane__column")?.contains(row)).toBe(
+      true,
+    );
+  });
+
+  it("split renders the ?pdash plan's dashboard in the aside, marks its row selected, and the dashboard's back clears the param", () => {
+    planListData.value = {
+      plans: [plan({ slug: "p1" }), plan({ slug: "p2" })],
+    };
+    nuqs.pdash = "papercusp::p2";
+    try {
+      render(<PlansPane layout="split" />);
+      const root = screen.getByTestId("plans-pane");
+      expect(root.hasAttribute("data-has-selection")).toBe(true);
+      const aside = screen.getByTestId("plans-pane-aside");
+      const dash = screen.getByTestId("plan-dashboard-stub");
+      expect(aside.contains(dash)).toBe(true);
+      expect(dash.getAttribute("data-plan")).toBe("p2");
+      expect(dash.getAttribute("data-harness")).toBe("papercusp");
+      expect(screen.queryByTestId("plans-pane-aside-empty")).toBeNull();
+      const selected = screen.getByTestId("plans-pane-row-p2");
+      expect(selected.classList.contains("is-selected")).toBe(true);
+      expect(selected.getAttribute("aria-current")).toBe("true");
+      const other = screen.getByTestId("plans-pane-row-p1");
+      expect(other.classList.contains("is-selected")).toBe(false);
+      expect(other.hasAttribute("aria-current")).toBe(false);
+      // Selection stays URL-owned: the dashboard's own back clears `?pdash`.
+      fireEvent.click(screen.getByTestId("plan-dashboard-back"));
+      expect(setters.pdash).toHaveBeenCalledWith(null);
+    } finally {
+      delete nuqs.pdash;
+    }
   });
 
   it("finished toggle flips ?plf", () => {

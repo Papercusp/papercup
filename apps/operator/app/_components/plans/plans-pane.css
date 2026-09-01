@@ -1039,3 +1039,80 @@
   border-radius: 2px;
   padding: 0 1px;
 }
+
+/* ── PlansPane layout="split" (portal-work-two-pane-2026-09-01 D-001) ────
+   List left (41%), the selected plan's dashboard in a right-hand aside. Used
+   ONLY by the operator-vite /plans full-page route the cloud portal embeds;
+   the chat sidebar stays in stack mode, where the column wrapper is
+   display:contents and the box tree is exactly what it was. */
+.plans-pane__column {
+  display: contents;
+}
+.plans-pane--split {
+  display: grid;
+  grid-template-columns: minmax(380px, 41%) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+}
+.plans-pane--split .plans-pane__column {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  border-right: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+.plans-pane__aside {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+  background: color-mix(
+    in srgb,
+    var(--bg-2, rgba(0, 0, 0, 0.18)) 40%,
+    transparent
+  );
+}
+/* The dashboard sizes itself (min-height:100%, its own padding); the aside
+   is only its scroll container. */
+.plans-pane__aside > .plan-dash {
+  flex: 1 0 auto;
+}
+.plans-pane__aside-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--fg-mute, #8a8a91);
+  font-size: 13px;
+  text-align: center;
+}
+/* The row whose dashboard `?pdash` currently opens (every layout). */
+.plans-pane__row.is-selected {
+  border-color: color-mix(in srgb, var(--accent, #38bdf8) 55%, transparent);
+  background: color-mix(in srgb, var(--accent, #38bdf8) 10%, transparent);
+}
+/* Narrow: one column at a time. With a selection the dashboard fills the
+   page (its own back control clears the selection); without one the list. */
+@media (max-width: 900px) {
+  .plans-pane--split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .plans-pane--split .plans-pane__column {
+    border-right: 0;
+  }
+  .plans-pane--split[data-has-selection] .plans-pane__column {
+    display: none;
+  }
+  .plans-pane--split:not([data-has-selection]) .plans-pane__aside {
+    display: none;
+  }
+}

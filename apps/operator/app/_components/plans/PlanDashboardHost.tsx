@@ -31,6 +31,10 @@ import { decodeScopedRef } from '../chat/chat-ref-popup-params';
 import './plan-dashboard.css';
 
 const PlanDashboard = lazy(() => import('./PlanDashboard'));
+/** The SAME lazy chunk, for PlansPane's split-mode aside
+ *  (portal-work-two-pane-2026-09-01 D-001) — one definition, one chunk, so
+ *  the takeover and the aside can never load two copies of the dashboard. */
+export const LazyPlanDashboard = PlanDashboard;
 
 /** The app-pane plan-dashboard takeover param. Distinct from `pplan` (the
  *  sidebar's popup) and `wppop` (chat's popup) — one key per renderer. */

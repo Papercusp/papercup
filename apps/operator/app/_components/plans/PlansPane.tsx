@@ -42,7 +42,7 @@
  * that cannot drift as facet chips wrap. A stale `?plFilters=…` deep link is
  * inert (the row it used to reveal is already open).
  */
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   Archive,
   ArrowUpDown,
@@ -92,14 +92,17 @@ import PlanProvenanceBadge, {
   planSourceFilterLabel,
   type PlanSourceFilter,
 } from "./PlanProvenanceBadge";
-import { PLAN_DASHBOARD_PARAM } from "./PlanDashboardHost";
+import { LazyPlanDashboard, PLAN_DASHBOARD_PARAM } from "./PlanDashboardHost";
 import PlanCleanupEntryButton from "./PlanCleanupEntryButton";
 import PlansCleanupStrip from "./PlansCleanupStrip";
 import {
   PLAN_CLEANUP_RUN_PARAM,
   usePlanCleanupRun,
 } from "./use-plan-cleanup-run";
-import { encodeScopedRef } from "../chat/chat-ref-popup-params";
+import {
+  decodeScopedRef,
+  encodeScopedRef,
+} from "../chat/chat-ref-popup-params";
 import "./plans-pane.css";
 import { advRosterArgs } from "@/lib/adv-roster-args";
 
@@ -318,7 +321,24 @@ interface PlanWorkActivityRow {
   lastWorkAtMs?: number;
 }
 
-export default function PlansPane() {
+/**
+ * How the pane lays out its list and the selected plan's dashboard
+ * (portal-work-two-pane-2026-09-01 D-001).
+ *  - `stack` — the chat-sidebar list; a row click opens the app-pane
+ *    PlanDashboardHost takeover. The default, and unchanged by this prop.
+ *  - `split` — list on the left, the selected plan's dashboard in a
+ *    right-hand aside. Used only by the operator-vite `/plans` full-page
+ *    route the cloud portal embeds (which skips the root takeover host).
+ *    Selection is the same `?pdash` either way.
+ */
+export type PlansPaneLayout = "stack" | "split";
+
+export default function PlansPane({
+  layout = "stack",
+}: {
+  layout?: PlansPaneLayout;
+} = {}) {
+  const split = layout === "split";
   const [query, setQuery] = useQueryState("plq", parseAsString.withDefault(""));
   const [showFinished, setShowFinished] = useQueryState(
     "plf",
@@ -352,7 +372,20 @@ export default function PlansPane() {
   // P-005 (D-002): a row click opens the app-pane dashboard takeover — the
   // param PlanDashboardHost renders. `pplan` (the popup) remains for its other
   // writers; this pane no longer writes it from rows.
-  const [, setDashPlan] = useQueryState(PLAN_DASHBOARD_PARAM, parseAsString);
+  const [dashPlan, setDashPlan] = useQueryState(
+    PLAN_DASHBOARD_PARAM,
+    parseAsString,
+  );
+  // The selected plan (D-001): the same scoped ref the row click writes. In
+  // split mode the aside renders its dashboard; in every mode the matching
+  // row reads `is-selected`.
+  const dashTarget = useMemo(
+    () => decodeScopedRef(dashPlan ?? null),
+    [dashPlan],
+  );
+  // Split mode's detail column — a focus landmark (tabIndex -1) so the
+  // dashboard's unmount never strands keyboard focus on <body>.
+  const asideRef = useRef<HTMLElement | null>(null);
 
   // Warm the Vditor stack shortly after the Plans face mounts, so the first
   // plan popup opens WARM (~430ms) instead of paying the ~600ms cold Lute/WASM
@@ -541,8 +574,18 @@ export default function PlansPane() {
     getItemKey: (i) => `${rows[i]!.plan.harness}:${rows[i]!.plan.slug}`,
   });
 
+  // `data-has-selection` is presence-only: the narrow-width split CSS swaps
+  // which column is shown on it. The `plans-pane__column` wrapper is
+  // display:contents in stack mode (the sidebar's box tree is unchanged); in
+  // split mode it is the left (list) column.
   return (
-    <div className="plans-pane" data-testid="plans-pane">
+    <div
+      className={`plans-pane${split ? " plans-pane--split" : ""}`}
+      data-testid="plans-pane"
+      data-layout={layout}
+      data-has-selection={split && dashTarget.id ? "" : undefined}
+    >
+      <div className="plans-pane__column">
       <header className="plans-pane__masthead">
         <span className="plans-pane__masthead-icon" aria-hidden="true">
           <ClipboardList size={20} />
@@ -783,6 +826,10 @@ export default function PlansPane() {
                   : liveAgents > 0
                     ? " plans-pane__row--live"
                     : "";
+              // D-001: the row whose dashboard `?pdash` currently opens.
+              const isSel =
+                dashTarget.id === plan.slug &&
+                (!dashTarget.harness || dashTarget.harness === plan.harness);
               return (
                 <div
                   key={vi.key}
@@ -800,7 +847,8 @@ export default function PlansPane() {
                 >
                   <button
                     type="button"
-                    className={`plans-pane__row${accent}`}
+                    className={`plans-pane__row${accent}${isSel ? " is-selected" : ""}`}
+                    aria-current={isSel ? "true" : undefined}
                     aria-label={`Open plan ${plan.title ?? plan.slug}`}
                     onClick={() => {
                       // P-005 (D-002): the row opens the option-C DASHBOARD
@@ -998,6 +1046,38 @@ export default function PlansPane() {
         <span>{rows.length} shown</span>
         <span>{showFinished ? "Active + finished" : "Active plans"}</span>
       </div>
+      </div>
+
+      {split ? (
+        <aside
+          ref={asideRef}
+          tabIndex={-1}
+          className="plans-pane__aside"
+          data-testid="plans-pane-aside"
+          aria-label="Selected plan"
+        >
+          {dashTarget.id ? (
+            // The dashboard's own back control (`onBack`) clears `?pdash`;
+            // at narrow widths that is the way back to the list.
+            <Suspense fallback={null}>
+              <LazyPlanDashboard
+                key={dashTarget.id}
+                planSlug={dashTarget.id}
+                harnessSlug={dashTarget.harness}
+                onBack={() => void setDashPlan(null)}
+              />
+            </Suspense>
+          ) : (
+            <div
+              className="plans-pane__aside-empty"
+              data-testid="plans-pane-aside-empty"
+            >
+              <ClipboardList size={22} aria-hidden="true" />
+              <span>Select a plan to open its dashboard here</span>
+            </div>
+          )}
+        </aside>
+      ) : null}
 
       {confirmEl}
 

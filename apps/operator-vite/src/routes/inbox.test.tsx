@@ -7,8 +7,11 @@ vi.mock('@tanstack/react-router', () => ({
 }));
 
 vi.mock('@/app/_components/inbox/InboxPane', () => ({
-  default: () => (
-    <section data-testid="canonical-inbox-pane">
+  default: (props: { layout?: string }) => (
+    <section
+      data-testid="canonical-inbox-pane"
+      data-layout={props.layout ?? 'stack'}
+    >
       <button data-testid="inbox-bulk-start" type="button">Bulk resolve shown items</button>
     </section>
   ),
@@ -24,5 +27,12 @@ describe('/inbox portal embed route', () => {
     expect(screen.getByTestId('inbox-portal-embed').getAttribute('data-portal-surface')).toBe('inbox');
     expect(screen.getByTestId('canonical-inbox-pane')).toBeTruthy();
     expect(screen.getByTestId('inbox-bulk-start')).toBeTruthy();
+  });
+
+  it('asks InboxPane for the split (list + detail) layout — Direction B (portal-work-two-pane-2026-09-01 P-003)', () => {
+    render(<InboxEmbedRoute />);
+    expect(
+      screen.getByTestId('canonical-inbox-pane').getAttribute('data-layout'),
+    ).toBe('split');
   });
 });

@@ -7,8 +7,11 @@ vi.mock('@tanstack/react-router', () => ({
 }));
 
 vi.mock('@/app/_components/plans/PlansPane', () => ({
-  default: () => (
-    <section data-testid="canonical-plans-pane">
+  default: (props: { layout?: string }) => (
+    <section
+      data-testid="canonical-plans-pane"
+      data-layout={props.layout ?? 'stack'}
+    >
       <button data-testid="plans-cleanup-start" type="button">Clean up shown plans</button>
     </section>
   ),
@@ -24,5 +27,12 @@ describe('/plans portal embed route', () => {
     expect(screen.getByTestId('plans-portal-embed').getAttribute('data-portal-surface')).toBe('plans');
     expect(screen.getByTestId('canonical-plans-pane')).toBeTruthy();
     expect(screen.getByTestId('plans-cleanup-start')).toBeTruthy();
+  });
+
+  it('asks PlansPane for the split (list + dashboard) layout — Direction B (portal-work-two-pane-2026-09-01 P-003)', () => {
+    render(<PlansEmbedRoute />);
+    expect(
+      screen.getByTestId('canonical-plans-pane').getAttribute('data-layout'),
+    ).toBe('split');
   });
 });
