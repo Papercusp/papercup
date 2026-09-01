@@ -323,11 +323,20 @@ describe('probeDiscriminatorMessage — the refusal must name the REMEDY, not ju
 });
 
 describe('continuityPredicateShapeMessage — a wrong-shaped `expect` must name the exact contract (EI-22052859235198905 / EI-22057107388066791 / EI-22057804176244287)', () => {
-  // Three independent reporters guessed a wrong shape for `expect` (a bare
-  // string, a same-fields-different-names object, free-form evidence text)
-  // and got zod's generic structural error back. `superRefine` below already
-  // gives a clear message once the shape is RIGHT but the VALUE is wrong
-  // (e.g. `exists` with a `value`) — this covers the shape itself being wrong.
+  // Independent reporters guessed a wrong shape for `expect` (a bare string;
+  // a right-shaped predicate plus stray extra keys — e.g. bundled narrative
+  // evidence) and got zod's generic structural error back. `superRefine`
+  // below already gives a clear message once the shape is RIGHT but the
+  // VALUE is wrong (e.g. `exists` with a `value`) — this covers the two
+  // structural-mismatch codes the OBJECT schema itself raises (its own
+  // invalid_type when the input isn't an object at all, and strict-mode
+  // unrecognized_keys). A predicate missing `path`/`op` ENTIRELY still
+  // surfaces zod's per-field message at that field's own path (e.g. "expected
+  // string, received undefined" at `path:['path']`) — that issue is raised by
+  // the CHILD field schema, not this object's own checks, so it is out of
+  // scope for this object-level `error` callback; it already names the exact
+  // missing field, which is a materially smaller class of confusion than the
+  // wrong-TYPE / stray-KEYS cases this message targets.
   const messageFor = (expect: unknown) => {
     const parsed = continuityPredicateSchema.safeParse(expect);
     if (parsed.success) throw new Error('expected this shape to be rejected');
@@ -338,8 +347,10 @@ describe('continuityPredicateShapeMessage — a wrong-shaped `expect` must name 
     expect(messageFor('the state is green')).toBe(continuityPredicateShapeMessage());
   });
 
-  it('a same-fields-different-names object is named, not silently coerced', () => {
-    expect(messageFor({ field: '$.state', expected: 'green' })).toBe(continuityPredicateShapeMessage());
+  it('a right-shaped predicate plus stray extra keys (bundled narrative evidence) is named', () => {
+    expect(messageFor({ path: '$.state', op: 'eq', value: 'green', reason: 'why I expect this' })).toBe(
+      continuityPredicateShapeMessage(),
+    );
   });
 
   it('a free-form evidence object (extra keys beyond path/op/value) is named', () => {

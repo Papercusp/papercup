@@ -47,13 +47,18 @@ const schemaRevisionSchema = z
 
 /**
  * EI-22052859235198905 / EI-22057107388066791 / EI-22057804176244287: three
- * independent reporters guessed a wrong shape for `expect` (a bare string, a
- * "documented-looking" object with the wrong field names, free-form evidence
- * text) and got zod's generic structural message back — accurate but not
+ * independent reporters guessed a wrong shape for `expect` (a bare string,
+ * free-form evidence text, a right-shaped predicate bundled with extra keys)
+ * and got zod's generic structural message back — accurate but not
  * actionable, unlike the semantic messages `superRefine` below already gives
- * for a right-shaped-but-wrong-valued predicate. This is the SAME class of fix
- * as `probeDiscriminatorMessage` above: name the exact shape + a worked
- * example, and point the free-text/evidence case at the field that wants it.
+ * for a right-shaped-but-wrong-valued predicate. This covers the two
+ * structural codes THIS object's own checks raise: `invalid_type` (the input
+ * isn't an object at all) and strict-mode `unrecognized_keys` (extra keys
+ * alongside path/op/value). A predicate missing `path`/`op` entirely still
+ * surfaces zod's own per-field message at that field's path — that issue is
+ * raised by the child field schema, not this object, so it is out of scope
+ * here; it already names the exact missing field. Same class of fix as
+ * `probeDiscriminatorMessage` above: name the exact shape + a worked example.
  */
 export function continuityPredicateShapeMessage(): string {
   return (
