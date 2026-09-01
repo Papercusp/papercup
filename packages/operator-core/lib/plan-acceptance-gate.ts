@@ -156,6 +156,29 @@ export interface PlanAcceptanceGateOpts {
    * into one switch.
    */
   force?: { reason: string };
+  /**
+   * Read the gate for GRADER RECRUITMENT rather than shipment. The real ship gate
+   * remains strict: every plan item must be terminal. Recruitment may look past an
+   * unfinished tail only when every such item is already audited `not-code` — the
+   * acceptance-ceremony item whose own completion requires the independent grade.
+   * Missing/stale audit evidence fails toward the ordinary unfinished-item refusal.
+   */
+  gradingRecruitment?: boolean;
+}
+
+/**
+ * Whether every unfinished item is explicitly classified as non-code by the
+ * effective completion audit. Exported as a pure seam because this exception is a
+ * narrow lifecycle rule: widening it accidentally would recruit graders while real
+ * implementation work is still open.
+ */
+export function unfinishedItemsAreAuditedNonCode(
+  unfinished: readonly { itemId: string }[],
+  effectiveAudits: readonly { entry: { itemId: string; verdict: string } }[],
+): boolean {
+  if (unfinished.length === 0) return false;
+  const verdictByItem = new Map(effectiveAudits.map(({ entry }) => [entry.itemId, entry.verdict]));
+  return unfinished.every((item) => verdictByItem.get(item.itemId) === 'not-code');
 }
 
 /**
@@ -310,20 +333,25 @@ export async function evaluatePlanAcceptanceGate(
     const items = await getPlanItemStatuses(planSlug);
     const unfinished = items.filter((i) => (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(i.status));
     if (unfinished.length > 0) {
-      if (force) {
-        forcedChecks.push('plan_items_unfinished');
-      } else {
-        const list = unfinished.map((i) => `${i.itemId} (${i.status})`).join(', ');
-        return {
-          satisfied: false,
-          code: 'plan_items_unfinished',
-          message:
-            `plan '${planSlug}' cannot be marked shipped: ${unfinished.length} item(s) are still unfinished — ` +
-            `${list}. Finish them, or — if the work went elsewhere and that was deliberate — DROP each one ` +
-            `with a reason: plans:set-status { slug:'${planSlug}', item:'<P-NNN>', status:'dropped', ` +
-            `note:'<why this was departed from>' }. Departing from the plan is legitimate; departing from it ` +
-            `silently is what this refuses. To ship anyway, pass force:{ reason } — it is recorded on the plan.`,
-        };
+      const recruitmentTail =
+        opts.gradingRecruitment &&
+        unfinishedItemsAreAuditedNonCode(unfinished, await getEffectiveItemAudits(planSlug));
+      if (!recruitmentTail) {
+        if (force) {
+          forcedChecks.push('plan_items_unfinished');
+        } else {
+          const list = unfinished.map((i) => `${i.itemId} (${i.status})`).join(', ');
+          return {
+            satisfied: false,
+            code: 'plan_items_unfinished',
+            message:
+              `plan '${planSlug}' cannot be marked shipped: ${unfinished.length} item(s) are still unfinished — ` +
+              `${list}. Finish them, or — if the work went elsewhere and that was deliberate — DROP each one ` +
+              `with a reason: plans:set-status { slug:'${planSlug}', item:'<P-NNN>', status:'dropped', ` +
+              `note:'<why this was departed from>' }. Departing from the plan is legitimate; departing from it ` +
+              `silently is what this refuses. To ship anyway, pass force:{ reason } — it is recorded on the plan.`,
+          };
+        }
       }
     }
   }

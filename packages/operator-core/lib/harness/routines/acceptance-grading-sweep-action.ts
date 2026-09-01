@@ -131,7 +131,7 @@ registerSystemAction('acceptance-grading-sweep', async () => {
 
     /** R7 — the ONE definition of stuck-ness. Never re-derived from scorecard rows. */
     evaluateGate: async (planSlug) => {
-      const verdict = await evaluatePlanAcceptanceGate(planSlug);
+      const verdict = await evaluatePlanAcceptanceGate(planSlug, { gradingRecruitment: true });
       return { satisfied: verdict.satisfied, code: verdict.code ?? null };
     },
 

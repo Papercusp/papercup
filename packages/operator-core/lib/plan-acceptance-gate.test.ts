@@ -7,7 +7,11 @@
  * teaching message), and the independent-grader satisfaction path.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ACCEPTANCE_VERDICT_REQUIRED_AFTER, evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
+import {
+  ACCEPTANCE_VERDICT_REQUIRED_AFTER,
+  evaluatePlanAcceptanceGate,
+  unfinishedItemsAreAuditedNonCode,
+} from './plan-acceptance-gate';
 import {
   getAcceptanceRubricForPlan,
   getAcceptanceRubricsForPlan,
@@ -171,6 +175,37 @@ beforeEach(() => {
   mockPg.mockReturnValue(
     sqlReturning([{ plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null, content: null }]),
   );
+});
+
+describe('grading-recruitment unfinished-item exception', () => {
+  const unfinished = [{ itemId: 'P-011' }];
+
+  it('admits an unfinished tail only when every item is effectively audited not-code', () => {
+    expect(
+      unfinishedItemsAreAuditedNonCode(unfinished, [
+        { entry: { itemId: 'P-011', verdict: 'not-code' } },
+      ]),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['missing audit', []],
+    ['implemented audit', [{ entry: { itemId: 'P-011', verdict: 'implemented' } }]],
+    [
+      'mixed tail',
+      [
+        { entry: { itemId: 'P-011', verdict: 'not-code' } },
+        { entry: { itemId: 'P-010', verdict: 'partial' } },
+      ],
+    ],
+  ])('refuses %s evidence', (_label, audits) => {
+    const items = _label === 'mixed tail' ? [...unfinished, { itemId: 'P-010' }] : unfinished;
+    expect(unfinishedItemsAreAuditedNonCode(items, audits)).toBe(false);
+  });
+
+  it('does not manufacture an exception when there are no unfinished items', () => {
+    expect(unfinishedItemsAreAuditedNonCode([], [])).toBe(false);
+  });
 });
 
 describe('evaluatePlanAcceptanceGate', () => {

@@ -132,6 +132,13 @@ describe('the production escalation lookup follows the canonical work-item schem
   });
 });
 
+describe('the sweep asks the gate for recruitment readiness, never shipment permission', () => {
+  it('uses the explicit grading-recruitment mode', () => {
+    const src = read(ACTION_FILE);
+    expect(src).toContain('evaluatePlanAcceptanceGate(planSlug, { gradingRecruitment: true })');
+  });
+});
+
 /**
  * Extract every module specifier the file actually IMPORTS — static `from '...'` and
  * dynamic `import('...')` alike.
