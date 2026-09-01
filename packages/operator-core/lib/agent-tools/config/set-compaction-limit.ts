@@ -21,8 +21,8 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setCompactionLimit, getPresence } from '../coordination/presence';
-import { resolveModelSpecForOwner } from '../../compaction-usage';
-import { clampCompactionLimit, selfSetCeilingForSpec } from '../../agent-config-constants';
+import { estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
+import { clampCompactionLimit, selfSetCeilingForSpec, selfSetCeilingForWindow } from '../../agent-config-constants';
 import { setCompactionLimitForOwner } from './set-compaction-limit-core';
 
 /** Soft limit applied when a session has set none. Read-time default (P-007).
@@ -75,13 +75,19 @@ export default defineTool({
     // unresolvable spec clamps to the fleet-default [1m] ceiling (400k, WI-3383) —
     // on this opus[1m]-default fleet a genuine small-window model is always
     // explicitly specced, so an unknown is a 1M session, not a haiku.
-    const spec = await resolveModelSpecForOwner(identity.ownerId).catch(() => null);
+    // Codex publishes its effective context window from the live rollout. Prefer
+    // that measurement over a launch-spec inference: the CLI can apply a smaller
+    // window than the model spec implies, and accepting a limit above the measured
+    // ceiling makes ok:true lie until the watchdog repairs it later.
+    const measuredWindow = await estimateContextWindowForOwner(identity.ownerId).catch(() => null);
+    const spec =
+      measuredWindow == null ? await resolveModelSpecForOwner(identity.ownerId).catch(() => null) : null;
     // SELF-SET path ⇒ the self-set ceiling (825k on a [1m] window), not the SEEDED
     // default (400k). Until 2026-08-08 these were one constant, so this verb's own
     // stated purpose — "raise it for wide-context work" — was unreachable on the
     // fleet's default spec: every request above 400k silently clamped back to it.
     // Seeding still uses defaultCompactionLimitForSpec, so fleet-wide cost is unchanged.
-    const cap = selfSetCeilingForSpec(spec);
+    const cap = measuredWindow != null ? selfSetCeilingForWindow(measuredWindow) : selfSetCeilingForSpec(spec);
     if (args.limit > cap) {
       return {
         data: {
@@ -95,7 +101,10 @@ export default defineTool({
         },
       };
     }
-    const applied = clampCompactionLimit(args.limit, spec, { selfSet: true });
+    // A measured window is authoritative, so the spec-based clamp must not
+    // silently lower an otherwise valid request after the measured-cap check.
+    const applied =
+      measuredWindow != null ? args.limit : clampCompactionLimit(args.limit, spec, { selfSet: true });
     if (applied !== args.limit) {
       return {
         data: {

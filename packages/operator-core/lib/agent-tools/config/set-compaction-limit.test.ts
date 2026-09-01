@@ -14,11 +14,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { setLimitMock, getPresenceMock, specMock } = vi.hoisted(() => ({
+const { setLimitMock, getPresenceMock, specMock, windowMock } = vi.hoisted(() => ({
   // Args typed so `.mock.calls.at(-1)?.[1]` (the echo in beforeEach) typechecks.
   setLimitMock: vi.fn(async (_owner: string, _limit: number) => {}),
   getPresenceMock: vi.fn(),
   specMock: vi.fn(),
+  windowMock: vi.fn(),
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-test' }),
@@ -29,6 +30,7 @@ vi.mock('../coordination/presence', () => ({
 }));
 vi.mock('../../compaction-usage', () => ({
   resolveModelSpecForOwner: specMock,
+  estimateContextWindowForOwner: windowMock,
 }));
 
 const tool = (await import('./set-compaction-limit')).default;
@@ -43,6 +45,7 @@ const SELF_SET_1M_CEILING = 825_000;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  windowMock.mockResolvedValue(null);
   getPresenceMock.mockImplementation(async () => ({
     compactionLimit: setLimitMock.mock.calls.at(-1)?.[1] ?? null,
   }));
@@ -60,6 +63,23 @@ describe('config:set-compaction-limit runtime validation', () => {
     expect(out.data.error).toBe('limit_exceeds_cap');
     expect(out.data.requested).toBe(900_000);
     expect(out.data.cap).toBe(SELF_SET_1M_CEILING);
+    expect(out.data.compactionLimit).toBeUndefined();
+  });
+
+  it('uses the measured effective window when it is narrower than the spec-derived ceiling', async () => {
+    specMock.mockResolvedValue('opus[1m]:high');
+    windowMock.mockResolvedValue(828_400);
+    const out = (await tool.handler({ limit: 800_000 }, {} as never)) as ToolOut;
+
+    // The spec suggests an 825k self-set ceiling, but the live Codex rollout's
+    // 828.4k effective window safely permits only 682k after margin/overshoot.
+    expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.data).toMatchObject({
+      ok: false,
+      error: 'limit_exceeds_cap',
+      requested: 800_000,
+      cap: 682_000,
+    });
     expect(out.data.compactionLimit).toBeUndefined();
   });
 
