@@ -533,13 +533,12 @@ export default defineTool({
      * hint rather than asserting the paths are clean.
      */
     const pathHintsFor = async (
-      wi: { payload?: unknown } | null,
-    ): Promise<{ pathHints: unknown; pathHintsNote: string | null } | null> => {
-      if (!wi?.payload) return null;
+      wi: { id?: string; payload?: unknown; title?: string | null; summary?: string | null } | null,
+    ): Promise<import('../../stale-path-hints-claim-port').ClaimTimeStalePathAdvisory | null> => {
+      if (!wi?.payload && !wi?.title && !wi?.summary) return null;
       try {
         const m = await import('../../stale-path-hints-claim-port');
-        const hints = await m.getClaimTimeStalePathHints({ payload: wi.payload });
-        return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
+        return m.getClaimTimeStalePathAdvisory({ workItem: wi });
       } catch {
         return null;
       }

@@ -5511,7 +5511,8 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  * claims. An issue-family work-item can carry a `payload.plan_item` back-pointer binding it to a
  * plan-item LANE (P-NNN of some plan). When that lane is being ACTIVELY driven — the parent plan is
  * operationally `started`/`paused`, or an ordinary plan is in a non-executable lifecycle state
- * (`paused`/`active`), or the plan-item is under a LIVE lease held by ANOTHER agent — the
+ * (`paused`/`active`), or the plan-item is under a LIVE lease or durable assignment held by
+ * ANOTHER agent — the
  * item belongs to that lane's own dispatch, NOT the general backlog-clearance drain. Without this
  * floor the drain SCOOPS such an item into the shared claim pool; members that know the lane is reserved (its plan's
  * `## Now`) correctly REFUSE + release it, and the scheduler immediately re-serves it — the
@@ -5520,8 +5521,9 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  *
  * SOUND + narrow: it fires ONLY when (a) the linked plan is under execution — operationally
  * `op_status IN ('started','paused')` — or is an ordinary plan in a non-executable lifecycle
- * state (`status IN ('paused','active')`), or (b) a non-lapsed `plan_item_claims` lease is
- * held by a DIFFERENT owner. An ordinary `ready` plan with NULL/`done` op_status, or a per-run
+ * state (`status IN ('paused','active')`), (b) a non-lapsed `plan_item_claims` lease is
+ * held by a DIFFERENT owner, or (c) an active `plan_item_assignments` row reserves the item
+ * to a DIFFERENT owner/name. An ordinary `ready` plan with NULL/`done` op_status, or a per-run
  * instance whose lifecycle state is covered only by the template row, is NOT excluded — those
  * items drain normally (no starvation of genuinely-free backlog). A member can still claim a
  * reserved item DIRECTLY by id (the named-claim floor bypass) when it legitimately owns the lane.
@@ -5681,6 +5683,33 @@ export function reservedPlanLaneExclusionSql(
            AND c.expires_ts > now()
            AND c.owner <> ${assignee}
       ))
+      -- EI-22040912157347872: ASSIGNMENT is the durable ownership intent underneath the
+      -- leased claim. A route-owning plan session can legitimately be between claims while
+      -- its assignment remains active; without this leg a generic kind-drain claims the
+      -- linked work-item, reads the plan ruling, releases it, and the scheduler serves it
+      -- again. That happened twice to WI-1801547 after its P-008 handoff.
+      --
+      -- Reserve an active assignment from every OTHER claimant. The assigned owner may
+      -- still self-select through either identity axis the plan-item claim door accepts:
+      -- the raw ownerId stored directly as assignee_name, or a stable adopted name resolved
+      -- through agent_name_sessions. A soft release ("released_ts") is the explicit return
+      -- to the generic pool; the existing dead/stalled assignment reapers perform that same
+      -- release after their grace windows, so this adds no parallel ownership mechanism.
+      OR EXISTS (
+        SELECT 1 FROM harness_shared.plan_item_assignments a
+         WHERE a.workspace_id = ${wsCol}
+           AND a.plan_slug = ${col}->'plan_item'->>'plan_slug'
+           AND a.item_id = ${col}->'plan_item'->>'item_id'
+           AND a.released_ts IS NULL
+           AND NULLIF(BTRIM(a.assignee_name), '') IS NOT NULL
+           AND a.assignee_name <> ${assignee}
+           AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.agent_name_sessions ans
+              WHERE ans.workspace_id = a.workspace_id
+                AND ans.session_owner_id = ${assignee}
+                AND ans.agent_name = a.assignee_name
+           )
+      )
       -- EI-20467873456529090: a completed plan-item is terminal residue, not generic backlog.
       -- planItemLaneBlockReason already rejects this after a claim, but that is too late for
       -- claimable previews, aggregate diagnostics, and fleet:bench. The normalized index is the
