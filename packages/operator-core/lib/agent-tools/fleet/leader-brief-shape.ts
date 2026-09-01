@@ -126,6 +126,12 @@ function compactClaimableNow(value: unknown): unknown {
   return out;
 }
 
+/** Keep the productive-headcount provenance beside the six numeric fields while
+ * bounding it to the stable, machine-readable fields emitted by the store. */
+function compactHeadcountBasis(value: unknown): unknown {
+  return pick(value, ['kind', 'liveRosterMembers', 'transactionWorkerReadyMembers'], 120) ?? value;
+}
+
 /** P-005: validate and keep this bounded aggregate atomically. Its metadata is
  * what makes the counts comparable; dropping scope/window/population would
  * violate D-005 even if the numerals survived. */
@@ -330,6 +336,13 @@ function compactSummary(value: unknown, ultra = false): unknown {
         ['schemaVersion', 'fleet', 'window', 'populationBasis', 'target', 'liveness', 'claimFlow'],
         180,
       ) ?? {};
+    const lifecycleTarget = asDict(lifecycle.target);
+    if (lifecycleTarget) {
+      const compactTarget =
+        pick(lifecycleTarget, ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict'], 120) ?? {};
+      if ('basis' in lifecycleTarget) compactTarget.basis = compactHeadcountBasis(lifecycleTarget.basis);
+      compactLifecycle.target = compactTarget;
+    }
     for (const key of ['currentRunnableRoster', 'relevantRoster', 'everMembers'] as const) {
       const population = asDict(lifecycle[key]);
       if (!population) continue;
@@ -356,9 +369,10 @@ function compactSummary(value: unknown, ultra = false): unknown {
 
   const headcount = pick(
     source.headcount,
-    ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict'],
+    ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict', 'basis'],
     120,
   );
+  if (headcount && 'basis' in headcount) headcount.basis = compactHeadcountBasis(headcount.basis);
   if (headcount) out.headcount = headcount;
 
   if ('claimable_now' in source) out.claimable_now = compactClaimableNow(source.claimable_now);

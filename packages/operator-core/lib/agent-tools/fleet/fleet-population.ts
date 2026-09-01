@@ -212,6 +212,8 @@ export interface FleetPopulationLifecycleTarget {
   shortfall: number | null;
   underStrength: boolean | null;
   verdict: string;
+  /** The same productive-population basis as the source headcount projection. */
+  basis?: unknown;
 }
 
 export type FleetPopulationLifecycleFlow =
@@ -355,6 +357,7 @@ export function buildFleetPopulationLifecycle<T extends {
         shortfall: input.target.shortfall ?? null,
         underStrength: input.target.underStrength ?? null,
         verdict: input.target.verdict ?? 'unknown',
+        ...(input.target.basis !== undefined ? { basis: input.target.basis } : {}),
       }
     : null;
   const claimFlow: FleetPopulationLifecycleFlow = input.claimFlow ?? {

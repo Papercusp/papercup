@@ -51,6 +51,11 @@ describe('buildFleetPopulationLifecycle', () => {
         shortfall: 1,
         underStrength: true,
         verdict: 'under-strength',
+        basis: {
+          kind: 'worker-ready-live-intersection',
+          liveRosterMembers: 4,
+          transactionWorkerReadyMembers: 2,
+        },
       },
     });
 
@@ -68,6 +73,15 @@ describe('buildFleetPopulationLifecycle', () => {
         ownerIds: ['live', 'parked', 'dead'],
       },
       everMembers: { counted: 3, ownerIds: ['dead', 'historical', 'live'] },
+      target: {
+        current: 2,
+        verdict: 'under-strength',
+        basis: {
+          kind: 'worker-ready-live-intersection',
+          liveRosterMembers: 4,
+          transactionWorkerReadyMembers: 2,
+        },
+      },
       liveness: { live: 1, parked: 1, dead: 1, unknown: 1 },
       claimFlow: { status: 'unknown', values: null, reason: 'claim-flow-unread' },
     });

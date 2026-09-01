@@ -243,6 +243,33 @@ describe('unguarded-halt rescue — wiring', () => {
     expect(body).toContain('there is no one to reply to');
   });
 
+  it('reports the structured loop-repair outcome instead of hiding recurrence failure', () => {
+    const repaired = rescueBody('drain-fleet', 2, {
+      armed: true,
+      reason: 'armed',
+      loopName: 'loop-member-7',
+    });
+    expect(repaired).toContain('SYSTEM REPAIR: your recurring loop is now armed (loop-member-7).');
+    expect(repaired).toContain('Verify with loop:status');
+
+    const failed = rescueBody('drain-fleet', 2, {
+      armed: false,
+      reason: 'fleet-claim-spec-unresolved',
+    });
+    expect(failed).toContain('SYSTEM REPAIR COULD NOT ARM YOUR LOOP (fleet-claim-spec-unresolved).');
+    expect(failed).toContain('restore recurrence with loop:arm');
+  });
+
+  it('arms recurrence before writing the rescue inbox row or issuing the wake', () => {
+    const src = readFileSync(join(__dirname, 'unguarded-halt-rescue-action.ts'), 'utf8');
+    const armAt = src.indexOf('autoArmFleetMemberLoop({');
+    const inboxAt = src.indexOf('sendMessage(RESCUE_IDENTITY', armAt);
+    const wakeAt = src.indexOf('wakeRecipients([c.agentId]', inboxAt);
+    expect(armAt).toBeGreaterThan(-1);
+    expect(inboxAt).toBeGreaterThan(armAt);
+    expect(wakeAt).toBeGreaterThan(inboxAt);
+  });
+
   it('marks its own outbox rows so the throttle can find them', () => {
     expect(RESCUE_PREFIX.length).toBeGreaterThan(0);
     expect(rescueBody('f', 1)).not.toContain(RESCUE_PREFIX);

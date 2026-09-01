@@ -73,7 +73,7 @@ describe('claimable_now aggregate projection (WI-41164 / P-002)', () => {
 });
 
 describe('headcount aggregate projection (WI-41145)', () => {
-  it('keeps target, current, shortfall, and verdict in every monitor tier', () => {
+  it('keeps target, current, shortfall, verdict, and productive-population basis in every monitor tier', () => {
     for (const tier of ['standard', 'trimmed'] as const) {
       const output = shapeLeaderBrief(
         {
@@ -88,6 +88,12 @@ describe('headcount aggregate projection (WI-41145)', () => {
               shortfall: 2,
               underStrength: true,
               verdict: 'under-strength',
+              basis: {
+                kind: 'worker-ready-live-intersection',
+                liveRosterMembers: 53,
+                transactionWorkerReadyMembers: 5,
+                ignoredLargeField: 'x'.repeat(4_000),
+              },
             },
           },
         },
@@ -101,6 +107,11 @@ describe('headcount aggregate projection (WI-41145)', () => {
         shortfall: 2,
         underStrength: true,
         verdict: 'under-strength',
+        basis: {
+          kind: 'worker-ready-live-intersection',
+          liveRosterMembers: 53,
+          transactionWorkerReadyMembers: 5,
+        },
       });
     }
   });
