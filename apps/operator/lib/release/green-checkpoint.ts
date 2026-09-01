@@ -178,6 +178,7 @@ import {
 // every narration line: a bare `export … from` re-exports without binding locally. Full
 // rationale at the re-export site.
 import {
+  GREEN_CHECKPOINT_RESULT_MARKER,
   ORCHESTRATOR_STDOUT_TAG,
   ORCHESTRATOR_STDOUT_TAG_UNDER_TEST,
   orchestratorStdoutTag,
@@ -2866,11 +2867,6 @@ export function createFatalCheckpointFinalizer(deps: {
   };
 }
 
-/** The marker the green-checkpoint CLI prints its CheckpointResult JSON behind, so the
- *  release-actions routine parses one delimited line instead of brace-slicing the whole
- *  stdout (P-008). MUST stay in sync with the literal in release-actions.ts. */
-export const GREEN_CHECKPOINT_RESULT_MARKER = "__GREEN_CHECKPOINT_RESULT__";
-
 /** Testable terminal-emission seam used by the CLI for every result, including process fatals. */
 export async function emitTerminalCheckpointResult(
   result: CheckpointResult,
@@ -2942,6 +2938,7 @@ export const CAPTURED_RESULT_MARKER_PLACEHOLDER =
  *     (`:` where `]` would be), so the habit every reader already has — grepping
  *     `[green-checkpoint]` — silently STOPS matching fixtures, with no change on their side. */
 export {
+  GREEN_CHECKPOINT_RESULT_MARKER,
   ORCHESTRATOR_STDOUT_TAG,
   ORCHESTRATOR_STDOUT_TAG_UNDER_TEST,
   orchestratorStdoutTag,
