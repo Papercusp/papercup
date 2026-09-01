@@ -157,6 +157,11 @@ const seedNormalizedPlanItem = (planSlug: string, itemId: string, status: string
 const seedLease = (slug: string, itemId: string, owner: string, expiresMinFromNow: number) =>
   db.sql`INSERT INTO harness_shared.plan_item_claims (plan_slug, item_id, owner, expires_ts)
           VALUES (${slug}, ${itemId}, ${owner}, now() + make_interval(mins => ${expiresMinFromNow}))`;
+const seedAssignment = (slug: string, itemId: string, assignee: string) =>
+  db.sql`INSERT INTO harness_shared.plan_item_assignments
+           (workspace_id, harness_slug, plan_slug, item_id, assignee_name,
+            assigned_by_user, assigned_ts)
+         VALUES (${WS}, ${H}, ${slug}, ${itemId}, ${assignee}, 'test-leader', now())`;
 const seedPlanLinkedIssue = (id: string, planSlug: string, itemId: string) =>
   seed(id, { kind: 'task', payload: { plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: H } } });
 
@@ -211,6 +216,9 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL); // base work_items + hfc + engineer_issues + plan tables
+  // EI-22040912157347872: the new SSOT/TS floor reads durable assignments and
+  // adopted-name bindings. This focused DB did not previously install migration 140.
+  await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WATCHDOG_TICKS_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
@@ -270,6 +278,10 @@ beforeAll(async () => {
   // EI-21268387863408600: ordinary draft/paused lifecycle plans are also reserved, while ready
   // and done controls remain free and per-run instance lifecycle rows stay exempt.
   await db.sql.unsafe(readMigration('920-draft-paused-plan-claim-floor.sql.DRAFT')).simple();
+  // EI-22040912157347872: an active durable plan-item assignment reserves the linked work-item
+  // while its owner is between claim leases. Apply the real migration so the queryable SSOT and
+  // every TS claim path must agree on the new assignment leg.
+  await db.sql.unsafe(readMigration('1059-plan-assignment-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -277,7 +289,8 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.plan_items, harness_shared.plan_decisions,
-                       harness_shared.harness_plans, harness_shared.plan_item_claims`;
+                       harness_shared.harness_plans, harness_shared.plan_item_claims,
+                       harness_shared.plan_item_assignments, harness_shared.agent_name_sessions`;
 });
 
 describe('canonical plan-item sibling claim guard (EI-21151083448505391)', () => {
@@ -381,6 +394,11 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seedPlan('other-lease-plan', 'ready'); // 11b. reserved by ANOTHER owner's live lease
     await seedPlanLinkedIssue('WI-OTHER-LEASE', 'other-lease-plan', 'P-03');
     await seedLease('other-lease-plan', 'P-03', 'su-other-owner', 20);
+    // 11c. an active durable assignment reserves the lane while its owner is between
+    // claim leases. This is the exact WI-1801547 claim→release→re-serve recurrence.
+    await seedPlan('assigned-plan', 'ready');
+    await seedPlanLinkedIssue('WI-ASSIGNED-PLAN', 'assigned-plan', 'P-ASSIGNED');
+    await seedAssignment('assigned-plan', 'P-ASSIGNED', 'su-route-owner');
     await seedPlan('draft-plan', 'draft'); // 11c. reserved to an ordinary draft plan
     await seedPlanLinkedIssue('WI-DRAFT-PLAN', 'draft-plan', 'P-DRAFT');
     await seedPlan('paused-lifecycle-plan', 'paused'); // 11d. reserved to an ordinary paused plan
