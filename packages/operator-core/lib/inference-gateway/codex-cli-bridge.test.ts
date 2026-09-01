@@ -108,7 +108,12 @@ describe('codexCliResponsesBody', () => {
       object: string;
       status: string;
       output_text: string;
-      output: Array<{ id: string; type: string; status: string; content: Array<{ type: string; text: string; annotations: unknown[]; logprobs: unknown[] }> }>;
+      output: Array<{
+        id: string;
+        type: string;
+        status: string;
+        content: Array<{ type: string; text: string; annotations: unknown[]; logprobs: unknown[] }>;
+      }>;
       usage: { input_tokens: number; output_tokens: number; total_tokens: number };
       gateway_codex_cli: boolean;
     };
@@ -122,13 +127,26 @@ describe('codexCliResponsesBody', () => {
   });
 
   it('emits the output-item/content event progression a Codex client uses to materialize text', () => {
-    const body = codexCliResponsesBody({ model: 'gpt-5.6-sol', text: 'GATEWAY_AUTO_OK', inputTokens: 8, outputTokens: 2 });
+    const body = codexCliResponsesBody({
+      model: 'gpt-5.6-sol',
+      text: 'GATEWAY_AUTO_OK',
+      inputTokens: 8,
+      outputTokens: 2,
+    });
     const wire = codexCliResponsesCompletionSse(body);
     const events = wire
       .split('\n\n')
-      .map((frame) => frame.split('\n').find((line) => line.startsWith('data: '))?.slice(6))
+      .map((frame) =>
+        frame
+          .split('\n')
+          .find((line) => line.startsWith('data: '))
+          ?.slice(6),
+      )
       .filter((data): data is string => Boolean(data && data !== '[DONE]'))
-      .map((data) => JSON.parse(data) as { type: string; item?: { id?: string }; response?: { id?: string }; delta?: string });
+      .map(
+        (data) =>
+          JSON.parse(data) as { type: string; item?: { id?: string }; response?: { id?: string }; delta?: string },
+      );
     expect(events.map((event) => event.type)).toEqual([
       'response.output_item.added',
       'response.content_part.added',
@@ -308,7 +326,7 @@ describe('runCodexCliCompletion', () => {
 const AUTH_HEADER_ERROR_STDOUT = [
   '{"type":"thread.started","thread_id":"01a04414-e33b-7cc3-bc02-6bf0fe3c3ac9"}',
   '{"type":"turn.started"}',
-  "2026-08-27T16:36:54.864240Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: UTF-8 encoding error: failed to convert header to a str for header name 'authorization' with value: \"Bearer PLACEHOLDER-NOT-A-REAL-TOKEN\"",
+  '2026-08-27T16:36:54.864240Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: UTF-8 encoding error: failed to convert header to a str for header name \'authorization\' with value: "Bearer PLACEHOLDER-NOT-A-REAL-TOKEN"',
 ].join('\n');
 
 describe('codexCliFailureDetail (EI-21618978789879488)', () => {

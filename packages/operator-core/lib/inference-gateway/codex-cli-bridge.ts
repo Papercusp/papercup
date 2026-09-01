@@ -78,7 +78,10 @@ export function parseBridgeModel(model: string | undefined): { id: string; effor
   let effort = 'medium';
   const colon = m.lastIndexOf(':');
   if (colon > 0) {
-    const suffix = m.slice(colon + 1).trim().toLowerCase();
+    const suffix = m
+      .slice(colon + 1)
+      .trim()
+      .toLowerCase();
     if (CODEX_EFFORTS.has(suffix)) {
       effort = suffix;
       m = m.slice(0, colon);
@@ -177,13 +180,17 @@ export function codexCliFailureDetail(stdout: string, stderr: string, limit = 40
     if (!obj || typeof obj !== 'object') continue;
     const ev = obj as { type?: string; error?: unknown; message?: unknown };
     const asText = (v: unknown): string =>
-      typeof v === 'string' ? v : v == null ? '' : (() => {
-        try {
-          return JSON.stringify(v);
-        } catch {
-          return String(v);
-        }
-      })();
+      typeof v === 'string'
+        ? v
+        : v == null
+          ? ''
+          : (() => {
+              try {
+                return JSON.stringify(v);
+              } catch {
+                return String(v);
+              }
+            })();
     if (ev.error != null) errorLines.push(asText(ev.error));
     else if (typeof ev.type === 'string' && /error|failed/i.test(ev.type)) {
       errorLines.push(`${ev.type}: ${asText(ev.message)}`.trim().replace(/:\s*$/, ''));
@@ -193,11 +200,7 @@ export function codexCliFailureDetail(stdout: string, stderr: string, limit = 40
   // Most specific first: an explicit error from either stream, then whatever
   // context remains. The last fallback exists so the caller can always say
   // SOMETHING about a non-zero exit.
-  const picked =
-    errorLines.join(' | ').trim() ||
-    stderrTail ||
-    otherLines.join(' | ').trim() ||
-    stdout.trim();
+  const picked = errorLines.join(' | ').trim() || stderrTail || otherLines.join(' | ').trim() || stdout.trim();
   // Codex tracing can include the rejected Authorization header's WHOLE bearer
   // value in this error. The diagnostic must preserve the cause without turning
   // a gateway log/error envelope into a credential exfiltration surface.
@@ -344,7 +347,9 @@ export function runCodexCliCompletion(opts: CodexCliRunOpts): Promise<CodexCliRu
         const r = parseCodexCliEvents(stdout);
         if (!r.text) {
           reject(
-            new Error(`codex-cli bridge: no agent_message in codex output (${codexCliFailureDetail(stdout, stderr, 200)})`),
+            new Error(
+              `codex-cli bridge: no agent_message in codex output (${codexCliFailureDetail(stdout, stderr, 200)})`,
+            ),
           );
           return;
         }

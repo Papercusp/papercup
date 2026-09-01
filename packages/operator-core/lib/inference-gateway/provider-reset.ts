@@ -34,15 +34,7 @@ export function parseProviderReset(raw: string | undefined, nowMs: number): numb
       if (!Number.isFinite(amount)) return undefined;
       milliseconds +=
         amount *
-        (unit === 'ms'
-          ? 1
-          : unit === 's'
-            ? 1_000
-            : unit === 'm'
-              ? 60_000
-              : unit === 'h'
-                ? 3_600_000
-                : 86_400_000);
+        (unit === 'ms' ? 1 : unit === 's' ? 1_000 : unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000);
     }
     return Number.isFinite(milliseconds) ? nowMs + Math.max(0, milliseconds) : undefined;
   }
