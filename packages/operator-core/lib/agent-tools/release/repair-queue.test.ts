@@ -164,6 +164,54 @@ describe('release:repair-queue', () => {
     expect(result).toMatchObject({ ok: true, retired: true, auditRecorded: true });
   });
 
+  // WI-1105109 [owner 2026-08-30, OWNER-interactive]: "How can we make sure another
+  // agent uses the frozen candidate system next and doesn't retire it like you did."
+  //
+  // The recorded failure was NOT the retire — that one was provably correct. It was
+  // firing release:checkpoint-run twice immediately AFTER it, each cutting a fresh
+  // candidate at tip: the re-cut-at-tip treadmill D-007 diagnosed, reintroduced by hand
+  // moments after clearing the thing that prevents it. `notWhen` already forbids this,
+  // but guidance is read BEFORE the call while the mistake happens AFTER it — so the
+  // procedure has to ride on the RESULT the caller is holding when they pick their next
+  // move. This pins that it does.
+  it('states the post-retire procedure on a SUCCESSFUL retire, and only then (WI-1105109)', async () => {
+    const args = {
+      op: 'retire',
+      expectedCandidate: queue.candidate,
+      expectedRepairHead: queue.repairHead,
+      expectedUpdatedAtMs: queue.updatedAtMs,
+      reason: 'terminal incident cleanup',
+    } as const;
+
+    const retired = body(
+      await tool.handler({ ...args, confirm: true } as never, { role: 'su' } as never),
+    ) as { retired?: boolean; nextStep?: string };
+    expect(retired.retired).toBe(true);
+    expect(
+      retired.nextStep,
+      'a successful retire must carry the next-step procedure, not leave it to guidance',
+    ).toEqual(expect.any(String));
+    // The two facts that actually prevent the treadmill: the gate re-freezes by itself,
+    // and checkpoint-run is NOT the lever to restart it.
+    expect(retired.nextStep).toMatch(/re-?freez/i);
+    expect(retired.nextStep).toMatch(/release:checkpoint-run/);
+    expect(retired.nextStep).toMatch(/converge/);
+
+    // CONTROL — the assertions above are all "field is present and matches", so they
+    // would pass just as well if `nextStep` were emitted unconditionally on every
+    // branch, which would make it noise rather than a signal about what just happened.
+    // A dry run retires NOTHING, so it must NOT claim a post-retire procedure.
+    const dryRun = body(await tool.handler(args as never, { role: 'su' } as never)) as {
+      retired?: boolean;
+      nextStep?: string;
+    };
+    expect(dryRun.retired).toBe(false);
+    expect(
+      dryRun.nextStep,
+      'control: nothing was retired, so there is no post-retire step to state',
+    ).toBeUndefined();
+  });
+
   it('refuses a stale caller identity before the storage CAS', async () => {
     const result = body(
       await tool.handler(
