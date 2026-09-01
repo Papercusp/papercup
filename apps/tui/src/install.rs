@@ -330,10 +330,25 @@ fn shell_single_quote(value: &str) -> String {
 /// client indefinitely even though it exposes the exact source identity needed to
 /// detect the mismatch. The repair reuses P-021's one supported install/update path;
 /// `PUI_OPERATOR` remains scoped to the selected remote target.
+///
+/// `operator_generation_caught_up` disambiguates a DIFFERING sha into two
+/// structurally different situations (EI-22066271581968324): the installed pui may
+/// be genuinely BEHIND the operator (rebuilding from local tip converges — the
+/// existing repair is correct and actionable), or the operator may simply be
+/// PINNED to an older generation the local tree has already passed (`release`
+/// (:3070) lags `staging` by design, or any long-running operator that hasn't been
+/// restarted since). In the latter case the prescribed repair can never converge:
+/// it always rebuilds from the *current* local tip, which on a continuously
+/// committing tree is a strictly newer commit each time, so the two shas simply
+/// never land on the same value again — a deterministic loop, not a repair. Pass
+/// `Some(true)` when the caller has verified (via `operator_generation_contained`)
+/// that the operator's sha is an ancestor of / equal to the installed sha; `None`
+/// when unknown (preserves the original STALE+repair verdict, the safe default).
 pub fn operator_install_freshness(
     installed_sha: &str,
     operator_sha: Option<&str>,
     endpoint: &str,
+    operator_generation_caught_up: Option<bool>,
 ) -> OperatorInstallFreshness {
     match operator_sha.map(str::trim).filter(|sha| !sha.is_empty()) {
         // The operator identity endpoint intentionally exposes `git rev-parse
@@ -343,6 +358,15 @@ pub fn operator_install_freshness(
         Some(sha) if sha_identity_matches(installed_sha, sha) => OperatorInstallFreshness {
             status: InstallFreshnessStatus::Ok,
             detail: format!("installed source {installed_sha} matches the selected operator"),
+            repair: None,
+        },
+        Some(sha) if operator_generation_caught_up == Some(true) => OperatorInstallFreshness {
+            status: InstallFreshnessStatus::Ok,
+            detail: format!(
+                "installed source {installed_sha} already covers the selected operator's \
+                 generation {sha} (operator is pinned to an older/deployed generation — \
+                 expected skew, not local staleness; rebuilding cannot change it)"
+            ),
             repair: None,
         },
         Some(sha) => OperatorInstallFreshness {
@@ -363,6 +387,47 @@ pub fn operator_install_freshness(
                 "upgrade the selected operator, then run `PUI_OPERATOR={endpoint} pui doctor`"
             )),
         },
+    }
+}
+
+/// Best-effort: is `operator_sha` an ancestor of (or equal to) `installed_sha` in
+/// the git history rooted at `source_root`? `Some(true)` means the installed pui
+/// already covers everything the operator's generation does, so a differing sha is
+/// expected deploy/restart skew rather than local staleness. `Some(false)` means a
+/// genuine divergence (the installed pui is missing commits the operator has, or
+/// the two histories are unrelated) — the existing rebuild repair remains correct.
+/// `None` means this could not be determined (no git on PATH, `source_root` is not
+/// a git worktree, one of the shas does not resolve, …) and callers MUST treat that
+/// as "unknown", never as "no" — it falls back to the pre-existing STALE verdict.
+pub fn operator_generation_contained(
+    source_root: &str,
+    operator_sha: &str,
+    installed_sha: &str,
+) -> Option<bool> {
+    let operator_sha = operator_sha.trim();
+    let installed_sha = installed_sha.trim();
+    if source_root.trim().is_empty() || operator_sha.is_empty() || installed_sha.is_empty() {
+        return None;
+    }
+    let output = std::process::Command::new("git")
+        .args([
+            "-C",
+            source_root,
+            "merge-base",
+            "--is-ancestor",
+            operator_sha,
+            installed_sha,
+        ])
+        .output()
+        .ok()?;
+    match output.status.code() {
+        // `git merge-base --is-ancestor` prints nothing and answers purely via
+        // exit status: 0 = ancestor (or same commit), 1 = definitively not. Any
+        // other code (128 unknown revision / not a repository, missing git, a
+        // signal, …) is genuinely UNKNOWN, not a "no" — never conflate the two.
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
     }
 }
 
@@ -518,6 +583,7 @@ mod tests {
             binary_sha256: binary_sha,
             companion_path: companion.display().to_string(),
             companion_sha256: companion_sha.clone(),
+            source_root: None,
         };
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
@@ -565,6 +631,7 @@ mod tests {
             binary_sha256: sha256_file(&binary).unwrap(),
             companion_path: "pui-companion.wasm".into(),
             companion_sha256: companion_sha.clone(),
+            source_root: None,
         };
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
@@ -614,14 +681,22 @@ mod tests {
 
     #[test]
     fn operator_freshness_uses_local_verdicts_and_the_same_remote_update_path() {
-        let current =
-            operator_install_freshness("build-a", Some("build-a"), "https://operator.example:9443");
+        let current = operator_install_freshness(
+            "build-a",
+            Some("build-a"),
+            "https://operator.example:9443",
+            None,
+        );
         assert_eq!(current.status.label(), "OK");
         assert!(current.is_ok());
         assert!(current.repair.is_none());
 
-        let stale =
-            operator_install_freshness("build-a", Some("build-b"), "https://operator.example:9443");
+        let stale = operator_install_freshness(
+            "build-a",
+            Some("build-b"),
+            "https://operator.example:9443",
+            None,
+        );
         assert_eq!(stale.status.label(), "STALE");
         assert!(!stale.is_ok());
         assert!(stale.detail.contains("build-a"));
@@ -634,12 +709,14 @@ mod tests {
             "c3bd839379f7461b04a6376f91892c58c48ef9b8",
             Some("c3bd839379"),
             "http://127.0.0.1:3170",
+            None,
         );
         assert!(short_remote.is_ok());
         let short_local = operator_install_freshness(
             "c3bd839379",
             Some("c3bd839379f7461b04a6376f91892c58c48ef9b8"),
             "http://127.0.0.1:3170",
+            None,
         );
         assert!(short_local.is_ok());
 
@@ -647,12 +724,144 @@ mod tests {
             "c3bd839379f7461b04a6376f91892c58c48ef9b8",
             Some("c3bd839379f7461b04a6376f91892c58c48ef9b9"),
             "http://127.0.0.1:3170",
+            None,
         );
         assert!(!same_prefix_but_different.is_ok());
 
-        let unknown = operator_install_freshness("build-a", None, "https://operator.example:9443");
+        let unknown = operator_install_freshness(
+            "build-a",
+            None,
+            "https://operator.example:9443",
+            None,
+        );
         assert_eq!(unknown.status.label(), "ERROR");
         assert!(!unknown.is_ok());
         assert!(unknown.repair.is_some());
+    }
+
+    /// EI-22066271581968324: a differing sha against a PINNED-BEHIND operator
+    /// (release/main, or any long-running operator not restarted since) must not
+    /// keep prescribing a rebuild that can never converge — the deterministic
+    /// loop from the bug report.
+    #[test]
+    fn operator_freshness_stops_the_loop_when_the_operator_is_pinned_behind() {
+        let caught_up = operator_install_freshness(
+            "a88b41aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("6e898b6cf8"),
+            "http://127.0.0.1:9071",
+            Some(true),
+        );
+        assert_eq!(caught_up.status.label(), "OK");
+        assert!(caught_up.is_ok());
+        assert!(
+            caught_up.repair.is_none(),
+            "no local action converges a pinned-behind operator"
+        );
+        assert!(caught_up.detail.contains("a88b41"));
+        assert!(caught_up.detail.contains("6e898b6cf8"));
+
+        // A GENUINE divergence (installed pui is missing operator commits, or the
+        // histories are unrelated) must keep the existing hard-fail + repair —
+        // this is exactly the case the original hard check exists to catch, and
+        // `operator_generation_caught_up` must never soften it.
+        let genuinely_behind = operator_install_freshness(
+            "build-a",
+            Some("build-b"),
+            "http://127.0.0.1:9071",
+            Some(false),
+        );
+        assert_eq!(genuinely_behind.status.label(), "STALE");
+        assert!(genuinely_behind.repair.is_some());
+
+        // Unknown (git unavailable, no recorded source_root, ...) must fall back
+        // to today's verdict rather than silently going quiet.
+        let unknown_ancestry = operator_install_freshness(
+            "build-a",
+            Some("build-b"),
+            "http://127.0.0.1:9071",
+            None,
+        );
+        assert_eq!(unknown_ancestry.status.label(), "STALE");
+        assert!(unknown_ancestry.repair.is_some());
+    }
+
+    /// Real git repo, real `merge-base --is-ancestor` shell-out — this is the
+    /// live half `operator_freshness_stops_the_loop_when_the_operator_is_pinned_behind`
+    /// stubs with a bool.
+    #[test]
+    fn operator_generation_contained_asks_real_git_for_ancestry() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .expect("git must be on PATH for this test");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        fs::write(root.join("f"), b"v1").unwrap();
+        git(&["add", "f"]);
+        git(&["commit", "--quiet", "-m", "v1"]);
+        let older = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        fs::write(root.join("f"), b"v2").unwrap();
+        git(&["add", "f"]);
+        git(&["commit", "--quiet", "-m", "v2"]);
+        let newer = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        let root_str = root.to_str().unwrap();
+        // The operator's (older) sha IS an ancestor of the installed (newer) sha:
+        // the client already covers this generation.
+        assert_eq!(
+            operator_generation_contained(root_str, &older, &newer),
+            Some(true)
+        );
+        // The reverse is definitively false: the newer commit is not an ancestor
+        // of the older one.
+        assert_eq!(
+            operator_generation_contained(root_str, &newer, &older),
+            Some(false)
+        );
+        // A commit git has never heard of resolves to "unknown", not "false".
+        assert_eq!(
+            operator_generation_contained(
+                root_str,
+                "0000000000000000000000000000000000dead",
+                &newer
+            ),
+            None
+        );
+        // No git repository at all is also "unknown".
+        let no_repo = tempdir().unwrap();
+        assert_eq!(
+            operator_generation_contained(no_repo.path().to_str().unwrap(), &older, &newer),
+            None
+        );
     }
 }
