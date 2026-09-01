@@ -58,6 +58,16 @@ Note the vetting self-grade is the ONE deliberate exception to "grader ≠ autho
 - **Non-overlapping** — two criteria that always fail together on the same observation are one criterion.
 - **Structured check preferred (D-006)** — wherever the outcome is objectively checkable, bind it: `check:{ kind:'tests', files }` (deterministic must-pass — paths must resolve at propose time or the propose is refused, and the files are actually RUN at grading time) or `check:{ kind:'instrument', instrumentKey }`. Rate prose-only criteria for checkable outcomes DOWN here — that pressure is this criterion's purpose: it pushes authors from prose to bindings over time.
 
+### Author the falsifier, not the confirming pattern
+
+For every criterion phrased as a negative, name the enumeration that could exhibit a violation — never a search that can only find the compliant pattern. The method must also name what makes that enumeration complete. An empty or partial enumeration is `unknown`/no-verdict, not clean.
+
+- **Absence or bypass claims:** enumerate every write to the state, every read of the row, or every caller/reference to the decision surface, then verify each path resolves through the named authority. Grepping only for the compliant constant or helper cannot reveal a bypass that omits it.
+- **Set-difference and replication claims:** establish corpus coverage before reading pass/fail. Every replication drill that runs tests must assert `matched === filesRequested` (equivalently, matched files equal requested files, with no route error or skipped request) before interpreting the test verdict. `matched=0`, a short match, or an errored route is `unknown`, even when the residual set is empty.
+- **Semantic actuation claims:** use a typed call graph, registry/dispatch resolution, or a live instrument for dynamic surfaces. A textual search for an exported symbol can miss string-dispatched or registered consumers and can match only comments/tests; zero textual references is `unknown`, never proof the surface is inert.
+
+These inversions are deliberately cheap: enumerate possible violators, prove the instrument covered the requested corpus, then judge the observation. If the authoring-time property leaves no artifact (for example intent or attendance), restate it as the observable artifact that property should have produced.
+
 ## Revision currency (D-010)
 
 The attestation pins the rubric plan row's `version` at emit time. ANY later `rubrics:propose` of the same rubricRef bumps the version and VOIDS the attestation — deliberately strict: a typo-only re-propose voids it too, because only re-reading the rubric can judge materiality. The intended loop: critique → improve (version bumps) → **re-emit citing the SAME consult** (emit's `vettingChanged` comparison escapes the unchanged-evidence dedupe, so the re-attestation is never declined as a duplicate). Degrade rules, matching the gate's never-throws contract: the current version unreadable (infra) ⇒ degrade OPEN, any linked vetting satisfies; a stamp lacking `rubricRevision` while the current IS known ⇒ NOT current (strict toward re-vetting).
@@ -79,7 +89,7 @@ All three were hit in a single vetting run (plan `on-demand-local-inference-life
 
 ### 1. The rating VOCABULARY is per-rubric — the meta-rubric does not use the scale your acceptance rubric uses
 
-`meta-acceptance-rubric` grades on **`pass | weak | fail | not-applicable | unknown`**. Most acceptance rubrics grade on **`healthy | degraded | broken | unknown`**. You will typically write both scorecards within an hour of each other, and the scale does NOT carry over.
+`meta-acceptance-rubric` currently grades on **`pass | weak | fail | not-applicable`**. Most acceptance rubrics grade on **`healthy | degraded | broken | unknown`**. You will typically write both scorecards within an hour of each other, and the scale does NOT carry over. Read the live rubric before composing; `unknown` is not in the current meta-rubric scale and is refused as off-scale.
 
 An off-scale value is refused at capture, by design ("an off-scale rating would be silently excluded from trends/staleness") — so the failure is loud, but it arrives only after you have composed every rating and its evidence, and the whole payload has to be resent. Read the target rubric's own `ratingScale` before you compose, not after you are refused: `rubrics:get { rubricRef }`, or `template_data->'ratingScale'`. Map deliberately — `healthy→pass`, `degraded→weak` — rather than assuming the words are interchangeable.
 
