@@ -16,6 +16,7 @@ import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers
 import {
   materializeLoop,
   getLoopStatus,
+  readActiveLoopFacts,
   deactivateLoop,
   transferLoopOwnership,
   loopRoutineName,
@@ -1108,6 +1109,30 @@ describe('loop surface round-trip (real PG)', () => {
     expect(status!.intervalSec).toBe(600);
     const r = await rawRow(OWNER);
     expect(r!.payload_template).toMatchObject({ kickoff: 'second' });
+  });
+
+  it('EI-22079408866636029: re-arming without workItem preserves the existing anchor', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'first',
+      workItem: 'wi-42',
+      sql,
+    });
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 600,
+      kickoff: 'second',
+      sql,
+    });
+
+    const r = await rawRow(OWNER);
+    expect(r!.payload_template).toMatchObject({ kickoff: 'second', workItem: 'WI-42' });
+    expect(await readActiveLoopFacts(OWNER, { sql })).toMatchObject({ workItem: 'WI-42' });
   });
 
   it('WI-3179: re-arming the same owner under a different harness updates the one logical loop row', async () => {
