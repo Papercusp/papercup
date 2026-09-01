@@ -30,6 +30,36 @@ panes and prints a pane/session-scoped relaunch instruction. The old plugin-only
 should run. The non-audio `#[ignore]`d live smokes require the operator running (an
 `~/.papercusp/endpoint-ipc.json` socket present) and exercise the real wire.
 
+## SU-session acceptance (real backends)
+
+PUI creates and reattaches Claude, Codex, and OMP sessions through the shared
+SU-session host (`launch-su` plus the typed session stream). It does not fall back
+to the removed PUI owned-loop/ModelPort provider-chat path. The opt-in matrix runs
+the exact deferred pane argv under a PTY, then proves create, ready, attach, an
+owner turn with a real tool result, identity stability, interrupt/resume, PUI
+restart/reattach, end, and orphan-free reconciliation:
+
+```bash
+PAPERCUSP_REAL_BACKEND_MATRIX=1 \
+PAPERCUSP_REAL_BACKEND_MATRIX_BACKENDS=claude,codex,omp \
+PAPERCUSP_REAL_BACKEND_MATRIX_CLAUDE_ACCOUNT=<eligible-claude-route> \
+PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT=<eligible-codex-route> \
+PAPERCUSP_REAL_BACKEND_MATRIX_OMP_ACCOUNT=<eligible-omp-route> \
+PAPERCUSP_TEST_FILE_TIMEOUT_MS=1800000 \
+npm run test:file -- packages/operator-core/lib/su-session-real-backend-matrix.integration.test.ts
+```
+
+Use only account routes that both `accounts:status` and `psu`'s session-override
+policy admit. The matrix defaults to the staging operator (`:3170`) and refuses
+to spend tokens unless that operator's `launch-su.ts` blob matches the working
+tree. A memory-pressure admission skip is **not measured**, never a backend pass.
+The three-backend durable restart/reconciliation journey is separate and does not
+spawn agents:
+
+```bash
+npm run test:file -- packages/operator-core/lib/su-session-restart-journey.integration.test.ts
+```
+
 ## What's covered
 
 - **`app.rs` — the reducer (pure, no I/O).** Tab switching, `j/k` nav + clamping,
