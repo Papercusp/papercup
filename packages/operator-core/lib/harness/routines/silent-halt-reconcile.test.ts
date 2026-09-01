@@ -8,12 +8,17 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   evaluateSilentHalt,
   sweepSilentHalts,
+  disarmEpochToken,
+  wakeMarkerSummary,
   SILENT_HALT_MIN_STALE_MS,
   SILENT_HALT_HEARTBEAT_FRESH_MS,
   SILENT_HALT_MAX_PAGES_PER_SWEEP,
+  SILENT_HALT_MAX_WAKES_PER_SWEEP,
   type SilentHaltCandidate,
   type SilentHaltSweepDeps,
+  type SilentHaltWakeMarker,
 } from './silent-halt-reconcile';
+import { resolveFleetParkResumePath } from '../../fleet-park-resume-path';
 
 const MIN = 60 * 1000;
 
@@ -135,12 +140,27 @@ describe('evaluateSilentHalt', () => {
 function sweepHarness(
   candidates: SilentHaltCandidate[],
   statuses: Record<string, { active: boolean; lastRealTurnAt: string | null }>,
-  opts: { nowMs?: number; notify?: ReturnType<typeof vi.fn>; dryRun?: boolean } = {},
+  opts: {
+    nowMs?: number;
+    notify?: ReturnType<typeof vi.fn>;
+    dryRun?: boolean;
+    /** Legacy tests exercise the page path; the P-003 wake-first rung is opt-in per test. */
+    wakeFirstEnabled?: boolean;
+    markers?: SilentHaltWakeMarker[] | (() => Promise<readonly SilentHaltWakeMarker[]>);
+    sendWakeMessage?: ReturnType<typeof vi.fn>;
+    fireWake?: ReturnType<typeof vi.fn>;
+    readFleetParkPath?: SilentHaltSweepDeps['readFleetParkPath'];
+  } = {},
 ) {
   const nowMs = opts.nowMs ?? Date.now();
   const notify = opts.notify ?? vi.fn(async () => {});
+  const sendWakeMessage =
+    opts.sendWakeMessage ?? vi.fn(async (_owner: string, _summary: string, _body: string) => {});
+  const fireWake = opts.fireWake ?? vi.fn(async (_owner: string, _summary: string, _ws: string) => {});
   return {
     notify,
+    sendWakeMessage,
+    fireWake,
     run: () =>
       sweepSilentHalts({
         workspaceId: 'ws',
@@ -151,6 +171,13 @@ function sweepHarness(
           readCandidates: async () => candidates,
           readLoopStatuses: (async () => new Map(Object.entries(statuses))) as never,
           notify: notify as unknown as SilentHaltSweepDeps['notify'],
+          wakeFirstEnabled: opts.wakeFirstEnabled ?? false,
+          readWakeMarkers:
+            typeof opts.markers === 'function' ? opts.markers : async () => opts.markers ?? [],
+          sendWakeMessage: sendWakeMessage as unknown as SilentHaltSweepDeps['sendWakeMessage'],
+          fireWake: fireWake as unknown as SilentHaltSweepDeps['fireWake'],
+          readEngineLoopRows: (async () => ({})) as never,
+          readFleetParkPath: opts.readFleetParkPath ?? (async () => null),
         },
       }),
   };
@@ -322,5 +349,171 @@ describe('sweepSilentHalts', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('sweepSilentHalts — wake-first rung (P-003)', () => {
+  const now = Date.parse('2026-09-01T07:00:00.000Z');
+  const oldTurn = new Date(now - 120 * MIN).toISOString();
+  const halted = { 'su-halted': { active: false, lastRealTurnAt: oldTurn } };
+
+  it('first tick: WAKES the halted holder instead of paging — marker written before the wake fires', async () => {
+    const h = sweepHarness([candidate()], halted, { nowMs: now, wakeFirstEnabled: true });
+    const r = await h.run();
+
+    expect(r.woken).toEqual(['su-halted']);
+    expect(r.paged).toEqual([]);
+    expect(h.notify).not.toHaveBeenCalled();
+    expect(h.sendWakeMessage).toHaveBeenCalledOnce();
+    const [owner, summary, body] = h.sendWakeMessage.mock.calls[0];
+    expect(owner).toBe('su-halted');
+    expect(summary).toBe(wakeMarkerSummary('su-halted', disarmEpochToken(now, 120 * MIN)));
+    expect(body).toMatch(/HOLDING 1 work-item/);
+    expect(body).toMatch(/next sweep tick pages the human owner/);
+    expect(h.fireWake).toHaveBeenCalledOnce();
+    // Restart-safety ordering: the durable marker strictly precedes the wake fire.
+    expect(h.sendWakeMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      h.fireWake.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('second tick: a marker for the SAME disarm epoch pages with the wake evidence', async () => {
+    const later = now + 10 * MIN;
+    const c = candidate({ inactiveForMs: 130 * MIN }); // same disarm instant, 10 minutes later
+    const marker: SilentHaltWakeMarker = {
+      to: ['su-halted'],
+      summary: wakeMarkerSummary('su-halted', disarmEpochToken(later, 130 * MIN)),
+      ts: new Date(now).toISOString(),
+    };
+    const h = sweepHarness([c], halted, { nowMs: later, wakeFirstEnabled: true, markers: [marker] });
+    const r = await h.run();
+
+    expect(r.woken).toEqual([]);
+    expect(h.sendWakeMessage).not.toHaveBeenCalled();
+    expect(r.paged).toEqual(['su-halted']);
+    const payload = h.notify.mock.calls[0][0];
+    expect(payload.body).toMatch(/wake was already attempted/);
+    expect(payload.body).toMatch(/produced no real turn/);
+    expect(payload.data.wakeAttemptedAt).toBe(marker.ts);
+    expect(payload.data.endClassification).toBe('abnormal');
+  });
+
+  it("a marker from an OLDER disarm epoch does not spend the new epoch's wake", async () => {
+    const stale: SilentHaltWakeMarker = {
+      to: ['su-halted'],
+      summary: wakeMarkerSummary('su-halted', disarmEpochToken(now, 500 * MIN)),
+      ts: new Date(now - 500 * MIN).toISOString(),
+    };
+    const h = sweepHarness([candidate()], halted, { nowMs: now, wakeFirstEnabled: true, markers: [stale] });
+    const r = await h.run();
+
+    expect(r.woken).toEqual(['su-halted']);
+    expect(r.paged).toEqual([]);
+  });
+
+  it('wake produced a turn but the session re-halted in the SAME epoch: the page says so', async () => {
+    const marker: SilentHaltWakeMarker = {
+      to: ['su-halted'],
+      summary: wakeMarkerSummary('su-halted', disarmEpochToken(now, 120 * MIN)),
+      ts: new Date(now - 60 * MIN).toISOString(),
+    };
+    const h = sweepHarness(
+      [candidate()],
+      { 'su-halted': { active: false, lastRealTurnAt: new Date(now - 40 * MIN).toISOString() } },
+      { nowMs: now, wakeFirstEnabled: true, markers: [marker] },
+    );
+    const r = await h.run();
+
+    expect(r.paged).toEqual(['su-halted']);
+    expect(h.notify.mock.calls[0][0].body).toMatch(/a turn followed, but the session halted again/);
+  });
+
+  it('caps the wake fan and DEFERS the overflow — it never falls through to the page', async () => {
+    const many = Array.from({ length: SILENT_HALT_MAX_WAKES_PER_SWEEP + 2 }, (_, i) =>
+      candidate({ ownerId: `su-${i}`, routineId: `rt_${i}` }),
+    );
+    const statuses = Object.fromEntries(many.map((c) => [c.ownerId, { active: false, lastRealTurnAt: oldTurn }]));
+    const h = sweepHarness(many, statuses, { nowMs: now, wakeFirstEnabled: true });
+    const r = await h.run();
+
+    expect(r.woken).toHaveLength(SILENT_HALT_MAX_WAKES_PER_SWEEP);
+    expect(r.wakeCapReached).toBe(true);
+    expect(r.paged).toEqual([]);
+    expect(h.notify).not.toHaveBeenCalled();
+  });
+
+  it('marker-READ failure falls back to page-only (never a re-wake storm), and says so', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const h = sweepHarness([candidate()], halted, {
+        nowMs: now,
+        wakeFirstEnabled: true,
+        markers: async () => {
+          throw new Error('pg down');
+        },
+      });
+      const r = await h.run();
+
+      expect(r.woken).toEqual([]);
+      expect(h.sendWakeMessage).not.toHaveBeenCalled();
+      expect(r.paged).toEqual(['su-halted']);
+      // The page must not CLAIM a wake was attempted — no marker was readable.
+      expect(h.notify.mock.calls[0][0].body).not.toMatch(/wake was already attempted/);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/wake-marker read failed/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('marker-WRITE failure skips the wake AND the page — the next tick retries the wake', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const send = vi.fn(async () => {
+        throw new Error('outbox down');
+      });
+      const h = sweepHarness([candidate()], halted, {
+        nowMs: now,
+        wakeFirstEnabled: true,
+        sendWakeMessage: send as never,
+      });
+      const r = await h.run();
+
+      expect(r.woken).toEqual([]);
+      expect(h.fireWake).not.toHaveBeenCalled();
+      expect(r.paged).toEqual([]);
+      expect(h.notify).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/wake marker write for su-halted failed/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('flag OFF: pages immediately with no wake attempt — the pre-P-003 behavior, exactly', async () => {
+    const h = sweepHarness([candidate()], halted, { nowMs: now, wakeFirstEnabled: false });
+    const r = await h.run();
+
+    expect(r.woken).toEqual([]);
+    expect(h.sendWakeMessage).not.toHaveBeenCalled();
+    expect(h.fireWake).not.toHaveBeenCalled();
+    expect(r.paged).toEqual(['su-halted']);
+  });
+
+  it("a parked fleet's member is woken WITH its way back — the park contract, verbatim", async () => {
+    const h = sweepHarness([candidate({ fleetSlug: 'f1' })], halted, {
+      nowMs: now,
+      wakeFirstEnabled: true,
+      readFleetParkPath: async () =>
+        resolveFleetParkResumePath(
+          { controlState: 'winding-down', controlResumeGate: 'fleet:f1:resume' },
+          now,
+        ),
+    });
+    const r = await h.run();
+
+    expect(r.woken).toEqual(['su-halted']);
+    const body = h.sendWakeMessage.mock.calls[0][2] as string;
+    expect(body).toMatch(/park directive in force/);
+    // The awaitable key is COPIED from the declaration (describeParkResumePath), never re-typed.
+    expect(body).toMatch(/events:await \{ event: 'fleet:f1:resume' \}/);
   });
 });

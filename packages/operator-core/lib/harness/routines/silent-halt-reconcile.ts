@@ -76,6 +76,13 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { AttentionNotifyInput } from '../../attention-notify';
 import { hasAutonomyPosture } from './loop-dead-man';
 import { getLoopStatuses } from './loop';
+import { readEngineLoopRowsByOwner } from './engine-loop-standdown';
+import { classifyEndedHolder, type SessionEndClassification } from '../../session-end-classifier';
+import {
+  resolveFleetParkResumePath,
+  describeParkResumePath,
+  type FleetParkResumePath,
+} from '../../fleet-park-resume-path';
 
 /**
  * A heartbeat older than this means the PROCESS is gone, not halted — the fifth term measured
@@ -97,6 +104,70 @@ export const SILENT_HALT_STALE_INTERVALS = 5;
 
 /** Never page about more owners than this in one pass — a mass-halt is ONE incident. */
 export const SILENT_HALT_MAX_PAGES_PER_SWEEP = 5;
+
+/** Bound the per-sweep WAKE fan the same way (P-003 R2): a mass halt recovers steadily. */
+export const SILENT_HALT_MAX_WAKES_PER_SWEEP = 5;
+
+/** Outbox identity for the wake-first rung — its own sent rows ARE the markers that
+ *  make the one-wake-per-(owner, disarm-epoch) bound restart-safe with NO new table
+ *  (R2), the same derived-from-PG pattern as `unguarded-halt-rescue-action.ts`. */
+export const SILENT_HALT_WAKE_OWNER = 'silent-halt-reconcile';
+
+/** Marks this rung's own outbox rows so the epoch dedupe can find them. */
+export const SILENT_HALT_WAKE_PREFIX = 'silent-halt wake:';
+
+/**
+ * The disarm-epoch token BOTH actuations key on: the disarm INSTANT in epoch-minutes
+ * (stable across sweeps — `now - inactiveFor` reproduces `active_changed_at`), or
+ * 'unknown' when no disarm timestamp exists. The page dedupeKey and the wake marker
+ * MUST share this derivation, or the two rungs would disagree about what "once per
+ * epoch" means.
+ */
+export function disarmEpochToken(nowMs: number, inactiveForMs: number | null): string {
+  return inactiveForMs != null ? String(Math.round((nowMs - inactiveForMs) / 60000)) : 'unknown';
+}
+
+/** The exact outbox summary a wake attempt writes — doubling as its dedupe marker. */
+export function wakeMarkerSummary(ownerId: string, epochToken: string): string {
+  return `${SILENT_HALT_WAKE_PREFIX} ${ownerId}:${epochToken}`;
+}
+
+/**
+ * The member-facing wake text (P-003). Unlike the rescue's body this addresses a
+ * session that HOLDS work: the ask is resume-or-release, then restore a wake source.
+ * A parked fleet's member also gets its park's way back VERBATIM
+ * (`describeParkResumePath`), so the key it should await is copied, never re-typed.
+ */
+export function silentHaltWakeBody(
+  candidate: SilentHaltCandidate,
+  verdict: SilentHaltVerdict,
+  parkPath: FleetParkResumePath | null,
+): string {
+  const park = parkPath?.parked
+    ? [
+        ``,
+        `Your fleet${candidate.fleetSlug ? ` "${candidate.fleetSlug}"` : ''} has a park directive in force:`,
+        describeParkResumePath(parkPath),
+      ]
+    : [];
+  return [
+    `You are an autonomous session that stopped taking turns while still HOLDING ` +
+      `${candidate.heldWorkItems} work-item(s): ${verdict.reason ?? 'no armed loop, no pending await — no wake source'}.`,
+    ``,
+    `This wake came from the system-side silent-halt sweep (${SILENT_HALT_WAKE_OWNER}), not from a`,
+    `peer — there is no one to reply to. It is the ONE wake this disarm epoch gets: if you take no`,
+    `real turn, the next sweep tick pages the human owner about the stranded work.`,
+    ``,
+    `NEXT, in this turn:`,
+    `  1. Re-read each held item's checkpoint (work_items:get) and either RESUME the work or`,
+    `     work_items:checkpoint + work_items:release what you cannot continue.`,
+    `  2. Restore a real wake source before ending the turn: loop:arm { intervalSec, goal }`,
+    `     (verify loop:status.active) or events:await { event } when blocked on a completion.`,
+    `  3. If you deliberately stopped (loop:end), note that a clean wind-down releases held claims`,
+    `     first — holding work with no wake source is exactly the strand this sweep exists to catch.`,
+    ...park,
+  ].join('\n');
+}
 
 export interface SilentHaltInput {
   /** Loop routine `active`. An ARMED loop is stalled-loops-guard's domain, never this one. */
@@ -216,6 +287,16 @@ export interface SilentHaltCandidate {
   /** Non-terminal, non-observation work-items this session still holds (`taken_by`). */
   heldWorkItems: number;
   modes: Array<{ mode: string }>;
+  /** Fleet the session belongs to (presence row), for the park-contract framing. */
+  fleetSlug?: string | null;
+}
+
+/** One wake marker row as the rung reads it back from its own outbox. */
+export interface SilentHaltWakeMarker {
+  to: readonly string[];
+  summary?: string | null;
+  /** ISO-8601 — when the wake was attempted. */
+  ts?: string | null;
 }
 
 export interface SilentHaltSweepDeps {
@@ -226,17 +307,33 @@ export interface SilentHaltSweepDeps {
   /** Injectable for tests; defaults to a dynamically-imported `notifyAttention`. */
   notify?: (payload: AttentionNotifyInput & { dedupeKey?: string }) => Promise<void>;
   nowMs?: number;
+  /** P-003 wake-first rung on/off. Defaults to the SILENT_HALT_WAKE_FIRST flag (fail-closed). */
+  wakeFirstEnabled?: boolean;
+  /** Reads this rung's own outbox markers; defaults to `readOutbox(SILENT_HALT_WAKE_OWNER)`. */
+  readWakeMarkers?: (sinceIso: string) => Promise<readonly SilentHaltWakeMarker[]>;
+  /** Writes the durable marker/inbox row (BEFORE the wake fires); defaults to `sendMessage`. */
+  sendWakeMessage?: (ownerId: string, summary: string, body: string) => Promise<void>;
+  /** Fires the actual wake; defaults to `wakeRecipients`. */
+  fireWake?: (ownerId: string, summary: string, workspaceId: string) => Promise<void>;
+  /** Engine-loop rows for the end classification; defaults to `readEngineLoopRowsByOwner`. */
+  readEngineLoopRows?: typeof readEngineLoopRowsByOwner;
+  /** Fleet park path for the park-contract framing; defaults to `getFleet` + resolver. */
+  readFleetParkPath?: (workspaceId: string, fleetSlug: string) => Promise<FleetParkResumePath | null>;
 }
 
 export interface SilentHaltSweepResult {
   checked: number;
   halted: string[];
   paged: string[];
+  /** Owners the wake-first rung WOKE this tick (P-003) — deliberately NOT paged this tick. */
+  woken: string[];
   /** ownerId → the named exemption, so a zero-page sweep is explicable rather than mute. */
   exempt: Record<string, string>;
   dryRun: boolean;
-  /** True when more halts were found than `SILENT_HALT_MAX_PAGES_PER_SWEEP`. */
+  /** True when more wake-spent halts were found than `SILENT_HALT_MAX_PAGES_PER_SWEEP`. */
   pageCapReached: boolean;
+  /** True when more unwoken halts were found than `SILENT_HALT_MAX_WAKES_PER_SWEEP`. */
+  wakeCapReached: boolean;
 }
 
 /**
@@ -257,6 +354,7 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
       workspace_id: string;
       routine_id: string;
       interval_sec: number | null;
+      fleet_slug: string | null;
       heartbeat_age_ms: string | number | null;
       inactive_for_ms: string | number | null;
       pending_awaits: string | number | null;
@@ -280,6 +378,7 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
        GROUP BY 1
     )
     SELECT l.routine_id, l.owner_id, l.workspace_id, l.interval_sec,
+           p.fleet_slug,
            round(extract(epoch from (now() - p.heartbeat_at)) * 1000)     AS heartbeat_age_ms,
            round(extract(epoch from (now() - l.active_changed_at)) * 1000) AS inactive_for_ms,
            COALESCE(a.n, 0)                                                AS pending_awaits,
@@ -299,7 +398,7 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
       LEFT JOIN awaits a ON a.subscriber_id = l.owner_id
      WHERE p.heartbeat_at > now() - make_interval(secs => ${SILENT_HALT_HEARTBEAT_FRESH_MS / 1000})
      GROUP BY l.routine_id, l.owner_id, l.workspace_id, l.interval_sec,
-              p.heartbeat_at, l.active_changed_at, a.n`;
+              p.fleet_slug, p.heartbeat_at, l.active_changed_at, a.n`;
 
   return rows.map((r) => ({
     ownerId: r.owner_id,
@@ -311,6 +410,7 @@ async function defaultReadCandidates(workspaceId: string, sql: Sql): Promise<Sil
     pendingAwaits: Number(r.pending_awaits ?? 0),
     heldWorkItems: Number(r.held_work_items ?? 0),
     modes: (r.modes ?? []).filter(Boolean).map((mode) => ({ mode })),
+    fleetSlug: r.fleet_slug ?? null,
   }));
 }
 
@@ -339,9 +439,11 @@ export async function sweepSilentHalts(opts: {
     checked: candidates.length,
     halted: [],
     paged: [],
+    woken: [],
     exempt: {},
     dryRun,
     pageCapReached: false,
+    wakeCapReached: false,
   };
   if (candidates.length === 0) return result;
 
@@ -362,7 +464,11 @@ export async function sweepSilentHalts(opts: {
     statuses = new Map();
   }
 
-  const halted: Array<{ candidate: SilentHaltCandidate; verdict: SilentHaltVerdict }> = [];
+  const halted: Array<{
+    candidate: SilentHaltCandidate;
+    verdict: SilentHaltVerdict;
+    lastRealTurnAtMs: number | null;
+  }> = [];
   for (const c of candidates) {
     const status = statuses.get(c.ownerId);
     const lastRealTurnAt = status?.lastRealTurnAt ?? null;
@@ -386,16 +492,181 @@ export async function sweepSilentHalts(opts: {
       continue;
     }
     result.halted.push(c.ownerId);
-    halted.push({ candidate: c, verdict });
+    halted.push({
+      candidate: c,
+      verdict,
+      lastRealTurnAtMs:
+        lastRealTurnAt != null && Number.isFinite(Date.parse(lastRealTurnAt))
+          ? Date.parse(lastRealTurnAt)
+          : null,
+    });
   }
 
   if (halted.length === 0 || dryRun) return result;
 
+  // ── P-003 wake-first rung (R1/R2) ──────────────────────────────────────────────
+  // ONE wake attempt per (owner, disarm epoch) BEFORE any owner page. The dedupe
+  // marker is this rung's own outbox row — written before the wake fires, so a crash
+  // between the two counts as attempted (never a re-wake storm), and the whole bound
+  // is derived from PG with no new table (R2). The page becomes the NEXT tick's
+  // fallback when the wake demonstrably produced no recovery (plan D-001/D-004).
+  const wakeFirstEnabled =
+    deps.wakeFirstEnabled ??
+    (await (async () => {
+      const [{ getFlag }, { FLAGS }] = await Promise.all([
+        import('@papercusp/flags/server'),
+        import('@papercusp/flags'),
+      ]);
+      return getFlag(FLAGS.SILENT_HALT_WAKE_FIRST, 'system');
+    })().catch(() => false)); // fail-CLOSED: a wake is a billable turn; the page is the established fallback
+
+  // Read the markers. A FAILED read must disable the rung for this tick (page-only,
+  // the pre-P-003 behavior) rather than read as "no marker": that direction would
+  // re-wake every candidate on every tick for as long as the read stays broken.
+  let markers: readonly SilentHaltWakeMarker[] | null = null;
+  if (wakeFirstEnabled) {
+    const readMarkers =
+      deps.readWakeMarkers ??
+      (async (sinceIso: string): Promise<readonly SilentHaltWakeMarker[]> => {
+        const { readOutbox } = await import('../../agent-tools/coordination/messages');
+        return readOutbox(SILENT_HALT_WAKE_OWNER, { since_ts: sinceIso });
+      });
+    // Look back to the oldest disarm among the halted (plus slack), bounded at 14d.
+    const oldestDisarmMs = halted.reduce(
+      (min, h) =>
+        h.candidate.inactiveForMs != null ? Math.min(min, nowMs - h.candidate.inactiveForMs) : min,
+      nowMs,
+    );
+    const lookbackMs = Math.min(
+      Math.max(nowMs - oldestDisarmMs + 60 * 60 * 1000, 60 * 60 * 1000),
+      14 * 24 * 60 * 60 * 1000,
+    );
+    try {
+      markers = await readMarkers(new Date(nowMs - lookbackMs).toISOString());
+    } catch (e) {
+      markers = null;
+      console.warn(
+        `[silent-halt-reconcile] wake-marker read failed; falling back to page-only this tick: ` +
+          `${e instanceof Error ? e.message : e}`,
+      );
+    }
+  }
+  const rungLive = wakeFirstEnabled && markers != null;
+
+  // End classification (plan D-003/D-005): consumed for FRAMING — the wake body tells
+  // a parked member its way back, and the page tells the owner what kind of stop this
+  // was. It deliberately does NOT gate the wake: every candidate here has an inactive
+  // loop row by construction (the candidate query keys on them), so the standdown
+  // conjunct is uniformly true over this population and gating on it would nullify R1.
+  const readRows = deps.readEngineLoopRows ?? readEngineLoopRowsByOwner;
+  const loopRows = await readRows(
+    halted.map((h) => h.candidate.ownerId),
+    { workspaceId: opts.workspaceId, sql },
+  ).catch(() => null);
+  const readParkPath =
+    deps.readFleetParkPath ??
+    (async (workspaceId: string, fleetSlug: string): Promise<FleetParkResumePath | null> => {
+      const { getFleet } = await import('../../agent-fleets-store');
+      const fleet = await getFleet(workspaceId, fleetSlug).catch(() => null);
+      return fleet ? resolveFleetParkResumePath(fleet, nowMs) : null;
+    });
+  const parkBySlug = new Map<string, FleetParkResumePath | null>();
+  const parkFor = async (c: SilentHaltCandidate): Promise<FleetParkResumePath | null> => {
+    const slug = c.fleetSlug ?? null;
+    if (!slug) return null;
+    if (!parkBySlug.has(slug)) {
+      parkBySlug.set(slug, await readParkPath(opts.workspaceId, slug).catch(() => null));
+    }
+    return parkBySlug.get(slug) ?? null;
+  };
+
+  type ActuationEntry = (typeof halted)[number] & {
+    epochToken: string;
+    marker: SilentHaltWakeMarker | null;
+    classification: SessionEndClassification;
+    parkPath: FleetParkResumePath | null;
+  };
+  const entries: ActuationEntry[] = [];
+  for (const h of halted) {
+    const epochToken = disarmEpochToken(nowMs, h.candidate.inactiveForMs);
+    const summary = wakeMarkerSummary(h.candidate.ownerId, epochToken);
+    const marker = rungLive ? ((markers ?? []).find((m) => m.summary === summary) ?? null) : null;
+    const parkPath = await parkFor(h.candidate);
+    entries.push({
+      ...h,
+      epochToken,
+      marker,
+      classification: classifyEndedHolder({
+        engineLoopRows: loopRows,
+        ownerId: h.candidate.ownerId,
+        parkPath,
+        heldWorkItems: h.candidate.heldWorkItems,
+      }),
+      parkPath,
+    });
+  }
+
+  const toWake = rungLive ? entries.filter((e) => e.marker == null) : [];
+  const toPage = rungLive ? entries.filter((e) => e.marker != null) : entries;
+
+  // WAKE leg — bounded fan (R2). Overflow is DEFERRED whole: an unwoken candidate has
+  // not had its R1 wake yet, so it must not fall through to the page either.
+  result.wakeCapReached = toWake.length > SILENT_HALT_MAX_WAKES_PER_SWEEP;
+  const waking = toWake.slice(0, SILENT_HALT_MAX_WAKES_PER_SWEEP);
+  if (waking.length > 0) {
+    const send =
+      deps.sendWakeMessage ??
+      (async (ownerId: string, summary: string, body: string) => {
+        const { sendMessage } = await import('../../agent-tools/coordination/messages');
+        await sendMessage(
+          {
+            ownerId: SILENT_HALT_WAKE_OWNER,
+            ownerLabel: SILENT_HALT_WAKE_OWNER,
+            source: 'static-client',
+            workspaceId: null,
+            userId: null,
+          },
+          { to: [ownerId], summary, body },
+        );
+      });
+    const fire =
+      deps.fireWake ??
+      (async (ownerId: string, summary: string, workspaceId: string) => {
+        const { wakeRecipients } = await import('../../agent-tools/coordination/inbox-wake');
+        await wakeRecipients([ownerId], { summary, source: SILENT_HALT_WAKE_OWNER, workspaceId });
+      });
+    for (const e of waking) {
+      const owner = e.candidate.ownerId;
+      const summary = wakeMarkerSummary(owner, e.epochToken);
+      try {
+        // Marker FIRST: an unmarked wake would break the ≤1-per-epoch bound on the next
+        // tick. If the marker cannot be written, skip the wake — the next tick retries.
+        await send(owner, summary, silentHaltWakeBody(e.candidate, e.verdict, e.parkPath));
+      } catch (err) {
+        console.warn(
+          `[silent-halt-reconcile] wake marker write for ${owner} failed (wake skipped): ` +
+            `${err instanceof Error ? err.message : err}`,
+        );
+        continue;
+      }
+      await fire(owner, summary, opts.workspaceId).catch((err) =>
+        console.warn(
+          `[silent-halt-reconcile] wake for ${owner} failed: ${err instanceof Error ? err.message : err}`,
+        ),
+      );
+      result.woken.push(owner);
+    }
+  }
+
+  if (toPage.length === 0) return result;
+
+  // PAGE leg — unchanged mechanics; with the rung live it now fires only for a
+  // candidate whose disarm epoch already spent its wake attempt.
   // A mass halt is ONE incident (a wedged host, a deploy, an operator restart), not N — page a
   // bounded sample and name the total, the same reasoning stalled-loops-guard applies to its
   // fleet-wide broadcast.
-  result.pageCapReached = halted.length > SILENT_HALT_MAX_PAGES_PER_SWEEP;
-  const toPage = halted.slice(0, SILENT_HALT_MAX_PAGES_PER_SWEEP);
+  result.pageCapReached = toPage.length > SILENT_HALT_MAX_PAGES_PER_SWEEP;
+  const paging = toPage.slice(0, SILENT_HALT_MAX_PAGES_PER_SWEEP);
 
   const notify =
     deps.notify ??
@@ -404,12 +675,27 @@ export async function sweepSilentHalts(opts: {
       await notifyAttention(payload);
     });
 
-  for (const { candidate, verdict } of toPage) {
+  for (const { candidate, verdict, epochToken, marker, classification, parkPath, lastRealTurnAtMs } of paging) {
     // One page per (owner, disarm epoch). A session that STAYS halted never re-pages; one that
     // is re-armed and halts again gets a new epoch, because that is a genuinely new fault.
-    const epoch = candidate.inactiveForMs != null ? Math.round((nowMs - candidate.inactiveForMs) / 60000) : 'unknown';
-    const dedupeKey = `silent-halt:${candidate.ownerId}:${epoch}`;
+    const dedupeKey = `silent-halt:${candidate.ownerId}:${epochToken}`;
     const inactiveMin = candidate.inactiveForMs != null ? Math.round(candidate.inactiveForMs / 60000) : null;
+    const attemptedAt = marker?.ts ?? null;
+    const attemptedAtMs = attemptedAt != null ? Date.parse(attemptedAt) : Number.NaN;
+    const turnFollowedWake =
+      Number.isFinite(attemptedAtMs) && lastRealTurnAtMs != null && lastRealTurnAtMs > attemptedAtMs;
+    const wakeLine =
+      marker != null
+        ? `\n\nA system wake was already attempted${attemptedAt ? ` at ${attemptedAt}` : ''} in this disarm ` +
+          `epoch and ${
+            turnFollowedWake
+              ? 'a turn followed, but the session halted again with the same held work'
+              : 'produced no real turn'
+          } — escalating to you (wake-before-page).`
+        : '';
+    const classificationLine =
+      `\n\nEnd classification (derived): ${classification}.` +
+      (parkPath?.parked ? ` Fleet park state: ${describeParkResumePath(parkPath)}` : '');
 
     try {
       await notify({
@@ -433,7 +719,9 @@ export async function sweepSilentHalts(opts: {
           `by a bound it should not have had, re-arm without maxFires/maxDurationSec. If it was ` +
           `stopped by a zero-tool escalation, check for a provider usage wall first — a wall makes ` +
           `an agent look inert without anything being wrong with it.\n\n` +
-          `Loop routine: ${candidate.routineId}`,
+          `Loop routine: ${candidate.routineId}` +
+          wakeLine +
+          classificationLine,
         importance: 'urgent',
         workspaceId: candidate.workspaceId,
         dedupeKey,
@@ -444,6 +732,8 @@ export async function sweepSilentHalts(opts: {
           modes: candidate.modes.map((m) => m.mode).join(','),
           inactiveForMin: inactiveMin,
           totalHalted: halted.length,
+          wakeAttemptedAt: attemptedAt,
+          endClassification: classification,
         },
       });
       result.paged.push(candidate.ownerId);
