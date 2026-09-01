@@ -21,6 +21,7 @@ import {
 import { mergeIds, runBulk, bulkContent } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness } from "../../work-item-checkpoint";
+import { scanCheckpointRetractions } from "./retraction-advisory";
 import { getClaimTimePriorWorkHint, priorWorkWarning } from "../../work-item-prior-work";
 import { computeCheckpointStaleness } from "../../checkpoint-staleness";
 import { detectBgJobCheckpointClaim } from "../../checkpoint-bg-job-claim";
@@ -523,6 +524,19 @@ export default defineTool({
           checkpointAgeMs,
           checkpointUpdatedAtMs,
           checkpointContentHash,
+          // EI-19454477695046958: a retraction living in the checkpoint is invisible to
+          // the reader who most needs it. The summary is the ORIGINAL claim and the
+          // checkpoint is the CURRENT one, but both arrive as plain prose of equal
+          // apparent authority — and the summary arrives first and reads as the item's
+          // definition. Measured: two agents independently endorsed WI-6980's summary
+          // over the checkpoint that withdrew it. Surfaced as a COUNT because the
+          // specific failure is missing the SECOND retraction (35 of 159 retraction-
+          // bearing checkpoints carry two or more). Omitted entirely when there is
+          // none, so an ordinary read stays lean.
+          ...(() => {
+            const r = scanCheckpointRetractions(checkpoint);
+            return r ? { checkpointRetractions: r } : {};
+          })(),
           // WI-6737: present ONLY on a failed read, so `checkpoint: null` stops being ambiguous
           // between "never written" and "could not ask". Absent on the ordinary path.
           ...(checkpointReadFailed ? { checkpointReadFailed: true as const } : {}),

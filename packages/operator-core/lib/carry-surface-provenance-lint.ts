@@ -502,6 +502,81 @@ function isPeerReportedAction(line: string): boolean {
  * (`the owner said X`) stay LINE-scoped and are never suppressed this way — a factual
  * owner-claim must not be laundered by an unrelated tagged block.
  */
+/**
+ * EI-19448526819046979 — the CAUSAL-MECHANISM claim class.
+ *
+ * WHY: every leg above polices WHO ORDERED something. This one polices a different
+ * laundering path, traced end-to-end the day it was filed. A root-cause HYPOTHESIS
+ * about what a named artifact does is compressed into a carry-note one-liner ("the
+ * pc-heavy admission gate refuses a read-only pgrep on command TEXT"), rides N cold
+ * wakes shedding its hedging (a carry-note has no room for "I think", and each re-read
+ * resolves ambiguity toward the confident reading), and is then FILED as a bug with a
+ * title, a severity and a named mechanism. FILING IS THE LAUNDERING STEP: a hedged note
+ * is cheap and self-limiting; a filed work-item directs a peer's labour. In the
+ * motivating incident the mechanism was invented — the named file contained ZERO
+ * matches for the thing it was said to match on — and it cost a peer a full
+ * investigation cycle before they challenged the premise.
+ *
+ * The affordance already existed and simply was not used: loop:checkpoint's `checks`
+ * carries {claim, recheck, verified}, and `[inferred]` is already a {@link SOURCE_TAG_RE}
+ * form. The filer's own note: "the affordance is not missing so much as unenforced at
+ * the door where it matters."
+ *
+ * PRECISION — this module's standing rule is that a lint which fires on the correct
+ * behaviour is how a leg that catches a real class gets ignored. So a match requires
+ * ALL THREE of a behavioural verb, an explicit causal binder, and a NAMED artifact;
+ * ordinary carry prose ("finished the refactor because the tests were red") names no
+ * artifact and does not trip it. A line is cleared OUTRIGHT by an evidence marker or a
+ * source tag — the compliant write is never punished — and a HEDGED claim is downgraded
+ * rather than accused, exactly as 'peer-reported-action' downgrades correct attribution.
+ */
+const MECHANISM_VERB_RE =
+  /\b(?:refuses?|rejects?|blocks?|skips?|drops?|ignores?|strips?|overwrites?|clobbers?|swallows?|truncates?|evicts?|reaps?|kills?|fails?|returns?|matches?|treats?|reports?|silently\s+\w+)\b/i;
+
+/** An explicit CAUSAL binder. Bare "on" is excluded (it is overwhelmingly locative —
+ *  "on WI-1234", "on the fleet"); only its mechanism-bearing form is accepted. */
+const MECHANISM_BINDER_RE =
+  /\b(?:because|due\s+to|owing\s+to|by\s+\w+ing|via|through)\b|\bon\s+(?:\w+\s+)?(?:text|name|string|pattern|argv|content|body|substring)\b/i;
+
+/** A NAMED artifact: a backticked token, a tool verb (`group:verb`), a source path, or
+ *  one of the closed set of machinery nouns a root-cause claim actually names. */
+const MECHANISM_ARTIFACT_RE =
+  /`[^`]+`|\b\w+:\w[\w-]*\b|\b[\w./-]+\.(?:ts|tsx|mjs|js|sh|sql|md|json)\b|\b(?:gate|lint|hook|guard|sweep|watchdog|reaper|router|resolver|routine|pipeline|matcher|parser|daemon|scheduler|governor|tool|verb)\b/i;
+
+/** Honest hedging — the claim is offered AS a hypothesis. Downgraded, never silenced:
+ *  hedging is what erodes across cold wakes, so the writer still gets the nudge to move
+ *  it into `checks` with a probe attached. */
+const MECHANISM_HEDGE_RE =
+  /\b(?:likely|probably|possibly|apparently|presumably|seems?|appears?|suspect(?:ed)?|hypothesis|guess(?:ing)?|may\s+be|might\s+be|could\s+be|i\s+think|unverified|unconfirmed|untested|assum(?:e|ed|ing)|inferred?)\b/i;
+
+/** The claim already travels with its probe or its result — compliance, cleared outright.
+ *
+ *  The backticked-command branch requires the command word to be followed by WHITESPACE,
+ *  i.e. an actual invocation with arguments. Matching the bare word instead read a
+ *  backticked ARTIFACT NAME as a probe — `git-sync` contains `git`, and a `\b` matches at
+ *  the hyphen — silently clearing the very claims this leg exists to catch. Caught by the
+ *  'backticked artifact' case in the sibling test before it shipped; keep the \s+. */
+const MECHANISM_EVIDENCE_RE =
+  /\b(?:measured|verified|confirmed|reproduced|re-?check(?:ed)?|positive\s+control|exit\s+code|observed)\b|`[^`]*\b(?:grep|rg|git|npm|psql|sed|awk|node)\s+[^`]*`/i;
+
+/** A question or a verification PLAN mentions a mechanism without asserting it — the
+ *  same mention-vs-use split {@link isConditionalActionMention} makes for actions. */
+const MECHANISM_QUESTION_RE =
+  /\b(?:whether|why\s+does|does\s+the|verify|confirm\s+that|check\s+whether|find\s+out)\b/i;
+
+/** Classify a line's causal-mechanism claim, or null when it makes none. */
+function classifyMechanismClaim(
+  line: string,
+): 'unverified-mechanism-claim' | 'hedged-mechanism-claim' | null {
+  if (!MECHANISM_VERB_RE.test(line)) return null;
+  if (!MECHANISM_BINDER_RE.test(line)) return null;
+  if (!MECHANISM_ARTIFACT_RE.test(line)) return null;
+  if (MECHANISM_QUESTION_RE.test(line)) return null;
+  if (MECHANISM_EVIDENCE_RE.test(line)) return null;
+  if (SOURCE_TAG_RE.test(line)) return null;
+  return MECHANISM_HEDGE_RE.test(line) ? 'hedged-mechanism-claim' : 'unverified-mechanism-claim';
+}
+
 const PROVENANCE_BLOCK_MARKER_RE = /\bprovenance\b/i;
 
 export interface ProvenanceLintMatch {
@@ -540,7 +615,9 @@ export interface ProvenanceLintMatch {
     | 'unverified-dialog-answer-claim'
     | 'possible-owner-tag-mention'
     | 'quote-mismatch'
-    | 'unverified-action-claim';
+    | 'unverified-action-claim'
+    | 'unverified-mechanism-claim'
+    | 'hedged-mechanism-claim';
 }
 
 export interface ProvenanceLintResult {
@@ -590,6 +667,16 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
         line: line.slice(0, MATCH_LINE_CAP),
         kind: isPeerReportedAction(line) ? 'peer-reported-action' : 'unverified-action-claim',
       });
+      if (matches.length >= MAX_MATCH_LINES) continue;
+    }
+    // EI-19448526819046979: an asserted CAUSAL MECHANISM about a named artifact, carrying
+    // no probe. Runs INDEPENDENTLY of the directive/action legs (a source tag attributes
+    // the DIRECTIVE that ordered work; it says nothing about whether a mechanism claim was
+    // ever measured), so a line can carry both this and a directive match. Capped like the
+    // rest.
+    const mechanismClaim = classifyMechanismClaim(line);
+    if (mechanismClaim) {
+      matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: mechanismClaim });
       if (matches.length >= MAX_MATCH_LINES) continue;
     }
     if (OWNER_TAG_RE.test(line)) {
@@ -700,7 +787,33 @@ export const PROVENANCE_LINT_DIALOG_NOTE =
 const DOWNGRADED_KINDS: ReadonlySet<ProvenanceLintMatch['kind']> = new Set([
   'possible-owner-tag-mention',
   'peer-reported-action',
+  // EI-19448526819046979: a HEDGED mechanism claim is the author offering a hypothesis AS a
+  // hypothesis — the discipline this module asks for. Surfaced (the hedge is exactly what
+  // erodes across cold wakes) but never in the loud category.
+  'hedged-mechanism-claim',
 ]);
+
+/** The mechanism-claim class ({@link classifyMechanismClaim}), loud and downgraded alike. */
+const MECHANISM_KINDS: ReadonlySet<ProvenanceLintMatch['kind']> = new Set([
+  'unverified-mechanism-claim',
+  'hedged-mechanism-claim',
+]);
+
+/**
+ * EI-19448526819046979 — the note for a write whose matches are ALL mechanism-class. The
+ * main note is about anchoring a DIRECTIVE or a completed ACTION to a turn ref, which is
+ * the wrong remedy here: nothing was ordered and nothing was done, a cause was GUESSED.
+ */
+export const PROVENANCE_LINT_MECHANISM_NOTE =
+  'provenance_lint: this carry-surface write asserts a CAUSAL MECHANISM about a named artifact ' +
+  '(e.g. "the X gate refuses Y by matching Z") carrying no probe, hedge or source tag. A ' +
+  'root-cause hypothesis compressed into a carry-note sheds its hedging across cold wakes and ' +
+  'arrives reading like an observation — and FILING is the laundering step, because a filed ' +
+  'work-item has a title, a severity and an assignee, so it directs a peer\'s labour. Either ' +
+  "(a) carry it in loop:checkpoint's `checks` as {claim, recheck} so the probe travels with the " +
+  'claim, (b) tag it [inferred] until re-probed, or (c) record the OBSERVATION you actually made ' +
+  'rather than the mechanism you inferred — the observation is true and leads to the real cause; ' +
+  'the mechanism is the part that gets invented. See EI-19448526819046979.';
 
 /**
  * P-014 — the note for a write whose matches are ALL downgraded. The main note opens
@@ -736,6 +849,13 @@ export function provenanceLintField(text: string | null | undefined):
   }
   // A single LOUD match makes the write accusable, so the softer note applies only when
   // EVERY match is downgraded — never let one real violation ride in under the FYI.
+  // EI-19448526819046979: the mechanism note applies only when EVERY match is
+  // mechanism-class. A mixed write (a real directive/action violation alongside a
+  // mechanism claim) falls through to the existing selection unchanged, so this leg
+  // cannot mask a louder, older class.
+  if (result.matches.length > 0 && result.matches.every((m) => MECHANISM_KINDS.has(m.kind))) {
+    return { flagged: true, note: PROVENANCE_LINT_MECHANISM_NOTE, matches: result.matches };
+  }
   const allDowngraded = result.matches.every((m) => DOWNGRADED_KINDS.has(m.kind));
   return {
     flagged: true,
