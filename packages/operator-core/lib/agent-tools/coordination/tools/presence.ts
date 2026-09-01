@@ -181,6 +181,22 @@ export default defineTool({
       });
     }
   }),
+  result: z
+    .object({
+      summary: z.unknown().optional(),
+      active: z.array(z.unknown()).optional(),
+      agents: z.array(z.unknown()).optional(),
+      activeTruncated: z.boolean().optional(),
+      self: z.unknown().optional(),
+      etag: z.string().optional(),
+      as_of: z.string().optional(),
+      scope: z.unknown().optional(),
+      unchanged: z.boolean().optional(),
+      note: z.string().optional(),
+      expanded: z.array(z.unknown()).optional(),
+      dispatch: z.unknown().optional(),
+    })
+    .passthrough(),
   // context-trimming-tiers P-022: trimmed/standard sessions get projected roster
   // rows (dispatch core only — see presence-shape.ts); summary stays verbatim.
   // The pui reads this over HTTP (no ctx_tier) → always full.
