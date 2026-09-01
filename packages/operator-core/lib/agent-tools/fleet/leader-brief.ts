@@ -30,11 +30,14 @@
  * decision actually reads, not the full claim-ledger fleet:assignments
  * carries for the Queen's placement decision).
  *
- * Resolves the target fleet from the caller's authoritative presence membership
- * (launch environment is failure-only fallback) unless `fleet` is passed
- * explicitly (an su monitoring a fleet it didn't launch into). coord:orient's monitor mode folds this in for
- * a fleet leader automatically (see orient.ts) — a leader's monitor wake is
- * then ONE round-trip instead of orient + a separate fleet:assignments scan.
+ * Resolves the target fleet from the caller's durable leadership relation when
+ * `fleet` is omitted. A sole led fleet is unambiguous; a multi-led caller must
+ * pass `fleet` explicitly. The current presence membership remains a fallback
+ * only when the caller leads no fleet (and the launch environment is a
+ * failure-only fallback inside the presence resolver). coord:orient's monitor
+ * mode folds this in for a fleet leader automatically (see orient.ts) — a
+ * leader's monitor wake is then ONE round-trip instead of orient + a separate
+ * fleet:assignments scan.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -50,6 +53,7 @@ import type { AgentIdentity } from '../coordination/identity';
 import {
   getFleet,
   getFleetHeadcountTarget,
+  listFleetsLedBy,
   projectFleetHeadcountState,
   FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
   type FleetControlState,
@@ -3172,7 +3176,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        "Fleet slug to brief. Defaults to the caller's current presence membership (launch environment is a failure-only fallback) — pass explicitly when monitoring a fleet you didn't launch into.",
+        "Fleet slug to brief. Defaults to the caller's sole durable led fleet; if the caller leads multiple fleets, pass this explicitly to avoid an ambiguous target. With no durable leadership, the current presence membership is a fallback (launch environment is failure-only).",
       ),
     harness: z.string().max(80).optional(),
     workspace: z.string().max(120).optional(),
@@ -3296,6 +3300,41 @@ export interface LeaderBriefCaller {
   resolveCallerMembership: boolean;
 }
 
+export type LeaderBriefFleetTarget =
+  | { kind: 'explicit' | 'led' | 'presence'; fleet: string }
+  | { kind: 'ambiguous'; fleets: string[] }
+  | { kind: 'none' };
+
+/**
+ * Resolve the omitted-fleet target for an agent's own leader brief.
+ *
+ * Presence carries one latest-joined fleet label, while the registry records
+ * every fleet an owner leads. A single durable leadership therefore wins over
+ * presence. When several durable led fleets exist, choosing one from the
+ * single presence label would still be an implicit target choice; callers must
+ * pass `{ fleet }` to make that choice explicit.
+ *
+ * Read-only viewers deliberately do not get this ambient resolution. Their
+ * caller bag sets `resolveCallerMembership: false` and the popup supplies an
+ * explicit fleet, so an omitted fleet remains a no-target result.
+ */
+export function resolveLeaderBriefFleet(input: {
+  explicitFleet?: string;
+  presenceFleet: string | null;
+  ledFleets: readonly string[];
+  resolveCallerMembership: boolean;
+}): LeaderBriefFleetTarget {
+  if (input.explicitFleet !== undefined) {
+    return input.explicitFleet ? { kind: 'explicit', fleet: input.explicitFleet } : { kind: 'none' };
+  }
+  if (!input.resolveCallerMembership) return { kind: 'none' };
+
+  const ledFleets = [...new Set(input.ledFleets.filter((fleet) => Boolean(fleet)))];
+  if (ledFleets.length === 1) return { kind: 'led', fleet: ledFleets[0] };
+  if (ledFleets.length > 1) return { kind: 'ambiguous', fleets: ledFleets };
+  return input.presenceFleet ? { kind: 'presence', fleet: input.presenceFleet } : { kind: 'none' };
+}
+
 /**
  * The refresh branch is a write hidden inside a health read. A typed fleet
  * wind-down is a durable stop boundary, so even the registered leader must not
@@ -3336,6 +3375,10 @@ export async function buildLeaderBrief(
   caller: LeaderBriefCaller,
 ) {
   const { agentIdentity, ownerId, actorWorkspace, self, allowLeadershipWrites } = caller;
+  // Resolve the workspace before the omitted-fleet lookup. `listFleetsLedBy`
+  // is the durable per-fleet leadership authority, and unlike presence it can
+  // answer for every fleet this owner leads.
+  const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
   const membership = caller.resolveCallerMembership
     ? await boundedLeaderBriefRead(
         'presence-fleet',
@@ -3343,7 +3386,33 @@ export async function buildLeaderBrief(
         { fleetSlug: null as string | null, fleetRole: null },
       )
     : { fleetSlug: null as string | null, fleetRole: null };
-  const fleet = args.fleet ?? membership.fleetSlug;
+  const ledFleets =
+    args.fleet === undefined && caller.resolveCallerMembership && ownerId
+      ? await boundedLeaderBriefRead(
+          'led-fleets',
+          async () => (await listFleetsLedBy(workspaceId, ownerId)).map((record) => record.fleetSlug),
+          [],
+        )
+      : [];
+  const target = resolveLeaderBriefFleet({
+    explicitFleet: args.fleet,
+    presenceFleet: membership.fleetSlug,
+    ledFleets,
+    resolveCallerMembership: caller.resolveCallerMembership,
+  });
+  if (target.kind === 'ambiguous') {
+    return {
+      data: {
+        ok: false,
+        error: 'ambiguous_fleet',
+        fleets: target.fleets,
+        hint:
+          'Multiple fleets are led by this agent and its current presence does not identify one of them. ' +
+          'Pass { fleet: "<slug>" } explicitly, or use fleet:assignments for a named fleet.',
+      },
+    };
+  }
+  const fleet = target.kind === 'none' ? null : target.fleet;
   if (!fleet) {
     return {
       data: {
@@ -3360,7 +3429,6 @@ export async function buildLeaderBrief(
   // session (EI-9013) — normalize through resolveConcreteWorkspaceId so '*'
   // never leaks into the roster/presence workspace filter (see the identical
   // fix + rationale in fleet:assignments' handler).
-  const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
   // fleet:status's presence-primary roster is the membership authority. The
   // old claim-primary read omitted live idle members whose assignment view had
   // no row, so leader-brief and fleet:status reported different rosters.
