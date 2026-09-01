@@ -674,7 +674,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     }
 
     expect(code).toBe(2);
-    const output = errSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    const output = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     expect(output).toMatch(
       /TEST_FILE_NOT_MEASURED requested=1 executed=0 matched=1 measuredFiles=0 status=not-measured reason=admission-starved\b/,
     );
