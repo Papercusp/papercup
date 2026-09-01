@@ -81,10 +81,9 @@ const TYPE_EVIDENCE = CompletionVerificationEvidenceSchema.pick({
   'Verification evidence for a `done` flip. Supply filesChanged + verifiedHow + testsRun/testResult so the response can challenge a unit-only TypeScript close; advisory only.',
 );
 
-const NOTE = softText(8000)
-  .describe(
-    'Optional SHORT comment appended inline to the item line — REQUIRED when status is `dropped` unless a nonblank `rationale` is supplied. REPLACES any note this same tool previously injected on the item (a repeat call to fix a typo overwrites, never stacks; EI-384). Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), never rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
-  );
+const NOTE = softText(8000).describe(
+  'Optional SHORT comment appended inline to the item line — REQUIRED when status is `dropped` unless a nonblank `rationale` is supplied. REPLACES any note this same tool previously injected on the item (a repeat call to fix a typo overwrites, never stacks; EI-384). Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), never rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
+);
 
 const itemSpec = z.object({
   slug: z.string().min(1),
@@ -95,7 +94,9 @@ const itemSpec = z.object({
   rationale: z
     .string()
     .optional()
-    .describe('per-item revision rationale (else the batch `rationale`); satisfies the required reason for status `dropped`'),
+    .describe(
+      'per-item revision rationale (else the batch `rationale`); satisfies the required reason for status `dropped`',
+    ),
   onlyIfNotTerminal: z.boolean().optional(),
   onlyIfNotBlocked: z.boolean().optional(),
   onlyIfNoOtherOpenCoverage: z.boolean().optional(),
@@ -110,7 +111,10 @@ const argsSchema = z
   .object({
     harness: harnessArg,
     slug: z.string().min(1).optional(),
-    item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required').optional(),
+    item: z
+      .string()
+      .regex(/^P-\d{3,}$/, 'P-NNN form required')
+      .optional(),
     status: STATUS.optional(),
     note: NOTE.optional(),
     itemIds: z
@@ -177,7 +181,10 @@ const argsSchema = z
     (a) =>
       (a.items?.length ?? 0) > 0 ||
       (Boolean(a.slug) && Boolean(a.status) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.item))),
-    { message: 'pass { slug, item, status } for one, { slug, itemIds:[…], status } for many of one plan, or items:[{ slug, item, status }] for heterogeneous' },
+    {
+      message:
+        'pass { slug, item, status } for one, { slug, itemIds:[…], status } for many of one plan, or items:[{ slug, item, status }] for heterogeneous',
+    },
   );
 
 interface StatusItem {
@@ -291,10 +298,7 @@ type SetStatusValue =
  * push gate.
  */
 export function itemImportance(body: string, itemId: string): Importance {
-  const re = new RegExp(
-    String.raw`^\s*[-*]\s+\*\*\s*` + itemId.replace(/-/g, '\\-') + String.raw`\s*\*\*[^\n]*$`,
-    'm',
-  );
+  const re = new RegExp(String.raw`^\s*[-*]\s+\*\*\s*` + itemId.replace(/-/g, '\\-') + String.raw`\s*\*\*[^\n]*$`, 'm');
   const m = re.exec(maskFences(body));
   if (!m) return 'normal';
   const im = /\bimportance:\s*(urgent|high|normal|low)\b/i.exec(m[0]);
@@ -306,15 +310,9 @@ export function itemImportance(body: string, itemId: string): Importance {
  * (not a re-set of an already-needs-human item) and its importance is at
  * least `high`. Pure so it's unit-testable without the lock/IO path.
  */
-export function shouldPushNeedsHuman(
-  oldStatus: string | null,
-  newStatus: string,
-  importance: Importance,
-): boolean {
+export function shouldPushNeedsHuman(oldStatus: string | null, newStatus: string, importance: Importance): boolean {
   return (
-    newStatus === 'needs-human' &&
-    oldStatus !== 'needs-human' &&
-    (importance === 'urgent' || importance === 'high')
+    newStatus === 'needs-human' && oldStatus !== 'needs-human' && (importance === 'urgent' || importance === 'high')
   );
 }
 
@@ -423,11 +421,7 @@ export function truncateInlineNote(note: string | undefined): {
 /** D-002/P-007: departing from a plan is legitimate, but never silent. Keep this
  * per-item (rather than a whole-args schema refinement) so one malformed drop in a
  * heterogeneous bulk call fails only itself under the house bulk contract. */
-export function droppedReasonMissing(input: {
-  status: string;
-  note?: string;
-  rationale?: string;
-}): boolean {
+export function droppedReasonMissing(input: { status: string; note?: string; rationale?: string }): boolean {
   return (
     input.status === 'dropped' &&
     !(typeof input.note === 'string' && input.note.trim().length > 0) &&
@@ -857,6 +851,75 @@ export function flipStatusInBody(
   return { newBody, found: true, oldStatus };
 }
 
+export type RestorePlanItemStatusResult =
+  | 'restored'
+  | 'already_restored'
+  | 'not_found'
+  | 'item_not_found'
+  | 'source_changed'
+  | 'busy';
+
+export function planItemCompensationMutation(
+  current: string | null,
+  input: {
+    itemId: string;
+    expectedStatus: string;
+    priorStatus: string;
+    now?: Date;
+  },
+): {
+  newBody: string | null;
+  value: Exclude<RestorePlanItemStatusResult, 'busy'>;
+} {
+  if (current === null) return { newBody: null, value: 'not_found' };
+  const probe = flipStatusInBody(current, input.itemId, input.priorStatus);
+  if (!probe.found) return { newBody: null, value: 'item_not_found' };
+  if (probe.oldStatus === input.priorStatus) {
+    return { newBody: null, value: 'already_restored' };
+  }
+  if (probe.oldStatus !== input.expectedStatus) {
+    return { newBody: null, value: 'source_changed' };
+  }
+  return {
+    newBody: bumpUpdatedDate(probe.newBody, input.now ?? new Date()),
+    value: 'restored',
+  };
+}
+
+/**
+ * Compare-and-set inverse used by the bounded Inbox bulk compensation path.
+ *
+ * This restores only the plan item's canonical status token. The immutable
+ * bulk receipt is the audit record, so this helper does not append a second
+ * plan-revision explanation. It still uses the same advisory-lock RMW, parser
+ * and updated-date writer as plans:set-status; a newer status always wins.
+ */
+export async function restorePlanItemStatusForCompensation(input: {
+  workspaceId: string;
+  harnessSlug?: string | null;
+  slug: string;
+  itemId: string;
+  expectedStatus: string;
+  priorStatus: string;
+}): Promise<RestorePlanItemStatusResult> {
+  const result = await withPlanLock<Exclude<RestorePlanItemStatusResult, 'busy'>>(
+    null,
+    {
+      slug: input.slug,
+      intent: `attention bulk compensation ${input.itemId} → ${input.priorStatus}`,
+      workspaceId: input.workspaceId,
+      ...(input.harnessSlug ? { harnessSlug: input.harnessSlug } : {}),
+    },
+    async (current) =>
+      planItemCompensationMutation(current, {
+        itemId: input.itemId,
+        expectedStatus: input.expectedStatus,
+        priorStatus: input.priorStatus,
+      }),
+  );
+  return result.kind === 'busy' ? 'busy' : result.value;
+}
+
 /**
  * Flip ONE item's status, returning the self-describing bulk result. This carries the
  * FULL single-call logic per item — wip auto-claim (+ claim_conflict reject as a
@@ -872,8 +935,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       slug: it.slug,
       itemId: it.itemId,
       error: 'dropped_reason_required',
-      hint:
-        "status:'dropped' records an intentional departure from the plan and requires a nonblank `note` (preferred; visible inline forever) or `rationale` (stored on the plan revision)",
+      hint: "status:'dropped' records an intentional departure from the plan and requires a nonblank `note` (preferred; visible inline forever) or `rationale` (stored on the plan revision)",
     };
   }
 
@@ -909,8 +971,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       slug: it.slug,
       itemId: it.itemId,
       error: 'ephemeral_mcp_call_identity',
-      hint:
-        'Refused: →wip auto-claims under the caller\'s identity, and this call arrived as scripts/mcp-call.mjs\'s auto-generated fallback (mcp-call-<pid>) — a one-shot process with no heartbeat/liveness and no fleet cup behind it (EI-8509). Spawn a real cup and let IT flip this item to wip.',
+      hint: "Refused: →wip auto-claims under the caller's identity, and this call arrived as scripts/mcp-call.mjs's auto-generated fallback (mcp-call-<pid>) — a one-shot process with no heartbeat/liveness and no fleet cup behind it (EI-8509). Spawn a real cup and let IT flip this item to wip.",
     };
   }
   let claim: { claimId: string; autoClaimed: boolean } | null = null;
@@ -985,10 +1046,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         // (P-029/D-060) without a detector that drifts from the writer.
         intent: autoConvertClaimIntent(it.itemId),
       }).catch((e) =>
-        console.warn(
-          `[plans:set-status] auto-convert ${it.slug}#${it.itemId} failed:`,
-          (e as Error)?.message ?? e,
-        ),
+        console.warn(`[plans:set-status] auto-convert ${it.slug}#${it.itemId} failed:`, (e as Error)?.message ?? e),
       );
     }
   }
@@ -1004,9 +1062,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // coordination-store blip never blocks a legitimate completion.
   if (agentId && isTerminalStatus(it.status)) {
     const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
-    const holder = await getClaim(scope.workspaceId, scope.harnessSlug, it.slug, it.itemId).catch(
-      () => null,
-    );
+    const holder = await getClaim(scope.workspaceId, scope.harnessSlug, it.slug, it.itemId).catch(() => null);
     const conflict = terminalFlipConflict({ status: it.status, agentOwnerId: agentId.ownerId, holder });
     if (conflict) {
       // P-027: the same disclosure on the TERMINAL-flip refusal. This is the
@@ -1074,10 +1130,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         };
       }
     } catch (e) {
-      console.warn(
-        `[plans:set-status] coverage guard ${it.slug}#${it.itemId} failed:`,
-        (e as Error)?.message ?? e,
-      );
+      console.warn(`[plans:set-status] coverage guard ${it.slug}#${it.itemId} failed:`, (e as Error)?.message ?? e);
     }
   }
 
@@ -1209,12 +1262,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     }
   }
 
-  const rev = planRevisionCapture(
-    ctx as PlanRevisionCtx,
-    it.slug,
-    it.rationale,
-    harnessSlug ? { harnessSlug } : {},
-  );
+  const rev = planRevisionCapture(ctx as PlanRevisionCtx, it.slug, it.rationale, harnessSlug ? { harnessSlug } : {});
   const result = await withPlanLock<SetStatusValue>(
     ctx as never,
     {
@@ -1489,9 +1537,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     // decision is planSyncWorkItemState re-run below with the work_item's REAL state.
     const isBlockEdge = PLAN_BLOCKED_STATUSES.has(it.status) && result.value.oldStatus !== it.status;
     const isUnblockEdge =
-      it.status === 'todo' &&
-      result.value.oldStatus !== null &&
-      PLAN_BLOCKED_STATUSES.has(result.value.oldStatus);
+      it.status === 'todo' && result.value.oldStatus !== null && PLAN_BLOCKED_STATUSES.has(result.value.oldStatus);
     if (isBlockEdge || isUnblockEdge) {
       try {
         const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
@@ -1564,9 +1610,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   void (async () => {
     const { notifySyncInvalidate } = await import('../../sync-sse');
     await notifySyncInvalidate('planItems.byPlan', { planSlug: it.slug });
-  })().catch((e) =>
-    console.warn('[plans:set-status] sync invalidate failed:', (e as Error)?.message ?? e),
-  );
+  })().catch((e) => console.warn('[plans:set-status] sync invalidate failed:', (e as Error)?.message ?? e));
 
   // P-020 (planning-attention-importance): push a notification when an
   // item transitions INTO needs-human at importance >= high — the
@@ -1591,9 +1635,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         importance: v.importance,
         data: { plan: it.slug, item: it.itemId },
       });
-    })().catch((e) =>
-      console.warn('[plans:set-status] needs-human push failed:', (e as Error)?.message ?? e),
-    );
+    })().catch((e) => console.warn('[plans:set-status] needs-human push failed:', (e as Error)?.message ?? e));
   }
 
   // EI-18655063958515097 (residual-coverage guard): "a residual split off a closing
@@ -1724,7 +1766,13 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         m.buildClaimRecallBlock({
           sessionId: agentId.ownerId,
           workspaceId: agentId.workspaceId,
-          items: [{ id: it.itemId, title: result.value.ok ? result.value.wipItemText : undefined, harness: harnessSlug ?? null }],
+          items: [
+            {
+              id: it.itemId,
+              title: result.value.ok ? result.value.wipItemText : undefined,
+              harness: harnessSlug ?? null,
+            },
+          ],
         }),
       )
       .catch(() => null);
