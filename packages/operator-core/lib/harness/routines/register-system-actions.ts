@@ -524,10 +524,23 @@ import './durable-escalation-orphan-sweep-action';
 // retirement of stale legacy payload.needsHuman attention markers. The action
 // fails closed for every typed owner/capability gate and mutates payload only.
 import './legacy-needs-human-reconcile-action';
+// silent-intake-central-resolution-2026-09-01 P-009 (audit R6): bounded
+// cross-harness auto-close of episode-scoped operational rows (gate-restore
+// tickets) once the green-checkpoint gate's CURRENT recorded verdict is a
+// fresh, unambiguous green — the WI-38439/WI-39939/WI-40150 dead-episode
+// class. Closes via the same setIssueState(skipCompletionGate) helper
+// legacy-needs-human-reconcile-action.ts uses; never infers greenness.
+import './episode-scoped-operational-reconcile-action';
 // autonomous-inbox-resolution-2026-08-31 P-009: durable routinesTick backstop
 // for the existing supervised Inbox bulk-resolver launch path.
 import './inbox-bulk-resolve-action';
 import './work-item-admission-daily-digest-action';
+// silent-intake-central-resolution-2026-09-01 P-007: `system:resolver-whole-corpus` — the
+// infrequent, quality-first whole-corpus resolver pass (same-defect merges + same-cause
+// clusters). Single non-checkpointed step (D-002: quality over cost, one context; unlike
+// bulk-dedup this never ratchets multi-stage convergence). Seeded by
+// seed-resolver-whole-corpus-routine.ts (durable, off-peak :52).
+import './resolver-whole-corpus-action';
 import './work-item-durable-park-audit-action';
 // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`
 // — the failed-unit reconciler, a bespoke ephemeral (tier:'ephemeral', 60s) operator-HOME cadence

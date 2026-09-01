@@ -213,6 +213,77 @@ describe('derivePlanLifecycleForRead — composition', () => {
     expect(r.derived.unmeasured).toContain('acceptance');
     expect(r.derived.verdict).toBe('implementation-complete');
   });
+
+  // EI-22078741539479611: an acceptance rubric retires WITH its shipped plan, so a
+  // shipped plan's "no active rubric" is a validation that CLOSED. The retired read
+  // exists to say so — and runs ONLY where it can change the answer.
+  it('a SHIPPED plan with no active rubric names its RETIRED rubric — closed, not unbegun', async () => {
+    const retiredCalls: string[][] = [];
+    const r = await derivePlanLifecycleForRead({
+      items: [item('P-001', 'done')],
+      storedStatus: 'shipped',
+      signals: signals({
+        readRetiredAcceptance: async ({ planSlugs }: { planSlugs: readonly string[] }) => {
+          retiredCalls.push([...planSlugs]);
+          return new Map([['p', 'acceptance-p']]);
+        },
+      }),
+    });
+    expect(retiredCalls).toEqual([['p']]);
+    expect(r.disposition).toBe('agreed');
+    expect(r.derived.acceptance).toMatchObject({ rubricActive: false, retiredRubricRef: 'acceptance-p' });
+    expect(r.derived.text).toContain('acceptance-p');
+    expect(r.derived.text).not.toMatch(/has not begun/i);
+  });
+
+  it('CONTROL: the same drained graph NOT shipped never runs the retired read', async () => {
+    let retiredCalls = 0;
+    const r = await derivePlanLifecycleForRead({
+      items: [item('P-001', 'done')],
+      storedStatus: 'active',
+      signals: signals({
+        readRetiredAcceptance: async () => {
+          retiredCalls += 1;
+          return new Map<string, string>();
+        },
+      }),
+    });
+    expect(retiredCalls).toBe(0);
+    expect(r.derived.acceptance?.retiredRubricRef).toBeUndefined();
+    expect(r.derived.text).toMatch(/has not begun/i);
+  });
+
+  it('CONTROL: a shipped plan with an ACTIVE successor rubric skips the retired read', async () => {
+    let retiredCalls = 0;
+    const r = await derivePlanLifecycleForRead({
+      items: [item('P-001', 'done')],
+      storedStatus: 'shipped',
+      signals: signals({
+        readAcceptance: async () => new Map([['p', 'acceptance-p-r2']]),
+        readRetiredAcceptance: async () => {
+          retiredCalls += 1;
+          return new Map<string, string>();
+        },
+      }),
+    });
+    expect(retiredCalls).toBe(0);
+    expect(r.derived.verdict).toBe('awaiting-acceptance');
+  });
+
+  it('a FAILED retired read degrades to measured-false — never a fabricated ref', async () => {
+    const r = await derivePlanLifecycleForRead({
+      items: [item('P-001', 'done')],
+      storedStatus: 'shipped',
+      signals: signals({
+        readRetiredAcceptance: async () => {
+          throw new Error('pg down');
+        },
+      }),
+    });
+    expect(r.derived.unmeasured).not.toContain('acceptance');
+    expect(r.derived.acceptance).toMatchObject({ rubricActive: false });
+    expect(r.derived.acceptance?.retiredRubricRef).toBeUndefined();
+  });
 });
 
 describe('pinned properties a later editor is likely to break', () => {

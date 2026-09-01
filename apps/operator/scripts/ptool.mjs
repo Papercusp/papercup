@@ -1288,7 +1288,7 @@ export function isLoopPressureShed(error) {
   if (/loop_pressure_critical|event loop critically saturated/i.test(text)) return true;
 
   // The MCP proxy can also refuse a request before forwarding when its normal
-  // admission class or bounded critical-continuation FIFO is full. The SDK
+  // admission class or any bounded class FIFO is full/aged out. The SDK
   // preserves the HTTP status as `code` and includes the proxy's typed JSON
   // body in the message. Do not treat every 429 as pre-dispatch: an ordinary
   // tool can surface a provider rate limit after it has already run.
@@ -1299,7 +1299,7 @@ export function isLoopPressureShed(error) {
     seen.add(current);
     if (
       Number(current.code) === 429 &&
-      /\bmcp_proxy_(?:overloaded|critical_continuation_queue_(?:full|dwell))\b/i.test(
+      /\bmcp_proxy_(?:overloaded|handshake_overloaded|(?:handshake|coord_send|critical_continuation)_queue_(?:full|dwell))\b/i.test(
         String(current?.message ?? current ?? ''),
       )
     ) return true;

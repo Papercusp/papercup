@@ -184,7 +184,7 @@ export default defineTool({
     notWhen: 'A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.',
     chaining: 'rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → an independent reviewer calls rubrics:ratify. The result reports `completeness` (criteria lacking a replication drill; missing methodRef) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only, bind-placeholder noise split out) — fill/fix the gaps first.',
     returns:
-      "{ ok, rubric, completeness, replicationSqlCheck, statusOverride }. statusOverride is non-null ONLY for kind:'acceptance' when the requested activation was silently discarded because that rubricRef is already retired against its shipped plan — content still lands (ok:true, statusOverride.contentApplied:true) but the rubric stays retired; your submitted criteria/description/title DID overwrite the retired document (recoverable via plans:revision-diff, not rubrics:get) — propose a NEW rubricRef naming the same subjectPlan/subjectGoal instead of re-proposing this one if you did not intend that overwrite.",
+      "{ ok, rubric, completeness, replicationSqlCheck, statusOverride }. statusOverride is non-null ONLY for kind:'acceptance' when the requested activation was silently discarded because that rubricRef is already retired against its shipped plan — content still lands (ok:true, statusOverride.contentApplied:true) but the rubric stays retired; your submitted criteria/description/title DID overwrite the retired document (recoverable via plans:revision-diff, not rubrics:get). A retired-with-the-ship rubric IS the shipped plan's validation record — a NEW acceptance rubric for a shipped subjectPlan is REFUSED (subject_plan_shipped); only a goal subject takes a new rubricRef.",
     seeAlso: [
       'rubrics:search (dedup before proposing)',
       'rubrics:get (fetch before revising — propose REPLACES the stored doc)',
@@ -267,7 +267,7 @@ export default defineTool({
             contentApplied: true as const,
             reason: 'stored-acceptance-retired',
             remedy:
-              'this acceptance rubric is retired and cannot be reactivated by re-proposing the same rubricRef — your submitted content WAS written over the retired document anyway (contentApplied:true; recoverable via plans:revision-diff, not rubrics:get) — propose a NEW rubricRef naming the same subjectPlan/subjectGoal instead if you did not intend to overwrite it',
+              'this acceptance rubric is retired and cannot be reactivated by re-proposing the same rubricRef — your submitted content WAS written over the retired document anyway (contentApplied:true; recoverable via plans:revision-diff, not rubrics:get). If it retired because its subject plan SHIPPED, there is nothing to reconcile: the retired rubric IS the validation record, and a NEW acceptance rubric for a shipped plan is refused (subject_plan_shipped, EI-22078741539479611). For a goal subject, propose a NEW rubricRef instead of re-proposing this one if you did not intend to overwrite it',
           }
         : null;
     // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.

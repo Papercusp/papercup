@@ -2150,6 +2150,80 @@ export function submitVerificationFailureReason(result) {
   return null;
 }
 
+/** WI-1386682 (1): does this pty screen text show Claude Code's OWN
+ *  usage-wall copy (weekly or 5-hour)? This is the missing half of
+ *  WI-1378748's fix — that item stopped a wake exhaustion from being
+ *  host-fatal; it did not stop the host from reading "the pty is quiet" as
+ *  "the agent is at its prompt" when the true cause is "the agent is alive
+ *  but rate-limited and cannot generate at all". Deliberately loose: a false
+ *  POSITIVE here costs at most one deferred wake (queue-to-next-turn,
+ *  recoverable); a false NEGATIVE re-opens the exact bug this item exists to
+ *  close (a wake spent into a wall that can never answer it). The exact
+ *  product copy is not pinned anywhere in this repo (WI-1378748's own tests
+ *  simulate the wall by withholding output, never by emitting real banner
+ *  text) — these patterns are the best match available from the reported
+ *  wording and should be widened the next time a real wall's raw text is
+ *  captured. Matches survive ANSI styling because the caller strips it
+ *  first. Pure; exported for tests. */
+const QUOTA_LIMIT_BANNER_PATTERNS = [
+  /weekly limit/i,
+  /5-hour limit/i,
+  /usage limit/i,
+  /\blimit\b[^\n]{0,60}\breset(?:s|ting)?\b/i,
+];
+
+export function quotaLimitBannerVisible(text) {
+  const visible = stripAnsi(String(text ?? ''));
+  return QUOTA_LIMIT_BANNER_PATTERNS.some((re) => re.test(visible));
+}
+
+/** How large a recent-screen window quotaBlockDetector keeps. Bounded (like
+ *  makeOutputTap's capBytes) but deliberately smaller than
+ *  childStartupOutput's 32_768-char window: the whole point is that the
+ *  window EVICTS the banner once genuine new output resumes, so a smaller
+ *  cap means "quota-blocked" clears after a modest amount of real churn
+ *  rather than requiring many KB of it. */
+const QUOTA_BLOCK_BUFFER_CHARS = 8_192;
+
+/** WI-1386682 (1): quota-wall detector. Feed it the SAME raw pty bytes the
+ *  activity tracker sees (child.onData); `isBlocked()` reports whether
+ *  Claude Code's own usage-limit banner is currently visible in the recent
+ *  screen. Deliberately a bounded ring buffer, not an edge-triggered
+ *  one-shot: a session truly sitting on a wall emits NOTHING further (the
+ *  banner is a static paint, not a redrawing spinner), so the buffer simply
+ *  stops growing and stays blocked; once genuine new output resumes — the
+ *  wall lifted, a recycle replaced the child, a human intervened — the
+ *  detector does not need to know which; enough of that new text evicts the
+ *  banner from the window and `isBlocked()` clears on its own. This is the
+ *  "clear-on-output rule" the parent item asks for: not an immediate
+ *  single-byte clear (which would be wrong — a redraw is routinely split
+ *  across several small writes) but a level check against the current
+ *  screen. Pure (no timers, no I/O); exported for tests. */
+export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS } = {}) {
+  let buffer = '';
+  let blocked = false;
+  return {
+    /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
+     *  or null when the level didn't change, so a caller can log transitions
+     *  without re-deriving state on every chunk. */
+    observe(chunk) {
+      buffer = `${buffer}${String(chunk ?? '')}`;
+      if (buffer.length > capBytes) buffer = buffer.slice(-capBytes);
+      const now = quotaLimitBannerVisible(buffer);
+      if (now === blocked) return null;
+      blocked = now;
+      return blocked ? 'detected' : 'cleared';
+    },
+    isBlocked: () => blocked,
+    /** Reset to a fresh, un-walled state. Call on recycle: a fresh child has
+     *  no screen history and cannot inherit the old child's wall. */
+    reset() {
+      buffer = '';
+      blocked = false;
+    },
+  };
+}
+
 /** How often the discovery file's activity fields are refreshed. Coarse on
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */
@@ -4005,6 +4079,11 @@ export function hostThroughPty(o) {
   // fields only (the read-side contract in operator-core psu-pty-discovery.ts
   // tolerates their absence for files written by older hosts).
   const activity = makeActivityTracker();
+  // WI-1386682 (1): quota-wall detector, fed the same raw bytes as `activity`
+  // (wireChildData below). A stable object with its own reset() — unlike
+  // childStartupOutput/childStartupReady this is not reassigned per recycle,
+  // just reset in place at the same recycle site.
+  const quotaBlockDetector = makeQuotaBlockDetector();
   // Output-quiet alone is not a startup-ready signal: before a backend-owned
   // marker, terminal probes can read as "quiet at prompt" even though a slow
   // TUI has not installed its editor yet (live Codex/OMP ports WI-4943/WI-4947).
@@ -5267,6 +5346,40 @@ export function hostThroughPty(o) {
             if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
             return { ok: false, reason: 'deferred-busy-gate' };
           }
+          // WI-1386682 (2): don't spend a wake `turn`/`reset` inject into a
+          // session sitting on Claude's own usage-limit wall. The pty is
+          // quiet for the SAME reason a settled prompt is quiet — no output —
+          // so the busy-gate above (agent-busy vs at-prompt) cannot tell them
+          // apart and just cleared this message to proceed. Writing text+CR
+          // into a walled screen is pure waste: the CR queues into the
+          // composer (or is dropped outright) and verifySubmitted's later
+          // resubmit CRs (WI-2930) are equally futile, all spent against an
+          // agent that cannot answer until the wall lifts. Deferring here
+          // uses the SAME queue-to-next-turn contract as the busy-gate defer
+          // just above — nothing is lost, the message stays durably in the
+          // recipient's inbox for a real turn once quota resets, a
+          // recycle/respawn replaces the child, or the owner intervenes.
+          // Scoped to turn/reset only: recycle/carry-respawn intentionally
+          // still proceed even while walled — a walled session still
+          // deserves the fresh child the owner asked for, and never letting
+          // ANY submit path (including those) be host-fatal while
+          // quota-blocked is WI-1386682 (3), a separate residual item — and
+          // mcp-reconnect/raw/osc never reach this branch (already returned
+          // above, or ungated).
+          if ((msg.mode === 'turn' || msg.mode === 'reset') && quotaBlockDetector.isBlocked()) {
+            const extra = { mode: msg.mode, reason: 'quota-blocked' };
+            appendHostEvent(ownerId, 'turn-deferred-quota-blocked', extra);
+            try {
+              process.stderr.write(
+                `psu-pty-host: ${msg.mode} DEFERRED for ${ownerId} (quota-blocked; ` +
+                  `usage-limit banner on screen) — left in inbox for the next natural turn\n`,
+              );
+            } catch {
+              /* diagnostic only */
+            }
+            if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+            return { ok: false, reason: 'deferred-quota-blocked' };
+          }
           // The agent gate above yields to the event loop. Re-check immediately
           // before the write in case the owner began composing during that wait.
           if (ownerComposerGate.hasPending()) {
@@ -5801,6 +5914,15 @@ export function hostThroughPty(o) {
         childStartupReady = false;
       } else if (resumeCompaction.action === 'ready') {
         childStartupReady = true;
+      }
+      // WI-1386682 (1): feed the quota-wall detector the same raw bytes.
+      const quotaTransition = quotaBlockDetector.observe(raw);
+      if (quotaTransition) {
+        appendHostEvent(
+          ownerId,
+          quotaTransition === 'detected' ? 'quota-block-detected' : 'quota-block-cleared',
+          {},
+        );
       }
       activity.touchOutput();
       // Everything else — readiness above, the output taps below — keeps seeing
@@ -6424,6 +6546,9 @@ export function hostThroughPty(o) {
         childStartupOutput = '';
         childStartupReady = false;
         childStartupFirstOutputAt = 0;
+        // WI-1386682 (1): a fresh child has no screen history and cannot
+        // inherit the old child's wall.
+        quotaBlockDetector.reset();
         // Composer state belongs to the child that was just killed. Carrying a
         // staged-line bit across this hard process boundary can make every wake
         // to the healthy successor defer forever, even though that successor's

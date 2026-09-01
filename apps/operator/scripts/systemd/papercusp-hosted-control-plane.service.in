@@ -1,0 +1,42 @@
+# Papercusp hosted control plane (app.papercusp.com) user service template.
+#
+# unified-web-portal-2026-08-29 P-028 / D-037 / D-044. This file is a TEMPLATE:
+# deploy-hosted-control-plane.sh resolves the machine-specific repo root, Node
+# directory and hosted env file, verifies the rendered unit, and installs it
+# atomically in ~/.config/systemd/user. It never enables or starts the unit —
+# that is the explicit cut-over step once every hosted reference resolves.
+#
+# What boots: `bin/serve.ts` under PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane,
+# i.e. ONLY the audited `/api` allowlist (hosted-runtime.ts) plus the same-origin
+# SPA — never the local operator handler. External Postgres is attached
+# (PAPERCUSP_USE_EMBEDDED_PG=0) via the operator checkout's .env.local.
+#
+# Secrets are NOT in this unit. The hosted env file carries only non-secret
+# configuration plus `integration:NAME` references that the runtime resolves
+# from the encrypted operator_integration_credentials store at point of use.
+[Unit]
+Description=Papercusp hosted control plane (app.papercusp.com) on 127.0.0.1:@PORT@
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@OPERATOR_ROOT@
+Environment=NODE_ENV=production
+Environment=PAPERCUSP_INTEGRATION_ROOT=@REPO_ROOT@
+Environment=PATH=@NODE_DIR@:%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
+# Source order matters: the operator's .env.local (database URLs) first, then the
+# hosted env file, then the profile pins exported LAST so a stale port/profile
+# hint in either file can never redirect this unit off the hosted surface.
+ExecStart=/usr/bin/bash -c 'set -a; [ -f .env.local ] && . ./.env.local; [ -f "@HOSTED_ENV_FILE@" ] && . "@HOSTED_ENV_FILE@"; set +a; export PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane PAPERCUSP_USE_EMBEDDED_PG=0 PAPERCUSP_HONO_PORT=@PORT@ PAPERCUSP_BIND_HOST=127.0.0.1 PAPERCUSP_BACKGROUND_WORKERS=0; exec npx tsx bin/serve.ts'
+Restart=on-failure
+RestartSec=3s
+TimeoutStartSec=180s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

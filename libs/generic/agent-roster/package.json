@@ -26,6 +26,11 @@
       "types": "./src/types.ts",
       "import": "./src/types.ts",
       "default": "./src/types.ts"
+    },
+    "./sessions": {
+      "types": "./src/sessions.ts",
+      "import": "./src/sessions.ts",
+      "default": "./src/sessions.ts"
     }
   },
   "peerDependencies": {

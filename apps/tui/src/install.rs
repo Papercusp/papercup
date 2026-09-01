@@ -33,6 +33,14 @@ pub struct InstallManifest {
     pub binary_sha256: String,
     pub companion_path: String,
     pub companion_sha256: String,
+    /// The git worktree `source_sha` was resolved from, when the writer knew
+    /// one (install-update.sh always passes it; an older manifest, or one from
+    /// another writer, simply omits the field). Used by
+    /// `operator_generation_contained` to ask git whether a differing operator
+    /// build sha is an ancestor of (already covered by) this install — missing
+    /// is treated as "unknown", never as "no root exists".
+    #[serde(default)]
+    pub source_root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -107,6 +107,12 @@ export type FleetAdmissionBlockTerminalResolver = (
   harness: string | null,
 ) => Promise<boolean>;
 
+/** Resolves a fleet's CURRENT registered leader ownerId, or null when unknown. */
+export type FleetAdmissionBlockLeaderResolver = (
+  fleetSlug: string,
+  workspaceId: string,
+) => Promise<string | null>;
+
 export interface FetchFleetAdmissionBlocksOptions {
   nowMs?: number;
   lookbackMs?: number;
@@ -123,6 +129,12 @@ export interface FetchFleetAdmissionBlocksOptions {
    * therefore fails open: an unreadable spec must not hide a live refusal.
    */
   resolveFleetSpec?: (fleetSlug: string, workspaceId: string) => Promise<FleetAdmissionSpecHead | null>;
+  /**
+   * Test seam; production reads the fleet registry's current `leaderOwnerId`
+   * (EI-22066839645010639). Used to revalidate a dependency-escape block against
+   * the documented `leader_claim` route.
+   */
+  resolveFleetLeader?: FleetAdmissionBlockLeaderResolver;
   /**
    * Authoritative post-liveness member ids from fleet:leader-brief. When supplied,
    * refusals from dead/removed members are historical noise and are dropped. An
@@ -283,20 +295,75 @@ export async function admissionBlockTargetIsTerminal(
   return item != null && ANY_FAMILY_TERMINAL_STATES.includes(item.state);
 }
 
-/** Drop only blocks whose referenced target is proven terminal right now. */
+async function currentFleetLeaderOwnerId(fleetSlug: string, workspaceId: string): Promise<string | null> {
+  const { getFleet } = await import('../../agent-fleets-store');
+  const record = await getFleet(workspaceId, fleetSlug);
+  return record?.leaderOwnerId?.trim() || null;
+}
+
+/**
+ * Revalidate a dependency-escape block against whether the fleet's LEADER has
+ * already exercised the documented `leader_claim` route — directly claiming the
+ * blocking dependency (`dependencyEscape.dependency.id`, the SAME id as
+ * `block.itemId`; see `notifyFleetScopeRefusal`) without releasing the refused
+ * member's own held work (`ownershipPreserved: true`).
+ *
+ * EI-22066839645010639: `admissionBlockTargetIsTerminal` only clears a block once
+ * the dependency reaches a TERMINAL state, but a leader who claims a dependency
+ * to become "the sole live gate fixer" is actively WORKING it, not done with it —
+ * so the block sat on the leader's own dashboard as a still-actionable "you must
+ * widen the spec / place outside the lane / claim it yourself" advisory for up to
+ * 24h (and re-fired after every restart's snapshot reset) even though the leader
+ * had already taken exactly that third route. `buildFleetDependencyEscape`'s
+ * `leader_claim` call passes no `assignee` — invoked by the leader, it claims
+ * under the caller's own identity — so "the dependency's current assignee is
+ * this fleet's registered leader" is the positive signal that route was taken.
+ *
+ * Fails OPEN like its terminal-check sibling: a missing escape/dependency id, an
+ * unresolvable leader, or a read failure all retain the block — an admission
+ * block only a leader can act on must never be hidden by absent data.
+ */
+export async function admissionBlockResolvedByLeaderClaim(
+  block: FleetAdmissionBlock,
+  fleetSlug: string | null,
+  workspaceId: string | null,
+  harness: string | null,
+  opts: { resolveFleetLeader?: FleetAdmissionBlockLeaderResolver } = {},
+): Promise<boolean> {
+  if (!fleetSlug || !workspaceId) return false;
+  const dependencyId = block.dependencyEscape?.dependency.id?.trim();
+  if (!dependencyId) return false;
+  const leaderOwnerId = await (opts.resolveFleetLeader ?? currentFleetLeaderOwnerId)(fleetSlug, workspaceId);
+  if (!leaderOwnerId) return false;
+  const { getWorkItem } = await import('../../work-items');
+  const item = await getWorkItem(dependencyId, harness ?? undefined);
+  return item != null && item.assignee === leaderOwnerId;
+}
+
+/**
+ * Drop blocks whose referenced target is proven terminal right now, OR whose
+ * dependency escape the fleet's own leader has already resolved by claiming the
+ * dependency directly. Both checks are additive and independently fail-open.
+ */
 export async function filterCurrentAdmissionBlocks(
   blocks: readonly FleetAdmissionBlock[],
-  opts: Pick<FetchFleetAdmissionBlocksOptions, 'harness' | 'isTargetTerminal'> = {},
+  opts: Pick<FetchFleetAdmissionBlocksOptions, 'harness' | 'isTargetTerminal' | 'resolveFleetLeader'> & {
+    fleetSlug?: string | null;
+    workspaceId?: string | null;
+  } = {},
 ): Promise<FleetAdmissionBlock[]> {
   const isTargetTerminal = opts.isTargetTerminal ?? admissionBlockTargetIsTerminal;
   const harness = opts.harness?.trim() || null;
+  const fleetSlug = opts.fleetSlug?.trim() || null;
+  const workspaceId = opts.workspaceId?.trim() || null;
   const filtered = await Promise.all(
     blocks.map(async (block) => {
-      try {
-        return (await isTargetTerminal(block, harness)) ? null : block;
-      } catch {
-        return block;
-      }
+      const terminal = await isTargetTerminal(block, harness).catch(() => false);
+      if (terminal) return null;
+      const resolvedByLeader = await admissionBlockResolvedByLeaderClaim(block, fleetSlug, workspaceId, harness, {
+        resolveFleetLeader: opts.resolveFleetLeader,
+      }).catch(() => false);
+      return resolvedByLeader ? null : block;
     }),
   );
   return filtered.filter((block): block is FleetAdmissionBlock => block !== null);
@@ -417,6 +484,9 @@ export async function readFleetAdmissionBlocks(
       blocks: await filterCurrentAdmissionBlocks(currentFleetBlocks, {
         harness,
         isTargetTerminal: opts.isTargetTerminal,
+        fleetSlug,
+        workspaceId: ws,
+        resolveFleetLeader: opts.resolveFleetLeader,
       }),
     };
   } catch {

@@ -25,8 +25,10 @@ import { z } from 'zod';
  * must never be flattened into a green:
  *
  *   · `skipped` — the gate did not APPLY (flag off, rubric-template plan, template
- *     instance). Nothing was checked. Rendering that as "passed" claims a verification
- *     that never happened.
+ *     instance, or the plan is ALREADY shipped). Nothing was checked. Rendering that as
+ *     "passed" claims a verification that never happened — except `already-shipped`,
+ *     which is the one skip that means "validated and closed": render it as the terminal
+ *     state it is, never as a pending gate (EI-22078741539479611).
  *   · `forcedPast` — a human explicitly waived the code-truth family with a reason. The
  *     gate's own comment is that "a force that is easy to hide is worth very little", so
  *     the waiver and its reason ride on the verdict and must be shown.

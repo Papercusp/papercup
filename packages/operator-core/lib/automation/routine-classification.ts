@@ -344,6 +344,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Runs one guarded full-corpus strong-model cluster digest after a completed bulk stage',
   },
+  'system:resolver-whole-corpus': {
+    spend: 'llm',
+    why: 'Runs the whole-corpus strong-model resolver pass over one or more embedding-component shards',
+  },
   'system:acceptance-grading-sweep': {
     spend: 'llm',
     why: 'Recruits or re-dispatches an independent grader, which can launch a model session',
@@ -569,6 +573,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:legacy-needs-human-reconcile': {
     spend: 'none',
     why: 'One bounded payload-only reconciliation of retired needsHuman markers against live work-item lifecycle and typed blocker state — no spawn/dispatch/wake',
+  },
+  'system:episode-scoped-operational-reconcile': {
+    spend: 'none',
+    why: 'One bounded read of episode-scoped operational rows plus a single gate-verdict read (gitPipelineSnapshot), closing matches via setIssueState — no spawn/dispatch/wake',
   },
   'system:inbox-bulk-resolve': {
     spend: 'llm',

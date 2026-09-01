@@ -7,6 +7,15 @@
  */
 export { AgentRoster, type AgentRosterProps } from './AgentRoster';
 export { AgentDetailStrip, type AgentDetailStripProps } from './AgentDetailStrip';
+export { InactiveSessionsSection, type InactiveSessionsSectionProps } from './InactiveSessionsSection';
+
+export {
+  appendEndedPage,
+  endedDisplayName,
+  visibleEndedRows,
+  type EndedSessionRow,
+  type EndedSessionsPage,
+} from './sessions';
 
 export {
   KIND_GLYPH,
@@ -36,7 +45,7 @@ export {
   thinkingStreamUrl,
 } from './logic';
 
-export { ROSTER_STYLES } from './roster-styles';
+export { INACTIVE_SESSIONS_STYLES, ROSTER_STYLES } from './roster-styles';
 
 export {
   defaultRosterChrome,

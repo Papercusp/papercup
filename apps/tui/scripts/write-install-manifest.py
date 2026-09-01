@@ -76,6 +76,14 @@ def write_manifest(args: argparse.Namespace) -> None:
         "companionPath": represented_path(companion, manifest, args.relative_paths),
         "companionSha256": sha256_file(companion.resolve(strict=True)),
     }
+    # Optional: the git worktree `--source-sha` was resolved from. `pui doctor`
+    # uses it (best-effort) to ask git whether a differing operator build sha is
+    # an ANCESTOR of this install's source sha — i.e. this generation already
+    # covers it — instead of only ever comparing for exact equality. Omitted
+    # (not just null) when the caller doesn't know a root, so an older/other
+    # writer's manifest round-trips unchanged.
+    if args.source_root and args.source_root.strip():
+        payload["sourceRoot"] = args.source_root.strip()
     temporary = manifest.with_name(f"{manifest.name}.tmp.{os.getpid()}")
     try:
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -122,6 +130,7 @@ def parser() -> argparse.ArgumentParser:
     write.add_argument("--binary", required=True)
     write.add_argument("--companion", required=True)
     write.add_argument("--relative-paths", action="store_true")
+    write.add_argument("--source-root")
     write.set_defaults(run=write_manifest)
 
     verify = commands.add_parser("verify")

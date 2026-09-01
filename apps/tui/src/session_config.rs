@@ -536,7 +536,11 @@ pub fn describe_pin_outcome(reply: &serde_json::Value, picked_label: &str) -> Pi
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerAxis {
-    Session,
+    /// Switch Agent Chat between EXISTING conversations. Deliberately not a
+    /// launcher: new SU sessions come from the real PSU picker, opened from
+    /// the Sessions destination (`psu --role=su --tui=pui`,
+    /// pui-psu-exact-launch-and-task-latency-2026-09-01 D-001/D-003).
+    Conversation,
     Model,
     Effort,
     Account,
@@ -563,7 +567,7 @@ impl SessionPicker {
 
     pub fn title(&self) -> &'static str {
         match self.axis {
-            PickerAxis::Session => " Agent / role / session — Enter select · Esc close ",
+            PickerAxis::Conversation => " Conversation — Enter select · Esc close ",
             PickerAxis::Model => " Model — Enter select · Esc close ",
             PickerAxis::Effort => " Effort — Enter select · Esc close ",
             PickerAxis::Account => " Account route — Enter select · Esc close ",

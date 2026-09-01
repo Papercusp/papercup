@@ -69,6 +69,7 @@ import { join } from 'node:path';
 import { readdir, readFile } from 'node:fs/promises';
 import type { ManagedEntry } from '@papercusp/scheduled-registry';
 import type { RegisteredSchedule } from './dbos/dbos-schedule-introspect';
+import type { StallWakerStatus } from './inference-gateway/stall-waker-loop';
 
 /** Loopback path each operator-shaped process serves its managed registry on. */
 export const SIBLING_PROBE_PATH = '/api/internal/managed-timers';
@@ -118,6 +119,16 @@ export interface SiblingManagedTimers {
    * afford I/O.
    */
   dbosSchedules: RegisteredSchedule[];
+  /**
+   * The sibling's OWN `getStallWakerStatus()` reading (EI-22054545312178322) —
+   * `null` when the sibling didn't answer (`ok:false`), predates this field, or
+   * its `stallWaker` payload was malformed. Piggybacked on this same route/probe
+   * rather than a new endpoint, exactly like `dbosSchedules` was: the loop
+   * boot-starts only where `PAPERCUSP_BACKGROUND_WORKERS=1` (bg-host today), so a
+   * caller on a request-only host (:3070/:3170) needs this to learn the real,
+   * production loop's state instead of its own always-`running:false` local copy.
+   */
+  stallWaker: StallWakerStatus | null;
   error?: string;
   elapsedMs: number;
 }
@@ -236,6 +247,7 @@ function degraded(s: SiblingOperator, error: string, elapsedMs: number): Sibling
     ok: false,
     timers: [],
     dbosSchedules: [],
+    stallWaker: null,
     error,
     elapsedMs,
   };
@@ -277,8 +289,29 @@ function primaryRowFromWire(
     dbosSchedules: Array.isArray(primary.dbosSchedules)
       ? (primary.dbosSchedules as RegisteredSchedule[])
       : [],
+    // EI-22054545312178322: the stall-waker loop is never relayed over this wire.
+    // It boot-starts on a genuine single-process background-workers host (bg-host
+    // today), not inside a true-cluster PRIMARY that forks request-serving workers
+    // — no observed topology runs both at once — so there is no primary-side
+    // reading to relay here. `probeSibling`'s own `workerRow` (which answers about
+    // whichever process actually served the HTTP request) is the row that carries it.
+    stallWaker: null,
     elapsedMs,
   };
+}
+
+/** Loosely validate + extract `body.stallWaker` from a sibling's `/internal/managed-timers`
+ *  response — `null` for an older sibling build that predates this field, or a malformed
+ *  payload, exactly like `dbosSchedules` degrades above. Only the `running` boolean is load-
+ *  bearing for `dev:stall_waker_status`'s selection logic, but the whole snapshot is passed
+ *  through once that much is trustworthy — cheaper than field-by-field validation and no
+ *  riskier, since the source is loopback-only (`auth: 'loopback'`) same-box IPC, not a
+ *  hostile network peer. */
+function parseStallWaker(x: unknown): StallWakerStatus | null {
+  if (!x || typeof x !== 'object' || typeof (x as { running?: unknown }).running !== 'boolean') {
+    return null;
+  }
+  return x as StallWakerStatus;
 }
 
 /**
@@ -314,6 +347,7 @@ export async function probeSibling(
       timers?: unknown;
       dbosSchedules?: unknown;
       primary?: unknown;
+      stallWaker?: unknown;
     };
     const proc = typeof body?.process === 'string' && body.process ? body.process : null;
     const timers = Array.isArray(body?.timers) ? (body.timers as ManagedEntry[]) : [];
@@ -322,6 +356,10 @@ export async function probeSibling(
     const dbosSchedules = Array.isArray(body?.dbosSchedules)
       ? (body.dbosSchedules as RegisteredSchedule[])
       : [];
+    // EI-22054545312178322: same degrade-on-absence rule as dbosSchedules — an
+    // older sibling build that predates this field, or a malformed payload, both
+    // read as "unknown", never fabricated as not-running.
+    const stallWaker = parseStallWaker(body?.stallWaker);
     const elapsedMs = Date.now() - startedAt;
     const workerRow: SiblingManagedTimers = {
       port: s.port,
@@ -331,6 +369,7 @@ export async function probeSibling(
       ok: true,
       timers,
       dbosSchedules,
+      stallWaker,
       elapsedMs,
     };
     const primaryRow = primaryRowFromWire(

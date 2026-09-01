@@ -54,21 +54,58 @@ function isUnconstrainedSchema(v: unknown): v is Record<string, unknown> {
   return Object.keys(v).every((k) => ANNOTATION_ONLY_KEYS.has(k));
 }
 
-/** Rewrite an unconstrained object schema to the same OMP-collapse-proof shape
- *  as `boolToSchema(true)`, preserving its annotations (description wins over
- *  the generic placeholder). */
+/** `inputSchema` (what a model must GENERATE args against) vs `outputSchema`
+ *  (what the MCP client SDK VALIDATES the tool's real return value against —
+ *  see `Client.callTool` in `@modelcontextprotocol/sdk`, which fetches
+ *  `tool.outputSchema` from tools/list and runs a real JSON-Schema validator
+ *  over `result.structuredContent`). The two need DIFFERENT "matches anything"
+ *  encodings — see `boolToSchema` — so every objectifying helper takes this. */
+export type SanitizePosition = "input" | "output";
+
+/** Rewrite an unconstrained object schema to the same shape as
+ *  `boolToSchema(true, position)`, preserving its annotations (the schema's
+ *  own description wins over the generic placeholder). */
 function unconstrainedToSchema(
   s: Record<string, unknown>,
+  position: SanitizePosition,
 ): Record<string, unknown> {
+  if (position === "output") {
+    return { description: "matches any value", ...s };
+  }
   return {
-    ...boolToSchema(true),
+    ...boolToSchema(true, position),
     ...s, // keep the original description/default/etc.
     type: "object",
     additionalProperties: true,
   };
 }
 
-function boolToSchema(b: boolean): Record<string, unknown> {
+function boolToSchema(
+  b: boolean,
+  position: SanitizePosition,
+): Record<string, unknown> {
+  if (!b) return { not: {} };
+  if (position === "output") {
+    // EI-22064217935223876: outputSchema is never sent to a model as a
+    // function-calling definition to generate against — it is read back by
+    // the MCP CLIENT SDK to validate the tool's REAL return value
+    // (Client.callTool → jsonSchemaValidator(tool.outputSchema)(structuredContent)).
+    // The `type: 'object'` strengthening below exists ONLY to survive OMP's
+    // outbound *request-building* collapse (it re-flattens an input tool
+    // definition's permissive sub-schemas back to a bare boolean when building
+    // the prompt it sends to the model) — a code path outputSchema never goes
+    // through. Applying that same strengthening to `outputSchema.properties[*]`
+    // makes the client-side validator require e.g. a STRING/NUMBER/ARRAY
+    // return value (a z.unknown() result field such as tools:find's `query`/
+    // `count`/`hits`) to literally be a JS object, which it correctly is not —
+    // producing an MCP -32602 "must be objects" rejection of a perfectly valid
+    // tool result. A plain annotated object still satisfies the ORIGINAL
+    // Ollama constraint this file exists for (a JSON OBJECT at properties[*],
+    // never a bare boolean, so Go's unmarshal into api.ToolProperty succeeds)
+    // without constraining the value's real JSON type, so real non-object
+    // return values validate correctly.
+    return { description: "matches any value" };
+  }
   // `{}` (the literal empty-object spelling of "matches anything") gets a NON-EMPTY
   // representation here. Root-caused 2026-06-30 (omp-ollama-tool-schema-investigation):
   // OMP (oh-my-pi)'s own outbound request serialization collapses any literally-empty
@@ -88,27 +125,33 @@ function boolToSchema(b: boolean): Record<string, unknown> {
   // `type: 'object'` (the one JSON-Schema type every field in this catalog already uses
   // successfully against Ollama) survives BOTH collapses: it is never empty and it always
   // carries `type`. Narrows z.unknown()/z.any() from "any JSON value" to "any object" —
-  // an acceptable trade for every current caller (all pass object payloads here) against
-  // "the whole catalog 400s on every turn".
-  return b
-    ? {
-        type: "object",
-        additionalProperties: true,
-        description: "matches any object value",
-      }
-    : { not: {} };
+  // an acceptable trade for every current INPUT caller (all pass object payloads here)
+  // against "the whole catalog 400s on every turn". This branch is INPUT-only (see the
+  // `position === 'output'` branch above) precisely because that trade is NOT acceptable
+  // for a result field whose real value is a string/number/array/boolean.
+  return {
+    type: "object",
+    additionalProperties: true,
+    description: "matches any object value",
+  };
 }
 
 function jsonPointerSegment(value: string): string {
   return value.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
-function recursiveReferenceToSchema(): Record<string, unknown> {
+function recursiveReferenceToSchema(
+  position: SanitizePosition,
+): Record<string, unknown> {
   // OMP resolves ordinary `$ref` nodes while flattening `anyOf` for Ollama, but a self-reference
   // is the cycle boundary: it collapses that node to the boolean schema `true`. Ollama's Go
   // decoder rejects the boolean before runtime validation ever sees the request. Keep the outer
   // recursive grammar intact and replace only the cycle edge with a typed object; the tool's own
-  // validator remains authoritative for deeper payloads.
+  // validator remains authoritative for deeper payloads. For `output`, see boolToSchema's
+  // position==='output' branch: the same real-value-validation concern applies here too.
+  if (position === "output") {
+    return { description: "recursive value validated by the tool" };
+  }
   return {
     type: "object",
     additionalProperties: true,
@@ -137,10 +180,11 @@ function isActiveReference(
 function sanitizeToolSchemaNode<T>(
   node: T,
   activeDefinitionRefs: ReadonlySet<string>,
+  position: SanitizePosition,
 ): T {
   if (Array.isArray(node)) {
     return node.map((n) =>
-      sanitizeToolSchemaNode(n, activeDefinitionRefs),
+      sanitizeToolSchemaNode(n, activeDefinitionRefs, position),
     ) as unknown as T;
   }
   if (!node || typeof node !== "object") return node;
@@ -163,6 +207,7 @@ function sanitizeToolSchemaNode<T>(
               sanitizeToolSchemaNode(
                 definition,
                 new Set([...activeDefinitionRefs, ref]),
+                position,
               ),
             ];
           },
@@ -180,32 +225,48 @@ function sanitizeToolSchemaNode<T>(
       )) {
         props[propName] =
           typeof propSchema === "boolean"
-            ? boolToSchema(propSchema)
+            ? boolToSchema(propSchema, position)
             : isActiveReference(propSchema, activeDefinitionRefs)
-              ? recursiveReferenceToSchema()
+              ? recursiveReferenceToSchema(position)
               : isUnconstrainedSchema(propSchema)
-                ? unconstrainedToSchema(propSchema)
-                : sanitizeToolSchemaNode(propSchema, activeDefinitionRefs);
+                ? unconstrainedToSchema(propSchema, position)
+                : sanitizeToolSchemaNode(propSchema, activeDefinitionRefs, position);
       }
       out[key] = props;
     } else if (key === "items") {
       out[key] =
         typeof value === "boolean"
-          ? boolToSchema(value)
+          ? boolToSchema(value, position)
           : isActiveReference(value, activeDefinitionRefs)
-            ? recursiveReferenceToSchema()
+            ? recursiveReferenceToSchema(position)
             : isUnconstrainedSchema(value)
-              ? unconstrainedToSchema(value)
-              : sanitizeToolSchemaNode(value, activeDefinitionRefs);
+              ? unconstrainedToSchema(value, position)
+              : sanitizeToolSchemaNode(value, activeDefinitionRefs, position);
     } else {
       // Recurse (so nested properties/items are reached) but do NOT
       // objectify booleans elsewhere — notably additionalProperties.
-      out[key] = sanitizeToolSchemaNode(value, activeDefinitionRefs);
+      out[key] = sanitizeToolSchemaNode(value, activeDefinitionRefs, position);
     }
   }
   return out as unknown as T;
 }
 
-export function sanitizeToolSchema<T>(node: T): T {
-  return sanitizeToolSchemaNode(node, new Set());
+/**
+ * @param position `"input"` (default, unchanged behavior) objectifies
+ *   unconstrained/boolean sub-schemas to `type: "object"` so they survive
+ *   OMP's outbound request-building collapse (see `boolToSchema`) — correct
+ *   for an `inputSchema`, which only describes what a MODEL must generate.
+ *   `"output"` keeps them as a plain annotated object (never a bare boolean,
+ *   so Ollama's Go unmarshal into `api.ToolProperty` still succeeds) WITHOUT
+ *   constraining the JSON type, because an `outputSchema` is validated by the
+ *   MCP client SDK against the tool's REAL return value
+ *   (EI-22064217935223876) — forcing `type: "object"` there rejects any
+ *   non-object return value a `z.unknown()`/`z.any()` result field legitimately
+ *   carries (a string, number, array, or boolean).
+ */
+export function sanitizeToolSchema<T>(
+  node: T,
+  position: SanitizePosition = "input",
+): T {
+  return sanitizeToolSchemaNode(node, new Set(), position);
 }

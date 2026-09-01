@@ -149,6 +149,45 @@ export async function readActiveAcceptanceRubrics(input: {
   return new Map(rows.map((r) => [r.subject_plan, r.plan_slug] as const));
 }
 
+/**
+ * Which plans have a RETIRED acceptance rubric — the trace of a validation that CLOSED
+ * (EI-22078741539479611). An acceptance rubric retires WITH its shipped plan, so on a
+ * shipped plan the active read above is empty by design, and a verdict built from that
+ * alone says "the validation path has not begun" about a plan whose validation finished.
+ *
+ * ⚠ NOT covered by the partial unique index the active read leans on (that index is
+ * active-only), so this is a workspace index scan + filter — measured 2026-09-01 at
+ * ~12ms / 3.3k buffers over ~1.7k plan rows. Callers must run it only when it can change
+ * the answer: a SHIPPED plan with no active rubric (`derivePlanLifecycleForRead` does).
+ * Returns slug → the newest retired rubric plan's slug.
+ */
+export async function readRetiredAcceptanceRubrics(input: {
+  workspaceId: string;
+  planSlugs: readonly string[];
+}): Promise<Map<string, string>> {
+  if (input.planSlugs.length === 0) return new Map();
+  const { withWorkspace } = await import('@papercusp/db-org');
+  const rows = await withWorkspace(
+    input.workspaceId,
+    async (tx) => tx<{ plan_slug: string; subject_plan: string }[]>`
+      SELECT plan_slug, template_data ->> 'subjectPlan' AS subject_plan
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${input.workspaceId}
+         AND template = 'rubric'
+         AND template_slug IS NULL
+         AND (archived = true OR status = ANY(ARRAY['superseded', 'shipped']))
+         AND template_data ->> 'kind' = 'acceptance'
+         AND NULLIF(template_data ->> 'subjectPlan', '') IS NOT NULL
+         AND template_data ->> 'subjectPlan' = ANY(${[...input.planSlugs]})
+       ORDER BY updated_at DESC NULLS LAST
+    `,
+  );
+  const out = new Map<string, string>();
+  // Newest first, so the first row per subject wins — the rubric the ship was judged against.
+  for (const r of rows) if (!out.has(r.subject_plan)) out.set(r.subject_plan, r.plan_slug);
+  return out;
+}
+
 export interface GatherPlanLifecycleSignalsInput {
   workspaceId: string;
   planSlug: string;
@@ -160,6 +199,8 @@ export interface GatherPlanLifecycleSignalsInput {
   now?: string;
   /** Injected reader, so callers that already batched the lookup skip the query. */
   readAcceptance?: typeof readActiveAcceptanceRubrics;
+  /** Injected RETIRED-rubric reader (read only for a shipped plan with no active rubric). */
+  readRetiredAcceptance?: typeof readRetiredAcceptanceRubrics;
   /**
    * A pre-resolved acceptance answer from a batched caller. `undefined` means
    * "not supplied, go look"; `null` means "looked, found none".
@@ -224,5 +265,21 @@ export async function derivePlanLifecycleForRead(input: {
   signals: GatherPlanLifecycleSignalsInput;
 }): Promise<PlanLifecycleReconciliation> {
   const signals = await gatherPlanLifecycleSignals(input.signals);
+  // EI-22078741539479611: on a SHIPPED plan, "no active acceptance rubric" is the
+  // expected shape of a validation that CLOSED (the rubric retired with the ship), not
+  // of one that never began. Look the retired rubric up — only here, where it changes
+  // the answer — so the derived text can say which. Best-effort: a failed lookup leaves
+  // the axis as measured-false rather than fabricating a ref.
+  const stored = (input.storedStatus ?? '').trim();
+  if (stored === 'shipped' && signals.acceptance && !signals.acceptance.rubricActive) {
+    try {
+      const read = input.signals.readRetiredAcceptance ?? readRetiredAcceptanceRubrics;
+      const found = await read({ workspaceId: input.signals.workspaceId, planSlugs: [input.signals.planSlug] });
+      const ref = found.get(input.signals.planSlug) ?? null;
+      if (ref) signals.acceptance = { ...signals.acceptance, retiredRubricRef: ref };
+    } catch {
+      /* measured-false stands; the text simply cannot name the retired rubric */
+    }
+  }
   return reconcilePlanLifecycle(input.storedStatus, derivePlanLifecycle(input.items, signals));
 }

@@ -813,6 +813,44 @@ export async function getAcceptanceRubricForPlan(planSlug: string): Promise<Rubr
 }
 
 /**
+ * The RETIRED acceptance rubric(s) FOR a plan — the historical validation record
+ * (EI-22078741539479611). An acceptance rubric retires WITH its shipped subject plan
+ * (retireAcceptanceRubricForPlan flips it to `superseded`), so on a shipped plan the
+ * live read above finds nothing and a reader that stops there concludes the plan was
+ * never validated. This is the read that tells it otherwise: newest first, so `[0]` is
+ * the rubric the ship was actually judged against. Never throws — degrades to `[]`.
+ *
+ * Deliberately NOT folded into getAcceptanceRubricsForPlan: that read backs the
+ * completion gate, which must see only LIVE contracts (a retired one must never
+ * satisfy a ship). This one backs the post-ship explanation.
+ */
+export async function getRetiredAcceptanceRubricsForPlan(planSlug: string): Promise<Rubric[]> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<RubricPlanRow[]>`
+      SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
+             version, owner, archived, template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND template = ${RUBRIC_TEMPLATE_NAME}
+         AND template_slug IS NULL
+         AND template_data->>'kind' = 'acceptance'
+         AND template_data->>'subjectPlan' = ${planSlug}
+         AND (archived = true OR status IN ('superseded', 'shipped'))
+       ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
+       LIMIT 5`;
+    return rows
+      .map(planRowToRubric)
+      .filter(
+        (r): r is Rubric =>
+          r !== null && r.kind === 'acceptance' && r.subjectPlan === planSlug && r.status === 'retired',
+      );
+  } catch {
+    return [];
+  }
+}
+
+/**
  * The acceptance rubric FOR a goal (consult-min-max-and-rubric-vetting-2026-08-17
  * P-009 / D-004 §2): the most recently updated valid acceptance-kind rubric whose
  * subjectGoal names `goalId`. The read behind the goal-mode 'achieved' gate — the
@@ -1330,18 +1368,65 @@ function buildRubricTemplateData(
  * BEFORE any write: the completion gate keys off subjectPlan, so a dangling link is a
  * rubric that never gates anything — refused loudly, never persisted.
  */
-async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<void> {
+/** What the acceptance-link guard learned about the subject plan on its way through. */
+export interface AcceptanceLinkResolution {
+  /** The subject plan's stored `status` (`null` when no subjectPlan was named). */
+  subjectPlanStatus: string | null;
+}
+
+/**
+ * EI-22078741539479611 — the ONE case a NEW acceptance rubric must be refused rather
+ * than activated: its subject plan is already SHIPPED. Shipping retires the plan's
+ * acceptance rubric (one-shot, by design), so a later read that finds "no active rubric"
+ * is looking at a CLOSED validation; authoring a fresh contract there re-opens a settled
+ * gate and routes a redundant grading pass to a peer (measured live 2026-09-01: the
+ * duplicate `-r2` rubric plus a BLOCKING grading request to the agent who had already
+ * graded 7/7). Re-proposing an EXISTING rubricRef is deliberately left alone: stored
+ * lifecycle state already outranks the authoring default (EI-21296891484659125), and a
+ * content-only edit of a retired rubric stays legal (EI-21909559308315843). Pure, so the
+ * rule is unit-testable without PG.
+ */
+export function acceptanceProposeReopensShippedPlan(args: {
+  kind: string;
+  storedExists: boolean;
+  subjectPlanStatus: string | null;
+}): boolean {
+  return args.kind === 'acceptance' && !args.storedExists && args.subjectPlanStatus === 'shipped';
+}
+
+/** The refusal text for {@link acceptanceProposeReopensShippedPlan}; pure for the same reason. */
+export function shippedSubjectPlanRefusal(args: {
+  rubricId: string;
+  subjectPlan: string;
+  retiredRubricId: string | null;
+}): string {
+  return (
+    `invalid_args: proposeRubric: subject_plan_shipped — subjectPlan '${args.subjectPlan}' is already SHIPPED, ` +
+    `so a new acceptance rubric '${args.rubricId}' would RE-OPEN a settled ship gate (EI-22078741539479611). ` +
+    (args.retiredRubricId
+      ? `Its acceptance rubric '${args.retiredRubricId}' was retired WITH the ship (one-shot, by design) and IS ` +
+        'the validation record. '
+      : 'It shipped with no acceptance rubric on record (pre-gate, or under a waiver). ') +
+    'A shipReadiness / lifecycle read that says "no active rubric" on a shipped plan describes a CLOSED ' +
+    'validation, not a missing one — do not reconcile it by authoring. To re-validate deliberately, move the ' +
+    'plan off shipped first (plans:set-plan-status), then propose.'
+  );
+}
+
+async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<AcceptanceLinkResolution> {
   const subjectPlan = input.subjectPlan;
   const subjectGoal = input.subjectGoal;
+  let subjectPlanStatus: string | null = null;
   if (subjectPlan) {
     const { sql } = getOrgPg();
-    const subj = await sql<{ plan_slug: string; template: string | null }[]>`
-      SELECT plan_slug, template
+    const subj = await sql<{ plan_slug: string; template: string | null; status: string | null }[]>`
+      SELECT plan_slug, template, status
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND plan_slug = ${subjectPlan}
        LIMIT 1`;
     const subjRow = subj.find((r) => r.plan_slug === subjectPlan);
+    subjectPlanStatus = subjRow?.status ?? null;
     if (!subjRow) {
       throw new Error(
         `invalid_args: proposeRubric: acceptance rubric '${input.rubricId}' names subjectPlan '${subjectPlan}', ` +
@@ -1375,7 +1460,7 @@ async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<
       );
     }
   }
-  if (!subjectPlan && !subjectGoal) return; // schema already refuses acceptance without a subject
+  if (!subjectPlan && !subjectGoal) return { subjectPlanStatus }; // schema already refuses acceptance without a subject
   if (input.classRef) {
     const cls = await getRubric(input.classRef);
     if (!cls) {
@@ -1392,6 +1477,7 @@ async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<
       );
     }
   }
+  return { subjectPlanStatus };
 }
 
 /** Keep one live acceptance contract per subject plan; migration 1004 is the
@@ -1670,8 +1756,28 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   }
   // Acceptance links must RESOLVE before anything persists (plan P-003): a dangling
   // subjectPlan would never gate anything, silently.
-  if (kind === 'acceptance') await assertAcceptanceLinksResolve(input);
+  const links = kind === 'acceptance' ? await assertAcceptanceLinksResolve(input) : null;
   const stored = await getRubric(input.rubricId);
+  // EI-22078741539479611: a NEW acceptance contract for an already-shipped plan re-opens a
+  // settled gate. Decided by the pure predicate so the rule is testable without PG; the
+  // retired-rubric lookup runs only on the refusal path, to name the record it protects.
+  if (
+    acceptanceProposeReopensShippedPlan({
+      kind,
+      storedExists: stored != null,
+      subjectPlanStatus: links?.subjectPlanStatus ?? null,
+    })
+  ) {
+    const subjectPlan = input.subjectPlan ?? '';
+    const retired = subjectPlan ? await getRetiredAcceptanceRubricsForPlan(subjectPlan) : [];
+    throw new Error(
+      shippedSubjectPlanRefusal({
+        rubricId: input.rubricId,
+        subjectPlan,
+        retiredRubricId: retired[0]?.rubricId ?? null,
+      }),
+    );
+  }
   // `getRubric` intentionally runs after the initial validation because reads can
   // trigger first-party seeding. Rebuild only when the caller omitted the
   // whole-document ratingScale, preserving the existing rubric's vocabulary instead

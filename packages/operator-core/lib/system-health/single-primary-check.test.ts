@@ -904,3 +904,86 @@ describe('runSinglePrimaryCheck (hysteresis + debounce + self-clear)', () => {
     expect(paged).toHaveLength(0);
   });
 });
+
+// EI-22040647386284200: a SECOND, broader quiesce signal — a self-reported, bounded-duration
+// announcement (announced-quiesce.ts) for an ad-hoc quiesce (manual kill + shell EXIT trap)
+// that leaves no D-026 systemd trace at all. Weaker evidence than D-026, so checked second;
+// still authorized to replace "Start the bg-host" with the announcer's own window.
+describe('announced-quiesce evidence (EI-22040647386284200)', () => {
+  it('evaluatePrimaryCount: an active announced quiesce reframes a stale zero-primary reading', () => {
+    const v = evaluatePrimaryCount(
+      0,
+      { lastRoutineFireAgeSec: 3600 },
+      undefined,
+      { active: true, subject: 'bg-host', reason: 'P-101 seed re-cut', by: 'su-0300e', until: '2026-09-01T22:40:00.000Z' },
+    );
+    expect(v).toMatchObject({ ok: false, severity: 'advisory', key: 'no-primary-announced-quiesce' });
+    expect(v.summary).toContain('Do NOT start or restart bg-host');
+    expect(v.summary).toContain('P-101 seed re-cut');
+    expect(v.summary).toContain('su-0300e');
+  });
+
+  it('evaluatePrimaryCount: an inactive/absent announced quiesce falls through to the ordinary blocker', () => {
+    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 3600 }, undefined, { active: false }).key).toBe('no-primary');
+    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 3600 }, undefined, undefined).key).toBe('no-primary');
+  });
+
+  it('evaluatePrimaryCount: D-026 is checked FIRST — a systemd-verified quiescence wins even when an announced-quiesce arg is also present', () => {
+    const v = evaluatePrimaryCount(
+      0,
+      { lastRoutineFireAgeSec: 3600 },
+      { cutActive: true, restoreActive: true },
+      { active: true, subject: 'bg-host', reason: 'unrelated announcement', by: 'someone-else' },
+    );
+    expect(v.key).toBe('no-primary-quiesced');
+  });
+
+  it('runSinglePrimaryCheck: a sustained stale zero-primary during an active announced quiesce records advisory context and never pages', async () => {
+    const paged: unknown[] = [];
+    const escalated: Array<{ severity: string; summary: string }> = [];
+    let now = 0;
+    const deps = {
+      count: async () => 0,
+      routineFireAgeSec: async () => 4000,
+      announcedQuiescence: async () => ({
+        active: true,
+        subject: 'bg-host',
+        reason: 'P-101 seed re-cut',
+        by: 'su-0300e',
+        until: '2026-09-01T22:40:00.000Z',
+      }),
+      escalate: async (i: { severity: string; summary: string }) => { escalated.push(i); return { msg_id: 'aq-1' }; },
+      page: async (v: unknown) => { paged.push(v); },
+      now: () => now,
+    };
+
+    await runSinglePrimaryCheck('ws', deps);
+    now += 3 * 60_000;
+    const result = await runSinglePrimaryCheck('ws', deps);
+
+    expect(result.verdict.key).toBe('no-primary-announced-quiesce');
+    expect(result.verdict.severity).toBe('advisory');
+    expect(escalated).toHaveLength(1);
+    expect(escalated[0].summary).toContain('Do NOT start or restart bg-host');
+    expect(paged).toHaveLength(0);
+  });
+
+  it('runSinglePrimaryCheck: a THROWING announcedQuiescence dep fails closed — never suppresses a real page (fail-closed, same rule as D-026)', async () => {
+    const paged: unknown[] = [];
+    let now = 0;
+    const deps = {
+      count: async () => 0,
+      routineFireAgeSec: async () => null,
+      announcedQuiescence: async () => { throw new Error('pg unreachable'); },
+      escalate: async () => ({ msg_id: 'e' }),
+      page: async (v: unknown) => { paged.push(v); },
+      now: () => now,
+    };
+
+    await runSinglePrimaryCheck('ws', deps);
+    now += 3 * 60_000;
+    const result = await runSinglePrimaryCheck('ws', deps);
+
+    expect(result.verdict.key).not.toBe('no-primary-announced-quiesce');
+  });
+});

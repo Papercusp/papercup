@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { formatIssues } from '@papercusp/tooldef';
 
 import assertTool from './assert';
 import { FACT_MAX_SUPERSEDES, FACT_VOLATILE_MAX_TTL_SEC } from '../../agent-facts/store';
@@ -237,5 +238,60 @@ describe('facts:assert volatile-measurement contract', () => {
     const subjectVolatile = describedOn('subjectVolatile');
     expect(subjectVolatile).toMatch(/hard refusal/i);
     expect(subjectVolatile).toMatch(/clamped/i);
+  });
+});
+
+/**
+ * EI-22057520151022793 — a private, undecidable work_item fact missing `settledBy`
+ * was reported as "shareable: Invalid input: expected true; settledBy: Invalid
+ * input: expected string, received undefined". Both clauses come from the
+ * FIRST-listed union branch (shareableUndecidable), which the caller never meant:
+ * they sent `shareable:false`, which is only legal on the private branches. Every
+ * branch of this 6-way union fails at the SAME shallow path-depth for this input,
+ * so the old "deepest branch, ties keep the first" rule fell through to raw
+ * declaration order and surfaced the WRONG branch's issues — a caller asking for a
+ * private fact was told to make it shareable, which has nothing to do with their
+ * one real mistake (the missing settledBy). See @papercusp/tooldef's
+ * `bestUnionBranch` (standard-schema.ts) for the general fix: on a depth tie,
+ * prefer the branch with fewer issues (a closer match) before falling back to
+ * declaration order.
+ */
+describe('facts:assert union branch selection on a private undecidable fact (EI-22057520151022793)', () => {
+  it('reports ONLY the missing settledBy for a private (shareable:false) undecidable fact, never the unrelated shareable mismatch', () => {
+    const parsed = assertTool.args.safeParse({
+      scope: 'work_item',
+      scopeRef: 'EI-22057520151022793',
+      harness: 'papercusp',
+      key: 'schema-probe-private-undecidable',
+      body: 'schema probe',
+      kind: 'undecidable',
+      shareable: false,
+      // settledBy deliberately omitted — the caller's one real mistake.
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const msg = formatIssues(parsed.error.issues);
+      expect(msg).toContain('settledBy');
+      // The regression: the shareable-federation branch's irrelevant complaint
+      // must never surface for a caller who explicitly asked for shareable:false.
+      expect(msg).not.toContain('shareable');
+    }
+  });
+
+  it('still requires shareable:true (and a federation harness) when the caller actually wants federation', () => {
+    // Sanity check in the other direction: this fix must not make the
+    // shareable-federation branch unreachable for callers who DO want it.
+    expect(
+      assertTool.args.safeParse({
+        scope: 'work_item',
+        scopeRef: 'EI-22057520151022793',
+        key: 'schema-probe-shareable-undecidable',
+        body: 'schema probe',
+        kind: 'undecidable',
+        shareable: true,
+        settledBy: 'a concrete validation probe',
+        harness: 'papercusp',
+      }).success,
+    ).toBe(true);
   });
 });

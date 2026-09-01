@@ -313,8 +313,9 @@ export default defineTool({
   capability: 'search:read',
   description:
     'List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time; continue a bounded result with nextCursor. ' +
+    'Ended/dead sessions are ALREADY included (rows are indexed transcripts, not live presence) — there is no includeEnded arg. ' +
     'Pass mode:"historical" with both since and until for an explicit bounded [since, until) fleet census; it selects owners from append-only activity and maps immutable session/membership evidence. ' +
-    'UNITS (EI-9970): `turns` = indexed TEXT-turn rows only (real user+assistant text; excludes tool_use/tool_result/thinking-only lines by design) — NOT a raw record count, NOT one row per model call; don\'t use it alone for cost/effort audits. Use `prompt_count` (real user prompts), `response_count` (distinct model-inference calls, deduped by request/message id — one call can span several raw lines), and `tool_call_count` (real tool invocations) instead; the latter two are null for source_kind=agent_chat (no tool-call signal in that shape).',
+    'UNITS: `turns` counts indexed TEXT turns only — for cost/effort use prompt_count/response_count/tool_call_count (definitions under returns).',
   guidance: {
     when:
       '"What sessions has agent X had", "find my session from yesterday", or picking a session id for sessions:read. Covers the whole fleet, not one client. For a COST/EFFORT audit, compare prompt_count/response_count/tool_call_count, not turns — see description.',
@@ -325,7 +326,8 @@ export default defineTool({
     // shapes were not, so writing any code:run batch over this tool required calling
     // it once just to learn the field names — a guaranteed wasted round-trip per tool.
     returns:
-      '{ ok, count (rows HERE), total (rows MATCHING), hasMore, nextCursor?, truncated?, note, sessions: [{ source_kind, session_id, turns, prompt_count, owner, harness_slug, cwd, first_ts, last_ts, response_count, tool_call_count, active? }] }. `active:true` (owner:\'self\', page one) marks your LIVE session surfaced even if its turns are not yet indexed under `self` (EI-11403). Timestamps are ISO-8601 with an explicit offset. Pass nextCursor back unchanged to continue the same filters.',
+      '{ ok, count (rows HERE), total (rows MATCHING), hasMore, nextCursor?, truncated?, note, sessions: [{ source_kind, session_id, turns, prompt_count, owner, harness_slug, cwd, first_ts, last_ts, response_count, tool_call_count, active? }] }. `active:true` (owner:\'self\', page one) marks your LIVE session surfaced even if its turns are not yet indexed under `self` (EI-11403). Timestamps are ISO-8601 with an explicit offset. Pass nextCursor back unchanged to continue the same filters. ' +
+      'UNITS (EI-9970): `turns` = indexed TEXT-turn rows only (real user+assistant text; excludes tool_use/tool_result/thinking-only lines by design) — NOT a raw record count, NOT one row per model call; don\'t use it alone for cost/effort audits. Use `prompt_count` (real user prompts), `response_count` (distinct model-inference calls, deduped by request/message id — one call can span several raw lines), and `tool_call_count` (real tool invocations) instead; the latter two are null for source_kind=agent_chat (no tool-call signal in that shape).',
     seeAlso: ['sessions:search', 'sessions:read', 'sessions:digest', 'sessions:timeline'],
   },
   requirePrincipal: false,

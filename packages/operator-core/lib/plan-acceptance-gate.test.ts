@@ -34,10 +34,12 @@ import {
 const rubricMocks = vi.hoisted(() => ({
   getAcceptanceRubricForPlan: vi.fn(),
   getAcceptanceRubricsForPlan: vi.fn(),
+  getRetiredAcceptanceRubricsForPlan: vi.fn(),
 }));
 vi.mock('./rubrics', () => ({
   getAcceptanceRubricForPlan: rubricMocks.getAcceptanceRubricForPlan,
   getAcceptanceRubricsForPlan: rubricMocks.getAcceptanceRubricsForPlan,
+  getRetiredAcceptanceRubricsForPlan: rubricMocks.getRetiredAcceptanceRubricsForPlan,
   getRubric: vi.fn(),
   getRubricPlanRevision: vi.fn(),
   readRubricPlanRevision: vi.fn(),
@@ -153,6 +155,8 @@ beforeEach(() => {
     const one = await mockRubric(planSlug);
     return one ? [one] : [];
   });
+  // Default: no retired acceptance rubric on record (only the already-shipped cases set one).
+  rubricMocks.getRetiredAcceptanceRubricsForPlan.mockResolvedValue([]);
   mockLineageRelated.mockImplementation(async (author, candidate) => author === candidate);
   // Delegate the ok/failed-aware read to the plain value mock every existing case
   // already drives, so those cases keep expressing "the revision is N" unchanged.
@@ -226,6 +230,60 @@ describe('evaluatePlanAcceptanceGate', () => {
     mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'run-2026-08-11', template: null, template_slug: 'daily-ops' }]));
     const v = await evaluatePlanAcceptanceGate('run-2026-08-11');
     expect(v).toMatchObject({ satisfied: true, skipped: 'template-instance' });
+  });
+
+  // EI-22078741539479611: the gate is a PRE-ship question. Asked of a plan that is
+  // already shipped it used to answer `acceptance_rubric_missing` (the ship retired the
+  // rubric) or `audit_coverage_stale` (a peer edited a cited file) — "cannot be marked
+  // shipped" about a shipped plan, prescribing a repair that re-opens a settled gate.
+  it('an ALREADY-SHIPPED plan → satisfied, skipped:already-shipped, naming the retired rubric', async () => {
+    mockPg.mockReturnValue(
+      sqlReturning([
+        { plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null, content: null, status: 'shipped' },
+      ]),
+    );
+    // The ship retired the contract: the LIVE read finds nothing, the RETIRED read finds it.
+    mockRubric.mockResolvedValue(null);
+    rubricMocks.getRetiredAcceptanceRubricsForPlan.mockResolvedValue([acceptanceRubric({ status: 'retired' })]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: true, skipped: 'already-shipped', rubricId: 'ar-some-plan' });
+    expect(v.code).toBeUndefined();
+    expect(v.message).toContain('already shipped');
+    expect(v.message).toContain("'ar-some-plan' was retired WITH the ship");
+    expect(v.message).toMatch(/Do NOT author a replacement acceptance rubric/);
+    // Short-circuited BEFORE the rubric family — the live read is never consulted.
+    expect(mockRubrics).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: the same plan NOT yet shipped falls through to acceptance_rubric_missing', async () => {
+    mockPg.mockReturnValue(
+      sqlReturning([
+        {
+          plan_slug: 'some-plan-2026-08-11',
+          template: null,
+          template_slug: null,
+          content: null,
+          status: 'awaiting-acceptance',
+        },
+      ]),
+    );
+    mockRubric.mockResolvedValue(null);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_missing' });
+    expect(rubricMocks.getRetiredAcceptanceRubricsForPlan).not.toHaveBeenCalled();
+  });
+
+  it('a shipped plan with NO rubric on record still skips, and says so instead of inventing one', async () => {
+    mockPg.mockReturnValue(
+      sqlReturning([
+        { plan_slug: 'pre-gate-plan', template: null, template_slug: null, content: null, status: 'shipped' },
+      ]),
+    );
+    const v = await evaluatePlanAcceptanceGate('pre-gate-plan');
+    expect(v).toMatchObject({ satisfied: true, skipped: 'already-shipped' });
+    expect(v.rubricId).toBeUndefined();
+    expect(v.message).toContain('No acceptance rubric is on record');
   });
 
   it('refuses an ephemeral deliverable reference without a durable companion', async () => {

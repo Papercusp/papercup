@@ -525,10 +525,18 @@ describe('ptool tools/call failure diagnostics', () => {
     expect(formatToolCallFailure('coord:send', error)).not.toContain('may have executed');
   });
 
-  it('classifies only typed proxy 429 refusals as pre-dispatch', () => {
-    const proxyShed = Object.assign(new Error(
-      'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_overloaded","retryable":true,"retryAfterSec":1}',
-    ), { code: 429 });
+  it('classifies every typed proxy queue refusal as pre-dispatch, including coord:send dwell', () => {
+    const proxySheds = [
+      'mcp_proxy_overloaded',
+      'mcp_proxy_handshake_overloaded',
+      'mcp_proxy_handshake_queue_dwell',
+      'mcp_proxy_coord_send_queue_full',
+      'mcp_proxy_coord_send_queue_dwell',
+      'mcp_proxy_critical_continuation_queue_full',
+      'mcp_proxy_critical_continuation_queue_dwell',
+    ].map((error) => Object.assign(new Error(
+      `Streamable HTTP error: Error POSTing to endpoint: {"error":"${error}","retryable":true,"retryAfterSec":1}`,
+    ), { code: 429 }));
     const providerLimit = Object.assign(new Error(
       'Streamable HTTP error: Error POSTing to endpoint: {"error":"provider_rate_limit"}',
     ), { code: 429 });
@@ -536,10 +544,17 @@ describe('ptool tools/call failure diagnostics', () => {
       'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_upstream_error"}',
     ), { code: 502 });
 
-    expect(isLoopPressureShed(proxyShed)).toBe(true);
+    for (const proxyShed of proxySheds) {
+      expect(isLoopPressureShed(proxyShed)).toBe(true);
+      expect(formatToolCallFailure('coord:send', proxyShed)).toContain(
+        'rejected before dispatch',
+      );
+      expect(formatToolCallFailure('coord:send', proxyShed)).toContain(
+        'no tool execution occurred',
+      );
+    }
     expect(isLoopPressureShed(providerLimit)).toBe(false);
     expect(isLoopPressureShed(realProxy502)).toBe(false);
-    expect(formatToolCallFailure('work_items:checkpoint', proxyShed)).toContain('rejected before dispatch');
   });
 
   it('retries a typed proxy refusal using its Retry-After hint', async () => {
@@ -553,6 +568,23 @@ describe('ptool tools/call failure diagnostics', () => {
     await expect(callToolWithPressureRetry(
       { callTool },
       { name: 'tools:invoke', arguments: { name: 'work_items:checkpoint', args: {} } },
+      { maxAttempts: 2, sleep },
+    )).resolves.toBe(result);
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2_000);
+  });
+
+  it('retries a coord:send queue-dwell refusal using its Retry-After hint', async () => {
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const proxyShed = Object.assign(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_coord_send_queue_dwell","retryable":true,"forwardingResult":"not_forwarded","retryAfterSec":2}',
+    ), { code: 429 });
+    const callTool = vi.fn().mockRejectedValueOnce(proxyShed).mockResolvedValue(result);
+    const sleep = vi.fn(async () => {});
+
+    await expect(callToolWithPressureRetry(
+      { callTool },
+      { name: 'tools:invoke', arguments: { name: 'coord:send', args: {} } },
       { maxAttempts: 2, sleep },
     )).resolves.toBe(result);
     expect(callTool).toHaveBeenCalledTimes(2);

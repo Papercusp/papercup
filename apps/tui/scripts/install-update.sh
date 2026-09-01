@@ -80,7 +80,8 @@ python3 "$MANIFEST_WRITER" write \
   --source-dirty "$SOURCE_DIRTY" \
   --built-at-epoch "$BUILD_EPOCH" \
   --binary "$BINARY_PATH" \
-  --companion "$WASM_PATH"
+  --companion "$WASM_PATH" \
+  --source-root "$ROOT"
 
 echo "→ installed pui generation ${SOURCE_SHA:0:12}"
 echo "  binary:    $BINARY_PATH"

@@ -16,7 +16,7 @@
  *     GET /api/adv/sessions/ended with IntersectionObserver infinite scroll
  *     (the ChatConversation.tsx sentinel + reentry-lock pattern).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import {
   computeFacets,
@@ -50,26 +50,30 @@ import {
   fmtCompactAge,
   groupByFleet,
   resumableSessionId,
-  shortOwner,
   type RosterAgent,
 } from './AgentsRunningPill';
+/* WI-2047194 — the "View inactive sessions" section now lives in
+   @papercusp/agent-roster (the same extraction P-001 did for the live roster),
+   so the web portal renders the SAME section from the SAME code. This file
+   keeps the operator's binding of it: nuqs expand state, the same-origin fetch,
+   the lexicon, and the transcript inspector. */
+import {
+  INACTIVE_SESSIONS_STYLES,
+  InactiveSessionsSection as SharedInactiveSessionsSection,
+  appendEndedPage,
+  defaultRosterChrome,
+  endedDisplayName as sharedEndedDisplayName,
+  type EndedSessionRow,
+  type EndedSessionsPage,
+  type RosterChrome,
+  type RosterLabels,
+} from '@papercusp/agent-roster';
 
-/** The AdvSessionRow subset the ended-sessions feed serves. */
-export interface EndedSessionRow {
-  id: number;
-  workspaceId?: string;
-  planSlug: string | null;
-  agent: string | null;
-  role: string | null;
-  feature: string | null;
-  label: string | null;
-  coordOwnerId: string | null;
-  sessionId: string | null;
-  ompThreadId: string | null;
-  startedAt: string;
-  endedAt: string | null;
-  exitCode: number | null;
-}
+/** The AdvSessionRow subset the ended-sessions feed serves — the shared
+ *  package's row type, re-exported so every existing importer of this path
+ *  keeps working unchanged. */
+export type { EndedSessionRow };
+export { appendEndedPage };
 
 /** One matched transcript turn from /api/adv/sessions/search-transcripts. */
 export interface SearchTurnHit {
@@ -298,23 +302,34 @@ export function hitMatchLabel(
 }
 
 /** Display name for an ended session row: label → short owner id → agent+row.
- *  Pure — exported for tests. */
+ *
+ *  Operator binding of the package's `endedDisplayName`: the generic form takes
+ *  a plain label normalizer, and this adapts the operator's `BoundLexicon` onto
+ *  it — the same shape as `displayName` in AgentsRunningPill. Callers keep the
+ *  original `endedDisplayName(r, lex)` signature. Pure — exported for tests. */
 export function endedDisplayName(
   r: Pick<EndedSessionRow, 'id' | 'agent' | 'label' | 'coordOwnerId'>,
   lex?: BoundLexicon,
 ): string {
-  const label = r.label?.trim();
-  if (label) return lex ? agentDisplayLabel(label, lex) : label;
-  if (r.coordOwnerId) return shortOwner(r.coordOwnerId);
-  return `${r.agent ?? 'session'} #${r.id}`;
+  return sharedEndedDisplayName(r, lex ? (raw) => agentDisplayLabel(raw, lex) : undefined);
 }
 
-/** Append a page of ended rows, dropping ids already present (a session that
- *  ended between two page fetches shifts the keyset). Pure — exported for tests. */
-export function appendEndedPage(prev: readonly EndedSessionRow[], page: readonly EndedSessionRow[]): EndedSessionRow[] {
-  const seen = new Set(prev.map((r) => r.id));
-  return [...prev, ...page.filter((r) => !seen.has(r.id))];
+/** The first page of the ended-sessions feed, or a later one when `before` is
+ *  the cursor the previous page returned. The operator's DATA seam for the
+ *  shared section — same-origin, no auth (the route is `auth: 'public'` on the
+ *  loopback-bound operator). Throws on a failed fetch so the section shows its
+ *  error state. Exported for tests. */
+export async function loadEndedSessionsPage(before: string | null): Promise<EndedSessionsPage> {
+  const r = await fetch(`/api/adv/sessions/ended?limit=30${before ? `&before=${encodeURIComponent(before)}` : ''}`);
+  const j = await r.json() as { ok: boolean; sessions?: EndedSessionRow[]; hasMore?: boolean; nextBefore?: string | null };
+  if (!j.ok) throw new Error('ended_fetch_failed');
+  return { sessions: j.sessions ?? [], hasMore: Boolean(j.hasMore), nextBefore: j.nextBefore ?? null };
 }
+
+/** The operator's chrome for the inactive list: its own LivenessDot (the shared
+ *  section renders only that one primitive, so the tooltip/thinking defaults
+ *  are never reached). Module scope so the identity is stable across renders. */
+const INACTIVE_CHROME: RosterChrome = { ...defaultRosterChrome, LivenessDot };
 
 /** Classify a failed search response into the user-facing message. A route
  *  timeout (the 30s watchdog 408s under host load — 2026-07-09 incident) is
@@ -999,14 +1014,14 @@ export function SessionSearchResults({
 
 /**
  * "View inactive sessions" — the expander at the popover bottom. Every ended
- * session ever, newest-ended first, in pages of 30 with infinite scroll: a
- * bottom sentinel inside the section's own scroll container, an
- * IntersectionObserver that fires loadMore while `hasMore`, and a synchronous
- * reentry lock (`fetchInFlightRef`) — the exact ChatConversation.tsx pattern
- * (there the sentinel is at the top for older history; here at the bottom).
- * Unlike ChatConversation there is deliberately NO user-scroll gate: when the
- * first page doesn't fill the container the observer SHOULD keep paging until
- * it does.
+ * session ever, newest-ended first, in pages of 30 with infinite scroll.
+ *
+ * The section itself is `@papercusp/agent-roster`'s `InactiveSessionsSection`
+ * (WI-2047194 — the same extraction P-001 did for the live roster, so the web
+ * portal renders it too). What this wrapper binds is exactly what is
+ * operator-specific: the URL-backed expand state, the same-origin
+ * /api/adv/sessions/ended fetch, the lexicon, and the transcript inspector a
+ * row click opens.
  */
 export function InactiveSessionsSection({
   activeOwnerIds,
@@ -1033,137 +1048,31 @@ export function InactiveSessionsSection({
   // value lives in the URL independent of the component's mount lifecycle,
   // so it survives that unmount/remount cycle.
   const [expanded, setExpanded] = useQueryState('agentsInactiveOpen', parseAsBoolean.withDefault(false));
-  // A focus deep-link means "show me this agent's history" — expand for it.
-  useEffect(() => {
-    if (focusOwnerId) void setExpanded(true);
-  }, [focusOwnerId, setExpanded]);
-  const [rows, setRows] = useState<EndedSessionRow[]>([]);
-  const [hasMore, setHasMore] = useState(true);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
   const [inspecting, setInspecting] = useState<EndedSessionRow | null>(null);
   // resume-in-gui-button-2026-08-09 — same destination as the search-results view.
   const openHudConversation = useOpenHudConversation();
-  const nextBeforeRef = useRef<string | null>(null);
-  const fetchInFlightRef = useRef(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
-
-  const loadMore = useCallback(async () => {
-    if (fetchInFlightRef.current) return;
-    fetchInFlightRef.current = true;
-    setLoading(true);
-    try {
-      const before = nextBeforeRef.current;
-      const r = await fetch(`/api/adv/sessions/ended?limit=30${before ? `&before=${encodeURIComponent(before)}` : ''}`);
-      const j = await r.json() as { ok: boolean; sessions?: EndedSessionRow[]; hasMore?: boolean; nextBefore?: string | null };
-      if (!j.ok) throw new Error('ended_fetch_failed');
-      nextBeforeRef.current = j.nextBefore ?? null;
-      setHasMore(Boolean(j.hasMore));
-      setRows((prev) => appendEndedPage(prev, j.sessions ?? []));
-    } catch {
-      setError(true);
-      setHasMore(false);
-    } finally {
-      fetchInFlightRef.current = false;
-      setLoading(false);
-    }
-  }, []);
-
-  // First page on expand.
-  useEffect(() => {
-    if (expanded && rows.length === 0 && !error) void loadMore();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded]);
-
-  // Infinite scroll: bottom sentinel + reentry lock (ChatConversation pattern).
-  useEffect(() => {
-    if (!expanded) return;
-    const el = sentinelRef.current;
-    if (!el) return;
-    const obs = new IntersectionObserver((entries) => {
-      for (const e of entries) {
-        if (!e.isIntersecting) continue;
-        if (!hasMore) continue;
-        if (fetchInFlightRef.current) continue;
-        void loadMore();
-      }
-    }, { root: scrollRef.current ?? null, rootMargin: '0px 0px 120px 0px' });
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [expanded, hasMore, loadMore]);
-
-  const visible = focusOwnerId
-    ? rows.filter((r) => r.coordOwnerId === focusOwnerId)
-    : rows.filter((r) => !r.coordOwnerId || !activeOwnerIds.has(r.coordOwnerId));
+  const labels = useMemo<RosterLabels>(() => ({
+    term: (key, opts) => lex(key, opts),
+    agentLabel: (raw) => agentDisplayLabel(raw, lex),
+    roleLabel: (raw) => agentRoleLabel(raw, lex),
+  }), [lex]);
 
   return (
-    <div className="pc-agents-sessions__inactive" data-testid="inactive-sessions-section">
-      <button
-        type="button"
-        className="pc-agents-sessions__toggle"
-        data-testid="inactive-sessions-toggle"
-        aria-expanded={expanded}
-        onClick={() => void setExpanded(!expanded)}
-      >
-        <span aria-hidden>{expanded ? '▾' : '▸'}</span> View inactive sessions
-        {expanded && visible.length > 0 ? (
-          <span className="pc-agents-roster__group-count" data-testid="inactive-sessions-count">
-            ({visible.length}{hasMore ? '+' : ''})
-          </span>
-        ) : null}
-        <span className="pc-agents-sessions__toggle-hint">every past session, newest first</span>
-      </button>
-      {expanded && (
-        <div className="pc-agents-sessions__scroll pc-agents-sessions__inactive-list" ref={scrollRef} data-testid="inactive-sessions-list">
-          {visible.map((r) => {
-            const url = endedSessionStreamUrl(r);
-            const endedAgo = r.endedAt ? fmtCompactAge(r.endedAt, nowMs) : '';
-            return (
-              <div
-                key={r.id}
-                className={`pc-agents-roster__row pc-agents-roster__row--nocheck${url ? '' : ' is-unopenable'}`}
-                data-testid={`inactive-session-${r.id}`}
-                role={url ? 'button' : undefined}
-                tabIndex={url ? 0 : undefined}
-                title={url ? 'Open transcript' : 'No transcript handle recorded for this session'}
-                onClick={() => { if (url) setInspecting(r); }}
-                onKeyDown={(e) => {
-                  if ((e.key === 'Enter' || e.key === ' ') && url) { e.preventDefault(); setInspecting(r); }
-                }}
-              >
-                <span className="pc-agents-roster__live">
-                  {/* Ended sessions get the SAME leading status dot as the active
-                      roster rows (a muted grey 'stale' dot = offline/ended), so the
-                      inactive list reads as a peer of the active-sessions section
-                      instead of a bare age-only column (owner ask 2026-07-12). */}
-                  <LivenessDot liveness="stale" size={7} title={endedAgo ? `ended ${endedAgo} ago` : 'ended session'} />
-                  {endedAgo ? (
-                    <span className="pc-agents-roster__age" title={`ended ${endedAgo} ago`}>{endedAgo}</span>
-                  ) : null}
-                </span>
-                <span className="pc-agents-roster__glyph" aria-hidden>
-                  {agentGlyph({ agentPaneKind: null, role: r.role })}
-                </span>
-                <span className="pc-agents-roster__name" title={`${r.coordOwnerId ?? ''}${r.agent ? ` · ${r.agent}` : ''}`}>
-                  {endedDisplayName(r, lex)}
-                </span>
-                <span className="pc-agents-roster__doing">
-                  {r.feature ? <span className="pc-agents-roster__feat">{r.feature}</span> : null}
-                  {[r.planSlug, r.agent].filter(Boolean).join(' · ') || '—'}
-                </span>
-              </div>
-            );
-          })}
-          {loading && <div className="pc-agents-sessions__status">Loading…</div>}
-          {error && <div className="pc-agents-sessions__status is-error">Couldn’t load inactive sessions.</div>}
-          {!hasMore && !loading && !error && visible.length === 0 && (
-            <div className="pc-agents-sessions__status">No inactive sessions.</div>
-          )}
-          {/* The infinite-scroll sentinel — observed while more pages remain. */}
-          <div ref={sentinelRef} data-testid="inactive-sessions-sentinel" style={{ height: 1 }} />
-        </div>
-      )}
+    <>
+      <SharedInactiveSessionsSection
+        activeOwnerIds={activeOwnerIds}
+        nowMs={nowMs}
+        focusOwnerId={focusOwnerId}
+        expanded={expanded}
+        onExpandedChange={(next) => void setExpanded(next)}
+        loadPage={loadEndedSessionsPage}
+        chrome={INACTIVE_CHROME}
+        labels={labels}
+        // A row opens only when a transcript viewer can resolve it — the same
+        // predicate the modal below relies on for its streamUrl.
+        isOpenable={(r) => endedSessionStreamUrl(r) !== null}
+        onRowActivate={setInspecting}
+      />
       {inspecting ? (
         <AgentInspectorModal
           slug=""
@@ -1190,7 +1099,7 @@ export function InactiveSessionsSection({
         />
       ) : null}
       <SessionsStyles />
-    </div>
+    </>
   );
 }
 
@@ -1208,8 +1117,10 @@ function SessionsStyles() {
         background: var(--bg-2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
       }
       .pc-agents-sessions__search:focus { outline: 1px solid var(--accent, #38bdf8); }
-      .pc-agents-sessions__status { padding: 8px 10px; font-size: 11.5px; color: var(--fg-mute); font-style: italic; }
-      .pc-agents-sessions__status.is-error { color: #d97757; }
+      /* The status line, the scroll container and the whole "View inactive
+         sessions" footer are the shared package's rules (WI-2047194) — one
+         source for both surfaces. Spliced here, not duplicated. */
+${INACTIVE_SESSIONS_STYLES}
       /* WI-4734: the in-flight state must be UNMISSABLE — animated ellipsis on
          the status line, and stale previous-query results dimmed (still
          interactive) so they read as "old results, new search running". */
@@ -1227,7 +1138,6 @@ function SessionsStyles() {
         border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
       }
       .pc-agents-sessions__retry:hover { border-color: var(--accent, #7aa2f7); }
-      .pc-agents-sessions__scroll { max-height: 300px; overflow-y: auto; }
       .pc-agents-sessions__result { padding: 2px 0 4px; border-bottom: 1px solid var(--border); }
       .pc-agents-sessions__result:last-child { border-bottom: none; }
       .pc-agents-sessions__result-head.is-unopenable { cursor: default; opacity: 0.75; }
@@ -1279,21 +1189,6 @@ function SessionsStyles() {
         border: 1px solid currentColor; border-radius: 3px;
         padding: 0 3px; opacity: 0.85;
       }
-      /* Sticky footer: pinned to the popover bottom so the hover detail strip
-         appearing/disappearing above it never displaces it (it was "fighting"
-         that strip for the same spot), and it stays visible without scrolling. */
-      .pc-agents-sessions__inactive {
-        border-top: 1px solid var(--border-strong, var(--border)); margin-top: 4px;
-        position: sticky; bottom: -4px; z-index: 2; background: var(--bg-1, #0b1525);
-      }
-      .pc-agents-sessions__toggle {
-        width: 100%; text-align: left; font-size: 12px; font-weight: 600;
-        padding: 8px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px;
-        background: transparent; color: var(--accent, #38bdf8); border: none; border-radius: 4px;
-      }
-      .pc-agents-sessions__toggle:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%); }
-      .pc-agents-sessions__toggle-hint { margin-left: auto; font-weight: 400; font-size: 10.5px; color: var(--fg-mute); }
-      .pc-agents-sessions__inactive-list { max-height: 260px; }
       /* Context-dependent facet filter bar (facet-pills-and-recency-2026-07-12) */
       .pc-agents-facets {
         display: flex; flex-direction: column; gap: 3px;

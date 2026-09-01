@@ -764,6 +764,33 @@ export function submitExhaustionTerminatesHost(label: any): boolean;
  * not proof that the injected turn landed, so it must remain distinguishable
  * from both success and bounded exhaustion. Pure; exported for tests. */
 export function submitVerificationFailureReason(result: any): string | null;
+export function quotaLimitBannerVisible(text: any): boolean;
+/** WI-1386682 (1): quota-wall detector. Feed it the SAME raw pty bytes the
+ *  activity tracker sees (child.onData); `isBlocked()` reports whether
+ *  Claude Code's own usage-limit banner is currently visible in the recent
+ *  screen. Deliberately a bounded ring buffer, not an edge-triggered
+ *  one-shot: a session truly sitting on a wall emits NOTHING further (the
+ *  banner is a static paint, not a redrawing spinner), so the buffer simply
+ *  stops growing and stays blocked; once genuine new output resumes — the
+ *  wall lifted, a recycle replaced the child, a human intervened — the
+ *  detector does not need to know which; enough of that new text evicts the
+ *  banner from the window and `isBlocked()` clears on its own. This is the
+ *  "clear-on-output rule" the parent item asks for: not an immediate
+ *  single-byte clear (which would be wrong — a redraw is routinely split
+ *  across several small writes) but a level check against the current
+ *  screen. Pure (no timers, no I/O); exported for tests. */
+export function makeQuotaBlockDetector({ capBytes }?: {
+    capBytes?: number | undefined;
+}): {
+    /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
+     *  or null when the level didn't change, so a caller can log transitions
+     *  without re-deriving state on every chunk. */
+    observe(chunk: any): "detected" | "cleared" | null;
+    isBlocked: () => boolean;
+    /** Reset to a fresh, un-walled state. Call on recycle: a fresh child has
+     *  no screen history and cannot inherit the old child's wall. */
+    reset(): void;
+};
 /**
  * Control-socket wire protocol (v1). A connector writes ONE UTF-8 payload then
  * half-closes. If it parses as a `{ v:1, mode, data }` envelope we act on the

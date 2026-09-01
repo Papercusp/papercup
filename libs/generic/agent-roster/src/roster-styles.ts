@@ -142,3 +142,32 @@ export const ROSTER_STYLES = `
       }
       .pc-agents-roster__compose-actions { display: flex; gap: 4px; }
 `;
+
+/**
+ * The "View inactive sessions" section's CSS (WI-2047194) — a SEPARATE string so
+ * a host that renders only the live roster pays nothing for it, and a host that
+ * renders both injects both. Same theming seam as ROSTER_STYLES: every colour is
+ * a custom property with a fallback.
+ *
+ * The section is a sticky FOOTER: pinned to the bottom of the host's popover so
+ * the roster's hover detail strip appearing/disappearing above it never
+ * displaces it, and it stays reachable without scrolling.
+ */
+export const INACTIVE_SESSIONS_STYLES = `
+      .pc-agents-sessions__status { padding: 8px 10px; font-size: 11.5px; color: var(--fg-mute); font-style: italic; }
+      .pc-agents-sessions__status.is-error { color: #d97757; }
+      .pc-agents-sessions__scroll { max-height: 300px; overflow-y: auto; }
+      .pc-agents-sessions__inactive {
+        border-top: 1px solid var(--border-strong, var(--border)); margin-top: 4px;
+        position: sticky; bottom: -4px; z-index: 2; background: var(--bg-1, #0b1525);
+      }
+      .pc-agents-sessions__toggle {
+        width: 100%; text-align: left; font: inherit; font-size: 12px; font-weight: 600;
+        padding: 8px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px;
+        background: transparent; color: var(--accent, #38bdf8); border: none; border-radius: 4px;
+      }
+      .pc-agents-sessions__toggle:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%); }
+      .pc-agents-sessions__toggle-hint { margin-left: auto; font-weight: 400; font-size: 10.5px; color: var(--fg-mute); }
+      .pc-agents-sessions__inactive-list { max-height: 260px; }
+      .pc-agents-sessions__inactive .pc-agents-roster__row.is-unopenable { cursor: default; opacity: 0.75; }
+`;

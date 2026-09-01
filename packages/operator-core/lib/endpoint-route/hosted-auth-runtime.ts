@@ -28,7 +28,7 @@ import {
 } from '../auth/hosted/service-adapters';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import { createWorkOSHostedIdentityProvider } from '../auth/hosted/workos-provider';
-import { resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
+import { resolveHostedSecretRef } from '../auth/hosted/secret-ref';
 import {
   HOSTED_AUTH_ROUTES,
   createHostedAuthRoutes,
@@ -156,7 +156,9 @@ export async function createHostedAuthRuntime(
   const runService = dependencies.runService ?? withHostedServiceContext;
   await assertHostedServicePosture(runService);
 
-  const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
+  // Default resolver understands env:/file: AND integration:NAME (the encrypted
+  // integration store) — see auth/hosted/secret-ref.ts. Tests inject their own.
+  const resolveSecret = dependencies.resolveSecret ?? resolveHostedSecretRef;
   const runTenant = dependencies.runTenant ?? withTenantContext;
   const sessionCookieSecret = await resolveSecret(configuration.hostedSessionCookieSecretRef);
   const sessionStore = new HostedServiceSessionStore(runService);

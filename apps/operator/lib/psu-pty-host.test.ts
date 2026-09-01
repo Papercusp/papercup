@@ -42,6 +42,8 @@ import {
   makeSubmitVerifier,
   submitExhaustionTerminatesHost,
   submitVerificationFailureReason,
+  quotaLimitBannerVisible,
+  makeQuotaBlockDetector,
   verifyNativeTurnStartWithRetry,
   carryTurnProofRequiresNativeId,
   signalNameFromCode,
@@ -2070,6 +2072,97 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     // WI-41044 teardown rather than silently inheriting the wake exemption.
     expect(submitExhaustionTerminatesHost('some future submit')).toBe(true);
     expect(submitExhaustionTerminatesHost(undefined)).toBe(true);
+  });
+});
+
+// WI-1386682 (1): the residual half of WI-1378748. That item stopped a wake
+// exhaustion from being host-fatal; it did not stop the host from reading a
+// rate-limited (quota-walled) agent's silence as "at its ordinary prompt".
+describe('quotaLimitBannerVisible (WI-1386682 (1) — usage-wall text detector)', () => {
+  it('recognizes the weekly-limit wording', () => {
+    expect(quotaLimitBannerVisible("You've hit your weekly limit.")).toBe(true);
+    expect(quotaLimitBannerVisible('WEEKLY LIMIT reached')).toBe(true);
+  });
+
+  it('recognizes the 5-hour-limit wording', () => {
+    expect(quotaLimitBannerVisible('Your 5-hour limit has been reached.')).toBe(true);
+  });
+
+  it('recognizes generic "usage limit" wording', () => {
+    expect(quotaLimitBannerVisible('You have reached your usage limit for this period.')).toBe(true);
+  });
+
+  it('recognizes a limit/resets pairing on the same line', () => {
+    expect(quotaLimitBannerVisible('Rate limit — resets at 3:00pm')).toBe(true);
+    expect(quotaLimitBannerVisible('limit resetting shortly')).toBe(true);
+  });
+
+  it('does not match ordinary TUI output', () => {
+    expect(quotaLimitBannerVisible('Welcome back! Continuing where you left off.')).toBe(false);
+    expect(quotaLimitBannerVisible('$ npm test\n42 passed')).toBe(false);
+    expect(quotaLimitBannerVisible('')).toBe(false);
+    expect(quotaLimitBannerVisible(undefined)).toBe(false);
+  });
+
+  it('survives ANSI styling around the matched phrase', () => {
+    expect(quotaLimitBannerVisible('\x1b[31mweekly limit\x1b[0m reached')).toBe(true);
+  });
+});
+
+describe('makeQuotaBlockDetector (WI-1386682 (1)/(2) — quota-wall ring-buffer detector)', () => {
+  it('starts unblocked and stays unblocked on ordinary output', () => {
+    const d = makeQuotaBlockDetector();
+    expect(d.isBlocked()).toBe(false);
+    expect(d.observe('$ echo hi\nhi\n')).toBeNull();
+    expect(d.observe('more ordinary output')).toBeNull();
+    expect(d.isBlocked()).toBe(false);
+  });
+
+  it('transitions to detected exactly once when the banner appears, even across repeated redraws', () => {
+    const d = makeQuotaBlockDetector();
+    expect(d.observe("You've hit your weekly limit.")).toBe('detected');
+    expect(d.isBlocked()).toBe(true);
+    // A static wall screen commonly repaints the SAME text (cursor moves,
+    // color resets) — that must not re-fire the transition every chunk.
+    expect(d.observe("You've hit your weekly limit.")).toBeNull();
+    expect(d.observe('')).toBeNull();
+    expect(d.isBlocked()).toBe(true);
+  });
+
+  it('recognizes the banner even when split across two onData chunks', () => {
+    const d = makeQuotaBlockDetector();
+    expect(d.observe('You have hit your weekly ')).toBeNull();
+    expect(d.observe('limit.')).toBe('detected');
+    expect(d.isBlocked()).toBe(true);
+  });
+
+  it('clears once enough genuinely new output evicts the banner from the window (clear-on-output rule)', () => {
+    const d = makeQuotaBlockDetector({ capBytes: 20 });
+    expect(d.observe('weekly limit')).toBe('detected'); // 12 chars, fits in the 20-char window
+    expect(d.isBlocked()).toBe(true);
+    // Push the banner text out of the bounded tail with real new content.
+    expect(d.observe('x'.repeat(20))).toBe('cleared');
+    expect(d.isBlocked()).toBe(false);
+  });
+
+  it('does not clear on the very next chunk when the banner is still within the window', () => {
+    const d = makeQuotaBlockDetector({ capBytes: 8_192 });
+    expect(d.observe('weekly limit')).toBe('detected');
+    // A handful of small redraw bytes (far short of the 8_192 window) must not
+    // evict the still-visible banner — a real wall keeps showing it.
+    expect(d.observe('\x1b[0m')).toBeNull();
+    expect(d.isBlocked()).toBe(true);
+  });
+
+  it('reset() returns to a fresh, un-walled state regardless of history', () => {
+    const d = makeQuotaBlockDetector();
+    d.observe('weekly limit reached');
+    expect(d.isBlocked()).toBe(true);
+    d.reset();
+    expect(d.isBlocked()).toBe(false);
+    // A fresh child's first bytes must not be read against the old wall text.
+    expect(d.observe('ordinary boot output')).toBeNull();
+    expect(d.isBlocked()).toBe(false);
   });
 });
 
