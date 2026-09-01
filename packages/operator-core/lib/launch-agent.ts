@@ -75,6 +75,14 @@ export interface LaunchAgentOpts extends LaunchOpts {
    */
   contextSize?: SuContextSize;
   /**
+   * WI-2140338 [owner 2026-09-01]: session compaction ceiling in TOKENS, threaded
+   * to the spawn as `--compaction-limit` (the argv seam MemberSpec.compactionLimit
+   * already rides). Lets a launcher pin a session to its model's full window
+   * (e.g. 1_000_000) instead of the tier default. Omitted = tier/system default.
+   * Distinct from `contextSize` (initial TOOL surface), not a token knob.
+   */
+  compactionLimit?: number | null;
+  /**
    * P-017 (work-on-everything-goal): free-text first-turn brief for the spawned
    * session, delivered via the spawn-safe PAPERCUSP_KICKOFF_PROMPT env
    * (launch-su threads it into the child env; psu's resolveKickoffText reads
@@ -312,6 +320,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     plan_slug: opts.planSlug ?? null,
     model: opts.model ?? null,
     context_size: opts.contextSize ?? null,
+    compaction_limit: opts.compactionLimit ?? null,
     resume_session_id: opts.resumeSessionId ?? null,
     kickoff: opts.kickoff ?? null,
     kickoff_prompt: opts.kickoffPrompt ?? null,
