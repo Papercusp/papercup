@@ -1,86 +1,20 @@
-# worker:chunk-loop dark-launch — the metrics surface + ramp gate, and how to run it
+# worker:chunk-loop routing retired — ordinary invoke is the supported path
 URL: /internal/docs/agent-insights/worker-chunk-loop-dark-launch-metrics-ramp
 
-The operator-hosted worker:chunk-loop op routes a coding worker through the operator process instead of the subprocess invoke-once path. Routing is a gated cohort in orchestrator-runner.ts useWorkerChunkLoopOp: the papercusp-worker-chunk-loop-blueprint flag (default-ON), a per-harness workerChunkLoop config knob (default false), and optional workerChunkLoopCohortPercent / workerModeCohortPercent 0..100 feature-stable hashing for the 25→50→100 ramp. To dark-launch you set workerChunkLoop:true plus the current cohort percent on ONE non-critical CODING harness (NOT papercup/papercusp) via its instance config (Blueprint Settings → POST /api/harness/:slug/spec; the keys land in configOverrides and configGet reads them), then dispatch real features. Outcomes are now recorded per-run (migration 397, harness_shared.worker_chunk_loop_outcomes) at the single runWorkerChunkLoop convergence point, labelled by execution path (op vs subprocess). Read them with dev:worker_chunk_loop_metrics (completion-rate + outcome distribution by path + op−subprocess delta); pass rampStep to get the deterministic advance/hold/rollback recommendation (decideRampAdvance). The actual %-advance and the dark-launch RUN are owner-attended.
+The operator-hosted worker:chunk-loop routing experiment is retired. Ordinary invoke is unconditional, stale flags/knobs cannot re-enable it, and historical chunk rows remain read-compatible while new chunk writes and active placement are disabled.
 
-## What this is
+## Status
 
-The `worker:chunk-loop` op runs the coding worker's chunk loop **inside the operator
-process** (a near-port of `runWorkerChunkLoop`) instead of spawning the `invoke-once`
-subprocess. The value is finer crash-recovery + one execution model on the **coding hot
-path** — so it ships behind a staged dark → ramp → retire rollout, never a blind cutover.
+The operator-hosted `worker:chunk-loop` routing experiment is retired. Current coding workers always use the ordinary `invoke-once` worker path; stale feature flags, cohort settings, and per-harness `useChunkLoop` values cannot re-enable the route.
 
-## Routing — the cohort gate
+## What changed
 
-`orchestrator-runner.ts` `useWorkerChunkLoopOp({ role, flagEnabled, harnessOptIn,
-cohortPercent, cohortKey })` returns true only when **all four** hold:
+* `invoke-once` no longer imports or dispatches `shouldUseWorkerChunkLoop`.
+* The DBOS pipeline always calls `spawnInvokeOnce`; `useWorkerChunkLoopOp` is a compatibility guard that returns `false`.
+* The worker chunk-loop blueprint and deterministic-op registration are retired. The historical implementation modules remain only for migration/forensics and unit fixtures.
+* The public `work_item.kind='chunk'` write path is retired. New tool, HTTP, scheduled-plan, and blueprint-run attempts are rejected or normalized to `feature`; existing chunk rows remain readable with explicit historical filters (for example `work_items:list { kind: "chunk" }`) and parent reads.
+* Active placement and self-selection admit `feature` plus explicitly opted-in generic kinds, never historical chunks. The resumed drain fleet therefore uses a positive `feature` + `change` claim specification.
 
-* `role === 'worker'`
-* `flagEnabled` — `papercusp-worker-chunk-loop-blueprint` (default-**ON**)
-* `harnessOptIn` — `configGet(cfg, 'workerChunkLoop', false) === true`, from
-  `readEffectiveHarnessConfig` (blueprint knobs ⊕ the workspace-PG instance config)
-* `cohortKey`'s stable feature bucket is inside `workerChunkLoopCohortPercent`
-  (or legacy alias `workerModeCohortPercent`). Omitted percent preserves the old
-  `workerChunkLoop:true` behavior: 100%.
+## Verification
 
-The knob is set on **zero** harnesses, so every coding worker still runs the subprocess
-path. Flipping the flag alone changes nothing — the per-harness knob + cohort percent
-are the real gate.
-
-## Dark-launch a harness (owner-attended)
-
-1. Pick **one non-critical CODING harness** — NOT `papercup`/`papercusp`. (As of
-   2026-06-24 no live non-critical coding harness exists; stand one up first.)
-2. Set `workerChunkLoop: true` and `workerChunkLoopCohortPercent: 25` in its
-   **instance config** — Blueprint Settings panel → `POST /api/harness/:slug/spec`.
-   The keys are not declared blueprint params, but
-   `splitConfigJson` routes any non-typed key into `configOverrides` and
-   `instanceEntryToConfig` spreads it back, so `configGet` reads it. Reversible: set it
-   back to `false` or `0`.
-3. Ensure the Brief-15 wiring is **deployed** to the operator running that harness
-   (`:3170` staging, or the green pipeline to `:3070` — the metrics tool + table land via
-   the normal deploy).
-4. Dispatch one real coding feature → the op path fires → an outcome row lands.
-
-## Reading the metrics
-
-Every `runWorkerChunkLoop` call (both paths) writes ONE row to
-`harness_shared.worker_chunk_loop_outcomes` at the convergence point in
-`run-worker-chunk-loop.ts` (best-effort — a persist hiccup never fails the loop), labelled
-`execution_path` = `op` | `subprocess` via `InvokeContext.executionPath` (the op runner
-sets `'op'`; the subprocess path defaults to `'subprocess'`).
-
-`dev:worker_chunk_loop_metrics { windowHours?, harnessSlug?, rampStep? }` returns
-per-path **completion rate** + **outcome distribution**
-(completed/escalated/planning\_failed/aborted) + avg chunks-committed + avg replan-strikes,
-plus the **op−subprocess completion-rate delta**. It degrades to a zeroed empty result
-before any rows exist.
-
-## Deciding a ramp step (owner-gated per step)
-
-Pass `rampStep` (0|25|50|100) and the tool adds a `rampRecommendation` from the pure
-`decideRampAdvance` (`worker-chunk-ramp.ts`):
-
-* **advance** — op has ≥ `minOpSamples` (20) runs AND op completion-rate is within
-  `completionParityTolerance` (0.02) of subprocess AND no op-specific `planning_failed`
-  spike.
-* **hold** — not enough op samples, or op below parity but not regressed.
-* **rollback** — op completion-rate is `regressionThreshold` (0.05) below subprocess, OR
-  the op `planning_failed` rate exceeds subprocess by `maxPlanningFailedRateDelta` (0.05).
-  The planning\_failed guard is deliberate: a mis-built operator-side `InvokeContext` (the
-  D-005 risk) shows up as the op path failing to PLAN, which raw completion-rate can mask.
-
-The recommendation is advisory — the actual cohort %-advance is the owner's call per step.
-To advance, update `workerChunkLoopCohortPercent` one step at a time: 25 → 50 → 100.
-The feature bucket is keyed by workspace + harness + feature id, so retries for the same
-feature stay on the same execution path while the cohort grows monotonically.
-
-## Gotcha — migration renumber drift
-
-The table was first authored as `394-worker-chunk-loop-outcomes.sql`, hit a concurrent
-migration-number collision, and was renamed to `397-…` (reserved via `db:next-migration`).
-Both filenames are recorded in `schema_migrations`; `db:check_drift` will show
-`394-worker-chunk-loop-outcomes.sql` as an "extra" (applied-but-file-gone) — **benign**.
-The migration's privilege/RLS block is gated on the policy not already existing, so a
-re-apply on the in-use table is a lock-free no-op (avoids the 2026-06-09 lock\_timeout
-deploy-wedge class).
+Focused route, blueprint-parameter, public-create, historical-read, and claim-floor tests cover the retirement boundary. The old ramp metrics below are retained as historical evidence only; there is no remaining ramp to run.

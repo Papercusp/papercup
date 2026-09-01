@@ -2797,3 +2797,31 @@ zellij -s pui-dock-<pid> action move-focus down             # move focus between
   ratatui (and a freshly-built `pui` binary) — **not** the `psu`/Claude-Code
   papercup pane above. Check the running binary's mtime vs the build, and the
   pane's launch command, before concluding "cards work in the TUI."
+
+### 17.1 Real X11 clicks: client origin, Radix pointerdown, and bridge liveness (EI-19481468061988626)
+
+The verifier prints a click recipe after the isolated Tauri instance is ready. Use
+`xwininfo` to obtain the WebView's **client origin** before converting a control's
+coordinates to screen coordinates. `xdotool getwindowgeometry Position` reports the
+window-manager frame origin; on GNOME/X11 the frame can be 22px taller, so using it
+shifts the click onto the control below the one you intended. The helper printed by
+`scripts/verify-tauri-headless.sh` computes `OX`/`OY` from `Absolute upper-left X/Y`
+and then runs `xdotool mousemove --sync` + `xdotool click 1`. After every click,
+assert the intended target (for example, `document.activeElement` or a `focusin`
+log); a focus change without the expected target is a coordinate error, not a
+broken component.
+
+Radix Popover, Select, Tabs, and similar widgets activate on `pointerdown`. The
+bridge/DOM `click` verb and `element.click()` dispatch only a click and can leave
+`aria-haspopup=dialog` triggers closed with no error. For these controls use the
+real X11 click recipe, then verify `data-state`/`aria-expanded` and the popover
+content. Synthetic events are useful for non-pointer controls but are not proof
+that a Radix interaction worked.
+
+The dev-bridge token file is JSON (`{"port":N,"token":"…","pid":N}`), not a
+bearer string. Parse its `token` field, or pass `--pid <pid>` so the CLI selects the
+matching endpoint and token together. A bare `--port` can pair with a different
+temporary bridge when peers are running. Before any DOM assertion, probe `GET
+/version` on that same bridge and require a 200 response whose version is present;
+a dead or stale bridge otherwise produces plausible empty DOM and misleading
+verification results.
