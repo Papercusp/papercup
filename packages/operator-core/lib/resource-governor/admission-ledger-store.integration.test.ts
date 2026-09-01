@@ -1,45 +1,20 @@
 /** Real-PostgreSQL behavior coverage for the ledger-only admission store. */
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import {
+  allSessionsLiveResolver,
+  applyAdmissionLedgerFixture,
+  truncateAdmissionLedgerFixture,
+} from '../../test/_admission-ledger-fixture';
 import { AdmissionIdempotencyConflictError, Governor } from './admission';
 import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
 import { WorkItemAdmissionQueueDriver } from './queue';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const MIGRATION = readFileSync(
-  resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1062-resource-governor-admission-ledger.sql'),
-  'utf8',
-);
 
 let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('resource-governor-ledger-store');
-  await db.sql
-    .unsafe(
-      `
-    CREATE EXTENSION IF NOT EXISTS pgcrypto;
-    CREATE SCHEMA IF NOT EXISTS harness_shared;
-    CREATE TABLE harness_shared.operator_settings (
-      key text PRIMARY KEY,
-      value text NOT NULL,
-      description text,
-      updated_at bigint NOT NULL DEFAULT 0,
-      workspace_id text
-    );
-    CREATE TABLE harness_shared.work_items (
-      workspace_id text NOT NULL,
-      feature_id text NOT NULL,
-      payload jsonb,
-      PRIMARY KEY (workspace_id, feature_id)
-    );
-  `,
-    )
-    .simple();
-  await db.sql.unsafe(MIGRATION).simple();
+  await applyAdmissionLedgerFixture(db.sql);
 }, 60_000);
 
 afterAll(async () => {
@@ -47,10 +22,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`
-    TRUNCATE harness_shared.resource_governor_admissions,
-             harness_shared.operator_settings,
-             harness_shared.work_items`;
+  await truncateAdmissionLedgerFixture(db.sql);
 });
 
 function instance(
@@ -68,8 +40,7 @@ function instance(
     sql: db.sql,
     workspaceId: options.workspaceId ?? 'ws-ledger',
     ...(options.abandonAfterMs ? { abandonAfterMs: options.abandonAfterMs } : {}),
-    resolveSessionStatesFn: (async (subjects: readonly { ownerId: string }[]) =>
-      new Map(subjects.map(({ ownerId }) => [ownerId, { sessionState: 'live' as const }]))) as never,
+    resolveSessionStatesFn: allSessionsLiveResolver,
   });
   const driver = new WorkItemAdmissionQueueDriver(store, {
     namespace: 'integration',
