@@ -579,6 +579,8 @@ export interface PromoterLlmResult {
   inputTokens: number;
   outputTokens: number;
   costUsd?: number;
+  /** Account that actually served the request, after gateway routing/failover. */
+  servedAccount?: string;
 }
 
 export type PromoterLlmCall = (input: {

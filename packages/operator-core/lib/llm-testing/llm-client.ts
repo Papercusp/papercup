@@ -48,6 +48,7 @@ function providerForBackend(backend: AgentBackend): TurnProvider {
  */
 const TEST_BACKEND = process.env.LLM_TEST_BACKEND as AgentBackend | undefined;
 const CODEX_GATEWAY_AUTH = 'papercusp-gateway';
+const ROUTED_ACCOUNT_HEADER = 'x-papercusp-routed-account';
 
 export function isCodexModel(model: string | undefined): boolean {
   const m = model?.trim().toLowerCase() ?? '';
@@ -229,7 +230,16 @@ async function llmCallViaCodexGateway(
   const costUsd = codexCostUsd(model, inputTokens, outputTokens);
   const json = opts.responseFormat === 'json' ? tryParseJson(finalText) : undefined;
 
-  return { text: finalText, json, inputTokens, outputTokens, costUsd, raw };
+  const servedAccount = res.headers.get(ROUTED_ACCOUNT_HEADER)?.trim() || undefined;
+  return {
+    text: finalText,
+    json,
+    inputTokens,
+    outputTokens,
+    costUsd,
+    raw,
+    ...(servedAccount ? { servedAccount } : {}),
+  };
 }
 
 /**
@@ -256,6 +266,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   let outputTokens = 0;
   let costUsd = 0;
   let stopReason: string | null | undefined;
+  let servedAccount: string | undefined;
   let lastErrMsg: string | undefined;
   let lastErrTurn: TurnError | undefined;
   let sawResult = false;
@@ -336,6 +347,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
       outputTokens = ev.tokensOut;
       costUsd = ev.costUsd;
       stopReason = ev.stopReason;
+      servedAccount = ev.servedAccount ?? servedAccount;
     } else if (ev.type === 'error') {
       // Fold the subprocess stderr tail into the message: the un-governed CLI path attaches
       // no classified turn, so a bare `<backend> exited 1` is undiagnosable — and the
@@ -358,7 +370,16 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     json = tryParseJson(finalText);
   }
 
-  return { text: finalText, json, inputTokens, outputTokens, costUsd, stopReason, raw: null };
+  return {
+    text: finalText,
+    json,
+    inputTokens,
+    outputTokens,
+    costUsd,
+    stopReason,
+    raw: null,
+    ...(servedAccount ? { servedAccount } : {}),
+  };
 }
 
 /**
