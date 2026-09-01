@@ -139,6 +139,24 @@ export type RosterRow = UnifiedPresenceRecord &
       fleetSlug: string | null;
       /** named-su-agent-fleets P-005: role within the fleet ('leader' | 'member'). */
       fleetRole: string | null;
+      /** EI-22072194984361823: the fleet's CONTROL state alongside its name —
+       *  'active' | 'winding-down' (agent-fleets-store.getFleetControlStates).
+       *  `fleet` was presented as an identity label with a hidden capability
+       *  consequence: a MEMBER of a winding-down fleet cannot acquire new work
+       *  (fleet-scope-admission.ts fleetControlWindDownRefusal) even though every
+       *  other presence signal reads live/wakeable. Present only alongside
+       *  fleetSlug (same no-null-spam convention); absent for a non-fleet agent
+       *  or when the batched control-state read failed (fail-soft — never
+       *  fabricates a gate that may not exist). */
+      fleetControlState: 'active' | 'winding-down' | null;
+      /** EI-22072194984361823: convenience boolean a router can filter on
+       *  directly, derived from fleetControlState + fleetRole. false ONLY for a
+       *  fleet MEMBER (never a leader — the winding-down gate is member-only,
+       *  see resolveFleetScopeContext) whose fleet is winding-down. Present only
+       *  alongside fleetSlug; a non-fleet agent has no entry (it is never gated
+       *  by this at all, which is what its absence means — same convention as
+       *  fleetSlug itself). */
+      canAcquireWork: boolean;
     } & PresenceTier1Joins
   >;
 

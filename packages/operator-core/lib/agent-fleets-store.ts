@@ -684,6 +684,61 @@ export async function listFleets(workspaceId: string, sql?: Sql): Promise<AgentF
   return rows.map(rowToRecord);
 }
 
+/** The one field a presence/routing read needs from a fleet row: whether it
+ *  can currently absorb NEW work, alongside the slug it answers for. */
+export interface FleetControlSummary {
+  fleetSlug: string;
+  /** Same defensive narrowing as {@link rowToRecord}: only the literal
+   *  'winding-down' is honored; any other stored value (legacy null, a
+   *  hand-forged string) reads back 'active'. */
+  controlState: FleetControlState;
+  controlReason: string | null;
+}
+
+/**
+ * Batched control-state read for a BOUNDED set of fleet slugs
+ * (coord:presence fleet-control-visibility, EI-22072194984361823).
+ *
+ * WHY NOT `listFleets` + a client-side filter: a workspace's fleet registry
+ * never shrinks (D-003 — a fleet persists even after every member is killed),
+ * so `listFleets` pages the whole historical population. A presence read
+ * already knows exactly which fleet slugs its roster touches (the keys of
+ * the map `fetchPresenceFleet` returns); this answers "is any of THOSE
+ * fleets winding-down" with one query bounded to that set, on a hot poll
+ * surface (coord:presence) where paging the full registry per call would be
+ * a real cost.
+ *
+ * A requested slug with no matching row (deleted, or never registered — e.g.
+ * a stale/hand-set coord_presence.fleet_slug label) is simply absent from
+ * the returned map. Callers must treat "absent" the same as "active": this
+ * mirrors `fleetControlWindDownRefusal`'s existing fail-OPEN policy — an
+ * unresolvable fleet never fabricates a gate that was never set.
+ */
+export async function getFleetControlStates(
+  workspaceId: string,
+  fleetSlugs: readonly string[],
+  sql?: Sql,
+): Promise<Map<string, FleetControlSummary>> {
+  const out = new Map<string, FleetControlSummary>();
+  const slugs = [...new Set(fleetSlugs.filter((s): s is string => typeof s === 'string' && s.length > 0))];
+  if (slugs.length === 0) return out;
+  const s = pg(sql);
+  const rows = (await s.unsafe(
+    `SELECT fleet_slug, control_state, control_reason
+       FROM harness_shared.agent_fleets
+      WHERE workspace_id = $1 AND fleet_slug = ANY($2::text[])`,
+    [workspaceId, slugs],
+  )) as unknown as Array<{ fleet_slug: string; control_state: string | null; control_reason: string | null }>;
+  for (const r of rows) {
+    out.set(r.fleet_slug, {
+      fleetSlug: r.fleet_slug,
+      controlState: r.control_state === 'winding-down' ? 'winding-down' : 'active',
+      controlReason: r.control_reason ?? null,
+    });
+  }
+  return out;
+}
+
 /**
  * Every fleet this agent currently LEADS (agent_fleets.leader_owner_id), newest
  * first. Unlike presence membership — a single soft label that collapses to the
