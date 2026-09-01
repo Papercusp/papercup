@@ -32,6 +32,7 @@ function plan(over: Partial<CleanupPlanInput> = {}): CleanupPlanInput {
     harnessSlug: 'h',
     planSlug: 'my-plan',
     title: 'My plan',
+    status: 'active',
     opStatus: 'started',
     archived: false,
     updatedAtMs: NOW - HOUR,
@@ -80,6 +81,43 @@ function ofKind(findings: CleanupFinding[], kind: CleanupFinding['kind']): Clean
 describe('terminal-state pin', () => {
   it("scanner's local terminal set is identical to the conversion plane's canonical set", () => {
     expect([...TERMINAL_WORK_ITEM_STATES_SCAN].sort()).toEqual([...TERMINAL_WORK_ITEM_STATES].sort());
+  });
+});
+
+describe('enlist-plan', () => {
+  it('emits only the bounded highest-priority ready/active plans missing from the goal worklist', () => {
+    const findings = scanForCleanupFindings({
+      plans: [
+        plan({ planSlug: 'priority-newer', status: 'ready', opPriority: 1, createdAtMs: NOW - HOUR }),
+        plan({ planSlug: 'priority-older', status: 'active', opPriority: 1, createdAtMs: NOW - 2 * HOUR }),
+        plan({ planSlug: 'later', status: 'active', opPriority: 2, createdAtMs: NOW - 3 * HOUR }),
+        plan({ planSlug: 'draft-first', status: 'draft', opPriority: 0, createdAtMs: NOW - 4 * HOUR }),
+        plan({ planSlug: 'already-qualified', status: 'active', opPriority: 0 }),
+        plan({ planSlug: 'already-short', status: 'active', opPriority: 0 }),
+        plan({ planSlug: 'archived-first', status: 'active', opPriority: 0, archived: true }),
+      ],
+      linkedWorkItems: [],
+      claims: [],
+      goalWorklist: {
+        goalId: 'goal-everything',
+        refs: ['plan:h/already-qualified', 'plan:already-short'],
+        version: 7,
+      },
+    }, { nowMs: NOW, enlistPlanLimit: 2 });
+
+    const enlistments = ofKind(findings, 'enlist-plan');
+    expect(enlistments.map((finding) => finding.findingId)).toEqual([
+      'enlist-plan:h/priority-older',
+      'enlist-plan:h/priority-newer',
+    ]);
+    expect(enlistments.every((finding) => finding.autoApply)).toBe(true);
+    expect(enlistments[0]?.action).toEqual({
+      kind: 'enlist-plan',
+      goalId: 'goal-everything',
+      planRef: 'plan:h/priority-older',
+      worklist: ['plan:h/already-qualified', 'plan:already-short'],
+      expectedVersion: 7,
+    });
   });
 });
 

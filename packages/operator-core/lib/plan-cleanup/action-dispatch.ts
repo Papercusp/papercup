@@ -48,6 +48,21 @@ export async function dispatchCleanupFindingAction(input: {
   const harness = finding.harnessSlug || run.harnessSlug || undefined;
 
   switch (finding.kind) {
+    case 'enlist-plan': {
+      const action = finding.action;
+      if (!action || action.kind !== 'enlist-plan') {
+        throw new Error(`${finding.findingId}: fresh worklist action payload is required`);
+      }
+      if (action.worklist.includes(action.planRef)) {
+        throw new Error(`${finding.findingId}: plan is already present in the worklist`);
+      }
+      return callRequired(call, 'goals:set-property', {
+        goalId: action.goalId,
+        property: 'worklist',
+        value: [...action.worklist, action.planRef],
+        expectedVersion: action.expectedVersion,
+      });
+    }
     // COMPARE-AND-SET on both status flips
     // (bulk-review-report-legibility-and-lifecycle-2026-08-31 P-011): the
     // finding's `from` is what the SCAN saw. Passing it as `expectedStatus`

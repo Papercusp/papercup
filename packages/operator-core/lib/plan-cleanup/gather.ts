@@ -44,7 +44,10 @@ interface PlanRow {
   harness_slug: string;
   plan_slug: string;
   title: string | null;
+  status: string | null;
   op_status: string | null;
+  op_priority: number | null;
+  created_at_ms: number | null;
   archived: boolean;
   updated_at_ms: number | null;
   now_state: string | null;
@@ -83,12 +86,15 @@ function toPlanItems(items: unknown): CleanupPlanItemInput[] {
  * candidate the re-verify discards.
  */
 export async function gatherCleanupInputs(scope: CleanupGatherScope): Promise<CleanupScanInputs> {
-  if (scope.planSlugs.length === 0) return { plans: [], linkedWorkItems: [], claims: [] };
+  if (scope.planSlugs.length === 0) {
+    return { plans: [], linkedWorkItems: [], claims: [], goalWorklist: null };
+  }
   const { sql } = getOrgPg();
 
   // ── 1. the plans themselves (items jsonb → plain item rows) ──────────────
   const planRows = await sql<PlanRow[]>`
-    SELECT workspace_id, harness_slug, plan_slug, title, op_status, archived,
+    SELECT workspace_id, harness_slug, plan_slug, title, status, op_status, op_priority, archived,
+           (EXTRACT(EPOCH FROM created_at) * 1000)::float8 AS created_at_ms,
            (EXTRACT(EPOCH FROM updated_at) * 1000)::float8 AS updated_at_ms,
            now_state, now_next, items
       FROM harness_shared.harness_plans
@@ -102,7 +108,10 @@ export async function gatherCleanupInputs(scope: CleanupGatherScope): Promise<Cl
     harnessSlug: r.harness_slug,
     planSlug: r.plan_slug,
     title: r.title,
+    status: r.status,
     opStatus: r.op_status,
+    opPriority: r.op_priority,
+    createdAtMs: r.created_at_ms,
     archived: r.archived,
     updatedAtMs: r.updated_at_ms,
     nowState: r.now_state,
@@ -195,5 +204,36 @@ export async function gatherCleanupInputs(scope: CleanupGatherScope): Promise<Cl
     holderAlive: r.holder_alive,
   }));
 
-  return { plans, linkedWorkItems, claims };
+  // ── 5. featured active standing goal + its typed worklist CAS envelope ──
+  // Multiple standing goals are legal; P-012 targets the bundled first-party
+  // Work-on-everything instance. If several instances are active, the most
+  // recently updated one is the currently steered instance (same board rule).
+  const goalRows = await sql<Array<{
+    id: string;
+    refs: unknown;
+    version: number | string | null;
+  }>>`
+    SELECT id,
+           COALESCE(properties->'worklist'->'value', '[]'::jsonb) AS refs,
+           COALESCE((properties->'worklist'->>'version')::int, 0) AS version
+      FROM harness_shared.goals
+     WHERE workspace_id = ${scope.workspaceId}
+       AND status = 'active'
+       AND standing = true
+       AND metadata->>'goalPackageRef' = 'work-on-everything'
+       AND property_schema ? 'worklist'
+     ORDER BY updated_at DESC, id ASC
+     LIMIT 1`;
+  const goal = goalRows[0];
+  const goalWorklist = goal
+    ? {
+        goalId: goal.id,
+        refs: Array.isArray(goal.refs)
+          ? goal.refs.filter((ref): ref is string => typeof ref === 'string')
+          : [],
+        version: Number(goal.version ?? 0),
+      }
+    : null;
+
+  return { plans, linkedWorkItems, claims, goalWorklist };
 }

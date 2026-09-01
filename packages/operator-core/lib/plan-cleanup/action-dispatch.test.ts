@@ -15,6 +15,7 @@ vi.mock('../plan-items/stale-claims', () => ({
 }));
 
 import { dispatchCleanupFindingAction } from './action-dispatch';
+import type { CleanupFinding } from './scanner';
 
 const run = {
   runId: 'cleanup-1',
@@ -37,7 +38,7 @@ function finding(kind: string, itemId: string | null = 'P-001') {
     autoApply: kind !== 'archive-candidate' && kind !== 'stale-now',
     autoApplyBlockedBy: null,
     evidence: [],
-  } as never;
+  } as CleanupFinding;
 }
 
 beforeEach(() => {
@@ -49,6 +50,30 @@ beforeEach(() => {
 });
 
 describe('dispatchCleanupFindingAction', () => {
+  it('appends an enlist-plan ref through the typed worklist compare-and-set', async () => {
+    await dispatchCleanupFindingAction({
+      run,
+      finding: {
+        ...finding('enlist-plan', null),
+        action: {
+          kind: 'enlist-plan',
+          goalId: 'goal-everything',
+          planRef: 'plan:papercusp/plan-a',
+          worklist: ['plan:papercusp/plan-b'],
+          expectedVersion: 4,
+        },
+      },
+      call: h.call,
+    });
+
+    expect(h.call).toHaveBeenCalledWith('goals:set-property', {
+      goalId: 'goal-everything',
+      property: 'worklist',
+      value: ['plan:papercusp/plan-b', 'plan:papercusp/plan-a'],
+      expectedVersion: 4,
+    });
+  });
+
   it.each([
     // Both status flips carry `expectedStatus` — the compare-and-set precondition
     // added by bulk-review-report-legibility-and-lifecycle-2026-08-31 P-011. Its
