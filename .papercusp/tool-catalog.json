@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 842,
+  "count": 843,
   "tools": [
     {
       "name": "ablation:report",
@@ -27156,7 +27156,7 @@
           "POST"
         ]
       },
-      "description": "List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time; continue a bounded result with nextCursor. Pass mode:\"historical\" with both since and until for an explicit bounded [since, until) fleet census; it selects owners from append-only activity and maps immutable session/membership evidence. UNITS (EI-9970): `turns` = indexed TEXT-turn rows only (real user+assistant text; excludes tool_use/tool_result/thinking-only lines by design) — NOT a raw record count, NOT one row per model call; don't use it alone for cost/effort audits. Use `prompt_count` (real user prompts), `response_count` (distinct model-inference calls, deduped by request/message id — one call can span several raw lines), and `tool_call_count` (real tool invocations) instead; the latter two are null for source_kind=agent_chat (no tool-call signal in that shape).",
+      "description": "List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time; continue a bounded result with nextCursor. Ended/dead sessions are ALREADY included (rows are indexed transcripts, not live presence) — there is no includeEnded arg. Pass mode:\"historical\" with both since and until for an explicit bounded [since, until) fleet census; it selects owners from append-only activity and maps immutable session/membership evidence. UNITS: `turns` counts indexed TEXT turns only — for cost/effort use prompt_count/response_count/tool_call_count (definitions under returns).",
       "capabilities": [
         "search:read"
       ],
@@ -27959,6 +27959,37 @@
         "when": "You (or someone) just paused a SUPERVISED unit (`systemctl --user disable --now <unit>`) and want the pause on record — or you are triaging a `[supervision-paused]` EI / a \"NO REASON RECORDED\" escalation and can supply the missing context. Also usable proactively, before the reconciler's next tick observes the pause.",
         "notWhen": "For a scheduled ROUTINE's pause (git-sync, green-checkpoint, scout, …) use routines:set { active:false, reason } instead — that path is mediated by a tool call and already requires a reason at pause time. This tool is only for the systemd-unit supervision layer (`SUPERVISED_PROCESSES`).",
         "chaining": "dev:service_health or routines:list to confirm the unit is actually paused first; supervision:annotate-pause to record why; the reconciler auto-resolves the escalation once the unit is re-enabled — nothing to call to \"un-annotate\"."
+      }
+    },
+    {
+      "name": "supervision:announce-quiesce",
+      "http": {
+        "path": "/api/agent-tools/supervision/announce-quiesce",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Register (or clear) a deliberate, bounded-duration quiesce window for `subject` (e.g. 'bg-host') so a health guard that would otherwise alarm on the resulting absence — and instruct peers to \"restart\" it — reads your announcement first instead. Weaker evidence than a systemd-verified contract (D-026), so a guard checks that first and this second. `until` is required unless `end:true`, and is clamped to a maximum window (~12h); re-announce to extend.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are about to (or just did) deliberately take a service down by hand — a manual kill/systemctl stop plus your own restore trap, not a Papercusp-mediated cut — and want a guard's alarm to name your window instead of instructing peers to restart it. `single-primary-check.ts` currently reads subject 'bg-host' for this.",
+        "notWhen": "For the systemd-verified release-cut whole-cut+restore contract (D-026), nothing to call — that suppression is automatic from the cut/restore units themselves. This tool is only for an ad-hoc, self-reported quiesce D-026 cannot observe.",
+        "chaining": "Call with end:true (no reason/until needed) once the quiesced service is restored, or let the window expire on its own — a forgotten end call cannot wedge the alarm off past `until`."
       }
     },
     {
