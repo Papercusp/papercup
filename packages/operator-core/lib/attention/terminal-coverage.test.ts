@@ -1,0 +1,391 @@
+/**
+ * The P-003 terminal-coverage AUDIT, as an executable guard.
+ *
+ * The audit this plan item asked for is "does every AttentionKind expose a
+ * terminal action". Written as a document that answer is stale the day a kind is
+ * added; written as this test it cannot go stale, because it DERIVES the answer
+ * from the two pieces of code that actually decide it:
+ *
+ *   1. the real adapters — which actions each kind offers, and
+ *   2. the real dispatcher — whether any of those actions has a branch that
+ *      resolves.
+ *
+ * `ATTENTION_TERMINAL_POLICY` states only the part code cannot: which CLASS of
+ * disposition is correct for the kind. This test is the pin that keeps that
+ * judgment honest against the implementation (derived-truth ladder rung 2 over a
+ * rung 4 map).
+ *
+ * The failure it exists to prevent is not hypothetical. Before P-003, 9 of 15
+ * kinds offered nothing terminal — including `work-item-needs-human` (46% of the
+ * live bulk-run ledger) and `dark-flag-ratification` (14%) — which is why the
+ * resolver could terminally dispose of ~17% of the queue no matter how confident
+ * or how widely authorised it was.
+ */
+
+import { describe, expect, it, vi } from 'vitest';
+import {
+  blockedSessionToAttention,
+  blockedWorkItemToAttention,
+  conversationToAttention,
+  coordEscalationToAttention,
+  coordMessageToAttention,
+  darkFlagRatificationToAttention,
+  decisionOwedToAttention,
+  improvementToAttention,
+  operatorReportToAttention,
+  ownerWallToAttention,
+  planItemToAttention,
+  scoutGradeToAttention,
+  smokeFailToAttention,
+  standingApprovalToAttention,
+  workItemNeedsHumanToAttention,
+} from './adapters';
+import {
+  dispatchAttentionTerminalAction,
+  type TerminalActionDependencies,
+  type TerminalAttentionItem,
+} from './terminal-action-dispatch';
+import {
+  ATTENTION_TERMINAL_POLICY,
+  isTerminalActionId,
+  terminalPolicyFor,
+} from './terminal-coverage';
+import { ATTENTION_KIND_AUTHORITY, type AttentionItem, type AttentionKind } from './types';
+
+/** One representative item per kind, built by the REAL adapters — never a
+ *  hand-written literal, which would let the fixture drift from what the reader
+ *  actually emits and report coverage the owner does not have. */
+const FIXTURES: Record<AttentionKind, AttentionItem> = {
+  'plan-item': planItemToAttention({
+    slug: 'p',
+    id: 'P-001',
+    harnessSlug: 'papercusp',
+    text: 'decide',
+    storedStatus: 'needs-human',
+    effectiveStatus: 'needs-human',
+    importance: 'normal',
+  }),
+  'coord-escalation': coordEscalationToAttention({
+    msgId: 'm1',
+    severity: 'blocker',
+    summary: 'blocked',
+  }),
+  'coord-message': coordMessageToAttention({ msgId: 'm2', summary: 'fyi' }),
+  'smoke-fail': smokeFailToAttention({ harnessSlug: 'papercusp' }),
+  'operator-report': operatorReportToAttention({
+    turnId: 't1',
+    conversationId: 'c1',
+    report: { title: 'r', plans: [] } as never,
+  }),
+  improvement: improvementToAttention({ issueId: 'EI-1', title: 'idea' }),
+  'standing-approval': standingApprovalToAttention({
+    capability: 'cap',
+    targetHarness: 'papercusp',
+    count: 3,
+  }),
+  conversation: conversationToAttention({ conversationId: 'cv1', title: 'q?' }),
+  'scout-grade': scoutGradeToAttention({ count: 4 }),
+  'work-item-needs-human': workItemNeedsHumanToAttention({
+    workItemId: 'EI-2',
+    itemKind: 'bug',
+    title: 'needs you',
+    harnessSlug: 'papercusp',
+  }),
+  'owner-wall': ownerWallToAttention({
+    source: 'work-item',
+    ownerId: null,
+    claim: 'needs a credential',
+    ref: 'EI-3',
+    status: 'waiting',
+    harnessSlug: 'papercusp',
+  }),
+  'dark-flag-ratification': darkFlagRatificationToAttention({ flagKey: 'SOME_FLAG' }),
+  'blocked-session': blockedSessionToAttention({
+    sessionId: 's1',
+    client: 'claude',
+    refId: 'r1',
+    gateKind: 'ask',
+  }),
+  'work-item-blocked': blockedWorkItemToAttention({
+    workItemId: 'EI-4',
+    itemKind: 'bug',
+    title: 'stuck',
+    reason: 'waiting on dep',
+  }),
+  'decision-owed': decisionOwedToAttention({
+    sessionId: 's2',
+    refId: 'r2',
+    client: 'claude',
+    question: 'ship it?',
+    ownerAgentId: null,
+    harnessSlug: null,
+    closedAt: new Date().toISOString(),
+  }),
+};
+
+const ALL_KINDS = Object.keys(FIXTURES) as AttentionKind[];
+
+/** The dep surface, every method a spy — so a probe reports not just THAT the
+ *  dispatcher resolved but WHICH effect it reached, which is the whole basis of
+ *  the source-mutating vs acknowledgement assertion below. */
+function spyDeps() {
+  const deps = {
+    resolveEscalation: vi.fn(async () => {}),
+    acknowledgeMessage: vi.fn(async () => {}),
+    setPlanItemStatus: vi.fn(async () => {}),
+    wakePlanLoop: vi.fn(async () => {}),
+    dismissImprovement: vi.fn(async () => {}),
+    decideStandingApproval: vi.fn(async () => {}),
+    triageAttentionItem: vi.fn(async () => {}),
+    clearWorkItemOwnerGate: vi.fn(async () => {}),
+    closeWorkItem: vi.fn(async () => {}),
+    resolveConversation: vi.fn(async () => {}),
+    closeSessionGate: vi.fn(async () => {}),
+  } satisfies TerminalActionDependencies;
+  return deps;
+}
+
+/** Every dep EXCEPT the shared triage record — reaching one of these is what
+ *  makes a disposition source-mutating rather than a suppression overlay. */
+function sourceMutatingCalls(deps: ReturnType<typeof spyDeps>): number {
+  return Object.entries(deps)
+    .filter(([name]) => name !== 'triageAttentionItem' && name !== 'wakePlanLoop')
+    .reduce((total, [, spy]) => total + spy.mock.calls.length, 0);
+}
+
+function asTerminalItem(item: AttentionItem): TerminalAttentionItem {
+  return {
+    id: item.id,
+    kind: item.kind,
+    title: item.title,
+    harnessSlug: item.harnessSlug,
+    planSlug: item.planSlug,
+    ownerAgentId: item.ownerAgentId,
+    ref: item.ref as TerminalAttentionItem['ref'],
+  };
+}
+
+function terminalActionIds(item: AttentionItem): string[] {
+  return (item.actions ?? []).map((a) => a.id).filter(isTerminalActionId);
+}
+
+describe('P-003 terminal-action coverage audit', () => {
+  it('declares a policy for exactly the live AttentionKind set', () => {
+    expect(Object.keys(ATTENTION_TERMINAL_POLICY).sort()).toEqual(
+      Object.keys(ATTENTION_KIND_AUTHORITY).sort(),
+    );
+    // The fixtures are the audit's instrument; a kind with no fixture is a kind
+    // this test silently stops covering.
+    expect(ALL_KINDS.sort()).toEqual(Object.keys(ATTENTION_KIND_AUTHORITY).sort());
+  });
+
+  it('every kind offers at least one TERMINAL action — the 17%-ceiling regression guard', () => {
+    const uncovered = ALL_KINDS.filter((kind) => terminalActionIds(FIXTURES[kind]).length === 0);
+    expect(
+      uncovered,
+      `these kinds offer only navigate actions, so neither the owner's click nor the ` +
+        `resolver can ever end them: ${uncovered.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it.each(ALL_KINDS)('%s: every offered terminal action actually dispatches', async (kind) => {
+    const item = FIXTURES[kind];
+    const ids = terminalActionIds(item);
+    expect(ids.length, `${kind} offers no terminal action`).toBeGreaterThan(0);
+
+    for (const actionId of ids) {
+      const deps = spyDeps();
+      const result = await dispatchAttentionTerminalAction({
+        item: asTerminalItem(item),
+        actionId,
+        deps,
+        rationale: 'audit probe',
+      });
+      expect(
+        result.resolved,
+        `${kind} offers "${actionId}" but the dispatcher has no branch for it — the ` +
+          `option would commit in the UI and resolve nothing`,
+      ).toBe(true);
+    }
+  });
+
+  it.each(ALL_KINDS)('%s: dispatch matches its declared disposition class', async (kind) => {
+    const policy = terminalPolicyFor(kind);
+    expect(policy).not.toBeNull();
+    const item = FIXTURES[kind];
+
+    let sawSourceMutation = false;
+    let sawAcknowledgement = false;
+    for (const actionId of terminalActionIds(item)) {
+      const deps = spyDeps();
+      await dispatchAttentionTerminalAction({
+        item: asTerminalItem(item),
+        actionId,
+        deps,
+        rationale: 'audit probe',
+      });
+      if (sourceMutatingCalls(deps) > 0) sawSourceMutation = true;
+      if (deps.triageAttentionItem.mock.calls.length > 0) sawAcknowledgement = true;
+    }
+
+    if (policy!.class === 'source-mutating') {
+      expect(
+        sawSourceMutation,
+        `${kind} is declared source-mutating (${policy!.why}) but no terminal action ` +
+          `writes its source — a card that only takes a triage record here would vanish ` +
+          `from the inbox while the underlying state still demands a human`,
+      ).toBe(true);
+    } else if (policy!.class === 'acknowledgement') {
+      expect(
+        sawAcknowledgement,
+        `${kind} is declared acknowledgement (${policy!.why}) but its terminal action ` +
+          `records no durable triage — nothing would suppress it on the next read`,
+      ).toBe(true);
+      expect(
+        sawSourceMutation,
+        `${kind} is declared acknowledgement but a terminal action mutates a source; ` +
+          `re-classify it rather than leaving the map lying`,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('P-003 owner-gate terminals write the SOURCE', () => {
+  it('work-item-needs-human resolve clears the owner gate, not just the card', async () => {
+    const deps = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES['work-item-needs-human']),
+      actionId: 'resolve',
+      deps,
+      rationale: 'handled',
+    });
+    expect(deps.clearWorkItemOwnerGate).toHaveBeenCalledWith({
+      workItemId: 'EI-2',
+      harnessSlug: 'papercusp',
+      statusGated: false,
+    });
+    expect(deps.triageAttentionItem).not.toHaveBeenCalled();
+  });
+
+  it('carries the STATUS leg when the row itself is status-gated', async () => {
+    const statusGated = workItemNeedsHumanToAttention({
+      workItemId: 'F-9',
+      itemKind: 'feature',
+      title: 'ratify',
+      harnessSlug: 'papercusp',
+      status: 'needs-human',
+    });
+    const deps = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(statusGated),
+      actionId: 'resolve',
+      deps,
+    });
+    expect(deps.clearWorkItemOwnerGate).toHaveBeenCalledWith(
+      expect.objectContaining({ workItemId: 'F-9', statusGated: true }),
+    );
+  });
+
+  it('drop closes the work-item WITH the caller rationale as evidence', async () => {
+    const deps = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES['work-item-needs-human']),
+      actionId: 'drop',
+      deps,
+      rationale: 'superseded by EI-9',
+    });
+    expect(deps.closeWorkItem).toHaveBeenCalledWith(
+      expect.objectContaining({ workItemId: 'EI-2', rationale: 'superseded by EI-9' }),
+    );
+  });
+
+  it('a terminal close never ships a blank rationale — the state write requires evidence', async () => {
+    const deps = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES['work-item-blocked']),
+      actionId: 'drop',
+      deps,
+      rationale: '   ',
+    });
+    const [call] = deps.closeWorkItem.mock.calls as unknown as [[{ rationale: string }]];
+    expect(call[0].rationale.trim().length).toBeGreaterThan(0);
+  });
+
+  it('a work-item-backed owner wall clears the same gate; a carry-note wall acknowledges', async () => {
+    const backed = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES['owner-wall']),
+      actionId: 'resolve',
+      deps: backed,
+      rationale: 'unblocked',
+    });
+    expect(backed.clearWorkItemOwnerGate).toHaveBeenCalledWith(
+      expect.objectContaining({ workItemId: 'EI-3' }),
+    );
+
+    const note = ownerWallToAttention({
+      source: 'loop-carry-note',
+      ownerId: null,
+      claim: 'needs the owner to buy a domain',
+      status: 'waiting',
+    });
+    const carry = spyDeps();
+    const result = await dispatchAttentionTerminalAction({
+      item: asTerminalItem(note),
+      actionId: 'dismiss',
+      deps: carry,
+      rationale: 'handled out of band',
+    });
+    expect(result.resolved).toBe(true);
+    expect(carry.clearWorkItemOwnerGate).not.toHaveBeenCalled();
+    expect(carry.triageAttentionItem).toHaveBeenCalled();
+  });
+});
+
+describe('P-003 conversation close', () => {
+  it('a bare close does NOT capture its close note as an answer', async () => {
+    const deps = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES.conversation),
+      actionId: 'dismiss',
+      deps,
+      rationale: 'no longer relevant',
+    });
+    expect(deps.resolveConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'cv1', capture: 'none' }),
+    );
+  });
+
+  it("a drafted answer IS captured — the resolver's text finally reaches the source", async () => {
+    const deps = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES.conversation),
+      actionId: 'dismiss',
+      deps,
+      answerText: 'Use the staging port.',
+    });
+    expect(deps.resolveConversation).toHaveBeenCalledWith({
+      conversationId: 'cv1',
+      acceptedAnswer: 'Use the staging port.',
+      capture: 'mem0',
+    });
+  });
+});
+
+describe('P-003 does not widen navigation into resolution', () => {
+  it.each(['discuss', 'chat', 'open', 'answer', 'view-log', 'message-owner'])(
+    '%s stays non-terminal for every kind',
+    async (actionId) => {
+      for (const kind of ALL_KINDS) {
+        const deps = spyDeps();
+        const result = await dispatchAttentionTerminalAction({
+          item: asTerminalItem(FIXTURES[kind]),
+          actionId,
+          deps,
+        });
+        expect(result.resolved, `${actionId} resolved a ${kind} item`).toBe(false);
+        expect(sourceMutatingCalls(deps) + deps.triageAttentionItem.mock.calls.length).toBe(0);
+      }
+    },
+  );
+});

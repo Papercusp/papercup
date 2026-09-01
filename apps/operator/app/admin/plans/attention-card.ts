@@ -45,6 +45,9 @@ import {
   resolveConversationAnswer,
   dismissImprovement,
   deliverInboxReply,
+  clearWorkItemOwnerGate,
+  closeWorkItem,
+  clearSessionGate,
 } from './plans-api';
 import type { AskChoiceArgs, AskChoiceOption } from '@/app/_components/chat/AskChoiceCard';
 
@@ -291,6 +294,29 @@ export async function resolveAttentionAction(
         const result = await deliverInboxReply(args);
         if (result.error) throw new Error(result.error);
         return { live: result.live, woken: result.woken };
+      },
+      // P-003 — the owner-gate terminals. Each throws on a backend error so the
+      // card toasts and stays unresolved, exactly like the older effects: a
+      // terminal option that silently no-ops is worse than one that fails loudly.
+      async clearWorkItemOwnerGate(args) {
+        const result = await clearWorkItemOwnerGate(args);
+        if (result?.error) throw new Error(result.error);
+      },
+      async closeWorkItem(args) {
+        const result = await closeWorkItem(args);
+        if (result?.error) throw new Error(result.error);
+      },
+      async resolveConversation({ conversationId, acceptedAnswer, capture }) {
+        const result = await resolveConversationAnswer({
+          conversation_id: conversationId,
+          accepted_answer: acceptedAnswer,
+          capture,
+        });
+        if (result?.error) throw new Error(result.error);
+      },
+      async closeSessionGate(args) {
+        const result = await clearSessionGate(args);
+        if (result?.error) throw new Error(result.error);
       },
     },
   });
