@@ -29,6 +29,12 @@ import { listTargets } from '@papercusp/operator-core/lib/llm-testing/targets';
 import { findPromotionCandidates, formatCandidatesReport } from '@papercusp/operator-core/lib/llm-testing/promotion/candidates';
 import { promoteShape } from '@papercusp/operator-core/lib/llm-testing/promotion/promote';
 import { replayFixture, reEvaluateRun } from '@papercusp/operator-core/lib/llm-testing/replay';
+import {
+  LLM_TEST_EXIT_NOTHING_RAN,
+  llmTestExitCode,
+  runSummaryLine,
+  type ScenarioOutcome,
+} from '@papercusp/operator-core/lib/llm-testing/run-exit-code';
 
 type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay' | 'export-fixture' | 'lint';
 
@@ -388,7 +394,7 @@ async function main(): Promise<void> {
     console.log(`[llm-test] --variant '${variant.id}' (${[variant.promptOverlay && 'promptOverlay', variant.configDelta && 'configDelta'].filter(Boolean).join(' + ') || 'empty'})`);
   }
 
-  const runOne = async (scenario: typeof scenarios[number]): Promise<boolean> => {
+  const runOne = async (scenario: typeof scenarios[number]): Promise<ScenarioOutcome> => {
     const scenarioFilePath = resolveScenarioFilePath(scenario);
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
     let report;
@@ -403,27 +409,41 @@ async function main(): Promise<void> {
       const msg = (err as Error).message ?? '';
       if (msg.startsWith('claim_busy')) {
         process.stdout.write(`  ⊘ skipped [${scenario.id}]: ${msg}\n`);
-        return false; // not a failure — another runner is on it
+        // Another runner is on it — not a FAILURE, but not a pass either: this
+        // scenario measured nothing. The zero-executed guard below is what
+        // keeps that from exiting 0 (EI-22032714687384561).
+        return 'skipped';
       }
       console.error(`  ✗ runner error [${scenario.id}]: ${msg}`);
-      return true;
+      return 'failed';
     }
     printReport(report);
     // Verdict for the UI/PG ('preview' for single-run per plan §2.4);
     // exit-code from the per-run status so CI still flags single-run
     // failures.
-    if (report.verdict === 'fail' || report.verdict === 'errored') return true;
-    return report.runs.some((r) => r.status === 'failed' || r.status === 'errored');
+    if (report.verdict === 'fail' || report.verdict === 'errored') return 'failed';
+    return report.runs.some((r) => r.status === 'failed' || r.status === 'errored')
+      ? 'failed'
+      : 'executed';
   };
 
-  let anyFailed = false;
+  const outcomes: ScenarioOutcome[] = [];
   for (let i = 0; i < scenarios.length; i += concurrency) {
     const batch = scenarios.slice(i, i + concurrency);
-    const results = await Promise.all(batch.map(runOne));
-    if (results.some(Boolean)) anyFailed = true;
+    outcomes.push(...(await Promise.all(batch.map(runOne))));
   }
 
-  process.exit(anyFailed ? 1 : 0);
+  const exitCode = llmTestExitCode(outcomes);
+  if (outcomes.some((o) => o === 'skipped')) {
+    console.log(`\n[llm-test] ${runSummaryLine(outcomes)}`);
+  }
+  if (exitCode === LLM_TEST_EXIT_NOTHING_RAN) {
+    console.error(
+      `[llm-test] NOTHING RAN — 0 of ${scenarios.length} requested scenario(s) executed. ` +
+        `Exiting ${exitCode}: this is not a pass.`,
+    );
+  }
+  process.exit(exitCode);
 }
 
 function resolveScenarioFilePath(scenario: { id: string; target: string }): string | undefined {
