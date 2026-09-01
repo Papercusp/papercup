@@ -21,6 +21,7 @@ const setCompactionLimit = vi.fn();
 const getPresence = vi.fn();
 const fetchPresenceFleet = vi.fn();
 const resolveModelSpecForOwner = vi.fn();
+const estimateContextWindowForOwner = vi.fn();
 const classifyAgentPane = vi.fn();
 
 const CALLER = 'su-caller';
@@ -51,6 +52,7 @@ vi.mock('../coordination/presence-fleet', () => ({
 }));
 vi.mock('../../compaction-usage', () => ({
   resolveModelSpecForOwner: (...a: unknown[]) => resolveModelSpecForOwner(...a),
+  estimateContextWindowForOwner: (...a: unknown[]) => estimateContextWindowForOwner(...a),
 }));
 vi.mock('../fleet_registry/_shared', () => ({
   resolveFleetCaller: () => ({
@@ -70,6 +72,7 @@ function fleetMap(target: string, fleetSlug: string | null, fleetRole: string | 
 beforeEach(() => {
   vi.clearAllMocks();
   resolveModelSpecForOwner.mockResolvedValue('opus[1m]'); // 400k leader / 300k member gap
+  estimateContextWindowForOwner.mockResolvedValue(null);
   classifyAgentPane.mockReturnValue({ kind: 'su' }); // default: owner-grade pane
   getPresence.mockResolvedValue({ agentRole: 'su', compactionLimit: null });
 });
@@ -151,6 +154,25 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
       targetRole: 'leader',
       requested: 900_000,
       error: 'limit_exceeds_cap',
+    });
+  });
+
+  it('uses a narrower measured effective window for a leader target', async () => {
+    fetchPresenceFleet.mockResolvedValue(fleetMap('su-lead2', 'other', 'leader'));
+    getFleet.mockResolvedValue({ leaderOwnerId: 'su-lead2' });
+    estimateContextWindowForOwner.mockResolvedValue(828_400);
+    getPresence.mockImplementation(async (id: string) =>
+      id === 'su-lead2' ? { compactionLimit: null } : { agentRole: 'su' },
+    );
+
+    const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-lead2', 800_000);
+    expect(setCompactionLimit).not.toHaveBeenCalled();
+    expect(out).toMatchObject({
+      ok: false,
+      cap: 682_000,
+      requested: 800_000,
+      error: 'limit_exceeds_cap',
+      targetRole: 'leader',
     });
   });
 

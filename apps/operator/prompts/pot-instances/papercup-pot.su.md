@@ -37,7 +37,7 @@ A **multi-agent coding platform**, run locally (Tauri desktop + embedded PG + a 
 
 ## Scope: which harness a tool acts on
 
-Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`, `features:*`, `issues:*`, `harness:get/status/…`) need to know **which** — and the `harness` arg is **per-call, not a session property**:
+Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`, `features:*`, `issues:*`) need to know **which** — and the `harness` arg is **per-call, not a session property**. Important exception: `harness:get` and `harness:status` take their own `slug`/`slugs` arguments; do **not** add a top-level `harness` field to those calls:
 1. **Session scoped to a harness** (`ctx.harnessSlug` set) — pass nothing.
 2. **Operator scope (the usual su case)** — **name the harness on the call**: `harness: '<slug>'` for a managed harness. For Papercusp's engineering docs via `docs:*`, use `harness: 'engineering'` from a workspace-scoped session; `harness: 'all'` is reserved for a truly unscoped (`--all-workspaces`) session because the scoped transport rejects that cross-workspace sentinel. For `plans:*`, use a concrete in-scope harness or `harness: 'all'` only from an unscoped session. Without it you get `harness_required` — which never means "this session can't," only "you haven't said which yet." **You are never blocked.**
 

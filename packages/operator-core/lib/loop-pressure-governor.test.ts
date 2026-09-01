@@ -7,7 +7,11 @@
  * (debounce) semantics with an injected pressure source + spies.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { startLoopPressureGovernor, type LoopPressureGovernorHandle } from './loop-pressure-governor';
+import {
+  startLoopPressureGovernor,
+  type LoopPressureGovernorHandle,
+  type PoolBurnRead,
+} from './loop-pressure-governor';
 import type { LoopPressure } from './event-loop-lag-monitor';
 
 describe('loop-pressure governor (P5-2)', () => {
@@ -85,7 +89,26 @@ describe('pool-burn lever (WI-41147 leg b)', () => {
   });
 
   /** A governor with an injected burn reader; pressure pinned to 'ok' so levers don't mix. */
-  const start = (readPoolBurn: () => Promise<{ action: 'none' | 'throttle' | 'shed'; reason: string }>, spies?: { onPenalty?: () => void; onClean?: () => void }) =>
+  /**
+   * A pool-burn read shaped like the real one: the action AND what it rests on. Defaults to a
+   * PACING PROJECTION because that is the reading the lever used to render indistinguishably from
+   * a provider wall (P-005) — a fake carrying only `{ action, reason }` was what let a type-level
+   * regression sit green here while the disposition was being dropped.
+   */
+  const poolBurn = (
+    action: 'none' | 'throttle' | 'shed',
+    disposition: PoolBurnRead['disposition'] = action === 'none' ? 'no-verdict' : 'pacing-projection',
+  ): PoolBurnRead => ({
+    action,
+    disposition,
+    label:
+      disposition === 'pacing-projection'
+        ? `${action.toUpperCase()} (pacing projection, not a measured wall; 1 account(s) projected, 0 measured)`
+        : `${action.toUpperCase()} (no wall asserted)`,
+    reason: 'test',
+  });
+
+  const start = (readPoolBurn: () => Promise<PoolBurnRead>, spies?: { onPenalty?: () => void; onClean?: () => void }) =>
     startLoopPressureGovernor({
       intervalMs: 1e9,
       burnIntervalMs: 1e9,
@@ -100,7 +123,7 @@ describe('pool-burn lever (WI-41147 leg b)', () => {
     let action: 'none' | 'throttle' | 'shed' = 'none';
     const onPenalty = vi.fn();
     const onClean = vi.fn();
-    handle = start(async () => ({ action, reason: 'test' }), { onPenalty, onClean });
+    handle = start(async () => poolBurn(action), { onPenalty, onClean });
     await handle.tickBurn(); // none → none: nothing
     expect(onPenalty).not.toHaveBeenCalled();
     action = 'throttle';
@@ -114,7 +137,7 @@ describe('pool-burn lever (WI-41147 leg b)', () => {
   it('escalation throttle→shed is a new, worse episode — second penalty', async () => {
     let action: 'none' | 'throttle' | 'shed' = 'throttle';
     const onPenalty = vi.fn();
-    handle = start(async () => ({ action, reason: 'test' }), { onPenalty });
+    handle = start(async () => poolBurn(action), { onPenalty });
     await handle.tickBurn(); // none → throttle ⇒ penalty 1
     action = 'shed';
     await handle.tickBurn(); // throttle → shed ⇒ penalty 2
@@ -126,7 +149,7 @@ describe('pool-burn lever (WI-41147 leg b)', () => {
     let action: 'none' | 'throttle' | 'shed' = 'shed';
     const onPenalty = vi.fn();
     const onClean = vi.fn();
-    handle = start(async () => ({ action, reason: 'test' }), { onPenalty, onClean });
+    handle = start(async () => poolBurn(action), { onPenalty, onClean });
     await handle.tickBurn(); // none → shed ⇒ penalty 1
     action = 'throttle';
     await handle.tickBurn(); // shed → throttle: still degraded ⇒ nothing
@@ -145,7 +168,7 @@ describe('pool-burn lever (WI-41147 leg b)', () => {
     handle = start(
       async () => {
         if (fail) throw new Error('pg down');
-        return { action, reason: 'test' };
+        return poolBurn(action);
       },
       { onClean },
     );
@@ -161,15 +184,13 @@ describe('pool-burn lever (WI-41147 leg b)', () => {
   });
 
   it('in-flight guard — a pending pool read is never doubled', async () => {
-    let resolveRead: ((v: { action: 'none' | 'throttle' | 'shed'; reason: string }) => void) | undefined;
-    const reader = vi.fn(
-      () => new Promise<{ action: 'none' | 'throttle' | 'shed'; reason: string }>((res) => { resolveRead = res; }),
-    );
+    let resolveRead: ((v: PoolBurnRead) => void) | undefined;
+    const reader = vi.fn(() => new Promise<PoolBurnRead>((res) => { resolveRead = res; }));
     handle = start(reader);
     const first = handle.tickBurn();
     const second = handle.tickBurn(); // guarded — returns without a second read
     expect(reader).toHaveBeenCalledTimes(1);
-    resolveRead!({ action: 'none', reason: 'test' });
+    resolveRead!(poolBurn('none'));
     await Promise.all([first, second]);
   });
 
@@ -181,7 +202,7 @@ describe('pool-burn lever (WI-41147 leg b)', () => {
       intervalMs: 1e9,
       burnIntervalMs: 1e9,
       readPressure: () => p,
-      readPoolBurn: async () => ({ action, reason: 'test' }),
+      readPoolBurn: async () => poolBurn(action),
       onPenalty,
       onClean: () => {},
       log: () => {},

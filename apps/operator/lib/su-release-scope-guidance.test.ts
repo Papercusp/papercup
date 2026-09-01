@@ -18,6 +18,21 @@ const RUBRIC_SOURCES = [
   'papercusp-su-power.tools.md',
 ];
 
+describe('SU harness reader scope guidance', () => {
+  for (const source of RELEASE_SOURCES) {
+    it(`${source} keeps harness:get/status on their slug arguments`, () => {
+      const prompt = readFileSync(join(PROMPTS, source), 'utf8');
+      const genericTools = prompt.match(/harness-scoped tools \(([^)]*)\)/s)?.[1] ?? '';
+
+      expect(genericTools).not.toContain('harness:get');
+      expect(genericTools).not.toContain('harness:status');
+      expect(prompt).toMatch(
+        /Important exception:\s+`harness:get` and `harness:status` take their own `slug`\/`slugs` arguments;\s+do\s+\*\*not\*\* add a top-level `harness` field/,
+      );
+    });
+  }
+});
+
 describe('SU workspace-global scope guidance', () => {
   for (const source of RELEASE_SOURCES) {
     it(`${source} identifies release:checkpoint-run as workspace-global`, () => {
