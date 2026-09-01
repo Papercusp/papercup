@@ -188,6 +188,18 @@ export default defineTool({
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['pending_edit'], message: 'pending_edit supports repository paths only; edit external files after the lock grant' });
     }
   }),
+  result: z
+    .object({
+      ok: z.unknown().optional(),
+      lock_id: z.unknown().optional(),
+      owner: z.unknown().optional(),
+      expires_ts: z.unknown().optional(),
+      held: z.unknown().optional(),
+      newly_held: z.unknown().optional(),
+      busy: z.unknown().optional(),
+      contention: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readFileLockIdentity(ctx);
     let coordinationDomain: string;
