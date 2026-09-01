@@ -35,15 +35,24 @@
  */
 import { loopPressure, type LoopPressure } from './event-loop-lag-monitor';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import type { BurnAction } from './inference-gateway/burn-governor';
+import type { BurnAction, BurnDisposition } from './inference-gateway/burn-governor';
 import {
   recordGlobalConcurrencyPenalty,
   recordGlobalConcurrencyClean,
 } from '@papercusp/papercusp-shared/agent';
 
-/** One pool-burn observation for the lever: the aggregate action + its stated WHY. */
+/** One pool-burn observation for the lever: the aggregate action, what it RESTS ON, and its WHY. */
 export interface PoolBurnRead {
   action: BurnAction;
+  /**
+   * What `action` rests on — a measured provider wall vs this system pacing itself off a
+   * projection. Carried beside the action rather than left to the reason prose (P-005): this
+   * lever's log line is the fleet's first sight of a pool burn, and `pool burn 'shed'` with the
+   * disposition dropped is indistinguishable from "the provider walled us".
+   */
+  disposition: BurnDisposition;
+  /** The one canonical rendering of this verdict — `renderPoolBurnLabel`. Leads with disposition. */
+  label: string;
   reason: string;
 }
 
@@ -90,16 +99,31 @@ async function defaultReadPoolBurn(): Promise<PoolBurnRead> {
     import('@papercusp/flags/server'),
   ]);
   const on = await getFlag(FLAGS.ACCOUNT_BURN_GOVERNOR, 'system').catch(() => true);
-  if (!on) return { action: 'none', reason: 'ACCOUNT_BURN_GOVERNOR is off — burn lever stands down' };
-  const [{ loadAccountPool }, { accountBurnAction }, { aggregatePoolBurn }] = await Promise.all([
+  if (!on) {
+    return {
+      action: 'none',
+      disposition: 'no-verdict',
+      label: 'NONE (no wall asserted)',
+      reason: 'ACCOUNT_BURN_GOVERNOR is off — burn lever stands down',
+    };
+  }
+  const [{ loadAccountPool }, { accountBurnVerdict }, { aggregatePoolBurn }] = await Promise.all([
     import('./deployment/account-pool-store'),
     import('./deployment/account-pool'),
     import('./inference-gateway/burn-governor'),
   ]);
   const pool = await loadAccountPool();
   const now = Date.now();
-  const agg = aggregatePoolBurn(pool.accounts.map((a) => accountBurnAction(a, now)));
-  return { action: agg.action, reason: agg.reason };
+  // The full stale-gated VERDICT per account, not `accountBurnAction`'s bare action: the
+  // disposition has to survive the rollup, and a projection dropped here cannot be recovered
+  // downstream (P-005).
+  const agg = aggregatePoolBurn(
+    pool.accounts.map((a) => {
+      const v = accountBurnVerdict(a.rate, now);
+      return { action: v.action, disposition: v.disposition };
+    }),
+  );
+  return { action: agg.action, disposition: agg.disposition, label: agg.label, reason: agg.reason };
 }
 
 // One per process. A second start() returns the existing handle (idempotent boot).
@@ -116,6 +140,10 @@ export function startLoopPressureGovernor(opts: LoopPressureGovernorOpts = {}): 
   const log = opts.log ?? ((m) => console.warn(m));
   let last: LoopPressure = 'ok';
   let lastBurn: BurnAction = 'none';
+  // The rendered form of `lastBurn`, kept in step with it so the read-failure line can restate
+  // the verdict it is HOLDING with its disposition intact — `'shed'` alone would tell a reader
+  // the provider walled us when the held verdict may be a pacing projection (P-005).
+  let lastLabel = 'NONE (no wall asserted)';
   let burnInFlight = false;
 
   const tick = (): void => {
@@ -139,17 +167,24 @@ export function startLoopPressureGovernor(opts: LoopPressureGovernorOpts = {}): 
     if (burnInFlight) return; // a pending pool read is never doubled
     burnInFlight = true;
     try {
-      const { action, reason } = await readPoolBurn();
+      const { action, label, reason } = await readPoolBurn();
       if (action !== lastBurn) {
         if (BURN_SEVERITY[action] > BURN_SEVERITY[lastBurn]) {
           // Escalation (none→throttle, none→shed, throttle→shed) — each is a new, worse
           // episode: shed once. Debounced: a pool that STAYS throttled isn't re-penalized.
           onPenalty();
-          log(`[loop-governor] pool burn '${action}' — shedding effective agent concurrency (WI-41147): ${reason}`);
+          // `label` and never a bare `'${action}'`: this line is where an operator or agent first
+          // sees a pool burn, and the disposition is the half that says whether the provider
+          // walled us or we are pacing ourselves (P-005).
+          lastLabel = label;
+          log(`[loop-governor] pool burn ${label} — shedding effective agent concurrency (WI-41147): ${reason}`);
         } else if (action === 'none') {
           // Fully recovered → one clean step (the AIMD +1-per-N walk continues it).
           onClean();
+          lastLabel = label;
           log(`[loop-governor] pool burn recovered — ramping effective agent concurrency back up (WI-41147): ${reason}`);
+        } else {
+          lastLabel = label;
         }
         // shed → throttle: still a degraded episode — no penalty, no clean; recovery fires at 'none'.
         lastBurn = action;
@@ -157,7 +192,7 @@ export function startLoopPressureGovernor(opts: LoopPressureGovernorOpts = {}): 
     } catch (e) {
       // A failed read is NOT a verdict: keep the last state — mapping failure to 'none'
       // here would fire a fake recovery clean mid-episode (never act on missing data).
-      log(`[loop-governor] pool burn read failed — keeping last verdict '${lastBurn}': ${String(e)}`);
+      log(`[loop-governor] pool burn read failed — keeping last verdict ${lastLabel}: ${String(e)}`);
     } finally {
       burnInFlight = false;
     }
