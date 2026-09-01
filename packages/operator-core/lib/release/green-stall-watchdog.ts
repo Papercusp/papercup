@@ -617,6 +617,10 @@ export interface VerdictlessRefireDecision {
   /** `refire` = safe to fire; `alarm` = a human must look; `none` = nothing to say yet. */
   action: VerdictlessRefireAction;
   reason: VerdictlessRefireReason;
+  /** P-002: which detection axis engaged this decision — the verdict-less CLOCK
+   *  (`evaluateGreenStall().verdictless`) or the P-003 verdict-RATE alarm. The clock wins
+   *  the label when both fire. `null` on the nothing-detected early-out. */
+  axis: 'verdictless-clock' | 'verdict-rate' | null;
   abortKind: GateAbortKind;
   abortStatus: string | null;
   /** the attempt number a `refire` would become; unchanged on every declining arm. */
@@ -723,6 +727,13 @@ const DEFAULT_VERDICTLESS_REFIRE_COOLDOWN_MS = 90 * 60 * 1000;
 export function decideVerdictlessRefire(opts: {
   /** `evaluateGreenStall().verdictless` — the detection this actuation hangs off. */
   verdictless: boolean;
+  /** P-002 wiring: the P-003 verdict-RATE alarm axis — true when the no-verdict rate
+   *  alarm is firing for this install. Engages the same bounded recovery: an abort stream
+   *  with INTERMITTENT verdicts keeps resetting the verdict-less clock while most fires
+   *  still render nothing, and the rate alarm is the axis that sees it. Every declining
+   *  arm below (wall, in-flight, unclassifiable, reproduced, budget, cooldown) governs
+   *  this axis identically — the alarm only changes what counts as a detection. */
+  rateAlarmed?: boolean;
   /** `gate_health.inconclusive.status`, or null when the abort recorded no typed status. */
   abortStatus: string | null;
   /** true while an owner wall (D-080) forbids firing the gate. Fail-CLOSED: default true. */
@@ -745,16 +756,29 @@ export function decideVerdictlessRefire(opts: {
     1,
     finiteNonNegativeInt(opts.maxAttempts, DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_MAX_ATTEMPTS),
   );
-  const base = { abortKind, abortStatus, nextAttempt: attempts } as const;
+  // P-002: which axis detected the pathology. The clock wins the label when both fire —
+  // it is the older, stricter signal — and the lead-in below keeps every detail sentence
+  // honest when the clock is quiet but the rate alarm is what engaged.
+  const axis: VerdictlessRefireDecision['axis'] = opts.verdictless
+    ? 'verdictless-clock'
+    : opts.rateAlarmed === true
+      ? 'verdict-rate'
+      : null;
+  const base = { abortKind, abortStatus, nextAttempt: attempts, axis } as const;
 
-  if (!opts.verdictless) {
+  if (axis === null) {
     return {
       ...base,
       action: 'none',
       reason: 'not-verdictless',
-      detail: 'no verdict-less death detected; nothing to re-fire.',
+      detail:
+        'no verdict-less death detected and the verdict-rate alarm is quiet; nothing to re-fire.',
     };
   }
+  const lead =
+    axis === 'verdictless-clock'
+      ? 'the gate died without a verdict'
+      : 'the verdict-rate alarm is firing (most recent gate fires render no verdict)';
 
   // D-006's hard prohibition, checked FIRST so no arm below can reach `refire` past it.
   // Fail-closed: an unspecified wall is treated as standing, because the cost of wrongly
@@ -765,7 +789,7 @@ export function decideVerdictlessRefire(opts: {
       action: 'alarm',
       reason: 'owner-wall',
       detail:
-        'the gate died without a verdict, but an owner wall (D-080) forbids firing it — ' +
+        `${lead}, but an owner wall (D-080) forbids firing it — ` +
         'alarming instead. Clear the wall to allow automatic recovery.',
     };
   }
@@ -786,7 +810,7 @@ export function decideVerdictlessRefire(opts: {
       action: 'alarm',
       reason: 'unclassifiable',
       detail:
-        `the gate died without a verdict and the abort is unclassifiable (${abortStatus ?? 'no status recorded'}) — ` +
+        `${lead} and the abort is unclassifiable (${abortStatus ?? 'no status recorded'}) — ` +
         'declining to re-fire. An unknown cause is not evidence of a transient one.',
     };
   }
@@ -797,7 +821,7 @@ export function decideVerdictlessRefire(opts: {
       action: 'alarm',
       reason: 'not-transient',
       detail:
-        `the gate died without a verdict on a ${abortKind} abort (${abortStatus}) — re-firing hits the ` +
+        `${lead} on a ${abortKind} abort (${abortStatus}) — re-firing hits the ` +
         'same wall, so this needs a human, not another suite.',
     };
   }
@@ -842,7 +866,7 @@ export function decideVerdictlessRefire(opts: {
     reason: 'transient-retry',
     nextAttempt: attempts + 1,
     detail:
-      `the gate died without a verdict on a transient abort (${abortStatus}) that has not yet repeated — ` +
+      `${lead} on a transient abort (${abortStatus}) that has not yet repeated — ` +
       `re-firing (attempt ${attempts + 1}/${maxAttempts}).`,
   };
 }
@@ -2017,87 +2041,17 @@ export async function checkGreenStall(
         opts,
       );
 
-      // ---- D-006 actuation (gate-verdict-liveness-and-repair-reliability-2026-08-31 D-003) ----
-      // Runs EVERY pass, deliberately upstream of the one-shot `watchdogAlerted` gate below:
-      // the alarm fires once per episode, but a bounded multi-attempt recovery must keep
-      // evaluating (its own cooldown / reproduced / max-attempts arms bound it). The decision
-      // is reused verbatim in the alarm's structured data below, so what we DID and what we
-      // SAID can never diverge.
-      let refire: VerdictlessRefireDecision | null = null;
-      if (verdict.verdictless) {
-        const episode = resolveVerdictlessRefireEpisode(row.gh, lastVerdictAtMs);
-        const wall: GateFireWall = opts.readGateFireWall
-          ? await opts.readGateFireWall().catch((e: unknown) => ({
-              active: true,
-              detail: `wall reader threw (fail-closed): ${e instanceof Error ? e.message : String(e)}`,
-            }))
-          : { active: true, detail: 'fail-closed: no wall reader wired (bare sweep call)' };
-        refire = decideVerdictlessRefire({
-          verdictless: true,
-          abortStatus: row.gh?.inconclusive?.status ?? null,
-          ownerWallActive: wall.active,
-          refireInFlight: checkpointRun.checkpointRunActive === true,
-          attempts: episode.attempts,
-          lastAttemptStatus: episode.lastAttemptStatus,
-          lastAttemptAtMs: episode.lastAttemptAtMs,
-          nowMs: now,
-          maxAttempts: opts.greenCheckpointStallRecoveryMaxAttempts,
-        });
-        if (refire.action === 'refire') {
-          const homeSlug = opts.refireHomeSlug ?? safeOperatorHomeSlug();
-          if (!opts.launchCheckpoint || homeSlug == null || row.install_slug !== homeSlug) {
-            // Advisory-only for non-home installs (their gates route to roots this launcher
-            // does not target) and for callers that wired no launcher.
-            console.warn(
-              `[green-stall-watchdog] D-006 refire warranted for ${row.install_slug} but actuation is ${
-                !opts.launchCheckpoint ? 'not wired' : 'home-scoped'
-              } — advisory only (${refire.detail})`,
-            );
-          } else {
-            try {
-              const launch = await opts.launchCheckpoint();
-              if (launch.launched) {
-                await sql`
-                  UPDATE harness_shared.routines
-                     SET metadata = jsonb_set(
-                           COALESCE(metadata, '{}'::jsonb),
-                           '{gate_health}',
-                           COALESCE(metadata->'gate_health', '{}'::jsonb) ||
-                             ${JSON.stringify({
-                               verdictlessRefire: {
-                                 attempts: refire.nextAttempt,
-                                 lastAttemptStatus: refire.abortStatus,
-                                 lastAttemptAtMs: now,
-                               },
-                             })}::jsonb
-                         ),
-                         updated_at = now()
-                   WHERE install_slug = ${row.install_slug}
-                     AND target_role = 'system:green-checkpoint'`;
-                console.warn(
-                  `[green-stall-watchdog] D-006 ACTUATED verdict-less auto-refire ${refire.nextAttempt} for ${row.install_slug} (abort: ${refire.abortStatus ?? 'unknown'}; unit ${launch.unit})`,
-                );
-              } else {
-                console.warn(
-                  `[green-stall-watchdog] D-006 refire declined by launcher for ${row.install_slug} (${launch.reason ?? 'no reason'}) — no attempt burned`,
-                );
-              }
-            } catch (e) {
-              console.warn(
-                `[green-stall-watchdog] D-006 refire launch failed for ${row.install_slug} (non-fatal, no attempt burned): ${e instanceof Error ? e.message : String(e)}`,
-              );
-            }
-          }
-        }
-      }
-
-      // ---- P-003 (gate-verdict-liveness): no-verdict RATE alarm ----
-      // MUST run before the `verdict.stalled` block below: its `continue`s (one-shot
-      // watchdogAlerted, flip races) would otherwise skip this for exactly the installs
-      // most likely to need it. Independent axis on purpose — a red verdict resetting
-      // consecutiveNoVerdict must not silence it, so it reads the P-001 fire ledger and
-      // the verdict-bearing clock, never the streak counters. Cost-gated: a green,
-      // un-alarmed gate pays zero extra queries.
+      // ---- P-003 (gate-verdict-liveness): no-verdict RATE alarm — evaluated FIRST ----
+      // Hoisted above the D-006 actuation block (P-002 wiring): the alarm axis feeds the
+      // refire decision, because an abort stream with INTERMITTENT verdicts keeps
+      // resetting the verdict-less clock while most fires still render nothing — the
+      // rate alarm is the axis that sees it. Independent axis on purpose — a red verdict
+      // resetting consecutiveNoVerdict must not silence it, so it reads the P-001 fire
+      // ledger and the verdict-bearing clock, never the streak counters. Cost-gated: a
+      // green, un-alarmed gate pays zero extra queries; on a failed read the PERSISTED
+      // one-shot flag governs the axis (fail-soft — a broken read neither invents nor
+      // clears an alarm).
+      let rateAlarmActive = row.gh?.verdictRateAlarmed ?? false;
       {
         const gateRed = (row.gh?.consecutiveReds ?? 0) > 0 || row.gh?.green === false;
         const rateAlarmed = row.gh?.verdictRateAlarmed ?? false;
@@ -2111,6 +2065,7 @@ export async function checkGreenStall(
               window,
               suiteBudgetMs: GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
             });
+            rateAlarmActive = rate.alarmed;
             if (rate.alarmed && !rateAlarmed) {
               // Cross-process exactly-once, same convention as watchdogAlerted below.
               const flip = await sql`
@@ -2171,6 +2126,88 @@ export async function checkGreenStall(
           }
         }
       }
+
+      // ---- D-006 actuation (gate-verdict-liveness-and-repair-reliability-2026-08-31 D-003) ----
+      // Runs EVERY pass, deliberately upstream of the one-shot `watchdogAlerted` gate below:
+      // the alarm fires once per episode, but a bounded multi-attempt recovery must keep
+      // evaluating (its own cooldown / reproduced / max-attempts arms bound it). The decision
+      // is reused verbatim in the alarm's structured data below, so what we DID and what we
+      // SAID can never diverge. P-002: the P-003 verdict-RATE alarm (evaluated above) is a
+      // second engagement axis — prompt-requeue on an abort stream the verdict-less clock
+      // cannot see; every declining arm (wall, in-flight, unclassifiable, reproduced,
+      // budget, cooldown) governs both axes identically.
+      let refire: VerdictlessRefireDecision | null = null;
+      if (verdict.verdictless || rateAlarmActive) {
+        const episode = resolveVerdictlessRefireEpisode(row.gh, lastVerdictAtMs);
+        const wall: GateFireWall = opts.readGateFireWall
+          ? await opts.readGateFireWall().catch((e: unknown) => ({
+              active: true,
+              detail: `wall reader threw (fail-closed): ${e instanceof Error ? e.message : String(e)}`,
+            }))
+          : { active: true, detail: 'fail-closed: no wall reader wired (bare sweep call)' };
+        refire = decideVerdictlessRefire({
+          verdictless: verdict.verdictless,
+          rateAlarmed: rateAlarmActive,
+          abortStatus: row.gh?.inconclusive?.status ?? null,
+          ownerWallActive: wall.active,
+          refireInFlight: checkpointRun.checkpointRunActive === true,
+          attempts: episode.attempts,
+          lastAttemptStatus: episode.lastAttemptStatus,
+          lastAttemptAtMs: episode.lastAttemptAtMs,
+          nowMs: now,
+          maxAttempts: opts.greenCheckpointStallRecoveryMaxAttempts,
+        });
+        if (refire.action === 'refire') {
+          const homeSlug = opts.refireHomeSlug ?? safeOperatorHomeSlug();
+          if (!opts.launchCheckpoint || homeSlug == null || row.install_slug !== homeSlug) {
+            // Advisory-only for non-home installs (their gates route to roots this launcher
+            // does not target) and for callers that wired no launcher.
+            console.warn(
+              `[green-stall-watchdog] D-006 refire warranted for ${row.install_slug} but actuation is ${
+                !opts.launchCheckpoint ? 'not wired' : 'home-scoped'
+              } — advisory only (${refire.detail})`,
+            );
+          } else {
+            try {
+              const launch = await opts.launchCheckpoint();
+              if (launch.launched) {
+                await sql`
+                  UPDATE harness_shared.routines
+                     SET metadata = jsonb_set(
+                           COALESCE(metadata, '{}'::jsonb),
+                           '{gate_health}',
+                           COALESCE(metadata->'gate_health', '{}'::jsonb) ||
+                             ${JSON.stringify({
+                               verdictlessRefire: {
+                                 attempts: refire.nextAttempt,
+                                 lastAttemptStatus: refire.abortStatus,
+                                 lastAttemptAtMs: now,
+                               },
+                             })}::jsonb
+                         ),
+                         updated_at = now()
+                   WHERE install_slug = ${row.install_slug}
+                     AND target_role = 'system:green-checkpoint'`;
+                console.warn(
+                  `[green-stall-watchdog] D-006 ACTUATED verdict-less auto-refire ${refire.nextAttempt} for ${row.install_slug} (abort: ${refire.abortStatus ?? 'unknown'}; unit ${launch.unit})`,
+                );
+              } else {
+                console.warn(
+                  `[green-stall-watchdog] D-006 refire declined by launcher for ${row.install_slug} (${launch.reason ?? 'no reason'}) — no attempt burned`,
+                );
+              }
+            } catch (e) {
+              console.warn(
+                `[green-stall-watchdog] D-006 refire launch failed for ${row.install_slug} (non-fatal, no attempt burned): ${e instanceof Error ? e.message : String(e)}`,
+              );
+            }
+          }
+        }
+      }
+
+      // (The P-003 no-verdict RATE alarm evaluation was HOISTED above the D-006 actuation
+      // block — P-002 wiring: the alarm axis feeds the refire decision via
+      // `rateAlarmActive`. See the "evaluated FIRST" block above.)
 
       if (verdict.stalled) {
         if (watchdogAlerted) continue; // already alarmed; one-shot until recovery

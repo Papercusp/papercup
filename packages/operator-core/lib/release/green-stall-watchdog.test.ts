@@ -2632,6 +2632,66 @@ describe('decideVerdictlessRefire — D-006: detection does not authorize actuat
     expect(d.action).toBe('alarm');
   });
 
+  describe('P-002: the verdict-rate alarm axis engages the same bounded recovery', () => {
+    it('rate alarm ALONE (clock quiet) reaches refire on a transient abort, labelled verdict-rate', () => {
+      const d = decideVerdictlessRefire({
+        verdictless: false,
+        rateAlarmed: true,
+        nowMs: NOW,
+        ownerWallActive: false,
+        abortStatus: 'cancelled',
+      });
+      expect(d.action).toBe('refire');
+      expect(d.reason).toBe('transient-retry');
+      expect(d.axis).toBe('verdict-rate');
+      expect(d.detail).toContain('verdict-rate alarm');
+    });
+
+    it('NEITHER axis ⇒ none/not-verdictless with a null axis', () => {
+      const d = decideVerdictlessRefire({
+        verdictless: false,
+        rateAlarmed: false,
+        nowMs: NOW,
+        ownerWallActive: false,
+        abortStatus: 'cancelled',
+      });
+      expect(d.action).toBe('none');
+      expect(d.reason).toBe('not-verdictless');
+      expect(d.axis).toBeNull();
+    });
+
+    it('BOTH axes ⇒ the clock wins the label', () => {
+      const d = decideVerdictlessRefire({ ...base, rateAlarmed: true, abortStatus: 'cancelled' });
+      expect(d.action).toBe('refire');
+      expect(d.axis).toBe('verdictless-clock');
+    });
+
+    it('the owner wall governs the alarm axis identically — fail-closed when unspecified', () => {
+      const d = decideVerdictlessRefire({
+        verdictless: false,
+        rateAlarmed: true,
+        nowMs: NOW,
+        abortStatus: 'cancelled',
+      });
+      expect(d.action).toBe('alarm');
+      expect(d.reason).toBe('owner-wall');
+      expect(d.axis).toBe('verdict-rate');
+    });
+
+    it('an UNCLASSIFIABLE abort on the alarm axis still alarms rather than re-firing', () => {
+      const d = decideVerdictlessRefire({
+        verdictless: false,
+        rateAlarmed: true,
+        nowMs: NOW,
+        ownerWallActive: false,
+        abortStatus: null,
+      });
+      expect(d.action).toBe('alarm');
+      expect(d.reason).toBe('unclassifiable');
+      expect(d.axis).toBe('verdict-rate');
+    });
+  });
+
   /**
    * The measured oddsmith case (2026-08-26): `error` classifies transient — correctly, it
    * latches nothing — yet that install had reproduced it 530 consecutive times. "Nothing to
@@ -3011,6 +3071,8 @@ describe('checkGreenStall P-003 verdict-rate alarm wiring (gate-verdict-liveness
     opts: {
       consecutiveReds?: number;
       verdictRateAlarmed?: boolean;
+      /** P-002: a recorded abort status, so the D-006 decision has something to classify. */
+      inconclusiveStatus?: string;
       /** pipeline_events window aggregates, or 'reject' to make that read throw. */
       window?: { fires: number; verdicts: number; last_verdict_ms: number | null } | 'reject';
     } = {},
@@ -3026,6 +3088,7 @@ describe('checkGreenStall P-003 verdict-rate alarm wiring (gate-verdict-liveness
         watchdogAlerted: false,
         consecutiveReds: opts.consecutiveReds ?? 0,
         verdictRateAlarmed: opts.verdictRateAlarmed ?? false,
+        ...(opts.inconclusiveStatus ? { inconclusive: { status: opts.inconclusiveStatus } } : {}),
       },
     };
     const calls: string[] = [];
@@ -3096,5 +3159,29 @@ describe('checkGreenStall P-003 verdict-rate alarm wiring (gate-verdict-liveness
     expect(clearWrites()).toHaveLength(0);
     expect(notifyAttentionMock).not.toHaveBeenCalled();
     expect(warnSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('P-003 verdict-rate alarm failed'))).toBe(true);
+  });
+
+  it('P-002 WIRING: an ALARMED verdict-rate axis engages the D-006 refire decision while the verdict-less clock is QUIET (advisory warn — no launcher wired)', async () => {
+    const { sql } = makeRateSql({
+      consecutiveReds: 3,
+      inconclusiveStatus: 'cancelled', // transient — the one abort class that authorizes a re-fire
+      window: { fires: 10, verdicts: 1, last_verdict_ms: Date.now() - 5 * 60_000 },
+    });
+    await checkGreenStall(sql, { readGateFireWall: async () => ({ active: false, detail: null }) });
+    expect(
+      warnSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('D-006 refire warranted')),
+    ).toBe(true);
+  });
+
+  it('P-002 CONTROL: the same alarmed axis WITHOUT a wall reader stays behind the fail-closed owner wall — refire structurally unreachable', async () => {
+    const { sql } = makeRateSql({
+      consecutiveReds: 3,
+      inconclusiveStatus: 'cancelled',
+      window: { fires: 10, verdicts: 1, last_verdict_ms: Date.now() - 5 * 60_000 },
+    });
+    await checkGreenStall(sql, {});
+    expect(
+      warnSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('D-006 refire warranted')),
+    ).toBe(false);
   });
 });

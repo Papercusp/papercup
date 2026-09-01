@@ -6068,7 +6068,20 @@ export interface DiskInfraFaultPolicy {
 
 export interface InfraFaultClassification {
   /** the host fault class; NO class renders a code verdict. */
-  kind: "vite-node-cache-vanished" | "disk-space-exhausted" | "suite-refused";
+  kind:
+    | "vite-node-cache-vanished"
+    | "disk-space-exhausted"
+    | "suite-refused"
+    // P-002 (gate-verdict-liveness-and-repair-reliability-2026-08-31): the checkpoint's
+    // suite CHILD was terminated by a signal (OOM-killer, a /tmp reaper, an external
+    // kill) while the checkpoint itself survived to classify the death — distinct from
+    // the recorded 'cancelled' abort, which is the checkpoint PROCESS dying before it
+    // publishes a marker.
+    | "suite-signaled"
+    // P-002: a vitest worker-pool crash (WI-806 markers) that the workspace-re-run
+    // absorber could NOT absorb — the no-signature crash whose re-run crashed again,
+    // errored, or was too broad / unlocalizable to attempt.
+    | "worker-pool-crash";
   /** how many matching fault lines the output carried. */
   occurrences: number;
   /** WI-1761602: for a `suite-refused` fault, the runner's own `reason=` token
@@ -6082,6 +6095,10 @@ export interface InfraFaultClassification {
   roots?: string[];
   /** the affected filesystems for a disk-space fault. */
   paths?: string[];
+  /** the terminating signal for a `suite-signaled` fault (e.g. "SIGKILL"). */
+  signal?: string;
+  /** the crashed workspaces for a `worker-pool-crash` fault ({@link parseCrashedWorkspaces}). */
+  workspaces?: string[];
   /** true when the post-suite sample crossed the configured low-space floor. */
   crossedLowSpaceFloor?: boolean;
   /** bounded post-suite evidence for a disk-space fault. */
@@ -6186,6 +6203,17 @@ export function parseSuiteRefusal(output: string): SuiteRefusal | null {
  *
  * Called ONLY on the red path, after both absorbers have declined. A green run is never
  * reclassified: if the suite passed despite a cache hiccup, the pass stands.
+ *
+ * P-002 (gate-verdict-liveness-and-repair-reliability-2026-08-31) adds the two
+ * kill-shaped classes — `suite-signaled` (the suite child was signal-killed; evidence is
+ * passed STRUCTURALLY via `evidence.signal` from the exec result, never re-parsed out of
+ * the marker prose) and `worker-pool-crash` (WI-806 markers, absorption declined). Both
+ * are gated on the MEASURED-FAILURES-STAY-RED invariant: they classify ONLY when the
+ * output carries ZERO parseable per-file failures. A run that measured real breakage
+ * before it died keeps its red — an infra fault never withdraws a measured verdict, it
+ * only absorbs the empty-signature death that would otherwise bank an unattributable red
+ * on the streak. (Deliberately the worker-crash absorber's own precondition, so
+ * classification and absorption cannot disagree about which runs qualify.)
  */
 export function classifyInfraFault(
   output: string,
@@ -6193,6 +6221,11 @@ export function classifyInfraFault(
     before?: CheckpointDiskSnapshot[];
     after?: CheckpointDiskSnapshot[];
     policy?: DiskInfraFaultPolicy;
+  },
+  evidence?: {
+    /** the suite child's terminating signal from the exec result (`r.signal`), when the
+     *  checkpoint child was signal-killed. Null/absent ⇒ no signal kill. */
+    signal?: string | null;
   },
 ): InfraFaultClassification | null {
   const refusal = parseSuiteRefusal(output);
@@ -6234,6 +6267,45 @@ export function classifyInfraFault(
         `must NOT be triaged. This is a HOST fault, not a code fault: something deleted the runner's own temp root ` +
         `while it was executing.`,
     };
+  }
+
+  // P-002: the two kill-shaped infra faults, both under the measured-failures-stay-red
+  // invariant (see the function doc). The signal takes precedence over the pool markers
+  // when both are present: a signal killed the TOP-LEVEL child, which is the stronger
+  // and more specific claim about what ended the run.
+  const signal = evidence?.signal ?? null;
+  if (signal || isWorkerPoolCrash(output)) {
+    const measured = parseFailingFilesByWorkspace(output).length;
+    if (measured === 0) {
+      if (signal) {
+        return {
+          kind: "suite-signaled",
+          occurrences: 1,
+          signal,
+          note:
+            `infra fault: the checkpoint's suite child was TERMINATED BY ${signal} before it produced a ` +
+            `verdict, and the output carries ZERO parseable per-file failures — nothing was measured, so ` +
+            `there is no code verdict here. A signal kill is host weather (the OOM-killer, a reaper, an ` +
+            `external kill), not a property of the candidate: rendering it INCONCLUSIVE instead of red ` +
+            `keeps the streak honest — a red here would name no files and dispatch no fixable work. ` +
+            `Measured failures stay red: this classification fires only on the empty-signature death.`,
+        };
+      }
+      const workspaces = parseCrashedWorkspaces(output);
+      return {
+        kind: "worker-pool-crash",
+        occurrences: 1,
+        ...(workspaces.length ? { workspaces } : {}),
+        note:
+          `infra fault: the suite died on a vitest WORKER-POOL crash (WI-806 markers) with ZERO parseable ` +
+          `per-file failures, and absorption could not absorb it (this classifier runs only on the red ` +
+          `path, after the workspace re-run declined or was inapplicable). A pool crash with no signature ` +
+          `measures nothing about the code — the honest verdict is INCONCLUSIVE, not a red that names no ` +
+          `files` +
+          (workspaces.length ? ` (crashed workspace(s): ${workspaces.join(", ")})` : "") +
+          `. Measured failures stay red: a crash that still named failing files keeps its red.`,
+      };
+    }
   }
 
   return classifyDiskInfraFault(output, disk);
@@ -15361,7 +15433,7 @@ export function realCheckpointDeps(
         : "";
       if (r.signal) {
         log(
-          `green suite child terminated by ${r.signal} (code=${r.code}); preserving the signal in the checkpoint output and holding the candidate red`,
+          `green suite child terminated by ${r.signal} (code=${r.code}); preserving the signal in the checkpoint output — measured failures stay red; an empty-signature kill classifies as an infra fault (suite-signaled) on the red path below`,
         );
       }
 
@@ -15722,11 +15794,18 @@ export function realCheckpointDeps(
       // manufacture a false green the way an absorber can).
       const infraFault = green
         ? null
-        : classifyInfraFault(fullOutput, {
-            before: diskBeforeSuite,
-            after: diskAfterSuite,
-            policy: diskPolicy,
-          });
+        : classifyInfraFault(
+            fullOutput,
+            {
+              before: diskBeforeSuite,
+              after: diskAfterSuite,
+              policy: diskPolicy,
+            },
+            // P-002: structured signal evidence — a signal-killed suite child with an
+            // empty failure signature classifies `suite-signaled` (INCONCLUSIVE) instead
+            // of banking an unattributable red; measured failures stay red.
+            { signal: r.signal },
+          );
       if (infraFault) log(infraFault.note);
       // Publish the gate's canonical red attribution while we are still inside the real-deps
       // runner. The orchestration caller appends richer notes later, but a self-watchdog,

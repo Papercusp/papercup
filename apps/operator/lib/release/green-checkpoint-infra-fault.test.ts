@@ -20,6 +20,8 @@ import {
   classifyInfraFault,
   DISK_ENOSPC_MIN_OCCURRENCES,
   INFRA_FAULT_MIN_OCCURRENCES,
+  parseFailingFilesByWorkspace,
+  WORKER_POOL_CRASH_MARKERS,
 } from "./green-checkpoint";
 
 /** The human `Error: ENOENT: …, open '<path>'` form, verbatim from the incident log
@@ -278,5 +280,71 @@ describe("control: the negative cases above are falsifying, not decorative", () 
 
     expect(naiveSubstringClassifier(real)).not.toBeNull();
     expect(classifyInfraFault(real)).not.toBeNull();
+  });
+});
+
+/**
+ * P-002 (gate-verdict-liveness-and-repair-reliability-2026-08-31): the two kill-shaped
+ * infra faults. Both classify ONLY on an EMPTY per-file failure signature — the
+ * measured-failures-stay-red invariant: a run that measured real breakage before it died
+ * keeps its red, and an infra fault only absorbs the empty-signature death that would
+ * otherwise bank an unattributable red on the streak.
+ */
+describe("P-002: kill-shaped infra faults — suite-signaled and worker-pool-crash", () => {
+  /** The affected runner's canonical failing-files line — the parser's preferred source. */
+  const MEASURED_FAILURES_LINE =
+    'AFFECTED_TESTS_FAILING_FILES run=fixture-p002 coverage=full fileCount=1 unattributedCount=0 truncated=false transformCulpritCount=0 files=[{"workspace":"@papercusp/operator-core","file":"lib/release/example.test.ts"}] unattributed=[] transformCulprits=[]';
+
+  it("CALIBRATION: the measured-failures fixture genuinely parses ≥1 failing file — the stay-red cases below cannot pass on a malformed fixture", () => {
+    expect(parseFailingFilesByWorkspace(MEASURED_FAILURES_LINE).length).toBeGreaterThan(0);
+  });
+
+  it("a signal-killed suite with an EMPTY failure signature classifies suite-signaled", () => {
+    const r = classifyInfraFault("ordinary suite chatter, no failure rows", undefined, {
+      signal: "SIGKILL",
+    });
+    expect(r?.kind).toBe("suite-signaled");
+    expect(r?.signal).toBe("SIGKILL");
+    expect(r?.note).toContain("SIGKILL");
+  });
+
+  it("measured failures STAY RED: a signal kill beside parseable per-file failures returns null", () => {
+    const out = `some chatter\n${MEASURED_FAILURES_LINE}\n`;
+    expect(classifyInfraFault(out, undefined, { signal: "SIGKILL" })).toBeNull();
+  });
+
+  it("classifies EVERY WI-806 pool marker straight off the real table (never a restated copy) when the signature is empty", () => {
+    for (const marker of WORKER_POOL_CRASH_MARKERS) {
+      const r = classifyInfraFault(`chatter\n${marker}\nmore chatter`);
+      expect(r?.kind).toBe("worker-pool-crash");
+    }
+  });
+
+  it("harvests the crashed workspaces into the classification", () => {
+    const out = [
+      "Worker exited unexpectedly",
+      "npm error workspace @papercusp/operator-core@0.1.0",
+    ].join("\n");
+    const r = classifyInfraFault(out);
+    expect(r?.kind).toBe("worker-pool-crash");
+    expect(r?.workspaces).toEqual(["@papercusp/operator-core"]);
+    expect(r?.note).toContain("@papercusp/operator-core");
+  });
+
+  it("measured failures STAY RED: pool markers beside parseable per-file failures return null", () => {
+    const out = `Worker exited unexpectedly\n${MEASURED_FAILURES_LINE}`;
+    expect(classifyInfraFault(out)).toBeNull();
+  });
+
+  it("the SIGNAL takes precedence over pool markers — the top-level kill is the stronger claim", () => {
+    const r = classifyInfraFault("Worker exited unexpectedly", undefined, { signal: "SIGTERM" });
+    expect(r?.kind).toBe("suite-signaled");
+    expect(r?.signal).toBe("SIGTERM");
+  });
+
+  it("no signal and no markers leave an ordinary red untouched (total, null)", () => {
+    expect(
+      classifyInfraFault("FAIL something ordinary but unparseable", undefined, { signal: null }),
+    ).toBeNull();
   });
 });
