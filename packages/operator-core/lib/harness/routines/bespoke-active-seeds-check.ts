@@ -84,6 +84,11 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // read+narrow-write), added here in the SAME change so the "seed script nobody ever ran"
   // guard covers it from day one.
   { name: 'account-capacity-reprobe', seedScript: 'seed-account-capacity-reprobe-routine.ts' },
+  // Found missing by this registry's own guard test while landing sync-batch-delta-check:
+  // the autonomous-inbox-resolution-2026-08-31 P-002 lane landed the action import + an
+  // active-by-default seed script but never added this row — the exact "seed script the
+  // guard cannot see" omission the dead-citation-sweep entry below records one instance of.
+  { name: 'bulk-run-watchdog', seedScript: 'seed-bulk-run-watchdog-routine.ts' },
   { name: 'cargo-test', seedScript: 'seed-cargo-test-routine.ts' },
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'consult-expiry-sweep', seedScript: 'seed-consult-expiry-routine.ts' },
@@ -135,6 +140,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'supervision-reconcile', seedScript: 'seed-supervision-reconcile-routine.ts' },
   { name: 'sweep-stalled-loops', seedScript: 'seed-stalled-loops-routine.ts' },
   { name: 'sweep-wedged-pty-hosts', seedScript: 'seed-pty-host-wedge-routine.ts' },
+  // gate-verdict-liveness P-012. Added in the SAME change as the action, its import, its
+  // spend entry and the seed script — the registry cross-checks red the fleet gate on a
+  // half-landed pair, and this registry exists to catch "the seed script nobody ever ran".
+  { name: 'sync-batch-delta-check', seedScript: 'seed-sync-batch-delta-check-routine.ts' },
   { name: 'sync-read-audit', seedScript: 'seed-sync-read-audit-routine.ts' },
   { name: 'task-reconcile', seedScript: 'seed-task-reconcile-routine.ts' },
   { name: 'unguarded-halt-rescue', seedScript: 'seed-unguarded-halt-rescue-routine.ts' },

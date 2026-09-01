@@ -532,6 +532,15 @@ import './consult-expiry-action';
 // prevention worked, so the plan succeeded when this stops filing. Silent when nothing is
 // frozen and when git cannot be read — it never reports a zero it did not measure.
 import './frozen-candidate-drift-sweep-action';
+// gate-verdict-liveness-and-repair-reliability-2026-08-31 P-012: `system:sync-batch-delta-check`
+// — per-git-sync-batch verification of staging (every 5 min, bounded): affected-tests +
+// workspace typecheck over the commits since a durable cursor, single-file re-confirmation
+// before anything is filed, and ONE condition-keyed work-item per confirmed red naming the
+// newest batch whose radius reaches it + a 60-min fix-or-revert SLA. Keeps staging near-green
+// so a frozen candidate opens with ~0-3 reds instead of 42 legs / 226 files (plan D-001).
+// Skips under host load and while a checkpoint suite runs; observer only — no revert, no gate
+// fire, no spawn. Seeded ACTIVE (seed-sync-batch-delta-check-routine.ts).
+import './sync-batch-delta-check-action';
 // acceptance-grading-stall-sweep-2026-08-26 P-002/P-004: `system:acceptance-grading-sweep`
 // — puts a clock on the one leg of plan completion that had none. A plan ships only after an
 // INDEPENDENT grader emits a scorecard, and that grader is recruited lazily by the ship

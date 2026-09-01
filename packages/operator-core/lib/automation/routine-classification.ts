@@ -386,6 +386,23 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:release-trigger': { spend: 'none', why: 'Deploys the green commit' },
   'system:pr-poll': { spend: 'none', why: 'Polls GitHub for PR state' },
   'system:cargo-test': { spend: 'none', why: 'Runs the Rust test suite' },
+  'system:bulk-run-watchdog': {
+    spend: 'none',
+    // Found unclassified by the registry cross-check while landing sync-batch-delta-check
+    // (the autonomous-inbox-resolution-2026-08-31 P-002 lane landed the import + seed but
+    // not this entry — the half-landed pair the check exists to catch). Verified against
+    // bulk-run-watchdog-action.ts before classifying: it fails stale executing bulk runs
+    // and reconciles run counters — deterministic row mutations, no spawn/wake/dispatch.
+    why: 'Fails stale bulk runs and reconciles run counters — deterministic row updates, no agent spawn or wake',
+  },
+  'system:sync-batch-delta-check': {
+    spend: 'none',
+    // Verified against sync-batch-delta-check-action.ts before classifying: it runs
+    // bounded test/typecheck subprocesses and files condition-keyed work-items via
+    // createOneWorkItem — no agent spawn, no session wake, no pipeline dispatch, so
+    // pausing it stops only the checks themselves.
+    why: 'Runs bounded per-sync-batch affected-tests/typecheck legs and files deduped work-items — no agent spawn or wake',
+  },
   'system:gate-watcher-tick': { spend: 'none', why: 'Reads gate state' },
   'system:fleet-transition-sweep': {
     spend: 'none',
@@ -724,7 +741,7 @@ const DOCS_FAMILY = /doc|^knowledge-pack-/i;
 const WAKE_FAMILY = /(^|-)wake($|-)/i;
 const LEARNING_FAMILY =
   /^improvement-|^bp-singleton-|^gym|^template-gym$|^pot-eval-battery$|^scout|^dream|prospector|^oddsmith-|^scan$/i;
-const GIT_RELEASE_FAMILY = /git-sync|checkpoint|release|deploy|^pr-poll$|^cargo-test$|^gate-/i;
+const GIT_RELEASE_FAMILY = /git-sync|checkpoint|release|deploy|^pr-poll$|^cargo-test$|^gate-|^sync-batch-delta-check$/i;
 const CLEANUP_FAMILY = /gc$|^gc-|reaper|retention|precompute|^knowledge-pack-/i;
 const FEDERATION_FAMILY = /^p2p-|hive|foreign|outbox|federation/i;
 
