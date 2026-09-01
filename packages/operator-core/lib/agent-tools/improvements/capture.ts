@@ -40,7 +40,7 @@ import { readRunningGeneration } from '../../scout/generation-watermark';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
-import { toolFailureStalenessHint } from '../../tool-schema-staleness';
+import { pathsStalenessHint, toolFailureStalenessHint } from '../../tool-schema-staleness';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveCaptureScope } from './capture-scope';
 import { coerceCaptureArgs } from './capture-coerce';
@@ -411,6 +411,7 @@ export default defineTool({
       'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, hint, alreadyDecided? }. The check-only `hint` states whether this was title-only or bound to the exact supplied body; changing the body can change semantic matches, so rerun with the final body before treating [] as clean.\n\n' +
       'UNKEYED OBSERVATION CREATE (`lane:"observation"`, no `conditionKey`): returns only `{ ok:true }`. Fresh storage and a server-side fold intentionally have the same response; the filing is complete and needs no caller-side duplicate investigation. Keyed machine-emitter observations retain their detailed coalesce response.\n\n' +
       'KEYED COALESCE (reason:"coalesced" — an observation matching an open conditionKey): also `coalescedOnto { id, repeatCount, bodyPersisted, bodyDiscarded?, priorAuthor, crossAuthor }`. Read `bodyPersisted` BEFORE asserting the row says what you wrote: on false your title/body was DISCARDED and the row still shows the previous reading. `crossAuthor:true` means you wrote onto a PEER\'s row (expected for a shared conditionKey; occurrences are all retained).\n\n' +
+      'A filing with `paths` may also return `staleCodeWarning` — a REPORT-ONLY check for commits touching those paths after the running build. It names the serving sha and newer commits; it NEVER blocks the filing. Verify the deployed generation before treating a live observation as a current defect.\n\n' +
       'An su kind=feature filing also returns `priorArt[]` — a REPORT-ONLY novelty pre-check (including already-tried-and-failed priors) that NEVER blocks the filing. Absent field = not checked; [] = checked and nothing similar found.\n\n' +
       'possibleDuplicates[] carries THREE kinds of hit, and they do NOT mean the same thing:\n' +
       '  • no flag        — token-overlap (Jaccard) above threshold. May DECLINE your capture.\n' +
@@ -925,12 +926,20 @@ export default defineTool({
     // Null unless the file actually differs between the serving build and the tree,
     // so the common case adds nothing. Never throws; never blocks the filing.
     const stalenessHint = args.toolFailure ? await toolFailureStalenessHint(args.toolFailure.toolName) : null;
+    // EI-19452091889263267: a report can be based on a live runtime observation
+    // even when the failing call itself was not a schema/tool error.  Compare the
+    // explicitly supplied subject paths against the serving build and carry a
+    // non-blocking cue into the durable body so triage does not mistake an older
+    // runtime for current tree behavior.
+    const pathStalenessHint = args.paths?.length ? await pathsStalenessHint(args.paths) : null;
     // Reserve room for the hint rather than clamping the join: the body arrives
     // already clamped to LIMITS.CONTENT, so a naive append could overflow it, and
     // clamping afterwards would silently truncate the hint off the END — losing
     // exactly the line this exists to add, on the longest (most detailed) reports.
-    const bodyWithStaleness = stalenessHint
-      ? [clampText(captureText.body, Math.max(0, LIMITS.CONTENT - stalenessHint.length - 2)), stalenessHint]
+    const stalenessHints = [stalenessHint, pathStalenessHint].filter((hint): hint is string => Boolean(hint));
+    const stalenessHintText = stalenessHints.join('\n\n');
+    const bodyWithStaleness = stalenessHintText
+      ? [clampText(captureText.body, Math.max(0, LIMITS.CONTENT - stalenessHintText.length - 2)), stalenessHintText]
           .filter(Boolean)
           .join('\n\n')
       : captureText.body;
@@ -1311,6 +1320,9 @@ export default defineTool({
               // The filer sees the skew warning too, not just the later triager —
               // they are the one still holding the repro and can settle it now.
               ...(!silenceUnkeyedObservationDisposition && stalenessHint ? { possiblyStaleSchema: stalenessHint } : {}),
+              ...(!silenceUnkeyedObservationDisposition && pathStalenessHint
+                ? { staleCodeWarning: pathStalenessHint }
+                : {}),
               ...(warnings.length > 0 ? { warnings } : {}),
             }),
           },

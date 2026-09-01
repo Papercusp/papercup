@@ -21,11 +21,24 @@ const drainAdmission = vi.hoisted(() => ({
   gate: vi.fn(),
 }));
 
+const stalenessHints = vi.hoisted(() => ({
+  toolFailure: vi.fn(async () => null as string | null),
+  paths: vi.fn(async () => null as string | null),
+}));
+
 // PG-free unit: capture-core has its own 31-test suite; this pins the tool
 // wrapper's two jobs — (1) deriving the `source` label from the caller's
 // identity tier, and (2) passing every arg + the resolved identity through to
 // the shared core unchanged. (self-learning-central P-001/P-010.)
 vi.mock('../../harness/improvements/capture-core');
+vi.mock('../../tool-schema-staleness', async () => {
+  const actual = await vi.importActual<typeof import('../../tool-schema-staleness')>('../../tool-schema-staleness');
+  return {
+    ...actual,
+    toolFailureStalenessHint: stalenessHints.toolFailure,
+    pathsStalenessHint: stalenessHints.paths,
+  };
+});
 vi.mock('../../harness/improvements/agent-review', () => ({
   enterAgentReview: vi.fn(async () => ({
     entered: true,
@@ -316,6 +329,22 @@ describe('improvements:capture tool envelope', () => {
       await callTool({ title: 'x', kind: 'change' });
       expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ source: 'engineer' }));
     }
+  });
+
+  it('adds a non-blocking staleCodeWarning for paths newer than the running build', async () => {
+    const warning = 'ⓘ Possible STALE RUNTIME: packages/operator-core/lib/x.ts has a newer commit';
+    stalenessHints.paths.mockResolvedValueOnce(warning);
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-stale', title: 'runtime report' },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    const result = await callTool({ title: 'runtime report', kind: 'change', paths: ['packages/operator-core/lib/x.ts'] });
+    const body = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ body: warning }));
+    expect(body.staleCodeWarning).toBe(warning);
+    expect(stalenessHints.paths).toHaveBeenCalledWith(['packages/operator-core/lib/x.ts']);
   });
 
   it('routes a one-off tool failure to correlated non-claimable probation', async () => {
