@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import { pausedByFrom } from './set';
+import { DEFAULT_RELEASE_PAUSE_TTL_HOURS, resolvePauseExpiryMs } from '../../harness/routines/release-pause-ttl';
 
 interface MemberSnap {
   installSlug: string;
@@ -61,6 +62,14 @@ export default defineTool({
     group: z.string().min(1).max(120).describe('The routine group slug (must already exist — routines:set { group } auto-creates one on first assignment).'),
     active: z.boolean().optional().describe('active:false pauses every currently-active member (stamping each with the group-pause marker). active:true resumes ONLY the members this group-pause held (snapshot restore); pass activateAll:true to instead force every member on.'),
     reason: z.string().min(1).max(500).optional().describe('REQUIRED when pausing (active:false) — why. Persisted on each stamped member as metadata.pause { reason, pausedBy, pausedAtMs, groupPause } (same discipline as routines:set).'),
+    pauseTtlHours: z
+      .number()
+      .positive()
+      .finite()
+      .optional()
+      .describe(
+        `Only meaningful alongside active:false on the RELEASE group. How long this bulk hold may last, in hours — stamped on every member as metadata.pause.expiresAtMs, after which the routines engine AUTO-RESUMES them and records a notice. Omit for the ${DEFAULT_RELEASE_PAUSE_TTL_HOURS}h default. A release-group pause is ALWAYS finite (a whole-group pause is how the release pipeline goes dark in one call); ignored on any other group.`,
+      ),
     activateAll: z.boolean().optional().describe('With active:true — resume EVERY member, including ones paused deliberately outside this group-pause. Default resumes only the group-pause snapshot.'),
     description: z.string().max(2000).optional().describe('Patch the group description.'),
     steward: z.string().max(200).optional().describe('Patch the group steward (who owns reviewing it).'),
@@ -164,11 +173,24 @@ export default defineTool({
             // the same durable pause-attribution record routines:set writes — plus the
             // groupPause marker that makes the held set a derivable snapshot. Members that
             // were already inactive (their own deliberate pauses included) are untouched.
+            // P-004 (gate-verdict-liveness-and-repair-reliability-2026-08-31): a bulk
+            // pause of the RELEASE group takes the whole release pipeline dark in one
+            // call, so it carries the same finite expiry a single-routine pause does —
+            // stamped identically, and enforced by the same routines-engine sweep.
+            // Null (key omitted) for every other group.
+            const pausedAtMs = Date.now();
+            const expiresAtMs = resolvePauseExpiryMs({
+              groupSlug: group,
+              pausedAtMs,
+              ttlHours: args.pauseTtlHours ?? null,
+              reason: args.reason ?? null,
+            });
             const stamp = {
               reason: args.reason,
               pausedBy: pausedByFrom(ctx, ctx.role),
-              pausedAtMs: Date.now(),
+              pausedAtMs,
               groupPause: group,
+              ...(expiresAtMs !== null ? { expiresAtMs } : {}),
             };
             await sql`
               UPDATE harness_shared.routines

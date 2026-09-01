@@ -19,6 +19,7 @@ import { WATCHDOG_HEALTH_METADATA_KEY } from '../../release/watchdog-health';
 import { parseInFlightCandidate } from '../../release/in-flight-candidate';
 import { gateAbortVintage } from '../../release/gate-abort-status';
 import { computeNextFireAt } from '../../harness/routines/cron';
+import { effectivePauseExpiryMs, readRoutinePause } from '../../harness/routines/release-pause-ttl';
 
 const GIT_SYNC_FRESHNESS_INTERVALS = 3;
 
@@ -45,15 +46,31 @@ const GIT_SYNC_FRESHNESS_INTERVALS = 3;
  */
 function pauseOf(
   metadata: Record<string, unknown> | null,
-): { reason: string | null; by: string | null; at: string | null } | null {
+  groupSlug: string | null = null,
+): {
+  reason: string | null;
+  by: string | null;
+  at: string | null;
+  autoResumesAt: string | null;
+  finite: boolean;
+} | null {
   const p = metadata?.pause;
   if (!p || typeof p !== 'object') return null;
   const rec = p as Record<string, unknown>;
   const atMs = typeof rec.pausedAtMs === 'number' ? rec.pausedAtMs : null;
+  // P-004 (gate-verdict-liveness-and-repair-reliability-2026-08-31): a deliberate
+  // hold now has an END, and this is the read side of it. `finite:false` is the
+  // loud case — nothing will re-arm the routine — and it is deliberately a
+  // separate field from a null timestamp so a reader cannot mistake "no
+  // auto-resume scheduled" for "the deadline is unknown".
+  const parsed = readRoutinePause(p);
+  const expiresAtMs = effectivePauseExpiryMs(parsed, { groupSlug });
   return {
     reason: typeof rec.reason === 'string' ? rec.reason : null,
     by: typeof rec.pausedBy === 'string' ? rec.pausedBy : null,
     at: atMs !== null && Number.isFinite(atMs) ? new Date(atMs).toISOString() : null,
+    autoResumesAt: expiresAtMs !== null ? new Date(expiresAtMs).toISOString() : null,
+    finite: expiresAtMs !== null,
   };
 }
 
@@ -756,7 +773,7 @@ export default defineTool({
         nextFireAt: iso(r.next_fire_at),
         lastFiredAt: iso(r.last_fired_at),
         group: r.group_slug,
-        paused: pauseOf(r.metadata),
+        paused: pauseOf(r.metadata, r.group_slug),
         health,
       };
       // Only the operator-home row backs the operator pipeline cells. Other installs

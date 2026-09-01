@@ -503,7 +503,16 @@ defineTool({
   // org-app transaction while registering the gate wait, or pool pressure can
   // make checkpoint:await time out before the registration runs.
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES],
+  // `release-fixer` is here because its own runbook mandates this verb: on a LEGACY
+  // dispatch it must "wait for the real verdict (`checkpoint:await`)" instead of killing
+  // a live run over a pessimistic quiet-cut prediction
+  // (blueprints/base/prompts/release-fixer.md), and the `release-fix` blueprint declares
+  // `checkpoint:await` in its `dependencies.tools`. It is NOT in SU_ROLES (it keeps its
+  // native file/shell surface), so the spread alone denied a verb the prompt requires —
+  // the six-recurrence class of EI-21988345999773689 / EI-21979521274634237 / WI-1179061.
+  // ../../release/release-fixer-tool-contract.test.ts derives this pairing from the
+  // prompt text, so dropping the role here fails that test rather than stranding a fixer.
+  agentRoles: [...SU_ROLES, 'release-fixer'],
   args: z.object({
     pipeline: z
       .string()

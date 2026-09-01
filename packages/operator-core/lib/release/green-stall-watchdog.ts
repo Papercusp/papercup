@@ -583,10 +583,20 @@ export function decideGreenCheckpointStallRecovery(opts: {
  * last clause ("never auto-refire past the owner wall while D-080 stands") is a hard
  * prohibition, and a hard prohibition should not be reachable only by argument.
  *
- * Pure by design: every input is passed in and nothing is persisted here. While D-080
- * stands the sweep consumes this ADVISORY only — it tells a human reading the alarm
- * whether a re-fire is safe and why — so the judgement can be reviewed on live data
- * before it is ever wired to actuation.
+ * Pure by design: every input is passed in and nothing is persisted here.
+ *
+ * ACTUATION STATUS (2026-08-31, gate-verdict-liveness-and-repair-reliability-2026-08-31
+ * D-003): the advisory-only phase D-038 documented is over for the OPERATOR-HOME gate. The
+ * sweep now wires `ownerWallActive` to the LIVE release checkpoint-config holds (see
+ * readGateFireOwnerWall — either scope held, or an unreadable hold, reads as an active
+ * wall) and, when this function returns `refire` for the home install, actually launches
+ * the detached checkpoint, persisting the episode budget in
+ * `gate_health.verdictlessRefire`. D-080 itself was a bounded ruling: it exhausted D-077's
+ * ONE manual-run authority (2026-08-26) and required "newer explicit authority" for the
+ * next transition — supplied by the owner's 2026-08-31 implement-start-to-finish directive
+ * on the plan above. Re-walling is one owner call, no deploy:
+ * `release:checkpoint-config { op:'hold', scope, governingRef }`. Non-home installs remain
+ * advisory-only (their gates route to roots the launcher does not target).
  */
 export type VerdictlessRefireAction = 'refire' | 'alarm' | 'none';
 
@@ -2001,6 +2011,80 @@ export async function checkGreenStall(
         opts,
       );
 
+      // ---- D-006 actuation (gate-verdict-liveness-and-repair-reliability-2026-08-31 D-003) ----
+      // Runs EVERY pass, deliberately upstream of the one-shot `watchdogAlerted` gate below:
+      // the alarm fires once per episode, but a bounded multi-attempt recovery must keep
+      // evaluating (its own cooldown / reproduced / max-attempts arms bound it). The decision
+      // is reused verbatim in the alarm's structured data below, so what we DID and what we
+      // SAID can never diverge.
+      let refire: VerdictlessRefireDecision | null = null;
+      if (verdict.verdictless) {
+        const episode = resolveVerdictlessRefireEpisode(row.gh, lastVerdictAtMs);
+        const wall: GateFireWall = opts.readGateFireWall
+          ? await opts.readGateFireWall().catch((e: unknown) => ({
+              active: true,
+              detail: `wall reader threw (fail-closed): ${e instanceof Error ? e.message : String(e)}`,
+            }))
+          : { active: true, detail: 'fail-closed: no wall reader wired (bare sweep call)' };
+        refire = decideVerdictlessRefire({
+          verdictless: true,
+          abortStatus: row.gh?.inconclusive?.status ?? null,
+          ownerWallActive: wall.active,
+          refireInFlight: checkpointRun.checkpointRunActive === true,
+          attempts: episode.attempts,
+          lastAttemptStatus: episode.lastAttemptStatus,
+          lastAttemptAtMs: episode.lastAttemptAtMs,
+          nowMs: now,
+          maxAttempts: opts.greenCheckpointStallRecoveryMaxAttempts,
+        });
+        if (refire.action === 'refire') {
+          const homeSlug = opts.refireHomeSlug ?? safeOperatorHomeSlug();
+          if (!opts.launchCheckpoint || homeSlug == null || row.install_slug !== homeSlug) {
+            // Advisory-only for non-home installs (their gates route to roots this launcher
+            // does not target) and for callers that wired no launcher.
+            console.warn(
+              `[green-stall-watchdog] D-006 refire warranted for ${row.install_slug} but actuation is ${
+                !opts.launchCheckpoint ? 'not wired' : 'home-scoped'
+              } — advisory only (${refire.detail})`,
+            );
+          } else {
+            try {
+              const launch = await opts.launchCheckpoint();
+              if (launch.launched) {
+                await sql`
+                  UPDATE harness_shared.routines
+                     SET metadata = jsonb_set(
+                           COALESCE(metadata, '{}'::jsonb),
+                           '{gate_health}',
+                           COALESCE(metadata->'gate_health', '{}'::jsonb) ||
+                             ${JSON.stringify({
+                               verdictlessRefire: {
+                                 attempts: refire.nextAttempt,
+                                 lastAttemptStatus: refire.abortStatus,
+                                 lastAttemptAtMs: now,
+                               },
+                             })}::jsonb
+                         ),
+                         updated_at = now()
+                   WHERE install_slug = ${row.install_slug}
+                     AND target_role = 'system:green-checkpoint'`;
+                console.warn(
+                  `[green-stall-watchdog] D-006 ACTUATED verdict-less auto-refire ${refire.nextAttempt} for ${row.install_slug} (abort: ${refire.abortStatus ?? 'unknown'}; unit ${launch.unit})`,
+                );
+              } else {
+                console.warn(
+                  `[green-stall-watchdog] D-006 refire declined by launcher for ${row.install_slug} (${launch.reason ?? 'no reason'}) — no attempt burned`,
+                );
+              }
+            } catch (e) {
+              console.warn(
+                `[green-stall-watchdog] D-006 refire launch failed for ${row.install_slug} (non-fatal, no attempt burned): ${e instanceof Error ? e.message : String(e)}`,
+              );
+            }
+          }
+        }
+      }
+
       if (verdict.stalled) {
         if (watchdogAlerted) continue; // already alarmed; one-shot until recovery
         // Cross-process exactly-once: only the writer that flips watchdogAlerted
@@ -2045,18 +2129,9 @@ export async function checkGreenStall(
         const attribution = needsEvidence
           ? attributeVerdictStale({ failingTests, last: lastRun, lastFiredMs, now })
           : null;
-        // D-006: classify whether this verdict-less death may be met with an automatic re-fire.
-        // ADVISORY ONLY while D-080 stands — `ownerWallActive: true` makes the decision function
-        // structurally incapable of returning `refire`, so this can be validated against live
-        // installs before it is ever wired to actuation.
-        const refire = verdict.verdictless
-          ? decideVerdictlessRefire({
-              verdictless: true,
-              abortStatus: row.gh?.inconclusive?.status ?? null,
-              ownerWallActive: true,
-              nowMs: now,
-            })
-          : null;
+        // D-006: the refire judgement was computed — and possibly ACTED ON — upstream of the
+        // one-shot alarm gate (see the actuation block above), so the alarm's structured data
+        // below reports exactly what the actuation path decided.
         const reasonText = attribution
           ? `${verdict.reason} — ${attribution.cause}`
           : (verdict.reason ?? '');
@@ -3094,8 +3169,17 @@ export function startGreenStallWatchdog(
   if (process.env.PAPERCUSP_GREEN_STALL_WATCHDOG === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS;
 
+  // D-003 (gate-verdict-liveness-and-repair-reliability-2026-08-31): the production watchdog
+  // is where actuation gets its real dependencies. A bare checkGreenStall(sql) call (unit
+  // tests, ad-hoc probes) stays advisory-only by default — see GreenStallThresholds.
+  const wired: GreenStallThresholds & { intervalMs?: number } = {
+    ...opts,
+    readGateFireWall: opts.readGateFireWall ?? readGateFireOwnerWall,
+    launchCheckpoint: opts.launchCheckpoint ?? (() => launchDetachedCheckpoint()),
+  };
+
   const run = (): void => {
-    void checkGreenStall(sql, opts).then((r) => {
+    void checkGreenStall(sql, wired).then((r) => {
       if (r.alarmed.length > 0) {
         console.warn(`[green-stall-watchdog] alarmed on: ${r.alarmed.join(', ')}`);
       }

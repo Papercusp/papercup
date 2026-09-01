@@ -86,6 +86,7 @@ export const isParkedNextFire = stub('isParkedNextFire');
 export const listActiveEphemeralRoutines = stub('listActiveEphemeralRoutines');
 export const listDueCronRoutines = stub('listDueCronRoutines');
 export const listGoals = stub('listGoals');
+export const listInProcessSweepRoutines = stub('listInProcessSweepRoutines');
 export const listUnconsumedEvents = stub('listUnconsumedEvents');
 export const longLivedPoolConnectionOptions = stub('longLivedPoolConnectionOptions');
 export const normalizeNextFireAt = stub('normalizeNextFireAt');

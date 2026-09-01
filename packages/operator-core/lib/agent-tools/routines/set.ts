@@ -21,6 +21,7 @@ import { readCheckpointSerializerAuthority } from '../../release/checkpoint-seri
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { readRoutineSnap, writeRoutineSnap, type RoutineSnap } from './routine-snapshot';
+import { DEFAULT_RELEASE_PAUSE_TTL_HOURS, resolvePauseExpiryMs } from '../../harness/routines/release-pause-ttl';
 
 /**
  * Best-effort caller ownerId for the pause-attribution stamp. A ctx-supplied
@@ -207,6 +208,14 @@ export default defineTool({
       .describe(
         'Only meaningful alongside active:false, for an ALWAYS-ON singleton learning loop (change-ledger / scout / iq-battery). An ISO timestamp persisted as metadata.pause.reviewBy — the DARK_FLAGS_REVIEW_BY analog for a deliberate pause (EI-19370236916382521). While it is in the future, the learning-loop-health sweep treats the pause as EXPLICITLY RE-AFFIRMED and stops daily-re-escalating it (`improvements:capture`-ing a fresh EI every 24h) — the "re-affirm it explicitly rather than letting this alarm re-fire silently" remedy that sweep\'s own health read asks for. Pass this whenever you are pausing (or re-pausing to re-affirm) one of those loops on purpose, with a date you intend to actually re-review it by — omitting it on a deliberate pause just means the alarm keeps re-firing until someone either resumes the loop or comes back and sets one.',
       ),
+    pauseTtlHours: z
+      .number()
+      .positive()
+      .finite()
+      .optional()
+      .describe(
+        `Only meaningful alongside active:false on a RELEASE-GROUP routine (green-checkpoint, release-trigger, pr-poll). How long this hold may last, in hours — persisted as metadata.pause.expiresAtMs, after which the routines engine AUTO-RESUMES the routine and records a notice. Omit for the ${DEFAULT_RELEASE_PAUSE_TTL_HOURS}h default. A longer TTL is allowed, but a release-group pause is ALWAYS finite: an open-ended hold is exactly what this closes (green-checkpoint sat deliberately paused 99h across 14 windows — 37% of an 11-day red streak — with nothing to end it, and no watchdog message saying it was off rather than failing). Ignored (but harmless) on a non-release-group routine and on the structured D-012/D-013 serializer quiescence hold, which has its own owner-liveness recovery instead of a clock.`,
+      ),
     dryRun: z.boolean().optional(),
   }),
   async handler(args, ctx) {
@@ -248,6 +257,12 @@ export default defineTool({
     const readSnap = (): Promise<RoutineSnap> => readRoutineSnap(sql, ws, slug, args.name);
     const writeSnap = (snap: RoutineSnap): Promise<void> => writeRoutineSnap(sql, ws, slug, args.name, snap);
 
+    // P-004: the stamped release-group pause expiry, captured so the CALLER is told
+    // when their hold auto-resumes. A pause whose end date only exists in the DB is
+    // the same silence one indirection over — the person taking the hold is the one
+    // who needs to know it is finite.
+    let stampedPauseExpiryMs: number | null = null;
+
     const outcome = await runControlMutation<RoutineSnap>(
       {
         action: 'routines:set',
@@ -281,15 +296,33 @@ export default defineTool({
           const metadata = { ...prev.metadata };
           const nextActive = args.active ?? prev.active;
           if (args.active === false) {
+            const pausedAtMs = Date.now();
+            // gate-verdict-liveness-and-repair-reliability-2026-08-31 P-004: a
+            // RELEASE-GROUP pause is always FINITE. Resolve the group as it will be
+            // AFTER this call (a caller may assign the group in the same mutation),
+            // then stamp the expiry the routines-engine sweep enforces. Null for a
+            // non-release routine and for the D-012/D-013 serializer quiescence hold —
+            // see release-pause-ttl.ts's "ONE EXCLUSION".
+            const nextGroupSlug = args.group !== undefined ? args.group : prev.groupSlug;
+            const expiresAtMs = resolvePauseExpiryMs({
+              groupSlug: nextGroupSlug,
+              pausedAtMs,
+              ttlHours: args.pauseTtlHours ?? null,
+              reason: args.reason ?? null,
+            });
+            stampedPauseExpiryMs = expiresAtMs;
             metadata.pause = {
               reason: args.reason,
               pausedBy: pausedByFrom(ctx, ctx.role),
-              pausedAtMs: Date.now(),
+              pausedAtMs,
               // EI-19370236916382521: omit the key entirely rather than storing `undefined` —
               // a present-but-undefined key would round-trip through JSON.stringify as if it
               // were never set, which is harmless, but an explicit omission keeps the stored
               // shape honest (no `reviewBy` key at all on a plain, non-reaffirmed pause).
               ...(args.reviewBy !== undefined ? { reviewBy: args.reviewBy } : {}),
+              // Same omit-don't-store-null discipline: an absent key means "not
+              // TTL-governed", which is a different claim from "TTL of null".
+              ...(expiresAtMs !== null ? { expiresAtMs } : {}),
             };
           } else if (args.active === true && prev.metadata.pause) {
             metadata.lastPause = { ...(prev.metadata.pause as Record<string, unknown>), resumedAtMs: Date.now() };
@@ -332,6 +365,19 @@ export default defineTool({
             group: args.group !== undefined ? args.group : prev.groupSlug,
             ...(args.payloadTemplate !== undefined
               ? { payloadTemplate: deepMergePlain(prev.payloadTemplate, args.payloadTemplate) }
+              : {}),
+            // P-004: a dryRun must PREVIEW the auto-resume deadline, not just the flag —
+            // `apply` never runs on a preview, so this is the only place it can appear.
+            ...(args.active === false
+              ? (() => {
+                  const at = resolvePauseExpiryMs({
+                    groupSlug: args.group !== undefined ? args.group : prev.groupSlug,
+                    pausedAtMs: Date.now(),
+                    ttlHours: args.pauseTtlHours ?? null,
+                    reason: args.reason ?? null,
+                  });
+                  return { pauseAutoResumesAt: at !== null ? new Date(at).toISOString() : null };
+                })()
               : {}),
           },
         }),
@@ -388,10 +434,24 @@ export default defineTool({
             title: `Always-on routine paused: ${args.name}`,
             body:
               `"${args.name}" (${slug}) is seeded ACTIVE by default and was just paused — ` +
-              `reason: "${args.reason}". Nothing re-arms it on its own. Resume with ` +
+              `reason: "${args.reason}". ` +
+              // P-004: "Nothing re-arms it on its own" is now FALSE for a TTL'd
+              // release-group pause, and a notice that misstates whether recovery is
+              // automatic is worse than no notice — it is what a responder plans around.
+              (stampedPauseExpiryMs !== null
+                ? `It is in the release group, so the hold is FINITE: the routines engine auto-resumes it at ` +
+                  `${new Date(stampedPauseExpiryMs).toISOString()} unless it is resumed sooner. `
+                : 'Nothing re-arms it on its own. ') +
+              `Resume with ` +
               `routines:set { name: "${args.name}", installSlug: "${slug}", active: true }, ` +
               `or re-pause with a \`reviewBy\` date to silence this notice deliberately.`,
-            data: { routine: args.name, installSlug: slug, reason: args.reason ?? '', event: 'always-on-routine-paused' },
+            data: {
+              routine: args.name,
+              installSlug: slug,
+              reason: args.reason ?? '',
+              event: 'always-on-routine-paused',
+              pauseExpiresAtMs: stampedPauseExpiryMs,
+            },
           });
         } catch (e) {
           console.warn('[routines:set] always-on pause notice failed (non-fatal):', (e as Error)?.message ?? e);
@@ -418,6 +478,17 @@ export default defineTool({
             verify: outcome.verify,
             auditId: outcome.auditId,
             revertHandle,
+            // P-004: a release-group pause is finite — say so in the reply, so the
+            // caller learns the deadline at the moment they take the hold rather than
+            // from a watchdog hours later. `null` on an untimed pause is the honest
+            // answer, not a missing field: it means nothing will re-arm this routine.
+            ...(args.active === false
+              ? {
+                  pauseAutoResumesAt:
+                    stampedPauseExpiryMs !== null ? new Date(stampedPauseExpiryMs).toISOString() : null,
+                  pauseIsFinite: stampedPauseExpiryMs !== null,
+                }
+              : {}),
           }),
         },
       ],

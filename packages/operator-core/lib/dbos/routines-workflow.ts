@@ -692,6 +692,23 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'pot-paused-recovery-sweep' },
   );
 
+  // gate-verdict-liveness-and-repair-reliability-2026-08-31 P-004: the RELEASE-GROUP
+  // PAUSE-TTL sweep — the same "a deliberate hold must not become a silent outage"
+  // shape as the paused-hive recovery directly above, one layer down at the routine
+  // row. A release-group pause (green-checkpoint especially) now carries a finite
+  // expiry; this re-arms it the tick after that expiry passes and records a notice.
+  // Measured motivation: green-checkpoint sat deliberately paused 99h across 14
+  // windows (37% of an 11-day red streak), two of them >21h, with nothing to end
+  // them. Bounded (~12 release rows, one guarded UPDATE each) and fail-soft inside
+  // the module, so it can never delay or break the fires above.
+  await DBOS.runStep(
+    async () => {
+      const { sweepExpiredReleasePauses } = await import('../harness/routines/release-pause-ttl');
+      await sweepExpiredReleasePauses(sql);
+    },
+    { name: 'release-pause-ttl-sweep' },
+  );
+
   // overwatch-role-2026-06-15 B-09 / D-004: the OVERWATCH liveness sweep — the
   // who-watches-the-watcher backstop, the same deterministic dead-man's switch as
   // the hive sweep above but for the overwatch supervisor's own wake channel. It

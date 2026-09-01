@@ -66,7 +66,7 @@ import { assessTestingCensusPopulation, assessTestingCoverageFloor } from './age
 import hostMemoryPressureTool from './agent-tools/state/host-memory';
 import coverageTool from './agent-tools/testing/coverage';
 import governorStateTool from './agent-tools/state/governor-state';
-import { composeGateOwnerBrief } from './gate-owner-brief';
+import { composeGateOwnerBrief, type GateOwnerBriefInput } from './gate-owner-brief';
 import { portfolioAssessmentFor } from './goals/portfolio-throughput';
 
 /**
@@ -223,7 +223,14 @@ const GOALOF = (agreement: string, competing: readonly string[] = []) =>
     declaredAt: '2026-08-24T00:00:00.000Z',
   }) as never;
 
-const OWNER_BRIEF_BASE = {
+// ⚠ ANNOTATED, not `as const`. An `as const` base narrows every field to its own literal
+// (`consecutiveReds: 0`, `repairQueue: null`, `fireStale: false`, `ownership: {…}`), so the
+// `Partial<typeof OWNER_BRIEF_BASE>` below REJECTS the very overrides these controls exist to
+// make — a RED gate could not be expressed at all, and every red/stalled/unowned control row
+// was a type error. Annotating with the resolver's own input type widens the override surface
+// to exactly what `composeGateOwnerBrief` accepts, so the rows stay typechecked against the
+// real contract instead of against the green base's literals.
+const OWNER_BRIEF_BASE: GateOwnerBriefInput = {
   nowMs: 1_000,
   consecutiveReds: 0,
   failingTests: [],
@@ -235,7 +242,7 @@ const OWNER_BRIEF_BASE = {
   inconclusive: null,
   repairQueue: null,
   ownership: { claimState: 'held', takenBy: 'su-holder', workItem: 'WI-1', assessment: 'held-live' },
-} as const;
+};
 const OWNER_BRIEF = (over: Partial<typeof OWNER_BRIEF_BASE> = {}) =>
   composeGateOwnerBrief({ ...OWNER_BRIEF_BASE, ...over }).answer;
 
@@ -1031,6 +1038,45 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       'is the gate judging MY change',
     ],
     [
+      // Literal codes (as for governor.* / memory.cgroupAttribution below): this cell's
+      // assessment is one branch of the async git+PG resolver, not a separately-exported
+      // pure function, so there is nothing to call here without a database.
+      'gate.greenCheckpoint.candidateFailures',
+      'candidateFailures.stillBrokenCount',
+      'repairs-outstanding',
+      'all-fixes-contained',
+      'one genuinely unrepaired file must not read as "every fix already landed"',
+    ],
+    [
+      'gate.greenCheckpoint.ownerBrief',
+      'gate.ownerBrief.remediation.fixerAlive',
+      OWNER_BRIEF({
+        consecutiveReds: 1,
+        repairQueue: {
+          phase: 'awaiting-fixer',
+          attempts: 1,
+          updatedAtMs: 900,
+          ageMs: 100,
+          fixerSpawnId: 's-fixer',
+          fixerAlive: false,
+          zeroAttemptStalled: false,
+        },
+      }),
+      OWNER_BRIEF({
+        consecutiveReds: 1,
+        repairQueue: {
+          phase: 'awaiting-fixer',
+          attempts: 1,
+          updatedAtMs: 900,
+          ageMs: 100,
+          fixerSpawnId: 's-fixer',
+          fixerAlive: true,
+          zeroAttemptStalled: false,
+        },
+      }),
+      'a DEAD fixer must not read as live remediation — the ~5h idle shape',
+    ],
+    [
       'gate.greenCheckpoint.ownership',
       'gate.ownership.holderSessionState',
       assessGateOwnership({ claimState: 'held', holderSessionState: 'live', duplicates: [] }) ?? '',
@@ -1078,6 +1124,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       assessAgentGoal(GOALOF('corroborated', ['WI-2']), []) ?? '',
       assessAgentGoal(GOALOF('corroborated', []), []) ?? '',
       'competing claims must outrank a corroborating edge',
+    ],
+    [
+      'goal.portfolioThroughput',
+      'portfolioThroughput.reason',
+      portfolioAssessmentFor('idle'),
+      portfolioAssessmentFor('within-grace'),
+      'a holder idle PAST the threshold must not read as one still inside its grace window',
     ],
     [
       'testing.census.population',

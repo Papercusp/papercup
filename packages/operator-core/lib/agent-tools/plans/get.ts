@@ -134,7 +134,15 @@ async function harnessMismatchForMiss(
 // mirror that lags PG. Read-only (capability: plans:read) — never grants a write path.
 // The evidence-only gym judge also needs the plan itself to evaluate accepted specs;
 // keep that role on the explicit allowlist rather than broadening the SU role set.
-const ALL_ROLES = [...SU_ROLES, "promote", "kettle", "worker", "cup", "judge"] as const;
+// `release-fixer` is on this allowlist because its runbook's attribution procedure
+// mandates it: git blame is worthless here (git-sync commits the whole tree under one
+// identity — WI-5111), so the persona directs the fixer to attribute a regression via
+// "the commissioning work-item/plan-item (`work_items:list`/`plans:get` around the
+// change's timestamp)". The `release-fix` blueprint declares `plans:get` in its
+// `dependencies.tools` for the same reason. Read-only (capability: plans:read, granted
+// to the role in role-principal-caps.ts) — never a write path. Derived + enforced by
+// ../../release/release-fixer-tool-contract.test.ts.
+const ALL_ROLES = [...SU_ROLES, "promote", "kettle", "worker", "cup", "judge", "release-fixer"] as const;
 
 const argsSchema = z
   .object({

@@ -222,6 +222,9 @@ describe('toRoutineInfo', () => {
       cron: '0 */10 * * * *',
       lastFiredAtMs: fired.getTime(),
       nextFireAtMs: next.getTime(),
+      // P-004: absent group_slug reads as ungrouped, never as the release group —
+      // the legacy-pause default TTL must not be applied to a row we cannot place.
+      groupSlug: null,
       pause: null,
     });
   });
@@ -245,7 +248,31 @@ describe('toRoutineInfo', () => {
       reason: 'hold until repaired checkout is green',
       pausedBy: 'su-release-owner',
       pausedAtMs: 1_786_780_000_000,
+      // P-004: a pre-TTL pause record carries no expiry — projected as an explicit
+      // null so a reader sees "no auto-resume recorded" rather than a missing field.
+      expiresAtMs: null,
     });
+  });
+
+  it('P-004: projects the stamped release-group pause expiry', () => {
+    const info = toRoutineInfo({
+      name: 'green-checkpoint',
+      active: false,
+      trigger_config: { cron: '0 15 * * * *' },
+      metadata: {
+        pause: {
+          reason: 'deploy-checkout surgery',
+          pausedBy: 'su-release-owner',
+          pausedAtMs: 1_786_780_000_000,
+          expiresAtMs: 1_786_780_000_000 + 4 * 3_600_000,
+        },
+      },
+      last_fired_at: null,
+      next_fire_at: null,
+      group_slug: 'release',
+    });
+    expect(info?.groupSlug).toBe('release');
+    expect(info?.pause?.expiresAtMs).toBe(1_786_780_000_000 + 4 * 3_600_000);
   });
 
   it('tolerates a null trigger_config / null schedule timestamps', () => {
