@@ -227,7 +227,7 @@ export default defineTool({
     chaining:
       "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.",
     notWhen:
-      "EI-7589: a row's `assignee:null` does NOT by itself mean 'unclaimed' when the row carries a `plan_item`/`plan_ref` link (payload.plan_item, or the trimmed/standard `plan_ref` field) — a plan-item can be under active coverage (effectiveStatus 'wip', a live worker holding it) while the work-item row's own assignee stays null. Before self-claiming a plan-linked row, cross-check `plans:items { slug }` for that item's effectiveStatus — do not trust the bare assignee field alone, or you risk duplicating in-flight work.",
+      "Do not treat `assignee:null` on an item carrying `plan_ref`/`payload.plan_item` as unclaimed: `plans:items { slug }` may show live coverage. `sourcePlanSlug` filters persisted item provenance only; it does not include ad-hoc work merely performed while a session/fleet declared that plan. Scheduler `plan` predicates use item provenance too; for current lane status use scheduler:get_next or work_items:claimable.",
     seeAlso: [
       'work_items:claimable (issue-family: how many / which are ACTUALLY claimable — the full claim floors, unlike admissibleOnly here)',
       'work_items:set_priority (steer the backlog order you just read)',
@@ -293,7 +293,9 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe("Only rows produced by this plan — 'what work came out of <plan>'."),
+      .describe(
+        "Persisted item provenance only: rows produced or stamped by this plan. It does NOT include ad-hoc work merely performed while a session/fleet declared that plan; scheduler `plan` predicates are item-provenance filters too.",
+      ),
     assignee: z
       .string()
       .max(120)
