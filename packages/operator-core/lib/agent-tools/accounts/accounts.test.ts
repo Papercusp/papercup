@@ -24,6 +24,9 @@ vi.mock('../../deployment/account-pool-store', () => ({
   // still record their calls — and so a handler that reverts to load-then-save fails here.
   updateAccountPool: vi.fn(),
   accountStatus: vi.fn(),
+  // P-002: accounts:status rolls the interleaved rows up per provider. The rollup's own logic
+  // is proven in account-pool-store.test.ts; here we only prove the handler WIRES it.
+  poolVerdictByProvider: vi.fn(() => []),
   handleAccountExhausted: vi.fn(),
   defaultScaleOutDeps: vi.fn(() => ({})),
 }));
@@ -35,13 +38,21 @@ vi.mock('../../deployment/account-pool', () => ({
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
-import { loadAccountPool, updateAccountPool, handleAccountExhausted, accountStatus } from '../../deployment/account-pool-store';
+import {
+  loadAccountPool,
+  updateAccountPool,
+  handleAccountExhausted,
+  accountStatus,
+  poolVerdictByProvider,
+  type ProviderPoolVerdict,
+} from '../../deployment/account-pool-store';
 import { getAccount, recordAccountReset } from '../../deployment/account-pool';
 const loadM = vi.mocked(loadAccountPool);
 const saveM = vi.mocked(updateAccountPool);
 const exhaustM = vi.mocked(handleAccountExhausted);
 const getAcct = vi.mocked(getAccount);
 const statusM = vi.mocked(accountStatus);
+const verdictM = vi.mocked(poolVerdictByProvider);
 const resetM = vi.mocked(recordAccountReset);
 
 const mod = await import('./accounts');
@@ -215,7 +226,34 @@ describe('accounts:status', () => {
   it('passes the workspace arg through to the status read-model', async () => {
     statusM.mockResolvedValue([] as never);
     await statusTool.handler({ workspace: 'ws-7' } as never, {} as never);
-    expect(statusM).toHaveBeenCalledWith('ws-7');
+    // P-002: one `now` is threaded through BOTH reads so the rows and their rollup cannot be
+    // evaluated at two different instants.
+    expect(statusM).toHaveBeenCalledWith('ws-7', expect.any(Number));
+  });
+
+  it('P-002: returns a per-provider poolVerdict rolled up from THOSE rows, at the same instant', async () => {
+    const rows = [{ id: 'A1', provider: 'claude' }] as never;
+    statusM.mockResolvedValue(rows);
+    // A COMPLETE ProviderPoolVerdict, not an `as never` stub: the cast would silently strand
+    // this fixture the next time the type gains a field, and only red the fleet gate.
+    const verdict: ProviderPoolVerdict = {
+      provider: 'claude',
+      total: 1,
+      serviceable: 1,
+      walledFresh: 0,
+      paused: 0,
+      pacing: 0,
+      unknown: 0,
+      atCapacity: false,
+      binding: 'none',
+      reason: "1 of 1 'claude' account(s) can serve right now",
+    };
+    verdictM.mockReturnValue([verdict]);
+    const b = body((await statusTool.handler({} as never, {} as never)) as Out);
+    expect(b.poolVerdict).toEqual([verdict]);
+    // Derived from the SAME rows the caller sees — not a second, independently-read population.
+    expect(verdictM).toHaveBeenCalledWith(rows, expect.any(Number));
+    expect(verdictM.mock.calls[0]![1]).toBe(statusM.mock.calls[0]![1]);
   });
 });
 

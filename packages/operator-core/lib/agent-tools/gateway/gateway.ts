@@ -36,6 +36,64 @@ const AUTO_ACCOUNT_ROUTE = 'auto';
  * EI-3409 / WI-892).
  */
 
+/**
+ * P-003 — the legacy per-provider capacity reads on `/admin/config`, each mapped to WHAT ITS
+ * WRITER ACTUALLY MEANS. The gateway's own endpoint already calls these "a legacy per-provider
+ * read kept for compatibility" beside the canonical `admissionState`, but it emits them at the
+ * SAME level as canonical fields, so a reader scanning the payload cannot tell which is which and
+ * reaches for whichever name sounds like capacity. Quarantining them under `legacy:{}` makes the
+ * distinction structural instead of a comment in a file the reader never opens.
+ *
+ * Nothing is dropped — every value is still present, one level down, next to the pointer that
+ * says what to read instead.
+ */
+const LEGACY_CAPACITY_FIELDS: Readonly<Record<string, string>> = {
+  admission: "the claude lane's raw admission counters — admissionState.lanes[lane='claude'] carries the same numbers PLUS which term binds them.",
+  codexAdmission: "the codex lane's raw admission counters — admissionState.lanes[lane='codex'] carries the same numbers PLUS which term binds them.",
+  concurrencyCap: 'the CONFIGURED cap only. Admission is capless by design (an adaptive window with a floor), so this is rarely what binds — admissionState.lanes[].binding says what does.',
+  aimd: "the claude AIMD controller's internal state — superseded by admissionState, which dates its snapshot (generation/freshness) so a stale read is legible as stale.",
+  codexAimd: "the codex AIMD controller's internal state — superseded by admissionState.",
+  clamp: 'the serviceable-account clamp RECOMMENDATION. A recommendation is not a verdict: admissionState.lanes[].binding says whether the clamp is what actually holds the lane back.',
+  admissionCeiling:
+    'which of applied/aimd-effective/configured-cap/clamp won, in the pre-P-013 shape — admissionState.lanes[].binding is the canonical form of the same answer.',
+  codexHealthyAccounts:
+    'WRITER MEANING: the number of codex accounts that CAN SERVE RIGHT NOW — pool membership plus auth/credential health. It is NOT quota, headroom, or a capacity budget: an account that is usage-walled but authenticated still counts here, and a 0 means the pool or its credentials are broken, NOT that quota is exhausted. For the quota question read accounts:status → poolVerdict.',
+};
+
+/** Top-level `/admin/config` fields that are CANONICAL and stay where they are. */
+const CANONICAL_CONFIG_FIELDS = ['version', 'accounts', 'codexAccounts', 'providers', 'admissionState', 'upstreamBase', 'hotReload'] as const;
+
+/**
+ * Move the legacy per-provider capacity reads out of the top level and under `legacy:{}`, with a
+ * pointer to the canonical model. Pure, and exported for the drift test that pins this list
+ * against what the gateway endpoint actually emits.
+ */
+export function quarantineLegacyCapacityFields(body: Record<string, unknown>): Record<string, unknown> {
+  const legacy: Record<string, unknown> = {};
+  const canonical: Record<string, unknown> = {};
+  const meaning: Record<string, string> = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (k in LEGACY_CAPACITY_FIELDS) {
+      legacy[k] = v;
+      meaning[k] = LEGACY_CAPACITY_FIELDS[k]!;
+    } else {
+      canonical[k] = v;
+    }
+  }
+  if (Object.keys(legacy).length === 0) return canonical;
+  return {
+    ...canonical,
+    legacy: {
+      readInstead: 'admissionState',
+      why: 'These are per-provider reads kept for compatibility. They predate the canonical admission model, do not say WHICH term binds a lane, and carry no generation/freshness — so a number taken from here cannot be told apart from a stale one. Read admissionState (and accounts:status → poolVerdict for quota) instead.',
+      // Per-field, because the trap is not "these are old" but "this name does not mean what you
+      // think": `codexHealthyAccounts` is auth health, never quota.
+      meaning,
+      ...legacy,
+    },
+  };
+}
+
 export const gatewayStatusTool = defineTool({
   name: 'gateway:status',
   description:
@@ -63,7 +121,12 @@ export const gatewayStatusTool = defineTool({
     try {
       const r = await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) });
       const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-      return r.ok ? ok(b) : fail({ error: `gateway /admin/config → ${r.status}`, ...b });
+      // P-003: the endpoint emits legacy per-provider capacity reads at the same level as the
+      // canonical `admissionState`. Quarantine them so the reader cannot mistake one for the
+      // other; nothing is dropped. A FAILURE body is left verbatim — never reshape an error.
+      return r.ok
+        ? ok(quarantineLegacyCapacityFields(b))
+        : fail({ error: `gateway /admin/config → ${r.status}`, ...b });
     } catch (e) {
       return fail({ error: `gateway unreachable at ${gwBase()}: ${errMsg(e)}` });
     }

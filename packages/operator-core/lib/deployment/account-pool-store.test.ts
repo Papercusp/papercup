@@ -37,9 +37,11 @@ import {
   initAccountScaleObserver,
   _resetAccountScaleObserver,
   projectLiveEdgeThrottle,
+  poolVerdictByProvider,
   setDefaultAccount,
   readDefaultAccountId,
   syncDefaultAccountEnv,
+  type AccountStatusRow,
   type ScaleOutResult,
 } from './account-pool-store';
 import { AccountPoolError } from './account-pool';
@@ -65,6 +67,141 @@ function poolOf(...ids: string[]): AccountPool {
   return p;
 }
 const frameOf = (id: string): Frame => ({ id, target: 'hetzner', placement: 'remote' });
+
+// ── P-002: per-provider capacity rollup ──────────────────────────────────────
+
+describe('poolVerdictByProvider (P-002)', () => {
+  const NOW = T0;
+  const row = (over: Partial<AccountStatusRow> & { id: string; provider: AccountStatusRow['provider'] }) =>
+    ({
+      credentialRef: `token:${over.id}`,
+      boundTo: [],
+      available: true,
+      usageWalled: false,
+      sustainedlyLimited: false,
+      edgeThrottleKnown: false,
+      edgeThrottled: false,
+      edgeThrottleCooledIps: 0,
+      edgeThrottleBare429Streak: 0,
+      rate: { pausedUntil: 0, penaltyCount: 0, lastPenaltyAt: 0, windowStartedAt: 0 },
+      liveBuckets: [],
+      readingStatus: 'fresh',
+      burn: {
+        burnRatePerHr: null,
+        headroomFraction: null,
+        projectedExhaustionAt: null,
+        exhaustsBeforeReset: false,
+        action: 'none',
+        utilization7d: null,
+        disposition: 'no-verdict',
+        reason: 'fixture',
+      },
+      ...over,
+    }) as AccountStatusRow;
+
+  it('THE POINT: one provider walled does not make the OTHER provider at capacity', () => {
+    // The failure this item exists to prevent: `accounts` interleaves providers, so a codex
+    // diagnostician reads "3 of 4 rows walled" and concludes the pool is exhausted — when every
+    // walled row is claude's and the one codex account is serving fine.
+    const rows = [
+      row({ id: 'claude-1', provider: 'claude', available: false, usageWalled: true }),
+      row({ id: 'claude-2', provider: 'claude', available: false, usageWalled: true }),
+      row({ id: 'claude-3', provider: 'claude', available: false, usageWalled: true }),
+      row({ id: 'codex-1', provider: 'codex' }),
+    ];
+    const byProvider = Object.fromEntries(poolVerdictByProvider(rows, NOW).map((v) => [v.provider, v]));
+
+    expect(byProvider.claude!.atCapacity).toBe(true);
+    expect(byProvider.claude!.binding).toBe('usage-wall');
+    expect(byProvider.claude!.walledFresh).toBe(3);
+
+    expect(byProvider.codex!.atCapacity).toBe(false);
+    expect(byProvider.codex!.binding).toBe('none');
+    expect(byProvider.codex!.serviceable).toBe(1);
+    expect(byProvider.codex!.reason).toContain('NOT at capacity');
+    // Every reason names its own provider, so a quoted line cannot be misattributed.
+    expect(byProvider.codex!.reason).toContain("'codex'");
+  });
+
+  it('a pool of STALE readings is UNKNOWN, never at capacity (never act on missing data)', () => {
+    const rows = [
+      row({ id: 'c1', provider: 'claude', available: false, usageWalled: true, readingStatus: 'stale' }),
+      row({ id: 'c2', provider: 'claude', available: false, usageWalled: true, readingStatus: 'never-observed' }),
+    ];
+    const [v] = poolVerdictByProvider(rows, NOW);
+    expect(v!.unknown).toBe(2);
+    expect(v!.walledFresh).toBe(0); // a stale wall is not a MEASURED wall
+    expect(v!.atCapacity).toBe(false);
+    expect(v!.binding).toBe('none');
+    expect(v!.reason).toContain('UNKNOWN, not walled');
+  });
+
+  it('a failed probe makes a row unknown even when its readingStatus says fresh', () => {
+    const rows = [row({ id: 'c1', provider: 'claude', available: false, usageWalled: true, lastProbeFailedAt: NOW })];
+    const [v] = poolVerdictByProvider(rows, NOW);
+    expect(v!.unknown).toBe(1);
+    expect(v!.atCapacity).toBe(false);
+  });
+
+  it('a PACING projection is counted apart and never makes the provider at capacity', () => {
+    // P-001's disposition, consumed: these accounts still serve.
+    const pacing = {
+      burnRatePerHr: 0.1,
+      headroomFraction: 0.42,
+      projectedExhaustionAt: NOW + 4 * 3_600_000,
+      exhaustsBeforeReset: true,
+      action: 'throttle' as const,
+      utilization7d: 0.58,
+      disposition: 'pacing-projection' as const,
+      reason: 'projection',
+    };
+    const rows = [
+      row({ id: 'c1', provider: 'claude', burn: pacing }),
+      row({ id: 'c2', provider: 'claude', burn: pacing }),
+    ];
+    const [v] = poolVerdictByProvider(rows, NOW);
+    expect(v!.pacing).toBe(2);
+    expect(v!.serviceable).toBe(2);
+    expect(v!.atCapacity).toBe(false);
+    expect(v!.binding).toBe('none');
+    expect(v!.reason).toContain('does not stop them serving');
+  });
+
+  it('a partial answer is not a measured verdict: walled + one stale row ⇒ atCapacity false', () => {
+    const rows = [
+      row({ id: 'c1', provider: 'claude', available: false, usageWalled: true }),
+      row({ id: 'c2', provider: 'claude', available: false, readingStatus: 'stale' }),
+    ];
+    const [v] = poolVerdictByProvider(rows, NOW);
+    expect(v!.walledFresh).toBe(1);
+    expect(v!.unknown).toBe(1);
+    expect(v!.atCapacity).toBe(false);
+    expect(v!.binding).toBe('usage-wall'); // what blocks the measured rows…
+    expect(v!.reason).toContain('NOT a measured at-capacity verdict'); // …but the pool verdict is not
+  });
+
+  it('a rate-limit PAUSE binds as a usage-wall and is counted even on a stale row', () => {
+    const rows = [
+      row({
+        id: 'c1',
+        provider: 'claude',
+        available: false,
+        rate: { pausedUntil: NOW + MIN, penaltyCount: 3, lastPenaltyAt: NOW, windowStartedAt: NOW },
+      }),
+    ];
+    const [v] = poolVerdictByProvider(rows, NOW);
+    expect(v!.paused).toBe(1);
+    expect(v!.binding).toBe('usage-wall');
+    expect(v!.atCapacity).toBe(true);
+  });
+
+  it('every provider group carries a non-empty reason, and groups are stable-sorted', () => {
+    const rows = [row({ id: 'z1', provider: 'codex' }), row({ id: 'a1', provider: 'claude' })];
+    const out = poolVerdictByProvider(rows, NOW);
+    expect(out.map((v) => v.provider)).toEqual(['claude', 'codex']);
+    for (const v of out) expect(v.reason.length).toBeGreaterThan(10);
+  });
+});
 
 describe('projectLiveEdgeThrottle (EI-11790)', () => {
   it('links a live bare-429 edge penalty to the account status row without changing quota availability', () => {

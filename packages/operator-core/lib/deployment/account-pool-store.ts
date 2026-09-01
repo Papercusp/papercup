@@ -875,3 +875,127 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
     };
   });
 }
+
+// ── Per-provider pool verdict (P-002) ────────────────────────────────────────
+
+/**
+ * WHAT is binding capacity right now. One vocabulary shared by every capacity surface so a
+ * reader never has to translate between them (P-002's per-provider rollup and P-004's canonical
+ * `capacity.<provider>.verdict` cell both speak it):
+ *  - `usage-wall`             — a MEASURED provider wall: the usage window is exhausted, or the
+ *                               provider is 429-ing us into a local pause. Retrying is futile.
+ *  - `admission-concurrency`  — the gateway/admission layer is clamping concurrency. The accounts
+ *                               themselves can serve; we are limiting ourselves at the door.
+ *  - `pacing-policy`          — the burn governor is PACING us off a projection (see
+ *                               `BurnDisposition`). Nothing is walled; this is a policy choice.
+ *  - `host`                   — the box (CPU/memory/PSI), not the provider.
+ *  - `none`                   — nothing is binding, OR the evidence does not support a verdict.
+ *                               Never act on missing data: `reason` says which.
+ */
+export type CapacityBinding = 'usage-wall' | 'admission-concurrency' | 'pacing-policy' | 'host' | 'none';
+
+/**
+ * One provider's capacity rollup over its own `accounts:status` rows (P-002).
+ *
+ * `accounts:status` returns every provider's accounts INTERLEAVED in one list, so a reader
+ * diagnosing (say) a codex fleet counts claude's walled rows as evidence about codex and concludes
+ * "we are at capacity" when the provider they care about is fine. This rollup is per-provider by
+ * construction, so that inference cannot be made.
+ *
+ * COUNTS OVERLAP — they are tallies, not a partition: a row can be both `walledFresh` and
+ * `paused`, and a `paused` row may also be `unknown`. `serviceable` alone is disjoint from
+ * `walledFresh`/`paused` (it requires `available`, which is pause-clear AND headroom-clear).
+ */
+export interface ProviderPoolVerdict {
+  provider: AccountProvider;
+  /** Accounts registered for this provider. */
+  total: number;
+  /** Fresh reading AND `available` — can serve right now, on a measurement rather than a guess. */
+  serviceable: number;
+  /** Fresh reading AND `usageWalled` — a MEASURED exhausted usage window. */
+  walledFresh: number;
+  /** Inside a local rate-limit pause window right now (a clock fact, known regardless of freshness). */
+  paused: number;
+  /**
+   * Under a burn-governor PACING PROJECTION (`burn.disposition === 'pacing-projection'`). These
+   * accounts still SERVE — counted separately precisely so a reader cannot add them to the walls.
+   */
+  pacing: number;
+  /** Reading stale / never observed / last probe got no answer — UNKNOWN, never inferred either way. */
+  unknown: number;
+  /**
+   * True only when EVERY row is measured unable to serve (no serviceable rows AND no unknown
+   * rows). A pool of stale readings is never `atCapacity` — it is unmeasured.
+   */
+  atCapacity: boolean;
+  binding: CapacityBinding;
+  /** Always populated — the WHY, naming the provider and the counts that produced the verdict. */
+  reason: string;
+}
+
+/**
+ * Roll `accounts:status` rows up per provider. Pure over the rows, so the cell in P-004 and the
+ * tool surface derive from ONE implementation and can never disagree.
+ */
+export function poolVerdictByProvider(rows: readonly AccountStatusRow[], now = Date.now()): ProviderPoolVerdict[] {
+  const byProvider = new Map<AccountProvider, AccountStatusRow[]>();
+  for (const r of rows) {
+    const list = byProvider.get(r.provider);
+    if (list) list.push(r);
+    else byProvider.set(r.provider, [r]);
+  }
+  return [...byProvider.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([provider, group]) => {
+      // A row whose reading is stale, never-observed, or whose last probe got no answer carries
+      // no MEASUREMENT — its available/usageWalled are inferences off an old window.
+      const measured = (r: AccountStatusRow): boolean =>
+        r.readingStatus === 'fresh' && r.lastProbeFailedAt === undefined;
+      const total = group.length;
+      const serviceable = group.filter((r) => measured(r) && r.available).length;
+      const walledFresh = group.filter((r) => measured(r) && r.usageWalled).length;
+      const paused = group.filter((r) => r.rate.pausedUntil > now).length;
+      const pacing = group.filter((r) => r.burn.disposition === 'pacing-projection').length;
+      const unknown = group.filter((r) => !measured(r)).length;
+      const base = { provider, total, serviceable, walledFresh, paused, pacing, unknown };
+
+      if (total === 0) {
+        return { ...base, atCapacity: false, binding: 'none' as const, reason: `no '${provider}' accounts registered` };
+      }
+      if (serviceable > 0) {
+        return {
+          ...base,
+          atCapacity: false,
+          binding: 'none' as const,
+          reason:
+            `${serviceable} of ${total} '${provider}' account(s) can serve right now — this provider is NOT at capacity` +
+            (pacing > 0
+              ? ` (${pacing} under a burn PACING PROJECTION, which does not stop them serving — see burn.disposition)`
+              : ''),
+        };
+      }
+      if (unknown === total) {
+        return {
+          ...base,
+          atCapacity: false,
+          binding: 'none' as const,
+          reason:
+            `all ${total} '${provider}' reading(s) are stale or never-observed — capacity here is UNKNOWN, not walled; ` +
+            `refresh with accounts:probe-capacity before concluding anything`,
+        };
+      }
+      const binding: CapacityBinding =
+        walledFresh > 0 || paused > 0 ? 'usage-wall' : pacing > 0 ? 'pacing-policy' : 'none';
+      return {
+        ...base,
+        // Any unmeasured row could still serve, so a partial answer is never "at capacity".
+        atCapacity: unknown === 0,
+        binding,
+        reason:
+          `no '${provider}' account can serve on a fresh reading (${walledFresh} usage-walled, ${paused} rate-paused of ${total})` +
+          (unknown > 0
+            ? ` — but ${unknown} reading(s) are stale/never-observed, so this is NOT a measured at-capacity verdict`
+            : ' — every reading is fresh, so this provider IS measurably at capacity'),
+      };
+    });
+}
