@@ -14,13 +14,14 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/acquire_resource.test.ts
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
 
 vi.mock('./identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })),
 }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
 vi.mock('./in-workspace-txn', () => ({
-  inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
+  inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: Sql) => Promise<unknown>) => fn({} as Sql)),
 }));
 vi.mock('./su-lock-store', () => ({ tryAcquireResource: vi.fn() }));
 vi.mock('./resource-acquire-wait', () => ({ acquireResourceExclusiveWithWait: vi.fn() }));
@@ -68,7 +69,7 @@ beforeEach(() => {
   // seams so the exhaustion cases cannot leak a persistent rejection into the
   // following recovery or cross-domain cases.
   txnM.mockReset();
-  txnM.mockImplementation(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({}));
+  txnM.mockImplementation(async (_d: string, _o: string, fn: (tx: Sql) => Promise<unknown>) => fn({} as Sql));
   sharedM.mockReset();
   exclM.mockReset();
   crossM.mockReset();
