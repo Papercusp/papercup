@@ -38,6 +38,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+fn decode_optional_native_session(
+    value: &serde_json::Value,
+) -> Result<Option<models::NativeSessionHandle>> {
+    value
+        .get("nativeSession")
+        .filter(|native| !native.is_null())
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .context("decode SU-session native handle")
+}
+
 /// The wire `OperatorClient` rides. `Ipc` is the local zero-auth Unix socket;
 /// `Http` is remote HTTP+bearer. An enum (not a `dyn` trait) keeps the async
 /// methods simple — no async-trait / object-safety dance.
@@ -893,12 +905,7 @@ impl OperatorClient {
                 .get("planSlug")
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
-            native_session: value
-                .get("nativeSession")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .context("decode SU-session native handle")?,
+            native_session: decode_optional_native_session(&value)?,
         })
     }
 
@@ -3085,6 +3092,28 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_su_session_accepts_a_null_native_handle() {
+        let deferred = serde_json::json!({ "nativeSession": null });
+        let omitted = serde_json::json!({});
+
+        assert!(decode_optional_native_session(&deferred).unwrap().is_none());
+        assert!(decode_optional_native_session(&omitted).unwrap().is_none());
+    }
+
+    #[test]
+    fn su_session_rejects_a_malformed_non_null_native_handle() {
+        let malformed = serde_json::json!({ "nativeSession": true });
+        let error = decode_optional_native_session(&malformed).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("decode SU-session native handle"),
+            "{error:#}"
+        );
+    }
 
     #[test]
     fn memory_load_error_classifies_typed_http_auth_failures() {
