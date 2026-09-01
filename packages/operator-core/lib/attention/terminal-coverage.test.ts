@@ -51,12 +51,7 @@ import {
   isAttentionDelegation,
   terminalPolicyFor,
 } from './terminal-coverage';
-import {
-  ATTENTION_KIND_AUTHORITY,
-  isTerminalActionId,
-  type AttentionItem,
-  type AttentionKind,
-} from './types';
+import { ATTENTION_KIND_AUTHORITY, isTerminalActionId, type AttentionItem, type AttentionKind } from './types';
 
 /** One representative item per kind, built by the REAL adapters — never a
  *  hand-written literal, which would let the fixture drift from what the reader
@@ -177,9 +172,7 @@ function terminalActionIds(item: AttentionItem): string[] {
 
 describe('P-003 terminal-action coverage audit', () => {
   it('declares a policy for exactly the live AttentionKind set', () => {
-    expect(Object.keys(ATTENTION_TERMINAL_POLICY).sort()).toEqual(
-      Object.keys(ATTENTION_KIND_AUTHORITY).sort(),
-    );
+    expect(Object.keys(ATTENTION_TERMINAL_POLICY).sort()).toEqual(Object.keys(ATTENTION_KIND_AUTHORITY).sort());
     // The fixtures are the audit's instrument; a kind with no fixture is a kind
     // this test silently stops covering.
     expect(ALL_KINDS.sort()).toEqual(Object.keys(ATTENTION_KIND_AUTHORITY).sort());
@@ -259,13 +252,9 @@ describe('P-003 terminal-action coverage audit', () => {
 describe('P-005 delegation-axis audit', () => {
   it('derives the public authority map from the one terminal-policy registry', () => {
     expect(ATTENTION_KIND_AUTHORITY).toEqual(
-      Object.fromEntries(
-        Object.entries(ATTENTION_TERMINAL_POLICY).map(([kind, policy]) => [kind, policy.authority]),
-      ),
+      Object.fromEntries(Object.entries(ATTENTION_TERMINAL_POLICY).map(([kind, policy]) => [kind, policy.authority])),
     );
-    expect(new Set(Object.values(ATTENTION_KIND_AUTHORITY))).toEqual(
-      new Set(ATTENTION_DELEGATIONS),
-    );
+    expect(new Set(Object.values(ATTENTION_KIND_AUTHORITY))).toEqual(new Set(ATTENTION_DELEGATIONS));
   });
 
   it('CONTROL: rejects a deliberately invalid fourth authority rung', () => {
@@ -345,9 +334,7 @@ describe('P-003 owner-gate terminals write the SOURCE', () => {
       deps: backed,
       rationale: 'unblocked',
     });
-    expect(backed.clearWorkItemOwnerGate).toHaveBeenCalledWith(
-      expect.objectContaining({ workItemId: 'EI-3' }),
-    );
+    expect(backed.clearWorkItemOwnerGate).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'EI-3' }));
 
     const note = ownerWallToAttention({
       source: 'loop-carry-note',
@@ -365,6 +352,22 @@ describe('P-003 owner-gate terminals write the SOURCE', () => {
     expect(result.resolved).toBe(true);
     expect(carry.clearWorkItemOwnerGate).not.toHaveBeenCalled();
     expect(carry.triageAttentionItem).toHaveBeenCalled();
+  });
+});
+
+describe('P-010 reversible improvement dismiss', () => {
+  it('threads the bulk rationale into the source decision for compare-and-set undo', async () => {
+    const deps = spyDeps();
+    await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES.improvement),
+      actionId: 'dismiss',
+      deps,
+      rationale: 'duplicate of EI-12',
+    });
+    expect(deps.dismissImprovement).toHaveBeenCalledWith({
+      issueId: 'EI-1',
+      rationale: 'duplicate of EI-12',
+    });
   });
 });
 
@@ -437,9 +440,7 @@ describe('P-003 audit controls — the guard detects the gaps it claims to', () 
     for (const actionId of ['resolve', 'drop', 'dismiss', 'ack', 'mark-done']) {
       const deps = spyDeps();
       const result = await dispatchAttentionTerminalAction({ item: navigateOnly, actionId, deps });
-      expect(result.resolved, `dispatcher claimed to resolve "${actionId}" on an unknown kind`).toBe(
-        false,
-      );
+      expect(result.resolved, `dispatcher claimed to resolve "${actionId}" on an unknown kind`).toBe(false);
       expect(sourceMutatingCalls(deps) + deps.triageAttentionItem.mock.calls.length).toBe(0);
     }
   });
