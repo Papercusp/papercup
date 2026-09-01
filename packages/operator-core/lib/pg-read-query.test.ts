@@ -22,6 +22,7 @@ import {
   buildNativeToolAttributionAdvisory,
   buildAgentActivityLedgerAdvisory,
   buildAgentFactsSupersessionAdvisory,
+  buildEventFireWindowAdvisory,
   buildEpochUnitAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
@@ -2727,5 +2728,114 @@ describe('buildAgentFactsSupersessionAdvisory — superseded_at means neither "l
         ` WHERE retracted_at IS NULL AND body <> 'superseded_at'`,
     );
     expect(advisory).toBeTruthy();
+  });
+});
+
+/**
+ * EI-19464809374955438 — the sibling of the block above, and the reason it is a
+ * SEPARATE advisory: that one warns a predicate is wrong and names the clause
+ * that repairs it, while this one warns the question cannot be answered from the
+ * data at all.
+ *
+ * `event_key_fires` holds ONE row per key, so a windowed predicate on its
+ * timestamps drops every fire but the last and returns 0 — a value shaped
+ * exactly like "no harm occurred". These tests pin the two properties that make
+ * the advisory worth its noise: it fires on the windowed shape a wake-loss
+ * investigation actually reaches for, and it stays silent on the ordinary latch
+ * reads that are a correct use of the table.
+ *
+ * The ABSENCE of a clearing predicate is deliberate and is asserted below. If a
+ * later edit "helpfully" adds one, that edit is claiming a right answer is
+ * reachable by rewriting the SQL — which is false, and this fails.
+ */
+describe('buildEventFireWindowAdvisory — an aggregate latch cannot answer a windowed question', () => {
+  const EKF = 'harness_shared.event_key_fires';
+
+  it('fires on the exact join the filing used to conclude "0 stranded"', () => {
+    const advisory = buildEventFireWindowAdvisory(
+      `SELECT count(*) FROM harness_shared.event_awaits cx\n` +
+        ` JOIN ${EKF} f ON f.event_key = cx.event_key\n` +
+        ` WHERE f.last_fired_at > cx.cancelled_at AND f.last_fired_at < cx.expires_ts`,
+    );
+    expect(advisory).toBeTruthy();
+    // The operative correction: the number is not a count, it is an unknown.
+    expect(advisory).toContain('UNKNOWN, never NONE');
+    expect(advisory).toContain('AGGREGATE LATCH');
+  });
+
+  /**
+   * Load-bearing. `event_wake_attempts` is the obvious next reach for a reader who
+   * has just been told the latch cannot answer, and it is the same trap one level
+   * quieter: 3.4% of fires observable, 98.5% of keys with no row at all. An
+   * advisory that omitted this would move the reader from a loud false negative to
+   * a silent one.
+   */
+  it('pre-empts the wake-attempts "fix", which is the same trap quieter', () => {
+    const advisory = buildEventFireWindowAdvisory(
+      `SELECT * FROM ${EKF} WHERE last_fired_at >= now() - interval '1 day'`,
+    )!;
+    expect(advisory).toContain('event_wake_attempts');
+    expect(advisory).toContain('ARMED');
+    expect(advisory).toContain('3.4%');
+  });
+
+  it('names the one narrowing that IS exact, rather than only refusing', () => {
+    const advisory = buildEventFireWindowAdvisory(
+      `SELECT * FROM ${EKF} WHERE last_fired_at BETWEEN $1 AND $2`,
+    )!;
+    expect(advisory).toContain('fire_count = 1');
+  });
+
+  it('offers NO clearing predicate — the data does not exist, so better SQL is not the fix', () => {
+    // Every plausible "corrected" form still fires. This is the property that
+    // separates this advisory from every other builder in the file.
+    for (const sql of [
+      `SELECT * FROM ${EKF} WHERE workspace_id = 'papercusp-workspace' AND last_fired_at > now() - interval '7 days'`,
+      `SELECT * FROM ${EKF} f JOIN harness_shared.event_wake_attempts a USING (event_key) WHERE f.last_fired_at > a.attempted_at`,
+      `SELECT * FROM ${EKF} WHERE first_fired_at >= $1 AND last_fired_at <= $2`,
+    ]) {
+      expect(buildEventFireWindowAdvisory(sql)).toBeTruthy();
+    }
+  });
+
+  it('matches a comparison on EITHER side of the operator', () => {
+    expect(buildEventFireWindowAdvisory(`SELECT * FROM ${EKF} WHERE $1 < f.last_fired_at`)).toBeTruthy();
+  });
+
+  /**
+   * The noise boundary. Reading the latch AS a latch is the common, correct use of
+   * this table; firing there would train readers to skim advisories, which is the
+   * cost that makes a good advisory bad.
+   */
+  it('stays silent on latch reads that make no window claim', () => {
+    expect(buildEventFireWindowAdvisory(`SELECT event_key, fire_count FROM ${EKF}`)).toBeNull();
+    expect(
+      buildEventFireWindowAdvisory(
+        `SELECT event_key, last_fired_at FROM ${EKF} ORDER BY last_fired_at DESC LIMIT 5`,
+      ),
+    ).toBeNull();
+    expect(buildEventFireWindowAdvisory(`SELECT max(last_fired_at) FROM ${EKF}`)).toBeNull();
+    // A comparison on a NON-timestamp column is not a window question.
+    expect(buildEventFireWindowAdvisory(`SELECT * FROM ${EKF} WHERE fire_count > 100`)).toBeNull();
+  });
+
+  it('does not fire on another table that happens to have a windowed timestamp', () => {
+    expect(
+      buildEventFireWindowAdvisory(
+        `SELECT * FROM harness_shared.event_wake_attempts WHERE attempted_at > now() - interval '1 day'`,
+      ),
+    ).toBeNull();
+  });
+
+  /**
+   * Same literal/comment discipline as the sibling: quoting the column inside a
+   * comment must not manufacture a window question out of a plain latch read.
+   */
+  it('does not treat a timestamp comparison inside a comment as a predicate', () => {
+    expect(
+      buildEventFireWindowAdvisory(
+        `SELECT event_key, fire_count FROM ${EKF}\n -- was: WHERE last_fired_at > now()\n`,
+      ),
+    ).toBeNull();
   });
 });
