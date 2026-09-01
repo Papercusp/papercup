@@ -118,6 +118,7 @@ import { liveFleetMemberIds, occupiesLaunchMemberSeat } from '../../fleet/fleet-
 import { listLiveTasks } from '../../task-manager/store';
 import type { TaskRow } from '../../task-manager/types';
 import { agentSpawnScopeMemoryMaxG } from '../../systemd-scope';
+import { resolveCodexModel } from '../../model-context-budget.mjs';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsAsync } from '../../inference-gateway/local-model-ids-cache';
@@ -567,7 +568,16 @@ export function resolveFleetAgent(opts: {
   // Inherit the caller's model ONLY when we also inherited its backend (no explicit agent) — else
   // an omp member would launch on omp's default, not the ornith the leader is actually running.
   const inheritedBackend = !opts.argAgent && agent === opts.callerAgent;
-  const model = argModel ?? (inheritedBackend && opts.callerModel ? opts.callerModel : undefined);
+  let model = argModel ?? (inheritedBackend && opts.callerModel ? opts.callerModel : undefined);
+  if (agent === 'codex') {
+    try {
+      // Resolve the omitted-model default and reject Spark while the launch
+      // shape is still pure — before fleet/account/terminal materialization.
+      model = resolveCodexModel(model);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
   return { agent, model };
 }
 

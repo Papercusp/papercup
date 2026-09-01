@@ -24,6 +24,7 @@ import {
   MIN_COMPACTION_LIMIT_TOKENS,
   MODEL_EFFORT_LEVELS,
 } from './agent-config-constants';
+import { resolveCodexModel } from './model-context-budget.mjs';
 
 /** Match `psu` as a command token — start of line, or after whitespace / a
  *  shell separator — followed by whitespace. Shared by every injector. */
@@ -493,7 +494,12 @@ export function buildAgentLaunchCommand(opts: {
   // Effort rides the MODEL SPEC — psu has no --effort flag (D-001), so join them here.
   // Free-form-safe: a spec like `opus[1m]:high` carries `[]` outside the identity set,
   // so quote (matching memberLaunchCommand) rather than reject it via safe().
-  const modelSpec = composeModelSpec(opts.model ?? undefined, opts.effort ?? undefined);
+  const composedModelSpec = composeModelSpec(opts.model ?? undefined, opts.effort ?? undefined);
+  // A fresh managed Codex launch must never rely on the CLI/cache default. The
+  // same resolver also rejects retired Spark spellings before a terminal opens.
+  const modelSpec = opts.mode === 'fresh' && opts.agent?.trim() === 'codex'
+    ? resolveCodexModel(composedModelSpec)
+    : composedModelSpec;
   if (modelSpec) parts.push(`--model=${quoteLaunchValue(modelSpec)}`);
   if (opts.workspace) parts.push(`--workspace=${safe('workspace', opts.workspace)}`);
   if (opts.contextSize) parts.push(`--context-size=${opts.contextSize}`);
@@ -797,7 +803,8 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   // `<model>:<effort>` tail per backend (claude → `--model X --effort Y`; codex →
   // `-c model_reasoning_effort`; omp verbatim), so composing it here is the ONE
   // form every backend honors.
-  const modelSpec = composeModelSpec(opts.model, opts.effort);
+  const composedModelSpec = composeModelSpec(opts.model, opts.effort);
+  const modelSpec = opts.agent === 'codex' ? resolveCodexModel(composedModelSpec) : composedModelSpec;
   if (modelSpec) parts.push(`--model=${quoteLaunchValue(modelSpec)}`);
   // P-005 (landed): psu parses `--compaction-limit` and re-emits it onto
   // adv_sessions.launch_argv; the compaction watchdog's seeding pass reads it back
