@@ -11,7 +11,13 @@
  */
 import { afterEach, test } from 'vitest';
 import assert from 'node:assert/strict';
-import { findAccountRow, ensureStallWakerLoop, stopStallWakerLoop, getStallWakerStatus } from './stall-waker-loop';
+import {
+  findAccountRow,
+  ensureStallWakerLoop,
+  stopStallWakerLoop,
+  getStallWakerStatus,
+  gatewayOwnerRequestActivityAt,
+} from './stall-waker-loop';
 import type { AccountStatusRow } from '../deployment/account-pool-store';
 
 const row = (id: string, over: Partial<AccountStatusRow> = {}): AccountStatusRow => ({
@@ -121,6 +127,20 @@ test('an erroring workspace pool is skipped, not fatal', async () => {
   };
   const a = await findAccountRow('broken', 'acct', withBroken);
   assert.ok(a, 'resolution survives a broken workspace pool');
+});
+
+test('owner activity prefers request start over a later outcome from pre-stall work', () => {
+  assert.equal(
+    gatewayOwnerRequestActivityAt({ ledger: { lastRequestAt: 1_000, lastAt: 9_000 } }),
+    1_000,
+    'a late outcome must not masquerade as a new request after the stall',
+  );
+  assert.equal(
+    gatewayOwnerRequestActivityAt({ ledger: { lastAt: 9_000 } }),
+    9_000,
+    'rolling deploys fall back to the legacy mixed timestamp until the gateway updates',
+  );
+  assert.equal(gatewayOwnerRequestActivityAt({ ledger: null }), 0);
 });
 
 // EI-2432: runtime observability for the loop itself — running?, since when, poll cadence,
