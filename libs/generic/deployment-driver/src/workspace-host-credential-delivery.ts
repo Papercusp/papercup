@@ -30,9 +30,10 @@
  * public, and this module keeps that line — the receipt is `{ family, generation, present: true }`
  * plus an observation timestamp, and a test pins that it never grows a size or digest field.
  */
-import { createHash, timingSafeEqual } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { hostname } from 'node:os';
+import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 
 import {
   WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS,
@@ -381,6 +382,70 @@ export interface WorkspaceHostCredentialDeliveryFilesystem {
   writePrivateFile(path: string, bytes: Buffer): Promise<void>;
   /** Read a file, or `null` when it does not exist. */
   readFileIfPresent(path: string): Promise<Buffer | null>;
+  /** Optional cross-process critical section. Production provides it; hermetic doubles may not. */
+  withExclusiveLock?<T>(path: string, task: () => Promise<T>): Promise<T>;
+}
+
+const WORKSPACE_HOST_FILESYSTEM_LOCK_TIMEOUT_MS = 360_000;
+const WORKSPACE_HOST_FILESYSTEM_LOCK_ORPHAN_MS = 60_000;
+const WORKSPACE_HOST_FILESYSTEM_LOCK_RETRY_MS = 25;
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const fallbackFilesystemLocks = new WeakMap<
+  WorkspaceHostCredentialDeliveryFilesystem,
+  Map<string, Promise<void>>
+>();
+
+/**
+ * Serialize a host credential mutation.
+ *
+ * Node production uses an atomic on-disk mutex below, so independent initializer/delivery
+ * processes agree. A WeakMap queue is the deterministic fallback for hermetic filesystem doubles;
+ * fresh dependency graphs sharing the same double still exercise the ordering contract.
+ */
+export async function withWorkspaceHostCredentialFilesystemLock<T>(
+  filesystem: WorkspaceHostCredentialDeliveryFilesystem,
+  path: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  if (filesystem.withExclusiveLock) {
+    return await filesystem.withExclusiveLock(path, task);
+  }
+  let locks = fallbackFilesystemLocks.get(filesystem);
+  if (!locks) {
+    locks = new Map();
+    fallbackFilesystemLocks.set(filesystem, locks);
+  }
+  const previous = locks.get(path) ?? Promise.resolve();
+  let release!: () => void;
+  const own = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => own);
+  locks.set(path, tail);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (locks.get(path) === tail) locks.delete(path);
+  }
+}
+
+export function workspaceHostCredentialFamilyLockPath(
+  root: string,
+  family: WorkspaceHostCredentialFamily,
+): string {
+  return join(root, family, '.lifecycle.lock');
 }
 
 /**
@@ -397,6 +462,10 @@ export class NodeWorkspaceHostCredentialDeliveryFilesystem
 {
   async ensureDirectory(path: string): Promise<void> {
     await mkdir(path, { recursive: true, mode: 0o700 });
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(`refusing non-directory or symlink at private directory '${path}'`);
+    }
     // `mkdir`'s mode is masked by the process umask, and a host whose umask is 022 would leave the
     // directory 0755 — world-readable, which for a directory holding credential material is the
     // whole failure. chmod is not masked, so this states the mode rather than requesting it.
@@ -407,17 +476,96 @@ export class NodeWorkspaceHostCredentialDeliveryFilesystem
     // Written to a sibling temp path and renamed so a reader never observes a partial credential:
     // `bind()` checks presence, and a half-written file is present. The temp file is created 0600
     // from the start, so the material is never briefly world-readable.
-    const temporary = join(dirname(path), `.${MATERIAL_FILE}.${process.pid}.tmp`);
-    await writeFile(temporary, bytes, { mode: 0o600 });
-    await chmod(temporary, 0o600);
-    await rename(temporary, path);
+    const temporary = join(
+      dirname(path),
+      `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
+    );
+    try {
+      await writeFile(temporary, bytes, { mode: 0o600, flag: 'wx' });
+      await chmod(temporary, 0o600);
+      await rename(temporary, path);
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined);
+    }
   }
 
   async readFileIfPresent(path: string): Promise<Buffer | null> {
     try {
       return await readFile(path);
-    } catch {
-      return null;
+    } catch (error) {
+      if (nodeErrorCode(error) === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  async withExclusiveLock<T>(path: string, task: () => Promise<T>): Promise<T> {
+    await this.ensureDirectory(dirname(path));
+    const token = randomUUID();
+    const ownerPath = join(path, 'owner.json');
+    const startedAt = Date.now();
+    let acquired = false;
+    while (!acquired) {
+      try {
+        await mkdir(path, { mode: 0o700 });
+        await writeFile(
+          ownerPath,
+          JSON.stringify({ token, pid: process.pid, host: hostname(), startedAt }),
+          { mode: 0o600, flag: 'wx' },
+        );
+        acquired = true;
+      } catch (error) {
+        if (nodeErrorCode(error) !== 'EEXIST') throw error;
+        let reclaim = false;
+        try {
+          const info = await lstat(path);
+          if (!info.isDirectory() || info.isSymbolicLink()) {
+            throw new Error(`refusing unsafe credential lock path '${path}'`);
+          }
+          try {
+            const owner = JSON.parse(await readFile(ownerPath, 'utf8')) as {
+              pid?: unknown;
+              host?: unknown;
+            };
+            if (
+              owner.host === hostname() &&
+              Number.isSafeInteger(owner.pid) &&
+              (owner.pid as number) > 0
+            ) {
+              try {
+                process.kill(owner.pid as number, 0);
+              } catch (probeError) {
+                reclaim = nodeErrorCode(probeError) === 'ESRCH';
+              }
+            }
+          } catch (ownerError) {
+            if (nodeErrorCode(ownerError) !== 'ENOENT') {
+              // A malformed owner record is never proof the holder is dead; age is the fallback.
+            }
+            reclaim = Date.now() - info.mtimeMs > WORKSPACE_HOST_FILESYSTEM_LOCK_ORPHAN_MS;
+          }
+        } catch (inspectError) {
+          if (nodeErrorCode(inspectError) === 'ENOENT') continue;
+          throw inspectError;
+        }
+        if (reclaim) {
+          await rm(path, { recursive: true, force: true });
+          continue;
+        }
+        if (Date.now() - startedAt > WORKSPACE_HOST_FILESYSTEM_LOCK_TIMEOUT_MS) {
+          throw new Error(`timed out waiting for credential filesystem lock '${path}'`);
+        }
+        await delay(WORKSPACE_HOST_FILESYSTEM_LOCK_RETRY_MS);
+      }
+    }
+    try {
+      return await task();
+    } finally {
+      try {
+        const owner = JSON.parse(await readFile(ownerPath, 'utf8')) as { token?: unknown };
+        if (owner.token === token) await rm(path, { recursive: true, force: true });
+      } catch {
+        // Never remove a lock whose token cannot be proven to be ours.
+      }
     }
   }
 }
@@ -471,13 +619,22 @@ export async function recordWorkspaceHostCredentialRevocation(
   root: string,
   family: WorkspaceHostCredentialFamily,
   generation: number,
+  options: { readonly lockHeld?: boolean } = {},
 ): Promise<void> {
-  const current = await readWorkspaceHostCredentialRevokedThrough(filesystem, root, family);
-  if (generation <= current) return;
-  await filesystem.ensureDirectory(join(root, family));
-  await filesystem.writePrivateFile(
-    workspaceHostCredentialRevocationLedgerPath(root, family),
-    Buffer.from(`${generation}\n`, 'utf8'),
+  const apply = async (): Promise<void> => {
+    const current = await readWorkspaceHostCredentialRevokedThrough(filesystem, root, family);
+    if (generation <= current) return;
+    await filesystem.ensureDirectory(join(root, family));
+    await filesystem.writePrivateFile(
+      workspaceHostCredentialRevocationLedgerPath(root, family),
+      Buffer.from(`${generation}\n`, 'utf8'),
+    );
+  };
+  if (options.lockHeld) return await apply();
+  await withWorkspaceHostCredentialFilesystemLock(
+    filesystem,
+    workspaceHostCredentialFamilyLockPath(root, family),
+    apply,
   );
 }
 
@@ -516,44 +673,52 @@ export async function executeWorkspaceHostCredentialDelivery(
     throw new WorkspaceHostAmbientCredentialDeliveryError(family);
   }
 
-  // D-215 point 5 — never resurrect a generation revoke() destroyed.
-  const revokedThrough = await readWorkspaceHostCredentialRevokedThrough(
+  return await withWorkspaceHostCredentialFilesystemLock(
     deps.filesystem,
-    deps.materialRoot,
-    family,
-  );
-  if (generation <= revokedThrough) {
-    throw new WorkspaceHostRevokedCredentialGenerationError(family, generation, revokedThrough);
-  }
+    workspaceHostCredentialFamilyLockPath(deps.materialRoot, family),
+    async () => {
+      // D-215 point 5 — never resurrect a generation revoke() destroyed.
+      const revokedThrough = await readWorkspaceHostCredentialRevokedThrough(
+        deps.filesystem,
+        deps.materialRoot,
+        family,
+      );
+      if (generation <= revokedThrough) {
+        throw new WorkspaceHostRevokedCredentialGenerationError(
+          family,
+          generation,
+          revokedThrough,
+        );
+      }
 
-  const path = workspaceHostCredentialMaterialPath(deps.materialRoot, family, generation);
-  const existing = await deps.filesystem.readFileIfPresent(path);
-  const bytes = request.material.reveal();
+      const path = workspaceHostCredentialMaterialPath(deps.materialRoot, family, generation);
+      const existing = await deps.filesystem.readFileIfPresent(path);
+      const bytes = request.material.reveal();
 
-  if (existing !== null) {
-    // Idempotent per (family, generation): the same material is a no-op, different material is a
-    // conflict rather than a silent overwrite.
-    if (!sameMaterial(existing, bytes)) {
-      throw new WorkspaceHostCredentialGenerationConflictError(family, generation);
+      if (existing !== null) {
+        // Idempotent per (family, generation): the same material is a no-op, different material is
+        // a conflict rather than a silent overwrite.
+        if (!sameMaterial(existing, bytes)) {
+          throw new WorkspaceHostCredentialGenerationConflictError(family, generation);
+        }
+      } else {
+        await deps.filesystem.ensureDirectory(
+          workspaceHostCredentialGenerationDirectory(deps.materialRoot, family, generation),
+        );
+        await deps.filesystem.writePrivateFile(path, bytes);
+      }
+
+      const receipt: WorkspaceHostCredentialDeliveryReceipt = {
+        protocolVersion: WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
+        family,
+        generation,
+        present: true,
+        observedAt: now().toISOString(),
+      };
+      assertWorkspaceHostSecretIsolation(receipt, 'workspaceHost.credentialDelivery.receipt');
+      return receipt;
     }
-  } else {
-    await deps.filesystem.ensureDirectory(
-      workspaceHostCredentialGenerationDirectory(deps.materialRoot, family, generation),
-    );
-    await deps.filesystem.writePrivateFile(path, bytes);
-  }
-
-  const receipt: WorkspaceHostCredentialDeliveryReceipt = {
-    protocolVersion: WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
-    family,
-    generation,
-    present: true,
-    observedAt: now().toISOString(),
-  };
-  // Asserted on the way OUT, exactly as the initialization protocol asserts its responses. This is
-  // the half of the asymmetry that stays.
-  assertWorkspaceHostSecretIsolation(receipt, 'workspaceHost.credentialDelivery.receipt');
-  return receipt;
+  );
 }
 
 /**
