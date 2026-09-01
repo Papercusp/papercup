@@ -69,8 +69,16 @@ const SERVICE_NAME = 'papercusp-device-keypair';
  * this module through a different call path, and a default-service write must
  * never split the primary/legacy mirrors.
  */
+export function isRequestOnlyIdentityProcess(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(
+    env.PAPERCUSP_ENV_OPERATOR_ID ||
+      env.PAPERCUSP_IDENTITY_MODE === 'load-only' ||
+      env.PAPERCUSP_REQUEST_ONLY === '1',
+  );
+}
+
 export function identityWritesAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PAPERCUSP_IDENTITY_MODE !== 'load-only' && !env.PAPERCUSP_ENV_OPERATOR_ID;
+  return !isRequestOnlyIdentityProcess(env);
 }
 
 function identityDir(): string {

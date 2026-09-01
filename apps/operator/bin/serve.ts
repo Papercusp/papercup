@@ -68,6 +68,7 @@ import {
   chmod,
 } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { isRequestOnlyIdentityProcess } from "@papercusp/operator-core/lib/identity/keychain";
 import { ensureToolPathEnv } from "@papercusp/operator-core/lib/tool-path";
 import { runShutdownWithDeadline } from "../lib/shutdown-deadline";
 import { getBuildInfo } from "@papercusp/operator-core/lib/build-info";
@@ -245,11 +246,13 @@ const ENV_OPERATOR_ID = process.env.PAPERCUSP_ENV_OPERATOR_ID || null;
  * a source/Vite path.  Keep the role marker independent of the env id so an
  * older launcher that only sets the explicit mode still cannot publish the
  * primary discovery records. */
-const REQUEST_ONLY_SIDEcar = Boolean(
-  ENV_OPERATOR_ID ||
-    process.env.PAPERCUSP_IDENTITY_MODE === 'load-only' ||
-    process.env.PAPERCUSP_REQUEST_ONLY === '1',
-);
+export function isRequestOnlySidecar(
+  env: NodeJS.ProcessEnv = process.env,
+  envOperatorId: string | null = env.PAPERCUSP_ENV_OPERATOR_ID || null,
+): boolean {
+  return Boolean(envOperatorId || isRequestOnlyIdentityProcess(env));
+}
+const REQUEST_ONLY_SIDECAR = isRequestOnlySidecar(process.env, ENV_OPERATOR_ID);
 /** Pure — exported so the scoping rule is unit-testable without a full module
  *  re-import (serve.ts has non-idempotent module-load side effects — DBOS
  *  workflow registration — that a `vi.resetModules()` re-import re-triggers). */
@@ -1689,7 +1692,7 @@ async function main(): Promise<void> {
           /* ignore */
         }
         // WI-3287: never unlink the PRIMARY's discovery file from a sibling shutdown.
-        if (!REQUEST_ONLY_SIDEcar) {
+        if (!REQUEST_ONLY_SIDECAR) {
           try {
             unlinkSync(OPERATOR_JSON);
           } catch {
@@ -1701,7 +1704,7 @@ async function main(): Promise<void> {
           // allowed to publish there. A refused publish uses the per-port
           // record below; env-sidecar siblings must never touch the primary's
           // global record.
-          if (!REQUEST_ONLY_SIDEcar) {
+          if (!REQUEST_ONLY_SIDECAR) {
             removeOwnedPgDiscoveryFile(EMBEDDED_PG_JSON, process.pid, pg.port);
           }
           removeOwnedPgDiscoveryFile(
@@ -1787,7 +1790,7 @@ async function main(): Promise<void> {
       // would clobber the primary's own discovery with itself, breaking every
       // future `--ensure` / reconnect. Siblings are reached by direct port
       // navigation (the env switcher), not through this file.
-      if (!REQUEST_ONLY_SIDEcar) {
+      if (!REQUEST_ONLY_SIDECAR) {
         const discovery: OperatorDiscovery = {
           httpUrl,
           port: info.port,
@@ -1828,7 +1831,7 @@ async function main(): Promise<void> {
     bootedHandlesPgPublisher?.stop();
     bootedHandlesPgPublisher = null;
     if (pg) {
-      if (!REQUEST_ONLY_SIDEcar) {
+      if (!REQUEST_ONLY_SIDECAR) {
         removeOwnedPgDiscoveryFile(EMBEDDED_PG_JSON, process.pid, pg.port);
       }
       removeOwnedPgDiscoveryFile(

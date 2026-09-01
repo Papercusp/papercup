@@ -44,7 +44,7 @@ import { loadOrGenerateDeviceKeypair, ensureAttestationGist } from '../../identi
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { getGhAuthToken } from '../../identity/gh-token';
-import { keychainLoad } from '../../identity/keychain';
+import { isRequestOnlyIdentityProcess, keychainLoad } from '../../identity/keychain';
 import { pubkeyBase64FromDer } from '../../identity/ed25519';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -407,7 +407,7 @@ export async function resolveLocalAnnounceIdentity(
   }
   const identityMode =
     opts.identityMode ??
-    (process.env.PAPERCUSP_IDENTITY_MODE === 'load-only' ? 'load-only' : 'authoring');
+    (isRequestOnlyIdentityProcess(process.env) ? 'load-only' : 'authoring');
   const loadKeypair = opts.loadKeypair ?? loadOrGenerateDeviceKeypair;
   const resolveUser = opts.resolveGithubUser ?? defaultResolveGithubUser;
   const buildKeychainId = opts.buildKeychainId ?? resolveDeviceKeychainId;

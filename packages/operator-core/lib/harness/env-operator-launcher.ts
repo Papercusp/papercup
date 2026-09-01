@@ -65,7 +65,7 @@
  */
 
 import { spawn, type StdioOptions } from 'node:child_process';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -223,6 +223,8 @@ export interface SpawnedOperator {
 }
 
 export interface BundledSidecarIdentity {
+  /** SHA-256 of the exact serve.mjs bytes, independent of metadata. */
+  readonly bundleSha256: string | null;
   /** SHA of the bytes this sidecar was built from, when attested. */
   readonly buildSha: string | null;
   /** Version baked into the sidecar provenance, when available. */
@@ -231,6 +233,29 @@ export interface BundledSidecarIdentity {
   readonly source: 'build-provenance' | 'build-stamp' | 'unknown';
   /** True only when the provenance also hashes this exact serve.mjs. */
   readonly bytesVerified: boolean;
+  /** The bundle itself carries the load-only identity capability marker. */
+  readonly requestOnlyIdentityGuard: boolean;
+}
+
+/**
+ * Assemble the marker at runtime so this CHECKER does not put the complete
+ * marker into every serve.mjs by itself. The complete literal lives only in
+ * local-announce-identity's guarded branch; finding it in another bundle is
+ * therefore evidence that the guarded implementation was actually bundled.
+ */
+export function requestOnlyIdentityGuardMarker(): string {
+  return ['papercusp', 'request', 'only', 'identity', 'load', 'only', 'v1'].join('-');
+}
+
+function trimmedString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function sha256Matches(actual: string | null, expected: unknown): boolean {
+  if (!actual || typeof expected !== 'string' || !/^[0-9a-f]{64}$/i.test(expected)) {
+    return false;
+  }
+  return actual === expected.toLowerCase();
 }
 
 /**
@@ -242,6 +267,17 @@ export interface BundledSidecarIdentity {
  */
 export function readBundledSidecarIdentity(bundlePath: string): BundledSidecarIdentity {
   const dir = dirname(bundlePath);
+  let bundleBytes: Buffer | null = null;
+  try {
+    bundleBytes = readFileSync(bundlePath);
+  } catch {
+    // The caller will refuse an unreadable bundle through the absent guard.
+  }
+  const requestOnlyIdentityGuard =
+    bundleBytes?.includes(requestOnlyIdentityGuardMarker()) ?? false;
+  const bundleSha256 = bundleBytes
+    ? createHash('sha256').update(bundleBytes).digest('hex')
+    : null;
   const provenance = join(dir, 'build-provenance.json');
   try {
     const parsed = JSON.parse(readFileSync(provenance, 'utf8')) as {
@@ -251,34 +287,156 @@ export function readBundledSidecarIdentity(bundlePath: string): BundledSidecarId
       version?: unknown;
       artifacts?: Array<{ name?: unknown; sha256?: unknown }>;
     };
+    // Prefer the explicit baked identity. Older emitters did not populate
+    // buildSha, so retain their own source provenance as a diagnostic fallback
+    // in the same order used by the original reader.
     const buildSha =
-      typeof parsed.buildSha === 'string' && parsed.buildSha.trim()
-        ? parsed.buildSha.trim()
-        : typeof parsed.gitHeadAtEmit === 'string' && parsed.gitHeadAtEmit.trim()
-          ? parsed.gitHeadAtEmit.trim()
-          : typeof parsed.gitHead === 'string' && parsed.gitHead.trim()
-            ? parsed.gitHead.trim()
-            : null;
-    const version = typeof parsed.version === 'string' && parsed.version.trim() ? parsed.version.trim() : null;
-    const artifact = parsed.artifacts?.find((a) => a?.name === 'serve.mjs');
-    let bytesVerified = false;
-    if (typeof artifact?.sha256 === 'string' && /^[0-9a-f]{64}$/i.test(artifact.sha256)) {
-      const actual = createHash('sha256').update(readFileSync(bundlePath)).digest('hex');
-      bytesVerified = actual.toLowerCase() === artifact.sha256.toLowerCase();
-    }
-    return { buildSha, version, source: 'build-provenance', bytesVerified };
+      trimmedString(parsed.buildSha) ??
+      trimmedString(parsed.gitHeadAtEmit) ??
+      trimmedString(parsed.gitHead);
+    const version = trimmedString(parsed.version);
+    const artifact = parsed.artifacts?.find((a) => {
+      const name = trimmedString(a?.name);
+      return name === 'serve.mjs' || name?.endsWith('/serve.mjs');
+    });
+    return {
+      buildSha,
+      version,
+      source: 'build-provenance',
+      bundleSha256,
+      bytesVerified: sha256Matches(bundleSha256, artifact?.sha256),
+      requestOnlyIdentityGuard,
+    };
   } catch {
-    // Older bundles may carry only the lightweight stamp emitted by the rig
-    // composer.  It is useful provenance for diagnostics, but not a byte hash.
+    // Continue to the lightweight sidecar/composed-payload stamps below.
+  }
+
+  for (const stampName of ['.sidecar-build-stamp', 'BUILD-STAMP.txt']) {
     try {
-      const stamp = readFileSync(join(dir, 'BUILD-STAMP.txt'), 'utf8');
-      const sha = /^sha=([^\s]+)\s/m.exec(stamp)?.[1]?.trim() || null;
+      const stamp = readFileSync(join(dir, stampName), 'utf8');
+      if (stampName === '.sidecar-build-stamp') {
+        const parsed = JSON.parse(stamp) as {
+          gitHead?: unknown;
+          version?: unknown;
+          serveSha256?: unknown;
+        };
+        return {
+          buildSha:
+            trimmedString((parsed as { buildSha?: unknown }).buildSha) ??
+            trimmedString(parsed.gitHead),
+          version: trimmedString(parsed.version),
+          source: 'build-stamp',
+          bundleSha256,
+          bytesVerified: sha256Matches(bundleSha256, parsed.serveSha256),
+          requestOnlyIdentityGuard,
+        };
+      }
+      const buildSha = /^sha=([^\s]+)\s/m.exec(stamp)?.[1]?.trim() || null;
       const version = /^version=([^\s]+)\s/m.exec(stamp)?.[1]?.trim() || null;
-      return { buildSha: sha, version, source: 'build-stamp', bytesVerified: false };
+      const serveSha256 = /^serveSha256=([0-9a-f]{64})\s*$/im.exec(stamp)?.[1] || null;
+      return {
+        buildSha,
+        version,
+        source: 'build-stamp',
+        bundleSha256,
+        bytesVerified: sha256Matches(bundleSha256, serveSha256),
+        requestOnlyIdentityGuard,
+      };
     } catch {
-      return { buildSha: null, version: null, source: 'unknown', bytesVerified: false };
+      // Try the next supported stamp shape.
     }
   }
+  return {
+    buildSha: null,
+    version: null,
+    source: 'unknown',
+    bundleSha256,
+    bytesVerified: false,
+    requestOnlyIdentityGuard,
+  };
+}
+
+export interface RequestOnlyBundleAdmission {
+  readonly ok: boolean;
+  readonly reason:
+    | 'byte-identical-primary'
+    | 'primary-bundle-unavailable'
+    | 'bundle-unreadable'
+    | 'identity-guard-absent'
+    | 'bundle-differs-from-primary';
+  readonly identity: BundledSidecarIdentity;
+}
+
+/**
+ * Resolve the serve.mjs this process was launched from. `PAPERCUSP_SIDECAR_BIN`
+ * names the sibling `bin/` directory on packaged launches; argv[1] is the
+ * direct bundle path. A bundled request-only child is unsafe when neither can
+ * establish the current primary bytes, so absence is a refusal rather than a
+ * provenance guess.
+ */
+export function resolveRunningPrimaryBundlePath(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv,
+): string | null {
+  const sidecarBin = env.PAPERCUSP_SIDECAR_BIN?.trim();
+  const sidecarCandidate = sidecarBin
+    ? basename(sidecarBin) === 'serve.mjs'
+      ? sidecarBin
+      : join(dirname(sidecarBin), 'serve.mjs')
+    : undefined;
+  const candidates = [
+    // The explicit sidecar-bin contract wins over argv[1]. In a source/tsx
+    // launch argv[1] is serve.ts, while PAPERCUSP_SIDECAR_BIN still points at
+    // the packaged primary bundle that a bundled child must match.
+    sidecarCandidate,
+    argv[1],
+  ];
+  for (const candidate of candidates) {
+    if (
+      candidate &&
+      basename(candidate) === 'serve.mjs' &&
+      existsSync(candidate)
+    ) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Fail-closed admission for a request-only bundled child. The marker proves
+ * the child contains the load-only implementation; direct content hashes prove
+ * it is the same serve.mjs as the running primary instead of a stale staged
+ * copy carrying inherited parent provenance.
+ */
+export function inspectRequestOnlyBundleAdmission(
+  bundlePath: string,
+  primaryBundlePath: string | null,
+): RequestOnlyBundleAdmission {
+  const identity = readBundledSidecarIdentity(bundlePath);
+  if (!primaryBundlePath) {
+    return { ok: false, reason: 'primary-bundle-unavailable', identity };
+  }
+  if (!identity.bundleSha256) {
+    return { ok: false, reason: 'bundle-unreadable', identity };
+  }
+  if (!identity.requestOnlyIdentityGuard) {
+    return { ok: false, reason: 'identity-guard-absent', identity };
+  }
+  const primaryIdentity =
+    resolve(bundlePath) === resolve(primaryBundlePath)
+      ? identity
+      : readBundledSidecarIdentity(primaryBundlePath);
+  if (!primaryIdentity.requestOnlyIdentityGuard) {
+    return { ok: false, reason: 'identity-guard-absent', identity };
+  }
+  if (
+    !primaryIdentity.bundleSha256 ||
+    primaryIdentity.bundleSha256 !== identity.bundleSha256
+  ) {
+    return { ok: false, reason: 'bundle-differs-from-primary', identity };
+  }
+  return { ok: true, reason: 'byte-identical-primary', identity };
 }
 
 export interface LaunchEnvOperatorsDeps {
@@ -654,7 +812,17 @@ function defaultSpawnOperator(
       const envDir = dirname(entry.bundlePath);
       const spaDir = join(envDir, 'spa');
       const docsDir = join(envDir, 'internal-docs');
-      const bundleIdentity = readBundledSidecarIdentity(entry.bundlePath);
+      const admission = inspectRequestOnlyBundleAdmission(
+        entry.bundlePath,
+        resolveRunningPrimaryBundlePath(),
+      );
+      if (!admission.ok) {
+        // launchEnvOperators records the resulting spawn-failed skip through
+        // its injected log sink; do not emit a process-global warning here,
+        // because this helper also runs in fail-on-console test harnesses.
+        return null;
+      }
+      const bundleIdentity = admission.identity;
       const parentBuildSha = process.env.PAPERCUSP_BUILD_SHA?.trim() || '';
       const log = openEnvOperatorLog(entry.id);
       writeSpawnHeader(log.fd, entry.id, entry.port, [process.execPath, entry.bundlePath], {

@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import {
+  REQUEST_ONLY_IDENTITY_GUARD_V1,
   resolveLocalAnnounceIdentity,
   resolveLocalAnnounceIdentityFromHiveMembers,
   loadCachedLocalAnnounceIdentity,
@@ -35,6 +36,111 @@ function stubKeypair() {
 }
 
 describe('resolveLocalAnnounceIdentity', () => {
+  describe('request-only load-only mode (P-008)', () => {
+    it('loads a cached, keychain-verified identity without GitHub, gist, cache, or key generation', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'papercusp-request-only-'));
+      const cachePath = join(root, 'identity.json');
+      await writeFile(
+        cachePath,
+        JSON.stringify({
+          version: 1,
+          savedAt: Date.now() - 24 * 60 * 60 * 1000,
+          keychainId: '4242:m',
+          devicePubkeyBase64: 'PUBKEY==',
+          githubUserId: 4242,
+          githubLogin: 'alice',
+          attestationGistId: 'gist-cached',
+        }),
+        'utf8',
+      );
+      const resolveGithubUser = vi.fn(async () => {
+        throw new Error('must not resolve GitHub in load-only mode');
+      });
+      const resolveAttestationGistId = vi.fn(async () => 'must-not-write');
+      const loadKeypair = vi.fn(async (keychainId: string) => ({
+        keychainId,
+        pubkeyBase64: 'PUBKEY==',
+      }));
+
+      await expect(
+        resolveLocalAnnounceIdentity({
+          logCoreKeyHex: LOG_CORE_KEY,
+          cachePath,
+          identityMode: 'load-only',
+          resolveGithubUser,
+          resolveAttestationGistId,
+          loadKeypair,
+        }),
+      ).resolves.toEqual({
+        keychainId: '4242:m',
+        devicePubkeyBase64: 'PUBKEY==',
+        githubUserId: 4242,
+        githubLogin: 'alice',
+        attestationGistId: 'gist-cached',
+      });
+      expect(resolveGithubUser).not.toHaveBeenCalled();
+      expect(resolveAttestationGistId).not.toHaveBeenCalled();
+      expect(loadKeypair).toHaveBeenCalledWith('4242:m');
+    });
+
+    it('fails closed on a cache miss and never falls through to key generation', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'papercusp-request-only-miss-'));
+      const cachePath = join(root, 'identity.json');
+      const resolveGithubUser = vi.fn(async () => ({ id: 1, login: 'should-not-run' }));
+      const loadKeypair = vi.fn(async () => {
+        throw new Error('loadExisting should not be reached for a missing cache');
+      });
+
+      await expect(
+        resolveLocalAnnounceIdentity({
+          logCoreKeyHex: LOG_CORE_KEY,
+          cachePath,
+          identityMode: 'load-only',
+          resolveGithubUser,
+          loadKeypair,
+        }),
+      ).rejects.toThrow(new RegExp(REQUEST_ONLY_IDENTITY_GUARD_V1));
+      expect(resolveGithubUser).not.toHaveBeenCalled();
+      expect(loadKeypair).not.toHaveBeenCalled();
+    });
+
+    it('derives load-only mode from the request-only environment marker', async () => {
+      const prior = process.env.PAPERCUSP_IDENTITY_MODE;
+      const root = await mkdtemp(join(tmpdir(), 'papercusp-request-only-env-'));
+      const cachePath = join(root, 'identity.json');
+      await writeFile(
+        cachePath,
+        JSON.stringify({
+          version: 1,
+          savedAt: Date.now(),
+          keychainId: 'env:m',
+          devicePubkeyBase64: 'ENVPUB==',
+          githubUserId: 7,
+          githubLogin: 'env-user',
+          attestationGistId: 'gist-cached',
+        }),
+        'utf8',
+      );
+      process.env.PAPERCUSP_IDENTITY_MODE = 'load-only';
+      try {
+        await expect(
+          resolveLocalAnnounceIdentity({
+            logCoreKeyHex: LOG_CORE_KEY,
+            cachePath,
+            resolveGithubUser: vi.fn(async () => ({ id: 7, login: 'wrong-path' })),
+            loadKeypair: vi.fn(async (keychainId: string) => ({
+              keychainId,
+              pubkeyBase64: 'ENVPUB==',
+            })),
+          }),
+        ).resolves.toMatchObject({ keychainId: 'env:m', githubLogin: 'env-user' });
+      } finally {
+        if (prior === undefined) delete process.env.PAPERCUSP_IDENTITY_MODE;
+        else process.env.PAPERCUSP_IDENTITY_MODE = prior;
+      }
+    });
+  });
+
   it('loads the keypair under the canonical per-user keychain id (Fix 1)', async () => {
     const resolveGithubUser = stubUser(4242, 'alice');
     const loadKeypair = stubKeypair();

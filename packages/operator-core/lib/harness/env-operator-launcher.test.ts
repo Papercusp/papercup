@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   mkdtempSync,
   mkdirSync,
@@ -26,7 +27,17 @@ import {
   viteChildArgv,
   viteChildEnv,
   formatEnvOperatorPass2Result,
+  readBundledSidecarIdentity,
+  requestOnlyIdentityGuardMarker,
+  inspectRequestOnlyBundleAdmission,
+  resolveRunningPrimaryBundlePath,
 } from './env-operator-launcher';
+
+function sha256(text: string): string {
+  // Keep this test dependency-free: the production helper uses node:crypto,
+  // and the expected digest is only used to build a fixture provenance record.
+  return createHash('sha256').update(text).digest('hex');
+}
 
 describe('formatEnvOperatorPass2Result', () => {
   it('emits stable fields for a completed source pass instead of prose', () => {
@@ -58,6 +69,146 @@ const SPECS: readonly EnvOperatorSpec[] = [
   { id: 'prod', port: 3070, branch: 'main' },
   { id: 'staging', port: 3170, branch: 'staging' },
 ];
+
+describe('request-only bundled sidecar admission (P-008)', () => {
+  function writeBundle(
+    dir: string,
+    text: string,
+    provenance?: Record<string, unknown>,
+  ): string {
+    mkdirSync(dir, { recursive: true });
+    const bundle = join(dir, 'serve.mjs');
+    writeFileSync(bundle, text);
+    if (provenance) {
+      writeFileSync(join(dir, 'build-provenance.json'), JSON.stringify(provenance));
+    }
+    return bundle;
+  }
+
+  it('reads the bundle own identity and verifies its exact bytes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-env-bundle-'));
+    try {
+      const body = `/* ${requestOnlyIdentityGuardMarker()} */\nexport {};\n`;
+      const bundle = writeBundle(root, body, {
+        version: '1.2.3',
+        buildSha: '',
+        gitHead: 'source-head',
+        gitHeadAtEmit: 'later-checkout-head',
+        artifacts: [{ name: 'serve.mjs', sha256: sha256(body) }],
+      });
+
+      expect(readBundledSidecarIdentity(bundle)).toMatchObject({
+        bundleSha256: sha256(body),
+        buildSha: 'later-checkout-head',
+        version: '1.2.3',
+        source: 'build-provenance',
+        bytesVerified: true,
+        requestOnlyIdentityGuard: true,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('understands both shipped .sidecar-build-stamp JSON and composed BUILD-STAMP.txt', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-env-stamps-'));
+    try {
+      const body = `/* ${requestOnlyIdentityGuardMarker()} */\n`;
+      const jsonDir = join(root, 'json');
+      const jsonBundle = writeBundle(jsonDir, body);
+      writeFileSync(
+        join(jsonDir, '.sidecar-build-stamp'),
+        JSON.stringify({ gitHead: 'source-only', serveSha256: sha256(body) }),
+      );
+      expect(readBundledSidecarIdentity(jsonBundle)).toMatchObject({
+        buildSha: 'source-only',
+        source: 'build-stamp',
+        bytesVerified: true,
+      });
+
+      const textDir = join(root, 'text');
+      const textBundle = writeBundle(textDir, body);
+      writeFileSync(
+        join(textDir, 'BUILD-STAMP.txt'),
+        `sha=composed123 dirty=0 composedAt=2026-08-31T23:00:00Z\nserveSha256=${sha256(body)}\n`,
+      );
+      expect(readBundledSidecarIdentity(textBundle)).toMatchObject({
+        buildSha: 'composed123',
+        source: 'build-stamp',
+        bytesVerified: true,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('admits only marker-bearing bytes identical to the running primary', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-env-admission-'));
+    try {
+      const guarded = `/* ${requestOnlyIdentityGuardMarker()} */\nexport {};\n`;
+      const primary = writeBundle(join(root, 'primary'), guarded);
+      const identical = writeBundle(join(root, 'identical'), guarded);
+      const staleGuarded = writeBundle(
+        join(root, 'stale'),
+        `/* ${requestOnlyIdentityGuardMarker()} */\nexport const stale = true;\n`,
+      );
+      const unguarded = writeBundle(join(root, 'unguarded'), 'export {};\n');
+
+      expect(inspectRequestOnlyBundleAdmission(identical, primary).reason).toBe(
+        'byte-identical-primary',
+      );
+      expect(inspectRequestOnlyBundleAdmission(staleGuarded, primary).reason).toBe(
+        'bundle-differs-from-primary',
+      );
+      expect(inspectRequestOnlyBundleAdmission(unguarded, primary).reason).toBe(
+        'identity-guard-absent',
+      );
+      expect(inspectRequestOnlyBundleAdmission(identical, unguarded).reason).toBe(
+        'identity-guard-absent',
+      );
+      expect(inspectRequestOnlyBundleAdmission(identical, null).reason).toBe(
+        'primary-bundle-unavailable',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the packaged primary from PAPERCUSP_SIDECAR_BIN before argv fallback', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-env-primary-'));
+    try {
+      const primary = writeBundle(join(root, 'sidecar'), 'primary');
+      const argvBundle = writeBundle(join(root, 'argv'), 'argv');
+      mkdirSync(join(root, 'sidecar', 'bin'));
+      expect(
+        resolveRunningPrimaryBundlePath(
+          { PAPERCUSP_SIDECAR_BIN: join(root, 'sidecar', 'bin') },
+          ['node', argvBundle],
+        ),
+      ).toBe(primary);
+      expect(resolveRunningPrimaryBundlePath({}, ['node', argvBundle])).toBe(argvBundle);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('wires the fail-closed admission into the production bundled spawn path', () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, 'env-operator-launcher.ts'),
+      'utf8',
+    );
+    const bundledBranch = source.slice(
+      source.indexOf("if (entry.spawnMode === 'bundled' && entry.bundlePath)"),
+      source.indexOf("if (entry.run === 'vite')"),
+    );
+    expect(bundledBranch).toContain('inspectRequestOnlyBundleAdmission(');
+    expect(bundledBranch).toContain('resolveRunningPrimaryBundlePath()');
+    expect(bundledBranch).toContain('if (!admission.ok)');
+    expect(bundledBranch.indexOf('if (!admission.ok)')).toBeLessThan(
+      bundledBranch.indexOf('spawn(process.execPath'),
+    );
+  });
+});
 
 /** Index a plan by env id for terse assertions. */
 function byId(plan: EnvOperatorPlanEntry[]): Record<string, EnvOperatorPlanEntry> {

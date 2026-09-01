@@ -19,6 +19,9 @@ let TMP_HOME: string;
 let origHome: string | undefined;
 let origIdentityDir: string | undefined;
 let origSeedRealHostname: string | undefined;
+let origIdentityMode: string | undefined;
+let origEnvOperatorId: string | undefined;
+let origRequestOnly: string | undefined;
 let execFileCalls = 0;
 let securityStoreSucceeds = false;
 let securityLoadSecret: string | null = null;
@@ -31,9 +34,15 @@ beforeEach(() => {
   origHome = process.env.HOME;
   origIdentityDir = process.env.PAPERCUSP_IDENTITY_DIR;
   origSeedRealHostname = process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
+  origIdentityMode = process.env.PAPERCUSP_IDENTITY_MODE;
+  origEnvOperatorId = process.env.PAPERCUSP_ENV_OPERATOR_ID;
+  origRequestOnly = process.env.PAPERCUSP_REQUEST_ONLY;
   process.env.HOME = TMP_HOME; // os.homedir() honors $HOME on POSIX -> default identity dir = $HOME/.papercusp/identity
   delete process.env.PAPERCUSP_IDENTITY_DIR;
   delete process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
+  delete process.env.PAPERCUSP_IDENTITY_MODE;
+  delete process.env.PAPERCUSP_ENV_OPERATOR_ID;
+  delete process.env.PAPERCUSP_REQUEST_ONLY;
   // Make the OS keychain CLIs look uninstalled so both tiers fall through to the file backend.
   execFileCalls = 0;
   securityStoreSucceeds = false;
@@ -77,6 +86,12 @@ afterEach(() => {
   else process.env.PAPERCUSP_IDENTITY_DIR = origIdentityDir;
   if (origSeedRealHostname === undefined) delete process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
   else process.env.PAPERCUSP_SEED_REAL_HOSTNAME = origSeedRealHostname;
+  if (origIdentityMode === undefined) delete process.env.PAPERCUSP_IDENTITY_MODE;
+  else process.env.PAPERCUSP_IDENTITY_MODE = origIdentityMode;
+  if (origEnvOperatorId === undefined) delete process.env.PAPERCUSP_ENV_OPERATOR_ID;
+  else process.env.PAPERCUSP_ENV_OPERATOR_ID = origEnvOperatorId;
+  if (origRequestOnly === undefined) delete process.env.PAPERCUSP_REQUEST_ONLY;
+  else process.env.PAPERCUSP_REQUEST_ONLY = origRequestOnly;
   vi.doUnmock('node:child_process');
   vi.doUnmock('node:fs/promises');
   try {
@@ -94,6 +109,34 @@ const encPath = (id: string) =>
   join(TMP_HOME, '.papercusp', 'identity', 'keypair-' + id.replace(/[^a-zA-Z0-9_-]/g, '_') + '.enc');
 
 describe('keychain (encrypted-file fallback)', () => {
+  it('recognizes every request-only marker and keeps ordinary primary writes enabled', async () => {
+    const { identityWritesAllowed, isRequestOnlyIdentityProcess } = await loadKeychain();
+    expect(identityWritesAllowed({})).toBe(true);
+    expect(isRequestOnlyIdentityProcess({})).toBe(false);
+    for (const env of [
+      { PAPERCUSP_IDENTITY_MODE: 'load-only' },
+      { PAPERCUSP_ENV_OPERATOR_ID: 'staging' },
+      { PAPERCUSP_REQUEST_ONLY: '1' },
+    ]) {
+      expect(isRequestOnlyIdentityProcess(env)).toBe(true);
+      expect(identityWritesAllowed(env)).toBe(false);
+    }
+  });
+
+  it('fails closed before store/delete can touch any backend or encrypted mirror', async () => {
+    process.env.PAPERCUSP_REQUEST_ONLY = '1';
+    const { keychainStore, keychainDelete } = await loadKeychain();
+    const id = 'request-only:must-not-write';
+    const callsBefore = execFileCalls;
+
+    await expect(keychainStore(id, Buffer.from('forbidden-key'))).rejects.toThrow(
+      /request-only sidecar identity guard/,
+    );
+    await expect(keychainDelete(id)).rejects.toThrow(/request-only sidecar identity guard/);
+    expect(execFileCalls).toBe(callsBefore);
+    expect(existsSync(encPath(id))).toBe(false);
+  });
+
   it('store -> load round-trips the private-key DER', async () => {
     const { keychainStore, keychainLoad } = await loadKeychain();
     const der = Buffer.from('fake-pkcs8-der-bytes-0123456789ab');
