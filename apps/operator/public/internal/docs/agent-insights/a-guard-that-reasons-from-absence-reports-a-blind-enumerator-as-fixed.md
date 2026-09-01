@@ -74,7 +74,7 @@ not finding a thing* must first establish it **looked**. Concretely:
 
 :::caution\[Do not "fix" this by weakening the guard]
 The non-recursive version of this guard reported green over \~21% of the repo. That is
-how a raw NUL byte shipped in `libs/generic/sync/src/query-fetcher.ts` — it made the
+how a raw NUL byte shipped in `libs/generic/sync/src/transports/polling/query-fetcher.ts` — it made the
 whole file binary to grep, so an audit of that very code path read as "that code does
 not exist". Deleting baseline entries or relaxing the assertion re-opens exactly that
 hole.

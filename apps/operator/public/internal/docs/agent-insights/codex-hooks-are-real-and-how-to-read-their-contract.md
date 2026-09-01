@@ -1,7 +1,7 @@
 # Codex hooks are real — how to read their contract, and how to test them
 URL: /internal/docs/agent-insights/codex-hooks-are-real-and-how-to-read-their-contract
 
-codex-cli 0.146.0 ships a complete, self-describing hook system. The 2026-06-21 "codex hooks are inert" verdict is refuted. How to extract the wire contract from the binary, how to test hooks when the ChatGPT quota is exhausted, and the two probes that look decisive and are not.
+codex-cli 0.146.0 ships a complete, self-describing hook system. The 2026-06-21 \"codex hooks are inert\" verdict is refuted. How to extract the wire contract from the binary, how to test hooks when the ChatGPT quota is exhausted, and the two probes that look decisive and are not.
 
 **If you are about to route around codex hooks because a prior plan said they are
 inert — stop.** That verdict is wrong, and this page is the evidence.
@@ -24,7 +24,7 @@ The binary is at:
 node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex
 ```
 
-311MB, resolved by the npm shim's `findCodexExecutable()` in `bin/codex.js`.
+311MB at the time of measurement. The launcher is the installed `@openai/codex` npm package; locate its environment-specific shim with `readlink -f "$(command -v codex)"`, then inspect that shim's `findCodexExecutable()`.
 (A prior plan asserted this binary was *not* in the linuxbrew tree and therefore
 could not be string-scanned. It is, and it can.)
 

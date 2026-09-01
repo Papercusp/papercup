@@ -1,63 +1,47 @@
-# A fleet placement's `spawned:N` does NOT mean the cups are running — manual wake-mode stages the boot-wake
+# A fleet placement's `spawned:N` does NOT mean agents are running — verify wake delivery
 URL: /internal/docs/agent-insights/place-batch-spawned-not-running-manual-wake
 
->-
+A spawn result is not proof of a running agent. Historical manual wake-mode pauses staged boot wakes; current default is auto, so verify the effective mode, live presence, and work-item pickup on every launch path.
 
-:::caution\[`fleet:place_batch` / `cup:spawn` are retired — the LESSON is not]
-Both verbs **refuse** as of 2026-08-09; the Mug · Kettle · Cup/nursery tier is
-[retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired). Kept because the
-finding generalises to every launch path that replaced them: **a spawn result that reports
-`spawned:N` is not evidence that anything is RUNNING.** The same check applies to
-`fleet:launch-on-plan` and `capability:launch-agent` — verify with `fleet:assignments` +
-work-item state, and treat `woken:0` as a MISS, never a silent success.
+:::caution\[`fleet:place_batch` / `cup:spawn` are retired — the lesson is not]
+Both verbs **refuse** as of 2026-08-09; the Mug · Kettle · Cup/nursery tier is retired. Kept because the finding generalises to every launch path that replaced them: **a spawn result that reports `spawned:N` is not evidence that anything is RUNNING.** The same check applies to `fleet:launch-on-plan`, `capability:launch-agent`, and direct wake handoffs — verify with `fleet:assignments` + work-item state, and treat `woken:0` as a MISS, never a silent success.
 :::
+
+## Current state (verified 2026-09-01)
+
+The implementation defaults to automatic wake delivery: `DEFAULT_WAKE_MODE = 'auto'` in `packages/operator-core/lib/agent-tools/coordination/wake-mode.ts`, and the focused wake-mode suites pass (24/24). A live `coord:wake-mode {}` read returns `{ mode: 'auto', default: 'auto' }`. `manual` is an explicit global or per-agent override, not the standing default.
+
+When diagnosing a launch, read the effective mode at the moment you act; do not infer it from an old incident or a staged-wake screenshot.
 
 ## The trap
 
-`fleet:place_batch` returned `{ summary: { spawned: 3 } }` and three `placements:[{action:'spawned'}]`.
-It reads as success. It was a **no-op**: the three cups never booted, and \~3.5h later the work-items
-were still `open`/unassigned with `fleet:assignments` showing **0 live agents**.
+A placement can return `{ summary: { spawned: 3 } }` and three `placements:[{action:'spawned'}]` while no agent has started a turn. The result records process creation, not wake execution. Confirm live presence and work-item pickup before treating it as success.
 
-Two independent causes, both invisible in the placement result:
+The historical failure mode was a global `manual` wake-mode setting. A spawn's boot-wake went through `wakeRecipients`; under `manual`, every wake **staged instead of fired** (`woken:0`) and the process never entered a turn. That setting was durable, so an explicit pause could strand later launches until an owner restored `auto`. This is a historical incident pattern, not today's default.
 
-1. **Global wake-mode is `manual`.** A spawn's boot-wake goes through `wakeRecipients`; under the
-   global `manual` default (the `pot:pause` primitive, stored as `operator_settings` `wake_mode:default`)
-   every wake **stages instead of fires** (`woken:0`). The cup process is created but never woken into a
-   turn. The mode is durable — it survives restarts — so one `pot:pause` during a firefight silently
-   strands every later spawn until someone restores `auto`. (This is exactly what happened fleet-wide on
-   2026-06-14; it froze placements for hours.)
-2. **Write-confinement (EI-524) — HISTORICAL, lifted 2026-06-14.** The `cup` read-only confinement once
-   meant an awake cup couldn't do write work, so a placement "succeeded" but the task couldn't progress.
-   It was lifted when the fleet went fully autonomous (`capability-envelope/policy.ts` — the envelope is
-   now empty under the protected floor). Kept here in case a future per-role confinement is re-armed via
-   `ROLE_ENVELOPES`; today, **manual wake-mode is the only live cause.**
+A second historical cause was write-confinement (EI-524), which was lifted on 2026-06-14. Keep it in mind only if a future per-role `ROLE_ENVELOPES` policy is deliberately re-armed; it is not active today.
 
 ## The diagnostic
 
-**Do not trust the placement result — confirm the cups actually came up:**
+**Do not trust the placement result — confirm the agent actually came up:**
 
 ```
-fleet:assignments { harness }   # 0 alive after a "spawned:N" batch ⇒ they didn't boot
-work_items:list { state: 'open' } # your just-placed items still open/unassigned ⇒ no pickup
-coord:wake-mode                  # global default == 'manual' ⇒ wakes are staging (woken:0)
+fleet:assignments { harness }   # live agents and claims, not just spawned count
+work_items:list { state: 'open' } # your just-placed item should not remain unassigned
+coord:wake-mode                  # read the effective global default at action time
 ```
 
-If `spawned:N` but `fleet:assignments` shows no live agents, suspect wake-mode first.
+If `spawned:N` is followed by no live agents, suspect a staged/manual wake, a dead launcher, or another measured boot failure. A `woken:0` result is a delivery miss even when the outer tool reports `ok:true`.
 
 ## The fix / workaround
 
-* **Restore wakes:** `coord:wake-mode { mode: 'auto' }` (or `pot:start`, which re-affirms `auto`).
-  The staged wakes already piled up don't auto-fire; live agents get fresh wakes under `auto`.
-* **If a per-role confinement is ever re-armed** (`ROLE_ENVELOPES` in `capability-envelope/policy.ts`):
-  drive write work via a **write-capable subagent** (your client's Task/Agent tool), not the confined
-  fleet role. (Not in effect today — the EI-524 cup confinement was lifted 2026-06-14.)
-* **The signal now exists for the wake-mode case:** `fleet:place_batch` surfaces a `warnings[]` when there
-  were fresh spawns under `manual` wake-mode (EI-590 — `buildPlacementWarnings` in
-  `packages/operator-core/lib/agent-tools/fleet/place_batch.ts`). Confinement is NOT yet surfaced there
-  (no cheap signal at that layer) — still verify via `fleet:assignments`.
+* If an explicit manual pause is still set, restore automatic delivery with `coord:wake-mode { mode: 'auto', reason: 'resume launch delivery' }`; then issue a fresh wake and verify pickup. Staged wakes do not auto-fire merely because the default changes.
+* Fleet members and agent-launched sessions receive per-agent `auto` immunity at boot so they can receive steering wakes; leaders remain subject to an intentional owner gate.
+* Keep the warning and verification path in `fleet:place_batch`/launch callers: surface manual-mode staging, then verify `fleet:assignments` and work-item state.
 
 ## See also
 
 * [`always-armed-inbox-wake`](/internal/docs/agent-insights/always-armed-inbox-wake) — the wake model.
 * `packages/operator-core/lib/agent-tools/coordination/wake-mode.ts` — `getDefaultWakeMode` / `setDefaultWakeMode`.
-* EI-590 (this surfacing), EI-524 (the read-only confinement).
+* `packages/operator-core/lib/agent-tools/coordination/tools/wake-mode.ts` — the read/set tool surface.
+* EI-590 (manual-mode warning), EI-524 (historical confinement).
