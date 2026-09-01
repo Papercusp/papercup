@@ -720,12 +720,19 @@ describe('readPendingBatch resolver-input priority (P-006)', () => {
     if (input.dedupCoverageDegraded !== undefined) {
       payload.dedupCoverage = { lexical: 'ok', semantic: 'ok', degraded: input.dedupCoverageDegraded };
     }
+    // sql.json() — NOT `${JSON.stringify(payload)}::jsonb` — per the documented
+    // postgres-js gotcha (_pg-helpers.ts header, dock-layouts.ts): on this
+    // production-faithful client config, the JSON.stringify+cast form
+    // double-encodes to a jsonb STRING (jsonb_typeof=string), which silently
+    // defeats every `payload -> 'key'` predicate (a string has no keys, so
+    // `IS NOT NULL` reads false for every row and the priority boost never
+    // fires — reproduced + root-caused via a standalone script before this fix).
     await db.sql`
       INSERT INTO harness_shared.work_items
         (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
          admission, condition_key, lane, payload, created_ts, updated_ts)
       VALUES (${WS}, ${HARNESS}, ${input.id}, 'title', 'summary', 'open', 'bug',
-              'pending', NULL, NULL, ${JSON.stringify(payload)}::jsonb,
+              'pending', NULL, NULL, ${db.sql.json(payload as unknown as Parameters<typeof db.sql.json>[0])},
               ${input.createdAtMs}, ${input.createdAtMs})`;
   }
 
