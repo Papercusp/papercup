@@ -37,6 +37,7 @@ import type {
   ModelEffort,
 } from '../agent-config-constants';
 import {
+  bulkAutomationSnapshot,
   canonicalDispositionForRow,
   type BulkAutomationPolicy,
   type BulkConfidence,
@@ -47,6 +48,7 @@ import {
   isBulkDispositionKind,
   normalizeBulkAutomationPolicy,
 } from './bulk-dispositions';
+import { readStandingBulkAutomationPolicy } from './automation-policy';
 
 /** Lifecycle of a run. `review` means the agent is done and the owner has
  *  recommendations waiting; `complete` means nothing is left to act on. */
@@ -716,7 +718,12 @@ export async function createRun(input: {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
   const runId = input.runId ?? `bulk-${randomUUID()}`;
-  const automationPolicy = normalizeBulkAutomationPolicy(input.automationPolicy);
+  // P-006: owner routes pass no policy override. Resolve the standing
+  // workspace policy once and persist its normalized launch receipt. The
+  // legacy input remains accepted for old programmatic callers only.
+  const automationPolicy = input.automationPolicy
+    ? normalizeBulkAutomationPolicy(input.automationPolicy)
+    : bulkAutomationSnapshot(await readStandingBulkAutomationPolicy(ws));
   const launchSnapshot = input.launchSnapshot
     ? ({ ...input.launchSnapshot, automationPolicy } as BulkRunLaunchSnapshot)
     : ({} as BulkRunLaunchSnapshot);
