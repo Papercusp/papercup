@@ -45,6 +45,7 @@ export type LifecycleCategory = (typeof LIFECYCLE_CATEGORIES)[number];
  *   unit            — a unit test suite
  *   integration     — an integration test (real PG / containers / a live dependency)
  *   live-drove-ui   — drove the running UI (e.g. the Tauri shell) and observed it
+ *   live-service    — restarted/probed a real running process or service (non-UI)
  *   manual          — verified by hand (ran the build/command, inspected real output)
  *   already-passing — no new verification; the existing suite already covered it
  */
@@ -52,7 +53,7 @@ export const CompletionVerifiedHowSchema = z
   .string()
   .min(1)
   .describe(
-    "HOW it was verified — a non-empty label. Prefer 'unit' | 'integration' | 'live-drove-ui' | 'manual' | 'already-passing' for queryable coarse modes; concise free-text labels are also accepted. Put detailed evidence in `testsRun` / `testResult`.",
+    "HOW it was verified — a non-empty label. Prefer 'unit' | 'integration' | 'live-drove-ui' | 'live-service' | 'manual' | 'already-passing' for queryable coarse modes; concise free-text labels are also accepted. `live-service` means a real running process/service was restarted or probed without driving UI. Put detailed evidence in `testsRun` / `testResult`.",
   );
 
 /** The complete repair contract shown for malformed coverage input. */
