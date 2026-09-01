@@ -7,7 +7,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: sqlMock }),
 }));
 
-import { agentOriginToolCallOwnersSince } from './assignments';
+import {
+  agentOriginToolCallOwnersSince,
+  executingOwnersSince,
+  nativeToolCallOwnersSince,
+} from './assignments';
 
 describe('agentOriginToolCallOwnersSince (WI-583276)', () => {
   beforeEach(() => {
@@ -36,5 +40,70 @@ describe('agentOriginToolCallOwnersSince (WI-583276)', () => {
   it('returns UNKNOWN as null when telemetry read fails', async () => {
     sqlMock.mockRejectedValue(new Error('telemetry unavailable'));
     await expect(agentOriginToolCallOwnersSince(['su-a'])).resolves.toBeNull();
+  });
+});
+
+describe('executingOwnersSince — the complete execution signal (WI-2034624)', () => {
+  beforeEach(() => {
+    sqlMock.mockReset();
+  });
+
+  // tool_invocations records MCP calls ONLY. Measured 2026-09-01 on live fleet
+  // members: fleet `windows-parity` had 1 live member, 0 visible in
+  // tool_invocations and 1 in agent_activity — an MCP-only reading calls that
+  // fleet's only working member idle and the governor replaces a filled seat.
+  it('counts an owner visible ONLY in the native-tool ledger', async () => {
+    sqlMock.mockImplementation((strings: readonly string[]) => {
+      const statement = strings.join('');
+      if (statement.includes('tool_invocations')) return Promise.resolve([]);
+      return Promise.resolve([{ owner_id: 'su-native-only' }]);
+    });
+
+    await expect(executingOwnersSince(['su-native-only'], 60 * 60_000)).resolves.toEqual(
+      new Set(['su-native-only']),
+    );
+  });
+
+  it('unions both ledgers rather than preferring either', async () => {
+    sqlMock.mockImplementation((strings: readonly string[]) => {
+      const statement = strings.join('');
+      if (statement.includes('tool_invocations')) return Promise.resolve([{ coord_owner_id: 'su-mcp' }]);
+      return Promise.resolve([{ owner_id: 'su-native' }]);
+    });
+
+    await expect(executingOwnersSince(['su-mcp', 'su-native'])).resolves.toEqual(
+      new Set(['su-mcp', 'su-native']),
+    );
+  });
+
+  // A PARTIAL union under-counts, and under-counting a capacity signal is the
+  // precise harm: it spawns replacements for seats that are already filled.
+  it('refuses a partial union — either leg failing is UNKNOWN, never the other leg alone', async () => {
+    sqlMock.mockImplementation((strings: readonly string[]) => {
+      const statement = strings.join('');
+      if (statement.includes('tool_invocations')) return Promise.resolve([{ coord_owner_id: 'su-mcp' }]);
+      return Promise.reject(new Error('agent_activity unavailable'));
+    });
+    await expect(executingOwnersSince(['su-mcp', 'su-native'])).resolves.toBeNull();
+
+    sqlMock.mockImplementation((strings: readonly string[]) => {
+      const statement = strings.join('');
+      if (statement.includes('tool_invocations')) return Promise.reject(new Error('tool_invocations unavailable'));
+      return Promise.resolve([{ owner_id: 'su-native' }]);
+    });
+    await expect(executingOwnersSince(['su-mcp', 'su-native'])).resolves.toBeNull();
+  });
+
+  it('reads the native ledger by owner_id over agent_activity in a bounded window', async () => {
+    sqlMock.mockResolvedValue([{ owner_id: 'su-a' }, { owner_id: 'su-a' }]);
+    await expect(nativeToolCallOwnersSince(['su-a'], 15 * 60_000)).resolves.toEqual(new Set(['su-a']));
+    const statement = String(sqlMock.mock.calls[0]?.[0]?.join?.('') ?? '');
+    expect(statement).toContain('harness_shared.agent_activity');
+    expect(statement).toContain('created_at > now()');
+  });
+
+  it('returns UNKNOWN as null when the native ledger read fails', async () => {
+    sqlMock.mockRejectedValue(new Error('activity ledger unavailable'));
+    await expect(nativeToolCallOwnersSince(['su-a'])).resolves.toBeNull();
   });
 });

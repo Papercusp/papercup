@@ -3401,9 +3401,11 @@ export async function buildLeaderBrief(
   // the canonical live roster — never from the current launch transaction's
   // worker-ready set, which excludes every member a prior transaction or a
   // carry-respawn created. Deliberately a SEPARATE read from the WI-583276
-  // collapse leg below: that one wants a tight window so silence is noticed
-  // fast, this one wants a wide one so a legitimately parked member is not
-  // mistaken for a missing seat. A failed read stays UNKNOWN.
+  // collapse leg below, on two axes: WINDOW (that one wants a tight window so
+  // silence is noticed fast; this one wants a wide one so a legitimately parked
+  // member is not mistaken for a missing seat) and LEDGER (this one unions the
+  // MCP and native tool ledgers, because `tool_invocations` misses an agent
+  // working through native Bash/Read/Edit entirely). A failed read stays UNKNOWN.
   const headcountExecutingRead = await withBoundedTimeout(
     headcountCurrentResult.value == null
       ? Promise.resolve(null)

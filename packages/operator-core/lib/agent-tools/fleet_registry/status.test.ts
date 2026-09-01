@@ -195,7 +195,7 @@ describe('fleet:status', () => {
     h.liveFleetMemberIds.mockResolvedValueOnce(['su-1', 'su-2', 'su-3']);
     // Telemetry unreadable: only then does a legacy fleet fall back to its
     // live-roster count.
-    h.agentOriginToolCallOwnersSince.mockResolvedValueOnce(null);
+    h.executingOwnersSince.mockResolvedValueOnce(null);
 
     const out = parse(await invoke({ fleet: 'rocket' }));
 
@@ -228,7 +228,7 @@ describe('fleet:status', () => {
       lastError: null,
     });
     h.liveFleetMemberIds.mockResolvedValueOnce(['su-1', 'su-2']);
-    h.agentOriginToolCallOwnersSince.mockResolvedValueOnce(new Set(['su-1', 'su-2']));
+    h.executingOwnersSince.mockResolvedValueOnce(new Set(['su-1', 'su-2']));
 
     const out = parse(await invoke({ fleet: 'rocket' }));
 
@@ -280,7 +280,7 @@ describe('fleet:status', () => {
       'su-unready-live',
       'su-prior-transaction-live',
     ]);
-    h.agentOriginToolCallOwnersSince.mockResolvedValueOnce(
+    h.executingOwnersSince.mockResolvedValueOnce(
       new Set(['su-ready-live', 'su-prior-transaction-live']),
     );
 
@@ -651,7 +651,7 @@ describe('fleet:status', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       h.getFleetHeadcountTarget.mockReturnValue(new Promise(() => {}));
       h.liveFleetMemberIds.mockResolvedValueOnce(['su-live']);
-      h.agentOriginToolCallOwnersSince.mockResolvedValueOnce(new Set(['su-live']));
+      h.executingOwnersSince.mockResolvedValueOnce(new Set(['su-live']));
       const resultPromise = invoke({ fleet: 'rocket' });
       await vi.advanceTimersByTimeAsync(10_000);
       const out = parse(await resultPromise);
