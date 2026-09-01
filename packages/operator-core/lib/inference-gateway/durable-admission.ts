@@ -21,7 +21,7 @@ import {
   type NormalizedAdmissionRequest,
   type ResourceDemand,
 } from '../resource-governor/admission';
-import { PgAdmissionLedgerQueueStore } from '../resource-governor/admission-ledger-store';
+import { PgAdmissionCutoverQueueStore } from '../resource-governor/admission-cutover-store';
 import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore } from '../resource-governor/queue';
 import { GATEWAY_ADMISSION_BYPASS_REGISTRY, type GatewayAdmissionGovernor } from './admission-context';
 
@@ -78,7 +78,7 @@ export class DurableGatewayAdmissionDriver implements AdmissionDriver {
     const ttl = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
     this.leaseTtlMs = Number.isFinite(ttl) && ttl > 0 ? Math.floor(ttl) : DEFAULT_LEASE_TTL_MS;
     this.#now = options.now ?? (() => Date.now());
-    const store = options.store ?? new PgAdmissionLedgerQueueStore({ workspaceId: options.workspaceId });
+    const store = options.store ?? new PgAdmissionCutoverQueueStore({ workspaceId: options.workspaceId });
     this.queue = new WorkItemAdmissionQueueDriver(store, {
       namespace: this.namespace,
       now: this.#now,

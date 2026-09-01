@@ -14,15 +14,19 @@ import {
   type DurableAdmissionQueueStore,
   type DurableAdmissionRecord,
   type QueueLeaseSelection,
+  type QueueLeaseOwnerObservation,
   type QueueMutationResult,
   type QueueReconciliationResult,
   type SqlClient,
   type StoredAdmissionRecord,
+  selectEndedLeaseOwners,
 } from './queue';
 
 const RECONCILE_LOCK_PREFIX = 'resource-governor-reconcile:';
 const RECONCILE_BATCH_SIZE = 25;
 export const RESOURCE_GOVERNOR_LEDGER_CUTOVER_SETTING_PREFIX = 'resource_governor_admission_ledger_cutover:';
+
+type ResolveSessionStates = typeof import('../agent-tools/coordination/liveness-oracle').resolveSessionStates;
 
 type DecisionValue = string | number | boolean | null;
 
@@ -109,6 +113,19 @@ export interface PgAdmissionLedgerQueueStoreOptions {
   readonly sql?: SqlClient;
   readonly workspaceId?: string;
   readonly abandonAfterMs?: number;
+  /** Injectable shared liveness oracle for owner-death lease reclamation. */
+  readonly resolveSessionStatesFn?: ResolveSessionStates;
+  /** Bounded pre-cutover work-item adapter. Omitted for the ledger-only store. */
+  readonly legacyAdapter?: AdmissionLedgerLegacyAdapter;
+}
+
+/**
+ * Transaction-bound compatibility seam used only during the rolling cutover.
+ * It deliberately cannot create a legacy receipt: enqueue remains ledger-only.
+ */
+export interface AdmissionLedgerLegacyAdapter {
+  findIdentity(tx: SqlClient, namespace: string, idempotencyKey: string): Promise<StoredAdmissionRecord | null>;
+  supersedeActiveCoalesce(tx: SqlClient, record: DurableAdmissionRecord): Promise<void>;
 }
 
 /** Ledger-only implementation. Legacy WI receipt compatibility is composed outside this class. */
@@ -116,6 +133,8 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   private readonly sql: SqlClient;
   private readonly workspaceId: string;
   private readonly abandonAfterMs: number;
+  private readonly resolveSessionStatesFn: ResolveSessionStates | undefined;
+  private readonly legacyAdapter: AdmissionLedgerLegacyAdapter | undefined;
 
   constructor(options: PgAdmissionLedgerQueueStoreOptions = {}) {
     this.sql = options.sql ?? getOrgPg().sql;
@@ -126,6 +145,8 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
       options.abandonAfterMs > 0
         ? options.abandonAfterMs
         : GOVERNOR_RECEIPT_ABANDON_MS;
+    this.resolveSessionStatesFn = options.resolveSessionStatesFn;
+    this.legacyAdapter = options.legacyAdapter;
   }
 
   private transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
@@ -218,9 +239,18 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
       await this.latchCutover(tx);
 
       const existing = await this.findRow(tx, record.namespace, record.idempotencyKey, true);
+      const legacy = await this.legacyAdapter?.findIdentity(tx, record.namespace, record.idempotencyKey);
+      if (existing && legacy) {
+        throw new AdmissionPersistenceError(
+          `resource-governor identity '${record.namespace}/${record.idempotencyKey}' exists in both ` +
+            `the admission ledger (${existing.receipt_id}) and legacy work_items (${legacy.receiptId})`,
+        );
+      }
+      if (legacy) return { ...legacy, created: false };
       if (existing) return { ...storedFromRow(existing), created: false };
 
       if (record.coalesceKey) {
+        await this.legacyAdapter?.supersedeActiveCoalesce(tx, record);
         const priorRows = await tx<LedgerDbRow[]>`
           SELECT receipt_id, record
             FROM harness_shared.resource_governor_admissions
@@ -251,6 +281,14 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
         RETURNING receipt_id, record`;
       if (rows[0]) return { ...storedFromRow(rows[0]), created: true };
       const raced = await this.findRow(tx, record.namespace, record.idempotencyKey, true);
+      const racedLegacy = await this.legacyAdapter?.findIdentity(tx, record.namespace, record.idempotencyKey);
+      if (raced && racedLegacy) {
+        throw new AdmissionPersistenceError(
+          `resource-governor identity '${record.namespace}/${record.idempotencyKey}' raced into both ` +
+            `the admission ledger (${raced.receipt_id}) and legacy work_items (${racedLegacy.receiptId})`,
+        );
+      }
+      if (racedLegacy) return { ...racedLegacy, created: false };
       if (!raced) {
         throw new AdmissionPersistenceError('admission ledger insert returned no row and no durable receipt exists');
       }
@@ -283,6 +321,56 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
       };
       return { ...(await this.writeRecord(tx, stored.receiptId, next)), changed: true };
     });
+  }
+
+  /** Read active ledger lease identities without taking row locks or mutating state. */
+  async readActiveLeaseOwners(namespace: string | null = null): Promise<QueueLeaseOwnerObservation[]> {
+    const namespacePredicate = namespace === null ? this.sql`` : this.sql`AND namespace = ${namespace}`;
+    const rows = await this.sql<Array<{ receipt_id: string | null; lease_id: string | null; owner: string | null }>>`
+      SELECT receipt_id,
+             record->'lease'->>'leaseId' AS lease_id,
+             lease_owner AS owner
+        FROM harness_shared.resource_governor_admissions
+       WHERE workspace_id = ${this.workspaceId}
+         ${namespacePredicate}
+         AND state IN ('leased', 'running')
+         AND btrim(COALESCE(record->'lease'->>'leaseId', '')) <> ''
+         AND lease_owner IS NOT NULL
+       ORDER BY receipt_id ASC`;
+    return rows.flatMap((row) => {
+      const receiptId = row.receipt_id?.trim();
+      const leaseId = row.lease_id?.trim();
+      const owner = row.owner?.trim();
+      return receiptId && leaseId && owner ? [{ receiptId, leaseId, owner }] : [];
+    });
+  }
+
+  private async endedLeaseOwners(namespace: string | null, nowMs = Date.now()): Promise<QueueLeaseOwnerObservation[]> {
+    let active: QueueLeaseOwnerObservation[];
+    try {
+      active = await this.readActiveLeaseOwners(namespace);
+    } catch (error) {
+      console.warn(
+        `[resource-governor] ledger active lease liveness read failed: ${error instanceof Error ? error.message : error}`,
+      );
+      return [];
+    }
+    const owners = [...new Set(active.map((row) => row.owner))];
+    if (owners.length === 0) return [];
+    const resolve =
+      this.resolveSessionStatesFn ?? (await import('../agent-tools/coordination/liveness-oracle')).resolveSessionStates;
+    try {
+      const verdicts = await resolve(
+        owners.map((ownerId) => ({ ownerId })),
+        { hydratePerId: true, nowMs },
+      );
+      return selectEndedLeaseOwners(active, verdicts);
+    } catch (error) {
+      console.warn(
+        `[resource-governor] ledger active lease liveness resolution failed: ${error instanceof Error ? error.message : error}`,
+      );
+      return [];
+    }
   }
 
   private async selectReconcileRows(
@@ -322,12 +410,47 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
     tx: SqlClient,
     namespace: string | null,
     nowMs: number,
+    endedLeaseOwners: readonly QueueLeaseOwnerObservation[] = [],
   ): Promise<QueueReconciliationResult> {
     const reconcileLock = `${RECONCILE_LOCK_PREFIX}${this.workspaceId}`;
     const lockRows = await tx<{ locked: boolean }[]>`
       SELECT pg_try_advisory_xact_lock(hashtextextended(${reconcileLock}, 0)) AS locked`;
     if (lockRows.length > 0 && lockRows[0]?.locked === false) {
       return { requeued: 0, expired: 0, abandoned: 0, total: 0 };
+    }
+
+    const ended =
+      endedLeaseOwners.length === 0
+        ? []
+        : await tx<LedgerDbRow[]>`
+            SELECT item.receipt_id, item.record
+              FROM harness_shared.resource_governor_admissions AS item
+              JOIN jsonb_to_recordset(${JSON.stringify(endedLeaseOwners)}::text::jsonb) AS identity(
+                "receiptId" text,
+                "leaseId" text,
+                owner text
+              )
+                ON identity."receiptId" = item.receipt_id
+             WHERE item.workspace_id = ${this.workspaceId}
+               ${namespace === null ? tx`` : tx`AND item.namespace = ${namespace}`}
+               AND item.state IN ('leased', 'running')
+               AND item.record->'lease'->>'leaseId' = identity."leaseId"
+               AND item.lease_owner = identity.owner
+             ORDER BY item.updated_at_ms ASC, item.receipt_id ASC
+             FOR UPDATE OF item SKIP LOCKED
+             LIMIT ${RECONCILE_BATCH_SIZE}`;
+    for (const row of ended) {
+      const stored = storedFromRow(row);
+      const identity = endedLeaseOwners.find((candidate) => candidate.receiptId === stored.receiptId);
+      const next: DurableAdmissionRecord = {
+        ...nextDecision(stored.record, 'queued', nowMs, 'owner-ended', {
+          owner: identity?.owner ?? stored.record.lease?.owner ?? null,
+          leaseId: identity?.leaseId ?? stored.record.lease?.leaseId ?? null,
+          sessionState: 'ended',
+        }),
+        lease: undefined,
+      };
+      await this.writeRecord(tx, stored.receiptId, next);
     }
 
     const lapsed = await this.selectReconcileRows(tx, namespace, 'lease', nowMs);
@@ -357,19 +480,21 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
       await this.writeRecord(tx, stored.receiptId, next);
     }
     return {
-      requeued: lapsed.length,
+      requeued: ended.length + lapsed.length,
       expired: deadlines.length,
       abandoned: abandoned.length,
-      total: lapsed.length + deadlines.length + abandoned.length,
+      total: ended.length + lapsed.length + deadlines.length + abandoned.length,
     };
   }
 
-  reconcileExpired(namespace: string, nowMs: number): Promise<QueueReconciliationResult> {
-    return this.transaction((tx) => this.reconcileExpiredRows(tx, namespace, nowMs));
+  async reconcileExpired(namespace: string, nowMs: number): Promise<QueueReconciliationResult> {
+    const endedLeaseOwners = await this.endedLeaseOwners(namespace, nowMs);
+    return this.transaction((tx) => this.reconcileExpiredRows(tx, namespace, nowMs, endedLeaseOwners));
   }
 
-  reconcileExpiredAll(nowMs = Date.now()): Promise<QueueReconciliationResult> {
-    return this.transaction((tx) => this.reconcileExpiredRows(tx, null, nowMs));
+  async reconcileExpiredAll(nowMs = Date.now()): Promise<QueueReconciliationResult> {
+    const endedLeaseOwners = await this.endedLeaseOwners(null, nowMs);
+    return this.transaction((tx) => this.reconcileExpiredRows(tx, null, nowMs, endedLeaseOwners));
   }
 
   async leaseNext(
@@ -380,8 +505,9 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
     nowMs: number,
     selection?: QueueLeaseSelection,
   ): Promise<QueueMutationResult | null> {
+    const endedLeaseOwners = await this.endedLeaseOwners(namespace, nowMs);
     return this.transaction(async (tx) => {
-      await this.reconcileExpiredRows(tx, namespace, nowMs);
+      await this.reconcileExpiredRows(tx, namespace, nowMs, endedLeaseOwners);
       let rows: LedgerDbRow[];
       if (!selection) {
         rows = await tx<LedgerDbRow[]>`
@@ -501,8 +627,9 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
     ttlMs: number,
     nowMs: number,
   ): Promise<QueueMutationResult | null> {
+    const endedLeaseOwners = await this.endedLeaseOwners(namespace, nowMs);
     return this.transaction(async (tx) => {
-      await this.reconcileExpiredRows(tx, namespace, nowMs);
+      await this.reconcileExpiredRows(tx, namespace, nowMs, endedLeaseOwners);
       const row = await this.findReceiptRow(tx, receiptId, true);
       if (!row) return null;
       const stored = storedFromRow(row);

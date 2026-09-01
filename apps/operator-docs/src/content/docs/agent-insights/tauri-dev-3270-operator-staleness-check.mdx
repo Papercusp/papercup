@@ -45,7 +45,9 @@ Compare the **listener process on the selected dev port** with the relevant chan
 ```bash
 dev_port=3270  # replace with the webview's selected port when it was relocated
 operator_pid="$(
-  ss -ltnp "sport = :$dev_port" 2>/dev/null     | sed -n 's/.*pid=\([0-9]\+\).*/\1/p'     | head -n 1
+  ss -ltnp "sport = :$dev_port" 2>/dev/null \
+    | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \
+    | head -n 1
 )"
 
 test -n "$operator_pid" || {

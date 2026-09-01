@@ -44,6 +44,7 @@ const {
   getActiveRun,
   getRunningRun,
   setRunPhase,
+  unsafeSetRunPhaseForFixtures,
   failRunIfExecuting,
   executeBulkRunAction,
   executeBulkRunItemReversal,
@@ -117,7 +118,7 @@ describe('attention bulk-run store (real PG)', () => {
       requestedBy: 'system:inbox-bulk-resolve',
       harnessSlug: 'papercusp',
     });
-    await setRunPhase({ runId: unattended.runId, phase: 'complete' });
+    await unsafeSetRunPhaseForFixtures({ runId: unattended.runId, phase: 'complete' });
 
     expect(h.deliverOwnerDigest).toHaveBeenCalledTimes(1);
     expect(h.deliverOwnerDigest).toHaveBeenCalledWith(
@@ -135,7 +136,7 @@ describe('attention bulk-run store (real PG)', () => {
       requestedBy: 'owner:aviynw',
       harnessSlug: 'papercusp',
     });
-    await setRunPhase({ runId: foreground.runId, phase: 'complete' });
+    await unsafeSetRunPhaseForFixtures({ runId: foreground.runId, phase: 'complete' });
     expect(h.deliverOwnerDigest).not.toHaveBeenCalled();
   });
 
@@ -608,7 +609,7 @@ describe('attention bulk-run store (real PG)', () => {
     const ws = 'ws-bulk-run-active-test';
 
     const older = await createRun({ items: seed('h'), workspaceId: ws });
-    await setRunPhase({ runId: older.runId, phase: 'complete', workspaceId: ws });
+    await unsafeSetRunPhaseForFixtures({ runId: older.runId, phase: 'complete', workspaceId: ws });
 
     const newer = await createRun({ items: seed('i'), workspaceId: ws });
     await setRunPhase({ runId: newer.runId, phase: 'running', workspaceId: ws });
@@ -618,7 +619,7 @@ describe('attention bulk-run store (real PG)', () => {
 
     // With every run terminal, the pane falls back to idle rather than showing
     // a stale running strip.
-    await setRunPhase({ runId: newer.runId, phase: 'complete', workspaceId: ws });
+    await unsafeSetRunPhaseForFixtures({ runId: newer.runId, phase: 'complete', workspaceId: ws });
     expect(await getActiveRun(ws)).toBeNull();
     expect((await getLatestRun(ws))!.runId).toBe(newer.runId);
   });
@@ -949,7 +950,7 @@ describe('attention bulk-run store (real PG)', () => {
 
       await setRunPhase({ runId: run.runId, phase: 'review' });
       expect(await recordRunHeartbeat({ runId: run.runId })).toBeNull();
-      await setRunPhase({ runId: run.runId, phase: 'complete' });
+      await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase: 'complete' });
       expect(await recordRunHeartbeat({ runId: run.runId })).toBeNull();
     });
 
