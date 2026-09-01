@@ -618,6 +618,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
     expect(claimM).toHaveBeenCalledWith('WI-42', 'su-caller-own-id', { harness: 'papercusp' });
     expect(b).toMatchObject({ ok: true, loop: { workItem: 'WI-42' }, workItemClaim: { id: 'WI-42', claimed: true } });
     expect(b.note).toContain('Auto-claimed work-item WI-42');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ workItem: 'WI-42' }));
     // the held id is passed to the wake-prompt builder so the mandate is concrete
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: 'WI-42' }));
   });
@@ -1354,6 +1355,25 @@ describe('loop:arm — EI-18221784742583615 overwrite guard (through the handler
     const b = body(await call({ intervalSec: 120, goal: 'drain the generic bug backlog' }));
     expect(b.priorLoopOverwrite).toBeNull();
     expect(b.note).not.toContain('OVERWRITES an already-ACTIVE loop');
+  });
+
+  it('EI-22079408866636029: preserves an active work-item anchor when a retune omits workItem', async () => {
+    priorLoopM.mockResolvedValue(
+      priorLoop({
+        goal: 'continue WI-42',
+        kickoff: 'kickoff-prompt',
+        workItem: 'WI-42',
+      }) as never,
+    );
+
+    const b = body(await call({ intervalSec: 600, goal: 'continue WI-42', maxDurationSec: 900 }));
+
+    expect(b).toMatchObject({ ok: true, loop: { workItem: 'WI-42' } });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: 'WI-42' }));
+    expect(materializeM).toHaveBeenCalledWith(
+      expect.objectContaining({ workItem: 'WI-42', maxDurationSec: 900 }),
+    );
   });
 
   it('no prior loop ⇒ priorLoopOverwrite null (the default arm shape, unaffected)', async () => {

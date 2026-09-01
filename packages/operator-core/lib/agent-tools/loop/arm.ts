@@ -976,8 +976,21 @@ export default defineTool({
             : undefined;
     // Work-item monitor authority is already held (admission proved it), so
     // bind it to the wake prompt without re-running the claim mutation.
+    // EI-22079408866636029: a cadence/dead-man retune commonly omits workItem.
+    // Preserve the active loop's durable anchor in that case, rather than rebuilding
+    // the response and kickoff with `null` and silently detaching the loop from its
+    // death-resilience work-item claim.
+    const priorWorkItem =
+      resolvedMode === 'work' &&
+      !explicitWorkItem &&
+      !monitorAuthorityWorkItem &&
+      prior?.active === true &&
+      typeof prior.workItem === 'string' &&
+      prior.workItem.trim()
+        ? prior.workItem.trim().toUpperCase()
+        : null;
     let claimedWorkItem: string | null =
-      admittedMonitorConfig?.authority.kind === 'work-item' ? admittedMonitorConfig.authority.workItem : null;
+      admittedMonitorConfig?.authority.kind === 'work-item' ? admittedMonitorConfig.authority.workItem : priorWorkItem;
     let workItemClaim:
       | { id: string; claimed: true }
       | { id: string; claimed: false; reason: string; holder?: string; hint?: string }
@@ -1124,6 +1137,7 @@ export default defineTool({
       continuation: args.continuation ?? 'settle',
       mode: resolvedMode,
       ...(admittedMonitorConfig ? { monitor: admittedMonitorConfig } : {}),
+      ...(claimedWorkItem ? { workItem: claimedWorkItem } : {}),
       customWakePrompt: hasCustomWakePrompt,
     });
     const control = await refreshControlAnchorAfterMutation({
