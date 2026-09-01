@@ -353,4 +353,78 @@ describe('work-item admission hourly delta sweep (real PostgreSQL)', () => {
     expect(result).toMatchObject({ recentItems: 0, modelCalled: false, umbrellaYield: 0 });
     expect(llmCall).not.toHaveBeenCalled();
   });
+
+  it('retries transient model transport failures with bounded backoff', async () => {
+    await seedItem({
+      id: 'WI-retry',
+      title: 'Transient retry probe',
+      summary: 'A recent item exercises the model transport retry path.',
+      admittedAt: '2026-08-26T11:30:00Z',
+    });
+    const llmCall = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('connect ECONNRESET 10.0.0.1:443'))
+      .mockResolvedValueOnce({ text: '', json: { umbrellas: [] }, inputTokens: 7, outputTokens: 3 });
+    const delay = vi.fn(async () => undefined);
+    const result = await runWorkItemAdmissionDeltaSweep({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'delta-transient-retry',
+      sql: db.sql,
+      now: () => NOW,
+      llmCall,
+      retryBackoffsMs: [1],
+      retryDelay: delay,
+      fileUmbrella: vi.fn(),
+      linkUmbrella: vi.fn(),
+    });
+    expect(result).toMatchObject({ modelCalled: true, tokensIn: 7, tokensOut: 3 });
+    expect(llmCall).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledWith(1);
+  }, 60_000);
+
+  it('resumes a failed effect from the admission ledger without another model call', async () => {
+    const ids = ['WI-r1', 'WI-r2', 'WI-r3'];
+    for (const [index, id] of ids.entries()) {
+      await seedItem({ id, title: `Resume item ${id}`, summary: 'Same resumable umbrella cause.', admittedAt: `2026-08-26T11:3${index}:00Z` });
+    }
+    const proposal = {
+      title: 'Resumable umbrella',
+      body: 'A partial effect is resumed from the ledger.',
+      reason: 'The effect checkpoint keeps the parsed result.',
+      memberIds: ids,
+    };
+    const llmCall = vi.fn(async () => ({ text: '', json: { umbrellas: [proposal] }, inputTokens: 9, outputTokens: 4 }));
+    const fileUmbrella = vi.fn(async () => ({ id: 'EI-resume', created: true }));
+    const linkUmbrella = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('link interrupted'))
+      .mockResolvedValueOnce(ids.length);
+    await expect(
+      runWorkItemAdmissionDeltaSweep({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'delta-resume',
+        sql: db.sql,
+        now: () => NOW,
+        llmCall,
+        fileUmbrella,
+        linkUmbrella,
+      }),
+    ).rejects.toThrow('link interrupted');
+    const resumed = await runWorkItemAdmissionDeltaSweep({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'delta-resume',
+      sql: db.sql,
+      now: () => NOW,
+      llmCall,
+      fileUmbrella,
+      linkUmbrella,
+    });
+    expect(resumed).toMatchObject({ modelCalled: true, umbrellaYield: 1, linksWritten: 3 });
+    expect(llmCall).toHaveBeenCalledTimes(1);
+    expect(fileUmbrella).toHaveBeenCalledTimes(1);
+    expect(linkUmbrella).toHaveBeenCalledTimes(2);
+  }, 60_000);
 });

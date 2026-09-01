@@ -17,7 +17,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { z } from 'zod';
+import { isLlmCallError } from '@papercusp/testing-shell/llm';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
+import { isTransientNetworkError } from './harness/routines/hetzner-orphan-frame-reaper';
 import {
   responsePayload,
   type AdmissionRunOutcome,
@@ -32,6 +34,13 @@ export const DEFAULT_DELTA_TITLE_WINDOW_HOURS = 24;
 export const DEFAULT_DELTA_CLUSTER_EXEMPLARS = 8;
 export const MIN_DELTA_UMBRELLA_MEMBERS = 3;
 export const MAX_DELTA_UMBRELLAS = 20;
+export const DELTA_MAX_PROMPT_CHARS = 800_000;
+export const DELTA_MAX_TITLE_CHARS = 240;
+export const DELTA_MAX_SUMMARY_CHARS = 1_200;
+export const DELTA_MAX_BODY_CHARS = 1_200;
+export const DELTA_MAX_REASON_CHARS = 300;
+export const DELTA_MAX_MEMBERS_PER_UMBRELLA = 25;
+export const DELTA_MODEL_RETRY_BACKOFFS_MS = [250, 1_000] as const;
 
 export interface DeltaSweepItem {
   id: string;
@@ -134,6 +143,10 @@ export interface DeltaSweepRunOptions {
    * naming the model the run actually called.
    */
   model?: string;
+  /** Bounded retry delays for transient model transport failures. */
+  retryBackoffsMs?: readonly number[];
+  /** Injectable delay for tests; defaults to a real timer. */
+  retryDelay?: (ms: number) => Promise<void>;
 }
 
 interface DeltaItemRow {
@@ -156,9 +169,9 @@ interface ShardMapRow {
 
 const UmbrellaSchema = z
   .object({
-    title: z.string().trim().min(1).max(240),
-    body: z.string().trim().min(1).max(12_000),
-    reason: z.string().trim().min(1).max(2_000),
+    title: z.string().trim().min(1),
+    body: z.string().trim().min(1),
+    reason: z.string().trim().min(1),
     memberIds: z.array(z.string().trim().min(1).max(160)).min(MIN_DELTA_UMBRELLA_MEMBERS).max(100),
   })
   .strict();
@@ -178,6 +191,25 @@ function normalizeTitle(value: string): string {
     .normalize('NFKC')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+}
+
+function clampDeltaText(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const cut = value.slice(0, max - 1);
+  const boundary = cut.lastIndexOf(' ');
+  return `${(boundary > max * 0.6 ? cut.slice(0, boundary) : cut).trimEnd()}…`;
+}
+
+function digestDeltaTitle(value: string): string {
+  return clampDeltaText(value.replace(/\s+/g, ' ').trim(), DELTA_MAX_TITLE_CHARS);
+}
+
+function isRetryableDeltaModelError(error: unknown): boolean {
+  if (isLlmCallError(error)) {
+    const retryable = error.turn.retryable;
+    if (typeof retryable === 'boolean') return retryable;
+  }
+  return isTransientNetworkError(error);
 }
 
 /** Stable enough for exact replay/convergence; the ordinary capture dedup net remains authoritative. */
@@ -215,14 +247,19 @@ export function parseDeltaSweepProposals(
     if (seenTitles.has(titleKey)) throw new Error(`delta-sweep model returned duplicate umbrella title '${raw.title}'`);
     seenTitles.add(titleKey);
     memberIds.forEach((id) => assignedMembers.add(id));
-    return { ...raw, memberIds: memberIds.sort() };
+    return {
+      title: digestDeltaTitle(raw.title),
+      body: clampDeltaText(raw.body, DELTA_MAX_BODY_CHARS),
+      reason: clampDeltaText(raw.reason, DELTA_MAX_REASON_CHARS),
+      memberIds: memberIds.slice(0, DELTA_MAX_MEMBERS_PER_UMBRELLA).sort(),
+    };
   });
 }
 
 export function buildDeltaSweepPrompt(
   context: DeltaSweepContext,
   input: { recentWindowMinutes: number; titleWindowHours: number },
-): { system: string; user: string } {
+): { system: string; user: string; includedItems: number; omittedItems: number } {
   const system = [
     'You detect SHARED UPSTREAM ROOT-CAUSE BURSTS in an admitted engineering work queue.',
     'This is NOT pairwise duplicate judgement, merit review, prioritization, or a request to rewrite individual items.',
@@ -232,17 +269,30 @@ export function buildDeltaSweepPrompt(
     'Do not assign one source item to multiple umbrellas. Prefer zero umbrellas over a speculative or generic grouping.',
     'The umbrella title should name the shared root cause, not merely restate a broad theme.',
     'The body must explain the common mechanism and cite the member IDs as evidence.',
+    `Keep each title <= ${DELTA_MAX_TITLE_CHARS} chars, body <= ${DELTA_MAX_BODY_CHARS}, reason <= ${DELTA_MAX_REASON_CHARS}, memberIds <= ${DELTA_MAX_MEMBERS_PER_UMBRELLA}.`,
+    `Return at most ${MAX_DELTA_UMBRELLAS} umbrellas and stay within the bounded prompt corpus.`,
     'Return strict JSON only: {"umbrellas":[{"title":"...","body":"...","reason":"...","memberIds":["..."]}]}.',
   ].join('\n');
+  const lines: string[] = [];
+  let used = 0;
+  let omittedItems = 0;
+  for (const item of context.recentItems) {
+    const line = [item.id, item.kind, item.state, item.conditionKey ?? '-', digestDeltaTitle(item.title), clampDeltaText(item.summary, DELTA_MAX_SUMMARY_CHARS)].join('\t');
+    if (used + line.length + 1 > DELTA_MAX_PROMPT_CHARS) { omittedItems += 1; continue; }
+    lines.push(line);
+    used += line.length + 1;
+  }
   const user = [
     `# CURRENT-WINDOW ITEMS — last ${input.recentWindowMinutes} minutes; full item text; ONLY valid memberIds`,
-    JSON.stringify(context.recentItems, null, 2),
+    '# One per line, TAB-separated: id, kind, state, condition, title, bounded summary.',
+    lines.join('\n'),
+    ...(omittedItems > 0 ? [`# BUDGET NOTE — ${omittedItems} current item(s) omitted from this bounded prompt.`] : []),
     `# READ-ONLY RECENCY CONTEXT — admitted titles from the last ${input.titleWindowHours} hours`,
     JSON.stringify(context.last24hTitles, null, 2),
     `# READ-ONLY CLUSTER-MAP SUMMARY — source census ${context.sourceCensusRunId ?? 'none'}`,
     JSON.stringify(context.clusterShards, null, 2),
   ].join('\n\n');
-  return { system, user };
+  return { system, user, includedItems: lines.length, omittedItems };
 }
 
 export async function readDeltaSweepContext(
@@ -376,6 +426,45 @@ async function readCompletedRun(sql: OrgSql, runId: string): Promise<DeltaSweepR
   };
 }
 
+interface DeltaSweepCheckpoint {
+  modelCalled?: boolean;
+  tokensIn?: number;
+  tokensOut?: number;
+  proposals?: DeltaSweepUmbrellaProposal[];
+  umbrellas?: DeltaSweepUmbrellaEffect[];
+}
+
+async function readRunCheckpoint(sql: OrgSql, runId: string): Promise<DeltaSweepCheckpoint | null> {
+  const rows = await sql<Array<{ detail: Record<string, unknown> | null }>>`
+    SELECT detail FROM harness_shared.admission_runs WHERE id = ${runId} LIMIT 1`;
+  const checkpoint = rows[0]?.detail?.checkpoint;
+  if (!checkpoint || typeof checkpoint !== 'object') return null;
+  return checkpoint as DeltaSweepCheckpoint;
+}
+
+async function saveRunCheckpoint(sql: OrgSql, runId: string, checkpoint: DeltaSweepCheckpoint): Promise<void> {
+  await sql`
+    UPDATE harness_shared.admission_runs
+       SET detail = COALESCE(detail, '{}'::jsonb) || ${JSON.stringify({ checkpoint })}::text::jsonb
+     WHERE id = ${runId}`;
+}
+
+async function callDeltaModelWithRetry(
+  call: () => Promise<Awaited<ReturnType<PromoterLlmCall>>>,
+  opts: { backoffsMs: readonly number[]; delay: (ms: number) => Promise<void> },
+): Promise<Awaited<ReturnType<PromoterLlmCall>>> {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await call();
+    } catch (error) {
+      if (!isRetryableDeltaModelError(error) || attempt >= opts.backoffsMs.length) throw error;
+      await opts.delay(opts.backoffsMs[attempt]!);
+      attempt += 1;
+    }
+  }
+}
+
 async function beginRun(
   sql: OrgSql,
   input: { runId: string; workspaceId: string; harnessSlug: string; startedAt: string },
@@ -441,12 +530,15 @@ export async function runWorkItemAdmissionDeltaSweep(opts: DeltaSweepRunOptions)
   const titleWindowHours = positiveInteger(opts.titleWindowHours, DEFAULT_DELTA_TITLE_WINDOW_HOURS);
   const clusterExemplarsPerShard = positiveInteger(opts.clusterExemplarsPerShard, DEFAULT_DELTA_CLUSTER_EXEMPLARS);
   const model = opts.model?.trim() || LEARNING_MODEL_SPEC;
-  await beginRun(sql, {
-    runId,
-    workspaceId: opts.workspaceId,
-    harnessSlug: opts.harnessSlug,
-    startedAt: new Date(startedMs).toISOString(),
-  });
+  const savedCheckpoint = await readRunCheckpoint(sql, runId);
+  if (!savedCheckpoint) {
+    await beginRun(sql, {
+      runId,
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      startedAt: new Date(startedMs).toISOString(),
+    });
+  }
 
   try {
     const context = await readDeltaSweepContext(sql, {
@@ -457,36 +549,61 @@ export async function runWorkItemAdmissionDeltaSweep(opts: DeltaSweepRunOptions)
       titleWindowHours,
       clusterExemplarsPerShard,
     });
-    let modelCalled = false;
-    let tokensIn = 0;
-    let tokensOut = 0;
-    let proposals: DeltaSweepUmbrellaProposal[] = [];
+    let modelCalled = savedCheckpoint?.modelCalled === true;
+    let tokensIn = Number(savedCheckpoint?.tokensIn ?? 0);
+    let tokensOut = Number(savedCheckpoint?.tokensOut ?? 0);
+    let proposals: DeltaSweepUmbrellaProposal[] = Array.isArray(savedCheckpoint?.proposals)
+      ? savedCheckpoint!.proposals!
+      : [];
     if (context.recentItems.length > 0) {
-      const prompt = buildDeltaSweepPrompt(context, { recentWindowMinutes, titleWindowHours });
-      const response = await opts.llmCall({
-        model,
-        system: prompt.system,
-        messages: [{ role: 'user', content: prompt.user }],
-        responseFormat: 'json',
-        maxTokens: 12_000,
-      });
-      modelCalled = true;
-      tokensIn = response.inputTokens;
-      tokensOut = response.outputTokens;
-      proposals = parseDeltaSweepProposals(
-        responsePayload(response),
-        new Set(context.recentItems.map((item) => item.id)),
-      );
+      if (!proposals.length) {
+        const prompt = buildDeltaSweepPrompt(context, { recentWindowMinutes, titleWindowHours });
+        const response = await callDeltaModelWithRetry(
+          () =>
+            opts.llmCall({
+              model,
+              system: prompt.system,
+              messages: [{ role: 'user', content: prompt.user }],
+              responseFormat: 'json',
+              maxTokens: 12_000,
+            }),
+          {
+            backoffsMs: opts.retryBackoffsMs ?? DELTA_MODEL_RETRY_BACKOFFS_MS,
+            delay: opts.retryDelay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+          },
+        );
+        modelCalled = true;
+        tokensIn += Number(response.inputTokens ?? 0);
+        tokensOut += Number(response.outputTokens ?? 0);
+        proposals = parseDeltaSweepProposals(
+          responsePayload(response),
+          new Set(context.recentItems.map((item) => item.id)),
+        );
+        await saveRunCheckpoint(sql, runId, { modelCalled, tokensIn, tokensOut, proposals, umbrellas: [] });
+      }
     }
 
-    const umbrellas: DeltaSweepUmbrellaEffect[] = [];
+    const umbrellas: DeltaSweepUmbrellaEffect[] = Array.isArray(savedCheckpoint?.umbrellas)
+      ? [...savedCheckpoint.umbrellas]
+      : [];
     for (const proposal of proposals) {
-      const filed = await opts.fileUmbrella({
-        runId,
-        harnessSlug: opts.harnessSlug,
-        proposal,
-        watchdogKey: deltaSweepWatchdogKey(opts.harnessSlug, proposal.title),
-      });
+      const existing = umbrellas.find(
+        (umbrella) => umbrella.title === proposal.title && umbrella.memberIds.join(',') === proposal.memberIds.join(','),
+      );
+      if (existing?.linksWritten === proposal.memberIds.length) continue;
+      let filed: FiledDeltaSweepUmbrella;
+      if (existing) {
+        filed = existing;
+      } else {
+        filed = await opts.fileUmbrella({
+          runId,
+          harnessSlug: opts.harnessSlug,
+          proposal,
+          watchdogKey: deltaSweepWatchdogKey(opts.harnessSlug, proposal.title),
+        });
+        umbrellas.push({ ...filed, title: proposal.title, memberIds: proposal.memberIds, linksWritten: 0 });
+        await saveRunCheckpoint(sql, runId, { modelCalled, tokensIn, tokensOut, proposals, umbrellas });
+      }
       const linksWritten = await opts.linkUmbrella({
         runId,
         workspaceId: opts.workspaceId,
@@ -499,7 +616,10 @@ export async function runWorkItemAdmissionDeltaSweep(opts: DeltaSweepRunOptions)
           `delta-sweep umbrella ${filed.id} link coverage mismatch: ${linksWritten}/${proposal.memberIds.length}`,
         );
       }
-      umbrellas.push({ ...filed, title: proposal.title, memberIds: proposal.memberIds, linksWritten });
+      const effect = umbrellas.find((umbrella) => umbrella.id === filed.id && umbrella.title === proposal.title);
+      if (effect) effect.linksWritten = linksWritten;
+      else umbrellas.push({ ...filed, title: proposal.title, memberIds: proposal.memberIds, linksWritten });
+      await saveRunCheckpoint(sql, runId, { modelCalled, tokensIn, tokensOut, proposals, umbrellas });
     }
 
     const latencyMs = Math.max(0, now() - startedMs);

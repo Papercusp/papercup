@@ -348,6 +348,35 @@ describe('work-item admission daily digest', () => {
     expect(bound.at(-1)?.values).not.toContain(LEARNING_MODEL_SPEC);
   });
 
+  it('retries transient model transport failures with bounded backoff', async () => {
+    const harness = digestHarness({});
+    const llmCall = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('connect ECONNRESET 10.0.0.1:443'))
+      .mockResolvedValueOnce({
+        json: { umbrellas: [] },
+        text: '',
+        inputTokens: 11,
+        outputTokens: 22,
+      });
+    const delay = vi.fn(async () => undefined);
+    const result = await runWorkItemAdmissionDailyDigest({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      runId: 'daily-transient-retry',
+      now: () => Date.parse('2026-08-29T00:00:00Z'),
+      sql: harness.sql,
+      llmCall: llmCall as unknown as Parameters<typeof runWorkItemAdmissionDailyDigest>[0]['llmCall'],
+      retryBackoffsMs: [1],
+      retryDelay: delay,
+      fileUmbrella: vi.fn(),
+      linkUmbrella: vi.fn(),
+    });
+    expect(result).toMatchObject({ status: 'complete', modelCalled: true, tokensIn: 11, tokensOut: 22 });
+    expect(llmCall).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledWith(1);
+  });
+
   /**
    * D-028. The census shard map can never cover the live corpus EXACTLY on a live
    * workspace: a census takes ~510s while items arrive at ~8/min, so it is ~67 items

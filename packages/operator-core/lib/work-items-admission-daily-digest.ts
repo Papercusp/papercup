@@ -10,9 +10,11 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { isLlmCallError } from '@papercusp/testing-shell/llm';
 import { getOrgPg } from '@papercusp/db-org';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
+import { isTransientNetworkError } from './harness/routines/hetzner-orphan-frame-reaper';
 import {
   responsePayload,
   type AdmissionRunOutcome,
@@ -112,6 +114,15 @@ export function maxUmbrellasForOutputBudget(
 
 export const MAX_DAILY_DIGEST_UMBRELLAS = maxUmbrellasForOutputBudget();
 export const DEFAULT_DAILY_DIGEST_MAX_TOKENS = DAILY_DIGEST_MAX_OUTPUT_TOKENS;
+export const DAILY_DIGEST_MODEL_RETRY_BACKOFFS_MS = [250, 1_000] as const;
+
+function isRetryableDailyDigestModelError(error: unknown): boolean {
+  if (isLlmCallError(error)) {
+    const retryable = error.turn.retryable;
+    if (typeof retryable === 'boolean') return retryable;
+  }
+  return isTransientNetworkError(error);
+}
 
 /**
  * Minimum share of the LIVE corpus the census shard map must cover for a digest to run
@@ -277,6 +288,10 @@ export interface DailyDigestRunOptions {
    * AND what the admission_runs ledger records as model_id.
    */
   model?: string;
+  /** Bounded retry delays for transient model transport failures. */
+  retryBackoffsMs?: readonly number[];
+  /** Injectable delay for tests; defaults to a real timer. */
+  retryDelay?: (ms: number) => Promise<void>;
 }
 
 interface BulkStageRow {
@@ -941,6 +956,47 @@ async function readFinishedRun(sql: OrgSql, runId: string): Promise<DailyDigestR
   };
 }
 
+interface DailyDigestCheckpoint {
+  modelCalled?: boolean;
+  tokensIn?: number;
+  tokensOut?: number;
+  proposals?: DailyDigestUmbrellaProposal[];
+  clamps?: DailyDigestClamps | null;
+  umbrellas?: DailyDigestUmbrellaEffect[];
+}
+
+async function readRunCheckpoint(sql: OrgSql, runId: string): Promise<DailyDigestCheckpoint | null> {
+  const rows = await sql<Array<{ detail: Record<string, unknown> | null }>>`
+    SELECT detail FROM harness_shared.admission_runs WHERE id = ${runId} LIMIT 1`;
+  const detail = rows[0]?.detail;
+  if (!detail || (detail.status !== 'running' && detail.status !== 'failed')) return null;
+  const checkpoint = detail.checkpoint;
+  return checkpoint && typeof checkpoint === 'object' ? (checkpoint as DailyDigestCheckpoint) : {};
+}
+
+async function saveRunCheckpoint(sql: OrgSql, runId: string, checkpoint: DailyDigestCheckpoint): Promise<void> {
+  await sql`
+    UPDATE harness_shared.admission_runs
+       SET detail = COALESCE(detail, '{}'::jsonb) || ${JSON.stringify({ checkpoint })}::text::jsonb
+     WHERE id = ${runId}`;
+}
+
+async function callDailyDigestModelWithRetry(
+  call: () => Promise<Awaited<ReturnType<PromoterLlmCall>>>,
+  opts: { backoffsMs: readonly number[]; delay: (ms: number) => Promise<void> },
+): Promise<Awaited<ReturnType<PromoterLlmCall>>> {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await call();
+    } catch (error) {
+      if (!isRetryableDailyDigestModelError(error) || attempt >= opts.backoffsMs.length) throw error;
+      await opts.delay(opts.backoffsMs[attempt]!);
+      attempt += 1;
+    }
+  }
+}
+
 async function beginRun(
   sql: OrgSql,
   input: { runId: string; workspaceId: string; harnessSlug: string; startedAt: string },
@@ -1006,12 +1062,15 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
   const runId = opts.runId ?? `${WORK_ITEM_ADMISSION_DAILY_DIGEST}:${startedMs}:${randomUUID().slice(0, 8)}`;
   const replay = await readFinishedRun(sql, runId);
   if (replay) return replay;
-  await beginRun(sql, {
-    runId,
-    workspaceId: opts.workspaceId,
-    harnessSlug: opts.harnessSlug,
-    startedAt: new Date(startedMs).toISOString(),
-  });
+  const savedCheckpoint = await readRunCheckpoint(sql, runId);
+  if (!savedCheckpoint) {
+    await beginRun(sql, {
+      runId,
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      startedAt: new Date(startedMs).toISOString(),
+    });
+  }
   try {
     const gate = await readYieldingBulkStage(sql, opts.workspaceId, opts.harnessSlug);
     const stage = gate.stage;
@@ -1139,28 +1198,61 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
       return result;
     }
     const prompt = buildDailyDigestPrompt(context);
-    const response = await opts.llmCall({
-      model,
-      system: prompt.system,
-      messages: [{ role: 'user', content: prompt.user }],
-      responseFormat: 'json',
-      maxTokens: Math.max(1, Math.floor(opts.maxTokens ?? DEFAULT_DAILY_DIGEST_MAX_TOKENS)),
-      ownerId: `${DAILY_DIGEST_ACTOR}:${runId}`,
-    });
-    const { proposals, clamps } = parseDailyDigestProposals(
-      responsePayload(response),
-      new Set(context.items.map((item) => item.id)),
-    );
-    const umbrellas: DailyDigestUmbrellaEffect[] = [];
+    let modelCalled = savedCheckpoint?.modelCalled === true;
+    let tokensIn = Number(savedCheckpoint?.tokensIn ?? 0);
+    let tokensOut = Number(savedCheckpoint?.tokensOut ?? 0);
+    let proposals = savedCheckpoint?.proposals ?? [];
+    let clamps = savedCheckpoint?.clamps ?? null;
+    if (!proposals.length) {
+      const response = await callDailyDigestModelWithRetry(
+        () =>
+          opts.llmCall({
+            model,
+            system: prompt.system,
+            messages: [{ role: 'user', content: prompt.user }],
+            responseFormat: 'json',
+            maxTokens: Math.max(1, Math.floor(opts.maxTokens ?? DEFAULT_DAILY_DIGEST_MAX_TOKENS)),
+            ownerId: `${DAILY_DIGEST_ACTOR}:${runId}`,
+          }),
+        {
+          backoffsMs: opts.retryBackoffsMs ?? DAILY_DIGEST_MODEL_RETRY_BACKOFFS_MS,
+          delay: opts.retryDelay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+        },
+      );
+      modelCalled = true;
+      tokensIn += Number(response.inputTokens ?? 0);
+      tokensOut += Number(response.outputTokens ?? 0);
+      const parsed = parseDailyDigestProposals(
+        responsePayload(response),
+        new Set(context.items.map((item) => item.id)),
+      );
+      proposals = parsed.proposals;
+      clamps = parsed.clamps;
+      await saveRunCheckpoint(sql, runId, { modelCalled, tokensIn, tokensOut, proposals, clamps, umbrellas: [] });
+    }
+    const umbrellas: DailyDigestUmbrellaEffect[] = Array.isArray(savedCheckpoint?.umbrellas)
+      ? [...savedCheckpoint.umbrellas]
+      : [];
     for (const proposal of proposals) {
-      const filed = await opts.fileUmbrella({
-        runId,
-        harnessSlug: opts.harnessSlug,
-        proposal,
-        watchdogKey: dailyDigestWatchdogKey(opts.harnessSlug, proposal.title),
-        sourceBulkStageRunId: context.sourceBulkStageRunId,
-        sourceCensusRunId: context.sourceCensusRunId,
-      });
+      const existing = umbrellas.find(
+        (umbrella) => umbrella.title === proposal.title && umbrella.memberIds.join(',') === proposal.memberIds.join(','),
+      );
+      if (existing?.linksWritten === proposal.memberIds.length) continue;
+      let filed: FiledDailyDigestUmbrella;
+      if (existing) {
+        filed = existing;
+      } else {
+        filed = await opts.fileUmbrella({
+          runId,
+          harnessSlug: opts.harnessSlug,
+          proposal,
+          watchdogKey: dailyDigestWatchdogKey(opts.harnessSlug, proposal.title),
+          sourceBulkStageRunId: context.sourceBulkStageRunId,
+          sourceCensusRunId: context.sourceCensusRunId,
+        });
+        umbrellas.push({ ...filed, title: proposal.title, memberIds: proposal.memberIds, linksWritten: 0 });
+        await saveRunCheckpoint(sql, runId, { modelCalled, tokensIn, tokensOut, proposals, clamps, umbrellas });
+      }
       const linksWritten = await opts.linkUmbrella({
         runId,
         workspaceId: opts.workspaceId,
@@ -1173,10 +1265,11 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
           `daily digest umbrella ${filed.id} link coverage mismatch: ${linksWritten}/${proposal.memberIds.length}`,
         );
       }
-      umbrellas.push({ ...filed, title: proposal.title, memberIds: proposal.memberIds, linksWritten });
+      const effect = umbrellas.find((umbrella) => umbrella.id === filed.id && umbrella.title === proposal.title);
+      if (effect) effect.linksWritten = linksWritten;
+      else umbrellas.push({ ...filed, title: proposal.title, memberIds: proposal.memberIds, linksWritten });
+      await saveRunCheckpoint(sql, runId, { modelCalled, tokensIn, tokensOut, proposals, clamps, umbrellas });
     }
-    const tokensIn = Number(response.inputTokens ?? 0);
-    const tokensOut = Number(response.outputTokens ?? 0);
     const result: DailyDigestRunResult = {
       runId,
       status: 'complete',
@@ -1186,7 +1279,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
       coverage: context.coverage,
       promptItems: { included: prompt.includedItems, omitted: prompt.omittedItems },
       clamps,
-      modelCalled: true,
+      modelCalled,
       tokensIn,
       tokensOut,
       umbrellaYield: umbrellas.length,
