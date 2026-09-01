@@ -1902,7 +1902,7 @@ DBOS.registerScheduled(guiE2eSurfaceScheduledRunWorkflow, {
   crontab: '0 15 3 * * *',
 });
 
-// HOURLY at :20 — retention for resource-governor admission receipts (WI-924391).
+// HOURLY at :20 — retention for the dedicated resource-governor admission ledger.
 //
 // HOURLY, not daily, is the whole point. These rows arrive at ~24k/hour, so a daily
 // sweep would let ~576k of them accumulate between runs — which IS the collapse this
@@ -1911,8 +1911,8 @@ DBOS.registerScheduled(guiE2eSurfaceScheduledRunWorkflow, {
 //
 // Each tick is bounded (GOVERNOR_RECEIPT_GC_BATCH_LIMIT) and takes the oldest first,
 // so a neglected table converges over successive runs instead of emitting one
-// unbounded delete burst. At the measured rate the steady state is far under one
-// batch per tick; the limit only bites on a first drain.
+// unbounded delete burst. Retention is now keyed to terminal updated_at_ms in
+// resource_governor_admissions; work_items is outside this routine's delete path.
 async function governorReceiptGcTick(): Promise<void> {
   const deleteTerminalReceipts = await retentionEnabled(FLAGS.STORAGE_RETAIN_GOVERNOR_RECEIPTS);
   await DBOS.runStep(
