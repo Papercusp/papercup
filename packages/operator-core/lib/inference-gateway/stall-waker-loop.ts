@@ -219,16 +219,25 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       // press Esc themselves; background/fleet windows stay auto-recoverable. Best-effort → false, so a
       // headless box behaves exactly as before.
       if (await isOwnerFocusedOnDesktop(ownerId).catch(() => false)) {
-        console.log(`[stall-waker] unwedge(${ownerId}) skipped: session is the FOCUSED desktop window (human present — not injecting Esc)`);
+        console.log(
+          `[stall-waker] unwedge(${ownerId}) skipped: session is the FOCUSED desktop window (human present — not injecting Esc)`,
+        );
         return { ok: false, expected: true };
       }
-      const r = await forceEndTurn({ actor: 'stall-waker', workspaceId, owner: ownerId, reason: 'gateway error — ESC to re-arm (un-wedge)' });
+      const r = await forceEndTurn({
+        actor: 'stall-waker',
+        workspaceId,
+        owner: ownerId,
+        reason: 'gateway error — ESC to re-arm (un-wedge)',
+      });
       // `no_live_session` is the EXPECTED outcome (owner idle / already ended its turn — not wedged): non-
       // actionable and it recurs every cooldown, so surface it as `expected` and DON'T warn. A genuine refusal
       // (storm-guard rate-limit, SIGINT failure, etc.) still warns — a human may need to act on that.
       const expected = r.code === 'no_live_session';
       if (!r.ok && !expected) {
-        console.warn(`[stall-waker] unwedge(${ownerId}) refused/failed: ${r.error ?? 'unknown'}${r.reason ? ` — ${r.reason}` : ''}`);
+        console.warn(
+          `[stall-waker] unwedge(${ownerId}) refused/failed: ${r.error ?? 'unknown'}${r.reason ? ` — ${r.reason}` : ''}`,
+        );
       }
       return { ok: r.ok, expected };
     },
@@ -289,7 +298,10 @@ let unwedgedTotal = 0;
 /** Start the poll loop if not already running (idempotent — safe to call on every spawn). */
 export function ensureStallWakerLoop(workspaceId: string): void {
   if (timer) return;
-  waker = new StallWaker(createStallWakerDeps(workspaceId), { idleSilenceMs: IDLE_SILENCE_MS, deadQuietMs: DEAD_QUIET_MS });
+  waker = new StallWaker(createStallWakerDeps(workspaceId), {
+    idleSilenceMs: IDLE_SILENCE_MS,
+    deadQuietMs: DEAD_QUIET_MS,
+  });
   startedAt = Date.now();
   boundWorkspaceId = workspaceId;
   timer = managedSetInterval(
