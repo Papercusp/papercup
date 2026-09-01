@@ -397,30 +397,44 @@ describe('executeWake — delivery-time fleet member-dead liveness re-check (EI-
     expect(write).not.toHaveBeenCalled();
   });
 
-  // EI-22068041747784942: the emit-time payload asserts "member X is DEAD" — the
-  // downgrade message used to APPEND the correction AFTER that assertion, so a
-  // reader skimming only the leading clause could still be misled into believing
-  // the member is dead (the exact risk a leader could act on destructively, even
+  // EI-22068041747784942: the REAL emit-time payload (emitFleetTransitionEdge)
+  // asserts "fleet X: member Y is DEAD (...)" as `d.summary`. The downgrade
+  // message used to APPEND the correction AFTER that assertion, so a reader
+  // skimming only the leading clause could still be misled into believing the
+  // member is dead (the exact risk a leader could act on destructively, even
   // though — per the tests above and below — executeWake itself never resumes/
   // PTY-injects on a confirmed-stale delivery). The corrected reading must now be
   // the FIRST thing stated, and the original claim must be explicitly labeled as
-  // retracted rather than repeated as a fresh assertion.
+  // retracted rather than repeated as a fresh assertion. Uses the REAL production
+  // summary shape (not the generic `work()` default) so this test actually
+  // exercises the misleading-headline risk the bug describes.
   it('the downgraded summary leads with the correction and marks the original DEAD claim as retracted, never re-asserting it', async () => {
     const sendCoordMessage = vi.fn(async () => ({}) as never);
     const resolveMemberLiveness = verdictMap('live');
     const d = deps({ sendCoordMessage: sendCoordMessage as never, resolveMemberLiveness: resolveMemberLiveness as never });
+    const productionSummary = 'fleet pui-cockpit: member su-worker is DEAD (live → ended)';
 
-    await executeWake(memberDeadWork(), d);
+    await executeWake(memberDeadWork({ summary: productionSummary }), d);
 
     expect(sendCoordMessage).toHaveBeenCalledTimes(1);
     const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
-    // The leading clause must be the CORRECTED truth, not the stale "is DEAD" claim.
-    expect(opts.summary.indexOf('STALE')).toBeLessThan(opts.summary.indexOf('is DEAD'));
-    expect(opts.summary).toMatch(/^⚠ STALE/);
-    // The original claim, when present, must be explicitly labeled RETRACTED —
-    // never left to read as a live/current assertion.
+    // `opts.summary` is built from the `reason` string, independent of `d.summary` —
+    // it must ALSO say the wake is stale/retracted, never just "currently 'live'"
+    // with no corrective framing.
+    expect(opts.summary).toContain("currently 'live', not 'ended'");
+    expect(opts.summary).toContain('STALE');
     expect(opts.summary).toContain('RETRACTED');
-    expect(opts.summary).toContain('Do NOT treat this as a live death signal');
+    // `d.summary` (the original "is DEAD" assertion, PLUS our correction) flows
+    // into the injected turn TEXT via wakeTurnText → opts.body. The leading
+    // clause there must be the CORRECTED truth, not the stale "is DEAD" claim.
+    expect(opts.body.indexOf('STALE')).toBeGreaterThanOrEqual(0);
+    expect(opts.body.indexOf('is DEAD')).toBeGreaterThan(opts.body.indexOf('STALE'));
+    expect(opts.body).toContain('⚠ STALE');
+    // The original claim survives (for audit trail) but is explicitly labeled
+    // RETRACTED — never left to read as a live/current assertion.
+    expect(opts.body).toContain('RETRACTED');
+    expect(opts.body).toContain(productionSummary);
+    expect(opts.body).toContain('Do NOT treat this as a live death signal');
   });
 
   it('unknown/missing/erroring liveness read fails open and preserves the normal wake', async () => {
