@@ -8,6 +8,7 @@
     "start": "tsx bin/hono-host.ts",
     "serve": "tsx bin/serve.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "pretest:e2e": "node ../../scripts/ensure-playwright-browsers.mjs",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test": "node ../../scripts/workspace-test.mjs --passWithNoTests",

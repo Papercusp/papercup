@@ -474,6 +474,79 @@ export function gitChangedFiles(root) {
 }
 
 /**
+ * Resolve the local source files reachable from a set of diagnostics. A full-tree tsc run is
+ * not an atomic snapshot on the shared checkout: a peer can edit an imported module while tsc is
+ * reading its importer, then leave only the importer in the diagnostic. Walking direct local
+ * imports keeps the concurrency check scoped to the error site rather than declaring every
+ * unrelated edit in the tree inconclusive.
+ *
+ * @param {{root:string, files:string[]|Set<string>}} input
+ * @returns {Set<string>} repo-relative paths (including the seed files)
+ */
+export function relatedSourceFiles({ root, files }) {
+  const importers = [...new Set(files ?? [])].filter((file) => file && file !== '(unattributed)');
+  const seen = new Set(importers);
+  const importRe = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)["']([^"']+)["']/g;
+  const extensions = ['', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.d.ts', '.d.mts', '.d.cts'];
+  for (const importer of importers) {
+    let source;
+    try {
+      source = readFileSync(resolve(root, importer), 'utf8');
+    } catch {
+      continue;
+    }
+    importRe.lastIndex = 0;
+    for (const match of source.matchAll(importRe)) {
+      const specifier = match[1];
+      if (!specifier?.startsWith('.')) continue;
+      const importerDir = dirname(importer);
+      const raw = resolve(root, importerDir, specifier);
+      const candidates = [];
+      for (const extension of extensions) candidates.push(raw + extension);
+      for (const extension of extensions) candidates.push(resolve(raw, `index${extension}`));
+      const resolved = candidates.find((candidate) => {
+        try {
+          return statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      });
+      if (!resolved) continue;
+      const relativePath = relative(root, resolved).replaceAll('\\', '/');
+      if (!relativePath.startsWith('..') && !seen.has(relativePath)) {
+        seen.add(relativePath);
+      }
+    }
+  }
+  return seen;
+}
+
+/**
+ * Find dependency-cone files whose mtime is newer than a typecheck's start. Such a file may have
+ * been half-written while tsc read the tree, so a regression that names the cone is INCONCLUSIVE
+ * until the caller re-runs against a settled snapshot.
+ *
+ * @param {{root:string, files:string[]|Set<string>, runStartMs:number, dirtyFiles?:Set<string>|null}} input
+ * @returns {string[]} repo-relative paths, sorted and de-duplicated
+ */
+export function filesModifiedDuringRun({ root, files, runStartMs, dirtyFiles = null }) {
+  if (!Number.isFinite(runStartMs)) return [];
+  const candidates = relatedSourceFiles({ root, files });
+  const modified = [];
+  for (const file of candidates) {
+    try {
+      if (statSync(resolve(root, file)).mtimeMs > runStartMs && (dirtyFiles === null || dirtyFiles.has(file))) {
+        modified.push(file);
+      }
+    } catch {
+      // A file removed during the run cannot prove either a clean or a concurrent regression.
+      // Keep the guard fail-soft; the compiler's own diagnostic remains authoritative.
+    }
+  }
+  return modified.sort((a, b) => a.localeCompare(b));
+}
+
+/**
  * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` CLI flag naming exactly the
  * files the caller changed THIS session, as an alternative to `--mine`'s implicit
  * git-status-derived scoping. Large callers may use `--files-from=/path/to/json`, where the
@@ -2378,7 +2451,7 @@ export function lintTscScopeFromArgv(argv) {
  * established and this must not break. `routed`/`routed-failed` remain reserved for the case
  * where this gate had NO verdict of its own and handed the whole request over.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, filesUnchecked?: number, filesRouted?: number, routed?: boolean, runStartIso?: string | null, headSha?: string | null }} input
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, concurrentEditInconclusive?: boolean, filesUnchecked?: number, filesRouted?: number, routed?: boolean, runStartIso?: string | null, headSha?: string | null }} input
  * @returns {string}
  */
 export function formatLintTscResultMarker({
@@ -2387,6 +2460,7 @@ export function formatLintTscResultMarker({
   code,
   nothingTypechecked = false,
   preflightFailed = false,
+  concurrentEditInconclusive = false,
   filesUnchecked = 0,
   filesRouted = 0,
   routed = false,
@@ -2415,11 +2489,13 @@ export function formatLintTscResultMarker({
         ? 'partial'
         : 'clean'
       : code === 1
-        ? preflightFailed
-          ? 'preflight-failed'
-          : nothingTypechecked
-            ? 'out-of-scope'
-            : 'regressed'
+        ? concurrentEditInconclusive
+          ? 'inconclusive-concurrent-edit'
+          : preflightFailed
+            ? 'preflight-failed'
+            : nothingTypechecked
+              ? 'out-of-scope'
+              : 'regressed'
         : `error(${code})`;
   const marker = `LINT_TSC_RESULT label=${label} scope=${scope} exit=${code} status=${status}`;
   // Reported on a REGRESSION too: "3 files regressed" and "2 more were never looked at" are
@@ -2578,6 +2654,10 @@ export async function runTscBaselineGate({
   // `process.exit(1)`. A preflight abort measured ZERO of the caller's files, and the marker
   // must say that instead of `regressed` (a verdict about work this run never judged).
   let preflightFailed = false;
+  // EI-20211153048499132 — a bare full-tree compile can straddle a peer's edit and observe a
+  // source graph that never existed atomically. This is set after the compile, then read by the
+  // exit hook so the terminal marker cannot mislabel that unrepeatable observation as REGRESSED.
+  let concurrentEditInconclusive = false;
   // A fatal out-of-project run may delegate its complete file set to verified owning gates. The
   // parent marker must say that explicitly; `status=clean` would falsely claim this gate itself
   // compiled the named files, while `status=out-of-scope` would hide that the delegated checks ran.
@@ -2608,6 +2688,7 @@ export async function runTscBaselineGate({
         code,
         nothingTypechecked,
         preflightFailed,
+        concurrentEditInconclusive,
         filesUnchecked,
         filesRouted,
         routed: autoRouted,
@@ -3152,6 +3233,18 @@ export async function runTscBaselineGate({
     dirtyFiles,
     attributionDeclared: explicitFiles !== null,
   });
+  const concurrentEditFiles =
+    ['fail-regressed', 'fail-attributed', 'fail-new-file'].includes(result.verdict)
+      ? filesModifiedDuringRun({
+          root,
+          files:
+            result.verdict === 'fail-attributed'
+              ? result.attributed.map((entry) => entry.file)
+              : result.regressions.map((entry) => entry.file),
+          runStartMs: Date.parse(runStartIso),
+        })
+      : [];
+  concurrentEditInconclusive = concurrentEditFiles.length > 0;
   console.log(
     `TSC ${label}: ${result.total} type errors across ${Object.keys(currentByFile).length} file(s) ` +
       `(baseline total ${result.baselineTotal})${explicitFiles ? ' [--files]' : mineFlag ? ' [--mine]' : ''}`,
@@ -3233,13 +3326,29 @@ export async function runTscBaselineGate({
   // which drops any verdict that did not observe the complete standing set — so the `fail-*`
   // exits below record nothing, and a future verdict nobody classified is ignored rather than
   // trusted. Fail-soft like its sibling: TSC_EXIT can never depend on it.
-  recordGateRun({
-    verdict: result.verdict,
-    project: label ?? '',
-    standingCount: Array.isArray(result.newFiles)
-      ? partitionNewFilesByLiveEdit(result.newFiles).standing.length
-      : 0,
-  });
+  if (!concurrentEditInconclusive) {
+    recordGateRun({
+      verdict: result.verdict,
+      project: label ?? '',
+      standingCount: Array.isArray(result.newFiles)
+        ? partitionNewFilesByLiveEdit(result.newFiles).standing.length
+        : 0,
+    });
+  }
+
+  if (concurrentEditInconclusive) {
+    console.error(
+      `⚠ INCONCLUSIVE — ${concurrentEditFiles.length} source file(s) in the reported regression's ` +
+        `dependency cone changed after this typecheck started:`,
+    );
+    for (const file of concurrentEditFiles) console.error(`   - ${file}`);
+    console.error(
+      `   The compiler may have read a half-written cross-file state that never existed as a settled tree. ` +
+        `Do NOT edit the named files from this result; re-run the focused check against the current tree.`,
+    );
+    process.exit(1);
+    return;
+  }
 
   switch (result.verdict) {
     case 'fail-syntax': {
