@@ -61,4 +61,10 @@ describe('projects:list handler guard', () => {
     expect(res.isError).toBeUndefined();
     expect(listProjectsForHarness).toHaveBeenCalledWith('api');
   });
+
+  it('documents and enforces the harness-only argument contract', () => {
+    expect(projectsListTool.args.safeParse({ harnessSlug: 'web' }).success).toBe(true);
+    expect(projectsListTool.args.safeParse({ harnessSlug: 'web', workspace: 'papercusp-workspace' }).success).toBe(false);
+    expect(projectsListTool.args.safeParse({ harnessSlug: 'web', limit: 50 }).success).toBe(false);
+  });
 });

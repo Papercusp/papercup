@@ -15,6 +15,7 @@ import { getWorkItem, setWorkItemStateWithAliasInfo, type WorkItem } from '../..
 import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { planWorkItemArm } from './arm-reversible-work-item';
+import { BUDGET, promptWeight } from '../tool-guidance-budget';
 const getM = vi.mocked(getWorkItem);
 const setM = vi.mocked(setWorkItemStateWithAliasInfo);
 const planStampM = vi.mocked(resolvePlanItemStamp);
@@ -222,6 +223,10 @@ describe('work_items:set_state handler (keyed-array)', () => {
 });
 
 describe('work_items:set_state — typed blocker guidance (WI-39529)', () => {
+  it('stays within the shared prompt-weight budget', () => {
+    expect(promptWeight(tool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
+  });
+
   it('routes external and work-item dependency reasons to their structured writers', () => {
     const description = (tool as { description?: string }).description ?? '';
     const guidance = (tool as { guidance?: { when?: string; chaining?: string; seeAlso?: string[] } }).guidance;

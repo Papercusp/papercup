@@ -105,7 +105,7 @@ export function aliasModelRows({ aliases, backends, sourceAgent }: {
  *
  * @param {ReadonlyArray<{ id: string, label?: string | null, description?: string | null,
  *          efforts?: readonly string[] | null, contextWindow?: number | null }>} models
- * @param {{ sourceAgent: string, skipIds?: readonly string[] }} args
+ * @param {{ sourceAgent: string, skipIds?: readonly string[], deniedIds?: readonly string[] }} args
  * @returns {Array<{ name: string, value: ModelChoice }>}
  */
 export function codexModelRows(models: ReadonlyArray<{
@@ -114,9 +114,10 @@ export function codexModelRows(models: ReadonlyArray<{
     description?: string | null;
     efforts?: readonly string[] | null;
     contextWindow?: number | null;
-}>, { sourceAgent, skipIds }: {
+}>, { sourceAgent, skipIds, deniedIds }: {
     sourceAgent: string;
     skipIds?: readonly string[];
+    deniedIds?: readonly string[];
 }): Array<{
     name: string;
     value: ModelChoice;
@@ -192,10 +193,10 @@ export function customModelRows({ backends, sourceAgent }: {
  * @param {{ backends: readonly string[], sourceAgent: string,
  *           aliases?: ReadonlyArray<{ name: string, value: string, backend: string }>,
  *           codexModels?: readonly any[], ompModels?: readonly any[],
- *           codexSkipIds?: readonly string[], includeCustomRows?: boolean }} args
+ *           codexSkipIds?: readonly string[], codexDeniedIds?: readonly string[], includeCustomRows?: boolean }} args
  * @returns {ResumeModelRow[]}
  */
-export function buildResumeModelRows({ backends, sourceAgent, aliases, codexModels, ompModels, codexSkipIds, includeCustomRows, }: {
+export function buildResumeModelRows({ backends, sourceAgent, aliases, codexModels, ompModels, codexSkipIds, codexDeniedIds, includeCustomRows, }: {
     backends: readonly string[];
     sourceAgent: string;
     aliases?: ReadonlyArray<{
@@ -206,6 +207,7 @@ export function buildResumeModelRows({ backends, sourceAgent, aliases, codexMode
     codexModels?: readonly any[];
     ompModels?: readonly any[];
     codexSkipIds?: readonly string[];
+    codexDeniedIds?: readonly string[];
     includeCustomRows?: boolean;
 }): ResumeModelRow[];
 /**

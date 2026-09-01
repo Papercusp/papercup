@@ -197,14 +197,18 @@ export function aliasModelRows({ aliases, backends, sourceAgent }) {
  *
  * @param {ReadonlyArray<{ id: string, label?: string | null, description?: string | null,
  *          efforts?: readonly string[] | null, contextWindow?: number | null }>} models
- * @param {{ sourceAgent: string, skipIds?: readonly string[] }} args
+ * @param {{ sourceAgent: string, skipIds?: readonly string[], deniedIds?: readonly string[] }} args
  * @returns {Array<{ name: string, value: ModelChoice }>}
  */
-export function codexModelRows(models, { sourceAgent, skipIds = [] }) {
+export function codexModelRows(models, { sourceAgent, skipIds = [], deniedIds = [] }) {
   const prefix = sourceAgent === 'codex' ? 'Native' : 'Port to';
   const covered = new Set((skipIds ?? []).map((id) => String(id).toLowerCase()));
+  const denied = new Set((deniedIds ?? []).map((id) => String(id).toLowerCase()));
   return (models ?? [])
-    .filter((model) => !covered.has(String(model?.id ?? '').toLowerCase()))
+    .filter((model) => {
+      const id = String(model?.id ?? '').toLowerCase();
+      return !covered.has(id) && !denied.has(id);
+    })
     .map((model) => ({
     name:
       `${prefix} codex: ${model.id}` +
@@ -300,7 +304,7 @@ export function customModelRows({ backends, sourceAgent }) {
  * @param {{ backends: readonly string[], sourceAgent: string,
  *           aliases?: ReadonlyArray<{ name: string, value: string, backend: string }>,
  *           codexModels?: readonly any[], ompModels?: readonly any[],
- *           codexSkipIds?: readonly string[], includeCustomRows?: boolean }} args
+ *           codexSkipIds?: readonly string[], codexDeniedIds?: readonly string[], includeCustomRows?: boolean }} args
  * @returns {ResumeModelRow[]}
  */
 export function buildResumeModelRows({
@@ -310,13 +314,16 @@ export function buildResumeModelRows({
   codexModels = [],
   ompModels = [],
   codexSkipIds = [],
+  codexDeniedIds = [],
   includeCustomRows = true,
 }) {
   const allowed = backends ?? [];
   return [
     ...backendDefaultRows({ backends: allowed, sourceAgent }),
     ...aliasModelRows({ aliases, backends: allowed, sourceAgent }),
-    ...(allowed.includes('codex') ? codexModelRows(codexModels, { sourceAgent, skipIds: codexSkipIds }) : []),
+    ...(allowed.includes('codex')
+      ? codexModelRows(codexModels, { sourceAgent, skipIds: codexSkipIds, deniedIds: codexDeniedIds })
+      : []),
     ...(allowed.includes('omp') ? ompModelRows(ompModels, { sourceAgent }) : []),
     ...(includeCustomRows ? customModelRows({ backends: allowed, sourceAgent }) : []),
   ];

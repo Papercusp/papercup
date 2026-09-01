@@ -15,20 +15,20 @@ export default defineTool({
   name: 'projects:list',
   profile: 'engineer',
   guidance: {
-    when: 'User asks "what projects do I have?" or you need a project id before calling `projects:get`. Workspace-level project enumeration.',
-    notWhen: 'For HARNESSES (work running inside a project), use `harness:list`. Projects ⊇ harnesses; the slug overlap is intentional but the surfaces are different.',
+    when: 'User asks which projects are associated with a specific harness, or you need a project id before calling `projects:get`. Pass only the concrete harness slug.',
+    notWhen: 'For workspace-wide project or harness enumeration, use `harness:list`. This tool is harness-scoped and does not accept `workspace` or `limit` arguments.',
     chaining: 'Pair with `projects:get` for detail, or `projects:spec_revisions` for the spec history.',
     seeAlso: [
       'projects:get (full record for one project)',
       'harness:list (harnesses running inside projects)',
     ],
   },
-  description: 'List projects relevant to a harness (filtered to those with at least one feature in the given slug). Includes feature counts.',
+  description: 'List projects relevant to one concrete harness (filtered to those with at least one feature in the given slug). Includes feature counts.',
   capability: 'projects:read',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
-    harnessSlug: z.string().optional(),
+    harnessSlug: z.string().optional().describe('Concrete harness slug to filter by; omit only when the session already has a concrete harness scope.'),
   }),
   async handler(args, ctx) {
     // Route through the fail-loud resolver (workspace-data-isolation-leaks P-004):
