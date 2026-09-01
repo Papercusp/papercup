@@ -158,6 +158,8 @@ export function resolveFleetParkResumePath(
     expired,
     parkedForMs,
     terminal,
+    by: trimmedOrNull(record.controlBy),
+    reason: trimmedOrNull(record.controlReason),
     indefinite: !terminal && gate === null && (expiresAt === null || expired),
   };
 }
@@ -266,9 +268,52 @@ export function buildPolicyParkedCapacity(input: {
   liveMembers: number;
   path: FleetParkResumePath;
 }): PolicyParkedCapacity | undefined {
-  const { path } = input;
-  if (!path.parked || input.liveMembers <= 0) return undefined;
-  const by = trimmedOrNull(path.gate === null ? null : null); // placeholder replaced below
-  void by;
-  return undefined as never;
+  const { path, liveMembers } = input;
+  if (!path.parked || liveMembers <= 0) return undefined;
+  const reason = reasonExcerpt(path.reason);
+  const who = path.by ?? 'an unrecorded invoker';
+  const forDuration = formatParkDuration(path.parkedForMs);
+  const noun = liveMembers === 1 ? 'member' : 'members';
+
+  // The verdict half — what a leader must NOT do about it. Relaunching parked
+  // members is the specific wrong move this row exists to prevent: they are alive
+  // and authorized, so a replacement seat adds cost without adding capacity.
+  let verdict: string;
+  if (path.terminal) {
+    verdict =
+      'The park is TERMINAL (no resume expected), so this is retired capacity, not recoverable capacity — ' +
+      'do not count it against the headcount target.';
+  } else if (path.gate) {
+    verdict =
+      `LOST CAPACITY, recoverable: fire the declared resume gate '${path.gate}' (fleet:resume does this) ` +
+      'to wake every member parked on it. Do NOT relaunch them — they are alive and waiting.';
+  } else if (path.expired) {
+    verdict =
+      `LOST CAPACITY, OVERDUE: the park's own deadline (${new Date(path.expiresAt as number).toISOString()}) ` +
+      'has passed with no lift and no resume gate was declared, so nothing will bring these members back. ' +
+      'fleet:resume them or record the park as terminal.';
+  } else if (path.expiresAt !== null) {
+    verdict =
+      `LOST CAPACITY, bounded: the park is due to lift by ${new Date(path.expiresAt).toISOString()}. ` +
+      'Do NOT relaunch these members before then.';
+  } else {
+    verdict =
+      'LOST CAPACITY, INDEFINITE: this park declared neither a resume gate nor a deadline, so nothing will ' +
+      'bring these members back on its own. Either fleet:resume them or re-issue the park with a resume gate.';
+  }
+
+  return {
+    members: liveMembers,
+    kind: path.kind,
+    by: path.by,
+    reason: path.reason,
+    gate: path.gate,
+    expiresAt: path.expiresAt,
+    expired: path.expired,
+    parkedForMs: path.parkedForMs,
+    indefinite: path.indefinite,
+    message:
+      `${liveMembers} ${noun} of ${input.fleet} policy-parked by ${who}` +
+      `${reason ? ` (${reason})` : ''} for ${forDuration}. ${verdict}`,
+  };
 }

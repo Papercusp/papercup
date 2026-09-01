@@ -242,6 +242,20 @@ export interface AgentFleetRecord {
   controlBy: string | null;
   /** Epoch ms when the current control state was set. */
   controlAt: number | null;
+  /** WI-2034563 / mig 1065: the DECLARED, LATCHING resume-gate event key for the
+   *  current park directive (`fleet:<slug>:<gate>`). Members events:await this key
+   *  instead of ending their loop wake-less; fleet:resume fires it. Null on an
+   *  active fleet and on every legacy wind-down created before mig 1065 — which is
+   *  why `resolveFleetParkResumePath` treats a null gate as "no path", preserving
+   *  the pre-1065 behaviour for rows already parked. */
+  controlResumeGate: string | null;
+  /** WI-2034563 / mig 1065: optional epoch-ms deadline after which the park is
+   *  OVERDUE. Bounds the capacity loss and is reported by fleet:leader-brief.
+   *  Advisory: no read flips the state, so the stored control_state never lies. */
+  controlExpiresAt: number | null;
+  /** WI-2034563 / mig 1065: the park is deliberately TERMINAL — nobody is coming
+   *  back. The only park shape that still authorizes a member's wake-less loop:end. */
+  controlNoResumePath: boolean;
   /** P-003 / migration 830: the latest canary-first launch transaction, including
    * exact partial-cohort recovery identities. */
   lastLaunchTransaction: FleetLaunchTransaction | null;
@@ -549,6 +563,9 @@ interface FleetRow {
   control_reason: string | null;
   control_by: string | null;
   control_at: string | number | null;
+  control_resume_gate?: string | null;
+  control_expires_at?: string | number | null;
+  control_no_resume_path?: boolean | null;
   last_launch_transaction?: FleetLaunchTransaction | string | null;
   created_at: string | number;
   updated_at: string | number;
@@ -577,6 +594,12 @@ function rowToRecord(r: FleetRow): AgentFleetRecord {
     controlReason: r.control_reason ?? null,
     controlBy: r.control_by ?? null,
     controlAt: r.control_at == null ? null : Number(r.control_at),
+    // mig 1065. A legacy row predating the migration returns undefined for all
+    // three, which narrows to exactly the pre-1065 reading: no gate, no deadline,
+    // not terminal. Never invent a resume path a park does not actually carry.
+    controlResumeGate: r.control_resume_gate ?? null,
+    controlExpiresAt: r.control_expires_at == null ? null : Number(r.control_expires_at),
+    controlNoResumePath: r.control_no_resume_path === true,
     lastLaunchTransaction,
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
@@ -609,7 +632,7 @@ function refreshDirectoryCard(
 // fleet_type is APPENDED (not slotted in beside color_scheme) so the positional
 // $N binds in createFleetIfAbsent's VALUES stay stable — the insert reads in
 // this exact order.
-const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, control_state, control_reason, control_by, control_at, created_at, updated_at, fleet_type`;
+const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, control_state, control_reason, control_by, control_at, created_at, updated_at, fleet_type, control_resume_gate, control_expires_at, control_no_resume_path`;
 
 /**
  * Derive a stable fleet_slug from a user-entered fleet NAME. The original name
@@ -776,7 +799,19 @@ export async function setFleetLeader(
 export async function setFleetControlState(
   workspaceId: string,
   fleetSlug: string,
-  control: { state: FleetControlState; reason?: string | null; by?: string | null },
+  control: {
+    state: FleetControlState;
+    reason?: string | null;
+    by?: string | null;
+    /** WI-2034563: the declared, latching resume-gate key this park publishes for
+     *  its members to await. Written only on a wind-down; a resume CLEARS it, so
+     *  an active row can never carry a stale park's gate. */
+    resumeGate?: string | null;
+    /** WI-2034563: epoch-ms deadline bounding the park. Cleared on resume. */
+    expiresAt?: number | null;
+    /** WI-2034563: this park is deliberately terminal (nobody is coming back). */
+    noResumePath?: boolean;
+  },
   sql?: Sql,
   expectedLeaderOwnerId?: string | null,
   expected?: { state?: FleetControlState; updatedAtMs?: number },
@@ -792,7 +827,16 @@ export async function setFleetControlState(
             headcount_next_attempt_at =
               CASE WHEN $3::text = 'winding-down' THEN NULL ELSE headcount_next_attempt_at END,
             headcount_backoff_ms = CASE WHEN $3::text = 'winding-down' THEN 0 ELSE headcount_backoff_ms END,
-            headcount_last_error = CASE WHEN $3::text = 'winding-down' THEN NULL ELSE headcount_last_error END
+            headcount_last_error = CASE WHEN $3::text = 'winding-down' THEN NULL ELSE headcount_last_error END,
+            -- WI-2034563: the park's resume path belongs to the park. A resume
+            -- clears all three so an ACTIVE row can never carry a dead park's gate
+            -- or a lapsed deadline for a later reader to mistake for a live one.
+            control_resume_gate =
+              CASE WHEN $3::text = 'winding-down' THEN $13::text ELSE NULL END,
+            control_expires_at =
+              CASE WHEN $3::text = 'winding-down' THEN $14::bigint ELSE NULL END,
+            control_no_resume_path =
+              CASE WHEN $3::text = 'winding-down' THEN $15::boolean ELSE false END
       WHERE workspace_id = $1 AND fleet_slug = $2
         AND ($7::boolean = false OR leader_owner_id IS NOT DISTINCT FROM $8::text)
         AND ($9::boolean = false OR control_state = $10::text)
@@ -811,6 +855,9 @@ export async function setFleetControlState(
       expected?.state ?? null,
       hasExpectedUpdatedAt,
       expected?.updatedAtMs ?? null,
+      control.resumeGate ?? null,
+      control.expiresAt ?? null,
+      control.noResumePath === true,
     ],
   )) as unknown as FleetRow[];
   if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
