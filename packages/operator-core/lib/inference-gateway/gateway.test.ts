@@ -3,7 +3,18 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
-import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, classifyColdRest429, classifyProxyHandlerError, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, normalizeGatewayRequestBody, resolveGatewayModel } from './gateway';
+import {
+  createInferenceGateway,
+  estimateTokens,
+  parseRateReset,
+  classify429Shape,
+  classifyColdRest429,
+  classifyProxyHandlerError,
+  effectivePriorityLabel,
+  MODEL_DOWNGRADED_HEADER,
+  normalizeGatewayRequestBody,
+  resolveGatewayModel,
+} from './gateway';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
@@ -178,7 +189,11 @@ async function boot(
 
 const ask = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${port}${path}`, init);
 const post = (body: unknown) =>
-  ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'anthropic-beta': 'fine-grained-2025' }, body: JSON.stringify(body) });
+  ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'anthropic-beta': 'fine-grained-2025' },
+    body: JSON.stringify(body),
+  });
 
 /** Deterministic-rig value for the SHORT bare-429 account penalty. Production is 15s
  *  (`BARE_429_FAILOVER_BACKOFF_MS` in gateway.ts) and `bare429FailoverBackoffMs` exists so a rig can
@@ -274,7 +289,11 @@ test('parseRateReset — a huge 7d reset is capped to WEEKLY_CAP_MAX_PAUSE_MS (6
     },
     now,
   );
-  assert.equal(r.resetAt, now + 6 * 60 * 60 * 1000, 'capped at the 6h max so a wrong header cannot strand the account for days');
+  assert.equal(
+    r.resetAt,
+    now + 6 * 60 * 60 * 1000,
+    'capped at the 6h max so a wrong header cannot strand the account for days',
+  );
 });
 
 test('parseRateReset — a NOT-weekly-capped account keeps the 5h reset (no-regression, WI-1083)', () => {
@@ -387,21 +406,39 @@ test('classifyColdRest429 — inconclusive for an unclassified shape within the 
 test('classifyProxyHandlerError — PRE-headers client abort (queued caller gave up) is a benign client-abort, not a crash', () => {
   // res.destroyed=true (client tore down the socket), res.writableEnded=false, and headers were
   // never sent — the exact shape the old `&& res.headersSent` gate misclassified as a crash.
-  assert.equal(classifyProxyHandlerError('The operation was aborted', { destroyed: true, writableEnded: false }), 'client-abort');
+  assert.equal(
+    classifyProxyHandlerError('The operation was aborted', { destroyed: true, writableEnded: false }),
+    'client-abort',
+  );
 });
 test('classifyProxyHandlerError — POST-headers client abort (stream torn down mid-response) is a client-abort', () => {
-  assert.equal(classifyProxyHandlerError('ERR_STREAM_PREMATURE_CLOSE', { destroyed: false, writableEnded: true }), 'client-abort');
+  assert.equal(
+    classifyProxyHandlerError('ERR_STREAM_PREMATURE_CLOSE', { destroyed: false, writableEnded: true }),
+    'client-abort',
+  );
 });
 test('classifyProxyHandlerError — ECONNRESET with a destroyed downstream is a client-abort', () => {
-  assert.equal(classifyProxyHandlerError('socket hang up ECONNRESET', { destroyed: true, writableEnded: false }), 'client-abort');
+  assert.equal(
+    classifyProxyHandlerError('socket hang up ECONNRESET', { destroyed: true, writableEnded: false }),
+    'client-abort',
+  );
 });
 test('classifyProxyHandlerError — an abort-shaped message but the downstream is INTACT (upstream/internal abort) is a crash', () => {
   // A stall-waker / internal-timeout abort throws an abort-shaped error while the CLIENT is still
   // connected (res not destroyed/ended) — that is a real gateway fault, keep the loud 500 path.
-  assert.equal(classifyProxyHandlerError('upstream fetch aborted', { destroyed: false, writableEnded: false }), 'crash');
+  assert.equal(
+    classifyProxyHandlerError('upstream fetch aborted', { destroyed: false, writableEnded: false }),
+    'crash',
+  );
 });
 test('classifyProxyHandlerError — a non-abort error with a destroyed downstream is still a crash (message must match)', () => {
-  assert.equal(classifyProxyHandlerError('TypeError: cannot read properties of undefined', { destroyed: true, writableEnded: false }), 'crash');
+  assert.equal(
+    classifyProxyHandlerError('TypeError: cannot read properties of undefined', {
+      destroyed: true,
+      writableEnded: false,
+    }),
+    'crash',
+  );
 });
 
 test('WI-3150: the internal-retry 429 log names the THROTTLED account with ITS util headers, not the rotated-to account', async () => {
@@ -409,7 +446,11 @@ test('WI-3150: the internal-retry 429 log names the THROTTLED account with ITS u
   // The retry log line is built from A's response headers (shape429Suffix) but is emitted AFTER the rotate
   // branch has reassigned `active` to B — so it MUST name A (throttled429AccountId), or A's util headers get
   // attributed to B (the shuffle that made a bare/quota 429 on one account read as exhaustion on another).
-  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const acct = (id: string): ActiveAccount => ({
+    accountId: id,
+    token: async () => `${id}-tok`,
+    invalidateToken: () => {},
+  });
   const pool = createFailoverPool([acct('acctA'), acct('acctB')]);
   const logs: string[] = [];
   const now = Date.now();
@@ -441,7 +482,10 @@ test('WI-3150: the internal-retry 429 log names the THROTTLED account with ITS u
   assert.ok(retryLine!.includes('util7d=0.95'), `suffix should carry A's util7d; got: ${retryLine}`);
   assert.ok(retryLine!.includes("on 'acctA'"), `log must name the THROTTLED account acctA; got: ${retryLine}`);
   // The rotated-to account must NOT be the one the util header is attributed to (the pre-fix bug).
-  assert.ok(!retryLine!.includes("on 'acctB'"), `log must NOT attribute A's util to the rotated-to acctB; got: ${retryLine}`);
+  assert.ok(
+    !retryLine!.includes("on 'acctB'"),
+    `log must NOT attribute A's util to the rotated-to acctB; got: ${retryLine}`,
+  );
 });
 
 test('WI-21593176337659162: the pre-dispatch route trace labels its account as picked, not served', async () => {
@@ -462,10 +506,12 @@ test('WI-21593176337659162: the pre-dispatch route trace labels its account as p
 
     const dispatchIndex = events.indexOf('upstream-dispatch');
     assert.notEqual(dispatchIndex, -1, `the request reached the upstream; events=${events.join(' | ')}`);
-    const preDispatchRouteLines = events
-      .slice(0, dispatchIndex)
-      .filter((event) => event.startsWith('log:gw-route:'));
-    assert.equal(preDispatchRouteLines.length, 1, `expected one pre-dispatch route trace; events=${events.join(' | ')}`);
+    const preDispatchRouteLines = events.slice(0, dispatchIndex).filter((event) => event.startsWith('log:gw-route:'));
+    assert.equal(
+      preDispatchRouteLines.length,
+      1,
+      `expected one pre-dispatch route trace; events=${events.join(' | ')}`,
+    );
     assert.match(preDispatchRouteLines[0]!, /\bpicked=test-acct\b/);
     assert.doesNotMatch(preDispatchRouteLines[0]!, /\brouted=/);
   } finally {
@@ -486,7 +532,10 @@ test('transparent proxy — injects OAuth bearer + merges anthropic-beta, forwar
   // upstream saw the injected auth (bee sent none) + the merged beta + forwarded body
   assert.equal(upstream.last.headers['authorization'], 'Bearer test-token');
   assert.ok(String(upstream.last.headers['anthropic-beta']).includes('oauth-2025-04-20'));
-  assert.ok(String(upstream.last.headers['anthropic-beta']).includes('fine-grained-2025'), 'preserves the client beta flags');
+  assert.ok(
+    String(upstream.last.headers['anthropic-beta']).includes('fine-grained-2025'),
+    'preserves the client beta flags',
+  );
   assert.ok(!String(upstream.last.headers['anthropic-beta']).includes('context-1m-2025-08-07'));
   assert.equal(upstream.last.headers['accept-encoding'], 'identity');
   assert.equal(JSON.parse(upstream.last.body).model, 'claude-opus-4-99');
@@ -542,7 +591,7 @@ test('load-shed: returns a retryable 429 when the admission backlog hits maxQueu
   ]);
   assert.deepEqual(rs.map((r) => r.status).sort(), [200, 200, 429], 'exactly one request shed with 429');
   const shed = rs.find((r) => r.status === 429)!;
-  assert.equal((await shed.json() as { gateway?: boolean }).gateway, true, 'gateway-synthesized load-shed 429');
+  assert.equal(((await shed.json()) as { gateway?: boolean }).gateway, true, 'gateway-synthesized load-shed 429');
   assert.ok(shed.headers.get('retry-after'), 'retry-after set so the caller backs off + retries');
 });
 
@@ -563,10 +612,10 @@ test('upstream HEADERS stall is aborted (502) and RELEASES the admission slot �
   );
   const r1 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r1.status, 502, 'stalled upstream is aborted, not hung');
-  assert.equal((await r1.json() as { gateway?: boolean }).gateway, true, 'gateway-synthesized 502');
+  assert.equal(((await r1.json()) as { gateway?: boolean }).gateway, true, 'gateway-synthesized 502');
   const r2 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
   assert.equal(r2.status, 200, 'the single admission slot was released — no deadlock');
-  assert.equal((await r2.json() as { ok: boolean }).ok, true);
+  assert.equal(((await r2.json()) as { ok: boolean }).ok, true);
 });
 
 test('a STREAMING request aborts at the SHORT TTFB deadline, not the generous one — 2026-06-20 silent-wedge fix', async () => {
@@ -582,7 +631,12 @@ test('a STREAMING request aborts at the SHORT TTFB deadline, not the generous on
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     },
-    { concurrency: 1, upstreamHeadersTimeoutMs: 5000, upstreamStreamHeadersTimeoutMs: 150, upstreamBodyIdleTimeoutMs: 5000 },
+    {
+      concurrency: 1,
+      upstreamHeadersTimeoutMs: 5000,
+      upstreamStreamHeadersTimeoutMs: 150,
+      upstreamBodyIdleTimeoutMs: 5000,
+    },
   );
   const t0 = Date.now();
   const r1 = await post({ model: 'claude-opus-4', stream: true, messages: [{ role: 'user', content: 'x' }] });
@@ -615,7 +669,7 @@ test('a mid-stream upstream stall is aborted (body-idle deadline) and releases t
   await r1.text().catch(() => {}); // body aborts mid-stream → client read ends (truncated); tolerate the reset
   const r2 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
   assert.equal(r2.status, 200, 'mid-stream stall released the slot — no deadlock');
-  assert.equal((await r2.json() as { ok: boolean }).ok, true);
+  assert.equal(((await r2.json()) as { ok: boolean }).ok, true);
 });
 
 test('backpressure — an upstream unified-429 pauses the governor; the next request gets a synthetic 429+retry-after', async () => {
@@ -637,7 +691,7 @@ test('backpressure — an upstream unified-429 pauses the governor; the next req
   // first request propagates the real upstream 429
   const first = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(first.status, 429);
-  assert.equal((await first.json() as { gateway?: boolean }).gateway, undefined, 'real upstream 429, not synthetic');
+  assert.equal(((await first.json()) as { gateway?: boolean }).gateway, undefined, 'real upstream 429, not synthetic');
   // governor is now paused → the next request times out admission (maxQueueWaitMs 80ms) → synthetic 429
   const second = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(second.status, 429);
@@ -668,7 +722,11 @@ test('a BARE upstream 429 (no rate-limit headers) fails over to the next account
   const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(res.status, 200, 'gateway fails over off the throttled account on a bare 429 and retries → 200');
   // Upstream was hit twice: one bare-429 attempt + one internal-failover success on the other account.
-  assert.equal(attempt, 2, 'one throttled attempt + one internal-failover success (no stuck-loop on the limited account)');
+  assert.equal(
+    attempt,
+    2,
+    'one throttled attempt + one internal-failover success (no stuck-loop on the limited account)',
+  );
   // The fix's invariant under round-robin: the bare-429 account is ROTATED OUT (onExhausted marked it
   // out of rotation), so the account that SERVED the 200 is the survivor and the throttled one is
   // skipped. The routed-account header names the survivor; the throttled account must stay out of
@@ -676,8 +734,16 @@ test('a BARE upstream 429 (no rate-limit headers) fails over to the next account
   const survivor = res.headers.get('x-papercusp-routed-account');
   assert.ok(survivor === 'A' || survivor === 'B', `served by a pool account (got ${survivor})`);
   const throttled = survivor === 'A' ? 'B' : 'A';
-  const seen = new Set([pool.active().accountId, pool.active().accountId, pool.active().accountId, pool.active().accountId]);
-  assert.ok(!seen.has(throttled), `bare-429 account '${throttled}' is out of rotation (no stuck-loop on the limited account)`);
+  const seen = new Set([
+    pool.active().accountId,
+    pool.active().accountId,
+    pool.active().accountId,
+    pool.active().accountId,
+  ]);
+  assert.ok(
+    !seen.has(throttled),
+    `bare-429 account '${throttled}' is out of rotation (no stuck-loop on the limited account)`,
+  );
   assert.ok(seen.has(survivor), `the healthy account '${survivor}' still serves rotation`);
 });
 
@@ -694,21 +760,46 @@ test('BARE-429 PERSISTENCE CIRCUIT: a sustained bare-429 streak on one account E
     res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
   });
   const onlyA: ActiveAccount = { accountId: 'A', token: async () => 't', invalidateToken: () => {} };
-  const pool: AccountPool = { active: () => onlyA, onExhausted: () => null, select: (id) => (id === 'A' ? onlyA : null) };
-  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 50, requestAbsorbMs: 0, internalRetryDeadlineMs: 2000, bare429FailoverBackoffMs: 50 });
+  const pool: AccountPool = {
+    active: () => onlyA,
+    onExhausted: () => null,
+    select: (id) => (id === 'A' ? onlyA : null),
+  };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: upstream.base,
+    maxQueueWaitMs: 50,
+    requestAbsorbMs: 0,
+    internalRetryDeadlineMs: 2000,
+    bare429FailoverBackoffMs: 50,
+  });
   port = await gw.listen(0);
   const gov = getGovernor('anthropic', 'opus', undefined, 'A');
   // One request drives the consecutive-bare-429 retry ladder past the streak threshold (default 4).
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
   const pausedForMs = gov.state.pausedUntil - Date.now();
   // Base backoff is 50ms; the circuit escalates it (×2 per step past the threshold), so the surviving pause
   // is well beyond a single 50ms pace — which is what makes the pool durably route AROUND this IP.
-  assert.ok(pausedForMs > 100, `bare-429 circuit escalated A's pause to ${pausedForMs}ms (>> the 50ms base) so the pool routes around the throttled IP`);
+  assert.ok(
+    pausedForMs > 100,
+    `bare-429 circuit escalated A's pause to ${pausedForMs}ms (>> the 50ms base) so the pool routes around the throttled IP`,
+  );
   const stats = (await (await ask('/stats')).json()) as {
     edgeThrottleByAccount?: Record<string, { edgeThrottled: boolean; cooldownUntil: number; bare429Streak: number }>;
   };
-  assert.equal(stats.edgeThrottleByAccount?.A?.edgeThrottled, true, 'live stats expose the active Cloudflare edge throttle instead of reporting only quota/rate state');
-  assert.ok((stats.edgeThrottleByAccount?.A?.bare429Streak ?? 0) > 0, 'live stats preserve the recurrence signal for the pinned account');
+  assert.equal(
+    stats.edgeThrottleByAccount?.A?.edgeThrottled,
+    true,
+    'live stats expose the active Cloudflare edge throttle instead of reporting only quota/rate state',
+  );
+  assert.ok(
+    (stats.edgeThrottleByAccount?.A?.bare429Streak ?? 0) > 0,
+    'live stats preserve the recurrence signal for the pinned account',
+  );
   resetGovernorRegistry();
 });
 
@@ -736,11 +827,15 @@ test('ALL accounts transiently throttled (bare 429) → gateway WAITS out the sh
     { pool, bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS },
   );
   const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(res.status, 200, 'gateway waited out the all-accounts transient throttle + retried → 200, not a forwarded retryable 429');
-  assert.equal(JSON.parse(await res.text()).ok, true, "forwarded body is the recovered 200, not the burst error");
+  assert.equal(
+    res.status,
+    200,
+    'gateway waited out the all-accounts transient throttle + retried → 200, not a forwarded retryable 429',
+  );
+  assert.equal(JSON.parse(await res.text()).ok, true, 'forwarded body is the recovered 200, not the burst error');
 }, 30_000);
 
-test('a usage/session CAP (429 body names the limit) is INTERNALLY failed over — bee gets B\'s success, not A\'s wall', async () => {
+test("a usage/session CAP (429 body names the limit) is INTERNALLY failed over — bee gets B's success, not A's wall", async () => {
   const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
   const pool = createFailoverPool([acct('A'), acct('B')]);
   let calls = 0;
@@ -752,7 +847,12 @@ test('a usage/session CAP (429 body names the limit) is INTERNALLY failed over �
         // 0 on a capped account — the cap is a DIFFERENT meter than the rolling window), so only the body
         // reveals it. The bee treats usage_limit as a no-retry WALL, so the gateway must route past it.
         res.writeHead(429, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: "You've hit your session limit · resets 10:50am" } }));
+        res.end(
+          JSON.stringify({
+            type: 'error',
+            error: { type: 'rate_limit_error', message: "You've hit your session limit · resets 10:50am" },
+          }),
+        );
       } else {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, content: 'hi from B' }));
@@ -761,9 +861,13 @@ test('a usage/session CAP (429 body names the limit) is INTERNALLY failed over �
     { pool },
   );
   const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(res.status, 200, 'gateway internally failed over the cap → returns the other account\'s success, not a 429 wall');
+  assert.equal(
+    res.status,
+    200,
+    "gateway internally failed over the cap → returns the other account's success, not a 429 wall",
+  );
   const body = JSON.parse(await res.text());
-  assert.equal(body.ok, true, 'the forwarded body is the healthy account\'s success, not the session-limit error');
+  assert.equal(body.ok, true, "the forwarded body is the healthy account's success, not the session-limit error");
   assert.equal(calls, 2, 'one capped attempt + one internal-failover success on a healthy account');
   // The capped account is rotated OUT of rotation (penalize + onExhausted). The routed-account header
   // names the survivor that served the 200; the session-capped account must stay skipped — over a full
@@ -771,7 +875,12 @@ test('a usage/session CAP (429 body names the limit) is INTERNALLY failed over �
   const survivor = res.headers.get('x-papercusp-routed-account');
   assert.ok(survivor === 'A' || survivor === 'B', `served by a pool account (got ${survivor})`);
   const capped = survivor === 'A' ? 'B' : 'A';
-  const seen = new Set([pool.active().accountId, pool.active().accountId, pool.active().accountId, pool.active().accountId]);
+  const seen = new Set([
+    pool.active().accountId,
+    pool.active().accountId,
+    pool.active().accountId,
+    pool.active().accountId,
+  ]);
   assert.ok(!seen.has(capped), `rotated off the session-capped account '${capped}' (it stays out of rotation)`);
   assert.ok(seen.has(survivor), `the healthy account '${survivor}' still serves rotation`);
 });
@@ -795,7 +904,12 @@ test('credential-health — consecutive 401s past the threshold fire onCredentia
   await boot(
     (_req, res) => {
       res.writeHead(401, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'Invalid authentication credentials' } }));
+      res.end(
+        JSON.stringify({
+          type: 'error',
+          error: { type: 'authentication_error', message: 'Invalid authentication credentials' },
+        }),
+      );
     },
     {
       credential401DeadThreshold: 3,
@@ -871,9 +985,9 @@ test('healthz + stats endpoints report account + counters', async () => {
   });
   const health = await ask('/healthz');
   assert.equal(health.status, 200);
-  assert.equal((await health.json() as { accountId: string }).accountId, 'test-acct');
+  assert.equal(((await health.json()) as { accountId: string }).accountId, 'test-acct');
   await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  const stats = await (await ask('/stats')).json() as { totalRequests: number };
+  const stats = (await (await ask('/stats')).json()) as { totalRequests: number };
   assert.ok(stats.totalRequests >= 1);
 });
 
@@ -967,15 +1081,28 @@ test('fails over to a second account when the active one hits its 5h budget (EI-
   // which account each round-robin hop picked.
   for (let i = 0; i < 3; i++) {
     const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-    assert.equal(r.status, 200, "every request → 200 (A's 5h-rejected 429 is internally failed over to B, never surfaced)");
-    assert.equal(r.headers.get('x-papercusp-routed-account'), 'B', 'every served request egressed on the healthy account B');
+    assert.equal(
+      r.status,
+      200,
+      "every request → 200 (A's 5h-rejected 429 is internally failed over to B, never surfaced)",
+    );
+    assert.equal(
+      r.headers.get('x-papercusp-routed-account'),
+      'B',
+      'every served request egressed on the healthy account B',
+    );
     assert.equal(JSON.parse(await r.text()).ok, true);
   }
   // The 5h-rejected account A is now OUT of rotation (onExhausted marked it until its reset), so active()
   // only ever yields B — A no longer takes a round-robin slot. The /stats headline account is therefore B
   // and at least one internal failover (A→B) was recorded.
   assert.equal(upstream.last.headers['authorization'], 'Bearer B-tok', 'egress settled on B');
-  const seen = new Set([pool.active().accountId, pool.active().accountId, pool.active().accountId, pool.active().accountId]);
+  const seen = new Set([
+    pool.active().accountId,
+    pool.active().accountId,
+    pool.active().accountId,
+    pool.active().accountId,
+  ]);
   assert.ok(!seen.has('A'), 'A is out of rotation after its 5h rejection');
   assert.deepEqual([...seen], ['B'], 'only B serves rotation now');
   const s = (await (await ask('/stats')).json()) as { accountId: string; failovers: number };
@@ -990,7 +1117,9 @@ test('a 403 org/subscription-disallowed account pauses + fails over to a healthy
   upstream = await startUpstream((req, res) => {
     if (req.headers['authorization'] === 'Bearer A-tok') {
       res.writeHead(403, { 'content-type': 'application/json' });
-      res.end('{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}');
+      res.end(
+        '{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}',
+      );
     } else {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
@@ -1014,7 +1143,12 @@ test('a 403 org/subscription-disallowed account pauses + fails over to a healthy
   }
   assert.equal(upstream.last.headers['authorization'], 'Bearer B-tok', 'egressed on B');
   // A is paused OUT of rotation (penalize + onExhausted on the org-disallow), so active() only yields B.
-  const seen = new Set([pool.active().accountId, pool.active().accountId, pool.active().accountId, pool.active().accountId]);
+  const seen = new Set([
+    pool.active().accountId,
+    pool.active().accountId,
+    pool.active().accountId,
+    pool.active().accountId,
+  ]);
   assert.ok(!seen.has('A'), 'A paused out of rotation on the org-disallow 403');
   assert.deepEqual([...seen], ['B'], 'B is the only account serving rotation');
   resetGovernorRegistry();
@@ -1025,7 +1159,9 @@ test('the spawned-claude-code disallow ("subscription disabled for Claude Code")
   upstream = await startUpstream((req, res) => {
     if (req.headers['authorization'] === 'Bearer A-tok') {
       res.writeHead(403, { 'content-type': 'application/json' });
-      res.end('{"type":"error","error":{"type":"permission_error","message":"Claude subscription disabled for Claude Code"}}');
+      res.end(
+        '{"type":"error","error":{"type":"permission_error","message":"Claude subscription disabled for Claude Code"}}',
+      );
     } else {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
@@ -1053,7 +1189,9 @@ test('org-disallowed — the FIRST org/subscription-disqualified 403 fires onOrg
   upstream = await startUpstream((req, res) => {
     if (req.headers['authorization'] === 'Bearer A-tok') {
       res.writeHead(403, { 'content-type': 'application/json' });
-      res.end('{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}');
+      res.end(
+        '{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}',
+      );
     } else {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
@@ -1063,7 +1201,12 @@ test('org-disallowed — the FIRST org/subscription-disqualified 403 fires onOrg
     { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
     { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
   ]);
-  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200, onOrgDisallowed: (info) => disallowed.push(info) });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: upstream.base,
+    maxQueueWaitMs: 200,
+    onOrgDisallowed: (info) => disallowed.push(info),
+  });
   port = await gw.listen(0);
   // A is hit once (then paused → B serves), and that FIRST org-disallow fires the persistent-deactivate hook.
   for (let i = 0; i < 3; i++) {
@@ -1072,7 +1215,11 @@ test('org-disallowed — the FIRST org/subscription-disqualified 403 fires onOrg
   }
   assert.equal(disallowed.length, 1, 'onOrgDisallowed fires EXACTLY once (A deactivated on its first definitive 403)');
   assert.equal(disallowed[0].accountId, 'A');
-  assert.equal(disallowed[0].consecutive, 1, 'fires on the first hit — a resettable in-memory pause alone let A re-leak on every restart');
+  assert.equal(
+    disallowed[0].consecutive,
+    1,
+    'fires on the first hit — a resettable in-memory pause alone let A re-leak on every restart',
+  );
   resetGovernorRegistry();
 });
 
@@ -1091,7 +1238,14 @@ test('org-disallowed — a throwing onOrgDisallowed never breaks the request hot
     { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
     { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
   ]);
-  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200, onOrgDisallowed: () => { throw new Error('deactivate side-channel blew up'); } });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: upstream.base,
+    maxQueueWaitMs: 200,
+    onOrgDisallowed: () => {
+      throw new Error('deactivate side-channel blew up');
+    },
+  });
   port = await gw.listen(0);
   const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 200, 'the request still fails over to B → 200 despite the throwing deactivate callback');
@@ -1108,7 +1262,9 @@ test('LAST-RESORT opus→sonnet downgrade when opus is walled pool-wide on every
     const reqModel = (JSON.parse(body) as { model?: string }).model ?? '';
     if (reqModel.includes('opus')) {
       res.writeHead(403, { 'content-type': 'application/json' });
-      res.end('{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}');
+      res.end(
+        '{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}',
+      );
     } else {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
@@ -1136,8 +1292,16 @@ test('LAST-RESORT opus→sonnet downgrade when opus is walled pool-wide on every
     200,
     `opus walled on every account → last-resort sonnet retry succeeds, never hard-fails the caller\nLOGS:\n${logs.join('\n')}`,
   );
-  assert.equal(r.headers.get(MODEL_DOWNGRADED_HEADER), 'opus->sonnet', 'the silent substitution is surfaced to the caller via the downgrade header');
-  assert.equal(JSON.parse(upstream.last.body).model, 'claude-sonnet-4-6', 'the forwarded request was rewritten to the fleet-canonical sonnet id');
+  assert.equal(
+    r.headers.get(MODEL_DOWNGRADED_HEADER),
+    'opus->sonnet',
+    'the silent substitution is surfaced to the caller via the downgrade header',
+  );
+  assert.equal(
+    JSON.parse(upstream.last.body).model,
+    'claude-sonnet-4-6',
+    'the forwarded request was rewritten to the fleet-canonical sonnet id',
+  );
 
   const s = (await (await ask('/stats')).json()) as { opusToSonnetDowngrades: number };
   assert.equal(s.opusToSonnetDowngrades, 1, '/stats records the last-resort downgrade for observability');
@@ -1169,10 +1333,13 @@ test('per-request x-papercusp-account header routes to the named pool account (P
     onExhausted: () => null,
     select: (id) => (id === 'acctA' ? acctA : id === 'acctB' ? acctB : null),
   };
-  await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"ok":true}');
-  }, { pool });
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool },
+  );
   // no header → the active account (acctA)
   await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(upstream.last.headers['authorization'], 'Bearer tokA');
@@ -1214,13 +1381,25 @@ test('COLD-START rate hint disqualifies a projection-known-exhausted account eve
     { accountId: 'dead', utilization7d: 1.0, windowResetAt7d: Date.now() + 7 * 24 * 3_600_000 },
     { accountId: 'healthy', utilization7d: 0.05, windowResetAt7d: Date.now() + 7 * 24 * 3_600_000 },
   ]);
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
-  assert.equal(upstream.last.headers['authorization'], 'Bearer thealthy', 'cold-start: routed to the account with room; the projection-known-exhausted account was disqualified despite a blank live governor');
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(
+    upstream.last.headers['authorization'],
+    'Bearer thealthy',
+    'cold-start: routed to the account with room; the projection-known-exhausted account was disqualified despite a blank live governor',
+  );
   resetGovernorRegistry();
 });
 
 test('DYNAMIC owner route can override a static pin with another account or auto, and unpin restores the static route (WI-4402)', async () => {
-  const acct = (id: string, tok: string): ActiveAccount => ({ accountId: id, token: async () => tok, invalidateToken: () => {} });
+  const acct = (id: string, tok: string): ActiveAccount => ({
+    accountId: id,
+    token: async () => tok,
+    invalidateToken: () => {},
+  });
   const acctA = acct('A', 'tA');
   const acctB = acct('B', 'tB');
   const pool: AccountPool = {
@@ -1228,28 +1407,71 @@ test('DYNAMIC owner route can override a static pin with another account or auto
     onExhausted: () => null,
     select: (id) => (id === 'A' ? acctA : id === 'B' ? acctB : null),
   };
-  await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"ok":true}');
-  }, { pool });
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool },
+  );
   // pin owner 'spawn-7' → account B (runtime, via the admin endpoint accounts:pin wraps)
-  const pinRes = await ask('/admin/owner-pin', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: 'spawn-7', account: 'B' }) });
+  const pinRes = await ask('/admin/owner-pin', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ownerId: 'spawn-7', account: 'B' }),
+  });
   assert.equal(pinRes.status, 200, 'owner-pin set ok');
   // a request from spawn-7 with NO account header → the dynamic pin routes it to B (not the active default A)
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
   assert.equal(upstream.last.headers['authorization'], 'Bearer tB', 'dynamic owner pin routed spawn-7 → B');
   // it OVERRIDES a conflicting static x-papercusp-account header (the dynamic pin wins by owner id)
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
-  assert.equal(upstream.last.headers['authorization'], 'Bearer tB', 'dynamic owner pin overrides the static x-papercusp-account header');
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'A' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(
+    upstream.last.headers['authorization'],
+    'Bearer tB',
+    'dynamic owner pin overrides the static x-papercusp-account header',
+  );
   // A present `auto` owner route is NOT the same as clearing the override: it suppresses the static
   // header and returns this already-gateway-routed session to active()/failover selection.
-  await ask('/admin/owner-pin', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: 'spawn-7', account: 'auto' }) });
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'B' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
-  assert.equal(upstream.last.headers['authorization'], 'Bearer tA', 'dynamic auto route suppresses the static B pin and uses active account A');
+  await ask('/admin/owner-pin', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ownerId: 'spawn-7', account: 'auto' }),
+  });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'B' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(
+    upstream.last.headers['authorization'],
+    'Bearer tA',
+    'dynamic auto route suppresses the static B pin and uses active account A',
+  );
   // unpin → reverts to the static header (A)
-  await ask('/admin/owner-pin', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: 'spawn-7', clear: true }) });
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'B' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
-  assert.equal(upstream.last.headers['authorization'], 'Bearer tB', 'after unpin, spawn-7 reverts to its static header account B');
+  await ask('/admin/owner-pin', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ownerId: 'spawn-7', clear: true }),
+  });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'B' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(
+    upstream.last.headers['authorization'],
+    'Bearer tB',
+    'after unpin, spawn-7 reverts to its static header account B',
+  );
 });
 
 test('Fault #3 — a header-pinned request whose account is paced fails over to active() (no $0 hang)', async () => {
@@ -1301,11 +1523,23 @@ test('HARD pin (x-papercusp-account-pin: hard) NEVER fails over off its account 
   getGovernor('anthropic', 'opus', undefined, 'paced-acct').penalize({ retryAfterMs: 60 * 60_000 });
   const r = await ask('/v1/messages', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'paced-acct', 'x-papercusp-account-pin': 'hard' },
+    headers: {
+      'content-type': 'application/json',
+      'x-papercusp-account': 'paced-acct',
+      'x-papercusp-account-pin': 'hard',
+    },
     body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
   });
-  assert.equal(r.status, 429, 'hard pin on a paced account 429s ON the pin (pause >> maxQueueWaitMs) — never fails over');
-  assert.equal(r.headers.get('x-papercusp-routed-account'), 'paced-acct', 'routed-account stays the pinned account, never the healthy sibling');
+  assert.equal(
+    r.status,
+    429,
+    'hard pin on a paced account 429s ON the pin (pause >> maxQueueWaitMs) — never fails over',
+  );
+  assert.equal(
+    r.headers.get('x-papercusp-routed-account'),
+    'paced-acct',
+    'routed-account stays the pinned account, never the healthy sibling',
+  );
   resetGovernorRegistry();
 });
 
@@ -1343,7 +1577,11 @@ test('a HEALTHY-but-BUSY pinned account is NOT soft-pin-failed-over onto a 7d-EX
     headers: { 'content-type': 'application/json', 'x-papercusp-account': 'healthy' },
     body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
   });
-  assert.equal(upstream.last.headers['authorization'], 'Bearer th', 'pinned request STAYED on the weekly-healthy account; it was NOT bounced to the 7d-exhausted sibling');
+  assert.equal(
+    upstream.last.headers['authorization'],
+    'Bearer th',
+    'pinned request STAYED on the weekly-healthy account; it was NOT bounced to the 7d-exhausted sibling',
+  );
   resetGovernorRegistry();
 });
 
@@ -1378,7 +1616,11 @@ test('Fault #3b — pinned account is paused AND pool.active() hands it back →
     body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
   });
   assert.equal(r.status, 200, 'served (yielded to liveness), NOT a paced/paused 429');
-  assert.equal(upstream.last.headers['authorization'], 'Bearer healthy-tok', 'walked to the healthy account despite active() returning the paused pin');
+  assert.equal(
+    upstream.last.headers['authorization'],
+    'Bearer healthy-tok',
+    'walked to the healthy account despite active() returning the paused pin',
+  );
   resetGovernorRegistry();
 });
 
@@ -1420,7 +1662,7 @@ test('UNPINNED request steers to the least-utilized healthy account up front, no
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"ok":true}');
   });
-  const hot: ActiveAccount = { accountId: 'hot', token: async () => 'hot-tok' };   // near-cap, still allowed
+  const hot: ActiveAccount = { accountId: 'hot', token: async () => 'hot-tok' }; // near-cap, still allowed
   const cool: ActiveAccount = { accountId: 'cool', token: async () => 'cool-tok' }; // fresh budget
   // Round-robin active() can hand back the HOT account (the pre-fix trap); the proactive pick must still land cool.
   const ring = [hot, cool];
@@ -1441,8 +1683,16 @@ test('UNPINNED request steers to the least-utilized healthy account up front, no
   });
   const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 200, 'served 200 (routed to the cool account, no stall-absorb)');
-  assert.equal(r.headers.get('x-papercusp-routed-account'), 'cool', 'unpinned request steered to the least-utilized healthy account');
-  assert.equal(upstream.last.headers['authorization'], 'Bearer cool-tok', 'egressed on the cool account, not the round-robin-first hot one');
+  assert.equal(
+    r.headers.get('x-papercusp-routed-account'),
+    'cool',
+    'unpinned request steered to the least-utilized healthy account',
+  );
+  assert.equal(
+    upstream.last.headers['authorization'],
+    'Bearer cool-tok',
+    'egressed on the cool account, not the round-robin-first hot one',
+  );
   resetGovernorRegistry();
 });
 
@@ -1467,11 +1717,25 @@ test('a per-account egress builds a dispatcher passed to the upstream fetch (per
     captured = init;
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
-  const egAcct: ActiveAccount = { accountId: 'eg', token: async () => 'T', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
+  const egAcct: ActiveAccount = {
+    accountId: 'eg',
+    token: async () => 'T',
+    egress: { proxyUrl: 'http://127.0.0.1:3128' },
+  };
   const pool: AccountPool = { active: () => egAcct, onExhausted: () => null };
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
   assert.ok(captured?.dispatcher, 'egress account passes an undici dispatcher to fetch');
 });
 
@@ -1483,9 +1747,19 @@ test('no per-account egress → no dispatcher (default shared egress)', async ()
   }) as unknown as typeof fetch;
   const plain: ActiveAccount = { accountId: 'plain', token: async () => 'T' };
   const pool: AccountPool = { active: () => plain, onExhausted: () => null };
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
   assert.equal(captured?.dispatcher, undefined, 'no egress → fetch gets no dispatcher');
 });
 
@@ -1539,7 +1813,13 @@ test('stats().pausedActuallyEnforced + unified.rejectedActuallyEnforced are LIVE
   const governor = new RateLimitGovernor({ maxConcurrent: 20 });
   const now = Date.now();
   governor.state.pausedUntil = now - 60_000; // lapsed a minute ago
-  governor.state.unified = { window: '5h', utilization: 1.02, rejected: true, resetAt: now - 30_000, observedAt: now - 4 * 60 * 60_000 }; // window "reset" 30s ago; last actually OBSERVED 4h ago (the idle-fleet scenario)
+  governor.state.unified = {
+    window: '5h',
+    utilization: 1.02,
+    rejected: true,
+    resetAt: now - 30_000,
+    observedAt: now - 4 * 60 * 60_000,
+  }; // window "reset" 30s ago; last actually OBSERVED 4h ago (the idle-fleet scenario)
   gw = createInferenceGateway({
     pool,
     upstreamBase: 'http://upstream.invalid',
@@ -1548,10 +1828,25 @@ test('stats().pausedActuallyEnforced + unified.rejectedActuallyEnforced are LIVE
   });
   const s = gw.stats();
   assert.equal(s.pausedUntil, now - 60_000, 'raw pausedUntil is untouched (still whatever was last recorded)');
-  assert.equal(s.pausedActuallyEnforced, false, 'but it is SELF-DESCRIBING: a lapsed deadline reads as not-enforced without the caller comparing to Date.now() itself');
-  assert.equal(s.unified?.rejected, true, 'raw rejected flag is untouched — the frozen-latch value the bug report observed');
-  assert.equal(s.unified?.rejectedActuallyEnforced, false, 'but the TRUSTWORTHY verdict says the window this reading described has already reset — not still rejected');
-  assert.ok((s.unified?.staleAsOfMs ?? 0) >= 4 * 60 * 60_000, 'staleAsOfMs reports how old the underlying reading actually is (~4h here), so a consumer can judge trust for themselves too');
+  assert.equal(
+    s.pausedActuallyEnforced,
+    false,
+    'but it is SELF-DESCRIBING: a lapsed deadline reads as not-enforced without the caller comparing to Date.now() itself',
+  );
+  assert.equal(
+    s.unified?.rejected,
+    true,
+    'raw rejected flag is untouched — the frozen-latch value the bug report observed',
+  );
+  assert.equal(
+    s.unified?.rejectedActuallyEnforced,
+    false,
+    'but the TRUSTWORTHY verdict says the window this reading described has already reset — not still rejected',
+  );
+  assert.ok(
+    (s.unified?.staleAsOfMs ?? 0) >= 4 * 60 * 60_000,
+    'staleAsOfMs reports how old the underlying reading actually is (~4h here), so a consumer can judge trust for themselves too',
+  );
 });
 
 test('stats().pausedActuallyEnforced + unified.rejectedActuallyEnforced read TRUE for a genuinely live pause/rejection (the non-stale control case)', () => {
@@ -1569,7 +1864,11 @@ test('stats().pausedActuallyEnforced + unified.rejectedActuallyEnforced read TRU
   });
   const s = gw.stats();
   assert.equal(s.pausedActuallyEnforced, true, 'a still-future pausedUntil IS actually enforced');
-  assert.equal(s.unified?.rejectedActuallyEnforced, true, 'a still-future resetAt means the rejected verdict is still live');
+  assert.equal(
+    s.unified?.rejectedActuallyEnforced,
+    true,
+    'a still-future resetAt means the rejected verdict is still live',
+  );
   // staleAsOfMs is a live wall-clock delta (Date.now() − observedAt), so "just
   // observed" is a small-elapsed bound, never an exact 0 — the strict equality
   // flaked on a loaded box (1ms elapsed between observe and read).
@@ -1594,14 +1893,28 @@ test('per-account egress isolation: each pinned account routes via its OWN dispa
 
   // Each account's token getter returns a distinct token → the captured Authorization header names
   // WHICH account actually egressed (ground truth, immune to any internal failover).
-  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
-  const B: ActiveAccount = { accountId: 'B', token: async () => 'B-tok', egress: { proxyUrl: 'http://127.0.0.1:3129' } };
+  const A: ActiveAccount = {
+    accountId: 'A',
+    token: async () => 'A-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:3128' },
+  };
+  const B: ActiveAccount = {
+    accountId: 'B',
+    token: async () => 'B-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:3129' },
+  };
   const C: ActiveAccount = { accountId: 'C', token: async () => 'C-tok', egress: { localAddress: '127.0.0.1' } };
   const P: ActiveAccount = { accountId: 'P', token: async () => 'P-tok' }; // no egress → shared default
   const byId: Record<string, ActiveAccount> = { A, B, C, P };
   const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => byId[id] ?? null };
 
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
 
   const pin = (acct: string) =>
@@ -1655,9 +1968,19 @@ test('per-account egress IP POOL: ONE account ROUND-ROBINS its upstream across B
     token: async () => 'A-tok',
     egressPool: [{ proxyUrl: 'http://127.0.0.1:3128' }, {}],
   };
-  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'aviynw8' ? A : null) };
+  const pool: AccountPool = {
+    active: () => A,
+    onExhausted: () => null,
+    select: (id: string) => (id === 'aviynw8' ? A : null),
+  };
 
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
 
   // Pin to the account so `active()` is deterministic; the egress-IP rotation is WITHIN the pinned account.
@@ -1714,9 +2037,19 @@ test('per-account egress IP POOL: ONE account ROUND-ROBINS its upstream across B
     token: async () => 'A-tok',
     egressPool: [{ proxyUrl: 'http://127.0.0.1:3128' }, {}],
   };
-  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'aviynw8' ? A : null) };
+  const pool: AccountPool = {
+    active: () => A,
+    onExhausted: () => null,
+    select: (id: string) => (id === 'aviynw8' ? A : null),
+  };
 
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
 
   // Pin to the account so `active()` is deterministic; the egress-IP rotation is WITHIN the pinned account.
@@ -1761,18 +2094,40 @@ test('egress cache key includes proxyUrl — a re-pointed egress proxy on the SA
     captured.push(init.dispatcher);
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
-  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
-  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'A' ? A : null) };
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  const A: ActiveAccount = {
+    accountId: 'A',
+    token: async () => 'A-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:3128' },
+  };
+  const pool: AccountPool = {
+    active: () => A,
+    onExhausted: () => null,
+    select: (id: string) => (id === 'A' ? A : null),
+  };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
   const pin = () =>
-    ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+    ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
   await pin(); // builds + caches A's dispatcher for proxy :3128
   A.egress = { proxyUrl: 'http://127.0.0.1:3129' }; // account egress re-pointed to a new proxy
   await pin(); // key changed → MUST build a fresh dispatcher, not reuse the :3128 one
   const [d1, d2] = captured;
   assert.ok(d1 && d2, 'both requests egress via a dispatcher');
-  assert.notEqual(d1, d2, 'a changed proxyUrl rebuilds the dispatcher (cache key includes the proxy, not just accountId)');
+  assert.notEqual(
+    d1,
+    d2,
+    'a changed proxyUrl rebuilds the dispatcher (cache key includes the proxy, not just accountId)',
+  );
 });
 
 test('egress cache key includes localAddress — a re-bound source IP on the SAME account rebuilds the dispatcher', async () => {
@@ -1782,11 +2137,25 @@ test('egress cache key includes localAddress — a re-bound source IP on the SAM
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
   const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { localAddress: '127.0.0.1' } };
-  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'A' ? A : null) };
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  const pool: AccountPool = {
+    active: () => A,
+    onExhausted: () => null,
+    select: (id: string) => (id === 'A' ? A : null),
+  };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
   const pin = () =>
-    ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+    ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
   await pin();
   A.egress = { localAddress: '127.0.0.2' }; // re-bound to a different loopback source IP
   await pin();
@@ -1802,16 +2171,34 @@ test('close() tears down every cached egress dispatcher (no leaked connection po
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
   const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { localAddress: '127.0.0.1' } };
-  const pool: AccountPool = { active: () => A, onExhausted: () => null, select: (id: string) => (id === 'A' ? A : null) };
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  const pool: AccountPool = {
+    active: () => A,
+    onExhausted: () => null,
+    select: (id: string) => (id === 'A' ? A : null),
+  };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
   assert.ok(captured, 'A built an egress dispatcher');
   assert.notEqual(captured!.closed, true, 'the dispatcher is open while the gateway is serving');
   await gw.close();
   // The gateway iterates the dispatcher cache and calls close() on each before clearing it — so the
   // captured (real undici) dispatcher reports closed; nothing is left holding a socket pool open.
-  assert.equal(captured!.closed, true, 'gateway.close() closed the cached egress dispatcher (no leaked connection pool)');
+  assert.equal(
+    captured!.closed,
+    true,
+    'gateway.close() closed the cached egress dispatcher (no leaked connection pool)',
+  );
 });
 
 // 529 = SERVER overload (Anthropic is momentarily over capacity), NOT account-budget exhaustion. It must be
@@ -1839,7 +2226,7 @@ test('[529 overload] a 529 backs off + retries the SAME account (no rotation) �
   );
   const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(res.status, 200, 'the 529 was retried into a 200, not forwarded to the bee');
-  assert.equal((await res.json() as { ok: boolean }).ok, true);
+  assert.equal(((await res.json()) as { ok: boolean }).ok, true);
   assert.equal(calls, 2, 'exactly one backoff-retry (529 then 200)');
   // CRITICAL distinction from a 429: a 529 retries the SAME account, never rotating to the other one.
   // (Which account the round-robin started on is irrelevant — both attempts must hit the SAME bearer.)
@@ -1885,7 +2272,10 @@ test('[529 overload] a PERSISTENT 529 is BOUNDED — the request settles with a 
   const start = Date.now();
   const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   const elapsed = Date.now() - start;
-  assert.ok(res.status >= 500 && res.status < 600, `a persistent 529 settles with a bounded 5xx (got ${res.status}), not an infinite retry`);
+  assert.ok(
+    res.status >= 500 && res.status < 600,
+    `a persistent 529 settles with a bounded 5xx (got ${res.status}), not an infinite retry`,
+  );
   assert.ok(elapsed < 3_000, `terminated fast (${elapsed}ms), slot freed — no unbounded backoff loop`);
 }, 15_000);
 
@@ -1946,7 +2336,10 @@ test('[529 overload] EI-21921571654476580: the OTHER exhaustion exit — the lad
       'false',
       'the ladder-exhausted 529 must also override the raw upstream x-should-retry:true before forwarding',
     );
-    assert.ok(res.headers.get('x-papercusp-retries-exhausted'), 'attempt count surfaced on the ladder-exhausted exit too');
+    assert.ok(
+      res.headers.get('x-papercusp-retries-exhausted'),
+      'attempt count surfaced on the ladder-exhausted exit too',
+    );
   } else {
     assert.ok(res.status >= 500 && res.status < 600, `bounded settlement (got ${res.status})`);
   }
@@ -1991,12 +2384,30 @@ test('a genuinely unsupported (non-http(s)/non-socks) egress proxyUrl fails SAFE
     captured = init;
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
-  const unsupportedAcct: ActiveAccount = { accountId: 'sx', token: async () => 'T', egress: { proxyUrl: 'ftp://127.0.0.1:1080' } };
+  const unsupportedAcct: ActiveAccount = {
+    accountId: 'sx',
+    token: async () => 'T',
+    egress: { proxyUrl: 'ftp://127.0.0.1:1080' },
+  };
   const pool: AccountPool = { active: () => unsupportedAcct, onExhausted: () => null };
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
-  assert.equal(captured?.dispatcher, undefined, 'an ftp:// proxyUrl is ignored → default shared egress (no dispatcher)');
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(
+    captured?.dispatcher,
+    undefined,
+    'an ftp:// proxyUrl is ignored → default shared egress (no dispatcher)',
+  );
 });
 
 test('an unsupported-scheme proxyUrl + a bound localAddress → still binds the source IP (proxy ignored, IP binding applied) (B-GW-3)', async () => {
@@ -2005,11 +2416,25 @@ test('an unsupported-scheme proxyUrl + a bound localAddress → still binds the 
     captured = init;
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
-  const acct: ActiveAccount = { accountId: 'mix', token: async () => 'T', egress: { proxyUrl: 'ftp://127.0.0.1:1080', localAddress: '127.0.0.1' } };
+  const acct: ActiveAccount = {
+    accountId: 'mix',
+    token: async () => 'T',
+    egress: { proxyUrl: 'ftp://127.0.0.1:1080', localAddress: '127.0.0.1' },
+  };
   const pool: AccountPool = { active: () => acct, onExhausted: () => null };
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
   assert.ok(captured?.dispatcher, 'falls through to the bound-source-IP dispatcher when the proxy scheme is unusable');
 });
 
@@ -2019,11 +2444,25 @@ test('a socks5:// egress proxyUrl builds a real Socks5ProxyAgent dispatcher — 
     captured = init;
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
-  const socksAcct: ActiveAccount = { accountId: 'sx', token: async () => 'T', egress: { proxyUrl: 'socks5://127.0.0.1:1080' } };
+  const socksAcct: ActiveAccount = {
+    accountId: 'sx',
+    token: async () => 'T',
+    egress: { proxyUrl: 'socks5://127.0.0.1:1080' },
+  };
   const pool: AccountPool = { active: () => socksAcct, onExhausted: () => null };
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
   assert.ok(captured?.dispatcher, 'a socks5:// proxyUrl is HONORED — a real dispatcher is built, not ignored');
   assert.equal((captured!.dispatcher as { constructor: { name: string } }).constructor.name, 'Socks5ProxyAgent');
 });
@@ -2034,11 +2473,25 @@ test('a socks5:// proxyUrl WINS over a bound localAddress (proxy takes precedenc
     captured = init;
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
-  const acct: ActiveAccount = { accountId: 'mix2', token: async () => 'T', egress: { proxyUrl: 'socks5://127.0.0.1:1080', localAddress: '127.0.0.1' } };
+  const acct: ActiveAccount = {
+    accountId: 'mix2',
+    token: async () => 'T',
+    egress: { proxyUrl: 'socks5://127.0.0.1:1080', localAddress: '127.0.0.1' },
+  };
   const pool: AccountPool = { active: () => acct, onExhausted: () => null };
-  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 80,
+  });
   port = await gw.listen(0);
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
   assert.equal((captured!.dispatcher as { constructor: { name: string } }).constructor.name, 'Socks5ProxyAgent');
 });
 
@@ -2053,9 +2506,18 @@ test('END-TO-END: a request through a socks5:// egress proxy genuinely tunnels t
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true, via: 'socks5-relay' }));
     });
-    const socksAcct: ActiveAccount = { accountId: 'e2e-socks', token: async () => 'T', egress: { proxyUrl: `socks5://127.0.0.1:${socks.port}` } };
+    const socksAcct: ActiveAccount = {
+      accountId: 'e2e-socks',
+      token: async () => 'T',
+      egress: { proxyUrl: `socks5://127.0.0.1:${socks.port}` },
+    };
     const pool: AccountPool = { active: () => socksAcct, onExhausted: () => null };
-    gw = createInferenceGateway({ pool, upstreamBase: upstream.base, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+    gw = createInferenceGateway({
+      pool,
+      upstreamBase: upstream.base,
+      governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+      maxQueueWaitMs: 80,
+    });
     port = await gw.listen(0);
     const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
     assert.equal(res.status, 200, 'the request tunneled through SOCKS5 and reached the real upstream');
@@ -2089,7 +2551,11 @@ test('a STALLED OAuth token refresh fails FAST with a retryable 503 + releases t
   assert.ok(elapsed < 2000, `failed fast (${elapsed}ms) instead of pinning the admission slot`);
   assert.equal(upstreamHits, 0, 'never reached upstream — the hang was before the fetch');
   const stats = (await (await ask('/stats')).json()) as { inFlight: number };
-  assert.equal(stats.inFlight, 0, 'admission slot released after the token timeout (wedge signature is inFlight stuck at max)');
+  assert.equal(
+    stats.inFlight,
+    0,
+    'admission slot released after the token timeout (wedge signature is inFlight stuck at max)',
+  );
 });
 
 test('a STALLED OAuth token refresh penalizes as TRANSPORT, not a real rate-limit penalty (2026-07-01 root-cause fix)', async () => {
@@ -2162,11 +2628,16 @@ test('the HARD per-request ceiling force-terminates a stuck request → slot rel
   // An upstream that accepts the connection and NEVER responds. Set the activity stall-guards LONG and the
   // ceiling SHORT so the CEILING is what fires — proving the universal backstop releases the slot no matter
   // which await a request is stuck in (not just the specific ones the activity timers cover).
-  const hanging = http.createServer(() => { /* never responds, never closes */ });
+  const hanging = http.createServer(() => {
+    /* never responds, never closes */
+  });
   await new Promise<void>((r) => hanging.listen(0, '127.0.0.1', () => r()));
   const hangPort = (hanging.address() as { port: number }).port;
   await boot(
-    (_req, res) => { res.writeHead(200); res.end('{}'); }, // boot's own upstream — unused (overridden below)
+    (_req, res) => {
+      res.writeHead(200);
+      res.end('{}');
+    }, // boot's own upstream — unused (overridden below)
     {
       upstreamBase: `http://127.0.0.1:${hangPort}`,
       upstreamHeadersTimeoutMs: 60_000, // long — would NOT fire inside the test window
@@ -2224,7 +2695,10 @@ test('[self-heal integration] the sweeper reclaims the oldest stuck slot when sa
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
-    }).then((r) => ({ status: r.status }), () => ({ status: 0 })); // the valve destroys the socket → fetch may reject
+    }).then(
+      (r) => ({ status: r.status }),
+      () => ({ status: 0 }),
+    ); // the valve destroys the socket → fetch may reject
 
   const start = Date.now();
   const p1 = fire(); // acquires the only slot; the upstream won't answer for 800ms
@@ -2236,10 +2710,17 @@ test('[self-heal integration] the sweeper reclaims the oldest stuck slot when sa
   assert.ok(elapsed1 < 3_000, `request 1 force-freed by self-heal in ${elapsed1}ms (not held to the 60s guards)`);
   assert.notEqual(r1.status, 200, 'the RECLAIMED request did not get a clean 200 (its slot was force-reclaimed)');
 
-  assert.ok(gw.stats().selfHealReclaims >= 1, `the self-heal valve recorded a reclaim (got ${gw.stats().selfHealReclaims})`);
+  assert.ok(
+    gw.stats().selfHealReclaims >= 1,
+    `the self-heal valve recorded a reclaim (got ${gw.stats().selfHealReclaims})`,
+  );
 
   const r2 = await p2; // the freed slot was handed to the queued waiter, which then completes for real
-  assert.equal(r2.status, 200, 'the queued waiter was admitted to the freed slot and completed (the wedge actually drained)');
+  assert.equal(
+    r2.status,
+    200,
+    'the queued waiter was admitted to the freed slot and completed (the wedge actually drained)',
+  );
 });
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -2313,7 +2794,11 @@ test('[B-GW-2 chaos] extreme concurrency vs a HEALTHY upstream — all settle 20
   const rs = await Promise.all(
     Array.from({ length: N }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
   );
-  assert.equal(rs.filter((r) => r.status === 200).length, N, 'every one of the 120 concurrent requests settled 200 (none dropped/shed/hung)');
+  assert.equal(
+    rs.filter((r) => r.status === 200).length,
+    N,
+    'every one of the 120 concurrent requests settled 200 (none dropped/shed/hung)',
+  );
   // (1) Upstream concurrency never exceeded the window admission was actually enforcing.
   const liveWindow = Math.max(windowAtPeak, gw.stats().admission.maxConcurrent);
   assert.ok(
@@ -2329,7 +2814,10 @@ test('[B-GW-2 chaos] extreme concurrency vs a HEALTHY upstream — all settle 20
   );
   // (3) The load-shape invariant the original assertion existed to protect: a 120-deep burst reaches
   //     the upstream a few at a time, never as a herd.
-  assert.ok(peak < N / 3, `upstream peak concurrency ${peak} stayed far below the ${N}-deep burst — the burst was paced, not forwarded`);
+  assert.ok(
+    peak < N / 3,
+    `upstream peak concurrency ${peak} stayed far below the ${N}-deep burst — the burst was paced, not forwarded`,
+  );
   assert.equal(gw.stats().totalRequests - before, N, 'every request was counted (counters never froze)');
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'all 120 admission slots drained back to 0 — no slot leak');
@@ -2368,12 +2856,18 @@ test('[B-GW-2 chaos] pool-wide throttle storm (slow upstream squats slots) under
   const shed = rs.filter((r) => r.status === 429);
   const ok = rs.filter((r) => r.status === 200);
   assert.equal(shed.length + ok.length, N, 'every request SETTLED (200 admitted or 429 shed) — none lost or hung');
-  assert.ok(shed.length >= 12, `excess load was shed as 429 (${shed.length}/${N}, expected ~28) — the backlog stayed BOUNDED, not unbounded`);
+  assert.ok(
+    shed.length >= 12,
+    `excess load was shed as 429 (${shed.length}/${N}, expected ~28) — the backlog stayed BOUNDED, not unbounded`,
+  );
   assert.ok(ok.length >= 1, 'the admitted requests (within the concurrency+queue budget) still succeeded');
   const shedBody = (await shed[0].json()) as { gateway?: boolean };
   assert.equal(shedBody.gateway, true, 'shed responses are gateway-synthesized retryable 429s, not crashes');
   assert.ok(shed[0].headers.get('retry-after'), 'shed 429 carries retry-after so the caller backs off + retries');
-  assert.ok(gw.stats().shed429 - shedBefore >= shed.length, 'the shed429 counter advanced — graceful load-shed is observable in /stats');
+  assert.ok(
+    gw.stats().shed429 - shedBefore >= shed.length,
+    'the shed429 counter advanced — graceful load-shed is observable in /stats',
+  );
   assert.ok(peak <= 4, `upstream peak concurrency ${peak} never exceeded the cap (4) even under the storm`);
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'all admission slots drained — the storm pinned no slot');
@@ -2410,12 +2904,21 @@ test('[B-GW-2 chaos] upstream 429 storm under high concurrency — every request
     Array.from({ length: N }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
   );
   const elapsed = Date.now() - t0;
-  assert.ok(rs.every((r) => r.status === 429), 'every request under the storm settled as a 429 (real or synthetic) — none hung');
-  assert.ok(elapsed < 12_000, `the whole 40-wide storm settled in bounded time (${elapsed}ms) — no slot squatting on the pause`);
+  assert.ok(
+    rs.every((r) => r.status === 429),
+    'every request under the storm settled as a 429 (real or synthetic) — none hung',
+  );
+  assert.ok(
+    elapsed < 12_000,
+    `the whole 40-wide storm settled in bounded time (${elapsed}ms) — no slot squatting on the pause`,
+  );
   // Anti-wedge: the wedge signature is totalRequests FROZEN. Assert it ADVANCED (not exactly N): a queue-
   // level shed (e.g. B-GW-1's AIMD far-reset whole-pool shed) settles a 429 WITHOUT reaching proxy's
   // totalRequests++, so the principled invariant is "counters moved", not "every request reached proxy".
-  assert.ok(gw.stats().totalRequests > before, 'totalRequests advanced — the gateway processed the burst (counters never froze)');
+  assert.ok(
+    gw.stats().totalRequests > before,
+    'totalRequests advanced — the gateway processed the burst (counters never froze)',
+  );
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'no admission slot left pinned after the 429 storm');
   // Bounded recovery / responsiveness: the control plane still answers and the gateway keeps shedding
@@ -2452,10 +2955,20 @@ test('[B-GW-2 chaos] internal-retry DEADLINE bounds slot-hold: a perpetual TRANS
   // The deadline shed manifests as a RETRYABLE error — 429 via the internal-retry guard, or 502/503 when a
   // near-deadline retry's headers-wait is deadline-capped and the fetch is aborted first. Both are retryable
   // and both FREE the slot; the durable invariant is "sheds fast + slot freed (no wedge)", not the code.
-  assert.ok([429, 502, 503].includes(r.status), `sheds a RETRYABLE error at the deadline (got ${r.status}) — not absorbed forever`);
-  assert.ok(elapsed < 5_000, `slot-hold bounded by the ~200ms deadline (${elapsed}ms) — NOT the full ~30s transient wait budget (the squat the wedge needs)`);
+  assert.ok(
+    [429, 502, 503].includes(r.status),
+    `sheds a RETRYABLE error at the deadline (got ${r.status}) — not absorbed forever`,
+  );
+  assert.ok(
+    elapsed < 5_000,
+    `slot-hold bounded by the ~200ms deadline (${elapsed}ms) — NOT the full ~30s transient wait budget (the squat the wedge needs)`,
+  );
   const inFlight = await drainToZeroInFlight();
-  assert.equal(inFlight, 0, 'the admission slot was freed at the deadline — no squat, so the frozen-while-saturated wedge signature never forms');
+  assert.equal(
+    inFlight,
+    0,
+    'the admission slot was freed at the deadline — no squat, so the frozen-while-saturated wedge signature never forms',
+  );
 }, 30_000);
 
 test('[B-GW-2 chaos] a STORM of upstream HEADER-stalls under high concurrency — all abort (502) fast, every slot drains, recovers', async () => {
@@ -2475,12 +2988,20 @@ test('[B-GW-2 chaos] a STORM of upstream HEADER-stalls under high concurrency �
   const N = 30;
   const t0 = Date.now();
   const rs = await Promise.all(
-    Array.from({ length: N }, () => post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] })),
+    Array.from({ length: N }, () =>
+      post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+    ),
   );
   const elapsed = Date.now() - t0;
-  assert.ok(rs.every((r) => r.status === 502), 'every stalled request aborted with a gateway 502 — none hung');
-  assert.equal((await rs[0].json() as { gateway?: boolean }).gateway, true, 'gateway-synthesized 502');
-  assert.ok(elapsed < 15_000, `the 30-wide stall storm aborted in bounded time (${elapsed}ms), not a multi-minute hang`);
+  assert.ok(
+    rs.every((r) => r.status === 502),
+    'every stalled request aborted with a gateway 502 — none hung',
+  );
+  assert.equal(((await rs[0].json()) as { gateway?: boolean }).gateway, true, 'gateway-synthesized 502');
+  assert.ok(
+    elapsed < 15_000,
+    `the 30-wide stall storm aborted in bounded time (${elapsed}ms), not a multi-minute hang`,
+  );
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'every admission slot released after the stall aborts — no deadlock under load');
   mode = 'healthy';
@@ -2506,12 +3027,19 @@ test('[B-GW-2 chaos] a STORM of mid-stream BODY-stalls under high concurrency �
   );
   const N = 18;
   const rs = await Promise.all(
-    Array.from({ length: N }, () => post({ model: 'claude-opus-4', stream: true, messages: [{ role: 'user', content: 'x' }] })),
+    Array.from({ length: N }, () =>
+      post({ model: 'claude-opus-4', stream: true, messages: [{ role: 'user', content: 'x' }] }),
+    ),
   );
-  assert.ok(rs.every((r) => r.status === 200), 'all streams opened (headers + first chunk forwarded)');
+  assert.ok(
+    rs.every((r) => r.status === 200),
+    'all streams opened (headers + first chunk forwarded)',
+  );
   // Drain the truncated/reset bodies, bounded so a lingering read can't blow the test budget. The slot
   // is freed by the UPSTREAM body-idle abort regardless of when the client read settles.
-  await Promise.all(rs.map((r) => Promise.race([r.text().catch(() => ''), new Promise((res) => setTimeout(res, 1500))])));
+  await Promise.all(
+    rs.map((r) => Promise.race([r.text().catch(() => ''), new Promise((res) => setTimeout(res, 1500))])),
+  );
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'the body-idle guard released every slot mid-stream — no leak under load');
   mode = 'healthy';
@@ -2534,19 +3062,32 @@ test('[B-GW-2 chaos] a hung OAuth-TOKEN endpoint under high concurrency — ever
     },
     // concurrency 50 > N so every request gets an admission slot and deterministically hits the token
     // timeout (503) — the overflow case (admission 429) is already covered by the throttle-storm tests.
-    { token: () => (tokenHangs ? new Promise<string>(() => {}) : Promise.resolve('tok')), tokenTimeoutMs: 80, concurrency: 50 },
+    {
+      token: () => (tokenHangs ? new Promise<string>(() => {}) : Promise.resolve('tok')),
+      tokenTimeoutMs: 80,
+      concurrency: 50,
+    },
   );
   const N = 30;
   const t0 = Date.now();
   const rs = await Promise.all(
-    Array.from({ length: N }, () => post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] })),
+    Array.from({ length: N }, () =>
+      post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+    ),
   );
   const elapsed = Date.now() - t0;
-  assert.ok(rs.every((r) => r.status === 503), 'every request fails fast with a retryable 503, not a hang');
+  assert.ok(
+    rs.every((r) => r.status === 503),
+    'every request fails fast with a retryable 503, not a hang',
+  );
   assert.equal(upstreamHits, 0, 'no request reached upstream — the hang is BEFORE the fetch');
   assert.ok(elapsed < 15_000, `the 30-wide token-hang storm settled fast (${elapsed}ms), not a multi-minute wedge`);
   const inFlight = await drainToZeroInFlight();
-  assert.equal(inFlight, 0, 'every admission slot released after the token timeout — wedge signature (inFlight stuck) absent');
+  assert.equal(
+    inFlight,
+    0,
+    'every admission slot released after the token timeout — wedge signature (inFlight stuck) absent',
+  );
   // Bounded recovery: a token-refresh timeout penalizes the stalled credential OUT of rotation
   // (gov.penalize) and releases every slot, so the gateway stays RESPONSIVE. With a SINGLE account there
   // is nothing healthy to fail over to, so a post-storm request settles FAST as a retryable error (429
@@ -2556,7 +3097,10 @@ test('[B-GW-2 chaos] a hung OAuth-TOKEN endpoint under high concurrency — ever
   tokenHangs = false;
   const t1 = Date.now();
   const after = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
-  assert.ok([200, 429, 503].includes(after.status), `post-storm request settles fast (got ${after.status}), not a hang`);
+  assert.ok(
+    [200, 429, 503].includes(after.status),
+    `post-storm request settles fast (got ${after.status}), not a hang`,
+  );
   assert.ok(Date.now() - t1 < 2000, 'gateway stayed responsive after the token-hang storm — no wedge');
 }, 20_000);
 
@@ -2598,11 +3142,23 @@ test('[B-GW-1 AIMD] a routed-around per-account 429 does NOT shrink global admis
   const r1 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r1.status, 200, 'request recovered via failover off the throttled account');
   await r1.text();
-  const s = (await (await ask('/stats')).json()) as { admission: { maxConcurrent: number }; concurrencyCap: number; aimd: { effective: number; cap: number; decreases: number } };
+  const s = (await (await ask('/stats')).json()) as {
+    admission: { maxConcurrent: number };
+    concurrencyCap: number;
+    aimd: { effective: number; cap: number; decreases: number };
+  };
   assert.equal(s.concurrencyCap, 8, 'the cap is the configured concurrency');
   assert.equal(s.aimd.decreases, 0, `a routed-around 429 must NOT trip an AIMD decrease (got ${s.aimd.decreases})`);
-  assert.equal(s.admission.maxConcurrent, 8, `global admission stayed at the cap — the healthy accounts are not choked (got ${s.admission.maxConcurrent}/8)`);
-  assert.equal(s.aimd.effective, 8, 'effective concurrency unchanged: one account 429ing does not throttle the whole pool');
+  assert.equal(
+    s.admission.maxConcurrent,
+    8,
+    `global admission stayed at the cap — the healthy accounts are not choked (got ${s.admission.maxConcurrent}/8)`,
+  );
+  assert.equal(
+    s.aimd.effective,
+    8,
+    'effective concurrency unchanged: one account 429ing does not throttle the whole pool',
+  );
   assert.equal(((await (await ask('/stats')).json()) as { inFlight: number }).inFlight, 0, 'no admission slot leaked');
 }, 20_000);
 
@@ -2618,16 +3174,27 @@ test('[B-GW-1 AIMD] an UN-ROUTABLE pool-wide 429 (no healthy account) DOES shrin
   await boot(
     (_req, res) => {
       res.writeHead(429, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: "You've hit your session limit · resets 10:50am" } }));
+      res.end(
+        JSON.stringify({
+          type: 'error',
+          error: { type: 'rate_limit_error', message: "You've hit your session limit · resets 10:50am" },
+        }),
+      );
     },
     { pool, concurrency: 16, aimd: { floor: 3, decreaseThreshold: 1 } },
   );
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 429, 'pool exhausted → the usage-cap 429 is forwarded after rotation');
   await r.text();
-  const s = (await (await ask('/stats')).json()) as { admission: { maxConcurrent: number }; aimd: { effective: number; floor: number; decreases: number } };
+  const s = (await (await ask('/stats')).json()) as {
+    admission: { maxConcurrent: number };
+    aimd: { effective: number; floor: number; decreases: number };
+  };
   assert.ok(s.aimd.decreases >= 1, 'the un-routable pool-wide-saturation 429 DID trip an AIMD decrease');
-  assert.ok(s.aimd.effective < 16 && s.aimd.effective >= 3, `effective shrank below the cap but never below the floor (got ${s.aimd.effective})`);
+  assert.ok(
+    s.aimd.effective < 16 && s.aimd.effective >= 3,
+    `effective shrank below the cap but never below the floor (got ${s.aimd.effective})`,
+  );
 }, 20_000);
 
 test('[B-GW-1 budget-aware] high concurrency, MAXED + HEALTHY accounts mixed: per-account 429s do NOT choke the global gate — everything routes to capacity (the owner "API errors despite headroom")', async () => {
@@ -2638,13 +3205,19 @@ test('[B-GW-1 budget-aware] high concurrency, MAXED + HEALTHY accounts mixed: pe
   // POST-FIX the routed-around 429s are invisible to AIMD: the gate stays at the cap, every request reaches a
   // healthy account, nothing is shed.
   resetGovernorRegistry();
-  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const acct = (id: string): ActiveAccount => ({
+    accountId: id,
+    token: async () => `${id}-tok`,
+    invalidateToken: () => {},
+  });
   const maxed = new Set(['A', 'B']); // 2 maxed, 6 with headroom
   const pool = createFailoverPool(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(acct));
   let calls429 = 0;
   await boot(
     (req, res) => {
-      const id = String(req.headers['authorization'] ?? '').replace(/^Bearer\s+/, '').replace(/-tok$/, '');
+      const id = String(req.headers['authorization'] ?? '')
+        .replace(/^Bearer\s+/, '')
+        .replace(/-tok$/, '');
       if (maxed.has(id)) {
         calls429 += 1;
         res.writeHead(429, { 'content-type': 'application/json' }); // bare transient → the gateway routes around
@@ -2672,11 +3245,22 @@ test('[B-GW-1 budget-aware] high concurrency, MAXED + HEALTHY accounts mixed: pe
     ),
   );
   const ok = statuses.filter((st) => st === 200).length;
-  const s = (await (await ask('/stats')).json()) as { aimd: { effective: number; floor: number; cap: number; decreases: number }; inFlight: number };
+  const s = (await (await ask('/stats')).json()) as {
+    aimd: { effective: number; floor: number; cap: number; decreases: number };
+    inFlight: number;
+  };
   assert.ok(calls429 > 0, 'the maxed accounts WERE hit under concurrency (the scenario is actually exercised)');
   assert.equal(ok, N, `every request routed around the maxed accounts to a healthy one (got ${ok}/${N} 200)`);
-  assert.equal(s.aimd.decreases, 0, `the maxed-account quota-429s did NOT trip a single global AIMD decrease (got ${s.aimd.decreases})`);
-  assert.equal(s.aimd.effective, s.aimd.cap, `global admission stayed at the cap, never choked by per-account quotas (effective=${s.aimd.effective}/${s.aimd.cap})`);
+  assert.equal(
+    s.aimd.decreases,
+    0,
+    `the maxed-account quota-429s did NOT trip a single global AIMD decrease (got ${s.aimd.decreases})`,
+  );
+  assert.equal(
+    s.aimd.effective,
+    s.aimd.cap,
+    `global admission stayed at the cap, never choked by per-account quotas (effective=${s.aimd.effective}/${s.aimd.cap})`,
+  );
   assert.equal(s.inFlight, 0, 'no admission slot leaked');
 }, 90_000);
 
@@ -2706,7 +3290,13 @@ test('[B-GW-1 G1] FLEET-WIDE bare-burst → rotate-retry SUPPRESSED (no cross-ac
         res.end(JSON.stringify({ ok: true, content: 'recovered' }));
       }
     },
-    { pool, governorFor: undefined, concurrency: 8, aimd: { floor: 2 }, bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS },
+    {
+      pool,
+      governorFor: undefined,
+      concurrency: 8,
+      aimd: { floor: 2 },
+      bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS,
+    },
   );
   // SIMULATE the fleet-wide state that concurrent in-flight requests create under the shared edge throttle:
   // HALF the 4-account pool (A, B) is already out of rotation. With ≥half penalized, rotating this bare-429
@@ -2715,14 +3305,37 @@ test('[B-GW-1 G1] FLEET-WIDE bare-burst → rotate-retry SUPPRESSED (no cross-ac
   pool.onExhausted('B', Date.now() + 60_000);
 
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(r.status, 200, 'the request ABSORBED the fleet-wide bare-burst (bounded wait + retry on the SAME account) and recovered — not a forwarded error');
-  assert.equal(JSON.parse(await r.text()).content, 'recovered', 'the forwarded body is the recovered 200, not the burst error');
-  const s = (await (await ask('/stats')).json()) as { failovers: number; bareBurstRotateSuppressed: number; inFlight: number };
+  assert.equal(
+    r.status,
+    200,
+    'the request ABSORBED the fleet-wide bare-burst (bounded wait + retry on the SAME account) and recovered — not a forwarded error',
+  );
+  assert.equal(
+    JSON.parse(await r.text()).content,
+    'recovered',
+    'the forwarded body is the recovered 200, not the burst error',
+  );
+  const s = (await (await ask('/stats')).json()) as {
+    failovers: number;
+    bareBurstRotateSuppressed: number;
+    inFlight: number;
+  };
   // THE FIX: no cross-account rotation happened. The OLD loop would have rotated C→D (a fresh upstream call on
   // each) before giving up — exactly the 2.4× / 108-failover amplification that sustained the storm.
-  assert.equal(s.failovers, 0, `ZERO cross-account rotation under fleet-wide bare-burst (got ${s.failovers}; the pre-fix loop would rotate C→D here)`);
-  assert.ok(s.bareBurstRotateSuppressed >= 1, `the storm-suppressor engaged at least once (got ${s.bareBurstRotateSuppressed})`);
-  assert.equal(calls, 2, `≈1 upstream call/request: one bare-burst + one recover-on-the-same-account, NOT a per-account fan-out (got ${calls})`);
+  assert.equal(
+    s.failovers,
+    0,
+    `ZERO cross-account rotation under fleet-wide bare-burst (got ${s.failovers}; the pre-fix loop would rotate C→D here)`,
+  );
+  assert.ok(
+    s.bareBurstRotateSuppressed >= 1,
+    `the storm-suppressor engaged at least once (got ${s.bareBurstRotateSuppressed})`,
+  );
+  assert.equal(
+    calls,
+    2,
+    `≈1 upstream call/request: one bare-burst + one recover-on-the-same-account, NOT a per-account fan-out (got ${calls})`,
+  );
   assert.equal(s.inFlight, 0, 'no admission slot leaked');
 }, 30_000);
 
@@ -2740,14 +3353,20 @@ test('[B-GW-1 G6] fleet-CONCURRENCY bare-burst regression rig: N real concurrent
   // would blow up calls-per-request and/or start forwarding 429s to the bee — this test would go red.
   resetGovernorRegistry();
   const ACCOUNTS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const acct = (id: string): ActiveAccount => ({
+    accountId: id,
+    token: async () => `${id}-tok`,
+    invalidateToken: () => {},
+  });
   const pool = createFailoverPool(ACCOUNTS.map(acct));
   let totalCalls = 0;
   const callsByAccount = new Map<string, number>();
   await boot(
     (req, res) => {
       totalCalls += 1;
-      const id = String(req.headers['authorization'] ?? '').replace(/^Bearer\s+/, '').replace(/-tok$/, '');
+      const id = String(req.headers['authorization'] ?? '')
+        .replace(/^Bearer\s+/, '')
+        .replace(/-tok$/, '');
       const seen = (callsByAccount.get(id) ?? 0) + 1;
       callsByAccount.set(id, seen);
       if (seen === 1) {
@@ -2761,7 +3380,13 @@ test('[B-GW-1 G6] fleet-CONCURRENCY bare-burst regression rig: N real concurrent
         res.end(JSON.stringify({ ok: true, content: 'served' }));
       }
     },
-    { pool, governorFor: undefined, concurrency: ACCOUNTS.length * 2, aimd: { floor: 2 }, bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS },
+    {
+      pool,
+      governorFor: undefined,
+      concurrency: ACCOUNTS.length * 2,
+      aimd: { floor: 2 },
+      bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS,
+    },
   );
 
   const N = ACCOUNTS.length;
@@ -2783,23 +3408,39 @@ test('[B-GW-1 G6] fleet-CONCURRENCY bare-burst regression rig: N real concurrent
 
   // Bee-facing: the entire fleet-wide burst must be ABSORBED — zero forwarded errors reach the client.
   const beeFacingErrors = statuses.filter((st) => st !== 200);
-  assert.deepEqual(beeFacingErrors, [], `every one of ${N} concurrent requests recovered to 200 — the burst must be invisible to the bee (got statuses ${JSON.stringify(statuses)})`);
+  assert.deepEqual(
+    beeFacingErrors,
+    [],
+    `every one of ${N} concurrent requests recovered to 200 — the burst must be invisible to the bee (got statuses ${JSON.stringify(statuses)})`,
+  );
 
   // upstream429: the mock genuinely bare-429'd (the burst was really exercised, not a no-op scenario).
-  assert.ok(s.upstream429 >= N - 1, `at least ${N - 1} accounts hit their first-round bare-429 (got upstream429=${s.upstream429})`);
+  assert.ok(
+    s.upstream429 >= N - 1,
+    `at least ${N - 1} accounts hit their first-round bare-429 (got upstream429=${s.upstream429})`,
+  );
 
   // The suppressor engaged repeatedly — this is a genuine multi-account fleet-wide event, not the
   // already-covered single-request/manually-poisoned scenario.
-  assert.ok(s.bareBurstRotateSuppressed >= N - 2, `cluster-suppress engaged for most of the burst (got ${s.bareBurstRotateSuppressed}, wanted >= ${N - 2})`);
+  assert.ok(
+    s.bareBurstRotateSuppressed >= N - 2,
+    `cluster-suppress engaged for most of the burst (got ${s.bareBurstRotateSuppressed}, wanted >= ${N - 2})`,
+  );
 
   // ZERO or at most ONE cross-account rotation (the very first bare-429 processed, before 2 distinct accounts
   // have clustered — see BAREBURST_CLUSTER_MIN_ACCOUNTS). NOT the cascading multi-hop rotation the pre-G1 code
   // would do under fleet-wide saturation.
-  assert.ok(s.failovers <= 1, `at most one early cross-account rotation before cluster-suppress engaged (got failovers=${s.failovers})`);
+  assert.ok(
+    s.failovers <= 1,
+    `at most one early cross-account rotation before cluster-suppress engaged (got failovers=${s.failovers})`,
+  );
 
   // upstream-calls-per-client-request stays ≈2 (one bare-429 + one absorbed retry), not a multi-hop blowup.
   const callsPerRequest = totalCalls / N;
-  assert.ok(callsPerRequest <= 2.5, `upstream-calls-per-client-request stayed bounded (got ${callsPerRequest.toFixed(2)}, wanted <= 2.5 — the pre-G1 code observed ~2.4x+ from cross-account rotation cascades)`);
+  assert.ok(
+    callsPerRequest <= 2.5,
+    `upstream-calls-per-client-request stayed bounded (got ${callsPerRequest.toFixed(2)}, wanted <= 2.5 — the pre-G1 code observed ~2.4x+ from cross-account rotation cascades)`,
+  );
 
   assert.equal(s.inFlight, 0, 'no admission slot leaked');
 }, 30_000);
@@ -2810,10 +3451,17 @@ test('[soft-pin] a PINNED request whose account is BUSY-but-serviceable STAYS pi
   // su-98731/aviynw7: 97%-cache-hit sessions bounced at inflight=1). Concurrency on a pin queues + paces on
   // the pin's own governor; only an UNSERVICEABLE pin (paused/exhausted/all-IPs-cooled) yields — see below.
   resetGovernorRegistry();
-  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const acct = (id: string): ActiveAccount => ({
+    accountId: id,
+    token: async () => `${id}-tok`,
+    invalidateToken: () => {},
+  });
   const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
   await boot(
-    (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); },
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
     { pool, governorFor: undefined, concurrency: 24 },
   );
   // Concurrent pinned sessions already forwarding through A (the load that used to trigger the yield).
@@ -2825,7 +3473,11 @@ test('[soft-pin] a PINNED request whose account is BUSY-but-serviceable STAYS pi
   });
   assert.equal(r.status, 200);
   await r.text();
-  assert.equal(r.headers.get('x-papercusp-routed-account'), 'A', 'a busy-but-serviceable pin is preserved (cache affinity is a commitment, not a tiebreak)');
+  assert.equal(
+    r.headers.get('x-papercusp-routed-account'),
+    'A',
+    'a busy-but-serviceable pin is preserved (cache affinity is a commitment, not a tiebreak)',
+  );
 }, 20_000);
 
 test('[soft-pin] a PINNED request whose account is UNSERVICEABLE (governor-paused) yields to a serviceable sibling', async () => {
@@ -2833,10 +3485,17 @@ test('[soft-pin] a PINNED request whose account is UNSERVICEABLE (governor-pause
   // request routes to the least-loaded serviceable sibling instead of erroring on the dead pin; per-request
   // re-evaluation returns traffic to the pin when the pause lifts.
   resetGovernorRegistry();
-  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const acct = (id: string): ActiveAccount => ({
+    accountId: id,
+    token: async () => `${id}-tok`,
+    invalidateToken: () => {},
+  });
   const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
   await boot(
-    (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); },
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
     { pool, governorFor: undefined, concurrency: 24 },
   );
   getGovernor('anthropic', 'opus', undefined, 'A').penalize({ resetAt: Date.now() + 60_000 });
@@ -2860,10 +3519,17 @@ test('[soft-pin] a PINNED request to a HEALTHY idle account STAYS on its pin (ca
   // The dual: a pin must NOT thrash when its account is fine — sequential/single-session use keeps its warm
   // per-credential cache. With A healthy + idle (in-flight 0), a pinned-to-A request stays on A.
   resetGovernorRegistry();
-  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const acct = (id: string): ActiveAccount => ({
+    accountId: id,
+    token: async () => `${id}-tok`,
+    invalidateToken: () => {},
+  });
   const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
   await boot(
-    (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); },
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
     { pool, governorFor: undefined, concurrency: 24 },
   );
   const r = await ask('/v1/messages', {
@@ -2881,7 +3547,14 @@ test('[B-GW-1] fail-fast SHED when the whole pool is throttled with a far-off re
   // account with headroom at admission and the reset is far → it sheds IMMEDIATELY with a pool-wide
   // retry-after instead of taking the acquire/retry path (which would just 429 anyway). Distinct counter.
   const gov = new RateLimitGovernor({ maxConcurrent: 20 });
-  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }, {}, gov);
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    {},
+    gov,
+  );
   gov.penalize({ resetAt: Date.now() + 60_000 }); // pause ~60s ≫ maxQueueWaitMs (80ms)
 
   const t0 = Date.now();
@@ -2902,14 +3575,24 @@ test('[serviceable fallback] a near-cap-but-ALLOWED account is SERVED (residual 
   // throttled" though the account was still ALLOWED (serviceable). Predictive pause routes AROUND a near-cap
   // account when a healthier one exists, but with none it must SERVE the residual, not shed.
   const gov = new RateLimitGovernor({ maxConcurrent: 20 });
-  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); }, {}, gov);
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    {},
+    gov,
+  );
   gov.recordResponse({
     'anthropic-ratelimit-unified-5h-status': 'allowed', // still ALLOWED by Anthropic
     'anthropic-ratelimit-unified-5h-utilization': '0.97', // ≥ predict-pause watermark → predictively paused
     'anthropic-ratelimit-unified-5h-reset': String(Math.round((Date.now() + 5 * 60 * 60_000) / 1000)),
   });
   assert.ok(gov.softPaused(Date.now()), 'precondition: the account is SOFT-paused (serviceable, not rejected)');
-  assert.ok(gov.state.pausedUntil - Date.now() > 80, 'precondition: pause is far beyond maxQueueWaitMs (would shed pre-fix)');
+  assert.ok(
+    gov.state.pausedUntil - Date.now() > 80,
+    'precondition: pause is far beyond maxQueueWaitMs (would shed pre-fix)',
+  );
   const res = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(res.status, 200, 'a serviceable near-cap account SERVES its residual — NOT a 429 all-throttled shed');
   await res.text();
@@ -2926,8 +3609,12 @@ test('[codex parity] a 429 on one Codex account ROTATES to another + retries —
   const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
     const id = ((init?.headers as Record<string, string> | undefined)?.authorization ?? '').replace(/^Bearer\s+/i, '');
     calls.push(id);
-    if (id === 'tokA') return new Response('{"error":"rate_limit"}', { status: 429, headers: { 'content-type': 'application/json' } });
-    return new Response('{"ok":true,"servedBy":"cdxB"}', { status: 200, headers: { 'content-type': 'application/json' } });
+    if (id === 'tokA')
+      return new Response('{"error":"rate_limit"}', { status: 429, headers: { 'content-type': 'application/json' } });
+    return new Response('{"ok":true,"servedBy":"cdxB"}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
   }) as typeof fetch;
   gw = createInferenceGateway({
     pool: createFailoverPool([{ accountId: 'claude1', token: async () => 'c1' }]),
@@ -2961,7 +3648,9 @@ test('[#0 cache] the passive observer tallies prompt-cache READ/WRITE per accoun
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 200);
   await r.text();
-  const s = (await (await ask('/stats')).json()) as { cache: { read: number; create: number; hits: number; misses: number; hitRate: number } };
+  const s = (await (await ask('/stats')).json()) as {
+    cache: { read: number; create: number; hits: number; misses: number; hitRate: number };
+  };
   assert.equal(s.cache.read, 29000, 'cache_read tokens tallied from message_start');
   assert.equal(s.cache.create, 100, 'cache_creation tokens tallied');
   assert.equal(s.cache.hits, 1, 'a cache_read>0 request is a HIT');
@@ -2980,7 +3669,9 @@ test('[#0 cache] a cold prefix (cache_read=0, large input) counts as a MISS', as
   });
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   await r.text();
-  const s = (await (await ask('/stats')).json()) as { cache: { hits: number; misses: number; read: number; create: number } };
+  const s = (await (await ask('/stats')).json()) as {
+    cache: { hits: number; misses: number; read: number; create: number };
+  };
   assert.equal(s.cache.hits, 0, 'no cache_read → not a hit');
   assert.equal(s.cache.misses, 1, 'read=0 with a large cold prefix is a miss');
   assert.equal(s.cache.create, 4000, 'the cold cache-creation is still tallied');
@@ -2988,7 +3679,14 @@ test('[#0 cache] a cold prefix (cache_read=0, large input) counts as a MISS', as
 
 test('[stall-autowake P-002] an all-throttled shed to an IDENTIFIED bee records a stall event on /admin/stalls', async () => {
   const gov = new RateLimitGovernor({ maxConcurrent: 20 });
-  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }, {}, gov);
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    {},
+    gov,
+  );
   gov.penalize({ resetAt: Date.now() + 600_000 }); // whole pool out of budget ~10min ≫ maxQueueWaitMs (80ms)
 
   const r = await ask('/v1/messages', {
@@ -2999,7 +3697,9 @@ test('[stall-autowake P-002] an all-throttled shed to an IDENTIFIED bee records 
   assert.equal(r.status, 429, 'all-throttled → shed 429');
   await r.text();
 
-  const stalls = (await (await ask('/admin/stalls')).json()) as { stalls: { ownerId: string; accountId: string; soonestResetAt: number }[] };
+  const stalls = (await (await ask('/admin/stalls')).json()) as {
+    stalls: { ownerId: string; accountId: string; soonestResetAt: number }[];
+  };
   assert.equal(stalls.stalls.length, 1, 'one stall recorded');
   assert.equal(stalls.stalls[0].ownerId, 'spawn-test-1', 'tagged with the bee owner id (== spawnId)');
   assert.equal(stalls.stalls[0].accountId, 'test-acct', 'tagged with the account that was out of budget');
@@ -3009,12 +3709,23 @@ test('[stall-autowake P-002] an all-throttled shed to an IDENTIFIED bee records 
 
 test('[stall-autowake P-002] an UN-identified bee (no x-papercusp-owner) records NO stall (not wake-able)', async () => {
   const gov = new RateLimitGovernor({ maxConcurrent: 20 });
-  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }, {}, gov);
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    {},
+    gov,
+  );
   gov.penalize({ resetAt: Date.now() + 600_000 });
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 429, 'still sheds (the shed is unchanged — only the recording is owner-gated)');
   await r.text();
-  assert.equal(((await (await ask('/stats')).json()) as { stallsRecorded: number }).stallsRecorded, 0, 'no owner header → nothing to wake → not recorded');
+  assert.equal(
+    ((await (await ask('/stats')).json()) as { stallsRecorded: number }).stallsRecorded,
+    0,
+    'no owner header → nothing to wake → not recorded',
+  );
   assert.equal(((await (await ask('/admin/stalls')).json()) as { stalls: unknown[] }).stalls.length, 0);
 });
 
@@ -3051,9 +3762,16 @@ test('[stall-absorb reconciled su-3650] a no-proxy / single-account upstream sta
   );
   const t0 = Date.now();
   const r1 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(r1.status, 502, 'a lone/no-proxy stall sheds a retryable error FAST — not held for the absorb budget (everRotated gate)');
-  assert.ok(Date.now() - t0 < 400, `shed fast, no absorb hold: ${Date.now() - t0}ms (< the 500ms requestAbsorbMs budget)`);
-  assert.equal((await r1.json() as { gateway?: boolean }).gateway, true, 'gateway-synthesized retryable error');
+  assert.equal(
+    r1.status,
+    502,
+    'a lone/no-proxy stall sheds a retryable error FAST — not held for the absorb budget (everRotated gate)',
+  );
+  assert.ok(
+    Date.now() - t0 < 400,
+    `shed fast, no absorb hold: ${Date.now() - t0}ms (< the 500ms requestAbsorbMs budget)`,
+  );
+  assert.equal(((await r1.json()) as { gateway?: boolean }).gateway, true, 'gateway-synthesized retryable error');
   const r2 = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'y' }] });
   assert.equal(r2.status, 200, "the slot was released → the bee's retry succeeds once the transient stall clears");
   assert.equal(calls, 2, 'first attempt stalled+shed, the bee retry is the second (successful) attempt');
@@ -3082,7 +3800,7 @@ test('[429-absorb SU-3650] upstream 429 (bare, transient) WITHIN absorption dead
   );
   const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(r.status, 200, 'bare 429 within absorption deadline is ABSORBED + retried → 200, not forwarded');
-  assert.equal((await r.json() as { ok: boolean }).ok, true);
+  assert.equal(((await r.json()) as { ok: boolean }).ok, true);
   assert.equal(calls, 2, 'bare-429 + successful retry (absorption held the slot through the transient burst)');
 });
 
@@ -3242,7 +3960,11 @@ test('egress-ip-pool: a bare-burst 429 on one egress IP rotates to a SIBLING IP 
     body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
   });
 
-  assert.equal(r.status, 200, 'the bare-burst 429 on IP-1 was retried on the sibling IP → 200 (not forwarded, not paused)');
+  assert.equal(
+    r.status,
+    200,
+    'the bare-burst 429 on IP-1 was retried on the sibling IP → 200 (not forwarded, not paused)',
+  );
   assert.equal(captured.length, 2, 'exactly two upstream attempts: the throttled IP, then the sibling IP');
   assert.notEqual(
     captured[0].dispatcher,
@@ -3282,9 +4004,17 @@ test('egress-ip-pool de-concentration: an account with partly-cooled egress IPs 
   const A: ActiveAccount = {
     accountId: 'A',
     token: async () => 'A-tok',
-    egressPool: [{ proxyUrl: 'http://127.0.0.1:3128' }, { proxyUrl: 'http://127.0.0.1:3129' }, { proxyUrl: 'http://127.0.0.1:3130' }],
+    egressPool: [
+      { proxyUrl: 'http://127.0.0.1:3128' },
+      { proxyUrl: 'http://127.0.0.1:3129' },
+      { proxyUrl: 'http://127.0.0.1:3130' },
+    ],
   };
-  const B: ActiveAccount = { accountId: 'B', token: async () => 'B-tok', egress: { proxyUrl: 'http://127.0.0.1:3200' } };
+  const B: ActiveAccount = {
+    accountId: 'B',
+    token: async () => 'B-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:3200' },
+  };
   const pool = createFailoverPool([A, B]);
   gw = createInferenceGateway({
     pool,
@@ -3312,7 +4042,10 @@ test('egress-ip-pool de-concentration: an account with partly-cooled egress IPs 
 
   const r1 = await pinA();
   assert.equal(r1.status, 200, "request 1 rode A's IP pool to a 200 (rotated past the two throttled IPs)");
-  assert.ok(aCalls.n >= 3, 'A took ≥3 attempts: IP-1 (429) → IP-2 (429) → IP-3 (200) — per-IP rotation within the account');
+  assert.ok(
+    aCalls.n >= 3,
+    'A took ≥3 attempts: IP-1 (429) → IP-2 (429) → IP-3 (200) — per-IP rotation within the account',
+  );
 
   const r2 = await unpinned();
   assert.equal(r2.status, 200, 'request 2 served a 200');
@@ -3350,7 +4083,11 @@ test('[EI-18791887279744938 defect A] repeated transport failures on the SAME eg
   const fetchImpl = (async () => {
     throw new Error('connect ECONNREFUSED 127.0.0.1:9199');
   }) as unknown as typeof fetch;
-  const acct: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:9199' } };
+  const acct: ActiveAccount = {
+    accountId: 'A',
+    token: async () => 'A-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:9199' },
+  };
   const pool: AccountPool = { active: () => acct, onExhausted: () => null, select: (id) => (id === 'A' ? acct : null) };
   gw = createInferenceGateway({
     pool,
@@ -3399,7 +4136,11 @@ test('[EI-18791887279744938 defect A] a genuine transport SUCCESS on a cooled eg
     if (call === 1) throw new Error('connect ECONNREFUSED 127.0.0.1:9198');
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
-  const acct: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:9198' } };
+  const acct: ActiveAccount = {
+    accountId: 'A',
+    token: async () => 'A-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:9198' },
+  };
   const pool: AccountPool = { active: () => acct, onExhausted: () => null, select: (id) => (id === 'A' ? acct : null) };
   gw = createInferenceGateway({
     pool,
@@ -3444,8 +4185,16 @@ test('[EI-18791887279744938 defect B] the zero-reachable-egress-proxy condition 
   const fetchImpl = (async () => {
     throw new Error('connect ECONNREFUSED');
   }) as unknown as typeof fetch;
-  const acctA: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:9101' } };
-  const acctB: ActiveAccount = { accountId: 'B', token: async () => 'B-tok', egress: { proxyUrl: 'http://127.0.0.1:9102' } };
+  const acctA: ActiveAccount = {
+    accountId: 'A',
+    token: async () => 'A-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:9101' },
+  };
+  const acctB: ActiveAccount = {
+    accountId: 'B',
+    token: async () => 'B-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:9102' },
+  };
   const pool: AccountPool = {
     active: () => acctA,
     onExhausted: () => null,
@@ -3472,7 +4221,12 @@ test('[EI-18791887279744938 defect B] the zero-reachable-egress-proxy condition 
 
   await pin('A');
   const midStats = (await (await ask('/stats')).json()) as {
-    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean; configured: boolean };
+    egressProxyHealth?: {
+      totalProxyEntries: number;
+      reachableProxyEntries: number;
+      allDown: boolean;
+      configured: boolean;
+    };
   };
   assert.equal(midStats.egressProxyHealth?.totalProxyEntries, 2, 'both accounts contribute a proxy entry');
   assert.equal(midStats.egressProxyHealth?.reachableProxyEntries, 1, 'B is still reachable — only A has failed so far');
@@ -3485,13 +4239,25 @@ test('[EI-18791887279744938 defect B] the zero-reachable-egress-proxy condition 
 
   await pin('B');
   const finalStats = (await (await ask('/stats')).json()) as {
-    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean; configured: boolean };
+    egressProxyHealth?: {
+      totalProxyEntries: number;
+      reachableProxyEntries: number;
+      allDown: boolean;
+      configured: boolean;
+    };
   };
   assert.equal(finalStats.egressProxyHealth?.reachableProxyEntries, 0, 'both proxy entries are now cooled');
   assert.equal(finalStats.egressProxyHealth?.allDown, true, '/stats surfaces the zero-reachable-proxy condition');
-  assert.equal(finalStats.egressProxyHealth?.configured, true, 'still configured — the pool did not lose its entries, they are just down');
+  assert.equal(
+    finalStats.egressProxyHealth?.configured,
+    true,
+    'still configured — the pool did not lose its entries, they are just down',
+  );
   const alarm = logs.find((l) => l.level === 'error' && l.msg.includes('EGRESS ALARM'));
-  assert.ok(alarm, `expected an error-level EGRESS ALARM log once every proxy went down; got:\n${logs.map((l) => `${l.level}: ${l.msg}`).join('\n')}`);
+  assert.ok(
+    alarm,
+    `expected an error-level EGRESS ALARM log once every proxy went down; got:\n${logs.map((l) => `${l.level}: ${l.msg}`).join('\n')}`,
+  );
   resetGovernorRegistry();
 }, 20_000);
 
@@ -3519,10 +4285,19 @@ test('[EI-19962845612125031] a zero-proxy-entry pool reports configured:false, n
   port = await gw.listen(0);
 
   const stats = (await (await ask('/stats')).json()) as {
-    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean; configured: boolean };
+    egressProxyHealth?: {
+      totalProxyEntries: number;
+      reachableProxyEntries: number;
+      allDown: boolean;
+      configured: boolean;
+    };
   };
   assert.equal(stats.egressProxyHealth?.totalProxyEntries, 0, 'no account in this pool configures a proxy egress');
-  assert.equal(stats.egressProxyHealth?.allDown, false, 'allDown is vacuously false — there is no proxy PATH to be down');
+  assert.equal(
+    stats.egressProxyHealth?.allDown,
+    false,
+    'allDown is vacuously false — there is no proxy PATH to be down',
+  );
   assert.equal(
     stats.egressProxyHealth?.configured,
     false,
@@ -3560,7 +4335,11 @@ test('[codex-cli] with NO bearer pool, /v1/responses is served by the CLI runner
   });
   assert.equal(res.status, 200, 'CLI bridge served the request');
   assert.equal(res.headers.get('x-papercusp-routed-account'), 'chatgpt-sub');
-  const body = (await res.json()) as { output_text: string; usage: { input_tokens: number; output_tokens: number; total_tokens: number }; gateway_codex_cli: boolean };
+  const body = (await res.json()) as {
+    output_text: string;
+    usage: { input_tokens: number; output_tokens: number; total_tokens: number };
+    gateway_codex_cli: boolean;
+  };
   assert.equal(body.output_text, 'BRIDGED');
   assert.equal(body.usage.input_tokens, 11);
   assert.equal(body.usage.total_tokens, 14, 'Responses usage includes the required aggregate');
@@ -3836,16 +4615,31 @@ test('[proactive-probe] a dead proxy is circuit-opened by the IDLE prober before
   const probeEgressImpl = (async (acct: { id: string }) => {
     probed.push(acct.id);
     return acct.id === 'A'
-      ? { accountId: acct.id, hasEgress: true, exitIp: null, reputation: null, asn: null, error: 'connect ECONNREFUSED' }
+      ? {
+          accountId: acct.id,
+          hasEgress: true,
+          exitIp: null,
+          reputation: null,
+          asn: null,
+          error: 'connect ECONNREFUSED',
+        }
       : { accountId: acct.id, hasEgress: true, exitIp: '203.0.113.7', reputation: null, asn: null };
   }) as unknown as typeof import('./egress-probe').probeEgress;
-  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
+  const A: ActiveAccount = {
+    accountId: 'A',
+    token: async () => 'A-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:3128' },
+  };
   const B: ActiveAccount = { accountId: 'B', token: async () => 'B-tok' };
   const pool = createFailoverPool([A, B]);
   gw = createInferenceGateway({
     pool,
     upstreamBase: 'http://upstream.invalid',
-    fetchImpl: (async () => new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch,
+    fetchImpl: (async () =>
+      new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch,
     governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
     maxQueueWaitMs: 200,
     proactiveEgressProbeMs: 25,
@@ -3857,7 +4651,9 @@ test('[proactive-probe] a dead proxy is circuit-opened by the IDLE prober before
   const deadline = Date.now() + 5_000;
   let opens = 0;
   for (;;) {
-    const s = (await (await ask('/stats')).json()) as { proactiveEgressProbe: { circuitOpens: number; enabled: boolean } };
+    const s = (await (await ask('/stats')).json()) as {
+      proactiveEgressProbe: { circuitOpens: number; enabled: boolean };
+    };
     assert.equal(s.proactiveEgressProbe.enabled, true, 'prober armed');
     opens = s.proactiveEgressProbe.circuitOpens;
     if (opens >= 1 || Date.now() > deadline) break;
@@ -3873,7 +4669,11 @@ test('[proactive-probe] a dead proxy is circuit-opened by the IDLE prober before
   });
   assert.equal(r.status, 200);
   await r.text();
-  assert.equal(r.headers.get('x-papercusp-routed-account'), 'B', 'pinned-to-A request yielded around the proactively-cooled proxy');
+  assert.equal(
+    r.headers.get('x-papercusp-routed-account'),
+    'B',
+    'pinned-to-A request yielded around the proactively-cooled proxy',
+  );
 }, 20_000);
 
 /* ── structured SSE error on mid-stream stall (gateway-rayobyte-hardening P-005) ── */
@@ -3891,7 +4691,12 @@ test('[P-005] a mid-stream SSE body stall ends the stream with an Anthropic-shap
     },
     { upstreamBodyIdleTimeoutMs: 150 },
   );
-  const r = await post({ model: 'claude-opus-4', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'x' }] });
+  const r = await post({
+    model: 'claude-opus-4',
+    max_tokens: 8,
+    stream: true,
+    messages: [{ role: 'user', content: 'x' }],
+  });
   assert.equal(r.status, 200, 'headers had already been relayed');
   const text = await r.text(); // resolves because the gateway ENDS the stream instead of destroying it
   assert.match(text, /event: message_start/, 'the relayed prefix arrived');
@@ -3932,7 +4737,10 @@ test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async (
     'the delayed outcome advances lastAt without rewriting request-start activity',
   );
   const top = (await (await ask('/admin/owner-report')).json()) as { owners: Array<{ owner: string }> };
-  assert.ok(top.owners.some((o) => o.owner === 'su-ledger-test'), 'overview lists the owner');
+  assert.ok(
+    top.owners.some((o) => o.owner === 'su-ledger-test'),
+    'overview lists the owner',
+  );
 }, 20_000);
 
 test('[egress kill-switch] ?proxy=off means NO request builds a proxy dispatcher — including proxy-only accounts (the default-param leak)', async () => {
@@ -3946,7 +4754,11 @@ test('[egress kill-switch] ?proxy=off means NO request builds a proxy dispatcher
     dispatchersSeen.push(init.dispatcher);
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
-  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
+  const A: ActiveAccount = {
+    accountId: 'A',
+    token: async () => 'A-tok',
+    egress: { proxyUrl: 'http://127.0.0.1:3128' },
+  };
   const pool = createFailoverPool([A]);
   gw = createInferenceGateway({
     pool,
@@ -3984,7 +4796,11 @@ test('POST /admin/readmit clears a live in-memory pool pause and reports fresh h
   // accounts:reset-rate resets the PERSISTED store; this endpoint is its live-process dual. A pool
   // with two paused accounts: readmit one by name (?account=A) → healthyAccounts 0→1; readmit with
   // no arg → every pool entry rejoins → healthyAccounts 2.
-  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `t${id}`, invalidateToken: () => {} });
+  const acct = (id: string): ActiveAccount => ({
+    accountId: id,
+    token: async () => `t${id}`,
+    invalidateToken: () => {},
+  });
   const A = acct('A');
   const B = acct('B');
   const paused = new Set(['A', 'B']);
@@ -3997,10 +4813,13 @@ test('POST /admin/readmit clears a live in-memory pool pause and reports fresh h
     healthyCount: () => 2 - paused.size,
     entries: () => [A, B],
   };
-  await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"ok":true}');
-  }, { pool });
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool },
+  );
   const one = (await (await ask('/admin/readmit?account=A', { method: 'POST' })).json()) as {
     ok: boolean;
     readmitted: string[];
@@ -4009,7 +4828,10 @@ test('POST /admin/readmit clears a live in-memory pool pause and reports fresh h
   assert.equal(one.ok, true, 'named readmit ok');
   assert.deepEqual(one.readmitted, ['A'], 'only the named account readmits');
   assert.equal(one.healthyAccounts, 1, 'A back in rotation, B still paused — the response reports the FRESH count');
-  const all = (await (await ask('/admin/readmit', { method: 'POST' })).json()) as { readmitted: string[]; healthyAccounts: number };
+  const all = (await (await ask('/admin/readmit', { method: 'POST' })).json()) as {
+    readmitted: string[];
+    healthyAccounts: number;
+  };
   assert.deepEqual(all.readmitted, ['A', 'B'], 'no-arg readmits every pool entry');
   assert.equal(all.healthyAccounts, 2, 'whole pool back in rotation');
 });
@@ -4028,32 +4850,45 @@ function zeroHealthyPool(): AccountPool {
 }
 
 test('serviceable recommendation is non-binding: a 0-serviceable pool does not shrink controller admission', async () => {
-  await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"ok":true}');
-  }, { pool: zeroHealthyPool(), concurrency: 24 });
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool: zeroHealthyPool(), concurrency: 24 },
+  );
   const s = (await (await ask('/admin/stats')).json()) as {
     admission: { maxConcurrent: number };
     clamp: { mode: string; recommendation: number | null; applied: number; overridden: boolean };
   };
   assert.equal(s.clamp.mode, 'off', 'retired clamp is advisory by default');
-  assert.equal(s.clamp.recommendation, 2, '0 serviceable accounts ⇒ recommendation is the MIN_SERVICEABLE_ADMISSION floor');
+  assert.equal(
+    s.clamp.recommendation,
+    2,
+    '0 serviceable accounts ⇒ recommendation is the MIN_SERVICEABLE_ADMISSION floor',
+  );
   assert.equal(s.admission.maxConcurrent, 24, 'the recommendation is not applied to live admission');
   assert.equal(s.clamp.applied, 24);
   assert.equal(s.clamp.overridden, true, 'status makes the non-binding recommendation explicit');
 });
 
 test('POST /admin/clamp-mode?mode=off overrides the clamp LIVE — admission returns to the AIMD effective', async () => {
-  await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"ok":true}');
-  }, { pool: zeroHealthyPool(), concurrency: 24 });
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool: zeroHealthyPool(), concurrency: 24 },
+  );
   // Precondition: the retired recommendation is visible but non-binding.
   const before = (await (await ask('/admin/stats')).json()) as { admission: { maxConcurrent: number } };
   assert.equal(before.admission.maxConcurrent, 24, 'serviceability does not clamp before the compatibility flip');
 
   const flip = (await (await ask('/admin/clamp-mode?mode=off', { method: 'POST' })).json()) as {
-    ok: boolean; mode: string; recommendation: number | null; applied: number;
+    ok: boolean;
+    mode: string;
+    recommendation: number | null;
+    applied: number;
   };
   assert.equal(flip.ok, true);
   assert.equal(flip.mode, 'off');
@@ -4070,34 +4905,49 @@ test('POST /admin/clamp-mode?mode=off overrides the clamp LIVE — admission ret
 });
 
 test('POST /admin/clamp-mode?mode=auto remains a compatibility readback and cannot restore a hard cap', async () => {
-  await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"ok":true}');
-  }, { pool: zeroHealthyPool(), concurrency: 24 });
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool: zeroHealthyPool(), concurrency: 24 },
+  );
   await ask('/admin/clamp-mode?mode=off', { method: 'POST' }).then((r) => r.json());
-  const back = (await (await ask('/admin/clamp-mode?mode=auto', { method: 'POST' })).json()) as { mode: string; applied: number };
+  const back = (await (await ask('/admin/clamp-mode?mode=auto', { method: 'POST' })).json()) as {
+    mode: string;
+    applied: number;
+  };
   assert.equal(back.mode, 'auto');
   assert.equal(back.applied, 24, 'the retired guard cannot re-clamp admission');
-  const s = (await (await ask('/admin/stats')).json()) as { admission: { maxConcurrent: number }; clamp: { overridden: boolean } };
+  const s = (await (await ask('/admin/stats')).json()) as {
+    admission: { maxConcurrent: number };
+    clamp: { overridden: boolean };
+  };
   assert.equal(s.admission.maxConcurrent, 24);
   assert.equal(s.clamp.overridden, true);
 });
 
 test('POST /admin/clamp-mode with no mode READS current state without changing it', async () => {
-  await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"ok":true}');
-  }, { pool: zeroHealthyPool(), concurrency: 24 });
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool: zeroHealthyPool(), concurrency: 24 },
+  );
   const r = (await (await ask('/admin/clamp-mode', { method: 'POST' })).json()) as { mode: string; applied: number };
   assert.equal(r.mode, 'off', 'read-only probe reports the retired advisory mode');
   assert.equal(r.applied, 24, 'unchanged');
 });
 
 test('POST /admin/clamp-mode rejects an unknown mode (400) rather than silently defaulting', async () => {
-  await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"ok":true}');
-  }, { pool: zeroHealthyPool(), concurrency: 24 });
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool: zeroHealthyPool(), concurrency: 24 },
+  );
   const res = await ask('/admin/clamp-mode?mode=yolo', { method: 'POST' });
   assert.equal(res.status, 400);
   await res.text();
@@ -4109,14 +4959,24 @@ test('an override does NOT lift the clamp for a pool that has real capacity (rec
   // 8 serviceable accounts × PER_ACCOUNT_ADMISSION(4) = 32 ≥ concurrency 24 ⇒ the clamp was never binding,
   // so flipping to `off` must not REPORT an override that didn't happen.
   const A: ActiveAccount = { accountId: 'A', token: async () => 'tA', invalidateToken: () => {} };
-  const pool: AccountPool = { active: () => A, onExhausted: () => null, readmit: () => {}, healthyCount: () => 8, entries: () => [A] };
-  await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"ok":true}');
-  }, { pool, concurrency: 24 });
+  const pool: AccountPool = {
+    active: () => A,
+    onExhausted: () => null,
+    readmit: () => {},
+    healthyCount: () => 8,
+    entries: () => [A],
+  };
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool, concurrency: 24 },
+  );
   await ask('/admin/clamp-mode?mode=off', { method: 'POST' }).then((r) => r.json());
   const s = (await (await ask('/admin/stats')).json()) as {
-    admission: { maxConcurrent: number }; clamp: { recommendation: number | null; overridden: boolean };
+    admission: { maxConcurrent: number };
+    clamp: { recommendation: number | null; overridden: boolean };
   };
   assert.equal(s.clamp.recommendation, 32);
   assert.equal(s.admission.maxConcurrent, 24, 'admission was already the AIMD effective');
@@ -4143,10 +5003,17 @@ test('POST /admin/readmit on a pool without readmit (single-account) → 503, ne
 // clamp already uses, so the count reflects accounts ACTUALLY usable right now.
 test('[EI-11511] /stats.healthyAccounts counts only serviceable accounts — a weekly-usage-walled (governor-paused) account is excluded', async () => {
   resetGovernorRegistry();
-  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const acct = (id: string): ActiveAccount => ({
+    accountId: id,
+    token: async () => `${id}-tok`,
+    invalidateToken: () => {},
+  });
   const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
   await boot(
-    (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); },
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
     { pool, governorFor: undefined, concurrency: 24 },
   );
   // Precondition: nothing walled yet → all three count (no governor paused).
@@ -4173,7 +5040,14 @@ test('POST /maintenance/summarize — omp remote-compaction wire: {systemPrompt,
   await boot(
     (_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ content: [{ type: 'text', text: 'THE SUMMARY' }, { type: 'text', text: 'PART 2' }] }));
+      res.end(
+        JSON.stringify({
+          content: [
+            { type: 'text', text: 'THE SUMMARY' },
+            { type: 'text', text: 'PART 2' },
+          ],
+        }),
+      );
     },
     { maintenanceModel: 'maint-model-test', maintenanceMaxTokens: 512 },
   );
@@ -4187,7 +5061,12 @@ test('POST /maintenance/summarize — omp remote-compaction wire: {systemPrompt,
   assert.equal(body.summary, 'THE SUMMARY\nPART 2', 'text blocks joined — the exact field omp Gm requires');
   assert.equal(body.model, 'maint-model-test');
   // The inner call ran on the CHEAP maintenance model — never the caller's own model/backend.
-  const inner = JSON.parse(upstream.last.body) as { model: string; max_tokens: number; system?: string; stream?: boolean };
+  const inner = JSON.parse(upstream.last.body) as {
+    model: string;
+    max_tokens: number;
+    system?: string;
+    stream?: boolean;
+  };
   assert.equal(inner.model, 'maint-model-test');
   assert.equal(inner.max_tokens, 512);
   assert.equal(inner.system, 'You summarize.');
@@ -4270,7 +5149,9 @@ test('POST /maintenance/summarize?carryOwner=… — the injected carry builder 
     [{ ownerId: 'su-abc123', opts: { effectiveWindowTokens: 120000, workspaceId: 'ws-1' } }],
     'carryOwner/carryWs/carryWindow thread through to the builder',
   );
-  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
+  const s = (await (await ask('/stats')).json()) as {
+    maintenance?: { requests: number; errors: number; carried: number };
+  };
   assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 1 });
 });
 
@@ -4370,7 +5251,9 @@ test('carry miss (null) falls through to the LLM lane — a carry fault never st
   const body = (await res.json()) as { summary?: string; deterministic?: boolean };
   assert.equal(body.summary, 'LLM FALLBACK');
   assert.equal(body.deterministic, undefined, 'an LLM fallback is never mislabelled deterministic');
-  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
+  const s = (await (await ask('/stats')).json()) as {
+    maintenance?: { requests: number; errors: number; carried: number };
+  };
   assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 0 });
 });
 
@@ -4394,8 +5277,14 @@ test('carry THROW falls through to the LLM lane (the gateway guards even beyond 
   assert.equal(res.status, 200);
   const body = (await res.json()) as { summary?: string };
   assert.equal(body.summary, 'LLM FALLBACK');
-  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
-  assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 0 }, 'a swallowed carry throw is not an LLM-lane error');
+  const s = (await (await ask('/stats')).json()) as {
+    maintenance?: { requests: number; errors: number; carried: number };
+  };
+  assert.deepEqual(
+    s.maintenance,
+    { requests: 1, errors: 0, carried: 0 },
+    'a swallowed carry throw is not an LLM-lane error',
+  );
 });
 
 test('no carryOwner param ⇒ the injected builder is NOT consulted (params-absent contract)', async () => {
@@ -4438,7 +5327,9 @@ test('carryOwner param WITHOUT an injected builder (flag OFF) ⇒ the LLM lane s
   const body = (await res.json()) as { summary?: string; deterministic?: boolean };
   assert.equal(body.summary, 'LLM SUMMARY');
   assert.equal(body.deterministic, undefined);
-  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
+  const s = (await (await ask('/stats')).json()) as {
+    maintenance?: { requests: number; errors: number; carried: number };
+  };
   assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 0 });
 });
 
@@ -4463,12 +5354,15 @@ test('missing prompt with carryOwner still 400s — the wire contract is validat
   });
   assert.equal(res.status, 400);
   assert.equal(builderCalls, 0, 'a wire-invalid request never reaches the builder');
-  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
+  const s = (await (await ask('/stats')).json()) as {
+    maintenance?: { requests: number; errors: number; carried: number };
+  };
   assert.deepEqual(s.maintenance, { requests: 0, errors: 0, carried: 0 });
 });
 
 test('maintenance label rides tier 1 when the tier layer is on (never AIMD-shed, reserved floor)', async () => {
-  const { parsePriorityTierMap, tierOf, defaultTierCaps, tiersOfMap } = await import('@papercusp/papercusp-shared/agent');
+  const { parsePriorityTierMap, tierOf, defaultTierCaps, tiersOfMap } =
+    await import('@papercusp/papercusp-shared/agent');
   const map = parsePriorityTierMap(undefined);
   assert.equal(tierOf('maintenance', map), 1);
   assert.equal(tierOf('compaction', map), 1);

@@ -8423,85 +8423,85 @@ export function createInferenceGateway(deps: GatewayDeps) {
       EXTERNAL_SCHEDULES.gatewaySelfHeal.name,
       selfHealPollMs,
       () => {
-      try {
-        // Read both queue snapshots directly (NOT stats(), which performs broader health work).
-        const claudeAdmission = queue.snapshot();
-        const codexAdmission = codexQueue.snapshot();
-        const now = Date.now();
-        const providerStates = [
-          { provider: 'claude' as const, admission: claudeAdmission },
-          { provider: 'codex' as const, admission: codexAdmission },
-        ];
-        // Evaluate each provider against its OWN cap and drain clock. Aggregating caps would hide a wedged
-        // four-slot Codex queue behind a healthy 24-slot Claude queue; sharing one drain clock would let
-        // active Claude completions indefinitely mask a frozen ChatGPT stream.
-        const reclaimable = providerStates
-          .map((state) => ({
-            ...state,
-            decision: evaluateSelfHeal(
-              {
-                inFlight: state.admission.running,
-                queueDepth: state.admission.queued,
-                maxConcurrent: state.admission.maxConcurrent,
-                msSinceLastDrain: now - lastDrainAt[state.provider],
-              },
-              selfHealFreezeMs,
-            ),
-          }))
-          .filter((state) => state.decision.reclaim)
-          .sort((a, b) => b.admission.queued - a.admission.queued);
-        const running = claudeAdmission.running + codexAdmission.running;
-        const maxConcurrent = claudeAdmission.maxConcurrent + codexAdmission.maxConcurrent;
-        const tracked = inFlightReg.size; // requests registered live in the self-heal registry
-        const selected = reclaimable[0];
-        const target = selected
-          ? pickReclaimTarget([...inFlightReg.values()].filter((entry) => entry.provider === selected.provider))
-          : null;
+        try {
+          // Read both queue snapshots directly (NOT stats(), which performs broader health work).
+          const claudeAdmission = queue.snapshot();
+          const codexAdmission = codexQueue.snapshot();
+          const now = Date.now();
+          const providerStates = [
+            { provider: 'claude' as const, admission: claudeAdmission },
+            { provider: 'codex' as const, admission: codexAdmission },
+          ];
+          // Evaluate each provider against its OWN cap and drain clock. Aggregating caps would hide a wedged
+          // four-slot Codex queue behind a healthy 24-slot Claude queue; sharing one drain clock would let
+          // active Claude completions indefinitely mask a frozen ChatGPT stream.
+          const reclaimable = providerStates
+            .map((state) => ({
+              ...state,
+              decision: evaluateSelfHeal(
+                {
+                  inFlight: state.admission.running,
+                  queueDepth: state.admission.queued,
+                  maxConcurrent: state.admission.maxConcurrent,
+                  msSinceLastDrain: now - lastDrainAt[state.provider],
+                },
+                selfHealFreezeMs,
+              ),
+            }))
+            .filter((state) => state.decision.reclaim)
+            .sort((a, b) => b.admission.queued - a.admission.queued);
+          const running = claudeAdmission.running + codexAdmission.running;
+          const maxConcurrent = claudeAdmission.maxConcurrent + codexAdmission.maxConcurrent;
+          const tracked = inFlightReg.size; // requests registered live in the self-heal registry
+          const selected = reclaimable[0];
+          const target = selected
+            ? pickReclaimTarget([...inFlightReg.values()].filter((entry) => entry.provider === selected.provider))
+            : null;
 
-        // ── P-005/W3 slot-leak RECURRENCE GUARD (D-001) ─────────────────────────────────────────────
-        // Cross-check the two INDEPENDENT in-flight accountings that must move together: the queue's held-
-        // slot counter (`running`) and the self-heal registry (`tracked`). The pure classifier flags only
-        // the two shapes that cannot be a healthy transient (see classifySlotReconcile). This is telemetry
-        // only — it NEVER throws (a guard must not crash the gateway); the de-bounce + counter + log below
-        // are the stateful half the pure classifier deliberately leaves to the sweeper.
-        const reconcileViolation = classifySlotReconcile({
-          running,
-          tracked,
-          wantsReclaim: reclaimable.length > 0,
-          hasReclaimTarget: !!target,
-        });
-        if (reconcileViolation) {
-          slotReconcileConsecutive++;
-          // De-bounce: only a violation SUSTAINED across ≥2 sweeps counts — skips the documented 1-tick
-          // delete/admit race where the registry is momentarily empty while a slot is between requests.
-          if (slotReconcileConsecutive >= 2) {
-            slotReconcileMismatch++;
-            if (!slotReconcileLogged) {
-              slotReconcileLogged = true; // log ONCE per contiguous streak (never a log storm)
-              log(
-                'error',
-                `inference-gateway: SLOT-RECONCILE mismatch (${reconcileViolation}) — held=${running} tracked=${tracked} maxConcurrent=${maxConcurrent} maxMsSinceDrain=${Math.round(Math.max(now - lastDrainAt.claude, now - lastDrainAt.codex) / 1000)}s: a leaked admission slot the self-heal valve cannot reclaim (mismatch #${slotReconcileMismatch})`,
-              );
+          // ── P-005/W3 slot-leak RECURRENCE GUARD (D-001) ─────────────────────────────────────────────
+          // Cross-check the two INDEPENDENT in-flight accountings that must move together: the queue's held-
+          // slot counter (`running`) and the self-heal registry (`tracked`). The pure classifier flags only
+          // the two shapes that cannot be a healthy transient (see classifySlotReconcile). This is telemetry
+          // only — it NEVER throws (a guard must not crash the gateway); the de-bounce + counter + log below
+          // are the stateful half the pure classifier deliberately leaves to the sweeper.
+          const reconcileViolation = classifySlotReconcile({
+            running,
+            tracked,
+            wantsReclaim: reclaimable.length > 0,
+            hasReclaimTarget: !!target,
+          });
+          if (reconcileViolation) {
+            slotReconcileConsecutive++;
+            // De-bounce: only a violation SUSTAINED across ≥2 sweeps counts — skips the documented 1-tick
+            // delete/admit race where the registry is momentarily empty while a slot is between requests.
+            if (slotReconcileConsecutive >= 2) {
+              slotReconcileMismatch++;
+              if (!slotReconcileLogged) {
+                slotReconcileLogged = true; // log ONCE per contiguous streak (never a log storm)
+                log(
+                  'error',
+                  `inference-gateway: SLOT-RECONCILE mismatch (${reconcileViolation}) — held=${running} tracked=${tracked} maxConcurrent=${maxConcurrent} maxMsSinceDrain=${Math.round(Math.max(now - lastDrainAt.claude, now - lastDrainAt.codex) / 1000)}s: a leaked admission slot the self-heal valve cannot reclaim (mismatch #${slotReconcileMismatch})`,
+                );
+              }
             }
+          } else {
+            slotReconcileConsecutive = 0;
+            slotReconcileLogged = false; // reset so the next distinct streak logs afresh
           }
-        } else {
-          slotReconcileConsecutive = 0;
-          slotReconcileLogged = false; // reset so the next distinct streak logs afresh
-        }
-        // ────────────────────────────────────────────────────────────────────────────────────────────
+          // ────────────────────────────────────────────────────────────────────────────────────────────
 
-        if (!selected) return;
-        if (!target) return; // saturated per the counters but the registry is momentarily empty — skip
-        target.reclaimed = true;
-        selfHealReclaims++;
-        log(
-          'error',
-          `inference-gateway: SELF-HEAL release valve — ${selected.provider}: ${selected.decision.reason} (slot #${target.id}, held ${Math.round((Date.now() - target.startedAt) / 1000)}s, stream=${target.isStream}; reclaim #${selfHealReclaims})`,
-        );
-        target.abort('inference-gateway self-heal: reclaiming wedged slot to pre-empt watchdog restart');
-      } catch (e) {
-        log('warn', `inference-gateway: self-heal sweep error: ${(e as Error).message}`);
-      }
+          if (!selected) return;
+          if (!target) return; // saturated per the counters but the registry is momentarily empty — skip
+          target.reclaimed = true;
+          selfHealReclaims++;
+          log(
+            'error',
+            `inference-gateway: SELF-HEAL release valve — ${selected.provider}: ${selected.decision.reason} (slot #${target.id}, held ${Math.round((Date.now() - target.startedAt) / 1000)}s, stream=${target.isStream}; reclaim #${selfHealReclaims})`,
+          );
+          target.abort('inference-gateway self-heal: reclaiming wedged slot to pre-empt watchdog restart');
+        } catch (e) {
+          log('warn', `inference-gateway: self-heal sweep error: ${(e as Error).message}`);
+        }
       },
       {
         category: EXTERNAL_SCHEDULES.gatewaySelfHeal.category,
