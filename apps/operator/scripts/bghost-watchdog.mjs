@@ -217,9 +217,10 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, realpathSync } fr
 import { cpus, freemem, homedir, hostname, loadavg, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EXTERNAL_SCHEDULES } from '../../../packages/operator-core/lib/schedule-descriptors.mjs';
 
 const UNIT = process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercusp-bg-host';
-const POLL_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POLL_MS) || 30_000;
+const POLL_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POLL_MS) || EXTERNAL_SCHEDULES.bgHostWatchdogPoll.defaultIntervalMs;
 const FREEZE_SILENCE_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SILENCE_S) || 100; // newest routine older than this while active = frozen
 const DEBOUNCE_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_DEBOUNCE_MS) || 5 * 60_000;
 // WI-37501: lowered from 8 — at the default BOOT_GRACE_MS(480s)+POLL_MS(30s), the fastest a genuine
@@ -1612,7 +1613,10 @@ function start() {
     );
   }
   void reportVintage('bghost-watchdog');
-  setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
+  setInterval(
+    () => void poll().catch((e) => log(`poll error: ${e.message}`)),
+    POLL_MS,
+  );
 }
 
 /** Are we the process's ENTRYPOINT (`node bghost-watchdog.mjs`), as opposed to a module someone imported?

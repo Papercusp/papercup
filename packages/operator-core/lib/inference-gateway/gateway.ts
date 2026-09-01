@@ -56,6 +56,8 @@ import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './ga
 import { probeEgress } from './egress-probe';
 import { recordGatewayStall } from './gateway-stall-store';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { listManaged } from '@papercusp/scheduled-registry';
+import { EXTERNAL_SCHEDULES } from '../schedule-descriptors.mjs';
 import {
   gatewayProviderStatuses,
   legacyExecutorForGatewayTransport,
@@ -1025,6 +1027,8 @@ export interface GatewayStats {
   /** Milliseconds since THIS gateway process started. Lets capacity readers distinguish a fresh restart
    *  bootstrap snapshot from sustained pool exhaustion. Optional for deploy-skew readers. */
   processUptimeMs?: number;
+  /** Live recurring timers in this gateway process, reconciled from the managed registry. */
+  scheduledTimers?: ReturnType<typeof listManaged>;
   totalRequests: number;
   /**
    * Correlated, privacy-safe request-stage timelines + bounded p50/p95/p99 histograms (P-001).
@@ -2467,11 +2471,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const proactiveProbeHandle =
     proactiveEgressProbeMs > 0 && providerPools().some((providerPool) => !!providerPool.entries)
       ? managedSetInterval(
-          'inference-gateway:proactive-egress-probe',
+          EXTERNAL_SCHEDULES.gatewayProactiveEgressProbe.name,
           proactiveEgressProbeMs,
           proactiveEgressProbeTick,
           {
-            category: 'health-probe',
+            category: EXTERNAL_SCHEDULES.gatewayProactiveEgressProbe.category,
+            classification: EXTERNAL_SCHEDULES.gatewayProactiveEgressProbe.classification,
+            allowInTest: true,
           },
         )
       : null;
@@ -2993,6 +2999,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       upstreamBase,
       processStartedAt,
       processUptimeMs: Math.max(0, now - processStartedAt),
+      scheduledTimers: listManaged(),
       totalRequests,
       requestStages: requestStageTelemetry.snapshot(),
       // P-002: the live breakpoint-layout measurement (see recordCachePolicy).
@@ -8403,9 +8410,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // Self-heal release-valve sweeper (EI-2086): tick the pure decider against live admission metrics +
   // the in-flight registry and reclaim the oldest stuck slot to pre-empt the watchdog's full restart.
   // unref'd so it never keeps the process alive; cleared on close().
-  let selfHealTimer: ReturnType<typeof setInterval> | undefined;
+  let selfHealTimer: ManagedHandle | undefined;
   if (selfHealEnabled) {
-    selfHealTimer = setInterval(() => {
+    selfHealTimer = managedSetInterval(
+      EXTERNAL_SCHEDULES.gatewaySelfHeal.name,
+      selfHealPollMs,
+      () => {
       try {
         // Read both queue snapshots directly (NOT stats(), which performs broader health work).
         const claudeAdmission = queue.snapshot();
@@ -8485,8 +8495,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       } catch (e) {
         log('warn', `inference-gateway: self-heal sweep error: ${(e as Error).message}`);
       }
-    }, selfHealPollMs);
-    selfHealTimer.unref?.();
+      },
+      {
+        category: EXTERNAL_SCHEDULES.gatewaySelfHeal.category,
+        classification: EXTERNAL_SCHEDULES.gatewaySelfHeal.classification,
+        allowInTest: true,
+      },
+    );
   }
 
   return {
@@ -8545,7 +8560,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return typeof addr === 'object' && addr ? addr.port : 0;
     },
     close(): Promise<void> {
-      if (selfHealTimer) clearInterval(selfHealTimer);
+      selfHealTimer?.stop();
       if (serviceableClampTimer) clearInterval(serviceableClampTimer);
       proactiveProbeHandle?.stop();
       // Tear down any per-account egress dispatchers (best-effort; they hold sockets).

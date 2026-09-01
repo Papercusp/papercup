@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   collectScheduleInventory,
   humanInterval,
@@ -9,9 +12,14 @@ import {
   type RoutineRow,
 } from './schedule-inventory';
 import type { DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
+import { EXTERNAL_SCHEDULES, SYNC_TRIGGERED_SCHEDULES } from './schedule-descriptors.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its allow/baseline sets only.
 import { BASELINE, ALLOWLIST, ALLOWLIST_DIRS } from '../../../scripts/check-no-raw-setinterval.mjs';
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const sourceText = (repoRelativePath: string): string =>
+  readFileSync(resolve(REPO_ROOT, repoRelativePath), 'utf8');
 
 const dbos = (over: Partial<DbosScheduledEntry> = {}): DbosScheduledEntry => ({
   name: 'telemetryFlush',
@@ -206,7 +214,9 @@ describe('collectScheduleInventory', () => {
     const ext = rows.filter((r) => r.source === 'external-process');
     expect(ext.length).toBeGreaterThanOrEqual(6);
     const processes = new Set(ext.map((r) => (r.detail as { process: string }).process));
-    expect(processes).toEqual(new Set(['inference-gateway', 'gateway-watchdog', 'psu-launcher']));
+    expect(processes).toEqual(
+      new Set(['inference-gateway', 'gateway-watchdog', 'mcp-proxy-watchdog', 'bg-host-watchdog', 'psu-launcher']),
+    );
   });
 
   it('surfaces live managed timers as source=managed with real fire times, deduping the static in-process fallback', async () => {
@@ -338,7 +348,9 @@ describe('schedule-inventory ⇄ host-timer guard reconcile (P-009 / WI-919)', (
 
   it('the manifest covers exactly the three separate-process owners (gateway, watchdog, psu-launcher)', () => {
     const processes = new Set(EXTERNAL_PROCESS_TIMERS.map((e) => e.process));
-    expect(processes).toEqual(new Set(['inference-gateway', 'gateway-watchdog', 'psu-launcher']));
+    expect(processes).toEqual(
+      new Set(['inference-gateway', 'gateway-watchdog', 'mcp-proxy-watchdog', 'bg-host-watchdog', 'psu-launcher']),
+    );
     // Every entry carries a real repo source path + a cadence (no blank audit rows).
     for (const e of EXTERNAL_PROCESS_TIMERS) {
       expect(e.source).toMatch(/\.(ts|mjs)$/);
@@ -381,6 +393,58 @@ describe('schedule-inventory ⇄ host-timer guard reconcile (P-009 / WI-919)', (
     const emitted = new Set(rows.map((r) => r.source));
     expect(emitted).toEqual(new Set(['dbos', 'routines', 'managed', 'in-process', 'external-process']));
     for (const s of emitted) expect(SCHEDULE_SOURCES).toContain(s);
+  });
+});
+
+/**
+ * P-006 C-10 — the manifest is an independent witness only when every writer
+ * consumes its descriptor identity. These checks read the writer files rather
+ * than comparing inventory rows to the same constants: descriptor→writer catches
+ * a stale source path, while writer→descriptor catches an unlisted new writer.
+ */
+describe('schedule descriptors ⇄ recurring writers (P-006 C-10)', () => {
+  it('every external descriptor source consumes its named EXTERNAL_SCHEDULES key', () => {
+    for (const [key, descriptor] of Object.entries(EXTERNAL_SCHEDULES)) {
+      const source = sourceText(descriptor.source);
+      expect(source, `${descriptor.source} must consume EXTERNAL_SCHEDULES.${key}`).toContain(
+        `EXTERNAL_SCHEDULES.${key}`,
+      );
+    }
+  });
+
+  it('every sync-triggered descriptor source consumes its named SYNC_TRIGGERED_SCHEDULES key', () => {
+    for (const [key, descriptor] of Object.entries(SYNC_TRIGGERED_SCHEDULES)) {
+      const source = sourceText(descriptor.source);
+      expect(source, `${descriptor.source} must consume SYNC_TRIGGERED_SCHEDULES.${key}`).toContain(
+        `SYNC_TRIGGERED_SCHEDULES.${key}`,
+      );
+    }
+  });
+
+  it('every descriptor reference in a writer resolves back to that writer\'s manifest row', () => {
+    const reconcile = (
+      prefix: 'EXTERNAL_SCHEDULES' | 'SYNC_TRIGGERED_SCHEDULES',
+      descriptors: Record<string, { readonly source: string }>,
+    ): void => {
+      const sources = new Set(Object.values(descriptors).map((descriptor) => descriptor.source));
+      for (const source of sources) {
+        const declared = Object.entries(descriptors)
+          .filter(([, descriptor]) => descriptor.source === source)
+          .map(([key]) => key)
+          .sort();
+        const referenced = [
+          ...sourceText(source).matchAll(new RegExp(`\\b${prefix}\\.([A-Za-z][A-Za-z0-9_]*)`, 'g')),
+        ]
+          .map((match) => match[1])
+          .filter((key) => Object.hasOwn(descriptors, key))
+          .filter((key, index, all) => all.indexOf(key) === index)
+          .sort();
+        expect(referenced, `${source} descriptor references must match its manifest rows`).toEqual(declared);
+      }
+    };
+
+    reconcile('EXTERNAL_SCHEDULES', EXTERNAL_SCHEDULES);
+    reconcile('SYNC_TRIGGERED_SCHEDULES', SYNC_TRIGGERED_SCHEDULES);
   });
 });
 

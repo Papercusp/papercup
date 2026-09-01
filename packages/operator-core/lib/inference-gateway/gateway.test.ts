@@ -195,6 +195,27 @@ test('estimateTokens — uses max_tokens for output, ~chars/4 for input', () => 
   assert.ok(e.inTok > 0);
 });
 
+test('GET /stats reconciles live gateway timers from the managed registry (P-006 C-10)', async () => {
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { selfHeal: { enabled: true, pollMs: 60_000 } },
+  );
+
+  const response = await ask('/stats');
+  assert.equal(response.status, 200);
+  const stats = (await response.json()) as {
+    scheduledTimers?: Array<{ name: string; intervalMs: number }>;
+  };
+  const live = stats.scheduledTimers ?? [];
+  assert.deepEqual(live, listManaged(), 'HTTP /stats must expose the managed registry snapshot');
+  const selfHeal = live.find((entry) => entry.name === 'gateway-self-heal');
+  assert.ok(selfHeal, 'the enabled self-heal writer is visible in /stats');
+  assert.equal(selfHeal.intervalMs, 60_000);
+});
+
 // The alias TARGETS below track ONE_MILLION_MODEL_ALIASES in gateway.ts — update them
 // together when a model flip repoints an alias. The `claude-opus-4-8` ids further down are
 // deliberately NOT alias targets: they prove a dated id is forwarded verbatim, which is a

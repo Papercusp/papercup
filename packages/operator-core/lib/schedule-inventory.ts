@@ -25,6 +25,12 @@ import {
 import { buildDefaultChecks, inProcessPeriodicChecksArmed } from './dbos/in-process-periodic';
 import { listManaged, type ManagedEntry, type TimerClassification } from '@papercusp/scheduled-registry';
 import { collectSiblingManagedTimers, type SiblingManagedTimers } from './schedule-federation';
+import {
+  EXTERNAL_SCHEDULES,
+  EXTERNAL_PROCESS_TIMERS as EXTERNAL_SCHEDULE_DESCRIPTORS,
+  SYNC_TRIGGERED_SCHEDULES,
+  SYNC_TRIGGERED_SWEEPS as SYNC_TRIGGERED_DESCRIPTORS,
+} from './schedule-descriptors.mjs';
 
 /**
  * Every source collectScheduleInventory can emit a row for. SINGLE source of truth:
@@ -126,15 +132,12 @@ export interface ExternalProcessTimer {
  * OR-clause ("list each as category 'external-process'"); LIVE federation (real fire-state over
  * each process's admin/IPC) is the documented follow-on that replaces it.
  */
-export const EXTERNAL_PROCESS_TIMERS: ExternalProcessTimer[] = [
-  { process: 'inference-gateway', name: 'gateway-serviceable-admission-clamp', cadence: 'every ~2s', source: 'packages/operator-core/lib/inference-gateway/gateway.ts' },
-  { process: 'inference-gateway', name: 'gateway-self-heal', cadence: 'every ~10s', source: 'packages/operator-core/lib/inference-gateway/gateway.ts' },
-  { process: 'inference-gateway', name: 'gateway-token-refresh', cadence: 'every ~45m', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
-  { process: 'inference-gateway', name: 'gateway-pool-reload', cadence: 'every ~60s', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
-  { process: 'inference-gateway', name: 'gateway-ratehint-pin-resync', cadence: 'every ~60s', source: 'packages/operator-core/lib/inference-gateway/launch.ts' },
-  { process: 'gateway-watchdog', name: 'gateway-watchdog-poll', cadence: 'every ~15s', source: 'packages/operator-core/lib/inference-gateway/watchdog.mjs' },
-  { process: 'psu-launcher', name: 'psu-supervisor-heartbeat', cadence: 'every ~60s', source: 'apps/operator/scripts/psu-launcher.mjs' },
-];
+export const EXTERNAL_PROCESS_TIMERS: ExternalProcessTimer[] = EXTERNAL_SCHEDULE_DESCRIPTORS.map((d) => ({
+  process: d.process,
+  name: d.name,
+  cadence: `every ~${humanInterval(d.defaultIntervalMs).replace(/^every /, '')}`,
+  source: d.source,
+}));
 
 /**
  * SYNC-TRIGGERED sweeps — recurring work whose cadence is "after each git-sync"
@@ -175,26 +178,9 @@ export interface SyncTriggeredSweep {
  * always runs and is free (a sha comparison); REPAIR spawns an LLM agent per
  * drift batch and is gated behind the owner-authority dark flag DOC_STEWARD.
  */
-export const SYNC_TRIGGERED_SWEEPS: SyncTriggeredSweep[] = [
-  {
-    name: 'doc-freshness-sweep',
-    cadence: 'after each git-sync',
-    armed: true, // detection is unconditional
-    source: 'packages/operator-core/lib/harness/docs/sweep-after-sync.ts',
-    trigger: 'git-sync-action.ts → runDocFreshnessSweepAfterSync',
-    spends: 'none',
-    note: "Detects drifted docs by comparing HEAD against each doc's anchored code. Free — no agent spawn.",
-  },
-  {
-    name: 'doc-steward-dispatch',
-    cadence: 'after each git-sync (when drift is found)',
-    armed: null,
-    flag: 'papercusp-doc-steward',
-    source: 'packages/operator-core/lib/harness/docs/doc-steward-dispatch.ts',
-    spends: 'llm',
-    note: 'Spawns an LLM doc-steward agent to re-sync drifted docs. Owner-authority dark flag — OFF means drift is still detected, just not auto-repaired.',
-  },
-];
+export const SYNC_TRIGGERED_SWEEPS: SyncTriggeredSweep[] = SYNC_TRIGGERED_DESCRIPTORS.map((descriptor) => ({
+  ...descriptor,
+}));
 
 /** Resolve a sweep's armed state from its feature flag; null when unknowable. */
 async function resolveFlagArmed(flagKey: string): Promise<boolean | null> {

@@ -7,6 +7,11 @@
  * the deterministic drift DETECTION. Mirrors git-sync → merge-resolution on conflict.
  */
 
+import { SYNC_TRIGGERED_SCHEDULES } from '../../schedule-descriptors.mjs';
+
+/** Stable inventory identity for the optional LLM repair writer. */
+const DOC_STEWARD_DISPATCH_NAME = SYNC_TRIGGERED_SCHEDULES.docStewardDispatch.name;
+
 /** A drifted doc handed to the doc-steward in its `--doc-drift` extra. */
 export interface DriftedDoc {
   /** Doc-root-relative path of the stale doc. */
@@ -87,7 +92,7 @@ export async function dispatchDocStewardForDrift(
     await fireLaunchBlueprintForEvent('docs:drift', {
       installSlug: harnessSlug,
       workspaceId,
-      kickoff: `Re-sync ${batch.length} drifted doc(s) in ${harnessSlug} to the current code: ${batch.map((d) => d.docId).join(', ')}`,
+      kickoff: `[${DOC_STEWARD_DISPATCH_NAME}] Re-sync ${batch.length} drifted doc(s) in ${harnessSlug} to the current code: ${batch.map((d) => d.docId).join(', ')}`,
       extra: ['--doc-drift', JSON.stringify({ docs: batch })],
     });
     return batch;

@@ -53,6 +53,8 @@ import {
   type TierAdmissionConfig,
 } from '@papercusp/papercusp-shared/agent';
 import { trackDetached } from '../detached-imports';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { EXTERNAL_SCHEDULES } from '../schedule-descriptors.mjs';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
 export const DEFAULT_GATEWAY_PORT = 8788;
@@ -1093,19 +1095,27 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           `re-scans on every 401 and on each proactive refresh tick, so recovery needs no restart)`,
       ),
     );
-  const refreshMs = opts.refreshIntervalMs ?? 45 * 60 * 1000;
-  let timer: ReturnType<typeof setInterval> | undefined;
+  const refreshMs = opts.refreshIntervalMs ?? EXTERNAL_SCHEDULES.gatewayTokenRefresh.defaultIntervalMs;
+  let timer: ManagedHandle | undefined;
   if (refreshMs > 0) {
-    timer = setInterval(() => {
-      for (const { resolver } of resolvers) {
-        // `token` setup-tokens never expire — skip; `file` refreshes via OAuth; `keychain`
-        // (macOS local fallback) re-runs the freshest-scan across every local credential source.
-        if (resolver.kind === 'token') continue;
-        resolver.invalidate();
-        void resolver.current().catch((e) => log('warn', `proactive refresh failed: ${(e as Error).message}`));
-      }
-    }, refreshMs);
-    timer.unref?.();
+    timer = managedSetInterval(
+      EXTERNAL_SCHEDULES.gatewayTokenRefresh.name,
+      refreshMs,
+      () => {
+        for (const { resolver } of resolvers) {
+          // `token` setup-tokens never expire — skip; `file` refreshes via OAuth; `keychain`
+          // (macOS local fallback) re-runs the freshest-scan across every local credential source.
+          if (resolver.kind === 'token') continue;
+          resolver.invalidate();
+          void resolver.current().catch((e) => log('warn', `proactive refresh failed: ${(e as Error).message}`));
+        }
+      },
+      {
+        category: EXTERNAL_SCHEDULES.gatewayTokenRefresh.category,
+        classification: EXTERNAL_SCHEDULES.gatewayTokenRefresh.classification,
+        allowInTest: true,
+      },
+    );
   }
 
   // POLL the DB pool (B-HOT-1): periodically hot-reload so an account registered / removed / egress-changed
@@ -1116,10 +1126,10 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // TRANSITION, so a flapping reconnect cannot turn this into a broadcast storm.
   setDbHealthTransitionHandler(makeDbHealthAlert(opts.workspace, log));
 
-  const reloadMs = opts.poolReloadIntervalMs ?? 60_000;
-  let reloadTimer: ReturnType<typeof setInterval> | undefined;
+  const reloadMs = opts.poolReloadIntervalMs ?? EXTERNAL_SCHEDULES.gatewayPoolReload.defaultIntervalMs;
+  let reloadTimer: ManagedHandle | undefined;
   if (reloadMs > 0 && pool.reload) {
-    reloadTimer = setInterval(() => {
+    reloadTimer = managedSetInterval(EXTERNAL_SCHEDULES.gatewayPoolReload.name, reloadMs, () => {
       // EI-19303809952284205: the 60s poll is the gateway's only CONTINUOUS durable-path heartbeat —
       // it runs whether or not traffic is flowing, so it is what advances the failure streak on an
       // idle gateway. When this fails the pool cannot load at all and the gateway silently collapses
@@ -1130,8 +1140,11 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           recordDbOutcome('pool-reload', false, e);
           log('warn', `pool reload poll failed: ${(e as Error).message}`);
         });
-    }, reloadMs);
-    reloadTimer.unref?.();
+    }, {
+      category: EXTERNAL_SCHEDULES.gatewayPoolReload.category,
+      classification: EXTERNAL_SCHEDULES.gatewayPoolReload.classification,
+      allowInTest: true,
+    });
   }
 
   // DYNAMIC OWNER PIN durability (account-dynamic-pin-2026-06-29): load the durable agent→account pins from
@@ -1174,32 +1187,48 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     }
   };
   await refreshGatewayHints();
-  let hintTimer: ReturnType<typeof setInterval> | undefined;
+  let hintTimer: ManagedHandle | undefined;
   if (reloadMs > 0) {
-    hintTimer = setInterval(() => void refreshGatewayHints(), reloadMs);
-    hintTimer.unref?.();
+    hintTimer = managedSetInterval(
+      EXTERNAL_SCHEDULES.gatewayRateHintPinResync.name,
+      reloadMs,
+      () => void refreshGatewayHints(),
+      {
+        category: EXTERNAL_SCHEDULES.gatewayRateHintPinResync.category,
+        classification: EXTERNAL_SCHEDULES.gatewayRateHintPinResync.classification,
+        allowInTest: true,
+      },
+    );
   }
 
   // Local inference-backend pool (D-002): load the registry now (so the FIRST request after boot
   // already sees any registered backend, not just after the first poll tick) + a periodic
   // reload-from-DB + health-check tick. Fail-soft — see refreshLocalBackends' own try/catch.
   await refreshLocalBackends();
-  const localBackendReloadMs = opts.localBackendReloadIntervalMs ?? 30_000;
-  let localBackendTimer: ReturnType<typeof setInterval> | undefined;
+  const localBackendReloadMs = opts.localBackendReloadIntervalMs ?? EXTERNAL_SCHEDULES.gatewayLocalBackendRefresh.defaultIntervalMs;
+  let localBackendTimer: ManagedHandle | undefined;
   if (localBackendReloadMs > 0) {
-    localBackendTimer = setInterval(() => {
-      void refreshLocalBackends();
-      void localBackendPool.runHealthChecks().catch((e) => log('warn', `inference-gateway: local-backend health check failed: ${(e as Error).message}`));
-    }, localBackendReloadMs);
-    localBackendTimer.unref?.();
+    localBackendTimer = managedSetInterval(
+      EXTERNAL_SCHEDULES.gatewayLocalBackendRefresh.name,
+      localBackendReloadMs,
+      () => {
+        void refreshLocalBackends();
+        void localBackendPool.runHealthChecks().catch((e) => log('warn', `inference-gateway: local-backend health check failed: ${(e as Error).message}`));
+      },
+      {
+        category: EXTERNAL_SCHEDULES.gatewayLocalBackendRefresh.category,
+        classification: EXTERNAL_SCHEDULES.gatewayLocalBackendRefresh.classification,
+        allowInTest: true,
+      },
+    );
   }
 
   // D-004/D-011: the production payload spool is lazy-GC'd rather than deleting on every
   // release, so a retried receipt can still resurrect its body. Keep the sweep bounded
   // and fail-soft: an individual maintenance failure must not take down the gateway.
-  const payloadSpoolSweepMs = opts.payloadSpoolSweepIntervalMs ?? DEFAULT_PAYLOAD_SPOOL_SWEEP_INTERVAL_MS;
+  const payloadSpoolSweepMs = opts.payloadSpoolSweepIntervalMs ?? EXTERNAL_SCHEDULES.gatewayPayloadSpoolSweep.defaultIntervalMs;
   const payloadSpoolSweepLimit = opts.payloadSpoolSweepLimit ?? DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT;
-  let payloadSpoolSweepTimer: ReturnType<typeof setInterval> | undefined;
+  let payloadSpoolSweepTimer: ManagedHandle | undefined;
   const sweepPayloadSpool = (): void => {
     if (!payloadSpool) return;
     void payloadSpool.sweep({ limit: payloadSpoolSweepLimit }).catch((e) => {
@@ -1210,8 +1239,16 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     // Run once at startup so a restart does not leave an already-overdue legacy backlog
     // waiting for the first interval tick.
     sweepPayloadSpool();
-    payloadSpoolSweepTimer = setInterval(sweepPayloadSpool, payloadSpoolSweepMs);
-    payloadSpoolSweepTimer.unref?.();
+    payloadSpoolSweepTimer = managedSetInterval(
+      EXTERNAL_SCHEDULES.gatewayPayloadSpoolSweep.name,
+      payloadSpoolSweepMs,
+      sweepPayloadSpool,
+      {
+        category: EXTERNAL_SCHEDULES.gatewayPayloadSpoolSweep.category,
+        classification: EXTERNAL_SCHEDULES.gatewayPayloadSpoolSweep.classification,
+        allowInTest: true,
+      },
+    );
   }
 
   return {
@@ -1223,11 +1260,11 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     configVersion: () => configVersion,
     reloadPool,
     async stop() {
-      if (timer) clearInterval(timer);
-      if (reloadTimer) clearInterval(reloadTimer);
-      if (hintTimer) clearInterval(hintTimer);
-      if (localBackendTimer) clearInterval(localBackendTimer);
-      if (payloadSpoolSweepTimer) clearInterval(payloadSpoolSweepTimer);
+      timer?.stop();
+      reloadTimer?.stop();
+      hintTimer?.stop();
+      localBackendTimer?.stop();
+      payloadSpoolSweepTimer?.stop();
       // EI-19303809952284205: drop the alert handler with the service. The tracker is a process
       // singleton, so leaving it registered would let a torn-down service (a test, a restarted
       // in-process gateway) keep firing escalations at the fleet.

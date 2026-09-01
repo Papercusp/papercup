@@ -32,6 +32,10 @@ import {
 } from './okf-expiry';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 import { trackDetached } from '../../detached-imports';
+import { SYNC_TRIGGERED_SCHEDULES } from '../../schedule-descriptors.mjs';
+
+/** Stable inventory identity for the deterministic post-git-sync detection writer. */
+const DOC_FRESHNESS_SWEEP_NAME = SYNC_TRIGGERED_SCHEDULES.docFreshnessSweep.name;
 
 const DOCS_IDENTITY: AgentIdentity = {
   ownerId: 'system:doc-freshness',
@@ -134,7 +138,9 @@ interface DocFreshnessSweepQueueState {
 const queuedDocFreshnessSweeps = new Map<string, DocFreshnessSweepQueueState>();
 
 function queueKey(input: SweepAfterSyncInput): string {
-  return `${input.workspaceId}\u0000${input.harnessSlug}`;
+  // Include the descriptor identity in the single-flight key so this writer's
+  // runtime queue cannot silently detach from schedule:inventory.
+  return `${DOC_FRESHNESS_SWEEP_NAME}\u0000${input.workspaceId}\u0000${input.harnessSlug}`;
 }
 
 /** Preserve every not-yet-swept commit when several syncs arrive during one run. */
