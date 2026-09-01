@@ -50,9 +50,11 @@ import {
   DECLARATION_STATUS_MAX_RETRIES,
   regenerateGeneratedDeclarationsBeforeCommit,
   regenerateToolCatalogBeforeCommit,
+  expandAtomicLiveLockExclusions,
   runGitBounded,
   type RunGit,
 } from './run-git-sync';
+import type { FileAttribution } from './git-sync-attribution';
 import type { ContentDetector } from '../../content-lint/registry';
 
 /** A test content detector that quarantines any matched file whose text contains BROKEN. */
@@ -80,6 +82,47 @@ function configUser(repo: string): void {
 }
 
 const REPO_ROOT = resolve(__dirname, '../../../../..');
+
+describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', () => {
+  it('expands one live-held file to every dirty file in its attributed work-item cohort', () => {
+    const attribution = new Map<string, FileAttribution>([
+      ['source.ts', { agent: 'su-peer', workItems: ['WI-1834529'] }],
+      ['source.test.ts', { agent: 'su-peer', workItems: ['WI-1834529'] }],
+      ['unrelated.ts', { agent: 'su-peer', workItems: ['WI-other'] }],
+    ]);
+
+    expect(
+      expandAtomicLiveLockExclusions(
+        ['source.ts', 'source.test.ts', 'unrelated.ts'],
+        [{ path: 'source.ts', owner: 'su-peer', intent: 'editing source', goalRef: ' WI-1834529 ' }],
+        attribution,
+      ),
+    ).toEqual({
+      paths: ['source.test.ts', 'source.ts'],
+      groups: [{
+        key: JSON.stringify(['su-peer', 'WI-1834529']),
+        owner: 'su-peer',
+        goalRef: 'WI-1834529',
+        paths: ['source.test.ts', 'source.ts'],
+      }],
+    });
+  });
+
+  it('keeps legacy/null-goal locks at per-path granularity instead of grouping by owner', () => {
+    const attribution = new Map<string, FileAttribution>([
+      ['source.ts', { agent: 'su-peer', workItems: ['WI-legacy'] }],
+      ['source.test.ts', { agent: 'su-peer', workItems: ['WI-legacy'] }],
+    ]);
+
+    expect(
+      expandAtomicLiveLockExclusions(
+        ['source.ts', 'source.test.ts'],
+        [{ path: 'source.ts', owner: 'su-peer', intent: 'editing source' }],
+        attribution,
+      ),
+    ).toEqual({ paths: ['source.ts'], groups: [] });
+  });
+});
 
 describe('git-sync commit identity', () => {
   it('uses a verified GitHub no-reply email for automated pushes', () => {
@@ -698,6 +741,64 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).toMatch(/file\.txt/);
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).not.toMatch(/normal\.txt/);
+  });
+
+  it('WI-1834529: a staggered lock defers the whole attributed source/test cohort', async () => {
+    const sourcePath = 'source.ts';
+    const testPath = 'source.test.ts';
+    const normalPath = 'normal.txt';
+    writeFileSync(join(repo, sourcePath), 'export const value = 1;\n');
+    writeFileSync(join(repo, testPath), "import { value } from './source';\nexport const observed = value;\n");
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed atomic edit cohort');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, sourcePath), 'export const value = 2;\n');
+    writeFileSync(join(repo, testPath), "import { value } from './source';\nexport const observed = value + 1;\n");
+    writeFileSync(join(repo, normalPath), 'unrelated work\n');
+
+    const workItem = 'WI-1834529';
+    const roster = [{
+      agent: 'su-peer',
+      intent: 'finish the source and test together',
+      files: [sourcePath, testPath],
+      workItems: [workItem],
+    }];
+    const logs: string[] = [];
+    const first = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: [sourcePath],
+      liveLockHoldings: [{
+        path: sourcePath,
+        owner: 'su-peer',
+        intent: 'editing source',
+        goalRef: workItem,
+      }],
+      loadRoster: async () => roster,
+      log: (message) => logs.push(message),
+    });
+
+    expect(first.status).toBe('synced');
+    expect(git(originDir, 'show', `main:${sourcePath}`)).toBe('export const value = 1;\n');
+    expect(git(originDir, 'show', `main:${testPath}`)).toContain('observed = value;');
+    expect(git(originDir, 'show', `main:${normalPath}`)).toBe('unrelated work\n');
+    expect(git(repo, 'status', '--porcelain', '--', sourcePath, testPath)).toMatch(/source(?:\.test)?\.ts/);
+    expect(logs.join('\n')).toContain('keeping 1 live edit cohort(s) atomic');
+
+    // Once the staggered source lock is gone, both dirty files can publish together;
+    // the first pass must not have left a source/test split in the remote tree.
+    const second = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      loadRoster: async () => roster,
+    });
+
+    expect(second.status).toBe('synced');
+    expect(git(originDir, 'show', `main:${sourcePath}`)).toBe('export const value = 2;\n');
+    expect(git(originDir, 'show', `main:${testPath}`)).toContain('observed = value + 1;');
+    expect(git(repo, 'status', '--porcelain', '--', sourcePath, testPath)).toBe('');
+    expect(git(originDir, 'log', '--format=%B', 'main')).toContain(`Papercusp-Work-Item: ${workItem}`);
   });
 
   it('WI-40770: a repo with only live-held dirty paths still reports skipped-locked', async () => {

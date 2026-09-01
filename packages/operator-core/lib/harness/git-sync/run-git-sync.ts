@@ -1083,6 +1083,8 @@ export interface GitSyncLockHolding {
   path: string;
   owner: string;
   intent: string;
+  /** The active work-item/goal associated with this lock, when stamped by locks:acquire. */
+  goalRef?: string;
 }
 
 /** A dirty path excluded from this pass because a live editor holds its lock. */
@@ -1091,6 +1093,78 @@ export interface GitSyncSkippedPath {
   path: string;
   owner: string;
   intent: string;
+}
+
+/** True when two repo-relative paths overlap as a file or directory lock. */
+function gitSyncPathsOverlap(a: string, b: string): boolean {
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+/**
+ * Expand a live-lock exclusion to the rest of the same edit cohort.
+ *
+ * A live file lock is a per-file lease, but an agent's edit is often a coherent
+ * multi-file change (source + test, or migration + code). The automatic hook can
+ * release those leases at different times, so excluding only the rows visible in
+ * this tick lets an already-unlocked sibling reach HEAD alone. The edit ledger
+ * attribution map is the durable bridge to that sibling: it records each granted
+ * path with the work-item active at edit time.
+ *
+ * Only a holding with a non-empty goalRef seeds a cohort. A legacy/null goal is
+ * intentionally left at the old per-path behavior: grouping unknown work under an
+ * owner would conflate unrelated edits. The caller still always protects every
+ * directly live-held path, whether or not attribution is available.
+ *
+ * Pure and exported so the TTL-skew regression is testable without a live lock DB or
+ * a git subprocess. `paths` contains only dirty paths (plus a directly held path
+ * when its lock names a directory); clean files do not need a pathspec exclusion.
+ */
+export function expandAtomicLiveLockExclusions(
+  dirtyFiles: readonly string[],
+  holdings: readonly GitSyncLockHolding[],
+  attribution?: ReadonlyMap<string, FileAttribution>,
+): { paths: string[]; groups: Array<{ key: string; owner: string; goalRef: string; paths: string[] }> } {
+  const dirty = [...new Set(dirtyFiles.map((path) => path.trim()).filter(Boolean))];
+  const groups = new Map<string, { owner: string; goalRef: string; paths: Set<string> }>();
+  const directPaths = new Set<string>();
+
+  for (const holding of holdings) {
+    const path = holding.path.trim();
+    if (!path || !dirty.some((file) => gitSyncPathsOverlap(file, path))) continue;
+    directPaths.add(path);
+    const owner = holding.owner.trim();
+    const goalRef = holding.goalRef?.trim() ?? '';
+    if (!owner || !goalRef) continue;
+    const key = JSON.stringify([owner, goalRef]);
+    let group = groups.get(key);
+    if (!group) {
+      group = { owner, goalRef, paths: new Set<string>() };
+      groups.set(key, group);
+    }
+    group.paths.add(path);
+  }
+
+  if (groups.size > 0 && attribution) {
+    for (const file of dirty) {
+      const a = attribution.get(file);
+      if (!a || !a.agent.trim()) continue;
+      for (const workItem of a.workItems ?? []) {
+        const key = JSON.stringify([a.agent.trim(), workItem.trim()]);
+        const group = groups.get(key);
+        if (group && workItem.trim()) group.paths.add(file);
+      }
+    }
+  }
+
+  const paths = new Set(directPaths);
+  const outputGroups: Array<{ key: string; owner: string; goalRef: string; paths: string[] }> = [];
+  for (const [key, group] of groups) {
+    const pathsForGroup = [...group.paths].sort();
+    for (const path of pathsForGroup) paths.add(path);
+    outputGroups.push({ key, owner: group.owner, goalRef: group.goalRef, paths: pathsForGroup });
+  }
+  outputGroups.sort((a, b) => a.key.localeCompare(b.key));
+  return { paths: [...paths].sort(), groups: outputGroups };
 }
 
 /**
@@ -3015,15 +3089,11 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   }
   const dirty = await dirtyFiles(runGit, repoPath);
   const dirtyPathCount = dirty.length;
-  const skippedPaths = o.protectedHoldings
-    .filter((holding) =>
-      dirty.some(
-        (file) =>
-          file === holding.path ||
-          file.startsWith(`${holding.path}/`) ||
-          holding.path.startsWith(`${file}/`),
-      ),
-    )
+  const directSkippedHoldings = o.protectedHoldings.filter((holding) =>
+    dirty.some((file) => gitSyncPathsOverlap(file, holding.path)),
+  );
+  const atomicExclusions = expandAtomicLiveLockExclusions(dirty, o.protectedHoldings, o.attribution);
+  const skippedPaths = directSkippedHoldings
     .map((holding) => ({
       scope: o.scope,
       path: holding.path,
@@ -3035,6 +3105,16 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       `[git-sync] ${o.scope}: excluding live-locked dirty path(s) while committing the unlocked remainder: ` +
         skippedPaths.map((p) => `${p.path} (${p.owner}: ${p.intent})`).join('; '),
     );
+    if (atomicExclusions.groups.some((group) => group.paths.length > 1)) {
+      o.log(
+        `[git-sync] ${o.scope}: keeping ${atomicExclusions.groups.length} live edit cohort(s) atomic ` +
+          `(owner + goal_ref); deferring grouped dirty path(s): ` +
+          atomicExclusions.groups
+            .filter((group) => group.paths.length > 1)
+            .map((group) => `${group.owner}/${group.goalRef} [${group.paths.join(', ')}]`)
+            .join('; '),
+      );
+    }
   }
   if (await isDirty(runGit, repoPath)) {
     const attachment = await ensureBranchAttachedForCommit(runGit, repoPath, o.remote, o.defaultBranch, o.log);
@@ -3144,7 +3224,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         ...o.excludePaths,
         // liveLockHoldings is the provenance-rich authority. Keep its paths safe
         // even if a caller omitted the parallel excludePaths projection.
-        ...skippedPaths.map((p) => p.path),
+        ...atomicExclusions.paths,
         ...oversized.map((f) => f.path),
         ...contentErrors.map((c) => c.file),
       ]),
@@ -3807,6 +3887,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       path: holding.path.trim(),
       owner: holding.owner,
       intent: holding.intent,
+      ...(holding.goalRef?.trim() ? { goalRef: holding.goalRef.trim() } : {}),
     }))
     .filter((holding) => holding.path.length > 0);
   const repoO = {
