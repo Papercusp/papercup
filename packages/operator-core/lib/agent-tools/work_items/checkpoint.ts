@@ -151,7 +151,13 @@ import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
-import { carryProvenanceFields, retainedProvenanceText } from '../../carry-surface-provenance-stamp';
+import {
+  carryProvenanceFields,
+  markUnverifiedOwnerAttribution,
+  ownerAttributionEnforcement,
+  retainedProvenanceText,
+  stampCarrySurfaceProvenance,
+} from '../../carry-surface-provenance-stamp';
 import { hasPotentialActionClaim, readSuccessfulActionInvocations } from '../../carry-surface-action-proof';
 import {
   CARRY_CAP_HARD_MULTIPLE,
@@ -1135,8 +1141,8 @@ export default defineTool({
         // setWorkItemCheckpoint is only a wrapper over it, so unifying costs nothing
         // and lets the shrink guard, the prior length AND the P-007 dependency
         // stamping apply on the append/clear paths too.
-        const isPlainReplace = !wantsAppend && !!checkpointToStore && checkpointToStore.length > 0;
-        const newLength = checkpointToStore?.length ?? 0;
+        let isPlainReplace = !wantsAppend && !!checkpointToStore && checkpointToStore.length > 0;
+        let newLength = checkpointToStore?.length ?? 0;
         // EI-20232176364474286: keep the guard as the first no-loss tripwire. Only
         // after it refuses a plain >50% shrink do we enable this flag for the one
         // retry below, where the transform appends under the locked prior row.
@@ -1173,10 +1179,27 @@ export default defineTool({
         // stored checkpoint may also carry old checks/body bytes through the locked
         // transform below; those are separated at the response boundary as
         // retainedProvenance instead of being misreported as current activity.
-        const currentProvenanceText = (() => {
+        let currentProvenanceText = (() => {
           const submittedBody = splitCarryNoteChecks(checkpoint ?? '').body;
           return suppliedChecks !== undefined ? withCarryNoteChecks(submittedBody, suppliedChecks) : submittedBody;
         })();
+        // P-016 / EI-212678: persist the caveat, not only the response warning.
+        // Compute against exactly the bytes supplied by this call, then prefix the
+        // stored narrative when owner authority is not mechanically established.
+        const successfulActions =
+          c.spawnId && hasPotentialActionClaim(currentProvenanceText)
+            ? await readSuccessfulActionInvocations({ workspaceId, spawnId: c.spawnId })
+            : undefined;
+        const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ident.ownerId, {
+          successfulActions,
+        });
+        const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
+        if (ownerEnforcement.unverified) {
+          checkpointToStore = markUnverifiedOwnerAttribution(checkpointToStore);
+          currentProvenanceText = markUnverifiedOwnerAttribution(currentProvenanceText) ?? currentProvenanceText;
+        }
+        isPlainReplace = !wantsAppend && !!checkpointToStore && checkpointToStore.length > 0;
+        newLength = checkpointToStore?.length ?? 0;
         const isClear = !(checkpointToStore && checkpointToStore.length > 0);
         // EI-19447043119380534: `checks` supplied while `checkpoint` is ENTIRELY OMITTED
         // (undefined — NOT an explicit null/'' clear) is a checks-only PATCH: carry the
@@ -1241,11 +1264,12 @@ export default defineTool({
                   priorNote.length > 500 &&
                   newLength < priorNote.length * 0.5 &&
                   incomingBody.length > 0;
-                const body = isBodyPreservingPatch
+                let body = isBodyPreservingPatch
                   ? priorSplit.body
                   : shouldAppendRefresh
                     ? joinCheckpointNewestFirst(incomingBody, priorSplit.body)
                     : incomingBody;
+                if (ownerEnforcement.unverified) body = markUnverifiedOwnerAttribution(body) ?? body;
                 if (shouldAppendRefresh) autoAppendedRefresh = true;
                 const patchedExistingChecks =
                   (additiveChecks || (preservePriorOnShrink && rowsMode !== 'replace')) &&
@@ -1954,10 +1978,8 @@ export default defineTool({
           ...(stored !== null
             ? await carryProvenanceFields(currentProvenanceText, ident.ownerId, {
                 retainedText: retainedProvenanceText(stored, currentProvenanceText),
-                successfulActions:
-                  c.spawnId && hasPotentialActionClaim(currentProvenanceText)
-                    ? await readSuccessfulActionInvocations({ workspaceId, spawnId: c.spawnId })
-                    : undefined,
+                precomputedStamp: preWriteStamp,
+                successfulActions,
               })
             : {}),
           // EI-9325: warn-only nudge — a plain replace-on-write that shrank the
