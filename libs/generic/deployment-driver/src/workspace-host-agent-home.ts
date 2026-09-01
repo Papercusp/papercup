@@ -1,8 +1,5 @@
 import { isAbsolute, join, normalize } from "node:path";
-import {
-  withWorkspaceHostCredentialFilesystemLock,
-  workspaceHostCredentialFamilyLockPath,
-} from "./workspace-host-credential-delivery";
+import { withWorkspaceHostCredentialFilesystemLock } from "./workspace-host-credential-delivery";
 
 /** The sealed material format installed into one workspace user's native agent homes. */
 export const WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION =
@@ -51,7 +48,9 @@ export interface WorkspaceHostAgentHomeFilesystem {
   /** Optional because hermetic doubles need not model uid/gid; production provides it. */
   setOwnership?(path: string, owner: string, group: string): Promise<void>;
   /** Return the lstat kind without following symlinks; production uses this to reject redirection. */
-  pathKind?(path: string): Promise<"missing" | "directory" | "file" | "symlink" | "other">;
+  pathKind?(
+    path: string,
+  ): Promise<"missing" | "directory" | "file" | "symlink" | "other">;
   /** Optional cross-process critical section shared with credential delivery. */
   withExclusiveLock?<T>(path: string, task: () => Promise<T>): Promise<T>;
 }
@@ -242,6 +241,11 @@ export function workspaceHostAgentHomeStatePath(materialRoot: string): string {
   return join(materialRoot, "active", "agent-home.json");
 }
 
+/** One lock for the shared three-file native home, regardless of which agent family supplied it. */
+export function workspaceHostAgentHomeLockPath(materialRoot: string): string {
+  return join(materialRoot, "active", ".agent-home.lifecycle.lock");
+}
+
 export function encodeWorkspaceHostAgentHomeState(
   family: WorkspaceHostAgentHomeFamily,
   generation: number,
@@ -398,7 +402,15 @@ export class WorkspaceHostAgentHomeConsumer {
     const raw = await this.filesystem.readFileIfPresent(
       workspaceHostAgentHomeStatePath(this.materialRoot),
     );
-    return raw === null ? null : parseWorkspaceHostAgentHomeState(raw);
+    if (raw === null) return null;
+    const state = parseWorkspaceHostAgentHomeState(raw);
+    if (state.home !== this.workspaceHome) {
+      throw new WorkspaceHostAgentHomeStateError(
+        "active agent-home state names a different workspace home",
+        { family: state.family, generation: state.generation },
+      );
+    }
+    return state;
   }
 
   private async own(path: string): Promise<void> {
@@ -415,25 +427,60 @@ export class WorkspaceHostAgentHomeConsumer {
     }
   }
 
-  private async ensureHomeLayout(): Promise<void> {
-    for (const directory of workspaceHostAgentHomeDirectories(
-      this.workspaceHome,
-    )) {
-      await this.filesystem.ensureDirectory(directory);
-      if (this.filesystem.pathKind) {
-        const kind = await this.filesystem.pathKind(directory);
-        if (kind !== "directory") {
-          throw new WorkspaceHostAgentHomeStateError(
-            `workspace agent-home directory '${directory}' is not a real directory`,
-          );
-        }
-      }
-      await this.own(directory);
+  private async requireRealDirectory(directory: string): Promise<void> {
+    if (!this.filesystem.pathKind) return;
+    const kind = await this.filesystem.pathKind(directory);
+    if (kind !== "directory") {
+      throw new WorkspaceHostAgentHomeStateError(
+        `workspace agent-home directory '${directory}' is not a real directory`,
+      );
     }
   }
 
+  /**
+   * Temporarily make the home and credential directories root-owned while the root consumer
+   * writes. This closes the check/write symlink race: the workspace user cannot swap a validated
+   * parent out from under the subsequent atomic rename. Final ownership is restored in reverse
+   * order with the home last, so the steady state remains a normal user-owned 0700 native home.
+   */
+  private async secureHomeLayout(): Promise<readonly string[]> {
+    const directories = workspaceHostAgentHomeDirectories(this.workspaceHome);
+    const secured: string[] = [];
+    try {
+      for (const directory of directories) {
+        await this.filesystem.ensureDirectory(directory);
+        await this.requireRealDirectory(directory);
+        if (
+          this.workspaceUser &&
+          this.workspaceGroup &&
+          this.filesystem.setOwnership
+        ) {
+          await this.filesystem.setOwnership(directory, "root", "root");
+        }
+        secured.push(directory);
+      }
+      return secured;
+    } catch (error) {
+      await this.restoreHomeLayout(secured).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async restoreHomeLayout(
+    directories: readonly string[],
+    files: readonly string[] = [],
+  ): Promise<void> {
+    // Restore children first and the home last. Until the final chown the workspace user cannot
+    // rename a validated child into a symlink through its parent.
+    for (const path of files) await this.own(path);
+    for (const directory of [...directories].reverse())
+      await this.own(directory);
+  }
+
   private lockPath(family: WorkspaceHostAgentHomeFamily): string {
-    return workspaceHostCredentialFamilyLockPath(this.materialRoot, family);
+    // Both agent families install the same native files and active marker. They must therefore
+    // serialize against one another even though their delivered-material directories differ.
+    return workspaceHostAgentHomeLockPath(this.materialRoot);
   }
 
   private async withLock<T>(
@@ -483,33 +530,59 @@ export class WorkspaceHostAgentHomeConsumer {
       );
     }
 
-    await this.ensureHomeLayout();
-    const paths = workspaceHostAgentHomePaths(this.workspaceHome);
-    for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
-      const existing = await this.filesystem.readFileIfPresent(paths[label]);
-      const bytes = bundle.files[label];
-      if (existing === null || !compareBytes(existing, bytes)) {
-        await this.filesystem.writePrivateFile(paths[label], bytes);
-      }
-      // Check the final path without following a user-created symlink before changing ownership.
-      if (this.filesystem.pathKind) {
-        const kind = await this.filesystem.pathKind(paths[label]);
-        if (kind !== "file") {
-          throw new WorkspaceHostAgentHomeStateError(
-            `workspace agent-home file '${label}' is not a regular file`,
-            { family, generation },
-          );
+    const securedDirectories = await this.secureHomeLayout();
+    const installedFiles: string[] = [];
+    try {
+      const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+      for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
+        const existing = await this.filesystem.readFileIfPresent(paths[label]);
+        const bytes = bundle.files[label];
+        if (existing === null || !compareBytes(existing, bytes)) {
+          await this.filesystem.writePrivateFile(paths[label], bytes);
         }
+        // Check the final path without following a user-created symlink before changing ownership.
+        if (this.filesystem.pathKind) {
+          const kind = await this.filesystem.pathKind(paths[label]);
+          if (kind !== "file") {
+            throw new WorkspaceHostAgentHomeStateError(
+              `workspace agent-home file '${label}' is not a regular file`,
+              { family, generation },
+            );
+          }
+        }
+        installedFiles.push(paths[label]);
       }
-      await this.own(paths[label]);
+      // State is the commit marker and is intentionally written after every native file succeeds.
+      await this.filesystem.ensureDirectory(join(this.materialRoot, "active"));
+      await this.filesystem.writePrivateFile(
+        workspaceHostAgentHomeStatePath(this.materialRoot),
+        encodeWorkspaceHostAgentHomeState(
+          family,
+          generation,
+          this.workspaceHome,
+        ),
+      );
+    } finally {
+      await this.restoreHomeLayout(securedDirectories, installedFiles);
     }
-    // State is the commit marker and is intentionally written after every native file succeeds.
-    await this.filesystem.ensureDirectory(join(this.materialRoot, "active"));
-    await this.filesystem.writePrivateFile(
-      workspaceHostAgentHomeStatePath(this.materialRoot),
-      encodeWorkspaceHostAgentHomeState(family, generation, this.workspaceHome),
-    );
     return { family, generation, present: true, home: this.workspaceHome };
+  }
+
+  private async removeNativeFile(
+    path: string,
+    family: WorkspaceHostAgentHomeFamily,
+    generation: number,
+  ): Promise<void> {
+    if (this.filesystem.pathKind) {
+      const kind = await this.filesystem.pathKind(path);
+      if (kind !== "missing" && kind !== "file") {
+        throw new WorkspaceHostAgentHomeStateError(
+          "refusing to remove a non-regular agent-home path",
+          { family, generation },
+        );
+      }
+    }
+    await this.filesystem.removePath(path);
   }
 
   async install(
@@ -548,7 +621,9 @@ export class WorkspaceHostAgentHomeConsumer {
           );
         }
         const paths = workspaceHostAgentHomePaths(this.workspaceHome);
-        for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
+        for (const label of Object.keys(
+          paths,
+        ) as WorkspaceHostAgentHomeFile[]) {
           if (this.filesystem.pathKind) {
             const kind = await this.filesystem.pathKind(paths[label]);
             if (kind !== "file") {
@@ -599,12 +674,21 @@ export class WorkspaceHostAgentHomeConsumer {
           current.family !== family ||
           current.generation !== generation
         ) {
-          return { family, generation, present: false, home: this.workspaceHome };
+          return {
+            family,
+            generation,
+            present: false,
+            home: this.workspaceHome,
+          };
         }
         const paths = workspaceHostAgentHomePaths(this.workspaceHome);
-        for (const path of Object.values(paths)) await this.filesystem.removePath(path);
-        await this.filesystem.removePath(
+        for (const path of Object.values(paths)) {
+          await this.removeNativeFile(path, family, generation);
+        }
+        await this.removeNativeFile(
           workspaceHostAgentHomeStatePath(this.materialRoot),
+          family,
+          generation,
         );
         return { family, generation, present: false, home: this.workspaceHome };
       },

@@ -30,18 +30,26 @@
  * public, and this module keeps that line — the receipt is `{ family, generation, present: true }`
  * plus an observation timestamp, and a test pins that it never grows a size or digest field.
  */
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { hostname } from 'node:os';
-import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { hostname } from "node:os";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 
 import {
   WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS,
   parseWorkspaceHostCredentialReference,
   type WorkspaceHostCredentialFamily,
-} from './workspace-host-credential-namespace';
-import type { WorkspaceHostCredentialChannel } from './workspace-host-initialization';
-import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
+} from "./workspace-host-credential-namespace";
+import type { WorkspaceHostCredentialChannel } from "./workspace-host-initialization";
+import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
 
 /**
  * The delivery wire version. Distinct from the initialization protocol's version on purpose: the
@@ -49,13 +57,13 @@ import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harnes
  * nothing about whether it speaks the other.
  */
 export const WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION =
-  'papercusp-workspace-host-credential-delivery-v1';
+  "papercusp-workspace-host-credential-delivery-v1";
 
 /** Fixed argv the controller passes; the CLI refuses anything else. */
 export const WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV = [
-  '--protocol-version',
+  "--protocol-version",
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
-  '--json-stdin',
+  "--json-stdin",
 ] as const;
 
 /**
@@ -68,7 +76,7 @@ export const WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV = [
 export const WORKSPACE_HOST_CREDENTIAL_MATERIAL_MAX_BYTES = 256 * 1024;
 
 /** File name under the generation directory. Single definition; every path helper uses it. */
-const MATERIAL_FILE = 'material';
+const MATERIAL_FILE = "material";
 
 /**
  * Per-family ledger recording the highest generation that `revoke()` has destroyed.
@@ -80,7 +88,7 @@ const MATERIAL_FILE = 'material';
  * material the controller had already destroyed. A monotonic high-water mark states the fact
  * positively instead of inferring it from a side effect.
  */
-const REVOCATION_LEDGER_FILE = 'revoked-through';
+const REVOCATION_LEDGER_FILE = "revoked-through";
 
 /* ------------------------------------------------------------------------------------------ */
 /* On-host layout — one definition, shared by the writer and the materializer                   */
@@ -107,7 +115,10 @@ export function workspaceHostCredentialMaterialPath(
   family: WorkspaceHostCredentialFamily,
   generation: number,
 ): string {
-  return join(workspaceHostCredentialGenerationDirectory(root, family, generation), MATERIAL_FILE);
+  return join(
+    workspaceHostCredentialGenerationDirectory(root, family, generation),
+    MATERIAL_FILE,
+  );
 }
 
 /** The per-family revocation high-water mark. */
@@ -145,19 +156,19 @@ export class WorkspaceHostCredentialMaterial {
   }
 
   toJSON(): string {
-    return '[redacted]';
+    return "[redacted]";
   }
 
   toString(): string {
-    return '[redacted]';
+    return "[redacted]";
   }
 
   get [Symbol.toStringTag](): string {
-    return 'WorkspaceHostCredentialMaterial';
+    return "WorkspaceHostCredentialMaterial";
   }
 
-  [Symbol.for('nodejs.util.inspect.custom')](): string {
-    return 'WorkspaceHostCredentialMaterial [redacted]';
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return "WorkspaceHostCredentialMaterial [redacted]";
   }
 }
 
@@ -168,7 +179,7 @@ export class WorkspaceHostCredentialMaterial {
 export class WorkspaceHostCredentialDeliveryProtocolError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'WorkspaceHostCredentialDeliveryProtocolError';
+    this.name = "WorkspaceHostCredentialDeliveryProtocolError";
   }
 }
 
@@ -189,7 +200,7 @@ export class WorkspaceHostAmbientCredentialDeliveryError extends Error {
         `receive delivered material. Writing a file for it would make bind() pass against a path ` +
         `delivery created itself.`,
     );
-    this.name = 'WorkspaceHostAmbientCredentialDeliveryError';
+    this.name = "WorkspaceHostAmbientCredentialDeliveryError";
     this.family = family;
   }
 }
@@ -200,13 +211,17 @@ export class WorkspaceHostRevokedCredentialGenerationError extends Error {
   readonly generation: number;
   readonly revokedThrough: number;
 
-  constructor(family: WorkspaceHostCredentialFamily, generation: number, revokedThrough: number) {
+  constructor(
+    family: WorkspaceHostCredentialFamily,
+    generation: number,
+    revokedThrough: number,
+  ) {
     super(
       `Generation ${generation} of family '${family}' cannot be delivered: generations through ` +
         `${revokedThrough} have been revoked on this host. Rotation must issue a strictly ` +
         `increasing generation with a new revocation reference.`,
     );
-    this.name = 'WorkspaceHostRevokedCredentialGenerationError';
+    this.name = "WorkspaceHostRevokedCredentialGenerationError";
     this.family = family;
     this.generation = generation;
     this.revokedThrough = revokedThrough;
@@ -230,7 +245,7 @@ export class WorkspaceHostCredentialGenerationConflictError extends Error {
         `different material. Delivery is idempotent per (family, generation); replacing material ` +
         `requires a new generation.`,
     );
-    this.name = 'WorkspaceHostCredentialGenerationConflictError';
+    this.name = "WorkspaceHostCredentialGenerationConflictError";
     this.family = family;
     this.generation = generation;
   }
@@ -275,16 +290,23 @@ export interface WorkspaceHostCredentialDeliveryReceipt {
   readonly observedAt: string;
 }
 
-function requireObject(value: unknown, label: string): Readonly<Record<string, unknown>> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new WorkspaceHostCredentialDeliveryProtocolError(`${label} must be an object`);
+function requireObject(
+  value: unknown,
+  label: string,
+): Readonly<Record<string, unknown>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new WorkspaceHostCredentialDeliveryProtocolError(
+      `${label} must be an object`,
+    );
   }
   return value as Readonly<Record<string, unknown>>;
 }
 
 function requireString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new WorkspaceHostCredentialDeliveryProtocolError(`${label} must be a non-empty string`);
+  if (typeof value !== "string" || value.length === 0) {
+    throw new WorkspaceHostCredentialDeliveryProtocolError(
+      `${label} must be a non-empty string`,
+    );
   }
   return value;
 }
@@ -299,16 +321,16 @@ function requireString(value: unknown, label: string): string {
  * refusal at the boundary.
  */
 function decodeMaterial(value: unknown): WorkspaceHostCredentialMaterial {
-  const encoded = requireString(value, 'request.material');
-  const bytes = Buffer.from(encoded, 'base64');
+  const encoded = requireString(value, "request.material");
+  const bytes = Buffer.from(encoded, "base64");
   if (bytes.length === 0) {
     throw new WorkspaceHostCredentialDeliveryProtocolError(
-      'request.material decoded to zero bytes; delivery must carry material',
+      "request.material decoded to zero bytes; delivery must carry material",
     );
   }
-  if (bytes.toString('base64') !== encoded.replace(/\s+/g, '')) {
+  if (bytes.toString("base64") !== encoded.replace(/\s+/g, "")) {
     throw new WorkspaceHostCredentialDeliveryProtocolError(
-      'request.material is not canonical base64',
+      "request.material is not canonical base64",
     );
   }
   if (bytes.length > WORKSPACE_HOST_CREDENTIAL_MATERIAL_MAX_BYTES) {
@@ -330,16 +352,21 @@ function decodeMaterial(value: unknown): WorkspaceHostCredentialMaterial {
 export function parseWorkspaceHostCredentialDeliveryRequest(
   raw: unknown,
 ): WorkspaceHostCredentialDeliveryRequest {
-  const body = requireObject(raw, 'request');
-  if (body.protocolVersion !== WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION) {
+  const body = requireObject(raw, "request");
+  if (
+    body.protocolVersion !== WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION
+  ) {
     throw new WorkspaceHostCredentialDeliveryProtocolError(
       `unsupported protocol version '${String(body.protocolVersion)}'; this delivery endpoint ` +
         `speaks '${WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION}'`,
     );
   }
 
-  const channel = requireString(body.channel, 'request.channel');
-  const credentialRef = requireString(body.credentialRef, 'request.credentialRef');
+  const channel = requireString(body.channel, "request.channel");
+  const credentialRef = requireString(
+    body.credentialRef,
+    "request.credentialRef",
+  );
   // The namespace parser is the authority on which family a reference belongs to, and it also
   // enforces that the reference matches the declared channel. Deriving rather than trusting is
   // what makes a family/reference disagreement impossible instead of merely unlikely.
@@ -351,7 +378,7 @@ export function parseWorkspaceHostCredentialDeliveryRequest(
   const generation = body.generation;
   if (!Number.isSafeInteger(generation) || (generation as number) < 1) {
     throw new WorkspaceHostCredentialDeliveryProtocolError(
-      'request.generation must be a positive safe integer',
+      "request.generation must be a positive safe integer",
     );
   }
 
@@ -382,6 +409,10 @@ export interface WorkspaceHostCredentialDeliveryFilesystem {
   writePrivateFile(path: string, bytes: Buffer): Promise<void>;
   /** Read a file, or `null` when it does not exist. */
   readFileIfPresent(path: string): Promise<Buffer | null>;
+  /** Return the lstat kind without following symlinks when the implementation can provide it. */
+  pathKind?(
+    path: string,
+  ): Promise<"missing" | "directory" | "file" | "symlink" | "other">;
   /** Optional cross-process critical section. Production provides it; hermetic doubles may not. */
   withExclusiveLock?<T>(path: string, task: () => Promise<T>): Promise<T>;
 }
@@ -391,13 +422,53 @@ const WORKSPACE_HOST_FILESYSTEM_LOCK_ORPHAN_MS = 60_000;
 const WORKSPACE_HOST_FILESYSTEM_LOCK_RETRY_MS = 25;
 
 function nodeErrorCode(error: unknown): string | undefined {
-  return error && typeof error === 'object' && 'code' in error
+  return error && typeof error === "object" && "code" in error
     ? String((error as { code?: unknown }).code)
     : undefined;
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Create a private directory one component at a time and reject symlinks at every component.
+ * `mkdir(..., { recursive:true })` follows an existing symlink, which is unsafe when a root-owned
+ * consumer is writing into a user-selected home or credential root.
+ */
+async function ensurePrivateDirectory(path: string): Promise<void> {
+  if (!isAbsolute(path) || normalize(path) !== path || /[\0\r\n]/.test(path)) {
+    throw new Error(
+      `private directory must be an absolute canonical path: '${path}'`,
+    );
+  }
+  const components = path.split("/").filter(Boolean);
+  let current = "/";
+  for (const component of components) {
+    current = join(current, component);
+    let info;
+    let created = false;
+    try {
+      info = await lstat(current);
+    } catch (error) {
+      if (nodeErrorCode(error) !== "ENOENT") throw error;
+      try {
+        await mkdir(current, { mode: 0o700 });
+        created = true;
+      } catch (mkdirError) {
+        if (nodeErrorCode(mkdirError) !== "EEXIST") throw mkdirError;
+      }
+      info = await lstat(current);
+    }
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(
+        `refusing non-directory or symlink at private directory '${current}'`,
+      );
+    }
+    // Existing ancestors may be shared system directories (/var, /var/lib, …); only the newly
+    // created components and the requested leaf receive the private mode.
+    if (created || current === path) await chmod(current, 0o700);
+  }
 }
 
 const fallbackFilesystemLocks = new WeakMap<
@@ -445,7 +516,16 @@ export function workspaceHostCredentialFamilyLockPath(
   root: string,
   family: WorkspaceHostCredentialFamily,
 ): string {
-  return join(root, family, '.lifecycle.lock');
+  // Both agent families install the same three native files and active marker. A shared lock keeps
+  // a forwarded/sealed rotation from interleaving even though their delivered artifacts are stored
+  // under different family directories.
+  if (
+    family === "agent-forwarded-reference" ||
+    family === "agent-encrypted-reference"
+  ) {
+    return join(root, "active", ".agent-home.lifecycle.lock");
+  }
+  return join(root, family, ".lifecycle.lock");
 }
 
 /**
@@ -457,31 +537,22 @@ export function workspaceHostCredentialFamilyLockPath(
  * seam defaulting to the real filesystem, a test that had carefully faked every host operation
  * still tried to `mkdir /credentials` on the machine running it.
  */
-export class NodeWorkspaceHostCredentialDeliveryFilesystem
-  implements WorkspaceHostCredentialDeliveryFilesystem
-{
+export class NodeWorkspaceHostCredentialDeliveryFilesystem implements WorkspaceHostCredentialDeliveryFilesystem {
   async ensureDirectory(path: string): Promise<void> {
-    await mkdir(path, { recursive: true, mode: 0o700 });
-    const info = await lstat(path);
-    if (!info.isDirectory() || info.isSymbolicLink()) {
-      throw new Error(`refusing non-directory or symlink at private directory '${path}'`);
-    }
-    // `mkdir`'s mode is masked by the process umask, and a host whose umask is 022 would leave the
-    // directory 0755 — world-readable, which for a directory holding credential material is the
-    // whole failure. chmod is not masked, so this states the mode rather than requesting it.
-    await chmod(path, 0o700);
+    await ensurePrivateDirectory(path);
   }
 
   async writePrivateFile(path: string, bytes: Buffer): Promise<void> {
     // Written to a sibling temp path and renamed so a reader never observes a partial credential:
     // `bind()` checks presence, and a half-written file is present. The temp file is created 0600
     // from the start, so the material is never briefly world-readable.
+    await ensurePrivateDirectory(dirname(path));
     const temporary = join(
       dirname(path),
       `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
     );
     try {
-      await writeFile(temporary, bytes, { mode: 0o600, flag: 'wx' });
+      await writeFile(temporary, bytes, { mode: 0o600, flag: "wx" });
       await chmod(temporary, 0o600);
       await rename(temporary, path);
     } finally {
@@ -491,9 +562,28 @@ export class NodeWorkspaceHostCredentialDeliveryFilesystem
 
   async readFileIfPresent(path: string): Promise<Buffer | null> {
     try {
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink()) {
+        throw new Error(`refusing to read non-regular private file '${path}'`);
+      }
       return await readFile(path);
     } catch (error) {
-      if (nodeErrorCode(error) === 'ENOENT') return null;
+      if (nodeErrorCode(error) === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  async pathKind(
+    path: string,
+  ): Promise<"missing" | "directory" | "file" | "symlink" | "other"> {
+    try {
+      const info = await lstat(path);
+      if (info.isSymbolicLink()) return "symlink";
+      if (info.isDirectory()) return "directory";
+      if (info.isFile()) return "file";
+      return "other";
+    } catch (error) {
+      if (nodeErrorCode(error) === "ENOENT") return "missing";
       throw error;
     }
   }
@@ -501,7 +591,7 @@ export class NodeWorkspaceHostCredentialDeliveryFilesystem
   async withExclusiveLock<T>(path: string, task: () => Promise<T>): Promise<T> {
     await this.ensureDirectory(dirname(path));
     const token = randomUUID();
-    const ownerPath = join(path, 'owner.json');
+    const ownerPath = join(path, "owner.json");
     const startedAt = Date.now();
     let acquired = false;
     while (!acquired) {
@@ -509,12 +599,17 @@ export class NodeWorkspaceHostCredentialDeliveryFilesystem
         await mkdir(path, { mode: 0o700 });
         await writeFile(
           ownerPath,
-          JSON.stringify({ token, pid: process.pid, host: hostname(), startedAt }),
-          { mode: 0o600, flag: 'wx' },
+          JSON.stringify({
+            token,
+            pid: process.pid,
+            host: hostname(),
+            startedAt,
+          }),
+          { mode: 0o600, flag: "wx" },
         );
         acquired = true;
       } catch (error) {
-        if (nodeErrorCode(error) !== 'EEXIST') throw error;
+        if (nodeErrorCode(error) !== "EEXIST") throw error;
         let reclaim = false;
         try {
           const info = await lstat(path);
@@ -522,7 +617,7 @@ export class NodeWorkspaceHostCredentialDeliveryFilesystem
             throw new Error(`refusing unsafe credential lock path '${path}'`);
           }
           try {
-            const owner = JSON.parse(await readFile(ownerPath, 'utf8')) as {
+            const owner = JSON.parse(await readFile(ownerPath, "utf8")) as {
               pid?: unknown;
               host?: unknown;
             };
@@ -534,25 +629,32 @@ export class NodeWorkspaceHostCredentialDeliveryFilesystem
               try {
                 process.kill(owner.pid as number, 0);
               } catch (probeError) {
-                reclaim = nodeErrorCode(probeError) === 'ESRCH';
+                reclaim = nodeErrorCode(probeError) === "ESRCH";
               }
             }
           } catch (ownerError) {
-            if (nodeErrorCode(ownerError) !== 'ENOENT') {
+            if (nodeErrorCode(ownerError) !== "ENOENT") {
               // A malformed owner record is never proof the holder is dead; age is the fallback.
             }
-            reclaim = Date.now() - info.mtimeMs > WORKSPACE_HOST_FILESYSTEM_LOCK_ORPHAN_MS;
+            reclaim =
+              Date.now() - info.mtimeMs >
+              WORKSPACE_HOST_FILESYSTEM_LOCK_ORPHAN_MS;
           }
         } catch (inspectError) {
-          if (nodeErrorCode(inspectError) === 'ENOENT') continue;
+          if (nodeErrorCode(inspectError) === "ENOENT") continue;
           throw inspectError;
         }
         if (reclaim) {
           await rm(path, { recursive: true, force: true });
           continue;
         }
-        if (Date.now() - startedAt > WORKSPACE_HOST_FILESYSTEM_LOCK_TIMEOUT_MS) {
-          throw new Error(`timed out waiting for credential filesystem lock '${path}'`);
+        if (
+          Date.now() - startedAt >
+          WORKSPACE_HOST_FILESYSTEM_LOCK_TIMEOUT_MS
+        ) {
+          throw new Error(
+            `timed out waiting for credential filesystem lock '${path}'`,
+          );
         }
         await delay(WORKSPACE_HOST_FILESYSTEM_LOCK_RETRY_MS);
       }
@@ -561,8 +663,11 @@ export class NodeWorkspaceHostCredentialDeliveryFilesystem
       return await task();
     } finally {
       try {
-        const owner = JSON.parse(await readFile(ownerPath, 'utf8')) as { token?: unknown };
-        if (owner.token === token) await rm(path, { recursive: true, force: true });
+        const owner = JSON.parse(await readFile(ownerPath, "utf8")) as {
+          token?: unknown;
+        };
+        if (owner.token === token)
+          await rm(path, { recursive: true, force: true });
       } catch {
         // Never remove a lock whose token cannot be proven to be ours.
       }
@@ -596,7 +701,7 @@ export async function readWorkspaceHostCredentialRevokedThrough(
     workspaceHostCredentialRevocationLedgerPath(root, family),
   );
   if (raw === null) return 0;
-  const text = raw.toString('utf8').trim();
+  const text = raw.toString("utf8").trim();
   const value = Number(text);
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new WorkspaceHostCredentialDeliveryProtocolError(
@@ -622,12 +727,16 @@ export async function recordWorkspaceHostCredentialRevocation(
   options: { readonly lockHeld?: boolean } = {},
 ): Promise<void> {
   const apply = async (): Promise<void> => {
-    const current = await readWorkspaceHostCredentialRevokedThrough(filesystem, root, family);
+    const current = await readWorkspaceHostCredentialRevokedThrough(
+      filesystem,
+      root,
+      family,
+    );
     if (generation <= current) return;
     await filesystem.ensureDirectory(join(root, family));
     await filesystem.writePrivateFile(
       workspaceHostCredentialRevocationLedgerPath(root, family),
-      Buffer.from(`${generation}\n`, 'utf8'),
+      Buffer.from(`${generation}\n`, "utf8"),
     );
   };
   if (options.lockHeld) return await apply();
@@ -647,8 +756,8 @@ function sameMaterial(a: Buffer, b: Buffer): boolean {
   // `timingSafeEqual` throws on a length mismatch, so lengths are compared through fixed-size
   // digests instead. Hashing here is safe in a way that hashing into the RECEIPT would not be:
   // the digest never leaves this process.
-  const left = createHash('sha256').update(a).digest();
-  const right = createHash('sha256').update(b).digest();
+  const left = createHash("sha256").update(a).digest();
+  const right = createHash("sha256").update(b).digest();
   return timingSafeEqual(left, right);
 }
 
@@ -669,7 +778,9 @@ export async function executeWorkspaceHostCredentialDelivery(
 
   // D-215 point 4 — derived from the family spec, never from a hard-coded family name, so a fifth
   // family has to declare which side it is on instead of inheriting a branch.
-  if (!WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial) {
+  if (
+    !WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial
+  ) {
     throw new WorkspaceHostAmbientCredentialDeliveryError(family);
   }
 
@@ -691,7 +802,11 @@ export async function executeWorkspaceHostCredentialDelivery(
         );
       }
 
-      const path = workspaceHostCredentialMaterialPath(deps.materialRoot, family, generation);
+      const path = workspaceHostCredentialMaterialPath(
+        deps.materialRoot,
+        family,
+        generation,
+      );
       const existing = await deps.filesystem.readFileIfPresent(path);
       const bytes = request.material.reveal();
 
@@ -699,11 +814,18 @@ export async function executeWorkspaceHostCredentialDelivery(
         // Idempotent per (family, generation): the same material is a no-op, different material is
         // a conflict rather than a silent overwrite.
         if (!sameMaterial(existing, bytes)) {
-          throw new WorkspaceHostCredentialGenerationConflictError(family, generation);
+          throw new WorkspaceHostCredentialGenerationConflictError(
+            family,
+            generation,
+          );
         }
       } else {
         await deps.filesystem.ensureDirectory(
-          workspaceHostCredentialGenerationDirectory(deps.materialRoot, family, generation),
+          workspaceHostCredentialGenerationDirectory(
+            deps.materialRoot,
+            family,
+            generation,
+          ),
         );
         await deps.filesystem.writePrivateFile(path, bytes);
       }
@@ -715,9 +837,12 @@ export async function executeWorkspaceHostCredentialDelivery(
         present: true,
         observedAt: now().toISOString(),
       };
-      assertWorkspaceHostSecretIsolation(receipt, 'workspaceHost.credentialDelivery.receipt');
+      assertWorkspaceHostSecretIsolation(
+        receipt,
+        "workspaceHost.credentialDelivery.receipt",
+      );
       return receipt;
-    }
+    },
   );
 }
 
@@ -735,7 +860,9 @@ export async function handleWorkspaceHostCredentialDeliveryPayload(
   try {
     parsed = JSON.parse(payload);
   } catch {
-    throw new WorkspaceHostCredentialDeliveryProtocolError('request body is not valid JSON');
+    throw new WorkspaceHostCredentialDeliveryProtocolError(
+      "request body is not valid JSON",
+    );
   }
   const request = parseWorkspaceHostCredentialDeliveryRequest(parsed);
   const receipt = await executeWorkspaceHostCredentialDelivery(request, deps);
@@ -743,13 +870,16 @@ export async function handleWorkspaceHostCredentialDeliveryPayload(
 }
 
 /** Reject argv that is not exactly what the controller's command builder emits. */
-export function assertWorkspaceHostCredentialDeliveryArgv(argv: readonly string[]): void {
+export function assertWorkspaceHostCredentialDeliveryArgv(
+  argv: readonly string[],
+): void {
   const expected = WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV;
   const matches =
-    argv.length === expected.length && expected.every((value, index) => argv[index] === value);
+    argv.length === expected.length &&
+    expected.every((value, index) => argv[index] === value);
   if (!matches) {
     throw new WorkspaceHostCredentialDeliveryProtocolError(
-      `credential delivery expects argv ${expected.join(' ')}, got ${argv.join(' ') || '(none)'}`,
+      `credential delivery expects argv ${expected.join(" ")}, got ${argv.join(" ") || "(none)"}`,
     );
   }
 }
@@ -777,6 +907,6 @@ export function encodeWorkspaceHostCredentialDeliveryRequest(input: {
     channel: input.channel,
     credentialRef: input.credentialRef,
     generation: input.generation,
-    material: input.material.reveal().toString('base64'),
+    material: input.material.reveal().toString("base64"),
   };
 }

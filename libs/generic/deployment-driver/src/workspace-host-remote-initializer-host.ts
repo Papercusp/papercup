@@ -29,16 +29,16 @@
  * a step that reported success it had not achieved would leave a half-initialized host that every
  * later step then builds on.
  */
-import { execFile } from 'node:child_process';
-import { chmod, mkdir, rm, stat } from "node:fs/promises";
-import { isAbsolute, join } from 'node:path';
+import { execFile } from "node:child_process";
+import { chmod, lstat, mkdir, rm, stat } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 
 import {
   NodeWorkspaceHostAgentProbeRunner,
   probeWorkspaceHostAgents,
   type WorkspaceHostAgentAuthenticationReport,
   type WorkspaceHostAgentProbeRunner,
-} from './workspace-host-agent-authentication';
+} from "./workspace-host-agent-authentication";
 import {
   WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS,
   WorkspaceHostCredentialResolver,
@@ -46,13 +46,15 @@ import {
   type WorkspaceHostCredentialBindingDescriptor,
   type WorkspaceHostCredentialFamily,
   type WorkspaceHostCredentialMaterializer,
-} from './workspace-host-credential-namespace';
+} from "./workspace-host-credential-namespace";
 import {
   NodeWorkspaceHostCredentialDeliveryFilesystem,
   recordWorkspaceHostCredentialRevocation,
+  withWorkspaceHostCredentialFilesystemLock,
+  workspaceHostCredentialFamilyLockPath,
   workspaceHostCredentialMaterialPath,
   type WorkspaceHostCredentialDeliveryFilesystem,
-} from './workspace-host-credential-delivery';
+} from "./workspace-host-credential-delivery";
 import {
   WorkspaceHostAgentHomeConsumer,
   WORKSPACE_HOST_AGENT_HOME_FAMILIES,
@@ -72,7 +74,7 @@ import type {
   WorkspaceHostRemoteInitializerDeps,
   WorkspaceHostRemoteInitializerHost,
   WorkspaceHostRemoteStepEvidence,
-} from './workspace-host-remote-initializer';
+} from "./workspace-host-remote-initializer";
 
 /** Default root under which per-workspace directories are created on the host. */
 export const WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT = WORKSPACE_HOST_DATA_ROOT;
@@ -85,7 +87,7 @@ export const WORKSPACE_HOST_DEFAULT_AGENT_PROBE_PATH =
   "/opt/papercusp/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /** Default bundled CLI used for pair/import. `sidecar/bin` is on the runtime PATH. */
-export const WORKSPACE_HOST_DEFAULT_WORKSPACE_COMMAND = 'papercup';
+export const WORKSPACE_HOST_DEFAULT_WORKSPACE_COMMAND = "papercup";
 
 /** Default bound on any single host command, so a hung child cannot stall a step forever. */
 export const WORKSPACE_HOST_DEFAULT_COMMAND_TIMEOUT_MS = 300_000;
@@ -131,8 +133,10 @@ export class WorkspaceHostOperationError extends Error {
   readonly exitCode: number;
 
   constructor(operation: string, exitCode: number, detail: string) {
-    super(`workspace host operation '${operation}' failed with exit ${exitCode}: ${detail}`);
-    this.name = 'WorkspaceHostOperationError';
+    super(
+      `workspace host operation '${operation}' failed with exit ${exitCode}: ${detail}`,
+    );
+    this.name = "WorkspaceHostOperationError";
     this.operation = operation;
     this.exitCode = exitCode;
   }
@@ -147,7 +151,7 @@ export class WorkspaceHostOperationError extends Error {
  */
 function diagnosticTail(text: string, maxChars = 2_000): string {
   const trimmed = text.trim();
-  if (trimmed.length <= maxChars) return trimmed || '(no diagnostic output)';
+  if (trimmed.length <= maxChars) return trimmed || "(no diagnostic output)";
   return `…${trimmed.slice(-maxChars)}`;
 }
 
@@ -187,8 +191,7 @@ export class NodeWorkspaceHostSystem implements WorkspaceHostSystem {
   }
 
   async ensureDirectory(path: string): Promise<void> {
-    await mkdir(path, { recursive: true, mode: 0o700 });
-    await chmod(path, 0o700);
+    await this.deliveryFilesystem.ensureDirectory(path);
   }
 
   async pathExists(path: string): Promise<boolean> {
@@ -198,6 +201,31 @@ export class NodeWorkspaceHostSystem implements WorkspaceHostSystem {
     } catch {
       return false;
     }
+  }
+
+  async pathKind(
+    path: string,
+  ): Promise<"missing" | "directory" | "file" | "symlink" | "other"> {
+    try {
+      const info = await lstat(path);
+      if (info.isSymbolicLink()) return "symlink";
+      if (info.isDirectory()) return "directory";
+      if (info.isFile()) return "file";
+      return "other";
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as { code?: unknown }).code === "ENOENT"
+      )
+        return "missing";
+      throw error;
+    }
+  }
+
+  async withExclusiveLock<T>(path: string, task: () => Promise<T>): Promise<T> {
+    return await this.deliveryFilesystem.withExclusiveLock!(path, task);
   }
 
   async removePath(path: string): Promise<void> {
@@ -357,7 +385,7 @@ export class WorkspaceHostGitCredentialBindingRegistry {
     };
   }
 
-  async bind(
+  private async bindUnlocked(
     binding: WorkspaceHostCredentialBindingDescriptor,
     materialPath: string,
   ): Promise<void> {
@@ -411,7 +439,24 @@ export class WorkspaceHostGitCredentialBindingRegistry {
     );
   }
 
-  async revoke(
+  async bind(
+    binding: WorkspaceHostCredentialBindingDescriptor,
+    materialPath: string,
+    options: { readonly lockHeld?: boolean } = {},
+  ): Promise<void> {
+    const task = () => this.bindUnlocked(binding, materialPath);
+    if (options.lockHeld) return await task();
+    return await withWorkspaceHostCredentialFilesystemLock(
+      this.filesystem,
+      workspaceHostCredentialFamilyLockPath(
+        this.materialRoot,
+        "git-short-lived-delegation",
+      ),
+      task,
+    );
+  }
+
+  private async revokeUnlocked(
     binding: WorkspaceHostCredentialBindingDescriptor,
   ): Promise<void> {
     if (binding.channel !== "git") return;
@@ -423,7 +468,23 @@ export class WorkspaceHostGitCredentialBindingRegistry {
     );
   }
 
-  async verifyBound(
+  async revoke(
+    binding: WorkspaceHostCredentialBindingDescriptor,
+    options: { readonly lockHeld?: boolean } = {},
+  ): Promise<void> {
+    const task = () => this.revokeUnlocked(binding);
+    if (options.lockHeld) return await task();
+    return await withWorkspaceHostCredentialFilesystemLock(
+      this.filesystem,
+      workspaceHostCredentialFamilyLockPath(
+        this.materialRoot,
+        "git-short-lived-delegation",
+      ),
+      task,
+    );
+  }
+
+  private async verifyBoundUnlocked(
     binding: WorkspaceHostCredentialBindingDescriptor,
     materialPath: string,
   ): Promise<void> {
@@ -443,7 +504,24 @@ export class WorkspaceHostGitCredentialBindingRegistry {
     }
   }
 
-  async verifyRevoked(
+  async verifyBound(
+    binding: WorkspaceHostCredentialBindingDescriptor,
+    materialPath: string,
+    options: { readonly lockHeld?: boolean } = {},
+  ): Promise<void> {
+    const task = () => this.verifyBoundUnlocked(binding, materialPath);
+    if (options.lockHeld) return await task();
+    return await withWorkspaceHostCredentialFilesystemLock(
+      this.filesystem,
+      workspaceHostCredentialFamilyLockPath(
+        this.materialRoot,
+        "git-short-lived-delegation",
+      ),
+      task,
+    );
+  }
+
+  private async verifyRevokedUnlocked(
     binding: WorkspaceHostCredentialBindingDescriptor,
   ): Promise<void> {
     if (binding.channel !== "git") return;
@@ -455,6 +533,22 @@ export class WorkspaceHostGitCredentialBindingRegistry {
         `generation ${binding.generation} is still the active Git binding`,
       );
     }
+  }
+
+  async verifyRevoked(
+    binding: WorkspaceHostCredentialBindingDescriptor,
+    options: { readonly lockHeld?: boolean } = {},
+  ): Promise<void> {
+    const task = () => this.verifyRevokedUnlocked(binding);
+    if (options.lockHeld) return await task();
+    return await withWorkspaceHostCredentialFilesystemLock(
+      this.filesystem,
+      workspaceHostCredentialFamilyLockPath(
+        this.materialRoot,
+        "git-short-lived-delegation",
+      ),
+      task,
+    );
   }
 
   async resolve(now: Date): Promise<WorkspaceHostGitCredentialBinding> {
@@ -487,13 +581,25 @@ const WORKSPACE_HOST_GIT_BINDING_STATE_VERSION =
  * boundary. A relative path containing `..`, or an absolute path pointing anywhere, would let a
  * malformed (or hostile) request write outside the workspace it claims to be initializing.
  */
-function resolveWithinRoot(root: string, candidate: string, label: string): string {
+function resolveWithinRoot(
+  root: string,
+  candidate: string,
+  label: string,
+): string {
   if (isAbsolute(candidate)) {
-    throw new WorkspaceHostOperationError(label, 1, `${label} must be workspace-relative`);
+    throw new WorkspaceHostOperationError(
+      label,
+      1,
+      `${label} must be workspace-relative`,
+    );
   }
   const resolved = join(root, candidate);
   if (resolved !== root && !resolved.startsWith(`${root}/`)) {
-    throw new WorkspaceHostOperationError(label, 1, `${label} escapes the workspace root`);
+    throw new WorkspaceHostOperationError(
+      label,
+      1,
+      `${label} escapes the workspace root`,
+    );
   }
   return resolved;
 }
@@ -806,6 +912,7 @@ export class ProductionWorkspaceHostCredentialMaterializer implements WorkspaceH
   private readonly gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry;
   private readonly agentHomeConsumer?: WorkspaceHostAgentHomeConsumer;
   private readonly recordRevocation?: (generation: number) => Promise<void>;
+  private readonly lifecycleLockPath?: string;
 
   constructor(
     family: WorkspaceHostCredentialFamily,
@@ -816,6 +923,7 @@ export class ProductionWorkspaceHostCredentialMaterializer implements WorkspaceH
     gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry,
     agentHomeConsumer?: WorkspaceHostAgentHomeConsumer,
     recordRevocation?: (generation: number) => Promise<void>,
+    lifecycleLockPath?: string,
   ) {
     this.family = family;
     this.system = system;
@@ -823,6 +931,16 @@ export class ProductionWorkspaceHostCredentialMaterializer implements WorkspaceH
     this.gitCredentialBindings = gitCredentialBindings;
     this.agentHomeConsumer = agentHomeConsumer;
     this.recordRevocation = recordRevocation;
+    this.lifecycleLockPath = lifecycleLockPath;
+  }
+
+  private async withLifecycleLock<T>(task: () => Promise<T>): Promise<T> {
+    if (!this.lifecycleLockPath) return await task();
+    return await withWorkspaceHostCredentialFilesystemLock(
+      this.system,
+      this.lifecycleLockPath,
+      task,
+    );
   }
 
   private agentFamily(): WorkspaceHostAgentHomeFamily | null {
@@ -866,124 +984,143 @@ export class ProductionWorkspaceHostCredentialMaterializer implements WorkspaceH
   async bind(
     binding: WorkspaceHostCredentialBindingDescriptor,
   ): Promise<Readonly<Record<string, unknown>>> {
-    const material = await this.requireMaterial(binding, "bind");
-    const agentFamily = this.agentFamily();
-    if (agentFamily) {
-      if (!this.agentHomeConsumer || !material) {
+    return await this.withLifecycleLock(async () => {
+      const material = await this.requireMaterial(binding, "bind");
+      const agentFamily = this.agentFamily();
+      if (agentFamily) {
+        if (!this.agentHomeConsumer || !material) {
+          throw new WorkspaceHostOperationError(
+            `credential.${binding.channel}.bind`,
+            1,
+            `no agent-home consumer is configured for family '${this.family}'`,
+          );
+        }
+        await this.agentHomeConsumer.install(
+          agentFamily,
+          binding.generation,
+          material.bytes,
+          { lockHeld: true },
+        );
+      } else if (binding.channel === "git" && material) {
+        if (!this.gitCredentialBindings) {
+          throw new WorkspaceHostOperationError(
+            "credential.git.bind",
+            1,
+            "no durable Git binding registry is configured",
+          );
+        }
+        await this.gitCredentialBindings.bind(binding, material.path, {
+          lockHeld: true,
+        });
+      } else if (binding.channel !== "cloud" && !material) {
         throw new WorkspaceHostOperationError(
           `credential.${binding.channel}.bind`,
           1,
-          `no agent-home consumer is configured for family '${this.family}'`,
+          `family '${this.family}' requires delivered material`,
         );
       }
-      await this.agentHomeConsumer.install(
-        agentFamily,
-        binding.generation,
-        material.bytes,
-      );
-    } else if (binding.channel === "git" && material) {
-      if (!this.gitCredentialBindings) {
-        throw new WorkspaceHostOperationError(
-          "credential.git.bind",
-          1,
-          "no durable Git binding registry is configured",
-        );
-      }
-      await this.gitCredentialBindings.bind(binding, material.path);
-    } else if (binding.channel !== "cloud" && !material) {
-      throw new WorkspaceHostOperationError(
-        `credential.${binding.channel}.bind`,
-        1,
-        `family '${this.family}' requires delivered material`,
-      );
-    }
-    return this.describe(binding, true);
+      return this.describe(binding, true);
+    });
   }
 
   async verifyBound(
     binding: WorkspaceHostCredentialBindingDescriptor,
   ): Promise<Readonly<Record<string, unknown>>> {
-    const material = await this.requireMaterial(binding, "verify-bound");
-    const agentFamily = this.agentFamily();
-    if (agentFamily) {
-      if (!this.agentHomeConsumer || !material) {
-        throw new WorkspaceHostOperationError(
-          `credential.${binding.channel}.verify-bound`,
-          1,
-          `no agent-home consumer is configured for family '${this.family}'`,
+    return await this.withLifecycleLock(async () => {
+      const material = await this.requireMaterial(binding, "verify-bound");
+      const agentFamily = this.agentFamily();
+      if (agentFamily) {
+        if (!this.agentHomeConsumer || !material) {
+          throw new WorkspaceHostOperationError(
+            `credential.${binding.channel}.verify-bound`,
+            1,
+            `no agent-home consumer is configured for family '${this.family}'`,
+          );
+        }
+        await this.agentHomeConsumer.verify(
+          agentFamily,
+          binding.generation,
+          material.bytes,
+          { lockHeld: true },
         );
+      } else if (binding.channel === "git" && material) {
+        await this.gitCredentialBindings?.verifyBound(binding, material.path, {
+          lockHeld: true,
+        });
       }
-      await this.agentHomeConsumer.verify(
-        agentFamily,
-        binding.generation,
-        material.bytes,
-      );
-    } else if (binding.channel === "git" && material) {
-      await this.gitCredentialBindings?.verifyBound(binding, material.path);
-    }
-    return this.describe(binding, true);
+      return this.describe(binding, true);
+    });
   }
 
   async revoke(
     binding: WorkspaceHostCredentialBindingDescriptor,
   ): Promise<Readonly<Record<string, unknown>>> {
-    const path = this.locate(binding);
-    const agentFamily = this.agentFamily();
-    if (agentFamily) {
-      if (!this.agentHomeConsumer) {
-        throw new WorkspaceHostOperationError(
-          `credential.${binding.channel}.revoke`,
-          1,
-          `no agent-home consumer is configured for family '${this.family}'`,
-        );
+    return await this.withLifecycleLock(async () => {
+      const path = this.locate(binding);
+      const agentFamily = this.agentFamily();
+      if (agentFamily) {
+        if (!this.agentHomeConsumer) {
+          throw new WorkspaceHostOperationError(
+            `credential.${binding.channel}.revoke`,
+            1,
+            `no agent-home consumer is configured for family '${this.family}'`,
+          );
+        }
+        await this.agentHomeConsumer.revoke(agentFamily, binding.generation, {
+          lockHeld: true,
+        });
       }
-      await this.agentHomeConsumer.revoke(agentFamily, binding.generation);
-    }
-    await this.gitCredentialBindings?.revoke(binding);
-    if (path !== null) await this.system.removePath(path);
-    // The ledger is raised before success is
-    // reported, because it is the only durable trace that this generation was destroyed. Removing
-    // the file alone leaves "revoked" and "never delivered" indistinguishable on disk, and
-    // delivery would then happily write the material back (D-215 point 5).
-    if (path !== null) await this.recordRevocation?.(binding.generation);
-    return this.describe(binding, false);
+      await this.gitCredentialBindings?.revoke(binding, { lockHeld: true });
+      if (path !== null) await this.system.removePath(path);
+      // The ledger is raised before success is reported, because it is the only durable trace that
+      // this generation was destroyed. Keep the whole sequence under one family lock so a delivery
+      // cannot slip between unlink and the high-water update.
+      if (path !== null) await this.recordRevocation?.(binding.generation);
+      return this.describe(binding, false);
+    });
   }
 
   async verifyRevoked(
     binding: WorkspaceHostCredentialBindingDescriptor,
   ): Promise<Readonly<Record<string, unknown>>> {
-    const path = this.locate(binding);
-    // Revocation of an ambient family is asserted by the ISSUER, not observable here; saying
-    // otherwise would manufacture evidence. Families with an on-host artifact are really checked.
-    if (path === null) return this.describe(binding, false);
-    if (await this.system.pathExists(path)) {
-      throw new WorkspaceHostOperationError(
-        `credential.${binding.channel}.verify-revoked`,
-        1,
-        `material for family '${this.family}' is still present after revocation`,
-      );
-    }
-    const agentFamily = this.agentFamily();
-    if (agentFamily) {
-      if (!this.agentHomeConsumer) {
+    return await this.withLifecycleLock(async () => {
+      const path = this.locate(binding);
+      // Revocation of an ambient family is asserted by the ISSUER, not observable here; saying
+      // otherwise would manufacture evidence. Families with an on-host artifact are really checked.
+      if (path === null) return this.describe(binding, false);
+      if (await this.system.pathExists(path)) {
         throw new WorkspaceHostOperationError(
           `credential.${binding.channel}.verify-revoked`,
           1,
-          `no agent-home consumer is configured for family '${this.family}'`,
+          `material for family '${this.family}' is still present after revocation`,
         );
       }
-      await this.agentHomeConsumer.verifyRevoked(
-        agentFamily,
-        binding.generation,
-      );
-    }
-    await this.gitCredentialBindings?.verifyRevoked(binding);
-    return this.describe(binding, false);
+      const agentFamily = this.agentFamily();
+      if (agentFamily) {
+        if (!this.agentHomeConsumer) {
+          throw new WorkspaceHostOperationError(
+            `credential.${binding.channel}.verify-revoked`,
+            1,
+            `no agent-home consumer is configured for family '${this.family}'`,
+          );
+        }
+        await this.agentHomeConsumer.verifyRevoked(
+          agentFamily,
+          binding.generation,
+          { lockHeld: true },
+        );
+      }
+      await this.gitCredentialBindings?.verifyRevoked(binding, {
+        lockHeld: true,
+      });
+      return this.describe(binding, false);
+    });
   }
 }
 
 /** Where each family's delivered material lives on the host, or null when it is ambient. */
-export const WORKSPACE_HOST_CREDENTIAL_MATERIAL_ROOT = '/var/lib/papercusp/credentials';
+export const WORKSPACE_HOST_CREDENTIAL_MATERIAL_ROOT =
+  "/var/lib/papercusp/credentials";
 
 function materialPathFor(
   root: string,
@@ -994,10 +1131,17 @@ function materialPathFor(
     // answered ambiently by the environment has no file to check, and inventing one would make
     // bind() pass against a path we created ourselves. Keying on the spec means a fifth family
     // has to declare which it is instead of silently inheriting the wrong branch.
-    if (!WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial) return null;
+    if (
+      !WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial
+    )
+      return null;
     // The layout is owned by the delivery module — the writer and this reader must agree on the
     // path, and two `join` calls that happen to match today are how they stop matching later.
-    return workspaceHostCredentialMaterialPath(root, family, binding.generation);
+    return workspaceHostCredentialMaterialPath(
+      root,
+      family,
+      binding.generation,
+    );
   };
 }
 
@@ -1049,7 +1193,11 @@ export function createProductionWorkspaceHostCredentialMaterializers(
                 materialRoot,
                 family,
                 generation,
+                { lockHeld: true },
               )
+          : undefined,
+        WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial
+          ? workspaceHostCredentialFamilyLockPath(materialRoot, family)
           : undefined,
       ),
   );
