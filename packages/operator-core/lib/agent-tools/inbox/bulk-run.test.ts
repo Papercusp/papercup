@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   inProcessCall: vi.fn(),
   innerCall: vi.fn(),
   dispatchAttentionTerminalAction: vi.fn(),
+  readStandingBulkAutomationPolicy: vi.fn(),
   upsertTriage: vi.fn(),
   notifySyncInvalidate: vi.fn(),
 }));
@@ -43,6 +44,10 @@ vi.mock('../../attention/bulk-run-store', () => ({
 vi.mock('../../attention/triage-store', () => ({ upsertTriage: h.upsertTriage }));
 vi.mock('../../attention/terminal-action-dispatch', () => ({
   dispatchAttentionTerminalAction: h.dispatchAttentionTerminalAction,
+}));
+vi.mock('../../attention/automation-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../attention/automation-policy')>()),
+  readStandingBulkAutomationPolicy: h.readStandingBulkAutomationPolicy,
 }));
 vi.mock('../plans/read-dispatch', () => ({ callPlansRead: h.callPlansRead }));
 vi.mock('../_compound-dispatch', () => ({ inProcessCall: h.inProcessCall }));
@@ -85,7 +90,7 @@ const item = {
   runId: run.runId,
   itemId: 'attention-1',
   position: 0,
-  kind: 'message',
+  kind: 'coord-message',
   title: 'Acknowledge this message',
   ref: { kind: 'coord-message', msgId: 'msg-1' },
   ownerAgentId: 'su-asker',
@@ -105,6 +110,7 @@ beforeEach(() => {
   });
   h.inProcessCall.mockReturnValue(h.innerCall);
   h.dispatchAttentionTerminalAction.mockResolvedValue({ resolved: true });
+  h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L1', minConfidence: 'high' });
   h.upsertTriage.mockResolvedValue(undefined);
   h.notifySyncInvalidate.mockResolvedValue(undefined);
 });
@@ -241,11 +247,47 @@ describe('inbox:bulk-run-report live-action snapshot reuse', () => {
 });
 
 describe('inbox:bulk-run-act authority boundary', () => {
-  it('enforces the run confidence floor before entering the terminal dispatcher', async () => {
+  async function arrangeSuccessfulAction(
+    overrides: Partial<Omit<typeof item, 'kind' | 'ref'>> & {
+      kind?: string;
+      ref?: Record<string, unknown>;
+    } = {},
+  ) {
+    const activeItem = { ...item, ...overrides };
+    h.getRunItems.mockResolvedValue([activeItem]);
+    h.callPlansRead.mockResolvedValue({
+      groups: [
+        {
+          items: [
+            {
+              id: activeItem.itemId,
+              ref: activeItem.ref,
+              actions: [{ id: 'resolve', label: 'Resolve' }],
+            },
+          ],
+        },
+      ],
+    });
+    h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => ({
+      actionResult: await input.execute(),
+      item: {
+        ...activeItem,
+        outcome: 'auto_resolved',
+        actionId: input.actionId,
+        rationale: input.rationale,
+      },
+      run: { ...run, autoResolved: 1 },
+      refused: null,
+    }));
+    return activeItem;
+  }
+
+  it('uses the live standing confidence floor rather than the run receipt', async () => {
     h.getRun.mockResolvedValue({
       ...run,
-      automationPolicy: { mode: 'safe-high', minConfidence: 'high' },
+      automationPolicy: { level: 'L2', mode: 'safe-high', minConfidence: 'low' },
     });
+    h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L1', minConfidence: 'high' });
     const result = body(
       await bulkRunAct.handler(
         {
@@ -260,9 +302,111 @@ describe('inbox:bulk-run-act authority boundary', () => {
     );
     expect(result).toMatchObject({
       ok: false,
-      refused: 'confidence_policy',
+      refused: 'automation_policy',
       reason: 'confidence-below-floor',
     });
+    expect(h.readStandingBulkAutomationPolicy).toHaveBeenCalledWith(run.workspaceId);
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps L0 review-all even for above-floor delegable kinds', async () => {
+    h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L0', minConfidence: 'high' });
+    const result = body(
+      await bulkRunAct.handler(
+        {
+          runId: run.runId,
+          itemId: item.itemId,
+          actionId: 'ack',
+          rationale: 'High-confidence acknowledgement.',
+          confidenceLevel: 'high',
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+    expect(result).toMatchObject({ ok: false, refused: 'automation_policy', reason: 'review-all' });
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+  });
+
+  it('lets L1 auto-apply an above-floor delegable kind', async () => {
+    await arrangeSuccessfulAction();
+    const result = body(
+      await bulkRunAct.handler(
+        {
+          runId: run.runId,
+          itemId: item.itemId,
+          actionId: 'resolve',
+          rationale: 'The delegable item has decisive evidence.',
+          confidenceLevel: 'high',
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+    expect(result).toMatchObject({ ok: true, outcome: 'auto_resolved', actionDispatched: true });
+    expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps owner-by-right kinds unreachable at L1', async () => {
+    h.getRunItems.mockResolvedValue([
+      {
+        ...item,
+        kind: 'work-item-needs-human',
+        ref: { kind: 'work-item-needs-human', msgId: 'msg-owner' },
+      },
+    ]);
+    const result = body(
+      await bulkRunAct.handler(
+        {
+          runId: run.runId,
+          itemId: item.itemId,
+          actionId: 'resolve',
+          rationale: 'The item is ready to resume.',
+          confidenceLevel: 'high',
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+    expect(result).toMatchObject({ ok: false, refused: 'automation_policy', reason: 'owner-by-right' });
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+  });
+
+  it('lets L2 auto-ratify an above-floor owner-by-right judgment kind', async () => {
+    h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L2', minConfidence: 'high' });
+    await arrangeSuccessfulAction({
+      kind: 'work-item-needs-human',
+      ref: { kind: 'work-item-needs-human', msgId: 'msg-owner' },
+    });
+    const result = body(
+      await bulkRunAct.handler(
+        {
+          runId: run.runId,
+          itemId: item.itemId,
+          actionId: 'resolve',
+          rationale: 'The owner gate is satisfied by decisive evidence.',
+          confidenceLevel: 'high',
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+    expect(result).toMatchObject({ ok: true, outcome: 'auto_resolved', actionDispatched: true });
+    expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps never-auto kinds unreachable even at L2 and above the floor', async () => {
+    h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L2', minConfidence: 'low' });
+    h.getRunItems.mockResolvedValue([{ ...item, kind: 'smoke-fail', ref: { kind: 'smoke-fail' } }]);
+    const result = body(
+      await bulkRunAct.handler(
+        {
+          runId: run.runId,
+          itemId: item.itemId,
+          actionId: 'resolve',
+          rationale: 'Must remain protected.',
+          confidenceLevel: 'high',
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+    expect(result).toMatchObject({ ok: false, refused: 'automation_policy', reason: 'never-auto' });
     expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
   });
 
@@ -286,6 +430,7 @@ describe('inbox:bulk-run-act authority boundary', () => {
           itemId: item.itemId,
           actionId: 'ack',
           rationale: 'The owner has read the message.',
+          confidenceLevel: 'high',
         },
         { workspaceId: run.workspaceId } as never,
       ),
@@ -331,6 +476,7 @@ describe('inbox:bulk-run-act authority boundary', () => {
           itemId: item.itemId,
           actionId: 'ack',
           rationale: 'Must not run after Stop.',
+          confidenceLevel: 'high',
         },
         { workspaceId: run.workspaceId } as never,
       ),
@@ -361,6 +507,7 @@ describe('inbox:bulk-run-act authority boundary', () => {
           itemId: item.itemId,
           actionId: 'ack',
           rationale: 'The message was acknowledged before audit persistence failed.',
+          confidenceLevel: 'high',
         },
         { workspaceId: run.workspaceId } as never,
       ),

@@ -71,9 +71,11 @@ import {
   type BulkDispositionKind,
   type BulkRecommendationKind,
   type BulkResponsibility,
-  bulkAutomationEligibility,
-  normalizeBulkAutomationPolicy,
 } from '../../attention/bulk-dispositions';
+import {
+  readStandingBulkAutomationPolicy,
+  standingAutomationEligibility,
+} from '../../attention/automation-policy';
 
 /**
  * WI-41021 — the resolver's own verbs have to honour the kill switch.
@@ -577,36 +579,34 @@ export const bulkRunAct = defineTool({
       };
     }
 
-    // Confidence is an ADDITIONAL floor. The canonical action/authority
-    // dispatcher below remains the final safety gate; this check only prevents
-    // a resolver from auto-applying a lower-confidence action than the owner
-    // selected for this run. Legacy mocked/old runs without a policy snapshot
-    // retain their historical behavior, while every 1015+ run is explicit.
-    if (run.automationPolicy) {
-      const policy = normalizeBulkAutomationPolicy(run.automationPolicy);
-      const confidenceLevel =
-        args.confidenceLevel ??
-        (args.confidence === 'high' ? 'high' : args.confidence === 'low' ? 'low' : null);
-      const eligibility = bulkAutomationEligibility(policy, confidenceLevel);
-      if (!eligibility.allowed) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                refused: 'confidence_policy',
-                reason: eligibility.reason,
-                policy,
-                runId,
-                itemId: row.itemId,
-                message:
-                  'The selected confidence policy does not permit auto-application. Report a typed recommendation with the evidence and confidence instead.',
-              }),
-            },
-          ],
-        };
-      }
+    // P-007 / D-012: the mutable standing policy is the authority source of
+    // truth; run.automationPolicy is only the immutable launch receipt. Gate
+    // the ref kind because that is what the terminal dispatcher will execute,
+    // so a stale/mismatched display kind can never widen the action's authority.
+    const policy = await readStandingBulkAutomationPolicy(run.workspaceId);
+    const confidenceLevel =
+      args.confidenceLevel ??
+      (args.confidence === 'high' ? 'high' : args.confidence === 'low' ? 'low' : null);
+    const actionKind = typeof row.ref.kind === 'string' ? row.ref.kind : row.kind ?? '';
+    const eligibility = standingAutomationEligibility(policy, actionKind, confidenceLevel);
+    if (!eligibility.allowed) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              refused: 'automation_policy',
+              reason: eligibility.reason,
+              policy,
+              runId,
+              itemId: row.itemId,
+              message:
+                'The standing authority and confidence policy does not permit auto-application. Report a typed recommendation with the evidence and confidence instead.',
+            }),
+          },
+        ],
+      };
     }
 
     const rationale = clampText(args.rationale, LIMITS.ANNOTATION)?.trim() ?? '';
