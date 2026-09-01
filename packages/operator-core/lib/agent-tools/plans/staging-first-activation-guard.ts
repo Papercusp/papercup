@@ -97,6 +97,29 @@ function hasNarrowDeployedMainException(text: string): boolean {
   return EXPLICIT_DEPLOYED_ONLY_RE.test(text) && STAGING_LIMIT_RE.test(text) && CONCRETE_REASON_RE.test(text);
 }
 
+/**
+ * The narrow exception is a three-predicate LEXICAL conjunction, and a caller can
+ * supply the full substance of a legitimate deployed-only wait while missing one
+ * magic token — then receive the same generic refusal on every retry with no way
+ * to see which predicate failed (EI-22058383186105579: a correctly-evidenced
+ * runtime-writer-vintage blocker was refused twice verbatim). Name each predicate's
+ * status and the exact token contract, so one refusal is enough to self-repair.
+ */
+function narrowExceptionDiagnosis(text: string): string {
+  const checks = [
+    EXPLICIT_DEPLOYED_ONLY_RE.test(text)
+      ? `'deployed-only' token: present`
+      : `'deployed-only' token: MISSING — name the property using the literal phrase "deployed-only"`,
+    STAGING_LIMIT_RE.test(text)
+      ? `staging limitation: present`
+      : `staging limitation: MISSING — state what staging/current-build cannot exercise (the words "staging" or "current-build" near "cannot"/"does not"/"unable")`,
+    CONCRETE_REASON_RE.test(text)
+      ? `concrete reason: present`
+      : `concrete reason: MISSING — give it with "because"/"due to"/"since", or name rollback / migration ordering / release packaging / production-only / deployed-host`,
+  ];
+  return `Narrow-exception check over the item + blocker text (all three must hold): ${checks.join('; ')}.`;
+}
+
 function relatedExceptionText(item: PlanItem, decisions: PlanDecision[]): string {
   return [
     item.text,
@@ -152,7 +175,8 @@ export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): Sta
   // ordinary implementation being serialized behind that plane.
   if (LIVE_GATE_OPERATION_RE.test(itemText)) return null;
   if (isFinalLifecycleText(itemText)) return null;
-  if (hasNarrowDeployedMainException(`${itemText}\n${blockerText}`)) return null;
+  const exceptionText = `${itemText}\n${blockerText}`;
+  if (hasNarrowDeployedMainException(exceptionText)) return null;
 
   return {
     itemId: input.itemId,
@@ -161,7 +185,8 @@ export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): Sta
       `${input.itemId} is being blocked on main/:3070/green-checkpoint/deployment for non-final work. ` +
       `Continue implementation and non-final verification on staging/current-build. ` +
       `Only use this blocker for a narrow deployed-only property: name that property, explain concretely ` +
-      `why staging/current-build cannot exercise it, and retain the deployed wait only for that property.`,
+      `why staging/current-build cannot exercise it, and retain the deployed wait only for that property. ` +
+      narrowExceptionDiagnosis(exceptionText),
   };
 }
 
