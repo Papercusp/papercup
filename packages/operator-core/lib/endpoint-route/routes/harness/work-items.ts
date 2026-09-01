@@ -22,6 +22,7 @@ import {
   countWorkItems,
   createWorkItem,
   isWorkItemKind,
+  isDeprecatedWorkItemKind,
   WORK_ITEMS_MAX_LIMIT,
   type WorkItem,
   type WorkItemKind,
@@ -223,6 +224,17 @@ const postWorkItem = defineTool({
     const kind = body.kind;
     if (typeof kind !== 'string' || !isWorkItemKind(kind)) {
       return Response.json({ ok: false, error: `unknown or missing work_item kind '${String(kind)}'` }, { status: 400 });
+    }
+    if (isDeprecatedWorkItemKind(kind)) {
+      return Response.json(
+        {
+          ok: false,
+          error: 'deprecated_kind',
+          message:
+            "work-item kind 'chunk' is deprecated and cannot be created; existing chunk rows remain readable.",
+        },
+        { status: 410 },
+      );
     }
     const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : '';
     if (!title) return Response.json({ ok: false, error: 'title required' }, { status: 400 });

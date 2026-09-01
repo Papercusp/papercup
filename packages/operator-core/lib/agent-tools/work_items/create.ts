@@ -188,7 +188,7 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
 const itemSpec = z.object({
   // Built-in kind OR a workspace-registered generic-kind datatype (P-001) — validated
   // per item in createOneWorkItem; an unregistered kind is rejected there as `unknown_kind`.
-  kind: z.string().min(1).max(80).describe('built-in kind (feature, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
+  kind: z.string().min(1).max(80).describe("built-in kind (feature, bug, change, task); 'chunk' is deprecated (historical rows remain readable) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)"),
   title: hardText(LIMITS.SHORT_TITLE),
   summary: hardText(8000).optional().describe('body / summary text'),
   // WI-4492: `body` is an ACCEPTED ALIAS for `summary` (the SAME field). work_items:update
@@ -282,7 +282,7 @@ export default defineTool({
       // Built-in kind OR a workspace-registered generic-kind datatype — validated in
       // createOneWorkItem (P-001). Relaxed from z.enum so a registered kind passes; an
       // unregistered one is rejected there with `unknown_kind` (was a zod enum error).
-      kind: z.string().min(1).max(80).optional().describe('built-in kind (feature, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
+      kind: z.string().min(1).max(80).optional().describe("built-in kind (feature, bug, change, task); 'chunk' is deprecated (historical rows remain readable) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)"),
       title: hardText(LIMITS.SHORT_TITLE).optional(),
       summary: hardText(8000).optional().describe('body / summary text'),
       body: hardText(8000).optional().describe('alias for `summary` — the item body text (work_items:update names it `body`). Pass either; both-with-different-values is rejected (WI-4492).'),

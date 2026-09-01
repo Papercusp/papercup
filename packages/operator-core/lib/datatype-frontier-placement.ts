@@ -24,14 +24,14 @@ import type postgres from 'postgres';
 export const HIVE_PLACEMENT_TAG = 'hive-placement';
 
 /**
- * The frontier kind filter: the built-in placeable feature-family kinds, PLUS any
+ * The frontier kind filter: the active built-in feature kind, PLUS any
  * generic-kind datatype kinds that opted into placement (the {@link HIVE_PLACEMENT_TAG}).
  * DARK until a datatype opts in — the subquery is empty otherwise, so the live frontier is
  * byte-identical to before this clause existed. Mirrors `featureFamilyKindClause` but adds
  * the opt-in tag gate (the visibility filter has no such gate).
  */
 export function frontierPlacementKindClause(sql: postgres.Sql, workspaceId: string) {
-  return sql`(item_kind IN ('feature', 'chunk')
+  return sql`(item_kind = 'feature'
        OR item_kind IN (
          SELECT work_item_kind FROM harness_shared.datatype_registry
           WHERE workspace_id = ${workspaceId} AND tier = 'generic-kind' AND status = 'active'

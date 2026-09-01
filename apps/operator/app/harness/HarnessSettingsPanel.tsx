@@ -59,15 +59,6 @@ interface ParallelWorkersCfg {
   /** Cap distinct features in flight. null = no separate cap (only
    *  max-workers limits). 1 = traditional one-feature-at-a-time. */
   maxFeaturesInFlight: number | null;
-  /** Feature flag for the new worker chunk loop (atomic file locks,
-   *  per-chunk typecheck gate, replan + escalate). */
-  useChunkLoop: boolean;
-  /** L1 typecheck command run after each chunk's edits. */
-  workingStateCheck: string;
-  /** Number of typecheck-rejection retries before escalating. */
-  replanStrikes: number;
-  /** Agent role taken over on chunk escalation. */
-  escalateToRole: string;
   /** Whether single-worker features also go through synthesis.
    *  Default ON: synthesis acts as a code-review pass even when
    *  there's only one candidate. Flip OFF for speed. */
@@ -161,10 +152,6 @@ export default function HarnessSettingsPanel({
     workerCountMode: 'one',
     workersPerFeature: null,
     maxFeaturesInFlight: null,
-    useChunkLoop: true,
-    workingStateCheck: 'pnpm typecheck',
-    replanStrikes: 3,
-    escalateToRole: 'debugger',
     synthesizeSingle: true,
     adaptive: { tiers: DEFAULT_TIERS, labels: DEFAULT_LABELS, rubric: DEFAULT_RUBRIC },
   });
@@ -255,12 +242,6 @@ export default function HarnessSettingsPanel({
       workerCountMode,
       workersPerFeature: wpfRaw,
       maxFeaturesInFlight: typeof pwRaw.maxFeaturesInFlight === 'number' ? pwRaw.maxFeaturesInFlight : null,
-      // Default is true (matches orchestrator's useChunkLoop()).
-      // Explicit `false` opts back into the branch-iso + synthesizer path.
-      useChunkLoop: pwRaw.useChunkLoop === undefined ? true : pwRaw.useChunkLoop === true,
-      workingStateCheck: typeof pwRaw.workingStateCheck === 'string' ? pwRaw.workingStateCheck : 'pnpm typecheck',
-      replanStrikes: typeof pwRaw.replanStrikes === 'number' && pwRaw.replanStrikes > 0 ? pwRaw.replanStrikes : 3,
-      escalateToRole: typeof pwRaw.escalateToRole === 'string' && pwRaw.escalateToRole.length > 0 ? pwRaw.escalateToRole : 'debugger',
       synthesizeSingle: pwRaw.synthesizeSingle === undefined ? true : pwRaw.synthesizeSingle === true,
       adaptive: {
         tiers: rawTiers.length >= 2 && rawTiers.length === rawLabels.length ? rawTiers : DEFAULT_TIERS,
@@ -407,21 +388,6 @@ export default function HarnessSettingsPanel({
 
       if (parallel.maxFeaturesInFlight !== null) {
         pw.maxFeaturesInFlight = parallel.maxFeaturesInFlight;
-      }
-      // Chunk-loop knobs: only persist when they differ from the
-      // defaults, to keep config files clean. The orchestrator
-      // applies defaults if these fields are absent.
-      if (parallel.useChunkLoop) {
-        pw.useChunkLoop = true;
-      }
-      if (parallel.workingStateCheck && parallel.workingStateCheck !== 'pnpm typecheck') {
-        pw.workingStateCheck = parallel.workingStateCheck;
-      }
-      if (parallel.replanStrikes !== 3) {
-        pw.replanStrikes = parallel.replanStrikes;
-      }
-      if (parallel.escalateToRole && parallel.escalateToRole !== 'debugger') {
-        pw.escalateToRole = parallel.escalateToRole;
       }
       // synthesizeSingle: default is true (synth even on N=1). Only
       // persist when user explicitly disabled.
@@ -714,75 +680,6 @@ export default function HarnessSettingsPanel({
             </div>
           )}
 
-          {/* ── Worker chunk loop knobs ───────────────────────────── */}
-          <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
-            <div style={{ fontSize: 11.5, color: 'var(--fg-mute)', marginBottom: 6, fontStyle: 'italic' }}>
-              Worker chunk loop (per-chunk file locks + L1 typecheck gate)
-            </div>
-
-            <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, marginBottom: 8 }}>
-              <Checkbox
-                checked={parallel.useChunkLoop}
-                onChange={(v) => setParallel((p) => ({ ...p, useChunkLoop: v }))}
-                ariaLabel="chunk loop enabled"
-              />
-              <span>chunk loop enabled</span>
-            </label>
-
-            {parallel.useChunkLoop && (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                  <span style={{ width: 80, fontSize: 11.5, color: 'var(--fg-mute)' }}>typecheck</span>
-                  <input
-                    type="text"
-                    value={parallel.workingStateCheck}
-                    placeholder="pnpm typecheck"
-                    onChange={(e) =>
-                      setParallel((p) => ({ ...p, workingStateCheck: e.target.value }))
-                    }
-                    style={{ flex: 1, minWidth: 200, fontSize: 13, padding: '3px 6px', fontFamily: 'monospace' }}
-                  />
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                  <span style={{ width: 80, fontSize: 11.5, color: 'var(--fg-mute)' }}>strikes</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={parallel.replanStrikes}
-                    onChange={(e) => {
-                      const n = parseInt(e.target.value, 10);
-                      if (Number.isFinite(n) && n > 0) {
-                        setParallel((p) => ({ ...p, replanStrikes: n }));
-                      }
-                    }}
-                    style={{ width: 64, fontSize: 13, padding: '3px 6px' }}
-                  />
-                  <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
-                    typecheck failures before escalating
-                  </span>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ width: 80, fontSize: 11.5, color: 'var(--fg-mute)' }}>escalate to</span>
-                  <input
-                    type="text"
-                    value={parallel.escalateToRole}
-                    placeholder="debugger"
-                    onChange={(e) =>
-                      setParallel((p) => ({ ...p, escalateToRole: e.target.value }))
-                    }
-                    style={{ width: 140, fontSize: 13, padding: '3px 6px', fontFamily: 'monospace' }}
-                  />
-                  <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
-                    role taken over on N strikes
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
-
           {/* ── Synthesizer knob ─────────────────────────────────── */}
           {testingFlag && (
             <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
@@ -827,11 +724,8 @@ export default function HarnessSettingsPanel({
             </span>
           </div>
 
-          {/* `branch isolation` toggle removed from UI — chunk-loop is the
-              default worker model now (orchestrator/lanes.ts useChunkLoop
-              defaults to true). The branchIsolation config field remains
-              supported in code for harnesses that opt in via direct config
-              edit. */}
+          {/* `branch isolation` remains a compatibility config field; worker
+              dispatch now always uses the ordinary invoke path. */}
 
           <div style={{ fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.5, marginTop: 4 }}>
             {testingFlag ? (
@@ -862,7 +756,7 @@ export default function HarnessSettingsPanel({
               </>
             ) : (
               <>
-                ↳ up to <strong>{parallel.max}</strong> feature{parallel.max === 1 ? '' : 's'} in parallel, one chunk-loop worker each.
+                ↳ up to <strong>{parallel.max}</strong> feature{parallel.max === 1 ? '' : 's'} in parallel, one worker each.
               </>
             )}
           </div>

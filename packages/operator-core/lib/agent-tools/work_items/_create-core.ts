@@ -19,7 +19,7 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, setWorkItemState, ensureClaimHoldAttribution, familyOf, type WorkItem, type WorkItemKind } from '../../work-items';
+import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, isDeprecatedWorkItemKind, setWorkItemState, ensureClaimHoldAttribution, familyOf, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import type { PlanItemStamp } from '../../plan-items/convert';
 import { findMirroredOpenItem } from './mirror-guard';
@@ -465,6 +465,16 @@ export async function createOneWorkItem(
   ctx: CreateOneWorkItemCtx,
 ): Promise<CreateOneWorkItemResult> {
   try {
+    if (isDeprecatedWorkItemKind(args.kind)) {
+      return {
+        ok: false,
+        error: 'deprecated_kind',
+        message:
+          "work-item kind 'chunk' is deprecated and cannot be created through the public queue. " +
+          'Use a feature for a top-level capability or a change for a direct code modification. ' +
+          'Existing chunk rows remain readable for history and compatibility.',
+      };
+    }
     const issueAdmission = familyOf(args.kind) === 'issue';
     const signalKey =
       args.payload && typeof args.payload.watchdogKey === 'string' ? args.payload.watchdogKey : undefined;

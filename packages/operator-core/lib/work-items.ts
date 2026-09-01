@@ -208,6 +208,14 @@ export type WorkItemKind = FeatureFamilyKind | IssueStoreKind;
 export type WorkItemFamily = 'feature' | 'issue';
 
 export const FEATURE_FAMILY_KINDS: readonly FeatureFamilyKind[] = ['feature', 'chunk'];
+/** Forward-active feature kind; `chunk` remains in the read union for history. */
+export const ACTIVE_FEATURE_FAMILY_KINDS: readonly ['feature'] = ['feature'];
+/** Public work-item kinds whose forward write path is retired. */
+export const DEPRECATED_WORK_ITEM_KINDS: readonly ['chunk'] = ['chunk'];
+
+export function isDeprecatedWorkItemKind(kind: string): kind is 'chunk' {
+  return (DEPRECATED_WORK_ITEM_KINDS as readonly string[]).includes(kind);
+}
 // research-task was MERGED INTO `task` 2026-07-05 (WI-2874): research is non-code
 // work, which is what `task` now means. It is no longer a feature-family kind; the
 // sentinel deep-delegate + Queen route-to-research now spawn `task` (issue-family),
@@ -1108,8 +1116,13 @@ export function compareByHeadOfLine(a: WorkItem, b: WorkItem): number {
  * (datatype-frontier-placement.ts) — gated on the `hive-placement` opt-in tag, because a
  * datatype is visible without necessarily auto-placing a bee per instance (placement is opt-in).
  */
-function featureFamilyKindClause(sql: OrgSql, workspaceId: string) {
-  return sql`(item_kind IN ('feature', 'chunk')
+function featureFamilyKindClause(
+  sql: OrgSql,
+  workspaceId: string,
+  opts: { includeDeprecatedChunk?: boolean } = {},
+) {
+  const builtIn = opts.includeDeprecatedChunk ? sql`item_kind IN ('feature', 'chunk')` : sql`item_kind = 'feature'`;
+  return sql`(${builtIn}
        OR item_kind IN (
          SELECT work_item_kind FROM harness_shared.datatype_registry
           WHERE workspace_id = ${workspaceId} AND tier = 'generic-kind' AND status = 'active'
@@ -1207,7 +1220,9 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
     const rows = await sql<FeatureRowDb[]>`
       SELECT ${sql.unsafe(filter.includePayload === false ? FEATURE_COLS_PAYLOADLESS : FEATURE_COLS)}
         FROM harness_shared.harness_features_consolidated
-         WHERE ${featureFamilyKindClause(sql, ws)}
+         WHERE ${featureFamilyKindClause(sql, ws, {
+           includeDeprecatedChunk: filter.kind === 'chunk' || Boolean(filter.parent) || filter.includeChildren === true,
+         })}
          AND workspace_id = ${ws}
          AND ${
            filter.harness
@@ -1341,7 +1356,9 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
     const rows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM harness_shared.harness_features_consolidated
-       WHERE ${featureFamilyKindClause(sql, ws)}
+       WHERE ${featureFamilyKindClause(sql, ws, {
+         includeDeprecatedChunk: filter.kind === 'chunk' || Boolean(filter.parent) || filter.includeChildren === true,
+       })}
          AND workspace_id = ${ws}
          AND ${
            filter.harness
@@ -1467,7 +1484,9 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
     const rows = await sql<{ state: string | null; n: number }[]>`
       SELECT status AS state, count(*)::int AS n
         FROM harness_shared.harness_features_consolidated
-       WHERE ${featureFamilyKindClause(sql, ws)}
+       WHERE ${featureFamilyKindClause(sql, ws, {
+         includeDeprecatedChunk: filter.kind === 'chunk' || Boolean(filter.parent) || filter.includeChildren === true,
+       })}
          AND workspace_id = ${ws}
          AND ${
            filter.harness
@@ -1941,7 +1960,7 @@ function issueSearchSource(f: WorkItemSearchFilters, embeddingMode: string | nul
 function featureSearchSource(f: WorkItemSearchFilters, embeddingMode: string | null): SearchSource {
   const ws = activeWorkspaceId();
   const scoped = (sql: OrgSql) => sql`
-          ${featureFamilyKindClause(sql, ws)}
+          ${featureFamilyKindClause(sql, ws, { includeDeprecatedChunk: f.kind === 'chunk' })}
       AND workspace_id = ${ws}
       AND ${f.kind ? sql`item_kind = ${f.kind}` : sql`TRUE`}
       AND ${f.harness ? sql`harness_slug = ${f.harness}` : sql`TRUE`}`;
@@ -2288,6 +2307,8 @@ export interface CreateWorkItemInput {
   /** WHY it was admitted at filing time (e.g. 'bypass:source-plan-slug'). Recorded on
    *  `admitted_by`; ignored for 'pending', which nobody has admitted yet. */
   admittedBy?: string | null;
+  /** Internal-only migration/test escape hatch for reconstructing old chunk rows. */
+  allowDeprecatedChunk?: boolean;
 }
 
 /** Fire the urgent brain wake for an urgent enqueue (P-006). Lazy import +
@@ -2362,6 +2383,15 @@ function maybeFireCreatedEvent(wi: WorkItem): void {
 
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
 export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
+  // Public chunk creation is retired. Historical rows remain readable through
+  // the feature-family read union; only explicitly marked migration/fixture
+  // writes may reconstruct one, and ordinary producers fail before allocation.
+  if (isDeprecatedWorkItemKind(input.kind) && input.allowDeprecatedChunk !== true) {
+    throw new Error(
+      "work_item kind 'chunk' is deprecated and cannot be created; use a feature or change work-item. " +
+        'Existing chunk rows remain readable for history and compatibility.',
+    );
+  }
   // P-001 generic-kind: accept a built-in kind OR a workspace-registered generic-kind
   // datatype (familyOf maps it to the feature family → the feature table). The
   // work_items:create gate (_create-core) already validated this, but createWorkItem is
