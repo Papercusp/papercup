@@ -284,6 +284,10 @@ beforeAll(async () => {
   // while its owner is between claim leases. Apply the real migration so the queryable SSOT and
   // every TS claim path must agree on the new assignment leg.
   await db.sql.unsafe(readMigration('1059-plan-assignment-claim-floor.sql')).simple();
+  // EI-22040898205841125: an already-claimed work-item implementing the same canonical
+  // plan-item is a pre-claim exclusion, not an invisible claim/clear miss. Apply the real
+  // migration so the queryable SSOT and the TypeScript selector stay bound.
+  await db.sql.unsafe(readMigration('1070-plan-item-sibling-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -296,6 +300,34 @@ beforeEach(async () => {
 });
 
 describe('canonical plan-item sibling claim guard (EI-21151083448505391)', () => {
+  it('skips an actively claimed sibling before UPDATE and serves the next unrelated issue', async () => {
+    const payload = { plan_item: { plan_slug: 'claimed-sibling-plan', item_id: 'P-SAME', harness_slug: H } };
+    await seedPlan('claimed-sibling-plan', 'ready');
+    await seed('WI-SIBLING-HELD', { kind: 'bug', payload, takenBy: 'plan-owner', createdTs: 1 });
+    await seed('WI-SIBLING-CANDIDATE', { kind: 'bug', payload, createdTs: 2 });
+    await seed('WI-UNRELATED-NEXT', { kind: 'bug', createdTs: 3 });
+
+    // The generic read and the real selector both exclude the duplicate implementation.
+    expect(await viewClaimableIds()).toEqual(['WI-UNRELATED-NEXT']);
+    expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'drain-member' }, WS))?.id).toBe(
+      'WI-UNRELATED-NEXT',
+    );
+    const [stillFree] = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-SIBLING-CANDIDATE'`;
+    expect(stillFree?.taken_by).toBeNull();
+
+    // Releasing the actual sibling owner returns the duplicate implementation to the pool.
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET taken_by = NULL, taken_at = NULL
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-SIBLING-HELD'`;
+    expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'drain-member' }, WS))?.id).toBe(
+      'WI-SIBLING-HELD',
+    );
+  });
+
   it('permits exactly one concurrent winner across bounded feature and issue claim transactions', async () => {
     const gn = await import('./get-next');
     const payload = { plan_item: { plan_slug: 'cross-family-race', item_id: 'P-RACE', harness_slug: H } };
