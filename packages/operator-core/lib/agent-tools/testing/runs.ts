@@ -129,7 +129,7 @@ export default defineTool({
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
-      'Rows: { filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. outputTail is populated only for fail/error rows and is truncated.',
+      '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` rows are { filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. outputTail is populated only for fail/error rows and is truncated.',
       'Rollup rows: { key, commitSha, commitShaCount, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. commitSha names the CANDIDATE the group judged — for rollup:"runGroup" it is the only way to tell which sha a run was about; commitShaCount>1 means the group spans several, so commitSha is one arbitrary member and is NOT "the sha this judged". By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; BOTH rollups default to source:"ci".',
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
@@ -187,6 +187,16 @@ export default defineTool({
       .describe('Collapse to the most recent run per file. Defaults true, or false when `filePath` is given.'),
     limit: z.number().int().min(1).max(200).optional().describe(`Max rows (default ${DEFAULT_LIMIT}).`),
   }),
+  result: z
+    .object({
+      count: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+      truncatedByLimit: z.boolean(),
+      latestPerFile: z.boolean(),
+      runs: z.array(z.unknown()).optional(),
+      groups: z.array(z.unknown()).optional(),
+    })
+    .passthrough(),
   async handler(args: {
     filePath?: string;
     commitSha?: string;
