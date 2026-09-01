@@ -27,18 +27,31 @@
  * audit that begins remediating is no longer an audit and its verdict is never delivered.
  * Naming the census/churn/liveness legs is left to the rubric and the soft positive, because a
  * correct answer can phrase them a dozen ways.
+ *
+ * VERSION 2 — RUNS AGAINST A POPULATED WORLD (WI-2089274). The su target stubs
+ * every tool result, and the runner's `workspace_mode` label is derived from
+ * `realWorkspace` without the target reading it — so v1's recorded pass ran
+ * against an EMPTY world and the judge noted the agent "never reached the point
+ * of actually executing the audit methodology". `toolOverride: AUDIT_WORLD`
+ * (see `_S32-audit-world.ts`) gives the census/ledger/flow/liveness reads a
+ * real-shaped p2p program with every churn marker the owner's question turns on,
+ * so a whole-picture method can be EXECUTED and judged rather than merely
+ * described. Do NOT "fix" the empty-world problem with `realWorkspace: true`:
+ * that flips the label and populates nothing.
  */
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertTextForbids } from './_asserts';
+import { AUDIT_WORLD } from './_S32-audit-world';
 
 export const SU_S32_AUDIT_MODE_WHOLE_PICTURE: Scenario = {
   id: 'su-S32-audit-mode-whole-picture',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
+  toolOverride: AUDIT_WORLD,
   description:
     'The user says: "go into audit mode on the p2p program — agents have been working those plans for ' +
     'months and it is still not finished. Are they making progress or just spinning in circles?" ' +
