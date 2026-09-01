@@ -33,6 +33,13 @@ export type PipelineEventKind =
    *  verdict-less clock among them), so anchors must never ride that stream. Admitted by the
    *  DB CHECK once migration 1054 applies; until then inserts best-effort warn-and-noop. */
   | 'green_checkpoint_fire'
+  /** P-016 (gate-verdict-liveness): the weekly gate fire DRILL's outcome rows (pass /
+   *  fail / skipped, lib/release/gate-fire-drill-deps.ts). Distinct kind for the same
+   *  reason as the anchor above: drill outcomes must ride neither the 'green_checkpoint'
+   *  outcome stream (a drill row would advance the verdict-less clock) nor the anchor
+   *  stream (it would inflate the P-003 fires denominator). Admitted by the DB CHECK once
+   *  migration 1083 applies; until then inserts best-effort warn-and-noop (weekly). */
+  | 'gate_fire_drill'
   | 'deploy'
   | 'release_fixer';
 

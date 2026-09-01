@@ -407,6 +407,16 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     // pausing it stops only the checks themselves.
     why: 'Runs bounded per-sync-batch affected-tests/typecheck legs and files deduped work-items — no agent spawn or wake',
   },
+  'system:reconcile-silent-halts': {
+    spend: 'none',
+    // Found unclassified by the registry cross-check while landing gate-fire-drill (the
+    // same half-landed-pair class the check exists to catch). Verified against
+    // silent-halt-action.ts + its registration contract before classifying: it detects
+    // heartbeat-fresh sessions holding claimed work-items while taking no turns and PAGES
+    // THE OWNER (a notification — deliberately never the halted agent's inbox, which does
+    // not wake a session); no spawn, no session wake, no dispatch.
+    why: 'Detects halted sessions holding claimed work-items and pages the owner — a notification only, no agent spawn or wake',
+  },
   'system:gate-fire-drill': {
     spend: 'none',
     // Verified against gate-fire-drill-action.ts before classifying: it launches ONE
