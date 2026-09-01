@@ -113,8 +113,10 @@ const KIND_LEGEND: Record<CoordKind, LegendEntry> = {
   // ── conversational: pure talk, zero authority over runtime state ──
   message: { glyph: '-', name: 'message — free-text note' },
   ack: { glyph: '=', name: 'ack — acknowledgement' },
+  unack: { glyph: '=', name: 'unack — acknowledgement reverted' },
   escalation: { glyph: '^', name: 'escalation — needs attention' },
   escalation_resolved: { glyph: '=', name: 'escalation resolved' },
+  escalation_reopened: { glyph: '^', name: 'escalation reopened' },
   // context-injection-audit-2026-07-28 P-039 / D-012. Its own glyph, for exactly
   // the reason the `handoff_expired` note above records: a line telling you the
   // peer you are BLOCKED ON just died must not render as `-` (a free-text note).

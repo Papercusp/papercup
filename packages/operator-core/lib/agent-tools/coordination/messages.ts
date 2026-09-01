@@ -515,6 +515,27 @@ export async function appendAck(
   });
 }
 
+/**
+ * Append-only compensation for an acknowledgement. The original ack remains in
+ * history; readAckedMsgIds folds this later event back to the unacknowledged
+ * state for the same principal and target message.
+ */
+export async function appendUnack(
+  identity: AgentIdentity,
+  targetMsgId: string,
+  targetFrom: string,
+  targetHarnessSlug?: string | null,
+  eventId?: string,
+): Promise<CoordEnvelope> {
+  return sendMessage(identity, {
+    to: [targetFrom],
+    kind: 'unack',
+    related_msg_id: targetMsgId,
+    harnessSlug: targetHarnessSlug,
+    ...(eventId ? { msgId: eventId } : {}),
+  });
+}
+
 /** WI-3825: skew-padded lower bound subtracted from `since_ts` before it is
  *  pushed into SQL as `ts >= …`. The row `ts` column is set via `DEFAULT
  *  now()` at INSERT time (monotonic with `id`) — a DIFFERENT field from
@@ -915,7 +936,8 @@ export async function drainAndDeliverUserMailbox(
  * being rendered, so only that principal's own acks dismiss their view.
  *
  * Optimized to query database directly (EI-401): avoid loading all messages
- * when table is large; use WHERE kind='ack' AND from=? filter at DB level.
+ * when table is large; use a narrow ack/unack + author filter at DB level and
+ * fold in append order.
  */
 export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>> {
   const acked = new Set<string>();
@@ -926,25 +948,28 @@ export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>
     // seam (tests, non-default workspace) would otherwise query the wrong DB /
     // scope and find nothing. Matches readInbox exactly.
     const sql = coordSql();
-    const rows = await sql<{ related_msg_id: string | null }[]>`
-      SELECT body->>'related_msg_id' AS related_msg_id
+    const rows = await sql<{ kind: string | null; related_msg_id: string | null }[]>`
+      SELECT body->>'kind' AS kind, body->>'related_msg_id' AS related_msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
-         AND body->>'kind' = 'ack'
+         AND body->>'kind' = ANY (ARRAY['ack', 'unack'])
          AND body->>'from' = ${ackerOwnerId}
+       ORDER BY id ASC
     `;
     for (const row of rows) {
       if (typeof row.related_msg_id === 'string') {
-        acked.add(row.related_msg_id);
+        if (row.kind === 'unack') acked.delete(row.related_msg_id);
+        else if (row.kind === 'ack') acked.add(row.related_msg_id);
       }
     }
   } catch {
     // Fallback to the slow path if the query fails
     const lines = await coordLog.readLines('messages');
     for (const l of lines) {
-      if (l.kind === 'ack' && l.from === ackerOwnerId && typeof l.related_msg_id === 'string') {
-        acked.add(l.related_msg_id);
+      if (l.from === ackerOwnerId && typeof l.related_msg_id === 'string') {
+        if (l.kind === 'unack') acked.delete(l.related_msg_id);
+        else if (l.kind === 'ack') acked.add(l.related_msg_id);
       }
     }
   }
