@@ -33,6 +33,7 @@ import {
   rubricTemplateDataSchema,
   rubricTemplateDataAuthoringSchema,
   rubricKindOf,
+  isUnknownRatingEquivalent,
   RUBRIC_TEMPLATE_NAME,
   type RubricKind,
   type RubricCriterionWindow,
@@ -957,6 +958,22 @@ export interface ProposeRubricInput {
   checkPathRoot?: string;
 }
 
+/** One explicit, deterministic upgrade made when a legacy acceptance Rubric
+ * projection is copied into a new authoring write. This metadata is recorded in
+ * the plan-revision rationale so a successor never looks byte-identical when it
+ * actually received a schema-compatibility upgrade. */
+export interface RubricCompatibilityUpgrade {
+  field: string;
+  action: 'omit-empty' | 'supply-falsifier' | 'append-unknown-equivalent';
+  reason: string;
+  value?: string;
+}
+
+export interface RubricCompatibilityAudit {
+  source: 'legacy-acceptance-read-projection';
+  upgrades: RubricCompatibilityUpgrade[];
+}
+
 // ─── WI-4287: loss-guards + completeness — never silently drop a testing procedure ────
 // [owner 2026-07-12] "how can we improve our system so that the next agent who
 // updates the rubric also knows to add the full detailed testing procedure and doesn't
@@ -1156,22 +1173,79 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
  * Acceptance criteria use a light profile where model/method/driftMarkers are optional.
  * The legacy `Rubric` projection maps omitted fields to empty strings to preserve its
  * required-string shape, so a read → re-propose round-trip can hand those empty strings
- * back here. Treat blank optional prose as omitted again; standard criteria remain
- * untouched and continue to fail the full-field validation when a required field is
- * missing.
+ * back here. Normalize only that projection artifact and record every upgrade. A blank
+ * drift marker needs a schema-valid replacement because the current authoring profile
+ * requires a concrete falsifier; the replacement is deliberately conservative and tells
+ * the grader to record unknown until a native marker is authored.
  */
-function normalizeAcceptanceCriteria(
+export function normalizeAcceptanceRubricProposal(
   criteria: ProposeRubricCriterion[],
   kind: RubricKind | undefined,
-): ProposeRubricCriterion[] {
-  if ((kind ?? 'standard') !== 'acceptance') return criteria;
-  return criteria.map((criterion) => {
+  ratingScale: readonly string[],
+): {
+  criteria: ProposeRubricCriterion[];
+  ratingScale: string[];
+  compatibility?: RubricCompatibilityAudit;
+} {
+  if ((kind ?? 'standard') !== 'acceptance') {
+    return { criteria, ratingScale: [...ratingScale] };
+  }
+
+  const upgrades: RubricCompatibilityUpgrade[] = [];
+  const normalizedCriteria = criteria.map((criterion, index) => {
     const normalized = { ...criterion };
-    for (const field of ['model', 'method', 'driftMarkers'] as const) {
-      if (normalized[field]?.trim() === '') delete normalized[field];
+    for (const field of ['model', 'method'] as const) {
+      if (typeof normalized[field] === 'string' && normalized[field].trim() === '') {
+        delete normalized[field];
+        upgrades.push({
+          field: `criteria[${index}].${field}`,
+          action: 'omit-empty',
+          reason: 'legacy Rubric projection represented an omitted optional field as an empty string',
+        });
+      }
+    }
+
+    // `planRowToRubric` maps a missing legacy driftMarkers field to ''. Keep an
+    // actually absent direct input invalid (fail-loud for new callers), while
+    // making the read → successor path deterministic and schema-valid.
+    if (typeof normalized.driftMarkers === 'string' && normalized.driftMarkers.trim() === '') {
+      const value =
+        `Legacy acceptance criterion '${normalized.key}' has no recorded drift marker; ` +
+        'treat missing evidence as unknown until a concrete falsifier is authored.';
+      normalized.driftMarkers = value;
+      upgrades.push({
+        field: `criteria[${index}].driftMarkers`,
+        action: 'supply-falsifier',
+        reason: 'legacy Rubric projection represented an omitted required acceptance falsifier as an empty string',
+        value,
+      });
     }
     return normalized;
   });
+
+  const normalizedRatingScale = [...ratingScale];
+  if (!normalizedRatingScale.some(isUnknownRatingEquivalent)) {
+    normalizedRatingScale.push('unknown');
+    upgrades.push({
+      field: 'ratingScale',
+      action: 'append-unknown-equivalent',
+      reason: 'legacy acceptance ratingScale had no label for evidence that cannot establish a verdict',
+      value: 'unknown',
+    });
+  }
+
+  return {
+    criteria: normalizedCriteria,
+    ratingScale: normalizedRatingScale,
+    ...(upgrades.length > 0
+      ? { compatibility: { source: 'legacy-acceptance-read-projection', upgrades } }
+      : {}),
+  };
+}
+
+interface BuiltRubricTemplateData {
+  data: unknown;
+  compatibility?: RubricCompatibilityAudit;
 }
 
 /** Build the validated `template_data` for a rubric-template plan from a propose input.
@@ -1182,7 +1256,7 @@ function normalizeAcceptanceCriteria(
 function buildRubricTemplateData(
   input: ProposeRubricInput,
   stored?: Pick<Rubric, 'ratingScale'> | null,
-): unknown {
+): BuiltRubricTemplateData {
   const instrumentContract = rubricInstrumentContract({
     releaseGating: input.releaseGating,
     criteria: input.criteria,
@@ -1202,7 +1276,12 @@ function buildRubricTemplateData(
           .join('; '),
     );
   }
-  const criteria = normalizeAcceptanceCriteria(input.criteria, input.kind);
+  const normalized = normalizeAcceptanceRubricProposal(
+    input.criteria,
+    input.kind,
+    input.ratingScale ?? stored?.ratingScale ?? [...DEFAULT_RATING_SCALE],
+  );
+  const criteria = normalized.criteria;
   const data = {
     // Kind + acceptance links (acceptance-rubrics-on-every-plan-2026-08-11) — the schema's
     // per-kind superRefine validates the combination (subjectPlan/classRef acceptance-only,
@@ -1213,7 +1292,7 @@ function buildRubricTemplateData(
     ...(input.classRef ? { classRef: input.classRef } : {}),
     characteristic: input.characteristic,
     criteria,
-    ratingScale: input.ratingScale ?? stored?.ratingScale ?? [...DEFAULT_RATING_SCALE],
+    ratingScale: normalized.ratingScale,
     ...(input.methodRef ? { methodRef: input.methodRef } : {}),
     ...(input.releaseGating !== undefined ? { releaseGating: input.releaseGating } : {}),
     ...(input.stalenessWatched !== undefined ? { stalenessWatched: input.stalenessWatched } : {}),
@@ -1243,7 +1322,7 @@ function buildRubricTemplateData(
     const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
     throw new Error(`invalid_args: proposeRubric: invalid rubric data for '${input.rubricId}': ${issues}`);
   }
-  return parsed.data;
+  return { data: parsed.data, compatibility: normalized.compatibility };
 }
 
 /**
@@ -1515,6 +1594,7 @@ function rubricRevisionAfterWrite(
   by: string | undefined,
   rationale: string,
   fallbackTemplateData?: unknown,
+  compatibilityAudit?: () => RubricCompatibilityAudit | undefined,
 ): (
   writtenBody: string,
   scope: { workspaceId: string; harnessSlug: string },
@@ -1548,7 +1628,12 @@ function rubricRevisionAfterWrite(
       // activation/current-revision comparisons. Only content_snapshot is
       // enriched with structured rubric data.
       contentHash: hashPlanContent(writtenBody),
-      rationale,
+      rationale: (() => {
+        const compatibility = compatibilityAudit?.();
+        return compatibility && compatibility.upgrades.length > 0
+          ? `${rationale}; compatibility=${JSON.stringify(compatibility)}`
+          : rationale;
+      })(),
       identity,
     });
   };
@@ -1573,7 +1658,9 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   const kind = input.kind ?? 'standard';
   // Validate FIRST (fail-loud) before any write, so a malformed rubric never persists a
   // half-state (a body with no/invalid template_data).
-  let templateData = buildRubricTemplateData(input);
+  let builtTemplateData = buildRubricTemplateData(input);
+  let templateData = builtTemplateData.data;
+  let compatibilityAudit = builtTemplateData.compatibility;
   // EI-21818117666341180: acceptance-rubric method/replication prose is itself a
   // citation map. Refuse a path that exists but does not contain the explicit
   // symbol-level subject or named test case the criterion tells the grader to
@@ -1590,7 +1677,9 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // whole-document ratingScale, preserving the existing rubric's vocabulary instead
   // of silently reverting it to DEFAULT_RATING_SCALE.
   if (input.ratingScale === undefined && stored?.ratingScale) {
-    templateData = buildRubricTemplateData(input, stored);
+    builtTemplateData = buildRubricTemplateData(input, stored);
+    templateData = builtTemplateData.data;
+    compatibilityAudit = builtTemplateData.compatibility;
   }
   // EI-21296891484659125: acceptance rubrics activate on their FIRST propose (D-008),
   // but a whole-document revision must never resurrect one already retired with its
@@ -1640,6 +1729,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
         input.by,
         `rubrics:propose (${rubricStatus})`,
         templateData,
+        () => compatibilityAudit,
       ),
     },
     async (current) => {
@@ -1815,13 +1905,20 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
  */
 export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
   const scope = await resolveRubricWriteScope(input.rubricId);
+  const compatibilityAudit: { current?: RubricCompatibilityAudit } = {};
   const result = await withPlanLock<true | null>(
     null,
     {
       slug: input.rubricId,
       intent: `rubrics:amend ${input.rubricId}`,
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(input.rubricId, input.by, 'rubrics:amend'),
+      afterWrite: rubricRevisionAfterWrite(
+        input.rubricId,
+        input.by,
+        'rubrics:amend',
+        undefined,
+        () => compatibilityAudit.current,
+      ),
     },
     async (current, meta) => {
       const stored = rubricFromLockedPlan(input.rubricId, current, meta?.templateData ?? null, scope);
@@ -1831,7 +1928,9 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       // the loss guards and template schema on the same side of the advisory lock
       // as the read-modify-write itself.
       const amended = applyRubricAmendment(stored, input);
-      const templateData = buildRubricTemplateData(amended);
+      const builtTemplateData = buildRubricTemplateData(amended);
+      const templateData = builtTemplateData.data;
+      compatibilityAudit.current = builtTemplateData.compatibility;
       if (amended.kind === 'acceptance') {
         assertAcceptanceRubricCitationPathsResolve(amended.criteria, { root: amended.checkPathRoot });
       }
