@@ -849,6 +849,17 @@ export default defineTool({
         'Optional caller scope hint accepted for compatibility; ignored — tools:find is catalog-global and its scope is resolved from session context automatically.',
       ),
   }),
+  result: z
+    .object({
+      query: z.unknown().optional(),
+      count: z.unknown().optional(),
+      semantic: z.unknown().optional(),
+      registry: z.unknown().optional(),
+      activated: z.unknown().optional(),
+      hits: z.unknown().optional(),
+      howToCall: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const registry = {
       source: PROJECTED_TOOL_REGISTRY_SOURCE,
