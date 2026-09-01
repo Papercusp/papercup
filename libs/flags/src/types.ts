@@ -2164,6 +2164,11 @@ export const FLAGS = {
   // fleet-autonomy surface that can open real agent sessions; the owner flips
   // it only after reviewing the bounded deficit, duplicate-suppression, and
   // exponential-backoff behavior. OFF is a pure no-op for the routine.
+  // R5 (interrupted-member-recovery-hardening-2026-09-01): even ON, the routine
+  // acts ONLY on fleets whose persisted recipe carries `supervise: true` (the
+  // per-fleet grant set via fleet:launch-on-plan { supervise } or
+  // fleet:headcount-target { supervise }) — a per-fleet consent gate under this
+  // master one; an ungranted fleet is untouched.
   FLEET_HEADCOUNT_GOVERNOR: "papercusp-fleet-headcount-governor",
   // WI-6054 (turn-end-tracking P-016): gates `system:unguarded-halt-rescue`, the
   // SYSTEM-side leg of the unguarded-halt guard. The detector already existed
@@ -3396,7 +3401,7 @@ export const DARK_FLAGS: ReadonlyMap<
     {
       case: "owner-authority",
       reason:
-        "WI-2479: persistent per-fleet headcount auto-top-up can open real agent sessions without an attended launch call. The routine is bounded to a live deficit, uses an atomic retry lease plus the existing launch-window guard, and exponentially backs off failures, but it remains a fleet-autonomy escalation surface. OFF is a pure no-op; owner flips ON only after reviewing the no-storm and no-double-open tests.",
+        "WI-2479: persistent per-fleet headcount auto-top-up can open real agent sessions without an attended launch call. The routine is bounded to a live deficit, uses an atomic retry lease plus the existing launch-window guard, and exponentially backs off failures, but it remains a fleet-autonomy escalation surface. OFF is a pure no-op; owner flips ON only after reviewing the no-storm and no-double-open tests. R5 (interrupted-member-recovery-hardening-2026-09-01) further scopes ON to fleets whose persisted recipe carries supervise:true — ungranted fleets are untouched even with the flag ON.",
     },
   ],
   [

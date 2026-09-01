@@ -18,6 +18,7 @@ import {
   setFleetLaunchTransaction,
   FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
   type FleetHeadcountConfig,
+  type FleetHeadcountTarget,
   type FleetHeadcountBasis,
   type FleetLaunchCapacitySnapshot,
   type FleetLaunchGovernorAction,
@@ -1576,9 +1577,27 @@ async function terminalPlanStatusForFleet(
   }
 }
 
+/** R5 (interrupted-member-recovery-hardening-2026-09-01): the per-fleet
+ * supervise/auto-topup GRANT. Only a fleet whose persisted launch recipe
+ * explicitly carries `supervise: true` is eligible for ANY governor action.
+ * A recipe persisted for reuse/respawn alone (D-008/WI-41145 — every fresh
+ * homogeneous plan fleet gets one) is deliberately NOT consent: without this
+ * filter, flipping FLEET_HEADCOUNT_GOVERNOR ON would auto-top-up every fleet
+ * ever launched. Legacy rows with no config can never be granted. */
+export function grantingHeadcountTargets(
+  targets: readonly FleetHeadcountTarget[],
+): FleetHeadcountTarget[] {
+  return targets.filter((target) => target.config?.supervise === true);
+}
+
 export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<void> {
   if (!(await getFlag(FLEET_HEADCOUNT_FLAG, 'system').catch(() => false))) return;
-  const targets = await listFleetHeadcountTargets(ctx.workspaceId);
+  // R5: the flag above is the MASTER gate; the per-fleet grant scopes it. The
+  // filter runs BEFORE the wave cap so ungranted rows neither consume the
+  // per-tick budget nor receive any action (top-up OR the terminal-plan
+  // disarm) — an ungranted armed row is inert by construction, because this
+  // sweep is topUpOneFleet's only caller.
+  const targets = grantingHeadcountTargets(await listFleetHeadcountTargets(ctx.workspaceId));
   // Bounded one-wave-per-tick: the durable per-fleet lease prevents duplicate
   // opens, while this cap prevents a large fleet registry from creating a burst.
   for (const target of targets.slice(0, 4)) {

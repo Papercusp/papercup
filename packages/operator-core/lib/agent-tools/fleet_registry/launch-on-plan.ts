@@ -54,6 +54,7 @@ import {
   createFleetIfAbsent,
   fleetSlugFromName,
   getFleet,
+  getFleetHeadcountTarget,
   getFleetScheme,
   mergeFleetLaunchWorkerAttestations,
   releaseFleetLaunchSlot,
@@ -62,6 +63,7 @@ import {
   setFleetLaunchTransaction,
   type FleetLaunchTransaction,
   type FleetHeadcountConfig,
+  type FleetHeadcountTarget,
   type FleetType,
 } from '../../agent-fleets-store';
 import {
@@ -1643,6 +1645,56 @@ const PAIRED_ROLE_ARGS = z.object({
   count: z.number().int().min(1).optional(),
 });
 
+/** R5 (interrupted-member-recovery-hardening-2026-09-01): decide how an explicit
+ * `supervise` grant/revoke reaches the fleet's durable headcount row. Pure so
+ * the branch is provable without opening a terminal (this module's standing
+ * discipline). `write` non-null ⇒ the caller must rewrite the row in place; a
+ * write failure downgrades `persisted` at the call site. An undeliverable grant
+ * (no row, or a disabled row the store cannot rewrite config for) is REPORTED,
+ * never silently dropped — "reads as configured while binding nothing" is the
+ * exact D-016/WI-38048 failure class. */
+export function resolveSuperviseGrant(args: {
+  supervise: boolean | undefined;
+  /** The headcount profile as it stands AFTER any fresh-fleet persist. */
+  profile: { target: number; config: { supervise?: boolean } } | null;
+  /** The durable row (re-read for `enabled`), or null when none exists. */
+  existing: Pick<FleetHeadcountTarget, 'enabled' | 'target' | 'config'> | null;
+}): {
+  requested: boolean;
+  persisted: boolean;
+  reason: string;
+  write: { target: number; config: FleetHeadcountConfig } | null;
+} | null {
+  if (args.supervise == null) return null;
+  if (args.profile?.config.supervise === args.supervise) {
+    return {
+      requested: args.supervise,
+      persisted: true,
+      reason: 'persisted on the fleet launch recipe',
+      write: null,
+    };
+  }
+  if (args.existing?.enabled) {
+    return {
+      requested: args.supervise,
+      persisted: true,
+      reason: 'updated the existing enabled headcount row in place',
+      write: {
+        target: args.existing.target,
+        config: normalizePersistedFleetLaunchConfig({ ...args.existing.config, supervise: args.supervise }),
+      },
+    };
+  }
+  return {
+    requested: args.supervise,
+    persisted: false,
+    reason: args.existing
+      ? 'the fleet headcount row is disabled (target null) and the store cannot rewrite config without arming; arm it via fleet:headcount-target { target, supervise }'
+      : 'no homogeneous headcount recipe exists for this fleet (paired/heterogeneous launches persist none); arm one via fleet:headcount-target { target, supervise }',
+    write: null,
+  };
+}
+
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
@@ -1738,6 +1790,12 @@ export default defineTool({
       .optional()
       .describe(
         "Auto-mode carry for EVERY member (default 'warm'), INDEPENDENT of `headless`: 'warm' = each loop:arm wake resumes the SAME live context (fast, remembers the thread); 'cold' = each wake starts a FRESH context reconstructed from the member's last checkpoint (cheaper long-run, survives compaction, but the carry-note is the ONLY memory). Threads into the member baseline so a cold member arms `loop:arm { carry:'cold' }` and treats its checkpoint as load-bearing. ANNOUNCE the choice to the owner per the persona spawn-disclosure rule (alongside account + model).",
+      ),
+    supervise: z
+      .boolean()
+      .optional()
+      .describe(
+        'R5 per-fleet governor grant: true opts THIS fleet into fleet-headcount auto-top-up by persisting `supervise: true` on its durable launch recipe (the governor acts only on granting fleets, and only while FLEET_HEADCOUNT_GOVERNOR is ON); false revokes; omit leaves the stored grant untouched. An undeliverable grant (paired/heterogeneous launch, or an existing fleet with no ENABLED headcount row) is reported on the result as `superviseGrant`, never silently dropped.',
       ),
     overrideCapacityClamp: z
       .boolean()
@@ -4061,6 +4119,8 @@ export default defineTool({
         ...(args.compactionLimit != null ? { compactionLimit: args.compactionLimit } : {}),
         carry: args.carry ?? 'warm',
         ...(args.extraArgs ? { extraArgs: [...args.extraArgs] } : {}),
+        // R5: an explicit supervise grant/revoke rides the fresh-recipe persist.
+        ...(args.supervise != null ? { supervise: args.supervise } : {}),
       });
       try {
         await setFleetHeadcountTarget({ workspaceId, fleetSlug, target: count, config });
@@ -5004,6 +5064,8 @@ export default defineTool({
               reusePath: savedLaunchSpec.reusePath,
             }
           : null,
+        // R5: how an explicit `supervise` arg landed (null = arg omitted).
+        superviseGrant,
         ignoredRoleDiagnostics,
         // P-004: the resolved per-member config (model/account/carry/compactionLimit/claimKinds),
         // null for a homogeneous (no-`members`) launch. `carry` here is honored per member; the

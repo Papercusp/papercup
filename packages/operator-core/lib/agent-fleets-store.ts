@@ -289,6 +289,13 @@ export interface FleetHeadcountConfig {
   /** Minimum worker-ready members required before the governor opens a
    * multi-member refill wave. Below this floor it launches one canary only. */
   productiveCapacityFloor?: number;
+  /** R5 (interrupted-member-recovery-hardening-2026-09-01): the per-fleet
+   * supervise/auto-topup GRANT. The headcount governor acts ONLY on fleets
+   * whose persisted recipe carries `supervise: true`; FLEET_HEADCOUNT_GOVERNOR
+   * stays the master gate above it. Absent/false = not granted — a recipe
+   * persisted for reuse/respawn alone (D-008/WI-41145) is not supervision
+   * consent. */
+  supervise?: boolean;
   /** Background drain fleets default headless; false explicitly preserves visible placement. */
   headless?: boolean;
   role?: string;

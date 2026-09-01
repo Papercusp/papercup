@@ -33,6 +33,10 @@ export default defineTool({
       .max(FLEET_MAX_TARGET_MEMBERS)
       .optional()
       .describe('Worker-ready members required before the governor may open a multi-member refill wave. Defaults to one canary.'),
+    supervise: z
+      .boolean()
+      .optional()
+      .describe('R5 per-fleet governor grant: true opts this fleet into fleet-headcount auto-top-up while FLEET_HEADCOUNT_GOVERNOR is ON; false revokes; omit preserves the stored grant. A governance knob, not a boot setting — changing it needs no replaceExisting.'),
     harness: z.string().min(1).describe('Harness containing the plan.'),
     plan: z.string().min(1).describe('Plan whose work the top-up members should pull.'),
     agent: z.enum(['claude', 'omp', 'codex']).optional().describe('Agent backend. Omit to preserve an existing profile; a new profile defaults to claude.'),
@@ -112,6 +116,11 @@ export default defineTool({
       ...(args.productiveCapacityFloor != null
         ? { productiveCapacityFloor: args.productiveCapacityFloor }
         : {}),
+      // R5: the supervise grant is deliberately outside the saved-spec conflict
+      // fields — granting/revoking supervision is a governance act, not an
+      // audited boot-setting change. Omission preserves the stored value via
+      // the `existing.config` spread above.
+      ...(args.supervise != null ? { supervise: args.supervise } : {}),
       headless: args.headless ?? existing?.config.headless ?? true,
       ...(args.role ? { role: args.role } : {}),
       ...(args.brief ? { brief: args.brief } : {}),
