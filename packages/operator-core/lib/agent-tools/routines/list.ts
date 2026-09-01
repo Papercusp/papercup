@@ -540,6 +540,25 @@ export default defineTool({
       });
     }
   }),
+  result: z
+    .object({
+      count: z.number().int().nonnegative().optional(),
+      routines: z.array(z.unknown()).optional(),
+      rollup: z.array(z.unknown()).optional(),
+      installSlug: z.string().optional(),
+      name: z.string().optional(),
+      triggerKind: z.string().nullable().optional(),
+      cron: z.string().nullable().optional(),
+      targetRole: z.string().nullable().optional(),
+      active: z.boolean().optional(),
+      nextFireAt: z.string().nullable().optional(),
+      lastFiredAt: z.string().nullable().optional(),
+      group: z.string().nullable().optional(),
+      paused: z.unknown().nullable().optional(),
+      health: z.unknown().nullable().optional(),
+      plane: z.unknown().optional(),
+    })
+    .passthrough(),
   // context-trimming-tiers P-023: rows are already lean scalars, so the CAP=60 row
   // cap plus a loud notice row IS the size control (count keeps the true total);
   // standard falls through to full.
