@@ -2792,6 +2792,55 @@ fi
 
 log "isolated instance ready: pid=$VERIFY_TAURI_PID port=$VERIFY_TAURI_PORT display=$VERIFY_TAURI_DISPLAY"
 
+# EI-19481468061988626: xdotool's `getwindowgeometry Position` is the
+# window-manager frame origin, not the WebView's client origin.  On the shared
+# GNOME/X11 host the frame was 22px taller than the client area, so a perfectly
+# valid coordinate aimed at one control landed on the control immediately
+# below it.  Resolve the verifier's window by PID and print the client origin
+# from xwininfo, together with a ready-to-paste REAL X11 click recipe.  This is
+# diagnostic output only; the verifier never moves the pointer or steals focus
+# on its own.
+print_x11_client_click_helper() {
+  local wid xwininfo_output client_x client_y frame_x frame_y
+  command -v xdotool >/dev/null 2>&1 || {
+    log "X11 client origin unavailable: xdotool is not installed (bridge clicks remain available; Radix popovers need a real X11 click)."
+    return 0
+  }
+  command -v xwininfo >/dev/null 2>&1 || {
+    log "X11 client origin unavailable: xwininfo is not installed (bridge clicks remain available; Radix popovers need a real X11 click)."
+    return 0
+  }
+  wid="$(DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool search --pid "$VERIFY_TAURI_PID" 2>/dev/null | tail -1)"
+  if [ -z "$wid" ]; then
+    log "X11 client origin unavailable: no window belongs to verifier pid=$VERIFY_TAURI_PID on display=$VERIFY_TAURI_DISPLAY."
+    return 0
+  fi
+  xwininfo_output="$(DISPLAY="$VERIFY_TAURI_DISPLAY" xwininfo -id "$wid" 2>/dev/null || true)"
+  client_x="$(awk '/Absolute upper-left X/{print $4; exit}' <<<"$xwininfo_output")"
+  client_y="$(awk '/Absolute upper-left Y/{print $4; exit}' <<<"$xwininfo_output")"
+  frame_x="$(DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool getwindowgeometry --shell "$wid" 2>/dev/null | sed -n 's/^X=//p' | head -1)"
+  frame_y="$(DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool getwindowgeometry --shell "$wid" 2>/dev/null | sed -n 's/^Y=//p' | head -1)"
+  if ! [[ "$client_x" =~ ^-?[0-9]+$ && "$client_y" =~ ^-?[0-9]+$ ]]; then
+    log "X11 client origin unavailable: xwininfo returned no numeric client origin for WID=$wid."
+    return 0
+  fi
+  log "X11 verifier window: WID=$wid client_origin=($client_x,$client_y)${frame_x:+ frame_position=($frame_x,$frame_y)}"
+  cat >&2 <<X11_HELPER
+[verify-tauri-headless] Ready-to-paste REAL X11 click helper (client coordinates; do not use xdotool getwindowgeometry Position):
+  WID=$wid
+  CLIENT_CX=<x coordinate inside the WebView>
+  CLIENT_CY=<y coordinate inside the WebView>
+  read OX OY < <(DISPLAY="$VERIFY_TAURI_DISPLAY" xwininfo -id "\$WID" | awk '/Absolute upper-left X/{x=\$4} /Absolute upper-left Y/{y=\$4} END{print x, y}')
+  DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool mousemove --sync \$((OX + CLIENT_CX)) \$((OY + CLIENT_CY))
+  DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool click 1
+
+  # For controls activated by pointerdown (including Radix Popover), a
+  # tauri-agent-tools/DOM synthetic click can stay closed; use the X11 click
+  # above, then assert the intended target (document.activeElement/focusin).
+X11_HELPER
+}
+print_x11_client_click_helper
+
 # EI-19930573774744721: every check above (bridge PID alive, origin health 200)
 # is silent about WHICH harness slug this instance actually booted into — and
 # it boots into whatever slug was last persisted (shared DB/workspace unless
