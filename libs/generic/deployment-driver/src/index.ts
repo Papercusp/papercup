@@ -409,24 +409,27 @@ export {
 } from "./workspace-host-credential-namespace";
 export type {
   WorkspaceHostCanaryAgent,
+  WorkspaceHostAgentVerificationKind,
   WorkspaceHostAgentSubjectDisclosure,
-  WorkspaceHostAgentAuthenticationProbeSpec,
+  WorkspaceHostAgentVerificationProbeSpec,
   WorkspaceHostAgentProbeInvocation,
   WorkspaceHostAgentProbeOutcome,
   WorkspaceHostAgentProbeRunner,
-  WorkspaceHostAgentAuthenticationEvidence,
+  WorkspaceHostAgentVerificationEvidence,
   WorkspaceHostAgentProbeFailureReason,
-  WorkspaceHostAgentAuthenticationReport,
+  WorkspaceHostAgentVerificationReport,
   ProbeWorkspaceHostAgentInput,
   ProbeWorkspaceHostAgentsInput,
 } from "./workspace-host-agent-authentication";
 export {
-  WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+  WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CANARY_AGENTS,
-  DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES,
+  WORKSPACE_HOST_OMP_LOCAL_MODEL,
+  WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER,
+  DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES,
   NodeWorkspaceHostAgentProbeRunner,
   workspaceHostAgentSubjectDigest,
-  probeWorkspaceHostAgentAuthentication,
+  probeWorkspaceHostAgentVerification,
   probeWorkspaceHostAgents,
 } from "./workspace-host-agent-authentication";
 export type {
@@ -495,6 +498,7 @@ export type {
   WorkspaceHostAgentHomeFamily,
   WorkspaceHostAgentHomeFile,
   WorkspaceHostAgentHomeBundle,
+  WorkspaceHostAgentHomeBundleFiles,
   WorkspaceHostAgentHomeState,
   WorkspaceHostAgentHomeFilesystem,
   WorkspaceHostAgentHomeConsumerOptions,
@@ -502,6 +506,7 @@ export type {
 } from "./workspace-host-agent-home";
 export {
   WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+  WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION,
   WORKSPACE_HOST_AGENT_HOME_FILES,
   WORKSPACE_HOST_AGENT_HOME_STATE_VERSION,
   WORKSPACE_HOST_AGENT_HOME_FAMILIES,
