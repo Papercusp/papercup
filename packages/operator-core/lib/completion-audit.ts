@@ -697,6 +697,54 @@ export function isBackedLiveDroveUiClaim(evidence: CompletionVerificationEvidenc
 }
 
 /**
+ * EI-20096763429995249 — is a `verifiedHow: 'live-service'` claim backed by
+ * evidence from a real running process/service rather than by a test suite wearing
+ * a stronger label?
+ *
+ * The two required facts may be split across `testsRun` and `testResult` because
+ * callers naturally put the command in one and its observations in the other:
+ *
+ *  1. a concrete service/unit/process identity; and
+ *  2. a falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or
+ *     an HTTP response status).
+ *
+ * Summary prose and `filesChanged` deliberately do not count. They cannot show what
+ * runtime check ran or what it observed, and accepting them would make the label as
+ * unauditable as the `integration` label this one was introduced to distinguish.
+ * Returns true for every other `verifiedHow` value so callers can compose this with
+ * the existing label-specific guards without changing their scope.
+ */
+export function isBackedLiveServiceClaim(
+  evidence: CompletionVerificationEvidence | null | undefined,
+): boolean {
+  if (!evidence || evidence.verifiedHow !== 'live-service') return true;
+
+  const runtimeEvidence = [evidence.testsRun, evidence.testResult]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n');
+  if (!runtimeEvidence) return false;
+
+  const namesConcreteService = [
+    // Canonical systemd unit identity, including templated units.
+    /\b[\w@.-]+\.service\b/i,
+    // Other supervisors/process managers still need a named runtime target.
+    /\b(?:service|systemd\s+unit|unit|daemon|process)\s+(?:named\s+)?[`'"]?[\w@./:-]{2,}/i,
+    /\b(?:service|unit|daemon|process)\s*[:=]\s*[`'"]?[\w@./:-]{2,}/i,
+  ].some((pattern) => pattern.test(runtimeEvidence));
+
+  const citesFalsifiableObservation = [
+    /\bMainPID\s*(?:=|:)\s*\d+\b/i,
+    /\bNRestarts\s*(?:=|:)\s*\d+\b/i,
+    /\bActiveState\s*(?:=|:)\s*(?:active|inactive|failed|activating|deactivating)\b/i,
+    /\bHTTP(?:\/\d(?:\.\d)?)?(?:\s+status)?\s*(?:=|:)?\s*[1-5]\d{2}\b/i,
+    /\b(?:GET|HEAD|POST|PUT|PATCH|DELETE)\s+\S+[^\n]{0,80}(?:->|→|returned|status)\s*[1-5]\d{2}\b/i,
+    /https?:\/\/\S+[^\n]{0,80}(?:->|→|returned|status)\s*[1-5]\d{2}\b/i,
+  ].some((pattern) => pattern.test(runtimeEvidence));
+
+  return namesConcreteService && citesFalsifiableObservation;
+}
+
+/**
  * EI-18797014705631713 — the hole the text-level gate above left open, and the reason
  * it is not enough on its own.
  *

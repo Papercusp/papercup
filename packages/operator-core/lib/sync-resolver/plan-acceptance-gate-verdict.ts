@@ -62,6 +62,8 @@ export interface PlanAcceptanceGateVerdictRow {
   rubricId: string | null;
   /** Rubric VERDICT: the INDEPENDENT grader who satisfied the gate, if any. */
   gradedBy: string | null;
+  /** Criterion keys rated `unknown` by the authoritative independent grading. */
+  unknownRatedCriteria: string[];
   /**
    * HOW that grader was selected — `'minimum'` means the relevance router did
    * NOT match them and they were taken as a below-floor minimum-fill
@@ -99,6 +101,7 @@ export async function resolvePlanAcceptanceGateVerdict(
         message: v.message ?? null,
         rubricId: v.rubricId ?? null,
         gradedBy: v.gradedBy ?? null,
+        unknownRatedCriteria: [...(v.unknownRatedCriteria ?? [])],
         gradedVia: v.gradedVia ?? null,
         forcedPast: v.forcedPast
           ? { reason: v.forcedPast.reason, checks: [...v.forcedPast.checks] }
@@ -127,6 +130,7 @@ export async function resolvePlanAcceptanceGateVerdict(
         }).`,
         rubricId: null,
         gradedBy: null,
+        unknownRatedCriteria: [],
         gradedVia: null,
         forcedPast: null,
         vettedUnderWaiver: null,

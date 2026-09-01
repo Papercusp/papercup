@@ -37,6 +37,7 @@ import {
   COMPLETION_AUTHORITY_FILTERS,
   hasIntermittentFailureRateEvidence,
   isBackedLiveDroveUiClaim,
+  isBackedLiveServiceClaim,
   KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES,
   looksLikeIntermittentClassification,
   RECONCILER_SYSTEM_ACTOR,
@@ -73,6 +74,80 @@ function recordingSql() {
     unsafe: (s: string) => unknown;
   };
 }
+
+describe("live-service completion evidence (EI-20096763429995249)", () => {
+  it.each([
+    'MainPID=4242',
+    'NRestarts=0',
+    'ActiveState=active',
+    'HTTP/1.1 200',
+    'GET http://localhost:3170/api/health -> 200',
+  ])('accepts a named service plus falsifiable runtime observation: %s', (observation) => {
+    expect(
+      isBackedLiveServiceClaim({
+        verifiedHow: 'live-service',
+        testsRun: 'dev:restart followed by systemctl show papercup-staging-api.service',
+        testResult: observation,
+      }),
+    ).toBe(true);
+  });
+
+  it('accepts a non-systemd process when it is concretely named', () => {
+    expect(
+      isBackedLiveServiceClaim({
+        verifiedHow: 'live-service',
+        testsRun: 'restarted process: papercusp-inference-gateway',
+        testResult: 'GET http://localhost:8788/health returned 204',
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects a unit/integration test run with no live runtime observation', () => {
+    expect(
+      isBackedLiveServiceClaim({
+        verifiedHow: 'live-service',
+        testsRun: 'npm run test:file -- bundle-host.test.ts',
+        testResult: '18/18 tests passed',
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects runtime-looking values that name no concrete service or process', () => {
+    expect(
+      isBackedLiveServiceClaim({
+        verifiedHow: 'live-service',
+        testsRun: 'restarted it and checked health',
+        testResult: 'ActiveState=active; MainPID=4242; HTTP 200',
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects a named service with only a subjective success claim', () => {
+    expect(
+      isBackedLiveServiceClaim({
+        verifiedHow: 'live-service',
+        testsRun: 'restarted papercup-staging-api.service',
+        testResult: 'came up clean and looked healthy',
+      }),
+    ).toBe(false);
+  });
+
+  it('does not launder summary prose into runtime evidence', () => {
+    expect(
+      isBackedLiveServiceClaim({
+        verifiedHow: 'live-service',
+        summary: 'papercup-staging-api.service had ActiveState=active and MainPID=4242',
+      }),
+    ).toBe(false);
+  });
+
+  it.each([undefined, 'unit', 'integration', 'live-drove-ui', 'manual', 'already-passing'])(
+    'leaves other verifiedHow labels untouched: %s',
+    (verifiedHow) => {
+      expect(isBackedLiveServiceClaim(verifiedHow ? { verifiedHow } : undefined)).toBe(true);
+    },
+  );
+});
 
 const frag = (x: unknown) => x as unknown as { text: string; params: unknown[] };
 

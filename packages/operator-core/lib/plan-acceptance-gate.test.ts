@@ -308,6 +308,25 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(v).toMatchObject({ satisfied: true, rubricId: 'ar-some-plan', gradedBy: 'su-grader' });
   });
 
+  it('satisfies the process gate but reports criteria rated UNKNOWN by the authoritative grader', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([
+      scorecard({
+        createdBy: 'su-grader',
+        ratings: { k1: { rating: 'unknown', evidence: 'not measurable in this window' } },
+      }),
+    ]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+    expect(v).toMatchObject({
+      satisfied: true,
+      rubricId: 'ar-some-plan',
+      gradedBy: 'su-grader',
+      unknownRatedCriteria: ['k1'],
+    });
+  });
+
   it('a new independent grading without an implementer verdict refuses acceptance_not_recorded', async () => {
     mockRubric.mockResolvedValue(acceptanceRubric());
     mockScorecards.mockResolvedValue([scorecard({ createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' })]);

@@ -13,6 +13,10 @@ const MIGRATION = readFileSync(
   resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1062-resource-governor-admission-ledger.sql'),
   'utf8',
 );
+const OVERLAP_GUARD_MIGRATION = readFileSync(
+  resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1067-resource-governor-cutover-collision-guard.sql.DRAFT'),
+  'utf8',
+);
 
 const WORKSPACE = 'ws-cutover';
 const NAMESPACE = 'cutover-integration';
@@ -63,6 +67,7 @@ beforeAll(async () => {
     )
     .simple();
   await db.sql.unsafe(MIGRATION).simple();
+  await db.sql.unsafe(OVERLAP_GUARD_MIGRATION).simple();
 }, 60_000);
 
 afterAll(async () => {
@@ -140,12 +145,28 @@ describe('PgAdmissionCutoverQueueStore', () => {
     expect((await modern.driver.markRunning(claim.receiptId, claim.lease.leaseId))?.changed).toBe(true);
     expect((await modern.driver.complete(claim.receiptId, claim.lease.leaseId, 'result:legacy'))?.changed).toBe(true);
 
-    await expect(
-      runtime('legacy', 'stale-binary').governor.admit({
-        idempotencyKey: 'post-latch-old-writer',
-        admissionClass: 'process',
-      }),
-    ).rejects.toThrow(/legacy work_items receipt insertion is disabled|post.cutover.guard/i);
+    const overlapNow = Date.now() + 1_000;
+    const staleBinary = runtime('legacy', 'stale-binary', { now: () => overlapNow });
+    const overlap = await staleBinary.governor.admit({
+      idempotencyKey: 'post-latch-old-writer',
+      admissionClass: 'process',
+    });
+    if (overlap.kind !== 'queued') throw new Error('expected a bounded overlap receipt');
+    expect(overlap.receipt.receiptId).toMatch(/^WI-/);
+    const overlapModern = runtime('cutover', 'overlap-modern', { now: () => overlapNow + 1_000 });
+    const overlapResumed = await overlapModern.governor.admit({
+      idempotencyKey: 'post-latch-old-writer',
+      admissionClass: 'process',
+    });
+    if (overlapResumed.kind !== 'queued') throw new Error('expected the overlap receipt');
+    expect(overlapResumed.receipt.receiptId).toBe(overlap.receipt.receiptId);
+    const overlapClaim = await overlapModern.driver.leaseReceipt({
+      receiptId: overlap.receipt.receiptId,
+      owner: 'owner-overlap',
+      ttlMs: 5_000,
+    });
+    if (!overlapClaim) throw new Error('expected the overlap receipt to remain leaseable');
+    await overlapModern.driver.complete(overlapClaim.receiptId, overlapClaim.lease.leaseId, 'result:overlap');
 
     const fresh = await modern.governor.admit({
       idempotencyKey: 'ledger-only',
@@ -157,18 +178,61 @@ describe('PgAdmissionCutoverQueueStore', () => {
     const rows = await db.sql<Array<{ feature_id: string; state: string }>>`
       SELECT feature_id, payload->'resource_governor'->>'state' AS state
         FROM harness_shared.work_items
-       WHERE workspace_id = ${WORKSPACE}`;
-    expect(rows).toEqual([{ feature_id: prior.receipt.receiptId, state: 'completed' }]);
+       WHERE workspace_id = ${WORKSPACE}
+       ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: prior.receipt.receiptId, state: 'completed' },
+      { feature_id: overlap.receipt.receiptId, state: 'completed' },
+    ]);
     await expect((modern.store as PgAdmissionCutoverQueueStore).readCutoverCensus()).resolves.toMatchObject({
       cutoverLatched: true,
+      legacyWritersRetired: false,
       ledgerTotal: 1,
       ledgerActive: 1,
-      legacyTotal: 1,
+      legacyTotal: 2,
       legacyActive: 0,
-      legacyTerminal: 1,
-      legacyCreatedAfterCutover: 0,
-      terminalLegacyDeletionReady: true,
+      legacyTerminal: 2,
+      legacyCreatedAfterCutover: 1,
+      legacyCreatedAfterRetirement: 0,
+      terminalLegacyDeletionReady: false,
     });
+  });
+
+  it('lets an unrelated old writer overlap but rejects ledger identity and active coalesce collisions', async () => {
+    const modern = runtime('cutover', 'ledger-owner');
+    const ledger = await modern.governor.admit({
+      idempotencyKey: 'ledger-identity',
+      admissionClass: 'process',
+    });
+    if (ledger.kind !== 'queued') throw new Error('expected ledger identity');
+    expect(ledger.receipt.receiptId).toMatch(/^RG-/);
+
+    await expect(
+      runtime('legacy', 'identity-collider').governor.admit({
+        idempotencyKey: 'ledger-identity',
+        admissionClass: 'process',
+      }),
+    ).rejects.toThrow(/identity already exists in the ledger|cross.store.identity.guard/i);
+
+    await modern.governor.admit({
+      idempotencyKey: 'ledger-coalesce-owner',
+      admissionClass: 'embedding',
+      coalesceKey: 'shared-index',
+    });
+    await expect(
+      runtime('legacy', 'coalesce-collider').governor.admit({
+        idempotencyKey: 'old-coalesce-request',
+        admissionClass: 'embedding',
+        coalesceKey: 'shared-index',
+      }),
+    ).rejects.toThrow(/active coalesce peer already exists in the ledger|cross.store.coalesce.guard/i);
+
+    const unrelated = await runtime('legacy', 'unrelated-old-writer').governor.admit({
+      idempotencyKey: 'unrelated-overlap',
+      admissionClass: 'agent',
+    });
+    if (unrelated.kind !== 'queued') throw new Error('expected unrelated overlap admission');
+    expect(unrelated.receipt.receiptId).toMatch(/^WI-/);
   });
 
   it('serializes an old/new identity race to exactly one durable receipt', async () => {
@@ -196,7 +260,7 @@ describe('PgAdmissionCutoverQueueStore', () => {
       expect(modernResult.value.receipt.receiptId).toBe(oldResult.value.receipt.receiptId);
       expect(modernResult.value.receipt.receiptId).toMatch(/^WI-/);
     } else if (oldResult.status === 'rejected') {
-      expect(String(oldResult.reason)).toMatch(/cutover|legacy work_items receipt insertion is disabled/i);
+      expect(String(oldResult.reason)).toMatch(/identity already exists|cross.store.identity.guard/i);
       expect(counts[0]).toEqual({ ledger: 1, legacy: 0 });
     } else {
       throw new Error('the modern cutover writer must always converge or create the receipt');
@@ -250,6 +314,36 @@ describe('PgAdmissionCutoverQueueStore', () => {
         admissionClass: 'process',
       }),
     ).rejects.toThrow(/exists in both/i);
+  });
+
+  it('requires an explicit retired-writers watermark and invalidates it if a later legacy row appears', async () => {
+    const modern = runtime('cutover', 'retirement-control');
+    await modern.governor.admit({ idempotencyKey: 'ledger-control', admissionClass: 'agent' });
+    const retiredAtMs = Date.now() + 5_000;
+    await db.sql`
+      INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
+      VALUES (
+        ${`resource_governor_admission_legacy_writers_retired:${WORKSPACE}`},
+        '1',
+        'integration retirement positive control',
+        ${retiredAtMs},
+        ${WORKSPACE}
+      )`;
+    await expect((modern.store as PgAdmissionCutoverQueueStore).readCutoverCensus()).resolves.toMatchObject({
+      legacyWritersRetired: true,
+      legacyActive: 0,
+      legacyCreatedAfterRetirement: 0,
+      terminalLegacyDeletionReady: true,
+    });
+
+    const lateLegacy = runtime('legacy', 'late-legacy', { now: () => retiredAtMs + 1_000 });
+    await lateLegacy.governor.admit({ idempotencyKey: 'late-legacy', admissionClass: 'process' });
+    await expect((modern.store as PgAdmissionCutoverQueueStore).readCutoverCensus()).resolves.toMatchObject({
+      legacyWritersRetired: true,
+      legacyActive: 1,
+      legacyCreatedAfterRetirement: 1,
+      terminalLegacyDeletionReady: false,
+    });
   });
 
   it('reclaims an explicitly ended ledger owner but preserves a lease renewed after the liveness read', async () => {

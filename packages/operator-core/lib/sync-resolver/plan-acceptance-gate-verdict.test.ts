@@ -45,6 +45,7 @@ type Row = {
   message: string | null;
   rubricId: string | null;
   gradedBy: string | null;
+  unknownRatedCriteria: string[];
   forcedPast: { reason: string; checks: string[] } | null;
   vettedUnderWaiver: { consultId: string; reason: string | null } | null;
   unavailableReason: string | null;
@@ -137,6 +138,16 @@ describe('P-011 acceptance-gate read — never flatten a non-check into a pass',
 
     expect(row.rubricId).toBe('RB-1');
     expect(row.gradedBy).toBe('su-peer');
+  });
+
+  it('carries authoritative UNKNOWN criterion keys and copies the array', async () => {
+    const unknownRatedCriteria = ['central-outcome'];
+    gateSpy.mockResolvedValue({ satisfied: true, unknownRatedCriteria });
+
+    const row = await run();
+    unknownRatedCriteria.push('mutated-after-the-fact');
+
+    expect(row.unknownRatedCriteria).toEqual(['central-outcome']);
   });
 });
 

@@ -25,6 +25,8 @@ import {
 const RECONCILE_LOCK_PREFIX = 'resource-governor-reconcile:';
 const RECONCILE_BATCH_SIZE = 25;
 export const RESOURCE_GOVERNOR_LEDGER_CUTOVER_SETTING_PREFIX = 'resource_governor_admission_ledger_cutover:';
+export const RESOURCE_GOVERNOR_LEGACY_WRITERS_RETIRED_SETTING_PREFIX =
+  'resource_governor_admission_legacy_writers_retired:';
 
 type ResolveSessionStates = typeof import('../agent-tools/coordination/liveness-oracle').resolveSessionStates;
 
@@ -167,7 +169,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
       ) VALUES (
         ${key},
         '1',
-        'Resource-governor admission persistence is ledger-only; reject new legacy work-item receipts.',
+        'New-code resource-governor admissions are ledger-only; bound old-writer overlap with cross-store collision guards.',
         ${Date.now()},
         ${this.workspaceId}
       )

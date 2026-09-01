@@ -3,13 +3,14 @@
  *
  * New identities are always written to the dedicated admission ledger. The
  * work-item store is present only to finish receipts created by an older binary
- * before the workspace cutover latch was committed.
+ * while independently deployed writer generations overlap.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { AdmissionPersistenceError, type QueueReceiptState, type ResourceDemand } from './admission';
 import {
   PgAdmissionLedgerQueueStore,
+  RESOURCE_GOVERNOR_LEGACY_WRITERS_RETIRED_SETTING_PREFIX,
   RESOURCE_GOVERNOR_LEDGER_CUTOVER_SETTING_PREFIX,
   type AdmissionLedgerLegacyAdapter,
 } from './admission-ledger-store';
@@ -38,6 +39,7 @@ interface CountRow {
   total: number | string | null;
   active: number | string | null;
   created_after_cutover?: number | string | null;
+  created_after_retirement?: number | string | null;
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | null {
@@ -213,12 +215,15 @@ export interface PgAdmissionCutoverQueueStoreOptions {
 export interface AdmissionCutoverCensus {
   readonly cutoverLatched: boolean;
   readonly cutoverAtMs: number | null;
+  readonly legacyWritersRetired: boolean;
+  readonly legacyWritersRetiredAtMs: number | null;
   readonly ledgerTotal: number;
   readonly ledgerActive: number;
   readonly legacyTotal: number;
   readonly legacyActive: number;
   readonly legacyTerminal: number;
   readonly legacyCreatedAfterCutover: number;
+  readonly legacyCreatedAfterRetirement: number;
   /** P-005 may delete terminal legacy rows only after this becomes true. */
   readonly terminalLegacyDeletionReady: boolean;
 }
@@ -358,15 +363,18 @@ export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore 
   }
 
   async readCutoverCensus(): Promise<AdmissionCutoverCensus> {
-    const key = `${RESOURCE_GOVERNOR_LEDGER_CUTOVER_SETTING_PREFIX}${this.workspaceId}`;
-    const latchRows = await this.sql<Array<{ value: string; updated_at: number | string | null }>>`
-      SELECT value, updated_at
+    const cutoverKey = `${RESOURCE_GOVERNOR_LEDGER_CUTOVER_SETTING_PREFIX}${this.workspaceId}`;
+    const retiredKey = `${RESOURCE_GOVERNOR_LEGACY_WRITERS_RETIRED_SETTING_PREFIX}${this.workspaceId}`;
+    const settingRows = await this.sql<Array<{ key: string; value: string; updated_at: number | string | null }>>`
+      SELECT key, value, updated_at
         FROM harness_shared.operator_settings
-       WHERE key = ${key}
-       LIMIT 1`;
-    const latch = latchRows[0];
+       WHERE key IN (${cutoverKey}, ${retiredKey})`;
+    const latch = settingRows.find((row) => row.key === cutoverKey);
+    const retired = settingRows.find((row) => row.key === retiredKey);
     const cutoverLatched = latch?.value === '1';
     const cutoverAtMs = cutoverLatched ? count(latch?.updated_at) : null;
+    const legacyWritersRetired = retired?.value === '1';
+    const legacyWritersRetiredAtMs = legacyWritersRetired ? count(retired?.updated_at) : null;
     const [ledgerRows, legacyRows] = await Promise.all([
       this.sql<CountRow[]>`
         SELECT count(*)::bigint AS total,
@@ -381,7 +389,11 @@ export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore 
                count(*) FILTER (
                  WHERE ${cutoverAtMs}::bigint IS NOT NULL
                    AND created_ts > ${cutoverAtMs}
-               )::bigint AS created_after_cutover
+               )::bigint AS created_after_cutover,
+               count(*) FILTER (
+                 WHERE ${legacyWritersRetiredAtMs}::bigint IS NOT NULL
+                   AND created_ts > ${legacyWritersRetiredAtMs}
+               )::bigint AS created_after_retirement
           FROM harness_shared.work_items
          WHERE workspace_id = ${this.workspaceId}
            AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}`,
@@ -391,17 +403,25 @@ export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore 
     const legacyTotal = count(legacyRows[0]?.total);
     const legacyActive = count(legacyRows[0]?.active);
     const legacyCreatedAfterCutover = count(legacyRows[0]?.created_after_cutover);
+    const legacyCreatedAfterRetirement = count(legacyRows[0]?.created_after_retirement);
     return {
       cutoverLatched,
       cutoverAtMs,
+      legacyWritersRetired,
+      legacyWritersRetiredAtMs,
       ledgerTotal,
       ledgerActive,
       legacyTotal,
       legacyActive,
       legacyTerminal: legacyTotal - legacyActive,
       legacyCreatedAfterCutover,
+      legacyCreatedAfterRetirement,
       terminalLegacyDeletionReady:
-        cutoverLatched && ledgerTotal > 0 && legacyActive === 0 && legacyCreatedAfterCutover === 0,
+        cutoverLatched &&
+        legacyWritersRetired &&
+        ledgerTotal > 0 &&
+        legacyActive === 0 &&
+        legacyCreatedAfterRetirement === 0,
     };
   }
 

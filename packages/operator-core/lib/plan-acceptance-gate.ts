@@ -99,6 +99,12 @@ export interface PlanAcceptanceGateVerdict {
   /** The independent grader satisfying the gate, when satisfied by a grading. */
   gradedBy?: string | null;
   /**
+   * Criterion keys whose authoritative grading explicitly recorded `unknown`.
+   * `unknown` is a valid categorical rating and therefore does not change the
+   * process-gate decision, but it is not evidence that the criterion was verified.
+   */
+  unknownRatedCriteria?: string[];
+  /**
    * HOW that grader was selected, read from the durable grading-cascade row
    * (unified-responder-selection-critique-and-grading-2026-08-30 P-004):
    * `'floor'` = cleared the relevance floor; `'minimum'` = a below-floor
@@ -745,6 +751,11 @@ export async function evaluatePlanAcceptanceGate(
   const graderVia = await readGraderSelectionVia(rubric.workspaceId, rubric.rubricId);
   const independent = pickAuthoritativeGrading(independentCards, (s) => gradingViaOf(s, graderVia));
   const independentVia = independent ? gradingViaOf(independent, graderVia) : null;
+  const unknownRatedCriteria = independent
+    ? rubric.criteria
+        .filter((criterion) => independent.ratings[criterion.key]?.rating.trim().toLowerCase() === 'unknown')
+        .map((criterion) => criterion.key)
+    : [];
   if (!independent) {
     return {
       satisfied: false,
@@ -777,6 +788,7 @@ export async function evaluatePlanAcceptanceGate(
       rubricId: rubric.rubricId,
       gradedBy: independent.createdBy ?? null,
       gradedVia: independentVia,
+      ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
       message:
         `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' was vetted at ` +
         `${vettingAttestedAt}, AFTER the independent grading at ${independent.createdAt} — so the grading was ` +
@@ -802,6 +814,7 @@ export async function evaluatePlanAcceptanceGate(
       rubricId: rubric.rubricId,
       gradedBy: independent.createdBy ?? null,
       gradedVia: independentVia,
+      ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
       message:
         `plan '${planSlug}' has a complete independent grading by '${independent.createdBy ?? 'unknown'}', but ` +
         `its implementer${implementer ? ` ('${implementer}')` : ''} has not recorded the post-grading acceptance ` +
@@ -817,6 +830,7 @@ export async function evaluatePlanAcceptanceGate(
       rubricId: rubric.rubricId,
       gradedBy: independent.createdBy ?? null,
       gradedVia: independentVia,
+      ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
       message:
         `plan '${planSlug}' cannot be marked shipped: implementer '${implementer}' recorded REJECT — ` +
         `${latestVerdict.acceptance.reasoning}. Address the grading, then record a newer acceptance verdict with ` +
@@ -830,6 +844,7 @@ export async function evaluatePlanAcceptanceGate(
     ...(specCoverage ? { specCoverage } : {}),
     gradedBy: independent.createdBy ?? null,
     gradedVia: independentVia,
+    ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
     ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
   };
 }

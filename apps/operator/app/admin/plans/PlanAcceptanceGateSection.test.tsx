@@ -9,13 +9,14 @@
  *
  * THE CLASS PINNED HERE IS THE INVERSE OF THE SIBLING COVERAGE SUITE. There, findings are
  * advisory and must not look like failures (D-018). Here the codes ARE real refusals, so
- * the burden moves onto the PASSES: three states are satisfied-but-not-clean, and
+ * the burden moves onto the PASSES: five states are satisfied-but-not-clean, and
  * flattening any into a green claims a verification that never happened.
  *
  *   · `skipped`           — the gate did not APPLY; nothing was checked.
  *   · `forcedPast`        — a recorded human waiver of the code-truth family.
  *   · `vettedUnderWaiver` — a rubric vetted over a consult nobody critiqued.
  *   · `gradedVia:'minimum'` — a grader taken from BELOW the relevance floor.
+ *   · `unknownRatedCriteria` — explicitly not-assessable outcomes.
  *
  * Each has a test named for the rule, so collapsing one into "passed" has to be deliberate.
  */
@@ -73,6 +74,7 @@ function row(over: Record<string, unknown> = {}) {
     message: null,
     rubricId: 'RUB-1',
     gradedBy: 'su-someone-else',
+    unknownRatedCriteria: [],
     gradedVia: null,
     forcedPast: null,
     vettedUnderWaiver: null,
@@ -200,6 +202,17 @@ describe('PlanAcceptanceGateSection caveated passes — a pass is not automatica
     const el = screen.getByTestId('plan-acceptance-gate-grader-minimum');
     expect(el.textContent).toContain('BELOW the relevance floor');
     expect(screen.getByTestId('plan-acceptance-gate-grader').textContent).toContain('su-below-floor');
+    expect(screen.getByTestId('plan-acceptance-gate-toggle').textContent).toContain('caveats');
+  });
+
+  it('DISCLOSES criteria explicitly rated UNKNOWN — a process pass is not outcome evidence', () => {
+    gateRow.current = row({ satisfied: true, unknownRatedCriteria: ['central-outcome'] });
+    renderSection(OPEN);
+
+    const el = screen.getByTestId('plan-acceptance-gate-unknown');
+    expect(el.textContent).toContain('central-outcome');
+    expect(el.textContent).toContain('UNKNOWN');
+    expect(el.textContent).toContain('not verified');
     expect(screen.getByTestId('plan-acceptance-gate-toggle').textContent).toContain('caveats');
   });
 
