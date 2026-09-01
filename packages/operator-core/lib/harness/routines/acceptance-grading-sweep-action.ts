@@ -22,6 +22,7 @@
  * grader leg otherwise does not have.
  */
 import { registerSystemAction } from './system-actions';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 /** Cadence hint consumed by the seeder; 10 minutes is far below every threshold the
  *  decision core uses (2h re-dispatch, 12h escalate), so the sweep's own timing can
@@ -163,7 +164,7 @@ registerSystemAction('acceptance-grading-sweep', async () => {
         SELECT count(*)::int AS n
           FROM harness_shared.work_items
          WHERE payload #>> '{_conditionUpsert,conditionKey}' = ${key}
-           AND closed_at IS NULL`;
+           AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as unknown as string[]}::text[]))`;
       return (rows[0]?.n ?? 0) > 0;
     },
 

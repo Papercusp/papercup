@@ -119,6 +119,19 @@ describe('cadence cannot be what decides an outcome', () => {
   });
 });
 
+describe('the production escalation lookup follows the canonical work-item schema', () => {
+  it('derives open ownership from status and the shared terminal-state set', () => {
+    const src = read(ACTION_FILE);
+
+    // WI-2140236: work_items has `status`, not `closed_at`. A nonexistent column
+    // throws inside observation and skips every candidate before grader dispatch.
+    expect(src).not.toContain('closed_at');
+    expect(src).toContain("from '../../work-item-dispatch-states'");
+    expect(src).toContain('ANY_FAMILY_TERMINAL_STATES');
+    expect(src).toContain('NOT (status = ANY(');
+  });
+});
+
 /**
  * Extract every module specifier the file actually IMPORTS — static `from '...'` and
  * dynamic `import('...')` alike.
