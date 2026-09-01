@@ -131,12 +131,15 @@ export function buildNightlyCutInvocation(
   return {
     command: 'bash',
     // A local cut requires an exact remote tag so the packaged dogfood clone is
-    // pinned. Create-if-absent is the existing release-owned, force-with-lease
-    // operation; the second call is the LOCAL-only cut. Both live in ONE managed
-    // task, so DBOS recovery/concurrency sees a single flight.
+    // pinned. Run the create-if-absent operation through the CURRENT source's
+    // release-owned script before materializing green main. The frozen source may
+    // predate the prepare-tag operation (the first production fire hit exactly
+    // that bootstrap boundary), while the actual cut must still execute entirely
+    // from the exact green-main checkout. Both calls live in ONE managed task, so
+    // DBOS recovery/concurrency sees a single flight.
     args: [
       '-c',
-      '"$2/apps/operator/bin/release/setup-release-checkout.sh" --integration "$2" --release "$3" --ref "$PAPERCUSP_EXPECTED_SOURCE_SHA" --node-modules auto --source-integrity object-sourced && cd "$3/papercusp-desktop" && PAPERCUSP_RELEASE_PREPARE_TAG_SHA="$PAPERCUSP_EXPECTED_SOURCE_SHA" PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM=1 bin/release-local.sh "$1" nightly && bin/release-local.sh "$1" nightly',
+      'PAPERCUSP_RELEASE_PREPARE_TAG_SHA="$PAPERCUSP_EXPECTED_SOURCE_SHA" PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM=1 "$2/papercusp-desktop/bin/release-local.sh" "$1" nightly && "$2/apps/operator/bin/release/setup-release-checkout.sh" --integration "$2" --release "$3" --ref "$PAPERCUSP_EXPECTED_SOURCE_SHA" --node-modules auto --source-integrity object-sourced && cd "$3/papercusp-desktop" && bin/release-local.sh "$1" nightly',
       'nightly-release-cut',
       version,
       sourceRoot,

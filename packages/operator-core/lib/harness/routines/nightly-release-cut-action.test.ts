@@ -72,6 +72,15 @@ describe('buildNightlyCutInvocation', () => {
     expect(invocation.args).toContain('0.0.19-20260901.0304');
     expect(invocation.args.join(' ')).toContain('setup-release-checkout.sh');
     expect(invocation.args.join(' ')).toContain('--source-integrity object-sourced');
+    const shell = invocation.args[1];
+    expect(shell).toContain('"$2/papercusp-desktop/bin/release-local.sh"');
+    expect(shell).toContain('PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM=1');
+    expect(shell.indexOf('"$2/papercusp-desktop/bin/release-local.sh"')).toBeLessThan(
+      shell.indexOf('"$2/apps/operator/bin/release/setup-release-checkout.sh"'),
+    );
+    expect(shell.indexOf('"$2/apps/operator/bin/release/setup-release-checkout.sh"')).toBeLessThan(
+      shell.lastIndexOf('bin/release-local.sh "$1" nightly'),
+    );
     expect(invocation.env).toMatchObject({
       PAPERCUSP_BUILD_ROLES: 'gui',
       PAPERCUSP_PUBLISH_GITHUB: '0',
