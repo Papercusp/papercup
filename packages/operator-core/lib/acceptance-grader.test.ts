@@ -101,6 +101,7 @@ describe('launchAcceptanceGrader', () => {
       account: 'default',
       agent: 'claude',
       count: 1,
+      independent: true,
       members: [{ role: 'judge' }],
       label: first.label,
       idempotencyKey: first.idempotencyKey,

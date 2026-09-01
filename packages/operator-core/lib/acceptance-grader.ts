@@ -1125,6 +1125,7 @@ export async function launchAcceptanceGrader(
           account: 'default',
           agent: launchBackend,
           count: 1,
+          independent: true,
           members: [
             useFallback
               ? {
