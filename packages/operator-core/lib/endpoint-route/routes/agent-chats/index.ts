@@ -38,7 +38,7 @@ import { resolveLoopChatModel, runLoopChatTurn } from '../../../agent-loop/chat-
 import { classifyLoopModelSpec } from '../../../agent-loop/model-selection';
 import { pgLoopSessionStore } from '../../../agent-loop/session-store';
 import type { LoopTool } from '../../../agent-loop/loop';
-import { MODEL_EFFORT_LEVELS } from '../../../agent-config-constants';
+import { MODEL_EFFORT_LEVELS, SURFACE_KEYS, type SurfaceKey } from '../../../agent-config-constants';
 import { listPendingLoopApprovals, resolveLoopApproval } from '../../../agent-loop/approval-store';
 import { taskOpsRoute } from './task-ops';
 import { suSessionRoutes } from './su-session';
@@ -275,6 +275,7 @@ const messagesRoute = defineTool({
       model?: string;
       effort?: string;
       account?: string;
+      surface?: string;
       retryAfterCancel?: unknown;
       context?: unknown;
     };
@@ -305,6 +306,11 @@ const messagesRoute = defineTool({
     if (account && !/^[A-Za-z0-9._-]{1,128}$/.test(account)) {
       return Response.json({ error: 'account contains unsupported characters' }, { status: 400 });
     }
+    const requestedSurface = body.surface?.trim();
+    if (requestedSurface && !(SURFACE_KEYS as readonly string[]).includes(requestedSurface)) {
+      return Response.json({ error: 'surface is not registered' }, { status: 400 });
+    }
+    const chatSurface = requestedSurface as SurfaceKey | undefined;
     if (body.retryAfterCancel !== undefined && typeof body.retryAfterCancel !== 'boolean') {
       return Response.json({ error: 'retryAfterCancel must be a boolean' }, { status: 400 });
     }
@@ -930,7 +936,12 @@ const messagesRoute = defineTool({
             // (itemHarness.harness, per P-003 scoping — NOT the cross-harness
             // queue-view `slug`). Best-effort on the tool side: an
             // unprovisioned build silently runs with no attached MCP tools.
-            { promptText: assembled.text, cwd: projectDir ?? undefined, harness: itemHarness.harness },
+            {
+              promptText: assembled.text,
+              cwd: projectDir ?? undefined,
+              harness: itemHarness.harness,
+              ...(chatSurface ? { surface: chatSurface } : {}),
+            },
             dispatchCtx as never,
             {},
           )) {
