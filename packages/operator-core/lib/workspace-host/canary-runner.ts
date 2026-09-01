@@ -7,7 +7,7 @@
  * replay store; the ordered plans and receipts remain available in the result for evidence.
  */
 import {
-  WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+  WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CANARY_AGENTS,
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
@@ -16,8 +16,8 @@ import {
   buildWorkspaceHostBackupRestoreCredentialRebindRequest,
   planWorkspaceHostCredentialLifecycle,
   planWorkspaceHostInitialization,
-  type WorkspaceHostAgentAuthenticationEvidence,
-  type WorkspaceHostAgentAuthenticationReport,
+  type WorkspaceHostAgentVerificationEvidence,
+  type WorkspaceHostAgentVerificationReport,
   type WorkspaceHostBackupCredentialManifest,
   type WorkspaceHostBackupRestoreCredentialRebindRequest,
   type WorkspaceHostCredentialDeliverySet,
@@ -183,34 +183,36 @@ function validateAgentEvidence(
   agent: (typeof WORKSPACE_HOST_CANARY_AGENTS)[number],
   value: unknown,
   problems: string[],
-): WorkspaceHostAgentAuthenticationEvidence | undefined {
+): WorkspaceHostAgentVerificationEvidence | undefined {
   if (!isRecord(value)) {
     problems.push(`initialization verification is missing '${agent}' agent evidence`);
     return undefined;
   }
   if (
-    value.contractVersion !== WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION ||
+    value.contractVersion !== WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION ||
     value.agent !== agent ||
-    value.authenticated !== true ||
+    value.ready !== true ||
+    (value.verificationKind !== 'authenticated-account' &&
+      !(agent === 'omp' && value.verificationKind === 'local-inference')) ||
     typeof value.endpoint !== 'string' ||
     !Number.isSafeInteger(value.exitStatus) ||
     typeof value.observedAt !== 'string' ||
     !Number.isFinite(Date.parse(value.observedAt)) ||
     (value.subjectDisclosure !== 'redacted' && value.subjectDisclosure !== 'digest') ||
-    typeof value.subjectDigest !== 'string' ||
-    value.subjectDigest.length === 0
+    typeof value.proofDigest !== 'string' ||
+    value.proofDigest.length === 0
   ) {
     problems.push(`initialization verification has invalid '${agent}' agent evidence`);
     return undefined;
   }
-  return value as unknown as WorkspaceHostAgentAuthenticationEvidence;
+  return value as unknown as WorkspaceHostAgentVerificationEvidence;
 }
 
 /** Extract only the fail-closed evidence emitted by the plan's verify-initialization step. */
 export function extractWorkspaceHostCanaryInitializationObservation(result: WorkspaceHostInitializationRunResult): {
   readonly observedAt: string;
   readonly repository: { readonly visibility: 'private'; readonly cloned: true };
-  readonly agents: WorkspaceHostAgentAuthenticationReport;
+  readonly agents: WorkspaceHostAgentVerificationReport;
 } {
   const problems: string[] = [];
   const verifySteps = result.plan.steps.filter((step) => step.kind === 'verify-initialization');
@@ -240,14 +242,13 @@ export function extractWorkspaceHostCanaryInitializationObservation(result: Work
   if (!isRecord(repository) || repository.visibility !== 'private' || repository.cloned !== true) {
     problems.push('initialization verification did not prove a private repository clone');
   }
-  if (evidence.agentContractVersion !== WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION) {
+  if (evidence.agentContractVersion !== WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION) {
     problems.push('initialization verification has an incompatible agent evidence contract');
   }
 
   const rawAgents = isRecord(evidence.agents) ? evidence.agents : {};
-  const agents: Partial<
-    Record<(typeof WORKSPACE_HOST_CANARY_AGENTS)[number], WorkspaceHostAgentAuthenticationEvidence>
-  > = {};
+  const agents: Partial<Record<(typeof WORKSPACE_HOST_CANARY_AGENTS)[number], WorkspaceHostAgentVerificationEvidence>> =
+    {};
   for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
     const validated = validateAgentEvidence(agent, rawAgents[agent], problems);
     if (validated) agents[agent] = validated;
@@ -261,10 +262,10 @@ export function extractWorkspaceHostCanaryInitializationObservation(result: Work
     observedAt: receipt.observedAt,
     repository: { visibility: 'private', cloned: true },
     agents: {
-      contractVersion: WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+      contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
       observedAt: receipt.observedAt,
-      allAuthenticated: true,
-      agents: agents as WorkspaceHostAgentAuthenticationReport['agents'],
+      allReady: true,
+      agents: agents as WorkspaceHostAgentVerificationReport['agents'],
     },
   };
 }

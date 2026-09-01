@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+  WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
   WORKSPACE_HOST_CREDENTIAL_NAMESPACE_VERSION,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
@@ -8,8 +8,8 @@ import {
   WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
   planWorkspaceHostCredentialLifecycle,
   planWorkspaceHostInitialization,
-  type WorkspaceHostAgentAuthenticationReport,
-  type WorkspaceHostAgentAuthenticationEvidence,
+  type WorkspaceHostAgentVerificationReport,
+  type WorkspaceHostAgentVerificationEvidence,
   type WorkspaceHostCredentialDeliverySet,
   type WorkspaceHostCredentialEvidence,
   type WorkspaceHostCredentialFamily,
@@ -62,21 +62,22 @@ function delivery(generation: number): WorkspaceHostCredentialDeliverySet {
   };
 }
 
-function agentReport(): WorkspaceHostAgentAuthenticationReport {
-  const evidence = (agent: 'claude' | 'codex' | 'omp'): WorkspaceHostAgentAuthenticationEvidence => ({
-    contractVersion: WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+function agentReport(): WorkspaceHostAgentVerificationReport {
+  const evidence = (agent: 'claude' | 'codex' | 'omp'): WorkspaceHostAgentVerificationEvidence => ({
+    contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     agent,
-    authenticated: true,
+    ready: true,
+    verificationKind: agent === 'omp' ? 'local-inference' : 'authenticated-account',
     endpoint: `https://auth.example.invalid/${agent}`,
     exitStatus: 0,
     observedAt: OBSERVED_AT,
-    subjectDigest: `digest-${agent}`,
+    proofDigest: `digest-${agent}`,
     subjectDisclosure: 'digest' as const,
   });
   return {
-    contractVersion: WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+    contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     observedAt: OBSERVED_AT,
-    allAuthenticated: true,
+    allReady: true,
     agents: {
       claude: evidence('claude'),
       codex: evidence('codex'),
@@ -374,7 +375,7 @@ describe('runWorkspaceHostCanary', () => {
         requiredChannels: [...WORKSPACE_HOST_CREDENTIAL_CHANNELS],
         repository: { visibility: 'public', cloned: true },
         agents: agentReport().agents,
-        agentContractVersion: WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+        agentContractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
       };
       return result;
     });

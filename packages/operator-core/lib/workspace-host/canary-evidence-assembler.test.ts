@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+  WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
   WORKSPACE_HOST_CREDENTIAL_NAMESPACE_VERSION,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   planWorkspaceHostCredentialLifecycle,
-  type WorkspaceHostAgentAuthenticationReport,
+  type WorkspaceHostAgentVerificationReport,
   type WorkspaceHostCredentialChannel,
   type WorkspaceHostCredentialDeliverySet,
   type WorkspaceHostCredentialEvidence,
@@ -111,9 +111,7 @@ const FAMILY_BY_CHANNEL = {
  * place: the derivation under test joins receipts to plan steps, so a loosely-typed fixture
  * would let the test keep passing if that contract changed underneath it.
  */
-function evidenceFor(
-  step: WorkspaceHostCredentialLifecyclePlan['steps'][number],
-): WorkspaceHostCredentialEvidence {
+function evidenceFor(step: WorkspaceHostCredentialLifecyclePlan['steps'][number]): WorkspaceHostCredentialEvidence {
   return {
     namespaceVersion: WORKSPACE_HOST_CREDENTIAL_NAMESPACE_VERSION,
     channel: step.channel,
@@ -136,22 +134,23 @@ function fullyObserved(plan: WorkspaceHostCredentialLifecyclePlan): WorkspaceHos
   };
 }
 
-function agentsReport(): WorkspaceHostAgentAuthenticationReport {
+function agentsReport(): WorkspaceHostAgentVerificationReport {
   const evidence = (agent: 'claude' | 'codex' | 'omp') =>
     ({
-      contractVersion: WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+      contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
       agent,
-      authenticated: true,
+      ready: true,
+      verificationKind: agent === 'omp' ? 'local-inference' : 'authenticated-account',
       endpoint: `https://example.invalid/${agent}`,
       exitStatus: 0,
       observedAt: OBSERVED_AT,
-      subjectDigest: `digest-${agent}`,
+      proofDigest: `digest-${agent}`,
       subjectDisclosure: 'digest',
     }) as const;
   return {
-    contractVersion: WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+    contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
     observedAt: OBSERVED_AT,
-    allAuthenticated: true,
+    allReady: true,
     agents: { claude: evidence('claude'), codex: evidence('codex'), omp: evidence('omp') },
   };
 }
@@ -205,11 +204,9 @@ describe('deriveWorkspaceHostCanaryChannelObservations', () => {
     // this input and a false `reconnected` is the per-run attribution itself.
     const verifyBoundSteps = run.plan.steps.filter((step) => step.kind === 'verify-bound');
     expect(verifyBoundSteps.length).toBe(WORKSPACE_HOST_CREDENTIAL_CHANNELS.length);
-    expect(
-      run.receipts.filter((receipt) =>
-        verifyBoundSteps.some((step) => step.id === receipt.stepId),
-      ).length,
-    ).toBe(verifyBoundSteps.length);
+    expect(run.receipts.filter((receipt) => verifyBoundSteps.some((step) => step.id === receipt.stepId)).length).toBe(
+      verifyBoundSteps.length,
+    );
 
     for (const channel of WORKSPACE_HOST_CREDENTIAL_CHANNELS) {
       expect(observations[channel].rotated).toBe(true);
@@ -218,9 +215,7 @@ describe('deriveWorkspaceHostCanaryChannelObservations', () => {
   });
 
   it('does not let a reconnect satisfy `rotated`', () => {
-    const observations = deriveWorkspaceHostCanaryChannelObservations([
-      fullyObserved(reconnectPlan()),
-    ]);
+    const observations = deriveWorkspaceHostCanaryChannelObservations([fullyObserved(reconnectPlan())]);
 
     for (const channel of WORKSPACE_HOST_CREDENTIAL_CHANNELS) {
       expect(observations[channel].reconnected).toBe(true);
@@ -302,8 +297,8 @@ describe('assembleWorkspaceHostCanaryEvidence', () => {
   // literal: an incomplete canary cannot become evidence that merely fails validation later.
   // It cannot become evidence at all.
   it('refuses to build evidence when a transition was never observed', () => {
-    expect(() =>
-      assembleWorkspaceHostCanaryEvidence(assembleInput([fullyObserved(rotatePlan())])),
-    ).toThrow(/reconnected/);
+    expect(() => assembleWorkspaceHostCanaryEvidence(assembleInput([fullyObserved(rotatePlan())]))).toThrow(
+      /reconnected/,
+    );
   });
 });
