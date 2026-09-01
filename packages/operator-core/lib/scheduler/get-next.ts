@@ -898,6 +898,11 @@ export interface IssueClaimExclusionBreakdown {
     remoteOrigin: number;
     /** Born-pending duplicate screening has not yet been adjudicated. */
     admissionPending?: number;
+    /** P-013/D-012 stop-the-line: the harness's gate-red-streak condition item has been
+     *  open >24h, and the row is neither a bug nor an alarm-condition item. Non-zero here
+     *  is a VERDICT ("the line is stopped"), never a drained lane — see
+     *  {@link stopTheLineExclusionSql} / stopTheLineExplanation (work-items-admission). */
+    stopTheLine?: number;
   };
   /** Independent queue-control axes over the spec-matched population. These counts
    * deliberately overlap: one row may be actively claimed, lease-held, durably
@@ -1043,6 +1048,13 @@ export function issueClaimCandidateSubquery(
           -- added below must be projected here too -- asserted by
           -- claimability-snapshot-projection-covers-floors.test.ts.
           wi.lane,
+          -- P-013/D-012: the stop-the-line floor's exemption leg reads condition_key
+          -- (alarm-condition items stay claimable while the line is stopped). Same
+          -- pushdown-path rule as wi.lane above: a floor column not projected here
+          -- genuinely does not exist for the ok_* expression on the filterPushdown
+          -- path, and the failure is silent — asserted by
+          -- claimability-snapshot-projection-covers-floors.test.ts.
+          wi.condition_key,
           wi.goal_id,
           wi.expected_cost_cents,
           wi.tags,
@@ -1123,7 +1135,13 @@ export function issueClaimCandidateSubquery(
       -- disagree. It covers BOTH caller-relative reasons (released-by-me, and filed-by-someone-
       -- else inside the filing-grace window); an exclusion for either reports here, under the
       -- one cooldown breakdown bucket, per WI-5939 "do not add a parallel mechanism".
-      (${issueCooldownExclusionSql(sql, assignee, cooldown)})            AS ok_cooldown
+      (${issueCooldownExclusionSql(sql, assignee, cooldown)})            AS ok_cooldown,
+      -- P-013/D-012 stop-the-line: while the harness's gate-red-streak condition item has
+      -- been open >24h, non-repair rows are not self-selectable (bugs + alarm-condition
+      -- items exempt; by-id claims bypass floors by design). Same shared-fragment
+      -- contract as every floor above: claimNextIssueWorkItem enforces the identical
+      -- predicate via ALL_ISSUE_CLAIM_FLOORS_PASS, so preview and claim cannot disagree.
+      (${stopTheLineExclusionSql(sql, 'issue-wi')})                      AS ok_stop_line
     FROM ${source}
     ${where}
   `;
@@ -1237,6 +1255,7 @@ async function aggregateIssueClaimExclusionsOn(
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_cooldown)::int        AS cooldown,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_origin)::int          AS remote_origin,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_admission)::int       AS admission_pending,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_stop_line)::int       AS stop_line,
       count(*) FILTER (
         WHERE spec_match AND NOT ok_claim_hold
           AND NULLIF(BTRIM(COALESCE(payload ->> 'held_open_by', '')), '') IS NOT NULL
@@ -1276,6 +1295,7 @@ async function aggregateIssueClaimExclusionsOn(
     cooldown: number;
     remote_origin: number;
     admission_pending: number;
+    stop_line: number;
     hold_open_leases: number;
     durable_parks: number;
     unattributed_claim_holds: number;
@@ -1315,6 +1335,7 @@ async function aggregateIssueClaimExclusionsOn(
       cooldown: r?.cooldown ?? 0,
       remoteOrigin: r?.remote_origin ?? 0,
       admissionPending: r?.admission_pending ?? 0,
+      stopTheLine: r?.stop_line ?? 0,
     },
     queueControl: {
       activeClaims: r?.taken ?? 0,
@@ -1398,6 +1419,9 @@ export interface IssueClaimExclusionSample {
   /** WI-6409: sampled ids of true-remote-origin rows — see {@link IssueClaimExclusionBreakdown.excluded}'s remoteOrigin. */
   remoteOrigin: string[];
   admissionPending?: string[];
+  /** P-013/D-012: sampled ids refused by the stop-the-line floor — see
+   *  {@link IssueClaimExclusionBreakdown.excluded}'s stopTheLine. */
+  stopTheLine?: string[];
   queueControl: IssueQueueControlSample;
 }
 
@@ -1513,7 +1537,8 @@ export async function sampleIssueClaimExclusions(
       ${sampleOf('NOT ok_no_blocker')}          AS blocked_dep,
       ${sampleOf('NOT ok_cooldown')}            AS cooldown,
       ${sampleOf('NOT ok_origin')}              AS remote_origin,
-      ${sampleOf('NOT ok_admission')}           AS admission_pending
+      ${sampleOf('NOT ok_admission')}           AS admission_pending,
+      ${sampleOf('NOT ok_stop_line')}           AS stop_line
   `) as Array<{
     taken: string[];
     claim_hold: string[];
@@ -1530,6 +1555,7 @@ export async function sampleIssueClaimExclusions(
     cooldown: string[];
     remote_origin: string[];
     admission_pending: string[];
+    stop_line: string[];
   }>;
   const controlRows = (await sql`
     SELECT * FROM (
@@ -1630,6 +1656,7 @@ export async function sampleIssueClaimExclusions(
     cooldown: r?.cooldown ?? [],
     remoteOrigin: r?.remote_origin ?? [],
     admissionPending: r?.admission_pending ?? [],
+    stopTheLine: r?.stop_line ?? [],
     queueControl,
   };
 }

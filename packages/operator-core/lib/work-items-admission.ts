@@ -23,6 +23,8 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
+import { ACTIONABLE_CONDITION_PREFIXES } from './coord/actionable-conditions';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -545,4 +547,135 @@ export async function isWorkItemDuplicateAdmitted(
      WHERE workspace_id = ${ws} AND feature_id = ${workItemId}
      LIMIT 1`;
   return rows[0] ? isAdmitted(rows[0].admission) : false;
+}
+
+/**
+ * STOP-THE-LINE — the third, orthogonal admission axis (P-013 / D-012 of
+ * gate-verdict-liveness-and-repair-reliability-2026-08-31).
+ *
+ * WHY IT LIVES HERE: same reason as the duplicate-screening axis above — this file is
+ * "the SINGLE source of truth for is-this-claimable", and an admission rule defined next
+ * to one consumer silently fails to reach the others (this module's header). A parallel
+ * gate module would repeat that mistake.
+ *
+ * WHAT IT SAYS: while the release gate on a harness has been RED-STREAKING for longer
+ * than {@link STOP_THE_LINE_RED_HOURS}, non-repair work must not be SELF-SELECTED on
+ * that harness — the fleet converges on repair instead of piling new commits onto a
+ * broken tree. "A days-red gate being everyone's problem becomes mechanical, not
+ * aspirational" (the plan item's own words).
+ *
+ * THE SIGNAL is the OPEN `gate-red-streak:<harness>` condition item's AGE — P-014's
+ * audited condition-singleton substrate (D-010): opened by `trackGateStall`
+ * (harness/routines/release-actions.ts) at the same edge as the red-streak alarm,
+ * settled by the condition bridge when the gate greens. So the throttle arms and lifts
+ * with zero state of its own, and the condition item doubles as the KILL-SWITCH: a
+ * stale-open item (bridge missed the green) is lifted by ANY agent settling it — no
+ * flag flip, no deploy (D-012 records why there is deliberately no feature flag).
+ * NOT gate_health: that lives in per-install routine metadata JSON, and its greenness
+ * semantics already burned once (EI-20706962612084953).
+ *
+ * EXEMPT (the plan item: "repair lanes, infra fixes, and owner-directed work"):
+ *   - `item_kind = 'bug'` — fixes ARE the line; never throttled (issue family only).
+ *   - alarm-condition items — `condition_key` under an actionable/alarm prefix
+ *     ({@link STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES}). Deliberately NOT every
+ *     condition item: `plan-promotion:` / `spec-triad:` conditions are ordinary work
+ *     inflow, which is exactly what stops (measured 2026-09-01: the live condition-key
+ *     population is dominated by plan-promotion rows).
+ *   - owner-directed work — a named BY-ID claim bypasses self-select floors by existing
+ *     architecture (agent-tools/work_items/claim.ts: "floors gate self-select only; a
+ *     named by-id claim is the deliberate operator override"). No code here; recorded
+ *     so the mapping is explicit.
+ *   NOT exempt: plan-promoted inflow (`bypass:plan-item` admission) — stopping routine
+ *   plan work is the point.
+ *
+ * FAIL-SAFE DIRECTION: like the G2 legs, unknown ⇒ the floor PASSES (no open condition
+ * row ⇒ no throttle). The trigger row is minted by exactly one writer under migration
+ * 741's partial unique index, so "open and old" is a deliberate, serialized state —
+ * never an inference from a metric.
+ *
+ * Row-EXTRINSIC, like `depsBlockedExclusionSql` — so it belongs to the CLAIM floors
+ * (candidate subquery + feature claimFloorsWhereSql), NOT to issueAdmissibleWhereSql's
+ * row-intrinsic advertise mirror (issues-engineer.ts documents that boundary:
+ * "work_items:claimable remains the only full oracle").
+ */
+export const STOP_THE_LINE_RED_HOURS = 24;
+
+/** The red-streak condition prefix — must match the trackGateStall producer's key. */
+export const GATE_RED_STREAK_CONDITION_PREFIX = 'gate-red-streak:';
+
+/**
+ * Condition-key prefixes whose items stay claimable while the line is stopped: the
+ * alarm/repair catalog ({@link ACTIONABLE_CONDITION_PREFIXES}, the condition-bridge
+ * opt-in set) plus `deploy-parity:`, which P-015 files DIRECTLY via
+ * `work_items:create { conditionKey }` rather than through the bridge catalog
+ * (apps/operator/lib/release/deploy-parity.ts) and is repair work by construction.
+ */
+export const STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES: readonly string[] = [
+  ...ACTIONABLE_CONDITION_PREFIXES,
+  'deploy-parity:',
+];
+
+/**
+ * Which relation shape the floor is being composed into. A closed internal union —
+ * never caller input — same safety argument as {@link admittedWhereSql}'s qualifier.
+ *   'issue-wi'             — the issue claim/diagnose queries aliasing work_items as `wi`.
+ *   'feature-consolidated' — claimFloorsWhereSql's unaliased harness_features_consolidated
+ *                            context (correlated refs need the full relation name there,
+ *                            matching that builder's own cooldown EXISTS).
+ */
+export type StopTheLineRowContext = 'issue-wi' | 'feature-consolidated';
+
+/**
+ * SQL floor: TRUE ⇒ the candidate row survives stop-the-line (claimable as far as this
+ * axis is concerned). Compose like the sibling floors:
+ *
+ *   ...AND ${stopTheLineExclusionSql(sql, 'issue-wi')}
+ *
+ * The inner EXISTS probes the open red-streak condition row for the CANDIDATE ROW'S OWN
+ * workspace+harness, so only the affected harness throttles; migration 741's partial
+ * unique index on open condition keys makes the probe an index hit.
+ *
+ * The feature-consolidated form has no `condition_key` column on the view (verified
+ * 2026-09-01 against information_schema) and its kinds are placement kinds, so it gets
+ * no per-row exemption legs — while the line is stopped, feature placement self-select
+ * on the harness pauses entirely.
+ */
+export function stopTheLineExclusionSql(sql: OrgSql, rowContext: StopTheLineRowContext) {
+  const q = rowContext === 'issue-wi' ? 'wi.' : 'harness_shared.harness_features_consolidated.';
+  const activeRedStreak = sql`EXISTS (
+    SELECT 1
+      FROM harness_shared.work_items stl
+     WHERE stl.workspace_id = ${sql.unsafe(`${q}workspace_id`)}
+       AND stl.harness_slug = ${sql.unsafe(`${q}harness_slug`)}
+       AND stl.condition_key = ${GATE_RED_STREAK_CONDITION_PREFIX} || stl.harness_slug
+       AND NOT (stl.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+       AND stl.created_ts <= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - ${STOP_THE_LINE_RED_HOURS * 3600 * 1000}
+  )`;
+  if (rowContext === 'feature-consolidated') {
+    return sql`(NOT ${activeRedStreak})`;
+  }
+  const exemptPrefixPatterns = STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES.map((p) => `${p}%`);
+  return sql`(
+    wi.item_kind = 'bug'
+    OR (wi.condition_key IS NOT NULL AND wi.condition_key LIKE ANY(${exemptPrefixPatterns as string[]}::text[]))
+    OR NOT ${activeRedStreak}
+  )`;
+}
+
+/**
+ * The stop-the-line refusal/diagnosis explanation — rendered wherever the `stopTheLine`
+ * exclusion bucket surfaces, so a throttled queue reads as a VERDICT with a remedy,
+ * never as a drained lane (the context-pressure-claim-gate lesson: a refusal must be a
+ * verdict, not silence).
+ */
+export function stopTheLineExplanation(harness: string): string {
+  return (
+    `stop-the-line: the ${harness} release gate has been red for over ${STOP_THE_LINE_RED_HOURS}h ` +
+    `(an open gate-red-streak:${harness} condition item older than the threshold), so non-repair ` +
+    'work is not served for self-select on this harness. Repair work still flows: bugs and ' +
+    'alarm-condition items are exempt, and a leader/owner can still dispatch any item BY ID. ' +
+    'The throttle lifts on its own when the gate greens (the condition bridge settles the item). ' +
+    'If the gate is ACTUALLY green and this persists, the condition item is stale — settling it ' +
+    'lifts the throttle immediately.'
+  );
 }

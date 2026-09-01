@@ -41,96 +41,21 @@ import { createWorkItem, setWorkItemState } from '../work-items';
 import { resolveWorkItemPot } from '../pot-membership';
 import { findConditionObject, linkWorkItemToCondition, type ConditionObject } from './condition-object';
 
-/**
- * Condition-key PREFIXES that may mint an owning work-item.
- *
- * OPT-IN, deliberately. A transient condition that opens and clears within a tick
- * would otherwise mint and immediately close a work-item on every flap, which is
- * strictly worse than the duplicate-filing problem this plan set out to fix.
- *
- * ⚠ The plan item said "opt-in per key via the signal-actor registry
- * (`actionable: true`)". That field does not exist — `signal-actor-registry.ts`
- * registers SIGNALS (4 of them) with `actingConsumer`/`waiver`, which is a
- * different granularity and a different question ("does anything act on this
- * stream?" vs "should THIS key own an item?"). Rather than bend that registry to
- * a shape it was not built for, the opt-in lives here, in the same small
- * manually-curated-catalog style that registry itself uses and for the same
- * stated reason: what counts is not mechanically decidable.
- *
- * A prefix earns a place here when the condition is (a) durable enough that a
- * human or agent would want to claim it, and (b) actionable — there is something
- * to DO. Everything else is intentionally absent.
- */
-export interface ActionableCondition {
-  /** Key prefix, always ending in ':'. */
-  prefix: string;
-  /**
-   * How to get the HARNESS this condition belongs to.
-   *
-   * ⚠ This field exists because the obvious shortcut is wrong and fails SILENTLY.
-   * Four of the five producers below suffix the key with the harness slug
-   * (`green-stall:${row.install_slug}`, `main-behind-staging:${harnessSlug}`,
-   * `release-trigger-freeze:${installSlug}`, `release-trigger-fire-stale:${installSlug}`)
-   * — but `single-primary:` does NOT: it is `single-primary:${verdict.key}`, and
-   * the live key is `single-primary:no-primary`. `no-primary` is a VERDICT.
-   *
-   * A `key.split(':')[1]` harness derivation therefore files that condition's
-   * work-item under harness `no-primary`, and `createWorkItem` does NOT validate
-   * the harness — it just builds `scope: harnessScope(input.harness)`. The row is
-   * created successfully, scoped to a harness nobody queries, and is invisible to
-   * `work_items:list { harness }` forever. Same class as D-010: a plausible
-   * derivation that produces an unreachable row and never errors.
-   *
-   * 'suffix'  = the text after the prefix IS the harness slug.
-   * 'ambient' = the key carries no harness; the caller must supply one.
-   */
-  harnessFrom: 'suffix' | 'ambient';
-  severity: 'critical' | 'major' | 'minor' | 'nit';
-}
-
-/** Stable condition namespace for bridge residues with a known agent remedy. */
-export const GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX = 'github-bridge-agent-actionable:';
-
-/**
- * The opt-in catalog. See the doc above for why `harnessFrom` is explicit
- * per-entry rather than parsed.
- */
-export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
-  { prefix: 'green-stall:', harnessFrom: 'suffix', severity: 'critical' },
-  // P-005 (gate-ownership-followup-2026-08-08). A gate that FIRES hourly and reds
-  // every time is not a stall — `green-stall:` above cannot see it (its legs are
-  // fire-staleness and a 12h no-green backstop), so until this entry existed a plain
-  // red gate had NO condition and therefore no ownable work-item. Emitted by
-  // `trackGateStall` (harness/routines/release-actions.ts) at the SAME edge that
-  // already fires the urgent stall alert, so the condition's open/close cannot drift
-  // from the state machine that decides the gate is stuck. Critical: `main` is frozen.
-  { prefix: 'gate-red-streak:', harnessFrom: 'suffix', severity: 'critical' },
-  { prefix: 'main-behind-staging:', harnessFrom: 'suffix', severity: 'major' },
-  { prefix: 'release-trigger-freeze:', harnessFrom: 'suffix', severity: 'major' },
-  { prefix: 'release-trigger-fire-stale:', harnessFrom: 'suffix', severity: 'major' },
-  { prefix: 'single-primary:', harnessFrom: 'ambient', severity: 'critical' },
-  // github-bridge divergence has a separate agent-actionable lane for known
-  // local remedies (for example restoring a workflow file when the remote
-  // OAuth token lacks the `workflow` scope). Keep it distinct from the
-  // owner-gated bridge alarm so the same condition gets one ownable item and
-  // does not page a human for a fix an agent can apply.
-  { prefix: GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX, harnessFrom: 'suffix', severity: 'major' },
-];
-
-/** The bare prefixes — derived, so the catalog stays the single source of truth. */
-export const ACTIONABLE_CONDITION_PREFIXES: readonly string[] = ACTIONABLE_CONDITIONS.map((c) => c.prefix);
-
-/** The catalog entry governing this key, or null when it is not opted in. */
-export function actionableConditionFor(conditionKey: string): ActionableCondition | null {
-  const key = conditionKey.trim();
-  if (!key) return null;
-  return ACTIONABLE_CONDITIONS.find((c) => key.startsWith(c.prefix)) ?? null;
-}
-
-/** Should this condition key mint an owning work-item? */
-export function isActionableConditionKey(conditionKey: string): boolean {
-  return actionableConditionFor(conditionKey) !== null;
-}
+// The condition-key opt-in CATALOG lives in the zero-import leaf './actionable-conditions'
+// (P-013/D-012 of gate-verdict-liveness-and-repair-reliability-2026-08-31): the
+// work-items-admission layer needs the alarm-prefix set for the stop-the-line claim floor,
+// and this module imports work-items.ts — so admission importing THIS module would cycle.
+// Re-exported in full so every existing `from './condition-bridge'` importer keeps working
+// unchanged — the CLAIM_STATES_ALLOWLIST re-export precedent (work-items.ts / EI-11300).
+import { actionableConditionFor } from './actionable-conditions';
+export {
+  ACTIONABLE_CONDITIONS,
+  ACTIONABLE_CONDITION_PREFIXES,
+  GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX,
+  actionableConditionFor,
+  isActionableConditionKey,
+  type ActionableCondition,
+} from './actionable-conditions';
 
 /**
  * Which harness owns this condition — or null when it cannot be established.
