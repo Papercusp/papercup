@@ -25,7 +25,9 @@ const { mugKettleSystemEnabled } = vi.hoisted(() => ({
 }));
 
 const launchRun = vi.fn();
-vi.mock('../../harness-launch', () => ({ launchRun: (...a: unknown[]) => launchRun(...(a as [])) }));
+vi.mock('../../harness-launch', () => ({
+  launchRun: (...a: unknown[]) => (launchRun as (...args: unknown[]) => unknown)(...a),
+}));
 
 const resolveProject = vi.fn();
 const resolvePhasedProject = vi.fn();
@@ -52,7 +54,7 @@ vi.mock('../../harness-invoke-once', () => ({
   resolveSpawnBackendModel: (...a: unknown[]) =>
     (resolveSpawnBackendModel as (...args: unknown[]) => unknown)(...a),
 }));
-const recordAdvSession = vi.fn(async () => 77);
+const recordAdvSession = vi.fn(async (_input: unknown) => 77);
 const markAdvSessionEnded = vi.fn(async () => {});
 vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: (...a: unknown[]) => (recordAdvSession as (...args: unknown[]) => unknown)(...a),
