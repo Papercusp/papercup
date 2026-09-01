@@ -157,6 +157,10 @@ import {
   usePtyHost,
   PTY_DEFAULT_ON,
   AGENTS,
+  PUI_TUI_ORIGIN,
+  agentPickerChoices,
+  puiWorkbenchCommand,
+  launchPuiWorkbench,
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
@@ -2303,7 +2307,46 @@ describe("psu-launcher arg parsing", () => {
       allowSubagents: null,
       kickoffPromptText: null,
       label: null,
+      tui: null,
     });
+  });
+
+  it("parses the PUI caller origin and supports the space form", () => {
+    expect(parseArgs(["--tui=pui"]).tui).toBe(PUI_TUI_ORIGIN);
+    expect(parseArgs(["--tui", "pui"]).tui).toBe(PUI_TUI_ORIGIN);
+    expect(() => parseArgs(["--tui=desktop"])).toThrow(/only supported caller origin/i);
+  });
+
+  it("exposes PUI exactly once and filters it for PUI-originated launches", () => {
+    expect(agentPickerChoices().map((choice) => choice.value)).toEqual([
+      "claude",
+      "omp",
+      "codex",
+      "pui",
+    ]);
+    expect(agentPickerChoices({ tui: PUI_TUI_ORIGIN }).map((choice) => choice.value)).toEqual([
+      "claude",
+      "omp",
+      "codex",
+    ]);
+    expect(puiWorkbenchCommand()).toEqual({ bin: "pui", args: ["workbench"] });
+    expect(PSU_HELP_TEXT).toContain("--tui=<pui>");
+  });
+
+  it("launches PUI with the exact workbench command and preserves child status", () => {
+    const calls: unknown[] = [];
+    const status = launchPuiWorkbench({
+      cwd: "/tmp/pui-test",
+      env: { PATH: "/bin" },
+      spawnImpl: (...args: unknown[]) => {
+        calls.push(args);
+        return { status: 7, signal: null, error: undefined };
+      },
+    });
+    expect(status).toBe(7);
+    expect(calls).toEqual([
+      ["pui", ["workbench"], { cwd: "/tmp/pui-test", env: { PATH: "/bin" }, stdio: "inherit" }],
+    ]);
   });
 
   it("keeps PUI outside the PSU command surface", () => {
@@ -2407,6 +2450,7 @@ describe("psu-launcher arg parsing", () => {
       allowSubagents: null,
       kickoffPromptText: null,
       label: null,
+      tui: null,
     });
   });
 
@@ -2675,6 +2719,12 @@ describe("psu-launcher arg parsing", () => {
       args: [
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
+        "-m",
+        "gpt-5.6-sol",
+        "-c",
+        "model_context_window=1000000",
+        "-c",
+        "model_auto_compact_token_limit=900000",
         "resume",
         "--last",
       ],
@@ -2764,6 +2814,12 @@ describe("psu-launcher arg parsing", () => {
       [
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
+        "-m",
+        "gpt-5.6-sol",
+        "-c",
+        "model_context_window=1000000",
+        "-c",
+        "model_auto_compact_token_limit=900000",
         "resume",
         "uuid-2",
       ],
@@ -2806,12 +2862,24 @@ describe("psu-launcher arg parsing", () => {
     ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      "model_context_window=1000000",
+      "-c",
+      "model_auto_compact_token_limit=900000",
       "fork",
       "uuid-2",
     ]);
     expect(resumeArgsFor({ agent: "codex" }, { fork: true }).args).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      "model_context_window=1000000",
+      "-c",
+      "model_auto_compact_token_limit=900000",
       "fork",
       "--last",
     ]);
@@ -2913,6 +2981,12 @@ describe("psu-launcher arg parsing", () => {
     ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      "model_context_window=1000000",
+      "-c",
+      "model_auto_compact_token_limit=900000",
       "--add-dir=/d",
       "resume",
       "u",
@@ -2925,6 +2999,12 @@ describe("psu-launcher arg parsing", () => {
     ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      "model_context_window=1000000",
+      "-c",
+      "model_auto_compact_token_limit=900000",
       "--add-dir=/d",
       "fork",
       "u",
@@ -3324,6 +3404,7 @@ describe("psu-launcher arg parsing", () => {
       feature: "F-001",
       plan: null,
       account: "codex-main",
+      model: "gpt-5.6-sol",
     });
     expect(
       roleBootstrapBody({
@@ -4376,7 +4457,7 @@ describe("psu-launcher arg parsing", () => {
     ).toThrow();
   });
 
-  it("AGENTS lists exactly the three kinds", () => {
+  it("AGENTS lists exactly the three real backend kinds", () => {
     expect(AGENTS).toEqual(["claude", "omp", "codex"]);
   });
 
@@ -4829,6 +4910,12 @@ describe("roleLaunchArgs (interactive role session)", () => {
     expect(args).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      "model_context_window=1000000",
+      "-c",
+      "model_auto_compact_token_limit=900000",
     ]);
   });
 
@@ -4907,6 +4994,12 @@ describe("roleLaunchArgs (interactive role session)", () => {
     ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      "model_context_window=1000000",
+      "-c",
+      "model_auto_compact_token_limit=900000",
     ]);
   });
 
