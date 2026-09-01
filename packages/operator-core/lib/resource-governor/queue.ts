@@ -259,6 +259,10 @@ export interface QueueLeaseOwnerObservation {
 export const GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS = 60_000;
 
 function nonNegativeDbNumber(value: number | string | null | undefined): number | null {
+  // PostgreSQL returns SQL NULL for an empty oldest-age aggregate. `Number(null)`
+  // is zero, which would turn an unmeasured value into false evidence of a fresh
+  // queue. Required totals reject this null below; optional oldest age preserves it.
+  if (value === null || value === undefined) return null;
   const number = typeof value === 'string' && value.trim() === '' ? NaN : Number(value);
   return Number.isFinite(number) && number >= 0 ? number : null;
 }

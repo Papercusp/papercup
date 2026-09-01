@@ -403,7 +403,12 @@ describe('WorkItemAdmissionQueueDriver', () => {
       values: ['15000ms'],
     });
 
-    const reconcileQueries = queries.filter((query) => query.text.includes('harness_shared.work_items'));
+    // The liveness census is a read-only work_items query and intentionally has
+    // no row lock. Only the three mutation branches must retain bounded
+    // FOR UPDATE SKIP LOCKED selection.
+    const workItemQueries = queries.filter((query) => query.text.includes('harness_shared.work_items'));
+    expect(workItemQueries).toHaveLength(4);
+    const reconcileQueries = workItemQueries.filter((query) => query.text.includes('FOR UPDATE SKIP LOCKED'));
     expect(reconcileQueries).toHaveLength(3);
     for (const query of reconcileQueries) {
       expect(query.text).toContain('FOR UPDATE SKIP LOCKED');
