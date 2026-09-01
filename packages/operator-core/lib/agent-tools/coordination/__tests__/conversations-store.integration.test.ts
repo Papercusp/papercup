@@ -55,7 +55,16 @@ let sql: postgres.Sql;
 let store: PgConversationStore;
 
 function input(id: string, over: Partial<CreateConversationInput> = {}): CreateConversationInput {
-  return { id, kind: 'question', scope: 'operator', asker_id: 'agA', body: `body of ${id}`, producer: 'test', created_ts: T0, ...over };
+  return {
+    id,
+    kind: 'question',
+    scope: 'operator',
+    asker_id: 'agA',
+    body: `body of ${id}`,
+    producer: 'test',
+    created_ts: T0,
+    ...over,
+  };
 }
 
 beforeAll(async () => {
@@ -106,7 +115,9 @@ describe('create → get round-trip', () => {
   });
 
   it('round-trips explicit harness scope + title', async () => {
-    await store.create(input('c2', { kind: 'discussion', scope: 'harness', harness_slug: 'papercup', title: 'a title' }));
+    await store.create(
+      input('c2', { kind: 'discussion', scope: 'harness', harness_slug: 'papercup', title: 'a title' }),
+    );
     const row = await store.get('c2');
     expect(row?.kind).toBe('discussion');
     expect(row?.scope).toBe('harness');
@@ -145,7 +156,9 @@ describe('list — filters, ordering, limit clamp', () => {
     expect((await store.list({ state: 'resolved' })).map((r) => r.id)).toEqual(['q-new']);
     expect((await store.list({ scope: 'harness' })).map((r) => r.id)).toEqual(['q-harness']);
     expect((await store.list({ harness_slug: 'pcup' })).map((r) => r.id)).toEqual(['q-harness']);
-    expect((await store.list({ kind: 'question', state: 'open', scope: 'operator' })).map((r) => r.id)).toEqual(['q-old']);
+    expect((await store.list({ kind: 'question', state: 'open', scope: 'operator' })).map((r) => r.id)).toEqual([
+      'q-old',
+    ]);
     expect(await store.list({ kind: 'question', state: 'resolved', scope: 'harness' })).toEqual([]);
   });
 
@@ -197,7 +210,12 @@ describe('setState — resolved_at semantics, no transition guard', () => {
 describe('setAcceptedAnswer', () => {
   it('persists answer + post id + capture target and bumps updated_at', async () => {
     await store.create(input('a1'));
-    await store.setAcceptedAnswer('a1', { answer: 'the fix', post_id: 7, capture_target: 'mem0:workspace:default', now_ts: T1 });
+    await store.setAcceptedAnswer('a1', {
+      answer: 'the fix',
+      post_id: 7,
+      capture_target: 'mem0:workspace:default',
+      now_ts: T1,
+    });
     const row = await store.get('a1');
     expect(row?.accepted_answer).toBe('the fix');
     expect(row?.accepted_post_id).toBe(7);
@@ -216,6 +234,84 @@ describe('setAcceptedAnswer', () => {
     expect(row?.accepted_post_id).toBeNull();
     expect(row?.capture_target).toBeNull();
     expect(row?.updated_ts).toBe(T2);
+  });
+});
+
+describe('reopenResolved — bounded compensation inverse', () => {
+  it('restores the open source row and clears every resolution scalar', async () => {
+    await store.create(input('undo-answer'));
+    await store.setAcceptedAnswer('undo-answer', {
+      answer: 'bulk close reason',
+      post_id: 7,
+      capture_target: 'none',
+      now_ts: T1,
+    });
+    await store.setState('undo-answer', 'resolved', { now_ts: T1 });
+
+    expect(
+      await store.reopenResolved('undo-answer', {
+        expected_answer: 'bulk close reason',
+        now_ts: T2,
+      }),
+    ).toBe('reopened');
+    expect(await store.get('undo-answer')).toMatchObject({
+      state: 'open',
+      accepted_answer: null,
+      accepted_post_id: null,
+      capture_target: null,
+      resolved_ts: null,
+      updated_ts: T2,
+    });
+    expect(
+      await store.reopenResolved('undo-answer', {
+        expected_answer: 'bulk close reason',
+        now_ts: T3,
+      }),
+    ).toBe('already_open');
+  });
+
+  it('compare-and-set refuses to overwrite a different terminal answer', async () => {
+    await store.create(input('changed-answer'));
+    await store.setAcceptedAnswer('changed-answer', { answer: 'newer answer', now_ts: T1 });
+    await store.setState('changed-answer', 'resolved', { now_ts: T1 });
+    expect(
+      await store.reopenResolved('changed-answer', {
+        expected_answer: 'bulk answer',
+        now_ts: T2,
+      }),
+    ).toBe('source_changed');
+    expect(await store.get('changed-answer')).toMatchObject({
+      state: 'resolved',
+      accepted_answer: 'newer answer',
+    });
+  });
+
+  it('participates in a caller transaction so receipt failure rolls the source restore back', async () => {
+    await store.create(input('rollback-answer'));
+    await store.setAcceptedAnswer('rollback-answer', { answer: 'bulk answer', now_ts: T1 });
+    await store.setState('rollback-answer', 'resolved', { now_ts: T1 });
+
+    await expect(
+      sql.begin(async (tx) => {
+        const txStore = new PgConversationStore({
+          getSql: () => tx,
+          ensureSchema: async () => {},
+          workspaceId: WS,
+        });
+        expect(
+          await txStore.reopenResolved('rollback-answer', {
+            expected_answer: 'bulk answer',
+            now_ts: T2,
+          }),
+        ).toBe('reopened');
+        throw new Error('receipt write failed');
+      }),
+    ).rejects.toThrow('receipt write failed');
+
+    expect(await store.get('rollback-answer')).toMatchObject({
+      state: 'resolved',
+      accepted_answer: 'bulk answer',
+    });
   });
 });
 
@@ -322,13 +418,25 @@ describe('create CHECK constraints (migration 132 mirror)', () => {
 describe('reparentThread (D-005 carry)', () => {
   it('re-keys the thread AND its posts to the destination thread_id in one tx; unrelated threads untouched', async () => {
     const threadStore = new PgThreadStore({ getSql: () => sql, ensureSchema: async () => {}, workspaceId: WS });
-    await threadStore.getOrCreateThread({ kind: 'conversation', ref: 'c-src' }, { thread_id: 'thr-c-src', created_ts: T0 });
+    await threadStore.getOrCreateThread(
+      { kind: 'conversation', ref: 'c-src' },
+      { thread_id: 'thr-c-src', created_ts: T0 },
+    );
     await threadStore.addPost({ thread_id: 'thr-c-src', author_id: 'agA', body: 'p1', created_ts: T0 });
     await threadStore.addPost({ thread_id: 'thr-c-src', author_id: 'agB', body: 'p2', created_ts: T1 });
-    await threadStore.getOrCreateThread({ kind: 'conversation', ref: 'c-other' }, { thread_id: 'thr-c-other', created_ts: T0 });
+    await threadStore.getOrCreateThread(
+      { kind: 'conversation', ref: 'c-other' },
+      { thread_id: 'thr-c-other', created_ts: T0 },
+    );
     await threadStore.addPost({ thread_id: 'thr-c-other', body: 'bystander', created_ts: T0 });
 
-    const rep = await reparentThread(sql, WS, { kind: 'conversation', ref: 'c-src' }, { kind: 'issue', ref: 'EI-7' }, 'issue-thread-EI-7');
+    const rep = await reparentThread(
+      sql,
+      WS,
+      { kind: 'conversation', ref: 'c-src' },
+      { kind: 'issue', ref: 'EI-7' },
+      'issue-thread-EI-7',
+    );
     expect(rep).toEqual({ reparented: true, thread_id: 'issue-thread-EI-7' });
 
     // The source parent no longer has a thread; the destination does, under ITS id.
@@ -340,16 +448,33 @@ describe('reparentThread (D-005 carry)', () => {
     expect(await threadStore.listPosts('thr-c-src')).toEqual([]);
 
     // The unrelated thread kept its id + post.
-    expect((await threadStore.getThreadByParent({ kind: 'conversation', ref: 'c-other' }))?.thread_id).toBe('thr-c-other');
+    expect((await threadStore.getThreadByParent({ kind: 'conversation', ref: 'c-other' }))?.thread_id).toBe(
+      'thr-c-other',
+    );
     expect((await threadStore.listPosts('thr-c-other')).map((p) => p.body)).toEqual(['bystander']);
   });
 
   it('a second reparent of the same (now thread-less) source reports {reparented:false}', async () => {
     const threadStore = new PgThreadStore({ getSql: () => sql, ensureSchema: async () => {}, workspaceId: WS });
-    await threadStore.getOrCreateThread({ kind: 'conversation', ref: 'c-once' }, { thread_id: 'thr-c-once', created_ts: T0 });
-    const first = await reparentThread(sql, WS, { kind: 'conversation', ref: 'c-once' }, { kind: 'issue', ref: 'EI-8' }, 'issue-thread-EI-8');
+    await threadStore.getOrCreateThread(
+      { kind: 'conversation', ref: 'c-once' },
+      { thread_id: 'thr-c-once', created_ts: T0 },
+    );
+    const first = await reparentThread(
+      sql,
+      WS,
+      { kind: 'conversation', ref: 'c-once' },
+      { kind: 'issue', ref: 'EI-8' },
+      'issue-thread-EI-8',
+    );
     expect(first.reparented).toBe(true);
-    const again = await reparentThread(sql, WS, { kind: 'conversation', ref: 'c-once' }, { kind: 'issue', ref: 'EI-8' }, 'issue-thread-EI-8');
+    const again = await reparentThread(
+      sql,
+      WS,
+      { kind: 'conversation', ref: 'c-once' },
+      { kind: 'issue', ref: 'EI-8' },
+      'issue-thread-EI-8',
+    );
     expect(again).toEqual({ reparented: false });
   });
 });

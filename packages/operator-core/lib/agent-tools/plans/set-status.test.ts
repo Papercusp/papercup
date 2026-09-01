@@ -13,8 +13,43 @@ import {
   completedGuardTrips,
   expectedStatusMismatch,
   planSyncWorkItemState,
+  planItemCompensationMutation,
   type HolderInfo,
 } from './set-status';
+
+describe('planItemCompensationMutation (P-010)', () => {
+  const body = (status: string) =>
+    `---\ntitle: t\nupdated: 2026-08-01\n---\n\n- **P-003** \`${status}\` Restore this gate.\n`;
+
+  it('restores only the exact terminal status written by the bulk action', () => {
+    const result = planItemCompensationMutation(body('done'), {
+      itemId: 'P-003',
+      expectedStatus: 'done',
+      priorStatus: 'needs-human',
+      now: new Date('2026-09-01T00:00:00.000Z'),
+    });
+    expect(result.value).toBe('restored');
+    expect(result.newBody).toContain('updated: 2026-09-01');
+    expect(result.newBody).toContain('- **P-003** `needs-human` Restore this gate.');
+  });
+
+  it('is idempotent and refuses to overwrite a newer status', () => {
+    expect(
+      planItemCompensationMutation(body('needs-human'), {
+        itemId: 'P-003',
+        expectedStatus: 'done',
+        priorStatus: 'needs-human',
+      }),
+    ).toEqual({ newBody: null, value: 'already_restored' });
+    expect(
+      planItemCompensationMutation(body('wip'), {
+        itemId: 'P-003',
+        expectedStatus: 'done',
+        priorStatus: 'needs-human',
+      }),
+    ).toEqual({ newBody: null, value: 'source_changed' });
+  });
+});
 
 // P-020 (planning-attention-importance): plans:set-status pushes a
 // notification when an item transitions INTO needs-human at importance
@@ -284,11 +319,17 @@ describe('releaseTodoClaim (EI-5822)', () => {
   const scope = { workspaceId: 'ws', harnessSlug: 'h' };
   function fakes() {
     const calls: unknown[][] = [];
-    return { calls, releaseClaim: async (...a: unknown[]) => { calls.push(a); return true; } };
+    return {
+      calls,
+      releaseClaim: async (...a: unknown[]) => {
+        calls.push(a);
+        return true;
+      },
+    };
   }
   const at = (slug = 'plan-a', itemId = 'P-001') => ({ scope, slug, itemId });
 
-  it('on →todo with an attributable agent: releases the caller\'s own claim', async () => {
+  it("on →todo with an attributable agent: releases the caller's own claim", async () => {
     const f = fakes();
     const out = await releaseTodoClaim({
       status: 'todo',
@@ -386,7 +427,7 @@ describe('flipStatusInBody', () => {
   });
 
   describe('note handling (EI-384)', () => {
-    it('appends a note verbatim — never strips the caller\'s own punctuation', () => {
+    it("appends a note verbatim — never strips the caller's own punctuation", () => {
       const body = '- **P-001** `wip` do the thing';
       const out = flipStatusInBody(body, 'P-001', 'wip', 'ratified in (a) prior review, see (b)');
       // Before the fix: `.replace(/[()]/g, '')` turned this into
@@ -473,9 +514,15 @@ describe('blockedGuardTrips — never weaken an explicit plan gate', () => {
 
   it('ALLOWS transitions that keep the item explicitly gated', () => {
     expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'blocked', nextStatus: 'blocked' })).toBe(false);
-    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'blocked', nextStatus: 'needs-human' })).toBe(false);
-    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'needs-human', nextStatus: 'blocked' })).toBe(false);
-    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'needs-human', nextStatus: 'needs-human' })).toBe(false);
+    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'blocked', nextStatus: 'needs-human' })).toBe(
+      false,
+    );
+    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'needs-human', nextStatus: 'blocked' })).toBe(
+      false,
+    );
+    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'needs-human', nextStatus: 'needs-human' })).toBe(
+      false,
+    );
   });
 
   it('does not guard non-gated items, missing items, or deliberate human flips', () => {
@@ -483,8 +530,12 @@ describe('blockedGuardTrips — never weaken an explicit plan gate', () => {
       expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus, nextStatus: 'todo' })).toBe(false);
     }
     expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: null, nextStatus: 'todo' })).toBe(false);
-    expect(blockedGuardTrips({ onlyIfNotBlocked: undefined, currentStatus: 'blocked', nextStatus: 'todo' })).toBe(false);
-    expect(blockedGuardTrips({ onlyIfNotBlocked: false, currentStatus: 'needs-human', nextStatus: 'done' })).toBe(false);
+    expect(blockedGuardTrips({ onlyIfNotBlocked: undefined, currentStatus: 'blocked', nextStatus: 'todo' })).toBe(
+      false,
+    );
+    expect(blockedGuardTrips({ onlyIfNotBlocked: false, currentStatus: 'needs-human', nextStatus: 'done' })).toBe(
+      false,
+    );
   });
 });
 
@@ -565,7 +616,9 @@ describe('completedGuardTrips — an automated cascade never downgrades finished
     expect(completedGuardTrips({ onlyIfNotCompleted: undefined, currentStatus: 'done', nextStatus: 'dropped' })).toBe(
       false,
     );
-    expect(completedGuardTrips({ onlyIfNotCompleted: false, currentStatus: 'done', nextStatus: 'dropped' })).toBe(false);
+    expect(completedGuardTrips({ onlyIfNotCompleted: false, currentStatus: 'done', nextStatus: 'dropped' })).toBe(
+      false,
+    );
   });
 
   it('is inert when the item does not exist yet (no current status to protect)', () => {

@@ -26530,7 +26530,7 @@
           "POST"
         ]
       },
-      "description": "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. When complete independent scorecards already exist for the same rubric revision, acknowledgeExisting:true is required to append another; force:true only bypasses unchanged-evidence deduplication. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Stamps the running generation and stores deterministic instrument snapshots.",
+      "description": "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. When complete independent scorecards already exist for the same rubric revision, acknowledgeExisting:true is required to append another; force:true only bypasses unchanged-evidence deduplication. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Every emit, including the author acceptance call, still requires schema-complete ratings; acceptance does not replace ratings. Stamps the running generation and stores deterministic instrument snapshots.",
       "capabilities": [
         "coord:write"
       ],
@@ -26558,7 +26558,7 @@
       "guidance": {
         "when": "Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.",
         "notWhen": "Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.",
-        "chaining": "scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. If emit returns existing_independent_scorecards, inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; do not pass supersedes on the author acceptance."
+        "chaining": "scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. If emit returns existing_independent_scorecards, inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance."
       }
     },
     {

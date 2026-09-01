@@ -58,6 +58,7 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
       cron: null,
       lastFiredAtMs: null,
       nextFireAtMs: null,
+      groupSlug: 'release',
       pause: null,
     }),
     readLiveReleaseCertification: async (targetSha) => ({

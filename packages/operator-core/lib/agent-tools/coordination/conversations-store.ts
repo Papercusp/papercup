@@ -229,9 +229,9 @@ export interface SupersedeStoreResult {
   replacement: ConversationRow;
 }
 
-export type SupersedeStoreError =
-  | { error: 'not_found' }
-  | { error: 'not_open'; conversation: ConversationRow };
+export type ReopenResolvedConversationResult = 'reopened' | 'not_found' | 'already_open' | 'source_changed';
+
+export type SupersedeStoreError = { error: 'not_found' } | { error: 'not_open'; conversation: ConversationRow };
 
 /** The same column list QUALIFIED to the `c` alias, for the list query's LEFT JOIN
  *  against coord_threads. Required, not cosmetic: coord_threads also has `title`,
@@ -338,7 +338,11 @@ export class PgConversationStore {
   }
 
   /** Update the Lifecycle state (and resolved_at when resolving). */
-  async setState(id: string, state: ConversationState, opts: { now_ts: string } = { now_ts: new Date().toISOString() }): Promise<void> {
+  async setState(
+    id: string,
+    state: ConversationState,
+    opts: { now_ts: string } = { now_ts: new Date().toISOString() },
+  ): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     await sql`
@@ -365,9 +369,7 @@ export class PgConversationStore {
   ): Promise<SupersedeStoreResult | SupersedeStoreError> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
-    const supersedeInTransaction = async (
-      tx: TransactionSql,
-    ): Promise<SupersedeStoreResult | SupersedeStoreError> => {
+    const supersedeInTransaction = async (tx: TransactionSql): Promise<SupersedeStoreResult | SupersedeStoreError> => {
       const oldRows = await tx<ConversationRowDb[]>`
         SELECT ${tx.unsafe(SELECT_COLS)}
           FROM harness_shared.coord_conversations
@@ -409,9 +411,7 @@ export class PgConversationStore {
     // A workflow may already supply a TransactionSql-backed store. Reuse that
     // transaction instead of attempting a nested `.begin()` the handle does
     // not expose; root Sql callers still get the row-locking transaction above.
-    return 'begin' in sql
-      ? sql.begin(supersedeInTransaction)
-      : supersedeInTransaction(sql);
+    return 'begin' in sql ? sql.begin(supersedeInTransaction) : supersedeInTransaction(sql);
   }
 
   /** Record the accepted answer + where it was captured (D-004). */
@@ -428,6 +428,48 @@ export class PgConversationStore {
              capture_target = ${input.capture_target ?? null},
              updated_at = ${input.now_ts}
        WHERE workspace_id = ${this.ws} AND id = ${id}`;
+  }
+
+  /**
+   * Explicit inverse of `resolveConversationCore` for a bounded compensation.
+   *
+   * Generic `setState('open')` is deliberately insufficient: resolution also
+   * writes accepted-answer/capture scalars, and leaving any of them behind
+   * would make an "open" question carry a stale accepted answer. The expected
+   * answer is a compare-and-set guard over the exact bulk effect; a later or
+   * unrelated terminal write is never overwritten. A TransactionSql-backed
+   * store keeps this restore atomic with its caller's compensation receipt.
+   */
+  async reopenResolved(
+    id: string,
+    input: { expected_answer: string; now_ts: string },
+  ): Promise<ReopenResolvedConversationResult> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const updated = await sql<Array<{ id: string }>>`
+      UPDATE harness_shared.coord_conversations
+         SET state = 'open',
+             accepted_answer = NULL,
+             accepted_post_id = NULL,
+             capture_target = NULL,
+             resolved_at = NULL,
+             updated_at = ${input.now_ts}
+       WHERE workspace_id = ${this.ws}
+         AND id = ${id}
+         AND state = 'resolved'
+         AND accepted_answer = ${input.expected_answer}
+       RETURNING id
+    `;
+    if (updated.length > 0) return 'reopened';
+
+    const rows = await sql<Array<{ state: ConversationState; accepted_answer: string | null }>>`
+      SELECT state, accepted_answer
+        FROM harness_shared.coord_conversations
+       WHERE workspace_id = ${this.ws} AND id = ${id}
+    `;
+    if (rows.length === 0) return 'not_found';
+    if (rows[0]?.state === 'open') return 'already_open';
+    return 'source_changed';
   }
 
   /** Mark the conversation promoted to an engineer issue (D-005): record the

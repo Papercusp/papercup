@@ -108,6 +108,7 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
       item_id text NOT NULL,
+      owner_gate_marker text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
     );
     CREATE TABLE harness_shared.harness_plan_assertions (

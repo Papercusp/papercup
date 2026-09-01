@@ -19,6 +19,7 @@
  *   tsx seed-release-routines.ts             # seed the decided posture
  *   tsx seed-release-routines.ts --active    # force both ON
  *   tsx seed-release-routines.ts --inactive  # force both OFF
+ *   tsx seed-release-routines.ts --only nightly-release-cut # seed one routine without touching gate rows
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -53,13 +54,26 @@ const ROUTINES = [
 async function main(): Promise<void> {
   const forceActive = process.argv.includes('--active');
   const forceInactive = process.argv.includes('--inactive');
+  // Narrow repair path for a missing bespoke routine. This must not require
+  // re-seeding the LIVE_GATE_OPS rows (green-checkpoint / release-trigger),
+  // whose runtime state is owned by the gate operator.
+  const onlyIndex = process.argv.findIndex((arg) => arg === '--only' || arg.startsWith('--only='));
+  const only = onlyIndex < 0
+    ? undefined
+    : process.argv[onlyIndex].startsWith('--only=')
+      ? process.argv[onlyIndex].slice('--only='.length)
+      : process.argv[onlyIndex + 1];
+  if (only !== undefined && !ROUTINES.some((r) => r.name === only)) {
+    throw new Error(`unknown routine for --only: ${only}`);
+  }
+  const routines = only ? ROUTINES.filter((r) => r.name === only) : ROUTINES;
   const ws = activeWorkspaceId();
   // Admin connection (bypasses RLS) + explicit workspace_id — this is operator
   // infra config, the same path migrations/cross-workspace tooling use. We set
   // workspace_id ourselves rather than depending on the fill-trigger.
   const { sql } = getOrgPg();
   const states: string[] = [];
-  for (const r of ROUTINES) {
+  for (const r of routines) {
     const active = forceActive ? true : forceInactive ? false : r.activeDefault;
     const id = `rt_${SLUG}_${r.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
     // WI-5018 routines grouping: seed group_slug='release' + auto-create the group row

@@ -102,6 +102,7 @@ function makeDeps(health: () => Promise<{ healthy: boolean; attempts: number; el
       cron: null,
       lastFiredAtMs: null,
       nextFireAtMs: null,
+      groupSlug: 'release',
       pause: null,
     }),
     readLiveReleaseCertification: async (targetSha) => ({

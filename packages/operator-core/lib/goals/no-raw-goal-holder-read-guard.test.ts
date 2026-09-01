@@ -195,7 +195,7 @@ describe('no-raw-goal-holder-read guard predicate (P-001 / D-003)', () => {
      * session. Succession here is governed by goal_lease_epoch and handoff
      * expiry, which is why liveness is irrelevant to its question.
      */
-    it('ALLOWLIST holds only the six files with a written reason', () => {
+    it('ALLOWLIST holds only the seven files with a written reason', () => {
       expect([...ALLOWLIST].sort()).toEqual(
         [
           'packages/agent-mcp/src/tools/goals/create.ts',
@@ -203,6 +203,7 @@ describe('no-raw-goal-holder-read guard predicate (P-001 / D-003)', () => {
           'packages/operator-core/lib/goals/holder.ts',
           'packages/operator-core/lib/goals/spend-rollup.ts',
           'packages/operator-core/lib/modes/store.ts',
+          'packages/operator-core/lib/projected-tool-deps.ts',
           'packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts',
         ].sort(),
       );

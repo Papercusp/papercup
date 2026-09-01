@@ -17,6 +17,7 @@ function deps(over: Partial<DeployDeps> = {}): { deps: DeployDeps; calls: string
       cron: null,
       lastFiredAtMs: null,
       nextFireAtMs: null,
+      groupSlug: 'release',
       pause: null,
     }),
     readLiveReleaseCertification: async (targetSha) => ({

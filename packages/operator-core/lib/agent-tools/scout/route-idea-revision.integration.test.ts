@@ -1,43 +1,42 @@
 /** EI-22044075415554418 — routed drafts must be activation-auditable immediately. */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
 
-import { _resetForTests } from '@papercusp/db-org';
-// eslint-disable-next-line import/no-relative-packages -- reset the test DB URL cache
-import { _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/src/connection';
-import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { registerHarnessProject } from '../plans/__tests__/_pg-tool-fixture';
+import {
+  cleanupPlans,
+  registerHarnessProject,
+  setupPlanPgFixture,
+  type PlanPgFixture,
+} from '../plans/__tests__/_pg-tool-fixture';
 import { recordCurrentActivationAudit } from '../../plan-audits';
 import { createScoutPlanDraft } from '../../scout/scout-plan-draft';
 import type { EngineerIssue } from '../../issues-engineer';
 import { runRouteIdea, type RouteIdeaDeps } from './route-idea';
 
-const WS = 'ws-route-idea-revision';
+const WS = 'default';
 const HARNESS = 'route-idea-revision-it';
 const SLUG = 'revision-spine-routed-feature-2026-09-01';
 
 describe('blender:route-idea revision spine', () => {
-  let db: OrgTestDb;
-  const savedEnv: Record<string, string | undefined> = {};
+  let fx: PlanPgFixture;
+  let admin: postgres.Sql;
 
   beforeAll(async () => {
-    db = await createOrgTestDb();
-    savedEnv.HARNESS_DATABASE_URL = process.env.HARNESS_DATABASE_URL;
-    savedEnv.HARNESS_ADMIN_DATABASE_URL = process.env.HARNESS_ADMIN_DATABASE_URL;
-    process.env.HARNESS_DATABASE_URL = db.appDsn;
-    process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
-    _resetUrlCacheForTests();
-    await _resetForTests();
-    await registerHarnessProject(db.adminSql, WS, HARNESS);
+    fx = await setupPlanPgFixture();
+    admin = fx.admin;
+    await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+    await admin`
+      DELETE FROM harness_shared.plan_audits
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+    await registerHarnessProject(admin, WS, HARNESS);
   }, 180_000);
 
   afterAll(async () => {
-    for (const [key, value] of Object.entries(savedEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    _resetUrlCacheForTests();
-    await _resetForTests();
-    await db?.cleanup();
+    await admin`
+      DELETE FROM harness_shared.plan_audits
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`.catch(() => {});
+    await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+    await fx?.dispose();
   });
 
   it('records the current bytes + resolved session and immediately admits activation audit', async () => {
@@ -67,7 +66,7 @@ describe('blender:route-idea revision spine', () => {
     const routed = await runRouteIdea({ featureId: issue.id, rail: 'plan' }, ctx, deps);
     expect(routed).toMatchObject({ ok: true, created: true, slug: SLUG });
 
-    const revisions = await db.adminSql<Array<{
+    const revisions = await admin<Array<{
       seq: number;
       session_id: string | null;
       session_kind: string | null;

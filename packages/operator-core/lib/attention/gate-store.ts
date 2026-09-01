@@ -12,6 +12,7 @@
  * never reopen an already-closed gate.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { TransactionSql } from 'postgres';
 
 export type GateClient = 'claude' | 'omp' | 'codex';
 export type GateKind = 'ask' | 'permission_wait';
@@ -92,6 +93,8 @@ export async function openOrTouchGate(input: OpenGateInput): Promise<{ id: strin
 
 export type CloseGateResult = 'closed' | 'not_found' | 'already_closed';
 
+export type ReopenGateResult = 'reopened' | 'not_found' | 'already_open' | 'source_changed';
+
 /** Close a gate by its correlation ref. Idempotent: closing an already-closed
  *  or never-opened ref is reported, never an error. */
 export async function closeGate(input: {
@@ -117,6 +120,53 @@ export async function closeGate(input: {
   `;
   if (existing.length === 0) return 'not_found';
   return 'already_closed';
+}
+
+/**
+ * Re-open a gate closed by the Inbox bulk resolver.
+ *
+ * This is intentionally NOT part of {@link openOrTouchGate}: watcher/hook
+ * re-observation must remain unable to resurrect a gate the owner already
+ * cleared. Only the bounded compensation path calls this explicit inverse.
+ * The expected close reason is a compare-and-set guard: if another producer
+ * closed the row, undo refuses instead of overwriting that newer authority.
+ * Supplying `tx` joins the source restore to the immutable bulk receipt's
+ * reverted_at/revert_note transaction.
+ */
+export async function reopenGate(
+  input: {
+    workspaceId: string;
+    sessionId: string;
+    refId: string;
+    expectedClosedReason: GateClosedReason;
+  },
+  tx?: TransactionSql,
+): Promise<ReopenGateResult> {
+  const sql = tx ?? getOrgPg().sql;
+  const updated = await sql<Array<{ id: string }>>`
+    UPDATE harness_shared.session_pending_gates
+       SET closed_at = NULL,
+           closed_reason = NULL,
+           updated_at = now()
+     WHERE workspace_id = ${input.workspaceId}
+       AND session_id = ${input.sessionId}
+       AND ref_id = ${input.refId}
+       AND closed_at IS NOT NULL
+       AND closed_reason = ${input.expectedClosedReason}
+     RETURNING id::text AS id
+  `;
+  if (updated.length > 0) return 'reopened';
+
+  const existing = await sql<Array<{ closed_at: string | null; closed_reason: GateClosedReason | null }>>`
+    SELECT closed_at::text AS closed_at, closed_reason
+      FROM harness_shared.session_pending_gates
+     WHERE workspace_id = ${input.workspaceId}
+       AND session_id = ${input.sessionId}
+       AND ref_id = ${input.refId}
+  `;
+  if (existing.length === 0) return 'not_found';
+  if (existing[0]?.closed_at == null) return 'already_open';
+  return 'source_changed';
 }
 
 /**

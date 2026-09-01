@@ -54,6 +54,7 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
         cron: '0 */15 * * * *',
         lastFiredAtMs: null,
         nextFireAtMs: null,
+        groupSlug: 'release',
         pause: null,
       }),
     readLiveReleaseCertification: async (targetSha) => ({
@@ -220,10 +221,12 @@ describe('executeDeploy — happy path', () => {
         cron: '0 */15 * * * *',
         lastFiredAtMs: null,
         nextFireAtMs: null,
+        groupSlug: 'release',
         pause: {
           reason: 'hold until repaired checkout is green',
           pausedBy: 'su-release-owner',
           pausedAtMs: Date.parse('2026-08-15T09:07:00Z'),
+          expiresAtMs: null,
         },
       }),
     });

@@ -96,6 +96,7 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
       item_id text NOT NULL,
+      owner_gate_marker text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id),
       FOREIGN KEY (workspace_id, harness_slug, plan_slug)
         REFERENCES harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
