@@ -32,6 +32,7 @@ import { defineTool, readJsonResult } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { readIssueClaimability } from '../../scheduler/get-next';
+import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
 import { filingGraceSec } from '../../work-items';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -307,11 +308,48 @@ export default defineTool({
     // reached a caller and was read as a claim-path defect. A read failure THROWS here
     // rather than degrading to a partial or zeroed reading: "could not measure" must not
     // masquerade as "measured none" when the answer drives a drain/wind-down call.
-    const { breakdown, rows: claimable, sample: excludedSample, admitted } = await readIssueClaimability(
+    const { breakdown, rows: claimableRows, sample: excludedSample, admitted } = await readIssueClaimability(
       filter,
       { harness, states, assignee, rigAvailable: args.rigAvailable, spec },
       { limit, breakdownOnly: args.breakdownOnly, sampleLimit: args.sampleExcluded },
     );
+
+    // EI-21834285144372521: `readIssueClaimability`'s SQL floors (ALL_ISSUE_CLAIM_FLOORS_PASS)
+    // have no notion of a plan's PROSE owner-gate ("owner-gated" / "hard-deferred" / … in an
+    // item's own text, its plan's `## Now` block, or a linked Decision) — that check only exists
+    // as `planItemLaneBlockReason`, run POST-CLAIM by the real scheduler (get-next.ts), which
+    // claims the row then immediately releases + retries when the linked plan item reads as
+    // owner-gated. `work_items:claimable` is READ-ONLY (it never claims), so it never ran that
+    // guard at all: a plan-linked row this caller can never actually keep reported itself as
+    // claimable, which is exactly what a drain fleet uses this tool to rule out. Apply the SAME
+    // guard here, over the already-bounded (<=200) returned page only — never over the full
+    // matched population, which is exactly the unbounded JS-per-row cost the owner_gate_marker
+    // column was added (migration 1059) to let a SQL floor avoid; that floor is not wired up yet
+    // (tracked separately), so this is the safe, additive fix available without touching the hot
+    // claim-candidate SQL every fleet's get_next depends on.
+    const ownerGateExcluded: Array<{ id: string; plan: string; reason: string }> = [];
+    const claimable: typeof claimableRows = [];
+    for (const row of claimableRows) {
+      if (!row.plan) {
+        claimable.push(row);
+        continue;
+      }
+      // Fails OPEN like every sibling guard in plan-item-lane-guard.ts: a lookup error here
+      // must never turn a real claimable row into a false exclusion.
+      const block = await planItemLaneBlockReason({ id: row.id, harness, family: 'issue', payload: null }).catch(
+        () => null,
+      );
+      if (block) {
+        ownerGateExcluded.push({ id: row.id, plan: row.plan, reason: block.reason });
+      } else {
+        claimable.push(row);
+      }
+    }
+    // Exact when the whole matched population fit in this page (claimable.length < limit, or
+    // the SQL count already equalled the page); a monotonic UNDER-correction (never negative,
+    // never an over-exclusion) when the page was truncated — some owner-gated rows beyond the
+    // page may still inflate the count in that case, which the note below says plainly.
+    const correctedClaimableCount = Math.max(0, breakdown.claimable - ownerGateExcluded.length);
 
     const payload = {
       ok: true as const,
@@ -325,14 +363,17 @@ export default defineTool({
         filingGraceSeconds,
         peerReadinessMayDiffer: filingGraceSeconds > 0,
       },
-      /** The authoritative count: rows passing spec_match AND every claim floor. */
-      claimableCount: breakdown.claimable,
+      /** The authoritative count: rows passing spec_match AND every claim floor, MINUS any
+       *  plan-linked row this page found to be owner-gated in plan prose (EI-21834285144372521;
+       *  see ownerGateExcluded below) — exact when `returned < limit`; a safe under-correction
+       *  (never an over-exclusion) when the page was truncated. */
+      claimableCount: correctedClaimableCount,
       /** EI-18835176695181727: alias of `claimableCount`. Sibling read tools (e.g.
        *  dev:pg_query) return `{ rows, count }`; a caller who guesses that shape here
        *  instead of `{ claimable, claimableCount }` gets `undefined`-keyed access —
        *  which silently yields `[]`/`0`, not an error, and `0` reads as "queue drained"
        *  at exactly the moment a drain/wind-down call is made on it. Purely additive. */
-      count: breakdown.claimable,
+      count: correctedClaimableCount,
       /** In-lane issue-family rows the spec's own filter matched, BEFORE floors. */
       matchedByFilter: breakdown.matchedByFilter,
       /** EI-16028: coverage of the affinity rank term's item-side path metadata over the
@@ -356,11 +397,19 @@ export default defineTool({
        *  (same overlapping-bucket semantics as excludedBreakdown) — which rows, not just
        *  how many. */
       ...(excludedSample ? { excludedSample } : {}),
+      /** Plan-linked rows this page found to be owner-gated in plan PROSE (an item's own text,
+       *  its plan's `## Now` block, or a linked Decision) — the same check the real scheduler
+       *  runs post-claim, applied here read-only so this tool never reports a row as claimable
+       *  that a real claim would immediately release. Only present when non-empty. */
+      ...(ownerGateExcluded.length > 0 ? { ownerGateExcluded } : {}),
       spec: specProvenance,
       states: states ? [...states] : null,
       note:
-        '`claimableCount` is authoritative for THIS CALLER (spec_match AND all ~12 floors — the SAME oracle scheduler:get_next runs). Caller-relative release cooldown and filing grace mean another fleet member may have a different total; a fresh row is visible to its filer before peers for up to ' +
+        '`claimableCount` is authoritative for THIS CALLER (spec_match AND all ~12 floors, MINUS any plan-prose owner-gated row this page detected — the SAME oracle scheduler:get_next runs, plus the post-claim plan-lane guard it also applies). Caller-relative release cooldown and filing grace mean another fleet member may have a different total; a fresh row is visible to its filer before peers for up to ' +
         `${filingGraceSeconds}s. excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.` +
+        (ownerGateExcluded.length > 0 && claimableRows.length >= limit
+          ? ` ⚠ This page was truncated at limit=${limit} — ${ownerGateExcluded.length} owner-gated row(s) were excluded from THIS page, but the matched population beyond it was not checked, so claimableCount can still be an OVER-count if more owner-gated rows exist past the page.`
+          : '') +
         (breakdown.affinityCoverage.belowFloor
           ? ` ⚠ AFFINITY PATH COVERAGE WARNING: ${breakdown.affinityCoverage.nonEmptyPaths}/${breakdown.affinityCoverage.denominator} claimable row(s) carry non-empty payload.paths, below the ${Math.round(breakdown.affinityCoverage.floor * 100)}% floor; affinity ranking is under-informed (EI-16028).`
           : '') +
