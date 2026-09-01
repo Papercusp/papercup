@@ -19,13 +19,21 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-bulk-run-test' }));
+const h = vi.hoisted(() => ({
+  sql: null as unknown,
+  ws: 'ws-bulk-run-test',
+  deliverOwnerDigest: vi.fn(async () => ({ delivered: true })),
+}));
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: h.sql }),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
+vi.mock('./bulk-run-owner-digest', () => ({
+  UNATTENDED_BULK_REQUESTER: 'system:inbox-bulk-resolve',
+  deliverUnattendedRunOwnerDigest: h.deliverOwnerDigest,
+}));
 
 const {
   BulkRunAlreadyActiveError,
@@ -99,6 +107,37 @@ describe('attention bulk-run store (real PG)', () => {
   beforeEach(() => {
     wsSeq += 1;
     h.ws = `ws-bulk-run-test-${wsSeq}`;
+    h.deliverOwnerDigest.mockClear();
+  });
+
+  it('delivers the P-010 owner digest from the run-store pass-ending seam only for unattended runs', async () => {
+    const unattended = await createRun({
+      items: seed('owner-digest'),
+      requestedBy: 'system:inbox-bulk-resolve',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: unattended.runId, phase: 'complete' });
+
+    expect(h.deliverOwnerDigest).toHaveBeenCalledTimes(1);
+    expect(h.deliverOwnerDigest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: unattended.runId,
+        requestedBy: 'system:inbox-bulk-resolve',
+        phase: 'complete',
+      }),
+      expect.arrayContaining([
+        expect.objectContaining({ itemId: 'coord-escalation:owner-digest-1' }),
+      ]),
+    );
+
+    h.deliverOwnerDigest.mockClear();
+    const foreground = await createRun({
+      items: seed('foreground'),
+      requestedBy: 'owner:aviynw',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: foreground.runId, phase: 'complete' });
+    expect(h.deliverOwnerDigest).not.toHaveBeenCalled();
   });
 
   it('creates a run from the snapshot, preserving order and ref shape', async () => {

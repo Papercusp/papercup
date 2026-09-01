@@ -14,7 +14,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  getClaimTimeStalePathAdvisory,
+  getClaimTimeStalePathRefs,
   getClaimTimeStalePathHints,
+  getStalePathRefsForSubjects,
+  stalePathRefsNote,
   stalePathHintsNote,
   type ClaimTimeStalePathHint,
 } from './stale-path-hints-claim-port';
@@ -192,6 +196,77 @@ describe('getClaimTimeStalePathHints', () => {
         rmSync(wrongRoot, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe.runIf(gitAvailable)('title/summary stalePathRefs (EI-20049758099997696)', () => {
+  let repo: string;
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'stale-path-refs-'));
+    sh(repo, ['init', '-q']);
+    sh(repo, ['config', 'user.email', 't@t']);
+    sh(repo, ['config', 'user.name', 't']);
+    writeFileAt(repo, 'apps/operator/live.tsx', 'export {};\n');
+    sh(repo, ['add', '.']);
+    sh(repo, ['commit', '-q', '-m', 'anchor']);
+  });
+
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  it('reports only unresolvable repo-relative paths cited in title/summary', async () => {
+    await expect(
+      getClaimTimeStalePathRefs({
+        workItem: {
+          id: 'WI-1',
+          title: 'Update apps/operator/live.tsx',
+          summary: 'Remove apps/operator/app/_components/LeftSidebar.tsx:42 after verification',
+        },
+        repoRoot: repo,
+      }),
+    ).resolves.toEqual(['apps/operator/app/_components/LeftSidebar.tsx']);
+  });
+
+  it('batches plan items against one advisory shape and stays silent for resolvable text', async () => {
+    await expect(
+      getStalePathRefsForSubjects(
+        [
+          { id: 'P-001', summary: 'Touch apps/operator/live.tsx' },
+          { id: 'P-002', summary: 'Delete packages/retired/no-longer-here.ts' },
+        ],
+        repo,
+      ),
+    ).resolves.toEqual({ 'P-002': ['packages/retired/no-longer-here.ts'] });
+  });
+
+  it('shares one claim-time advisory with payload pathHints without conflating the fields', async () => {
+    writeFileAt(repo, 'old/moved.ts', 'export {};\n');
+    sh(repo, ['add', '.']);
+    sh(repo, ['commit', '-q', '-m', 'add moved fixture']);
+    mkdirSync(join(repo, 'new'), { recursive: true });
+    sh(repo, ['mv', 'old/moved.ts', 'new/moved.ts']);
+    sh(repo, ['commit', '-q', '-am', 'move fixture']);
+
+    const advisory = await getClaimTimeStalePathAdvisory({
+      workItem: {
+        id: 'WI-2',
+        payload: { paths: ['old/moved.ts'] },
+        summary: 'Also edit packages/never-created.ts',
+      },
+      repoRoot: repo,
+    });
+    expect(advisory?.pathHints).toEqual([
+      { requested: 'old/moved.ts', status: 'moved', resolvedTo: 'new/moved.ts' },
+    ]);
+    expect(advisory?.stalePathRefs).toEqual(['packages/never-created.ts']);
+    expect(advisory?.stalePathRefsNote).toContain('not semantic staleness');
+  });
+
+  it('renders the required advisory scope limits', () => {
+    const note = stalePathRefsNote(['apps/operator/missing.tsx'])!;
+    expect(note).toContain('Advisory only');
+    expect(note).toContain('file to CREATE');
+    expect(note).toContain('absence of this field does not verify the item');
   });
 });
 
