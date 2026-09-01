@@ -6526,6 +6526,16 @@ export async function setWorkItemClaimHold(
      *  terminal transition. */
     parkedBy?: string;
     parkedReason?: string;
+    /** Typed, evidence-bearing release condition for a durable park. The public
+     *  park writer resolves this from the event ledger rather than trusting a
+     *  caller-supplied reachability assertion (WI-141378 / D-025). */
+    releaseContract?: {
+      condition: string;
+      owner: string;
+      trigger: string;
+      reachability: 'reachable' | 'blocked' | 'unreachable' | 'satisfied';
+      evidence: string;
+    };
     /** Clear ONLY the `held_open_*` lease, preserving a coexisting durable park
      *  (`_claimHold` + `claim_hold_*`). For AUTOMATED liveness-triggered lifts (the inline
      *  expired-lease chokepoint); explicit agent clears stay full. */
@@ -6569,6 +6579,7 @@ export async function setWorkItemClaimHold(
     ...(opts.reason ? { held_open_reason: opts.reason } : {}),
     ...(opts.parkedBy ? { claim_hold_by: opts.parkedBy, claim_hold_at: new Date().toISOString() } : {}),
     ...(opts.parkedReason ? { claim_hold_reason: opts.parkedReason } : {}),
+    ...(opts.releaseContract ? { claim_hold_release: opts.releaseContract } : {}),
   });
   const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.work_items
@@ -6577,7 +6588,7 @@ export async function setWorkItemClaimHold(
              WHEN ${opts.leaseOnly === true} AND COALESCE(payload, '{}'::jsonb) ? 'claim_hold_by'
              THEN COALESCE(payload, '{}'::jsonb) - 'held_open_by' - 'held_open_reason' - 'held_open_at'
              ELSE COALESCE(payload, '{}'::jsonb) - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
-                    - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
+                    - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at' - 'claim_hold_release'
            END,
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${ws} AND feature_id = ${id}
@@ -6607,6 +6618,7 @@ export async function setWorkItemClaimHold(
           mode: opts.by ? 'held_open' : opts.parkedBy ? 'claim_hold' : opts.leaseOnly ? 'lease_only_clear' : 'clear',
           by: auditActor,
           reason: opts.reason ?? opts.parkedReason ?? null,
+          releaseContract: opts.releaseContract ?? null,
           leaseOnly: opts.leaseOnly === true,
         }),
         ws,
