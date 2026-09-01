@@ -397,10 +397,11 @@ describe('git-read.ts model tracks the real capability:git (D-015)', () => {
     expectArgSurface(
       capabilityGit,
       'capability:git',
-      ['args', 'cwd'],
+      ['args', 'cwd', 'scratchClone'],
       'gitReadPassthrough rewrites the whole command as literal argv, and maps `git -C <dir>` / `--git-dir` / ' +
         '`--work-tree` onto `cwd` (140 corpus atoms point at a sibling worktree). Losing `cwd` would make every ' +
-        'one of those expressions run in the WRONG REPOSITORY while still reporting success.',
+        'one of those expressions run in the WRONG REPOSITORY while still reporting success. scratchClone is a ' +
+        'guarded construction mode for a different intent and does not broaden the read-passthrough pair.',
     );
   });
 

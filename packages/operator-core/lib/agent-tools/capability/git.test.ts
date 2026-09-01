@@ -7,20 +7,114 @@
  * gives an honest end-to-end probe of the CHILD PROCESS's actual env without
  * mocking anything — the exact vector a bee's `capability:git` would have had.
  */
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { emptyPathspecNote, runGit } from './git';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import capabilityGit, { createScratchClone, emptyPathspecNote, runGit } from './git';
 
 const STATE = mkdtempSync(join(tmpdir(), 'cap-git-'));
 const never = new AbortController().signal;
+const cleanup: string[] = [];
+
+afterAll(() => rmSync(STATE, { recursive: true, force: true }));
+
+afterEach(() => {
+  for (const path of cleanup.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+}
+
+function repository(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  cleanup.push(root);
+  git(root, ['init', '--quiet']);
+  git(root, ['config', 'user.name', 'Scratch Clone Test']);
+  git(root, ['config', 'user.email', 'scratch-clone@example.invalid']);
+  writeFileSync(join(root, 'tracked.txt'), `${prefix}\n`);
+  git(root, ['add', 'tracked.txt']);
+  git(root, ['commit', '--quiet', '-m', 'initial']);
+  return root;
+}
 
 describe('runGit', () => {
   it('runs a plain git subcommand', async () => {
     const r = await runGit(['--version'], STATE, STATE, never);
     expect(r.code).toBe(0);
     expect(r.output).toContain('git version');
+  });
+});
+
+describe('scratchClone — guarded cheap local materialisation (WI-38848)', () => {
+  it('keeps the existing argv form and exposes a mutually-exclusive scratch form', () => {
+    const schema = (capabilityGit as unknown as { args: { safeParse(value: unknown): { success: boolean } } }).args;
+    expect(schema.safeParse({ args: ['status', '--porcelain'] }).success).toBe(true);
+    expect(schema.safeParse({ scratchClone: { ref: 'HEAD' } }).success).toBe(true);
+    expect(schema.safeParse({ args: ['status'], scratchClone: {} }).success).toBe(false);
+    expect(schema.safeParse({}).success).toBe(false);
+  });
+
+  it('borrows the object store, pins a detached commit, strips origin, and skips untracked node_modules', async () => {
+    const source = repository('cap-git-scratch-source-');
+    mkdirSync(join(source, 'node_modules'), { recursive: true });
+    writeFileSync(join(source, 'node_modules', 'large-untracked-model.bin'), 'never copy me');
+    const sha = git(source, ['rev-parse', 'HEAD']);
+
+    const result = await createScratchClone({ source, signal: never });
+    cleanup.push(result.path);
+
+    expect(result.sha).toBe(sha);
+    expect(result.borrowedRepositories).toBe(1);
+    expect(git(result.path, ['rev-parse', 'HEAD'])).toBe(sha);
+    expect(git(result.path, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('HEAD');
+    expect(git(result.path, ['remote'])).toBe('');
+    expect(existsSync(join(result.path, 'node_modules'))).toBe(false);
+    expect(readFileSync(join(result.path, '.git', 'objects', 'info', 'alternates'), 'utf8').trim()).not.toBe('');
+  });
+
+  it('materialises local submodules at their exact pins with shared objects and no origins', async () => {
+    const child = repository('cap-git-scratch-child-');
+    const source = repository('cap-git-scratch-parent-');
+    git(source, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '--quiet', child, 'modules/child']);
+    git(source, ['commit', '--quiet', '-am', 'add child']);
+    const childPin = git(source, ['rev-parse', 'HEAD:modules/child']);
+
+    const result = await createScratchClone({ source, signal: never });
+    cleanup.push(result.path);
+    const clonedChild = join(result.path, 'modules', 'child');
+
+    expect(result.submodules).toBe(1);
+    expect(result.borrowedRepositories).toBe(2);
+    expect(git(clonedChild, ['rev-parse', 'HEAD'])).toBe(childPin);
+    expect(git(clonedChild, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('HEAD');
+    expect(git(clonedChild, ['remote'])).toBe('');
+    expect(readFileSync(join(clonedChild, '.git', 'objects', 'info', 'alternates'), 'utf8').trim()).not.toBe('');
+  });
+
+  it('fails closed and removes the destination it created when a local submodule is unavailable', async () => {
+    const child = repository('cap-git-scratch-missing-child-');
+    const source = repository('cap-git-scratch-missing-parent-');
+    git(source, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '--quiet', child, 'modules/child']);
+    git(source, ['commit', '--quiet', '-am', 'add child']);
+    rmSync(join(source, 'modules', 'child'), { recursive: true, force: true });
+    const destination = join(tmpdir(), `cap-git-scratch-fail-${crypto.randomUUID()}`);
+
+    await expect(createScratchClone({ source, destination, signal: never })).rejects.toThrow(/local submodule modules\/child/);
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  it('never deletes or enters a caller-owned destination', async () => {
+    const source = repository('cap-git-scratch-preserve-source-');
+    const destination = mkdtempSync(join(tmpdir(), 'cap-git-scratch-preserve-dest-'));
+    cleanup.push(destination);
+    const sentinel = join(destination, 'peer-work.txt');
+    writeFileSync(sentinel, 'keep');
+
+    await expect(createScratchClone({ source, destination, signal: never })).rejects.toThrow(/must not already exist/);
+    expect(readFileSync(sentinel, 'utf8')).toBe('keep');
   });
 });
 

@@ -11,7 +11,9 @@
 
 import { spawn as childSpawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
@@ -29,14 +31,306 @@ import { buildCapabilitySandboxCommand, capabilityExecSandboxEnabled, scrubExecE
  */
 export const REFUSED_SUBCOMMANDS = new Set(['push']);
 
+const scratchCloneSpec = z.object({
+  source: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Local repository path (absolute, or relative to cwd). Defaults to cwd/project dir. Remote URLs are refused.'),
+  ref: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Commit-ish to pin exactly and check out detached. Defaults to HEAD.'),
+  destination: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Optional absolute, non-existing destination below the OS temp directory. Omit to create one safely.'),
+  submodules: z
+    .boolean()
+    .optional()
+    .describe('Materialise locally checked-out submodules at their exact pins (default true). No network fallback.'),
+});
+
+const cwdArg = z
+  .string()
+  .optional()
+  .describe('Working dir (absolute, or relative to the project dir). Defaults to the project dir. In scratchClone mode it is the default source/base.');
+
+const gitToolArgs = z.union([
+  z.object({
+    args: z.array(z.string()).min(1).describe('git arguments, e.g. ["status","--porcelain"] or ["diff","--stat"].'),
+    cwd: cwdArg,
+    scratchClone: z.never().optional(),
+  }),
+  z.object({
+    args: z.never().optional(),
+    cwd: cwdArg,
+    scratchClone: scratchCloneSpec.describe('Guarded, cheap, disposable local clone. Use instead of ad-hoc `git clone`/copy commands for scratch work.'),
+  }),
+]);
+
+export interface ScratchCloneResult {
+  path: string;
+  source: string;
+  requestedRef: string;
+  sha: string;
+  submodules: number;
+  borrowedRepositories: number;
+}
+
+export interface ScratchCloneOptions {
+  source: string;
+  ref?: string;
+  destination?: string;
+  includeSubmodules?: boolean;
+  stateDir?: string;
+  signal?: AbortSignal;
+  sandboxEnabled?: boolean;
+}
+
+interface ScratchCloneContext {
+  stateDir: string | undefined;
+  signal: AbortSignal;
+  sandboxEnabled: boolean;
+  submodules: number;
+}
+
+interface ScratchSubmodule {
+  path: string;
+}
+
+const MAX_SCRATCH_SUBMODULES = 256;
+const MAX_SCRATCH_SUBMODULE_DEPTH = 8;
+
+function strictlyWithin(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+function parseScratchGitmodules(text: string): ScratchSubmodule[] {
+  const out: ScratchSubmodule[] = [];
+  let current: ScratchSubmodule | null = null;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (/^\[submodule\s+"[^"]+"\]$/.test(line)) {
+      current = { path: '' };
+      out.push(current);
+      continue;
+    }
+    if (!current || line.startsWith('#') || line.startsWith(';')) continue;
+    const match = /^path\s*=\s*(.*)$/.exec(line);
+    if (match) current.path = match[1].trim();
+  }
+  return out.filter((entry) => entry.path.length > 0);
+}
+
+function scratchError(label: string, output: string): Error {
+  const detail = output.trim();
+  return new Error(`${label}${detail ? `: ${detail}` : ''}`);
+}
+
+async function gitStep(
+  argv: string[],
+  cwd: string,
+  ctx: ScratchCloneContext,
+  label: string,
+): Promise<string> {
+  const result = await runGit(argv, cwd, ctx.stateDir, ctx.signal, ctx.sandboxEnabled);
+  if (result.code !== 0) throw scratchError(label, result.output);
+  return result.output.trim();
+}
+
+async function localRepositoryRoot(path: string, ctx: ScratchCloneContext, label: string): Promise<string> {
+  if (!isAbsolute(path)) throw new Error(`${label} must be an absolute local path.`);
+  let canonical: string;
+  try {
+    canonical = await realpath(path);
+    if (!(await stat(canonical)).isDirectory()) throw new Error('not a directory');
+  } catch (error) {
+    throw new Error(`${label} is not an existing local directory: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const root = await gitStep(['rev-parse', '--show-toplevel'], canonical, ctx, `${label} is not a Git working tree`);
+  const canonicalRoot = await realpath(root);
+  if (!isAbsolute(canonicalRoot)) throw new Error(`${label} resolved to a non-absolute Git root.`);
+  return canonicalRoot;
+}
+
+async function createOwnedTempDestination(requested?: string): Promise<string> {
+  const tempRoot = await realpath(tmpdir());
+  if (!requested) return mkdtemp(join(tempRoot, 'papercusp-git-scratch-'));
+  if (!isAbsolute(requested)) throw new Error('scratchClone.destination must be absolute.');
+
+  const parent = await realpath(dirname(requested));
+  const destination = resolve(parent, basename(requested));
+  if (!strictlyWithin(tempRoot, destination)) {
+    throw new Error(`scratchClone.destination must be below the OS temp directory (${tempRoot}).`);
+  }
+  try {
+    // Atomic ownership boundary: cleanup is allowed only after THIS mkdir succeeds.
+    // An existing path (including a symlink) is never entered, modified, or removed.
+    await mkdir(destination, { mode: 0o700 });
+  } catch (error) {
+    throw new Error(`scratchClone.destination must not already exist: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return destination;
+}
+
+async function verifyBorrowedObjects(destination: string): Promise<void> {
+  const alternates = await readFile(join(destination, '.git', 'objects', 'info', 'alternates'), 'utf8').catch(() => '');
+  if (!alternates.trim()) {
+    throw new Error(`git clone did not create an object-store alternate for ${destination}; refusing a clone that may have copied its pack.`);
+  }
+}
+
+async function materialiseLocalSubmodules(
+  sourceRoot: string,
+  destinationRoot: string,
+  parentSha: string,
+  ctx: ScratchCloneContext,
+  depth: number,
+): Promise<void> {
+  const gitmodules = await readFile(join(destinationRoot, '.gitmodules'), 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  });
+  const entries = parseScratchGitmodules(gitmodules);
+  if (entries.length === 0) return;
+  if (depth >= MAX_SCRATCH_SUBMODULE_DEPTH) {
+    throw new Error(`scratchClone submodule nesting exceeds the safe depth limit (${MAX_SCRATCH_SUBMODULE_DEPTH}).`);
+  }
+  if (ctx.submodules + entries.length > MAX_SCRATCH_SUBMODULES) {
+    throw new Error(`scratchClone submodule count exceeds the safe limit (${MAX_SCRATCH_SUBMODULES}).`);
+  }
+
+  // Preflight the whole level before cloning any child. A partial submodule tree
+  // can make a test/lint produce a confident false answer, so there is no network
+  // fallback and no "best effort" branch here.
+  const ready: Array<{ source: string; destination: string; pin: string; path: string }> = [];
+  for (const entry of entries) {
+    if (isAbsolute(entry.path) || entry.path.split(/[\\/]+/).includes('..')) {
+      throw new Error(`scratchClone refuses unsafe submodule path: ${entry.path}`);
+    }
+    const sourceCandidate = resolve(sourceRoot, entry.path);
+    const destination = resolve(destinationRoot, entry.path);
+    if (!strictlyWithin(sourceRoot, sourceCandidate) || !strictlyWithin(destinationRoot, destination)) {
+      throw new Error(`scratchClone submodule path escapes its repository: ${entry.path}`);
+    }
+    const source = await localRepositoryRoot(sourceCandidate, ctx, `local submodule ${entry.path}`);
+    if (source !== await realpath(sourceCandidate)) {
+      throw new Error(`local submodule ${entry.path} is not checked out at its declared path.`);
+    }
+    const pin = await gitStep(
+      ['rev-parse', '--verify', '--end-of-options', `${parentSha}:${entry.path}`],
+      sourceRoot,
+      ctx,
+      `cannot resolve submodule pin for ${entry.path}`,
+    );
+    await gitStep(
+      ['rev-parse', '--verify', '--end-of-options', `${pin}^{commit}`],
+      source,
+      ctx,
+      `local submodule ${entry.path} does not contain pinned commit ${pin}`,
+    );
+    ready.push({ source, destination, pin, path: entry.path });
+  }
+
+  ctx.submodules += ready.length;
+  for (const child of ready) {
+    // Checkout materialises a gitlink as an empty directory. It is inside the
+    // root directory this tool atomically created, so replacing it is safe.
+    await rm(child.destination, { recursive: true, force: true });
+    await gitStep(
+      ['clone', '--local', '--shared', '--no-checkout', '--quiet', '--', child.source, child.destination],
+      destinationRoot,
+      ctx,
+      `failed to clone local submodule ${child.path}`,
+    );
+    await verifyBorrowedObjects(child.destination);
+    await gitStep(
+      ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', child.pin],
+      child.destination,
+      ctx,
+      `failed to check out local submodule ${child.path} at ${child.pin}`,
+    );
+    await gitStep(['remote', 'remove', 'origin'], child.destination, ctx, `failed to remove origin from submodule ${child.path}`);
+    await materialiseLocalSubmodules(child.source, child.destination, child.pin, ctx, depth + 1);
+  }
+}
+
+/**
+ * Create a disposable, exact-ref local clone without copying the source pack.
+ *
+ * This is the guarded counterpart to ad-hoc agent shell clones (WI-38848). It
+ * deliberately reuses the real-Git recipe proven by lint-as-committed:
+ * `clone --local --shared --no-checkout` followed by detached checkout. Every
+ * destination is atomically created by this function, so the failure cleanup
+ * can never delete a caller/peer-owned directory.
+ */
+export async function createScratchClone(options: ScratchCloneOptions): Promise<ScratchCloneResult> {
+  const ctx: ScratchCloneContext = {
+    stateDir: options.stateDir,
+    signal: options.signal ?? new AbortController().signal,
+    sandboxEnabled: options.sandboxEnabled ?? false,
+    submodules: 0,
+  };
+  const source = await localRepositoryRoot(options.source, ctx, 'scratchClone.source');
+  const requestedRef = options.ref ?? 'HEAD';
+  const sha = await gitStep(
+    ['rev-parse', '--verify', '--end-of-options', `${requestedRef}^{commit}`],
+    source,
+    ctx,
+    `scratchClone.ref does not resolve to a commit (${requestedRef})`,
+  );
+
+  const destination = await createOwnedTempDestination(options.destination);
+  if (strictlyWithin(source, destination) || strictlyWithin(destination, source) || source === destination) {
+    await rm(destination, { recursive: true, force: true });
+    throw new Error('scratchClone source and destination must not contain one another.');
+  }
+
+  let complete = false;
+  try {
+    await gitStep(
+      ['clone', '--local', '--shared', '--no-checkout', '--quiet', '--', source, destination],
+      dirname(destination),
+      ctx,
+      'scratchClone failed to borrow the source repository',
+    );
+    await verifyBorrowedObjects(destination);
+    await gitStep(
+      ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', sha],
+      destination,
+      ctx,
+      `scratchClone failed to check out ${sha}`,
+    );
+    await gitStep(['remote', 'remove', 'origin'], destination, ctx, 'scratchClone failed to remove origin');
+    if (options.includeSubmodules !== false) {
+      await materialiseLocalSubmodules(source, destination, sha, ctx, 0);
+    }
+    complete = true;
+    return {
+      path: destination,
+      source,
+      requestedRef,
+      sha,
+      submodules: ctx.submodules,
+      borrowedRepositories: 1 + ctx.submodules,
+    };
+  } finally {
+    if (!complete) await rm(destination, { recursive: true, force: true });
+  }
+}
+
 export default defineTool({
   name: 'capability:git',
   description:
-    'Run a git subcommand (argv, no shell) in the project dir. `push` is refused (git-sync owns push). Output spills to a log if large.',
+    'Run a git subcommand (argv, no shell), or create a guarded cheap local scratch clone that borrows object stores. `push` is refused (git-sync owns push).',
   guidance: {
-    when: 'Inspect or stage git state — status, diff, log, show, add, commit (within a worktree). Prefer this over capability:bash for git so the action is gated as git, not arbitrary shell.',
-    notWhen: 'Pushing (refused — git-sync owns push). Arbitrary shell — use capability:bash.',
-    chaining: 'capability:git { args: ["status","--porcelain"] } → inspect → capability:git { args: ["add","-A"] } etc.',
+    when: 'Inspect/stage git state, or make an ephemeral local checkout. For scratch work use scratchClone: it pins a detached ref, borrows packs, skips untracked node_modules, materialises only resolvable local submodules, and removes origins.',
+    notWhen: 'Pushing (refused — git-sync owns push). Remote/network clones or persistent product checkouts. Arbitrary shell — use capability:bash.',
+    chaining: 'Read form: capability:git { args: ["status","--porcelain"] }. Scratch form: capability:git { scratchClone: { ref: "HEAD" } } → use returned path; OS temp cleanup remains the lifecycle owner.',
     seeAlso: [
       'capability:bash (run an arbitrary shell command)',
       'dev:pipeline_position (where a committed edit is in the pipeline)',
@@ -51,12 +345,57 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   timeoutSec: 120,
-  args: z.object({
-    args: z.array(z.string()).min(1).describe('git arguments, e.g. ["status","--porcelain"] or ["diff","--stat"].'),
-    cwd: z.string().optional().describe('Working dir (absolute, or relative to the project dir). Defaults to the project dir.'),
-  }),
+  args: gitToolArgs,
   async handler(args, ctx) {
-    const sub = args.args.find((a) => !a.startsWith('-')) ?? '';
+    const baseDir = resolveCapabilityBaseDir(ctx);
+    const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolve(baseDir, args.cwd)) : baseDir;
+    // P-022/D-008: re-apply the OS sandbox to this operator-side git subprocess
+    // when the papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
+    const sandboxEnabled = await capabilityExecSandboxEnabled();
+
+    if ('scratchClone' in args && args.scratchClone) {
+      const requestedSource = args.scratchClone.source ?? cwd;
+      const source = isAbsolute(requestedSource) ? requestedSource : resolve(cwd, requestedSource);
+      try {
+        const result = await createScratchClone({
+          source,
+          ref: args.scratchClone.ref,
+          destination: args.scratchClone.destination,
+          includeSubmodules: args.scratchClone.submodules,
+          stateDir: ctx.stateDir,
+          signal: ctx.signal,
+          sandboxEnabled,
+        });
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              mode: 'scratchClone',
+              ...result,
+              detached: true,
+              remotesRemoved: true,
+              objectStorage: 'borrowed-local-alternates',
+            }),
+          }],
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              reason: 'scratch_clone_failed',
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          }],
+          isError: true,
+        };
+      }
+    }
+
+    const argv = args.args;
+    const sub = argv.find((a) => !a.startsWith('-')) ?? '';
     if (REFUSED_SUBCOMMANDS.has(sub)) {
       return {
         content: [
@@ -74,13 +413,7 @@ export default defineTool({
     // repo-relative pathspec after `--` resolved to `apps/operator/<path>`, matched
     // nothing, and printed nothing at exit 0 — a confident FALSE ABSENCE for every
     // agent using `git log -- <path>` for landing/containment triage.
-    const baseDir = resolveCapabilityBaseDir(ctx);
-    const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolve(baseDir, args.cwd)) : baseDir;
-    // P-022/D-008: re-apply the OS sandbox to this operator-side git subprocess
-    // when the papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
-    const sandboxEnabled = await capabilityExecSandboxEnabled();
-
-    const r = await runGit(args.args, cwd, ctx.stateDir, ctx.signal, sandboxEnabled);
+    const r = await runGit(argv, cwd, ctx.stateDir, ctx.signal, sandboxEnabled);
     const truncated = r.output.length > INLINE_OUTPUT_CAP;
     let logPath: string | undefined;
     let output = r.output;
@@ -93,8 +426,8 @@ export default defineTool({
     // to this directory (and, for a worktree, to ITS branch). capability:bash has
     // always printed its cwd; capability:git printing none is what let the wrong-tree
     // reading above look like a normal empty result. (EI-20881501070735530)
-    const header = `git ${args.args.join(' ')} · exit ${r.code ?? 'null'} · cwd ${cwd}${truncated ? ` · spilled → ${logPath}` : ''}`;
-    const body = output || `(no output)${emptyPathspecNote(args.args, r.code, output, cwd)}`;
+    const header = `git ${argv.join(' ')} · exit ${r.code ?? 'null'} · cwd ${cwd}${truncated ? ` · spilled → ${logPath}` : ''}`;
+    const body = output || `(no output)${emptyPathspecNote(argv, r.code, output, cwd)}`;
     return {
       content: [{ type: 'text' as const, text: `${header}\n${body}` }],
       isError: r.code === null,
