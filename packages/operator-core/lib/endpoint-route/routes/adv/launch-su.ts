@@ -84,6 +84,10 @@ const launchSu = defineTool({
       effort?: string | null;
       // su-context-size-variants: 'full' | 'trimmed' — initial-context size.
       context_size?: string | null;
+      // WI-2140338 [owner 2026-09-01]: session compaction ceiling in TOKENS,
+      // emitted as `--compaction-limit` (the MemberSpec seam). Null/omitted =
+      // tier/system default. Distinct from context_size (tool surface).
+      compaction_limit?: number | null;
       resume_session_id?: string | null;
       kickoff?: { kind?: string } | null;
       // P-017 (work-on-everything-goal): free-text first-turn brief, delivered
@@ -437,6 +441,17 @@ const launchSu = defineTool({
     psuArgs.push(plan ? `--plan=${plan}` : '--no-plan');
     if (model) psuArgs.push(`--model=${model}`);
     psuArgs.push(`--context-size=${contextSize}`);
+    // WI-2140338 [owner 2026-09-01]: pin the session's token ceiling when the
+    // launcher supplied one (goal launch profiles do for full-window holders).
+    // Validated int>0; a non-finite/negative value is refused above argv, not
+    // silently dropped into a malformed flag.
+    if (body.compaction_limit != null) {
+      const cl = Math.floor(Number(body.compaction_limit));
+      if (!Number.isFinite(cl) || cl <= 0) {
+        return json({ status: 'error', error: `compaction_limit: expected a positive integer, got ${String(body.compaction_limit)}` }, 400);
+      }
+      psuArgs.push(`--compaction-limit=${cl}`);
+    }
     // WI-6321 — same flags, same order psu's own psuLaunchArgvRecord emits them,
     // so a GUI launch and a terminal launch produce an identical launch_argv.
     // Unconditional by D-014: `account` is now always resolved above, and the argv
