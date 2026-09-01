@@ -96,11 +96,7 @@ import { isWorkItemCompletionAuthority, type WorkItemCompletionAuthority } from 
 // NOT re-exported — the leaf is the import site for anyone who needs the decision itself.
 import { classifySettledCompletionEvidence } from './work-item-settled-completion-evidence';
 import { liveDriveTerminalRefusal } from './turn-provenance/owner-visible-surface-acceptance';
-import {
-  readExternalBlockers,
-  updateExternalBlockerHistory,
-  type ExternalBlockerRecord,
-} from './external-blockers';
+import { readExternalBlockers, updateExternalBlockerHistory, type ExternalBlockerRecord } from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { clearGoalClaimedIfMatches, noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
@@ -110,10 +106,7 @@ import {
   readAgentReviewState,
   readStructuredOwnerAsk,
 } from './harness/improvements/agent-review-policy';
-import {
-  hasResourceGovernorReceiptPayload,
-  ResourceGovernorReleaseRequiredError,
-} from './resource-governor/queue';
+import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
 
 /**
  * Release cleanup is only needed on the explicit release paths. Keep the
@@ -766,10 +759,7 @@ export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary
  * requires it; this only prevents postgres-js from parsing and retaining every
  * checkpoint/completion envelope before the agent result shaper drops it (WI-42508).
  */
-export const FEATURE_COLS_PAYLOADLESS = FEATURE_COLS.replace(
-  /(^|,\s*)payload(\s*,)/,
-  '$1NULL::jsonb AS payload$2',
-);
+export const FEATURE_COLS_PAYLOADLESS = FEATURE_COLS.replace(/(^|,\s*)payload(\s*,)/, '$1NULL::jsonb AS payload$2');
 
 interface PlanItemClaimIdentity {
   planSlug: string;
@@ -1118,11 +1108,7 @@ export function compareByHeadOfLine(a: WorkItem, b: WorkItem): number {
  * (datatype-frontier-placement.ts) — gated on the `hive-placement` opt-in tag, because a
  * datatype is visible without necessarily auto-placing a bee per instance (placement is opt-in).
  */
-function featureFamilyKindClause(
-  sql: OrgSql,
-  workspaceId: string,
-  opts: { includeDeprecatedChunk?: boolean } = {},
-) {
+function featureFamilyKindClause(sql: OrgSql, workspaceId: string, opts: { includeDeprecatedChunk?: boolean } = {}) {
   const builtIn = opts.includeDeprecatedChunk ? sql`item_kind IN ('feature', 'chunk')` : sql`item_kind = 'feature'`;
   return sql`(${builtIn}
        OR item_kind IN (
@@ -2192,8 +2178,7 @@ export async function searchWorkItems(
       }
       embedder = async (): Promise<number[]> => {
         throw new Error(
-          workItemEmbedderWarmupFailure ??
-            'query embedder warming up (cold start; retry for semantic results)',
+          workItemEmbedderWarmupFailure ?? 'query embedder warming up (cold start; retry for semantic results)',
         );
       };
     }
@@ -4409,9 +4394,7 @@ export interface RefreshPlanLinkedFeatureWorkItemInput {
 }
 
 /** Return true when the guarded refresh matched and updated one feature row. */
-export async function refreshPlanLinkedFeatureWorkItem(
-  input: RefreshPlanLinkedFeatureWorkItemInput,
-): Promise<boolean> {
+export async function refreshPlanLinkedFeatureWorkItem(input: RefreshPlanLinkedFeatureWorkItemInput): Promise<boolean> {
   const workItemId = input.workItemId.trim();
   const harnessSlug = input.harnessSlug.trim();
   const planSlug = input.planSlug.trim();
@@ -5991,13 +5974,15 @@ export async function reconcileEventExternalBlockers(
   const settledBy = actor?.trim() || 'system:event-settlement';
   const parsedNow = Date.parse(now);
   const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
-  const rows = await tx<{
-    workspace_id: string;
-    feature_id: string;
-    item_kind: string | null;
-    status: string | null;
-    payload: unknown;
-  }[]>`
+  const rows = await tx<
+    {
+      workspace_id: string;
+      feature_id: string;
+      item_kind: string | null;
+      status: string | null;
+      payload: unknown;
+    }[]
+  >`
     SELECT workspace_id, feature_id, item_kind, status, payload
       FROM harness_shared.work_items
      WHERE COALESCE(payload, '{}'::jsonb) @> jsonb_build_object(
@@ -6014,20 +5999,13 @@ export async function reconcileEventExternalBlockers(
       row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
         ? (row.payload as Record<string, unknown>)
         : {};
-    const history = updateExternalBlockerHistory(
-      payload,
-      { kind: 'event', ref, clear: true },
-      settledBy,
-      now,
-    );
+    const history = updateExternalBlockerHistory(payload, { kind: 'event', ref, clear: true }, settledBy, now);
     if (!history.changed) continue;
 
     const activeBlockers = history.blockers.some((blocker) => blocker.status === 'active');
     const issueFamily = ['bug', 'change', 'task'].includes(String(row.item_kind));
     const autoBlockedIssue =
-      issueFamily &&
-      String(row.status ?? '').toLowerCase() === 'blocked' &&
-      payload.held_open_reason === 'blocked';
+      issueFamily && String(row.status ?? '').toLowerCase() === 'blocked' && payload.held_open_reason === 'blocked';
     const restoreIssue = autoBlockedIssue && !activeBlockers;
     const nextPayload: Record<string, unknown> = {
       ...payload,
@@ -8028,10 +8006,7 @@ async function retireVoluntaryReleaseClaimWatch(
   if (!ownerId || !wi.assignee || wi.assignee !== ownerId) return;
   try {
     const { retireLifecycleBoundWatches } = await import('./events/await/store');
-    await retireLifecycleBoundWatches(
-      { kind: 'work-item-claim', ref: wi.id },
-      { ownerIds: [ownerId] },
-    );
+    await retireLifecycleBoundWatches({ kind: 'work-item-claim', ref: wi.id }, { ownerIds: [ownerId] });
   } catch {
     // A coordination-store failure must never fail a release or prevent the
     // normal claim:released event from reaching other waiters.
