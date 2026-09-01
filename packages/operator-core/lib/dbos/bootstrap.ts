@@ -111,9 +111,42 @@ export function resolvePgLaunchRetryMs(env: NodeJS.ProcessEnv = process.env): nu
   return Math.max(10_000, Number(env.PAPERCUSP_DBOS_PG_RETRY_MS) || 30_000);
 }
 
+/**
+ * DBOS wraps the PostgreSQL error raised while initializing its system
+ * database in a DBOSInitializationError. Keep the retry decision independent
+ * of the SDK's concrete error class: the wrapped `error.code` is the stable
+ * SQLSTATE, while the message is the only signal older pg clients sometimes
+ * preserve. Only the transient lock-timeout class is retryable here; a broken
+ * registration, schema, or configuration must still reach host-bootstrap's
+ * loud failure path.
+ */
+export function isRetryableDbosLaunchError(error: unknown): boolean {
+  const seen = new Set<object>();
+  const visit = (value: unknown): boolean => {
+    if (value === null || typeof value !== 'object') return false;
+    if (seen.has(value)) return false;
+    seen.add(value);
+
+    const candidate = value as {
+      code?: unknown;
+      message?: unknown;
+      error?: unknown;
+      cause?: unknown;
+      originalError?: unknown;
+    };
+    if (candidate.code === '55P03') return true; // lock_not_available / lock_timeout
+    if (typeof candidate.message === 'string' && /lock(?:[_ ]timeout|[_ ]not[_ ]available)/i.test(candidate.message)) {
+      return true;
+    }
+    return visit(candidate.error) || visit(candidate.cause) || visit(candidate.originalError);
+  };
+  return visit(error);
+}
+
 const PG_LAUNCH_RETRY_MS = resolvePgLaunchRetryMs();
 let pgRetryTimer: ManagedHandle | null = null;
 let pgRetryInFlight = false;
+let dbosStartInFlight: Promise<void> | null = null;
 
 /**
  * EI-90 (2026-06-08 DBOS appVersion war, retriggered): arming
@@ -148,11 +181,11 @@ export function assertSafeDbosAppVersionPartition(env: NodeJS.ProcessEnv = proce
   }
 }
 
-function armPgLaunchRetry(): void {
+function armPgLaunchRetry(reason = 'PG reachability'): void {
   if (pgRetryTimer) return;
   console.warn(
     `[dbos] arming PG-reachability launch retry every ${PG_LAUNCH_RETRY_MS}ms — ` +
-      `DBOS launches as soon as PG answers (previous behavior: skip for the process lifetime)`,
+      `DBOS launches as soon as the transient boot failure clears (reason=${reason})`,
   );
   pgRetryTimer = managedSetInterval(
     'dbos-pg-launch-retry',
@@ -180,8 +213,18 @@ function armPgLaunchRetry(): void {
   );
 }
 
-/** Idempotent single launch. Safe across Next HMR re-registers. */
-export async function startDbos(): Promise<void> {
+/**
+ * Clean up the executor DBOS creates before `launch()` initializes it. The SDK
+ * intentionally leaves the failed executor global so callers can inspect it,
+ * but that also leaves its system-database pool open; shutdown is the only
+ * supported path that destroys that pool and permits a fresh launch.
+ */
+async function cleanupFailedDbosLaunch(dbos: { shutdown: () => Promise<void> }): Promise<void> {
+  await dbos.shutdown();
+}
+
+/** The actual launch attempt. The public wrapper below coalesces callers. */
+async function startDbosOnce(): Promise<void> {
   if (G.__papercuspDbosStarted) return;
 
   // EI-90: cheap env-only check before any PG probe / SDK import — refuse
@@ -329,7 +372,34 @@ export async function startDbos(): Promise<void> {
   // This keeps waitForEligibility transport-safe without making DBOS a request-handler import.
   const { wireCheckpointEligibilityWait } = await import('./checkpoint-eligibility-workflow');
 
-  await DBOS.launch();
+  try {
+    await DBOS.launch();
+  } catch (err) {
+    if (!isRetryableDbosLaunchError(err)) throw err;
+
+    // DBOS creates its global executor before migrations run. A lock timeout
+    // therefore leaves an uninitialized executor + pool behind; retrying
+    // launch directly would leak one pool per attempt and can make the next
+    // attempt fail for an unrelated reason. Cleanup must settle before the
+    // bounded retry is armed. If cleanup itself fails, preserve the original
+    // initialization error and let the caller's loud failure path handle it.
+    try {
+      await cleanupFailedDbosLaunch(DBOS);
+    } catch (cleanupErr) {
+      console.warn(
+        '[dbos] failed to clean up the transient launch executor; retry not armed:',
+        cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
+      );
+      throw err;
+    }
+
+    console.warn(
+      '[dbos] transient system-database lock timeout during launch; ' +
+        'executor cleaned up and a bounded retry is armed',
+    );
+    armPgLaunchRetry('DBOS system-database initialization lock timeout');
+    return;
+  }
   G.__papercuspDbosStarted = true;
   wireCheckpointEligibilityWait();
   console.log(`[dbos] launched (schema=dbos, source=${source}, appVersion=${PINNED_APP_VERSION})`);
@@ -663,4 +733,15 @@ export async function startDbos(): Promise<void> {
   } catch (e) {
     console.warn('[coord] failed to arm coord.plans boot pre-warm:', e instanceof Error ? e.message : e);
   }
+}
+
+/** Idempotent single launch. Safe across host bootstrap + retry timer/HMR. */
+export function startDbos(): Promise<void> {
+  if (G.__papercuspDbosStarted) return Promise.resolve();
+  if (!dbosStartInFlight) {
+    dbosStartInFlight = startDbosOnce().finally(() => {
+      dbosStartInFlight = null;
+    });
+  }
+  return dbosStartInFlight;
 }

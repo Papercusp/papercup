@@ -8,7 +8,12 @@
  * DBOS.setConfig/launch).
  */
 import { describe, expect, it, afterEach } from 'vitest';
-import { withDbosIdleTxGrace, resolvePgLaunchRetryMs, assertSafeDbosAppVersionPartition } from './bootstrap';
+import {
+  withDbosIdleTxGrace,
+  resolvePgLaunchRetryMs,
+  assertSafeDbosAppVersionPartition,
+  isRetryableDbosLaunchError,
+} from './bootstrap';
 
 describe('withDbosIdleTxGrace', () => {
   const ENV_KEY = 'PAPERCUSP_DBOS_IDLE_IN_TX_TIMEOUT_SEC';
@@ -78,6 +83,34 @@ describe('resolvePgLaunchRetryMs (WI-3619)', () => {
       if (prior === undefined) delete process.env.PAPERCUSP_DBOS_PG_RETRY_MS;
       else process.env.PAPERCUSP_DBOS_PG_RETRY_MS = prior;
     }
+  });
+});
+
+describe('isRetryableDbosLaunchError (EI-22022209900260112)', () => {
+  it('recognizes a DBOS-wrapped PostgreSQL lock-timeout SQLSTATE', () => {
+    expect(
+      isRetryableDbosLaunchError({
+        dbosErrorCode: 3,
+        message: 'Failed to initialize workflow executor',
+        error: { code: '55P03', message: 'canceling statement due to lock timeout' },
+      }),
+    ).toBe(true);
+  });
+
+  it('recognizes the lock-timeout message when a pg client omits the SQLSTATE', () => {
+    expect(isRetryableDbosLaunchError(new Error('canceling statement due to lock timeout'))).toBe(true);
+    expect(isRetryableDbosLaunchError({ cause: { message: 'lock_not_available' } })).toBe(true);
+  });
+
+  it('does not retry non-transient DBOS initialization failures', () => {
+    expect(
+      isRetryableDbosLaunchError({
+        dbosErrorCode: 3,
+        message: 'Failed to initialize workflow executor: relation does not exist',
+        error: { code: '42P01', message: 'relation does not exist' },
+      }),
+    ).toBe(false);
+    expect(isRetryableDbosLaunchError(new Error('workflow registration failed'))).toBe(false);
   });
 });
 
