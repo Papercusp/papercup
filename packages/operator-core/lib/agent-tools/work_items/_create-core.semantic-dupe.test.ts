@@ -104,26 +104,22 @@ beforeEach(() => {
 });
 
 describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
-  it('hard match refuses with duplicate_semantic + existing + similarOpen', async () => {
+  it('P-002: a hard match CREATES with the semantic-hard stamp (duplicate_semantic veto retired, D-001)', async () => {
     guardM.mockResolvedValue(verdict([0.96], []));
     const r = await createOneWorkItem({ kind: 'bug', title: 'agents keep filing the same bug' }, ctx);
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error('unreachable');
-    expect(r.error).toBe('duplicate_semantic');
-    expect(r.existing).toEqual({ id: 'EI-1', state: 'open' });
-    expect(r.similarOpen?.map((c) => c.id)).toEqual(['EI-1']);
-    expect(r.message).toContain('EI-1');
-    expect(r.message).toContain('force:true');
-    expect(occurrenceMocks.record).toHaveBeenCalledWith(
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(createM).toHaveBeenCalledWith(
       expect.objectContaining({
-        canonicalId: 'EI-1',
-        canonicalHarness: 'papercusp',
-        reporter: 'me',
-        sourceTool: 'work_items:create',
-        reportKind: 'duplicate',
-        reportedTitle: 'agents keep filing the same bug',
-        admissionIdentity: expect.objectContaining({ schemaVersion: 'admission-identity-v1' }),
+        payload: expect.objectContaining({
+          dedupCandidates: [expect.objectContaining({ id: 'EI-1', method: 'semantic-hard' })],
+        }),
       }),
+    );
+    // The 'duplicate' occurrence append is retired with the refusal — the created
+    // row is the record the central resolver reads.
+    expect(occurrenceMocks.record).not.toHaveBeenCalledWith(
+      expect.objectContaining({ reportKind: 'duplicate' }),
     );
   });
 
@@ -242,26 +238,30 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     );
   });
 
-  it('fails DRAIN bug admission closed when semantic coverage is unavailable, including force', async () => {
+  it('P-002: DRAIN bug with unavailable semantic coverage now FILES, degradation stamped (veto retired)', async () => {
     const r = await createOneWorkItem(
       { kind: 'bug', title: 'direct drain blocker', force: true, requireCompleteDedupCoverage: true },
       ctx,
     );
-    expect(r).toMatchObject({ ok: false, error: 'dedup_unavailable' });
-    expect(createM).not.toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          dedupCoverage: { lexical: 'ok', semantic: 'unavailable', degraded: true },
+        }),
+      }),
+    );
   });
 
-  // WI-39824: the DRAIN rail's job is COVERAGE ("the probe actually ran"), which the
-  // test above pins and this change leaves untouched. It must NOT also veto an explicit
-  // force on a HEALTHY probe: the guard's own calibration block records that cosine
-  // ALONE cannot separate duplicates from distinct filings in this corpus at any cut
-  // (0.93 is merely "the only defensible pure-cosine refusal"), so a weak metric was
-  // permanently outranking an accountable caller assertion. The observed cost was a
-  // genuinely distinct bug that could not be filed AT ALL through the remedy the
-  // refusal itself names — the same silent-drop shape EI-18784357226895330 fixed one
-  // guard over by downgrading refusal→file. The three tests below are one positive
-  // case plus two calibration controls; without the controls the positive case also
-  // passes when the prescreen is broken outright.
+  // WI-39824 → P-002 (silent-intake-central-resolution-2026-09-01, D-001): the
+  // match veto this block used to calibrate is retired outright — every filing is
+  // accepted, hard hits are stamped 'semantic-hard' for the central resolver, and
+  // DRAIN's surviving contract is MEASUREMENT (the probe runs and its verdict is
+  // recorded on the row). The tests below pin that: filing succeeds with and
+  // without force, and the stamp survives both paths — without the stamp
+  // assertions they would also pass when the prescreen is broken outright.
   it('DRAIN + healthy probe + hard match + force:true → FILES the item (force is the distinctness escape)', async () => {
     guardM.mockResolvedValue(verdict([0.94], []));
     const r = await createOneWorkItem(
@@ -276,32 +276,36 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(createM).toHaveBeenCalled();
   });
 
-  it('CONTROL: DRAIN + healthy probe + hard match + NO force → still refuses duplicate_semantic', async () => {
+  it('CONTROL (P-002): DRAIN + healthy probe + hard match + NO force → files with the semantic-hard stamp', async () => {
     guardM.mockResolvedValue(verdict([0.94], []));
     const r = await createOneWorkItem(
       { kind: 'bug', title: 'a reworded drain duplicate', requireCompleteDedupCoverage: true },
       ctx,
     );
-    expect(r).toMatchObject({ ok: false, error: 'duplicate_semantic' });
-    expect(createM).not.toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          dedupCandidates: [expect.objectContaining({ id: 'EI-1', method: 'semantic-hard' })],
+        }),
+      }),
+    );
   });
 
-  it('CONTROL: the refusal message never names a remedy the same call would reject', async () => {
+  it('CONTROL (P-001/P-002): force + DRAIN + hard match still stamps semantic-hard — force suppresses no measurement', async () => {
     guardM.mockResolvedValue(verdict([0.94], []));
-    const r = await createOneWorkItem(
-      { kind: 'bug', title: 'a reworded drain duplicate', requireCompleteDedupCoverage: true },
-      ctx,
-    );
-    if (r.ok) throw new Error('unreachable');
-    // The message advises force:true. That advice is only honest because the refusal
-    // above is now unreachable WITH force — this test fails if the veto is ever
-    // re-coupled to the DRAIN rail while the message keeps promising the escape.
-    expect(r.message).toContain('force:true');
     const forced = await createOneWorkItem(
       { kind: 'bug', title: 'a reworded drain duplicate', force: true, requireCompleteDedupCoverage: true },
       ctx,
     );
     expect(forced.ok).toBe(true);
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          dedupCandidates: [expect.objectContaining({ id: 'EI-1', method: 'semantic-hard' })],
+        }),
+      }),
+    );
   });
 
   it('rejects an exact normalized identity match in DRAIN even when coverage is healthy', async () => {

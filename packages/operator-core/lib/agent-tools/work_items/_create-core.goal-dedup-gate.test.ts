@@ -236,14 +236,22 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
   });
 
-  it('gate + healthy probe + hard match + no force → the MATCH refusal still fires first', async () => {
+  it('P-002: gate + healthy probe + hard match + no force → FILES with the semantic-hard stamp (match veto retired)', async () => {
     guardM.mockResolvedValue(verdict([0.96], []));
     const r = await createOneWorkItem(
       { kind: 'bug', title: 'a reworded duplicate', goalDedupGate: true },
       ctx,
     );
-    expect(r).toMatchObject({ ok: false, error: 'duplicate_semantic', existing: { id: 'EI-1' } });
-    expect(createM).not.toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          dedupCandidates: expect.arrayContaining([
+            expect.objectContaining({ id: 'EI-1', method: 'semantic-hard' }),
+          ]),
+        }),
+      }),
+    );
   });
 
   it('FEATURE-family gate + semantic leg down → fails CLOSED too (lexical skipped, not counted degraded)', async () => {
@@ -287,7 +295,7 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     expect('dedupCoverage' in r).toBe(false);
   });
 
-  it('DRAIN + gate both degraded → the DRAIN refusal (which overrides even force) wins', async () => {
+  it('P-002: DRAIN + gate both degraded + force → FILES with the degradation stamped (DRAIN veto retired; goal gate honors force)', async () => {
     const r = await createOneWorkItem(
       {
         kind: 'bug',
@@ -298,10 +306,15 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
       },
       ctx,
     );
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error('unreachable');
-    expect(r.error).toBe('dedup_unavailable');
-    expect(r.message).toContain('DRAIN');
-    expect(createM).not.toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.dedupCoverage?.degraded).toBe(true);
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          dedupCoverage: expect.objectContaining({ degraded: true }),
+        }),
+      }),
+    );
   });
 });
