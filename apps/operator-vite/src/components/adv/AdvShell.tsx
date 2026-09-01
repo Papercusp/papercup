@@ -1141,7 +1141,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
           min-height: 0;
           background:
             radial-gradient(circle at top left, color-mix(in oklab, var(--accent, #38bdf8), transparent 91%), transparent 30%),
-            linear-gradient(180deg, var(--bg, #07101d), #04111b);
+            linear-gradient(180deg, var(--bg, #07101d), var(--bg-deepest, #02060c));
         }
         .pc-advshell__header {
           display: flex;
@@ -1380,7 +1380,11 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
           border-radius: 10px 10px 0 0;
           background:
             radial-gradient(circle at 18% 0%, rgba(var(--h-main-tab-accent-rgb), 0.12), transparent 72%),
-            linear-gradient(180deg, rgba(var(--h-main-tab-accent-rgb), 0.080), rgba(3, 10, 20, 0.98));
+            linear-gradient(
+              180deg,
+              rgba(var(--h-main-tab-accent-rgb), 0.080),
+              color-mix(in srgb, var(--bg-deeper, #030a14), transparent 2%)
+            );
           border-color: rgba(var(--h-main-tab-accent-rgb), 0.28);
           color: color-mix(in oklab, var(--fg-dim, #b9d4e8), var(--h-main-tab-accent) 18%);
           font-size: 11.5px;
@@ -1431,7 +1435,11 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
           padding: 9px 12px 10px;
           border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.28));
           border-radius: 10px 10px 0 0;
-          background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 94%), rgba(3, 10, 20, 0.98));
+          background: linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--accent), transparent 94%),
+            color-mix(in srgb, var(--bg-deeper, #030a14), transparent 2%)
+          );
           color: var(--fg-dim, #b9d4e8);
           font-size: 11.5px;
           font-weight: 600;
