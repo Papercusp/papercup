@@ -160,11 +160,22 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       //     egress-class stall the gateway records a fabricated now+30s reset, so this is a real floor: never
       //     wake before it.
       if (soonestResetAt && Date.now() < soonestResetAt) return false;
+      // (1b) Resolve the account row FIRST — it names the PROVIDER, so the pool-wide check below
+      //     reads the right lane. WI-2038027: with the default (claude) projection, a CODEX stall
+      //     was gated on the CLAUDE pool's paused/rejected state — wrong pool both ways (a walled
+      //     claude pool held codex wakes; a healthy one waved them through blind). For codex the
+      //     projection carries no pool-wide paused/rejected fields, so that check no-ops and the
+      //     per-account usage-wall verdict below is the real gate — which is correct: codex
+      //     capacity IS tracked per account (x-codex windows, WI-38582).
+      const a = await findAccountRow(workspaceId, accountId);
       // (2) The gateway pool must NOT be wholesale-throttled. The old check only read the ACCOUNT's pausedUntil,
       //     so a fabricated 30s reset would wake the bee straight back into an all-accounts storm → re-stall →
       //     wake-cap burn → bee abandoned. The gateway /stats is the shared capacity oracle; unreachable ⇒ fall
       //     back to the per-account verdict (never strand a wake on a missing signal).
-      const gw = await fetchGatewayHeadroom({ timeoutMs: 1000 }).catch(() => null);
+      const gw = await fetchGatewayHeadroom({
+        timeoutMs: 1000,
+        provider: a?.provider === 'codex' ? 'codex' : 'claude',
+      }).catch(() => null);
       if (gw?.reachable && (gw.paused || gw.rejected)) return false; // whole pool throttled → keep waiting
       // (3) ...and the account itself must be able to SERVE: pause clear AND usage headroom.
       //     `available` is usage-aware as of WI-3310 (`!accountFull`): a weekly-usage-exhausted
@@ -176,7 +187,7 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       //     The lookup is CROSS-WORKSPACE (findAccountRow): /admin/stalls is global while this loop
       //     is pinned to one workspaceId, so a same-workspace-only read used to miss the account
       //     entirely and the unknown-account fallback waived the whole check (WI-3310 layer 2).
-      const a = await findAccountRow(workspaceId, accountId);
+      //     (`a` was resolved at (1b) above — it now also drives the provider selection.)
       if (a?.usageWalled) {
         const until = a.usageResetAt;
         if ((usageWallLoggedUntil.get(accountId) ?? 0) !== (until ?? -1)) {

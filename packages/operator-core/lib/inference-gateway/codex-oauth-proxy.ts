@@ -854,3 +854,65 @@ export function parseCodexRateLimitHeaders(
   }
   return {};
 }
+
+/** A window at/over this utilization is EXHAUSTED — the meter that produced the 429. Matches the
+ *  Claude selector's `u >= 0.99` disqualification bound so the two lanes agree on "walled". */
+const CODEX_EXHAUSTED_UTILIZATION = 0.99;
+
+/**
+ * WI-2038027 (codex 429 recovery P1): the CODEX-dialect analogue of gateway.ts's `parseRateReset`
+ * — an upstream 429's headers → the instant this ACCOUNT can serve again, for `AccountPool.
+ * onExhausted` parking and for the retry-after the gateway hands the caller.
+ *
+ * Why it exists: the codex kernel adapters were wired to `parseRateReset`, which reads the
+ * ANTHROPIC `anthropic-ratelimit-*` dialect (plus a bare numeric `retry-after`) — headers the
+ * ChatGPT codex backend never sends. So a weekly-walled codex account was parked only the generic
+ * 15s failover backoff, rejoined rotation still walled, and re-burned an upstream 429 on nearly
+ * every subsequent request — the same class of bug the Claude pool fixed in 2026-06 ("the
+ * 5h-exhaustion failover never fired"). This parser reads the dialect the backend actually
+ * speaks (`x-codex-*` / `x-base-model-inference-*`, WI-38582) via `parseCodexRateLimitHeaders`.
+ *
+ * Semantics:
+ *  - resetAt = the LATEST reset among EXHAUSTED windows (util ≥ 0.99): if both the 5h and the
+ *    weekly meter are walled, the account cannot serve until BOTH reset; a non-exhausted window
+ *    never parks (its reset is routine pacing, not a wall).
+ *  - A `retry-after` (numeric seconds — the only form observed from this backend) fills in when
+ *    no window is exhausted, and also floors a window-derived reset (trust the larger signal).
+ *  - A reset at/before `nowMs` is DROPPED, never returned: `createFailoverPool.onExhausted`
+ *    treats a past resetAt as "no reset" and parks FIVE HOURS — a clock-skewed just-past header
+ *    must degrade to the caller's short failover backoff instead.
+ *  - `transient` = a 429 with NO exhausted window (a burst/pacing throttle — capacity exists),
+ *    the codex analogue of the Claude lane's bare-burst-vs-usage-cap split. Callers that shape a
+ *    terminal 429 use it to pick between "retry soon" and "walled until reset".
+ */
+export function parseCodexRateReset(
+  h: Record<string, string | undefined>,
+  nowMs: number = Date.now(),
+): { resetAt: number | null; retryAfterMs: number | null; transient: boolean } {
+  const lower: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(h)) lower[key.toLowerCase()] = value;
+  let retryAfterMs: number | null = null;
+  const ra = lower['retry-after'];
+  if (ra && /^\d+$/.test(ra.trim())) retryAfterMs = Number(ra.trim()) * 1000;
+
+  const windows = parseCodexRateLimitHeaders(lower, nowMs);
+  let walledResetAt: number | null = null;
+  let sawExhausted = false;
+  const consider = (utilization?: number, resetAt?: number) => {
+    if (utilization === undefined || utilization < CODEX_EXHAUSTED_UTILIZATION) return;
+    sawExhausted = true;
+    if (resetAt !== undefined && resetAt > nowMs) {
+      walledResetAt = walledResetAt === null ? resetAt : Math.max(walledResetAt, resetAt);
+    }
+  };
+  consider(windows.utilization, windows.windowResetAt);
+  consider(windows.utilization7d, windows.windowResetAt7d);
+
+  let resetAt: number | null = walledResetAt;
+  if (retryAfterMs !== null) {
+    const fromRetryAfter = nowMs + retryAfterMs;
+    resetAt = resetAt === null ? fromRetryAfter : Math.max(resetAt, fromRetryAfter);
+  }
+  if (resetAt !== null && resetAt <= nowMs) resetAt = null;
+  return { resetAt, retryAfterMs, transient: !sawExhausted };
+}

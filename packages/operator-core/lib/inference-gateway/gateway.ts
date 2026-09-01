@@ -136,6 +136,7 @@ import {
   makeCodexNonStreamUpstreamBody,
   normalizeCodexChatGptResponsesBody,
   codexReserveModelFor,
+  parseCodexRateReset,
   refreshCodexToken,
   resolveCodexAccessToken,
   type CodexAuth,
@@ -5964,8 +5965,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       coolIp: (key, ms) => coolIp(key, ms),
       dispatcherFor: (account, entry) => dispatcherFor(account, entry as AccountEgress | undefined),
       rateReset: (headers) => {
-        const parsed = parseRateReset(headers);
-        return { resetAt: parsed.resetAt ?? null, retryAfterMs: parsed.retryAfterMs ?? null };
+        // WI-2038027 (codex 429 recovery P1): the ChatGPT codex backend speaks the x-codex-*
+        // dialect, never anthropic-ratelimit-*. Wired to `parseRateReset` this always came back
+        // empty, so `resolveResetAt` parked a WEEKLY-walled account only the 15s failover backoff
+        // — it rejoined rotation still walled and re-burned an upstream 429 on nearly every
+        // request. The codex parser reads the real dialect (exhausted-window resets + retry-after).
+        const parsed = parseCodexRateReset(headers);
+        return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs };
       },
       onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
       onEgressFailure: (id) => egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1),
@@ -6074,6 +6080,34 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 account: metadata.accountId,
                 detail: outHeaders[PIN_YIELDED_HEADER],
               });
+            }
+            // WI-2038027 (codex 429 recovery P1): this head IS the gateway's final answer — the
+            // kernel ladder (reserve-tier retry, sibling-IP, rotation) is exhausted. Forwarding
+            // the raw upstream 429 stranded codex sessions: the backend's retry-after is absent
+            // or hours long, the codex CLI's ~4 client retries burn in seconds ("exceeded retry
+            // limit, last status: 429"), and nothing ever woke the session when capacity
+            // returned. Shape it exactly as the Claude lane shapes its terminal 429s: (1) a
+            // retry-after CAPPED at BEE_RETRY_AFTER_CAP_S so the client re-asks soon (by then
+            // routing has walked to a healthy account, or the stall-waker resumes it later);
+            // (2) the retries-exhausted marker so "slow" is distinguishable from "never";
+            // (3) recordStall, which is what plugs codex sessions into the stall-waker's
+            // confirm → un-wedge → capacity-gated wake recovery (stall-waker.ts).
+            if (status === 429) {
+              const parsed = parseCodexRateReset(metadata.headers);
+              if (routing.ownerId) {
+                recordStall(routing.ownerId, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
+              }
+              const resetAt = parsed.resetAt ?? Date.now() + LOADSHED_RETRY_AFTER_SEC * 1000;
+              const retryAfterSec = Math.min(
+                BEE_RETRY_AFTER_CAP_S,
+                Math.max(1, Math.ceil((resetAt - Date.now()) / 1000)),
+              );
+              outHeaders['retry-after'] = String(retryAfterSec);
+              outHeaders[RETRIES_EXHAUSTED_HEADER] = String(attemptsSeen);
+              log(
+                'warn',
+                `inference-gateway: codex upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (${parsed.transient ? 'transient burst' : 'window walled'}; retry-after ${retryAfterSec}s${routing.ownerId ? `; stall recorded for '${routing.ownerId}'` : ''})`,
+              );
             }
             recordRoute(routing.ownerId, metadata.accountId, 'codex');
             recordOwnerOutcome(
@@ -6643,6 +6677,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 account: metadata.accountId,
                 detail: outHeaders[PIN_YIELDED_HEADER],
               });
+            }
+            // WI-2038027 (codex 429 recovery P1): same terminal-429 shaping as the OAuth lane —
+            // capped retry-after + retries-exhausted marker + stall attribution, so a bearer-pool
+            // caller is paced and its session is stall-waker-recoverable instead of dying on the
+            // raw upstream throttle. (api.openai.com speaks x-ratelimit-reset-* durations this
+            // parser does not read — P2; a numeric retry-after still parses, and the shed floor
+            // covers the rest.)
+            if (status === 429) {
+              const parsed = parseCodexRateReset(metadata.headers);
+              if (wantOwner) {
+                recordStall(wantOwner, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
+              }
+              const resetAt = parsed.resetAt ?? Date.now() + LOADSHED_RETRY_AFTER_SEC * 1000;
+              const retryAfterSec = Math.min(
+                BEE_RETRY_AFTER_CAP_S,
+                Math.max(1, Math.ceil((resetAt - Date.now()) / 1000)),
+              );
+              outHeaders['retry-after'] = String(retryAfterSec);
+              outHeaders[RETRIES_EXHAUSTED_HEADER] = String(attemptsSeen);
+              log(
+                'warn',
+                `inference-gateway: Codex bearer upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (retry-after ${retryAfterSec}s${wantOwner ? `; stall recorded for '${wantOwner}'` : ''})`,
+              );
             }
             recordRoute(wantOwner, metadata.accountId, 'codex');
             recordOwnerOutcome(
