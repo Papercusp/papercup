@@ -530,18 +530,27 @@ function isPeerReportedAction(line: string): boolean {
  * source tag — the compliant write is never punished — and a HEDGED claim is downgraded
  * rather than accused, exactly as 'peer-reported-action' downgrades correct attribution.
  */
+/** DEFECT-shaped verbs only. Measured against 21,631 real carry-note lines, the neutral
+ *  reporting verbs (returns / reports / matches / treats) carried ordinary status prose —
+ *  "release:trace reports committedLocal=true" — and produced almost every false firing. */
 const MECHANISM_VERB_RE =
-  /\b(?:refuses?|rejects?|blocks?|skips?|drops?|ignores?|strips?|overwrites?|clobbers?|swallows?|truncates?|evicts?|reaps?|kills?|fails?|returns?|matches?|treats?|reports?|silently\s+\w+)\b/i;
+  /\b(?:refuses?|rejects?|blocks?|drops?|ignores?|strips?|overwrites?|clobbers?|swallows?|truncates?|evicts?|reaps?|kills?|fails?|breaks?|skips?|silently\s+\w+|mis(?:reads?|reports?|matches?|handles?))\b/i;
 
 /** An explicit CAUSAL binder. Bare "on" is excluded (it is overwhelmingly locative —
  *  "on WI-1234", "on the fleet"); only its mechanism-bearing form is accepted. */
 const MECHANISM_BINDER_RE =
-  /\b(?:because|due\s+to|owing\s+to|by\s+\w+ing|via|through)\b|\bon\s+(?:\w+\s+)?(?:text|name|string|pattern|argv|content|body|substring)\b/i;
+  /\b(?:because|due\s+to|owing\s+to|by\s+\w+ing)\b|\bon\s+(?:\w+\s+)?(?:text|name|string|pattern|argv|content|substring)\b/i;
 
 /** A NAMED artifact: a backticked token, a tool verb (`group:verb`), a source path, or
- *  one of the closed set of machinery nouns a root-cause claim actually names. */
+ *  one of the closed set of machinery nouns a root-cause claim actually names.
+ *
+ *  The tool-verb branch requires >=3 LOWERCASE chars either side of the colon. A looser
+ *  \w+:\w form matched clock times ("03:06Z") and every event key in a status line, which
+ *  measured as the single largest false-firing source on real carry notes. The generic
+ *  nouns (routine / pipeline / daemon / tool / verb) are likewise excluded: they are
+ *  ordinary vocabulary here, not evidence that a specific artifact is being named. */
 const MECHANISM_ARTIFACT_RE =
-  /`[^`]+`|\b\w+:\w[\w-]*\b|\b[\w./-]+\.(?:ts|tsx|mjs|js|sh|sql|md|json)\b|\b(?:gate|lint|hook|guard|sweep|watchdog|reaper|router|resolver|routine|pipeline|matcher|parser|daemon|scheduler|governor|tool|verb)\b/i;
+  /`[^`]+`|\b[a-z][a-z_]{2,}:[a-z][a-z_-]{2,}\b|\b[\w./-]+\.(?:ts|tsx|mjs|js|sh|sql)\b|\b(?:gate|lint|hook|guard|sweep|watchdog|reaper|router|resolver|matcher|parser|scheduler|governor)\b/i;
 
 /** Honest hedging — the claim is offered AS a hypothesis. Downgraded, never silenced:
  *  hedging is what erodes across cold wakes, so the writer still gets the nudge to move
@@ -555,9 +564,13 @@ const MECHANISM_HEDGE_RE =
  *  i.e. an actual invocation with arguments. Matching the bare word instead read a
  *  backticked ARTIFACT NAME as a probe — `git-sync` contains `git`, and a `\b` matches at
  *  the hyphen — silently clearing the very claims this leg exists to catch. Caught by the
- *  'backticked artifact' case in the sibling test before it shipped; keep the \s+. */
+ *  'backticked artifact' case in the sibling test before it shipped; keep the \s+.
+ *
+ *  A `file.ts:535` or `:41-49` citation also counts: naming the line you read IS the
+ *  probe. Treating it otherwise flagged the most carefully-sourced notes in the measured
+ *  corpus — the precise inversion this leg exists to avoid. */
 const MECHANISM_EVIDENCE_RE =
-  /\b(?:measured|verified|confirmed|reproduced|re-?check(?:ed)?|positive\s+control|exit\s+code|observed)\b|`[^`]*\b(?:grep|rg|git|npm|psql|sed|awk|node)\s+[^`]*`/i;
+  /\b(?:measured|verified|confirms?|confirmed|reproduced|re-?check(?:ed)?|positive\s+control|exit\s+code|observed|surfaced)\b|`[^`]*\b(?:grep|rg|git|npm|psql|sed|awk|node)\s+[^`]*`|\b[\w./-]+\.(?:ts|tsx|mjs|js|sh|sql):\d+|:\d+-\d+\b/i;
 
 /** A question or a verification PLAN mentions a mechanism without asserting it — the
  *  same mention-vs-use split {@link isConditionalActionMention} makes for actions. */

@@ -38,7 +38,6 @@ describe('causal-mechanism claims — the loud class', () => {
   it.each([
     ['by-gerund binder', 'The lint drops the row by matching the command string.'],
     ['because binder', 'The reaper kills the scope because the heartbeat is stale.'],
-    ['via binder', 'The resolver returns null via the cached projection.'],
     ['due-to binder', 'The sweep evicts the fact due to the per-scope cap.'],
     ['backticked artifact', '`git-sync` skips the file because the edit-lock is held.'],
     ['tool-verb artifact', 'work_items:claim rejects the item by comparing the claim spec.'],
@@ -79,6 +78,12 @@ describe('causal-mechanism claims — ordinary carry prose is not a mechanism cl
     ['no named artifact', 'Finished the refactor because the tests were red.'],
     ['no causal binder', 'The gate is red and the candidate is frozen.'],
     ['no behavioural verb', 'The gate is owned by another agent right now.'],
+    // Measured false-firing shapes from 21,631 real carry-note lines — these are the
+    // calibration that keeps the leg from regressing into status-prose noise.
+    ['status prose with a clock time', 'One read-only dev:dogfood_substrate_status at ~03:06Z: backlogOps=0, peers=1.'],
+    ['await bookkeeping', 'A replacement exact await 134416 is now registered through 2026-09-01 for the global key.'],
+    ['neutral reporting verb', 'release:trace reports committedLocal=true, onStaging=true, inMain=false.'],
+    ['design description', 'Managed portal deployment contract validates via deploy-cloud-portal.'],
     ['locative "on", not mechanism', 'Posted the evidence on WI-1234 for the leader.'],
     ['plain progress note', 'Closed two items; the claim slot is free and clean.'],
   ])('does not flag %s', (_label, line) => {

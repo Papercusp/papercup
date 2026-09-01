@@ -857,6 +857,76 @@ describe("citedFacts survives the shaper (EI-19465127338264010)", () => {
 });
 
 /**
+ * EI-19454477695046958 — the SAME whitelist-drop class as the block above, and it
+ * recurred anyway: `checkpointRetractions` was added to get.ts, shipped unit-green
+ * and typecheck-clean, and was dropped here silently. Caught only by probing the
+ * LIVE tool, which returned the field at `full` and nothing at `trimmed`.
+ *
+ * Why the drop mattered more than usual: this advisory exists BECAUSE a trimmed
+ * reader gets the summary nearly whole and the checkpoint as a short prefix, so a
+ * retraction past the clip is invisible while the claim it withdraws still reads as
+ * the item's definition. Measured on WI-39344 — retractions at offsets 1803/1965/2349
+ * of a 24,597-char note the trimmed tier delivered as 849 chars. Dropping it here
+ * defeated the fix on precisely the tier the fix was for.
+ */
+describe("checkpointRetractions survives the shaper (EI-19454477695046958)", () => {
+  // count 5 / 3 excerpts / more 2 — the real WI-39344 shape.
+  const checkpointRetractions = {
+    count: 5,
+    excerpts: Array.from({ length: 3 }, (_, i) => `CORRECTION ${i + 1} — ${"R".repeat(400)}`),
+    more: 2,
+  };
+
+  for (const tier of ["trimmed", "standard"] as const) {
+    it(`keeps the count at the '${tier}' tier, where the checkpoint is clipped`, () => {
+      const out = shapeWorkItemsGet(
+        { ok: true, results: [row({ checkpointRetractions })], counts: { ok: 1, failed: 0 } },
+        tier,
+      ) as Envelope;
+      const cr = out.results[0].checkpointRetractions as Record<string, unknown>;
+      expect(cr).toBeDefined();
+      // The COUNT is the irreducible signal — the documented failure is missing the
+      // SECOND retraction, which a boolean or a shortened list cannot convey.
+      expect(cr.count).toBe(5);
+    });
+
+    it(`re-derives 'more' from what it kept at the '${tier}' tier, so the arithmetic stays true`, () => {
+      const out = shapeWorkItemsGet(
+        { ok: true, results: [row({ checkpointRetractions })], counts: { ok: 1, failed: 0 } },
+        tier,
+      ) as Envelope;
+      const cr = out.results[0].checkpointRetractions as Record<string, unknown>;
+      const kept = cr.excerpts as string[];
+      const more = (cr.more as number | undefined) ?? 0;
+      // scanCheckpointRetractions guarantees excerpts.length + more === count. Forwarding
+      // the ORIGINAL more (2) beside a shortened excerpts list would understate the
+      // remainder — a wrong number from the one field whose job is to be counted on.
+      expect(kept.length + more).toBe(5);
+    });
+  }
+
+  it("announces an excerpt cut rather than shrinking the list silently", () => {
+    const many = { count: 9, excerpts: Array.from({ length: 9 }, (_, i) => `CORRECTION ${i + 1}`) };
+    const out = shapeWorkItemsGet(
+      { ok: true, results: [row({ checkpointRetractions: many })], counts: { ok: 1, failed: 0 } },
+      "trimmed",
+    ) as Envelope;
+    const cr = out.results[0].checkpointRetractions as Record<string, unknown>;
+    expect((cr.excerpts as string[]).length).toBeLessThan(9);
+    expect(cr.count).toBe(9);
+    expect(out._shapeNote?.dropped).toContain("checkpointRetractions.excerpts");
+  });
+
+  it("omits the field entirely when the checkpoint carries no retraction, so a clean read stays lean", () => {
+    const out = shapeWorkItemsGet(
+      { ok: true, results: [row({})], counts: { ok: 1, failed: 0 } },
+      "trimmed",
+    ) as Envelope;
+    expect("checkpointRetractions" in out.results[0]).toBe(false);
+  });
+});
+
+/**
  * EI-20106094931898818 / EI-20190481053365787 — the SAME whitelist-drop class as
  * the block above, one whitelist over: `projectWorkItem`, not `projectRow`.
  *

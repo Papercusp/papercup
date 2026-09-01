@@ -536,6 +536,19 @@ function compactSingleRow(
     // stored, and `checkpointReadFailed` already says the read broke.
     ...(r.checkpointContentHash ? { checkpointContentHash: r.checkpointContentHash } : {}),
     ...(r.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
+    // EI-19454477695046958: like `checkpointContentHash` above, this stays true when the
+    // checkpoint clips — and it is needed MOST exactly then. A trimmed reader receives the
+    // summary nearly whole and the checkpoint as a short prefix, so a retraction living past
+    // the clip is invisible while the claim it withdraws still reads as the item's definition.
+    // That is the failure this item exists to fix, so dropping the advisory here defeated the
+    // fix on precisely the tier that needed it. Measured on WI-39344: retractions at offsets
+    // 1803/1965/2349 of a 24,597-char note the trimmed tier delivered as 849 chars — every
+    // retraction cut, and the advisory (present at `full`) absent here. The COUNT is the
+    // irreducible part (the documented failure is missing the SECOND retraction), so it is
+    // kept at every tier; the excerpts ride the existing small-advisory budget.
+    ...(r.checkpointRetractions
+      ? { checkpointRetractions: projectCheckpointRetractions(r.checkpointRetractions, caps, dropped) }
+      : {}),
     ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
     ...(r.deploymentPosition
       ? { deploymentPosition: projectDeploymentPosition(r.deploymentPosition, tier, dropped) }
@@ -560,6 +573,25 @@ function compactSingleRow(
  * Never silently: a capped list says so via `citedTruncated` in-band AND lands in
  * the shared `dropped` set, so `_shapeNote` names it too.
  */
+/**
+ * EI-19454477695046958: bound the retraction advisory to the tier's small-advisory
+ * budget WITHOUT breaking its arithmetic. `scanCheckpointRetractions` guarantees
+ * `excerpts.length + (more ?? 0) === count`; re-clipping the array here therefore has
+ * to RE-DERIVE `more` from the kept length. Forwarding the original `more` beside a
+ * shortened `excerpts` would understate the remainder — a wrong number from the one
+ * field whose entire job is to be counted on.
+ */
+function projectCheckpointRetractions(raw: unknown, caps: FieldCaps, dropped: Set<string>): unknown {
+  if (!raw || typeof raw !== "object") return raw ?? null;
+  const cr = raw as Row;
+  const count = typeof cr.count === "number" ? cr.count : 0;
+  const all = Array.isArray(cr.excerpts) ? cr.excerpts : [];
+  const kept = all.slice(0, caps.citedFacts).map((e) => (typeof e === "string" ? clip(e, caps.citedExcerpt) : e));
+  if (all.length > kept.length) dropped.add("checkpointRetractions.excerpts");
+  const more = Math.max(0, count - kept.length);
+  return { count, excerpts: kept, ...(more > 0 ? { more } : {}) };
+}
+
 function projectCitedFacts(raw: unknown, caps: FieldCaps, dropped: Set<string>): unknown {
   if (!raw || typeof raw !== "object") return raw ?? null;
   const cf = raw as Row;
@@ -840,6 +872,13 @@ function projectRow(
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
     ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
     ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) } : {}),
+    // EI-19454477695046958: the sharpest member of this group — it says the checkpoint
+    // above WITHDRAWS something, and it stays true when that checkpoint clips. Needed
+    // most exactly when the clip hides the retraction and the summary still reads as the
+    // item's definition. See projectCheckpointRetractions for why `more` is re-derived.
+    ...(r.checkpointRetractions
+      ? { checkpointRetractions: projectCheckpointRetractions(r.checkpointRetractions, caps, dropped) }
+      : {}),
     // Conditional "read before acting" warnings this tool's `returns` promises.
     ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
     ...(r.citedFacts ? { citedFacts: projectCitedFacts(r.citedFacts, caps, dropped) } : {}),
