@@ -482,6 +482,76 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     })).toMatchObject({ action: 'spawn', spawnCount: 2, pendingOpenedMemberIds: [] });
   });
 
+  /**
+   * WI-2034601 — the launch-window deadline used to be unreachable for exactly the
+   * members it existed to catch. The predicate read
+   * `!verified.has(id) || elapsed < WINDOW`, and that disjunction short-circuits: an
+   * UNVERIFIED member satisfied `!verified` and so was never time-bounded, while a
+   * VERIFIED one was the only kind the deadline could retire. A
+   * registered-but-never-first-turn member is unverified by definition, so it waited
+   * forever (observed: 278 governor decisions across ~3.5 days at deficit 50).
+   *
+   * These three cases pin the corrected shape. The middle one is the falsifier: it
+   * fails if the deadline is applied too eagerly, which is the way a naive fix breaks
+   * the legitimate late-boot behaviour the original branch was protecting.
+   */
+  describe('first-turn launch deadline (WI-2034601)', () => {
+    it('classifies an UNVERIFIED never-first-turn member launch-failed past the deadline, and stops waiting', () => {
+      const stuck = transaction(['su-never-booted']);
+      const assessment = assessFleetHeadcountGovernor({
+        target: 1,
+        liveMemberIds: [],
+        executingMemberIds: new Set<string>(),
+        transaction: stuck,
+        // requestedAt is 1_000 and the window is 300_000, so this is past the deadline.
+        now: 1_000 + 300_000 + 1,
+      });
+
+      // The regression itself: an unverified member must NOT be pending past the deadline.
+      expect(assessment.pendingOpenedMemberIds).toEqual([]);
+      expect(assessment.launchDeadlineExceededMemberIds).toEqual(['su-never-booted']);
+      // And the governor must leave the wait branch, so the seat is actually replaced.
+      expect(assessment.action).not.toBe('wait');
+      expect(assessment.action).toBe('spawn');
+      expect(assessment.reason).toMatch(/never became live within the 300s launch window/);
+      expect(assessment.reason).toMatch(/launch-failed/);
+    });
+
+    it('FALSIFIER: still waits on an unverified member INSIDE the window, so a late healthy boot is not pruned early', () => {
+      const booting = transaction(['su-slow-boot']);
+      const assessment = assessFleetHeadcountGovernor({
+        target: 1,
+        liveMemberIds: [],
+        executingMemberIds: new Set<string>(),
+        transaction: booting,
+        now: 1_000 + 300_000 - 1,
+      });
+
+      expect(assessment.action).toBe('wait');
+      expect(assessment.pendingOpenedMemberIds).toEqual(['su-slow-boot']);
+      expect(assessment.launchDeadlineExceededMemberIds).toEqual([]);
+      expect(assessment.reason).not.toMatch(/launch-failed/);
+    });
+
+    it('bounds a VERIFIED-but-not-live member on the same deadline, so neither kind waits forever', () => {
+      const verifiedGhost = transaction(['su-verified-ghost'], {
+        verifiedMemberIds: ['su-verified-ghost'],
+        unconfirmedMemberIds: [],
+      });
+      const assessment = assessFleetHeadcountGovernor({
+        target: 1,
+        liveMemberIds: [],
+        executingMemberIds: new Set<string>(),
+        transaction: verifiedGhost,
+        now: 1_000 + 300_000 + 1,
+      });
+
+      expect(assessment.pendingOpenedMemberIds).toEqual([]);
+      expect(assessment.launchDeadlineExceededMemberIds).toEqual(['su-verified-ghost']);
+      expect(assessment.action).not.toBe('wait');
+    });
+  });
+
   it('prunes only after bounded repeated non-ready evidence plus verified agent start', () => {
     const member = transaction(['su-dark'], {
       verifiedMemberIds: ['su-dark'],

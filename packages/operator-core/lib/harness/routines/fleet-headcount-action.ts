@@ -153,16 +153,36 @@ export function assessFleetHeadcountGovernor(args: {
       (attempts[ownerId] ?? 0) >= retryLimit &&
       (verified.has(ownerId) || terminalFailureIds.has(ownerId)),
   );
-  const pendingOpenedMemberIds = (transaction?.openedMemberIds ?? []).filter(
+  // WI-2034601: an opened member that never became live must be bounded by the launch
+  // window REGARDLESS of whether it verified. The predicate here used to read
+  //
+  //     !verified.has(ownerId) || elapsed < FLEET_HEADCOUNT_LAUNCH_WINDOW_MS
+  //
+  // and that disjunction SHORT-CIRCUITS: for an UNVERIFIED member `!verified` is already
+  // true, so the elapsed bound was never evaluated and the member stayed pending forever —
+  // while a member that HAD verified was the only one the deadline could ever retire. The
+  // bound was applied exactly backwards with respect to the failure it exists to catch: a
+  // registered-but-never-first-turn member is by definition unverified, so it took the
+  // unbounded branch every time. Observed before this fix: fleet nonp2p-bug-drain's launch
+  // transaction re-decided `wait` for one such member 278 times across ~3.5 days while the
+  // fleet sat at deficit 50.
+  const openedButNotLive = (transaction?.openedMemberIds ?? []).filter(
     (ownerId) =>
       !retired.has(ownerId) &&
       !live.has(ownerId) &&
-      !terminalFailureIds.has(ownerId) &&
-      (
-        !verified.has(ownerId) ||
-        (args.now ?? Date.now()) - (transaction?.requestedAt ?? 0) < FLEET_HEADCOUNT_LAUNCH_WINDOW_MS
-      ),
+      !terminalFailureIds.has(ownerId),
   );
+  // Transaction-scoped, not per-member: `openedMemberIds` carries no per-member open
+  // timestamp, so `requestedAt` is the only elapsed signal available — which is also what
+  // the previous predicate used. A hard deadline measured from the transaction start is
+  // strictly tighter than the unbounded wait it replaces.
+  const withinLaunchWindow =
+    (args.now ?? Date.now()) - (transaction?.requestedAt ?? 0) < FLEET_HEADCOUNT_LAUNCH_WINDOW_MS;
+  const pendingOpenedMemberIds = withinLaunchWindow ? openedButNotLive : [];
+  // Past the deadline these are LAUNCH-FAILED. Leaving the pending set is what makes the
+  // governor fall through to the deficit path and spawn replacements, instead of returning
+  // `wait` on every tick for the life of the transaction.
+  const launchDeadlineExceededMemberIds = withinLaunchWindow ? [] : openedButNotLive;
   const currentProbeOwners = new Set(transaction?.governor?.probeOwnerIds ?? []);
   const retryable = unreadyMemberIds.filter(
     (ownerId) => currentProbeOwners.has(ownerId) && (attempts[ownerId] ?? 0) < retryLimit,
@@ -185,6 +205,7 @@ export function assessFleetHeadcountGovernor(args: {
     unreadyMemberIds,
     unverifiedMemberIds,
     pendingOpenedMemberIds,
+    launchDeadlineExceededMemberIds,
     pruneCandidateIds,
     productiveMemberCount,
     headcountBasis: headcountMeasurement.basis,
@@ -216,7 +237,7 @@ export function assessFleetHeadcountGovernor(args: {
       action: 'wait',
       actionOwnerId: null,
       spawnCount: 0,
-      reason: 'an opened member is still unverified; a late healthy boot must settle before replay',
+      reason: `an opened member is still unverified inside the ${Math.round(FLEET_HEADCOUNT_LAUNCH_WINDOW_MS / 1000)}s launch window; a late healthy boot must settle before replay`,
     };
   }
   if (retryable.length > 0) {
@@ -256,6 +277,15 @@ export function assessFleetHeadcountGovernor(args: {
       workerReadyMemberIds.length >= productiveCapacityFloor ||
       attestedExecuting >= productiveCapacityFloor;
     const hasUnverifiedSeats = unverifiedMemberIds.length > 0;
+    // WI-2034601: when this deficit exists BECAUSE opened members blew the launch
+    // deadline, say so on the reason. Without it the governor's move out of `wait`
+    // reads as an unexplained replacement instead of a deadline being enforced —
+    // and the unexplained version is what let the old unbounded wait hide for days.
+    // Empty when no member exceeded the deadline, so the existing reasons are
+    // unchanged in the ordinary case.
+    const launchFailedPrefix = launchDeadlineExceededMemberIds.length > 0
+      ? `${launchDeadlineExceededMemberIds.length} opened member(s) never became live within the ${Math.round(FLEET_HEADCOUNT_LAUNCH_WINDOW_MS / 1000)}s launch window and are classified launch-failed; `
+      : '';
     return {
       ...common,
       action: 'spawn',
@@ -263,13 +293,13 @@ export function assessFleetHeadcountGovernor(args: {
       spawnCount: floorMet
         ? Math.min(deficit, FLEET_HEADCOUNT_BULK_WAVE_SIZE)
         : 1,
-      reason: floorMet
+      reason: launchFailedPrefix + (floorMet
         ? hasUnverifiedSeats
           ? 'productive-capacity floor is evidenced; preserve unverified live seats and open a capacity-clamped bounded refill wave'
           : 'productive-capacity floor is evidenced; a bounded refill wave is safe'
         : hasUnverifiedSeats
           ? 'unverified live seats do not satisfy productive headcount and the productive-capacity floor is not yet evidenced; open one canary only'
-          : 'productive-capacity floor is not yet evidenced; open one canary only',
+          : 'productive-capacity floor is not yet evidenced; open one canary only'),
     };
   }
   if (unverifiedMemberIds.length > 0) {
