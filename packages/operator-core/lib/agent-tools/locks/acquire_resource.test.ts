@@ -13,7 +13,7 @@
  * In-tree (operator-core, tab-visible).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/acquire_resource.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })),
@@ -62,7 +62,22 @@ const sharedGrant = (over: Partial<Extract<ResourceAcquireResult, { ok: true }>>
   ...over,
 });
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // clearAllMocks preserves implementations. Reset the transaction/store
+  // seams so the exhaustion cases cannot leak a persistent rejection into the
+  // following recovery or cross-domain cases.
+  txnM.mockReset();
+  txnM.mockImplementation(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({}));
+  sharedM.mockReset();
+  exclM.mockReset();
+  crossM.mockReset();
+  crossM.mockResolvedValue([]);
+});
+afterEach(() => vi.useRealTimers());
+
+const contention = (pgCode: '57014' | '55P03') =>
+  Object.assign(new Error('workspace contended'), { name: 'WorkspaceContendedError', pgCode });
 
 describe('locks:acquire_resource shared', () => {
   it('grants a shared hold', async () => {
@@ -79,13 +94,11 @@ describe('locks:acquire_resource shared', () => {
   });
 
   it('maps transient workspace contention to an explicit retryable result', async () => {
-    txnM.mockRejectedValueOnce(
-      Object.assign(new Error('workspace contended'), {
-        name: 'WorkspaceContendedError',
-        pgCode: '57014',
-      }),
-    );
-    const b = body(await callShared());
+    vi.useFakeTimers();
+    txnM.mockRejectedValue(contention('57014'));
+    const result = callShared();
+    await vi.runAllTimersAsync();
+    const b = body(await result);
     expect(b).toMatchObject({
       ok: false,
       reason: 'workspace_contended',
@@ -97,6 +110,19 @@ describe('locks:acquire_resource shared', () => {
     });
     expect(String(b.advice)).toMatch(/retry/i);
     expect(String(b.advice)).toMatch(/unknown/i);
+    expect(txnM).toHaveBeenCalledTimes(4);
+  });
+
+  it('retries a transient workspace contention and succeeds on a fresh transaction', async () => {
+    vi.useFakeTimers();
+    txnM.mockRejectedValueOnce(contention('57014'));
+    sharedM.mockResolvedValue(sharedGrant());
+    const result = callShared();
+    await vi.runAllTimersAsync();
+    const b = body(await result);
+    expect(b).toMatchObject({ ok: true, lock_id: 'L1', mode: 'shared', status: 'held' });
+    expect(txnM).toHaveBeenCalledTimes(2);
+    expect(sharedM).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -127,13 +153,11 @@ describe('locks:acquire_resource exclusive', () => {
   });
 
   it('maps transient workspace contention from the exclusive wait to an explicit retryable result', async () => {
-    exclM.mockRejectedValueOnce(
-      Object.assign(new Error('workspace contended'), {
-        name: 'WorkspaceContendedError',
-        pgCode: '55P03',
-      }),
-    );
-    const b = body(await callExcl());
+    vi.useFakeTimers();
+    exclM.mockRejectedValue(contention('55P03'));
+    const result = callExcl();
+    await vi.runAllTimersAsync();
+    const b = body(await result);
     expect(b).toMatchObject({
       ok: false,
       reason: 'workspace_contended',
@@ -144,6 +168,18 @@ describe('locks:acquire_resource exclusive', () => {
       pg_code: '55P03',
     });
     expect(String(b.advice)).toMatch(/retry/i);
+    expect(exclM).toHaveBeenCalledTimes(4);
+  });
+
+  it('retries a transient exclusive contention and succeeds on a fresh wait attempt', async () => {
+    vi.useFakeTimers();
+    exclM.mockRejectedValueOnce(contention('55P03'));
+    exclM.mockResolvedValue({ ok: true, status: 'held', lock_id: 'L2', waited_sec: 0, fence_seq: 8 } as never);
+    const result = callExcl();
+    await vi.runAllTimersAsync();
+    const b = body(await result);
+    expect(b).toMatchObject({ ok: true, status: 'held', mode: 'exclusive', fence_seq: 8 });
+    expect(exclM).toHaveBeenCalledTimes(2);
   });
 });
 

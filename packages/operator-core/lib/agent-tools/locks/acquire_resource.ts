@@ -16,7 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireResource, type ResourceHolder } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
-import { isWorkspaceContended } from './contention-retry';
+import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 import { resourceLockDomain } from './coordination-domain';
 import { ensureResourceDomainKindsFresh } from './resource-domain-kinds';
 import {
@@ -149,16 +149,22 @@ export default defineTool({
     if (args.mode === 'shared') {
       let r: Awaited<ReturnType<typeof tryAcquireResource>>;
       try {
-        r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-          tryAcquireResource(tx, {
-            coordinationDomain,
-            resource: args.resource,
-            mode: 'shared',
-            owner: ownerId,
-            ownerLabel,
-            reason,
-            ttlSec,
-          }),
+        // EI-21993817406733718: a transient workspace advisory-lock timeout
+        // must not turn a recoverable contention dip into a user-visible
+        // acquire failure. Retry the complete transaction so each attempt
+        // gets a fresh serialization boundary.
+        r = await acquireWithContentionRetry(() =>
+          inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+            tryAcquireResource(tx, {
+              coordinationDomain,
+              resource: args.resource,
+              mode: 'shared',
+              owner: ownerId,
+              ownerLabel,
+              reason,
+              ttlSec,
+            }),
+          ),
         );
       } catch (error) {
         if (isWorkspaceContended(error)) return workspaceContended(error);
@@ -180,18 +186,23 @@ export default defineTool({
     const coordId = resolveAgentIdentity(ctx);
     let r: Awaited<ReturnType<typeof acquireResourceExclusiveWithWait>>;
     try {
-      r = await acquireResourceExclusiveWithWait({
-        coordinationDomain,
-        owner: ownerId,
-        ownerLabel,
-        resource: args.resource,
-        reason,
-        ttlSec,
-        maxWaitSec,
-        // P-009: tell the shared holders to release when the drain begins.
-        onDrainStart: (holders) =>
-          broadcastResourceDrainStart({ source: coordId, resource: args.resource, holders, reason }),
-      });
+      // Retry the whole exclusive protocol: contention can happen while
+      // acquiring its workspace transaction, and each retry must rebuild the
+      // wait/listen lifecycle from a clean attempt.
+      r = await acquireWithContentionRetry(() =>
+        acquireResourceExclusiveWithWait({
+          coordinationDomain,
+          owner: ownerId,
+          ownerLabel,
+          resource: args.resource,
+          reason,
+          ttlSec,
+          maxWaitSec,
+          // P-009: tell the shared holders to release when the drain begins.
+          onDrainStart: (holders) =>
+            broadcastResourceDrainStart({ source: coordId, resource: args.resource, holders, reason }),
+        }),
+      );
     } catch (error) {
       if (isWorkspaceContended(error)) return workspaceContended(error);
       throw error;
