@@ -458,7 +458,7 @@ export default defineTool({
       "gapsOnly:true at your floor for the gap list → sourceFile to scope it to the files a plan touched → testing:runs on the surface's source_file for the run history behind its evidence.",
     // Response docs live HERE, not in description/when — those are prompt-weight budgeted.
     returns: [
-      'verdict "measured" | "not-measured". not-measured means the RATIO HAS NO DENOMINATOR (zero censused surfaces) — it is NOT a coverage of 0%, and censusUnknown carries the reason (no-providers-registered | census-has-not-run | no-surfaces-match-filters).',
+      '{ scope, assessments, verdict, censusUnknown, census, coverage, byKind, rows, count, total, truncatedByLimit } — verdict "measured" | "not-measured". not-measured means the RATIO HAS NO DENOMINATOR (zero censused surfaces) — it is NOT a coverage of 0%, and censusUnknown carries the reason (no-providers-registered | census-has-not-run | no-surfaces-match-filters).',
       'Every aggregate (root `coverage`, each `byKind` entry, each `byRung` entry) carries `fidelity` { counts, weakest, declaredPct } and `basis` { countedOver, boundedByLimit:false, limitAppliesTo:"rows" }. fidelity.weakest is the ceiling on what the number means: 90% over a "file-only" census is not 90% over a "declared" one.',
       '`pct` is null whenever its denominator is 0, at every level including per-kind. A null pct is an honest unknown; treating it as 0 is the misread this tool exists to prevent.',
       'Aggregates are computed in SQL over the WHOLE matching set and do not move with `limit`; only `rows` is capped, and reports count/total/truncatedByLimit.',
@@ -500,6 +500,21 @@ export default defineTool({
       .optional()
       .describe(`Max ROWS (default ${DEFAULT_LIMIT}). Never bounds the aggregates.`),
   }),
+  result: z
+    .object({
+      scope: z.unknown(),
+      assessments: z.unknown(),
+      verdict: z.enum(['measured', 'not-measured']),
+      censusUnknown: z.array(z.string()).nullable(),
+      census: z.unknown(),
+      coverage: z.unknown(),
+      byKind: z.array(z.unknown()),
+      rows: z.array(z.unknown()),
+      count: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+      truncatedByLimit: z.boolean(),
+    })
+    .passthrough(),
   // ⚠ WRAPPED IN `{ data }`, like every sibling tool. A handler must return a
   // `ToolResult | ToolResponse`, not a bare payload — `dispatchReadOnlyTool` unwraps
   // `data`, which is why the state cells' declared paths are rooted at `coverage.pct`

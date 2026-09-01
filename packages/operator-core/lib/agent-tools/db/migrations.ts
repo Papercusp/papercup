@@ -131,7 +131,7 @@ export default defineTool({
     // prompt-weight budgeted and this text would push the tool over the cap
     // (the same guard that refused the P-002 edit on routines:list).
     returns: [
-      'Each row: { filename, appliedAt, sha256 }, ordered by `order` DESC (filename = migration-number order, applied_at = run order).',
+      '{ count, total, truncatedByLimit, newest, migrations, lookup } — `migrations` rows are { filename, appliedAt, sha256 }, ordered by `order` DESC (filename = migration-number order, applied_at = run order).',
       '`count` = rows returned; `total` = rows MATCHING the filter, independent of `limit`; `truncatedByLimit` says whether the two differ — so a capped list is never read as a total.',
       '`newest` = max(applied_at) over the matched set.',
       '`lookup` is present ONLY when `like` matched zero applied rows, and is the point of this tool: { verdict, note, onDisk, sqlDirs }. verdict `pending` = on disk, not yet run. `draft-not-armed` = a .DRAFT/.PENDING-CODE-DEPLOY file the runner will NEVER apply. `no-such-migration` = no file either, so the number is likely wrong. `unknown` = no sql dir on this host, so it could not be classified — NOT a claim the migration is absent.',
@@ -170,6 +170,16 @@ export default defineTool({
       ),
     limit: z.number().int().min(1).max(200).optional().describe(`Max rows (default ${DEFAULT_LIMIT}).`),
   }),
+  result: z
+    .object({
+      count: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+      truncatedByLimit: z.boolean(),
+      newest: z.string().nullable(),
+      migrations: z.array(z.unknown()),
+      lookup: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args: {
     like?: string;
     since?: string;

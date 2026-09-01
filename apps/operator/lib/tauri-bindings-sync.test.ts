@@ -275,11 +275,14 @@ function undeclaredTypeReferences(bindings: string): string[] {
   }
 
   const referenced = new Set<string>();
-  // A capitalised identifier NOT in a property-key position (`Bool:` / `Array?:`).
+  // A capitalised identifier NOT in a property-key position (`Bool:` / `Array?:`)
+  // or a qualified member position (`Namespace.EventCallback` /
+  // `import("...").Webview`). Qualified members are declared by their namespace
+  // or import target; only the qualifier itself can be an undeclared local name.
   // The generated `Value` union is built from object keys named `Array`, `Object`,
   // `String`, `Number`, `Bool` — keys, not type references, and excluding them is
   // what keeps this check from crying wolf on every serde-tagged enum.
-  for (const m of code.matchAll(/\b([A-Z][\w$]*)\b(?!\s*\??\s*:)/g)) referenced.add(m[1]);
+  for (const m of code.matchAll(/(?<!\.)\b([A-Z][\w$]*)\b(?!\s*\??\s*:)/g)) referenced.add(m[1]);
 
   return [...referenced].filter((name) => !declared.has(name)).sort();
 }
@@ -416,6 +419,11 @@ describe('tauri-specta bindings stay in sync with the Rust command list', () => 
     expect(
       undeclaredTypeReferences(
         'export type V = ({ Bool: boolean }) & { Array?: never; Object?: never; String?: never; Number?: never };',
+      ),
+    ).toEqual([]);
+    expect(
+      undeclaredTypeReferences(
+        'import * as NS from "pkg"; export type V = NS.EventCallback<import("pkg").Webview>;',
       ),
     ).toEqual([]);
   });

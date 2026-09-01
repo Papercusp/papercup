@@ -600,6 +600,21 @@ export default defineTool({
         "Which systemd manager `units` is looked up in: 'user' (default — every papercup-* unit), 'system' (auditd, ufw, pgbouncer), or 'all' to query both and merge. Only meaningful with `units`.",
       ),
   }),
+  // Keep the complete diagnostic snapshot available as structured MCP content.
+  // The text projection remains human-oriented, while this schema makes the
+  // authored return shape machine-verifiable (EI-211111).
+  result: z
+    .object({
+      configured: z.unknown().optional(),
+      effective: z.unknown().optional(),
+      evidence: z.unknown().optional(),
+      rootCause: z.unknown().nullable().optional(),
+      nextVerb: z.string().nullable().optional(),
+      services: z.unknown().optional(),
+      telemetry: z.unknown().optional(),
+      supervision: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler({ units, scope }) {
     // The unit query is ADDITIVE and independent of the fixed probe set: a
     // caller passing `units` still gets the full snapshot, because "is this one

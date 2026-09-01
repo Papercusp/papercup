@@ -77,7 +77,7 @@ export default defineTool({
     // Response docs live in `returns` — description/when are prompt-weight
     // budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
-      'Rows: { id, kind, scope, title, severity, state, assignee, createdAt, updatedAt, closedAt } plus `body` only when includeBody:true. (`lane` is a FILTER here, not a returned field.)',
+      '{ count, total, truncatedByLimit, issues } (or { rollup, counts, total } for rollup) — `issues` rows are { id, kind, scope, title, severity, state, assignee, createdAt, updatedAt, closedAt } plus `body` only when includeBody:true. (`lane` is a FILTER here, not a returned field.)',
       'For anything time-of-close read `closedAt`, not `updatedAt` — updatedAt moves on any write.',
       '`count` = rows returned; `total` = rows MATCHING the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
       'rollup:"state" → { open, wip, done, … } counts. rollup:"observationKind" → counts by payload->observation->>kind. Both are computed over the whole filtered set, not the page.',
@@ -122,6 +122,16 @@ export default defineTool({
       .describe('Return counts instead of rows, over the whole filtered set.'),
     limit: z.number().int().min(1).max(200).optional().describe(`Max rows (default ${DEFAULT_LIMIT}).`),
   }),
+  result: z
+    .object({
+      count: z.number().int().nonnegative().optional(),
+      total: z.number().int().nonnegative(),
+      truncatedByLimit: z.boolean().optional(),
+      issues: z.array(z.unknown()).optional(),
+      rollup: z.enum(['state', 'observationKind']).optional(),
+      counts: z.record(z.string(), z.number()).optional(),
+    })
+    .passthrough(),
   async handler(args: {
     state?: string;
     scope?: string;
