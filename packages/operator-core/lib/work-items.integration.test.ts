@@ -124,6 +124,10 @@ beforeAll(async () => {
     await db.sql.unsafe(readMigration(migration)).simple();
   }
   await db.sql.unsafe(HFC_DDL);
+  // EI-22040912157347872: the reserved-plan-lane predicate now reads the durable
+  // assignment + adopted-name tables as well as live claim leases. Install their
+  // production schema in this narrowed fixture before any claim query is prepared.
+  await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple(); // claim path's watchdog recovery-window floor reads watchdog_ticks
@@ -2749,6 +2753,51 @@ describe('EI-19409397800537963 — the reserved-plan-lane floor keys on op_statu
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
     expect(list.some((w) => w.id === local.id)).toBe(true);
     expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-tenant' }))?.id).toBe(local.id);
+  });
+});
+
+// EI-22040912157347872 — a durable plan-item assignment is ownership, not a suggestion.
+// WI-1801547 had already been released by a general feature-drain member and assigned back to
+// its live originating P-008 owner; because the reservation floor read only plan lifecycle +
+// live CLAIM leases, the next generic member immediately reclaimed it while the assignee was
+// between plan-item claims. This pins the missing durable-assignment leg on the FEATURE family.
+describe('EI-22040912157347872 — active plan-item assignments reserve generic self-select', () => {
+  const seedAssignedFeature = async (slug: string, assignee: string) => {
+    await db.sql`INSERT INTO harness_shared.harness_plans
+                   (workspace_id, harness_slug, plan_slug, status, op_status)
+                 VALUES ('default', 'papercup', ${slug}, 'ready', NULL)`;
+    await db.sql`INSERT INTO harness_shared.plan_item_assignments
+                   (workspace_id, harness_slug, plan_slug, item_id, assignee_name,
+                    assigned_by_user, assigned_ts)
+                 VALUES ('default', 'papercup', ${slug}, 'P-008', ${assignee},
+                         'test-leader', now())`;
+    return wi.createWorkItem({
+      kind: 'feature',
+      title: `assigned lane ${slug}`,
+      harness: 'papercup',
+      createdBy: 'test-plan',
+      payload: { plan_item: { plan_slug: slug, item_id: 'P-008', harness_slug: 'papercup' } },
+    });
+  };
+
+  it('excludes an active foreign assignment, then re-admits only after its soft release', async () => {
+    const item = await seedAssignedFeature('ei-220409-foreign-assignment', 'route-owner');
+
+    expect(await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'generic-drainer' })).toBeNull();
+    const reserved = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(reserved.some((w) => w.id === item.id)).toBe(false);
+
+    await db.sql`UPDATE harness_shared.plan_item_assignments
+                    SET released_ts = now()
+                  WHERE workspace_id = 'default'
+                    AND plan_slug = 'ei-220409-foreign-assignment'
+                    AND item_id = 'P-008'`;
+    expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'generic-drainer' }))?.id).toBe(item.id);
+  });
+
+  it('keeps the assigned raw ownerId eligible for its own lane', async () => {
+    const item = await seedAssignedFeature('ei-220409-own-assignment', 'route-owner');
+    expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'route-owner' }))?.id).toBe(item.id);
   });
 });
 
