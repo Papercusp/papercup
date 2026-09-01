@@ -507,7 +507,67 @@ export interface MergedPlanItemState {
    *  renders — the claim's declared goal (or an honest `goalUnknown`) plus
    *  staleness. Null when unheld. Projected from `claim`, so it adds no read. */
   holder: ClaimHolder | null;
+  /**
+   * The work-item execution record linked to this plan item, when one exists.
+   * This is deliberately separate from `disposition`: a claim-hold is a
+   * work-item self-select floor and must not rewrite the plan-item assignment /
+   * lease vocabulary (EI-22024943221800341).
+   *
+   * The lookup is best-effort. A missing or temporarily unreadable link leaves
+   * this field null so the established assignment/claim view remains usable.
+   */
+  implementingWorkItem: ImplementingWorkItemState | null;
   inPlan: boolean;
+}
+
+/** The status and canonical claim-hold provenance of a linked execution record. */
+export interface ImplementingWorkItemState {
+  id: string;
+  state: string;
+  claimHold: boolean;
+  claimHoldBy: string | null;
+  claimHoldReason: string | null;
+  claimHoldAt: string | null;
+  /** Both supported provenance conventions, as returned by the canonical reader. */
+  provenance: {
+    heldOpen: { by: string; reason: string | null; at: string | null } | null;
+    parked: { by: string; reason: string | null; at: string | null } | null;
+    attributed: boolean;
+  };
+}
+
+/**
+ * Read the linked execution record without making the plan-item liveness module
+ * statically depend on convert.ts (convert.ts imports claimPlanItem from here).
+ * The optional read intentionally fails open: status' existing assignment/claim
+ * projection must not disappear because a historical implements edge is broken.
+ */
+async function implementingWorkItemState(planSlug: string, itemId: string): Promise<ImplementingWorkItemState | null> {
+  try {
+    const [{ findImplementingWorkItem }, { isClaimHoldParked, readWorkItemClaimHoldProvenance }] = await Promise.all([
+      import('./convert'),
+      import('../work-items'),
+    ]);
+    const workItem = await findImplementingWorkItem(planSlug, itemId);
+    if (!workItem) return null;
+
+    const provenance = readWorkItemClaimHoldProvenance(workItem.payload);
+    // A record can carry both conventions while a liveness-bound lease coexists
+    // with a durable park. Prefer the lease for the flattened compatibility
+    // fields; `provenance` preserves both sources without losing information.
+    const selected = provenance.heldOpen ?? provenance.parked;
+    return {
+      id: workItem.id,
+      state: workItem.state,
+      claimHold: isClaimHoldParked(workItem.payload),
+      claimHoldBy: selected?.by ?? null,
+      claimHoldReason: selected?.reason ?? null,
+      claimHoldAt: selected?.at ?? null,
+      provenance,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function disposition(assignment: PlanItemAssignment | null, liveClaim: PlanItemClaim | null): PlanItemDisposition {
@@ -552,6 +612,15 @@ export async function mergedPlanItemStates(
   for (const a of assignments) ids.add(a.itemId);
   for (const c of claims) ids.add(c.itemId);
 
+  // Keep this optional join separate from the assignment/claim reads. The
+  // implementing record is useful status context, but a stale/missing link
+  // must not make the established liveness projection fail closed.
+  const implementingByItem = new Map(
+    await Promise.all(
+      [...ids].map(async (id) => [id, await implementingWorkItemState(planSlug, id)] as const),
+    ),
+  );
+
   const planStatus = new Map(planItems.map((i) => [i.id, i.status] as const));
   const planBlockers = new Map(planItems.map((i) => [i.id, i.blockedBy] as const));
   const out: MergedPlanItemState[] = [];
@@ -567,6 +636,7 @@ export async function mergedPlanItemStates(
       assignment,
       claim: liveClaim,
       holder: holderOfClaim(liveClaim),
+      implementingWorkItem: implementingByItem.get(id) ?? null,
       inPlan: planStatus.has(id),
     });
   }

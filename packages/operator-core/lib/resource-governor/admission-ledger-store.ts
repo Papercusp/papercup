@@ -9,17 +9,20 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { AdmissionPersistenceError, type QueueReceiptState } from './admission';
 import {
+  GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
   GOVERNOR_RECEIPT_ABANDON_MS,
   RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION,
   type DurableAdmissionQueueStore,
   type DurableAdmissionRecord,
   type QueueLeaseSelection,
   type QueueLeaseOwnerObservation,
+  type GovernorQueuePopulationObservation,
   type QueueMutationResult,
   type QueueReconciliationResult,
   type SqlClient,
   type StoredAdmissionRecord,
   selectEndedLeaseOwners,
+  readGovernorQueuePopulation,
 } from './queue';
 
 const RECONCILE_LOCK_PREFIX = 'resource-governor-reconcile:';
@@ -153,6 +156,21 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
 
   private transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
     return boundedOrgTxn(fn, { client: this.sql });
+  }
+
+  /** Complete ledger + bounded-overlap population used by governor snapshots. */
+  readQueuePopulation(
+    nowMs = Date.now(),
+    observationWindowMs = GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
+  ): Promise<GovernorQueuePopulationObservation[]> {
+    return readGovernorQueuePopulation(this.sql, this.workspaceId, nowMs, observationWindowMs);
+  }
+
+  readGovernorQueuePopulation(
+    nowMs = Date.now(),
+    observationWindowMs = GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
+  ): Promise<GovernorQueuePopulationObservation[]> {
+    return this.readQueuePopulation(nowMs, observationWindowMs);
   }
 
   private async lockKeys(tx: SqlClient, keys: readonly string[]): Promise<void> {

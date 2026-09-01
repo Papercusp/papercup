@@ -29,7 +29,7 @@ function claim(itemId: string, ownerName: string, mode: 'availability' | 'activi
 function merged(over: Partial<MergedPlanItemState> & Pick<MergedPlanItemState, 'itemId' | 'disposition'>): MergedPlanItemState {
   return {
     // P-029/D-060 made `holder` required on MergedPlanItemState; unheld ⇒ null.
-    itemStatus: 'todo', blockedBy: [], assignment: null, claim: null, holder: null, inPlan: true, ...over,
+    itemStatus: 'todo', blockedBy: [], assignment: null, claim: null, holder: null, implementingWorkItem: null, inPlan: true, ...over,
   };
 }
 
@@ -46,7 +46,7 @@ describe('shapePlanItemStates', () => {
     expect(dto.items[0]).toEqual({
       itemId: 'P-001', itemStatus: 'todo', blockedBy: [], inPlan: true, disposition: 'pooled',
       assigneeName: null, claimOwner: null, claimOwnerId: null, claimOwnerName: null,
-      claimIntent: null, claimLivenessMode: null, claimExpiresTs: null,
+      claimIntent: null, claimLivenessMode: null, claimExpiresTs: null, implementingWorkItem: null,
     });
   });
 
@@ -65,6 +65,26 @@ describe('shapePlanItemStates', () => {
       claimIntent: 'building', claimLivenessMode: 'activity',
       claimExpiresTs: '2026-06-04T00:20:00Z',
     });
+  });
+
+  it('passes through a linked implementing work-item claim hold', () => {
+    const implementingWorkItem = {
+      id: 'WI-parked',
+      state: 'open',
+      claimHold: true,
+      claimHoldBy: 'su-parker',
+      claimHoldReason: 'D-051: canonical wrapper owns this record',
+      claimHoldAt: '2026-06-04T00:00:00Z',
+      provenance: {
+        heldOpen: null,
+        parked: { by: 'su-parker', reason: 'D-051: canonical wrapper owns this record', at: '2026-06-04T00:00:00Z' },
+        attributed: true,
+      },
+    } as const;
+    const dto = shapePlanItemStates('papercup', 'p', 'availability', [
+      merged({ itemId: 'P-006', disposition: 'pooled', implementingWorkItem }),
+    ]);
+    expect(dto.items[0]?.implementingWorkItem).toEqual(implementingWorkItem);
   });
 
   it('surfaces a claimed-mismatch (claim held by a non-assignee — drift)', () => {

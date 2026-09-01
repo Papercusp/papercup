@@ -11,7 +11,7 @@ import { listWorkGroup } from '../../plan-items/work-group';
 export default defineTool({
   name: 'plan_items:status',
   description:
-    'The merged per-item view of a plan: each item\'s disposition (pooled / assigned-idle / active / claimed-pooled / claimed-mismatch) combining the durable assignment with the live claim, plus any work-group members. The coherent answer to "who is doing what on this plan".',
+    'The merged per-item view of a plan: each item\'s disposition (pooled / assigned-idle / active / claimed-pooled / claimed-mismatch) combining the durable assignment with the live claim, the optional linked implementing work-item (including claim-hold status and provenance), plus any work-group members. The coherent answer to "who is doing what on this plan" and why a linked record may be excluded from self-selection.',
   guidance: {
     when: 'Deciding what to pick up, or auditing who holds what on a plan.',
     notWhen: 'You only want YOUR assigned items — plan_items:my_items is narrower.',

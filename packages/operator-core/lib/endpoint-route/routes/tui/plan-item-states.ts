@@ -20,6 +20,7 @@ import { resolvePlanScope } from '../../../agent-tools/plans/source';
 import {
   mergedPlanItemStates,
   harnessLivenessMode,
+  type ImplementingWorkItemState,
   type MergedPlanItemState,
   type PlanItemDisposition,
 } from '../../../plan-items/liveness';
@@ -48,6 +49,8 @@ export interface PlanItemStateDto {
   claimLivenessMode: LivenessMode | null;
   /** Live claim's lease expiry (ISO), or null. */
   claimExpiresTs: string | null;
+  /** Linked plan-item execution record, including any claim-hold provenance. */
+  implementingWorkItem: ImplementingWorkItemState | null;
 }
 
 export interface PlanItemStatesDto {
@@ -85,6 +88,7 @@ export function shapePlanItemStates(
       claimIntent: s.claim?.intent && s.claim.intent.trim() ? s.claim.intent : null,
       claimLivenessMode: s.claim?.livenessMode ?? null,
       claimExpiresTs: s.claim?.expiresTs ?? null,
+      implementingWorkItem: s.implementingWorkItem ?? null,
     })),
   };
 }

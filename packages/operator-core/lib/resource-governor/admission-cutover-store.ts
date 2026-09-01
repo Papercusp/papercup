@@ -6,6 +6,7 @@
  * while independently deployed writer generations overlap.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { boundedOrgTxn } from '../pg-bounded-txn';
 import { activeWorkspaceId } from '../workspace-registry';
 import { AdmissionPersistenceError, type QueueReceiptState, type ResourceDemand } from './admission';
 import {
@@ -15,11 +16,13 @@ import {
   type AdmissionLedgerLegacyAdapter,
 } from './admission-ledger-store';
 import {
+  GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
   PgWorkItemAdmissionQueueStore,
   RESOURCE_GOVERNOR_PAYLOAD_KEY,
   RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION,
   type DurableAdmissionQueueStore,
   type DurableAdmissionRecord,
+  type GovernorQueuePopulationObservation,
   type QueueLeaseSelection,
   type QueueMutationResult,
   type QueueReconciliationResult,
@@ -38,8 +41,15 @@ interface LegacyDbRow {
 interface CountRow {
   total: number | string | null;
   active: number | string | null;
+  newest_created_ms?: number | string | null;
   created_after_cutover?: number | string | null;
   created_after_retirement?: number | string | null;
+}
+
+interface RetirementControlRow {
+  cutover_value: string | null;
+  ledger_total: number | string | null;
+  legacy_newest_created_ms: number | string | null;
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | null {
@@ -118,6 +128,10 @@ function count(value: number | string | null | undefined): number {
     throw new AdmissionPersistenceError(`resource-governor cutover census returned invalid count '${String(value)}'`);
   }
   return parsed;
+}
+
+function optionalCount(value: number | string | null | undefined): number | null {
+  return value === null || value === undefined ? null : count(value);
 }
 
 function aggregateReconciliation(
@@ -222,6 +236,7 @@ export interface AdmissionCutoverCensus {
   readonly legacyTotal: number;
   readonly legacyActive: number;
   readonly legacyTerminal: number;
+  readonly legacyNewestCreatedMs: number | null;
   readonly legacyCreatedAfterCutover: number;
   readonly legacyCreatedAfterRetirement: number;
   /** P-005 may delete terminal legacy rows only after this becomes true. */
@@ -356,10 +371,113 @@ export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore 
     return aggregateReconciliation(legacy, ledger);
   }
 
+  readQueuePopulation(
+    nowMs = Date.now(),
+    observationWindowMs = GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
+  ): Promise<GovernorQueuePopulationObservation[]> {
+    return this.ledger.readQueuePopulation(nowMs, observationWindowMs);
+  }
+
+  readGovernorQueuePopulation(
+    nowMs = Date.now(),
+    observationWindowMs = GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
+  ): Promise<GovernorQueuePopulationObservation[]> {
+    return this.readQueuePopulation(nowMs, observationWindowMs);
+  }
+
   async reconcileExpiredAll(nowMs = Date.now()): Promise<QueueReconciliationResult> {
     const legacy = await this.legacy.reconcileExpiredAll(nowMs);
     const ledger = await this.ledger.reconcileExpiredAll(nowMs);
     return aggregateReconciliation(legacy, ledger);
+  }
+
+  /**
+   * Establish the explicit end of old-writer overlap.
+   *
+   * The table lock drains any already-started INSERT and blocks the next one until
+   * the marker commits. Migration 1073 then rejects every later legacy admission,
+   * turning a measured edge into a stable boundary. The newest-row CAS prevents a
+   * caller from marking retirement from a stale census.
+   */
+  async markLegacyWritersRetired(
+    expectedLegacyNewestCreatedMs: number | null,
+    nowMs = Date.now(),
+  ): Promise<AdmissionCutoverCensus> {
+    const retiredAtMs = Math.floor(nowMs);
+    if (!Number.isSafeInteger(retiredAtMs) || retiredAtMs < 0) {
+      throw new AdmissionPersistenceError(`invalid legacy-writer retirement time '${String(nowMs)}'`);
+    }
+    if (
+      expectedLegacyNewestCreatedMs !== null &&
+      (!Number.isSafeInteger(expectedLegacyNewestCreatedMs) || expectedLegacyNewestCreatedMs < 0)
+    ) {
+      throw new AdmissionPersistenceError(
+        `invalid expected newest legacy receipt time '${String(expectedLegacyNewestCreatedMs)}'`,
+      );
+    }
+    const cutoverKey = `${RESOURCE_GOVERNOR_LEDGER_CUTOVER_SETTING_PREFIX}${this.workspaceId}`;
+    const retiredKey = `${RESOURCE_GOVERNOR_LEGACY_WRITERS_RETIRED_SETTING_PREFIX}${this.workspaceId}`;
+    await boundedOrgTxn(
+      async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`resource-governor-retire:${this.workspaceId}`}, 0))`;
+        await tx`LOCK TABLE harness_shared.work_items IN SHARE ROW EXCLUSIVE MODE`;
+        const rows = await tx<RetirementControlRow[]>`
+          SELECT (
+                   SELECT value
+                     FROM harness_shared.operator_settings
+                    WHERE key = ${cutoverKey}
+                    LIMIT 1
+                 ) AS cutover_value,
+                 (
+                   SELECT count(*)::bigint
+                     FROM harness_shared.resource_governor_admissions
+                    WHERE workspace_id = ${this.workspaceId}
+                 ) AS ledger_total,
+                 (
+                   SELECT max(created_ts)::bigint
+                     FROM harness_shared.work_items
+                    WHERE workspace_id = ${this.workspaceId}
+                      AND payload->'resource_governor'->>'schemaVersion' = ${String(
+                        RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION,
+                      )}
+                 ) AS legacy_newest_created_ms`;
+        const control = rows[0];
+        if (control?.cutover_value !== '1' || count(control?.ledger_total) === 0) {
+          throw new AdmissionPersistenceError(
+            'legacy writers cannot be retired before the ledger cutover latch and a positive ledger row exist',
+          );
+        }
+        const currentNewest = optionalCount(control.legacy_newest_created_ms);
+        if (currentNewest !== expectedLegacyNewestCreatedMs) {
+          throw new AdmissionPersistenceError(
+            `legacy receipt census changed before retirement: expected newest ${String(
+              expectedLegacyNewestCreatedMs,
+            )}, measured ${String(currentNewest)}`,
+          );
+        }
+        await tx`
+          INSERT INTO harness_shared.operator_settings (
+            key, value, description, updated_at, workspace_id
+          ) VALUES (
+            ${retiredKey},
+            '1',
+            'Every independently deployed resource-governor writer is ledger-only; reject all later legacy work_items admissions.',
+            ${retiredAtMs},
+            ${this.workspaceId}
+          )
+          ON CONFLICT (key) DO UPDATE SET
+            value = EXCLUDED.value,
+            description = EXCLUDED.description,
+            updated_at = EXCLUDED.updated_at,
+            workspace_id = EXCLUDED.workspace_id`;
+      },
+      { client: this.sql },
+    );
+    const census = await this.readCutoverCensus();
+    if (!census.legacyWritersRetired || census.legacyWritersRetiredAtMs !== retiredAtMs) {
+      throw new AdmissionPersistenceError('legacy-writer retirement marker did not persist at the requested boundary');
+    }
+    return census;
   }
 
   async readCutoverCensus(): Promise<AdmissionCutoverCensus> {
@@ -386,6 +504,7 @@ export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore 
                count(*) FILTER (
                  WHERE payload->'resource_governor'->>'state' IN ('queued', 'eligible', 'leased', 'running')
                )::bigint AS active,
+               max(created_ts)::bigint AS newest_created_ms,
                count(*) FILTER (
                  WHERE ${cutoverAtMs}::bigint IS NOT NULL
                    AND created_ts > ${cutoverAtMs}
@@ -402,6 +521,7 @@ export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore 
     const ledgerActive = count(ledgerRows[0]?.active);
     const legacyTotal = count(legacyRows[0]?.total);
     const legacyActive = count(legacyRows[0]?.active);
+    const legacyNewestCreatedMs = optionalCount(legacyRows[0]?.newest_created_ms);
     const legacyCreatedAfterCutover = count(legacyRows[0]?.created_after_cutover);
     const legacyCreatedAfterRetirement = count(legacyRows[0]?.created_after_retirement);
     return {
@@ -414,6 +534,7 @@ export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore 
       legacyTotal,
       legacyActive,
       legacyTerminal: legacyTotal - legacyActive,
+      legacyNewestCreatedMs,
       legacyCreatedAfterCutover,
       legacyCreatedAfterRetirement,
       terminalLegacyDeletionReady:
