@@ -63,6 +63,8 @@ import { assessGateOwnership } from './coord/gate-ownership';
 import { assessAgentGoal } from './agent-tools/coordination/agent-goal-sources';
 import { assessHostMemoryPressure } from './agent-tools/state/host-memory';
 import { assessTestingCensusPopulation, assessTestingCoverageFloor } from './agent-tools/testing/coverage';
+import { deriveCapacityVerdict, type AdmissionTerms } from './fleet/capacity-verdict';
+import type { ProviderPoolVerdict } from './deployment/account-pool-store';
 import hostMemoryPressureTool from './agent-tools/state/host-memory';
 import coverageTool from './agent-tools/testing/coverage';
 import governorStateTool from './agent-tools/state/governor-state';
@@ -139,6 +141,9 @@ const COVERAGE_CELLS = BUILTIN_CELLS.filter(
 );
 const GOVERNOR_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'governor:state_snapshot',
+);
+const CAPACITY_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'fleet:capacity',
 );
 
 async function livePipelinePayload(path?: string) {
@@ -245,6 +250,35 @@ const OWNER_BRIEF_BASE: GateOwnerBriefInput = {
 };
 const OWNER_BRIEF = (over: Partial<typeof OWNER_BRIEF_BASE> = {}) =>
   composeGateOwnerBrief({ ...OWNER_BRIEF_BASE, ...over }).answer;
+
+const CAPACITY_ADMISSION: AdmissionTerms = {
+  reachable: true,
+  blind: false,
+  dispatchBudget: 6,
+  inFlight: 0,
+};
+const CAPACITY_POOL = (over: Partial<ProviderPoolVerdict> = {}): ProviderPoolVerdict => ({
+  provider: 'claude',
+  total: 7,
+  serviceable: 7,
+  walledFresh: 0,
+  paused: 0,
+  pacing: 0,
+  unknown: 0,
+  atCapacity: false,
+  binding: 'none',
+  reason: 'assessment reality control',
+  ...over,
+});
+const CAPACITY = (
+  pool: Partial<ProviderPoolVerdict> = {},
+  admission: AdmissionTerms = CAPACITY_ADMISSION,
+) =>
+  deriveCapacityVerdict({
+    provider: 'claude',
+    pool: CAPACITY_POOL(pool),
+    admission,
+  }).binding;
 
 const CONTROLS: Record<string, readonly Control[]> = {
   'git.pipelinePosition': [
@@ -645,6 +679,26 @@ const CONTROLS: Record<string, readonly Control[]> = {
     { label: 'stalled recovery', expect: 'stalled' },
     { label: 'unmeasured snapshot', expect: 'unknown' },
   ],
+  'capacity.verdict': [
+    {
+      label: 'provider pool measurably usage-walled',
+      expect: CAPACITY({
+        serviceable: 0,
+        walledFresh: 7,
+        atCapacity: true,
+        binding: 'usage-wall',
+      }),
+    },
+    {
+      label: 'gateway admission window has no spare slot',
+      expect: CAPACITY({}, { reachable: true, blind: false, dispatchBudget: 0, inFlight: 12 }),
+    },
+    {
+      label: 'burn governor is pacing an otherwise serviceable pool',
+      expect: CAPACITY({ serviceable: 0, pacing: 7, atCapacity: true, binding: 'pacing-policy' }),
+    },
+    { label: 'both measured legs are clear', expect: CAPACITY() },
+  ],
 };
 
 /**
@@ -749,6 +803,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'governor.queue': ['empty', 'draining', 'growing', 'unknown'],
   'governor.resources': ['unconstrained', 'constrained', 'unknown'],
   'governor.recovery': ['stable', 'recovering', 'stalled', 'unknown'],
+  'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'none'],
 };
 
 describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
@@ -759,17 +814,24 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
    * suite green with zero cells examined. The plan item demands an EXPLICIT ten-of-ten
    * partition with zero residue, and this is it.
    */
-  it('registers exactly seventeen cells and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(20);
-    expect(PIPELINE_CELLS.length + GOAL_CELLS.length + PORTFOLIO_CELLS.length + HOST_MEMORY_CELLS.length + COVERAGE_CELLS.length + GOVERNOR_CELLS.length).toBe(
-      BUILTIN_CELLS.length,
-    );
+  it('registers exactly twenty-one cells and routes every one to a resolver family', () => {
+    expect(BUILTIN_CELLS).toHaveLength(21);
+    expect(
+      PIPELINE_CELLS.length +
+        GOAL_CELLS.length +
+        PORTFOLIO_CELLS.length +
+        HOST_MEMORY_CELLS.length +
+        COVERAGE_CELLS.length +
+        GOVERNOR_CELLS.length +
+        CAPACITY_CELLS.length,
+    ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS).toHaveLength(9);
     expect(GOAL_CELLS).toHaveLength(1);
     expect(PORTFOLIO_CELLS).toHaveLength(1);
     expect(HOST_MEMORY_CELLS).toHaveLength(2);
     expect(COVERAGE_CELLS).toHaveLength(2);
     expect(GOVERNOR_CELLS).toHaveLength(5);
+    expect(CAPACITY_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1151,6 +1213,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
     ['governor.queue', 'queue.trend', 'growing', 'draining', 'queue growth direction must not invert'],
     ['governor.resources', 'resources.constrained', 'constrained', 'unconstrained', 'resource constraint polarity'],
     ['governor.recovery', 'recovery.state', 'recovering', 'stable', 'active recovery must not read stable'],
+    [
+      'capacity.verdict',
+      'admission.dispatchBudget',
+      CAPACITY({}, { reachable: true, blind: false, dispatchBudget: 0, inFlight: 12 }),
+      CAPACITY({}, { reachable: true, blind: false, dispatchBudget: 1, inFlight: 12 }),
+      'a self-imposed zero-slot admission clamp must not read as a measured clear lane',
+    ],
   ];
 
   /** Every cell gets an inversion probe — the same ten-of-ten partition, no residue. */
