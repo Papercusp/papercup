@@ -528,7 +528,11 @@ export async function emitScorecard(
     // WHAT changed). Same fail-open/unrecorded-on-failure contract as rubricRevision.
     const criteriaHash = await getRubricCriteriaHash(args.rubricRef);
     const acceptance = args.acceptance as ScorecardAcceptance | undefined;
-    const implementer = rubric.proposedBy ?? rubric.createdBy ?? null;
+    // Acceptance authority belongs to the rubric author of record. A later
+    // repair/re-propose records its actor in proposedBy, but must not transfer
+    // the right to issue the plan verdict away from createdBy. Keep proposedBy
+    // only as a legacy fallback for rows whose original creator is unavailable.
+    const implementer = rubric.createdBy ?? rubric.proposedBy ?? null;
     if (acceptance && rubric.kind !== 'acceptance') {
       return {
         ok: false as const,
