@@ -121,6 +121,24 @@ describe("hosted control-plane serve profile (D-051 / P-037)", () => {
   });
 });
 
+describe("request-only sidecar identity/discovery guard (P-008)", () => {
+  it("classifies env id, explicit load-only, and request-only markers consistently", () => {
+    expect(serve.isRequestOnlySidecar({}, null)).toBe(false);
+    expect(serve.isRequestOnlySidecar({}, "staging")).toBe(true);
+    expect(serve.isRequestOnlySidecar({ PAPERCUSP_IDENTITY_MODE: "load-only" }, null)).toBe(true);
+    expect(serve.isRequestOnlySidecar({ PAPERCUSP_REQUEST_ONLY: "1" }, null)).toBe(true);
+    expect(serve.isRequestOnlySidecar({ PAPERCUSP_REQUEST_ONLY: "0" }, null)).toBe(false);
+  });
+
+  it("keeps the request-only predicate at every primary discovery cleanup/write site", () => {
+    const code = serveSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
+    expect((code.match(/REQUEST_ONLY_SIDECAR/g) ?? []).length).toBeGreaterThanOrEqual(4);
+    expect(code).not.toContain("REQUEST_ONLY_SIDEcar");
+  });
+});
+
 describe("side-effect-free help (EI-21546899007927487)", () => {
   it.each(["--help", "-h"])(
     "%s exits successfully without touching runtime state",
