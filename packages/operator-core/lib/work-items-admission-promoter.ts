@@ -36,6 +36,15 @@ export const DEFAULT_PROMOTER_BATCH_SIZE = 20;
  */
 export { DEFAULT_PROMOTER_TICK_MINUTES };
 export const DEFAULT_PROMOTER_LIVENESS_MINUTES = 90;
+/**
+ * Fail-open rows are review debt, not a second terminal admission path.  The
+ * promoter gets two of its normal ticks to revisit a rescued row before the
+ * owner-facing snapshot marks it overdue.  Keeping this beside the cadence
+ * means the SLO cannot drift from the retry floor.
+ */
+export const DEFAULT_ADMISSION_REVIEW_SLO_MINUTES = DEFAULT_PROMOTER_TICK_MINUTES * 2;
+export const ADMISSION_REVIEW_RETRY_OWNER = PROMOTER_ACTOR;
+export const ADMISSION_REVIEW_ALERT_KEY = 'work-item-admission-review-debt';
 export const DEFAULT_RECENT_TERMINAL_DAYS = 30;
 export const PROMOTER_COSINE_FLOOR = 0.85;
 export const PROMOTER_TOP_K = 8;
@@ -144,6 +153,81 @@ export interface FailOpenRunResult {
   autoPromotedByHarness: Record<string, string[]>;
   scope: AdmissionFailOpenScope;
   liveness: PromoterLiveness;
+  reviewDebt?: AdmissionReviewDebt;
+}
+
+export type AdmissionReviewState = 'pending' | 'reviewed' | 'terminal';
+
+/** Durable P-006 review-debt rollup projected by the owner snapshot. */
+export interface AdmissionReviewDebt {
+  pending: number;
+  overdue: number;
+  reReviewed: number;
+  stillOpen: number;
+  terminal: number;
+  oldestAgeMs: number | null;
+  sloMs: number;
+}
+
+export interface AdmissionReviewMetadata {
+  state: AdmissionReviewState;
+  enteredAt: string;
+  reviewDueAt: string;
+  retryOwner: string;
+  retryAttempts: number;
+  lastRetryAt: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  terminalAt: string | null;
+  terminalOutcome: string | null;
+  alert: {
+    key: string;
+    state: 'open' | 'cleared';
+    emittedAt: string;
+    reason: string;
+  };
+}
+
+/** Build the versioned payload fragment written for every fail-open/re-review transition. */
+export function buildAdmissionReviewMetadata(input: {
+  state: AdmissionReviewState;
+  nowMs: number;
+  retryOwner?: string;
+  retryAttempts?: number;
+  enteredAtMs?: number;
+  reviewDueAtMs?: number;
+  reviewedBy?: string | null;
+  terminalOutcome?: string | null;
+  alertState?: 'open' | 'cleared';
+  alertReason?: string;
+}): AdmissionReviewMetadata {
+  const now = new Date(input.nowMs).toISOString();
+  const enteredAt = new Date(input.enteredAtMs ?? input.nowMs).toISOString();
+  const dueAt = new Date(
+    input.reviewDueAtMs ?? input.nowMs + DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000,
+  ).toISOString();
+  const terminal = input.state === 'terminal';
+  const reviewed = input.state !== 'pending';
+  return {
+    state: input.state,
+    enteredAt,
+    reviewDueAt: dueAt,
+    retryOwner: input.retryOwner ?? ADMISSION_REVIEW_RETRY_OWNER,
+    retryAttempts: Math.max(0, Math.floor(input.retryAttempts ?? 0)),
+    lastRetryAt: input.state === 'pending' ? null : now,
+    reviewedAt: reviewed ? now : null,
+    reviewedBy: reviewed ? input.reviewedBy ?? ADMISSION_REVIEW_RETRY_OWNER : null,
+    terminalAt: terminal ? now : null,
+    terminalOutcome: terminal ? input.terminalOutcome ?? 'terminal' : null,
+    alert: {
+      key: ADMISSION_REVIEW_ALERT_KEY,
+      state: input.alertState ?? (input.state === 'pending' ? 'open' : 'cleared'),
+      emittedAt: now,
+      reason:
+        input.alertReason ??
+        (input.state === 'pending' ? 'pending fail-open admission requires re-review' : 'review completed'),
+    },
+  };
 }
 
 export type AdmissionRunKind =
@@ -434,6 +518,8 @@ export interface WorkItemAdmissionQueueHealth {
     p50Ms: number | null;
     p95Ms: number | null;
   };
+  /** P-006 durable review-debt rollup; optional for older callers/mocks. */
+  reviewDebt?: AdmissionReviewDebt;
 }
 
 export interface WorkItemAdmissionSnapshot {
@@ -944,7 +1030,7 @@ async function readPendingBatch(
       FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
-       AND admission = 'pending'
+       AND admission IN ('pending', 'unreviewed')
        AND lane IS DISTINCT FROM 'observation'
      ORDER BY created_ts ASC NULLS FIRST, feature_id ASC
      LIMIT ${batchSize}`;
@@ -970,7 +1056,7 @@ async function readPromoterPairs(
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${harnessSlug}
          AND feature_id = ANY(${ids}::text[])
-         AND admission = 'pending'
+         AND admission IN ('pending', 'unreviewed')
     )
     SELECT p.feature_id AS pending_id,
            c.feature_id AS candidate_id,
@@ -1207,6 +1293,12 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
     latency_sample_size: number | string;
     p50_ms: number | string | null;
     p95_ms: number | string | null;
+    review_pending: number | string;
+    review_overdue: number | string;
+    review_re_reviewed: number | string;
+    review_still_open: number | string;
+    review_terminal: number | string;
+    review_oldest_age_ms: number | string | null;
   };
   const rows = await sql<RollupRow[]>`
     SELECT (count(*) FILTER (WHERE wi.admission = 'pending'))::int AS pending,
@@ -1230,6 +1322,29 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
                AND wi.first_claimed_at IS NOT NULL
                AND wi.first_claimed_at >= wi.admitted_at
            ) AS p95_ms
+           ,(count(*) FILTER (
+             WHERE COALESCE(wi.payload #>> '{admissionReview,state}', CASE WHEN wi.admission = 'unreviewed' THEN 'pending' END) = 'pending'
+           ))::int AS review_pending
+           ,(count(*) FILTER (
+             WHERE COALESCE(wi.payload #>> '{admissionReview,state}', CASE WHEN wi.admission = 'unreviewed' THEN 'pending' END) = 'pending'
+               AND NULLIF(wi.payload #>> '{admissionReview,reviewDueAt}', '') IS NOT NULL
+               AND (wi.payload #>> '{admissionReview,reviewDueAt}')::timestamptz < now()
+           ))::int AS review_overdue
+           ,(count(*) FILTER (
+             WHERE wi.payload #>> '{admissionReview,state}' = 'reviewed'
+           ))::int AS review_re_reviewed
+           ,(count(*) FILTER (
+             WHERE wi.payload #>> '{admissionReview,state}' = 'reviewed'
+               AND NOT harness_shared.work_item_status_is_terminal(wi.status)
+           ))::int AS review_still_open
+           ,(count(*) FILTER (
+             WHERE wi.payload #>> '{admissionReview,state}' = 'terminal'
+           ))::int AS review_terminal
+           ,MAX(EXTRACT(EPOCH FROM (now() - NULLIF(wi.payload #>> '{admissionReview,enteredAt}', '')::timestamptz) * 1000)
+             ) FILTER (
+             WHERE COALESCE(wi.payload #>> '{admissionReview,state}', CASE WHEN wi.admission = 'unreviewed' THEN 'pending' END) = 'pending'
+               AND NULLIF(wi.payload #>> '{admissionReview,enteredAt}', '') IS NOT NULL
+           ) AS review_oldest_age_ms
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${opts.workspaceId}
        AND (${harnessSlug}::text IS NULL OR wi.harness_slug = ${harnessSlug})`;
@@ -1243,6 +1358,15 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
       sampleSize: Number(row?.latency_sample_size ?? 0),
       p50Ms: numberOrNull(row?.p50_ms),
       p95Ms: numberOrNull(row?.p95_ms),
+    },
+    reviewDebt: {
+      pending: Number(row?.review_pending ?? 0),
+      overdue: Number(row?.review_overdue ?? 0),
+      reReviewed: Number(row?.review_re_reviewed ?? 0),
+      stillOpen: Number(row?.review_still_open ?? 0),
+      terminal: Number(row?.review_terminal ?? 0),
+      oldestAgeMs: numberOrNull(row?.review_oldest_age_ms),
+      sloMs: DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000,
     },
   };
 }
@@ -1607,11 +1731,30 @@ export async function persistAdmissionPlan(
       await sql`
         UPDATE harness_shared.work_items
            SET admission = 'admitted', admitted_at = now(), admitted_by = ${actor},
+               payload = CASE WHEN admission = 'unreviewed' THEN
+                 COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
+                   'admissionReview',
+                   COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
+                     'state', CASE WHEN harness_shared.work_item_status_is_terminal(status) THEN 'terminal' ELSE 'reviewed' END,
+                     'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                     'reviewedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                     'reviewedBy', ${actor}::text,
+                     'terminalAt', CASE WHEN harness_shared.work_item_status_is_terminal(status) THEN to_jsonb(to_timestamp(${input.nowMs} / 1000.0)) ELSE NULL END,
+                     'terminalOutcome', CASE WHEN harness_shared.work_item_status_is_terminal(status) THEN 'promoted-terminal' ELSE NULL END,
+                     'alert', jsonb_build_object(
+                       'key', ${ADMISSION_REVIEW_ALERT_KEY}::text,
+                       'state', 'cleared',
+                       'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                       'reason', 'review completed'
+                     )
+                   )
+                 )
+               ELSE payload END,
                updated_ts = ${input.nowMs}
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
            AND feature_id = ${disposition.itemId}
-           AND admission = 'pending'`;
+           AND admission IN ('pending', 'unreviewed')`;
       continue;
     }
     const pending = pendingById.get(disposition.itemId);
@@ -1645,6 +1788,17 @@ export async function persistAdmissionPlan(
                terminal_reason = ${terminalReason}, terminal_owner = ${actor}, closed_ts = ${input.nowMs},
                payload = COALESCE(payload, '{}'::jsonb) ||
                  jsonb_build_object(
+                   'admissionReview', CASE WHEN admission = 'unreviewed' THEN
+                     COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
+                       'state', 'terminal',
+                       'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                       'reviewedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                       'reviewedBy', ${actor}::text,
+                       'terminalAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                       'terminalOutcome', 'duplicate-merge',
+                       'alert', jsonb_build_object('key', ${ADMISSION_REVIEW_ALERT_KEY}::text, 'state', 'cleared', 'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)), 'reason', 'review completed')
+                     )
+                   ELSE NULL END,
                    'admissionMerge',
                    jsonb_build_object(
                      'canonicalId', ${disposition.canonicalId}::text,
@@ -1664,6 +1818,17 @@ export async function persistAdmissionPlan(
                terminal_reason = ${terminalReason}, terminal_owner = ${actor}, closed_ts = ${input.nowMs},
                payload = COALESCE(payload, '{}'::jsonb) ||
                  jsonb_build_object(
+                   'admissionReview', CASE WHEN admission = 'unreviewed' THEN
+                     COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
+                       'state', 'terminal',
+                       'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                       'reviewedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                       'reviewedBy', ${actor}::text,
+                       'terminalAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                       'terminalOutcome', 'duplicate-merge',
+                       'alert', jsonb_build_object('key', ${ADMISSION_REVIEW_ALERT_KEY}::text, 'state', 'cleared', 'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)), 'reason', 'review completed')
+                     )
+                   ELSE NULL END,
                    'admissionMerge',
                    jsonb_build_object(
                      'canonicalId', ${disposition.canonicalId}::text,
@@ -1674,7 +1839,7 @@ export async function persistAdmissionPlan(
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
            AND feature_id = ${disposition.itemId}
-           AND admission = 'pending'`;
+           AND admission IN ('pending', 'unreviewed')`;
     }
   }
 }
@@ -1942,7 +2107,26 @@ export async function runWorkItemAdmissionFailOpen(opts: {
                  jsonb_build_object(
                    'actor', ${FAIL_OPEN_ACTOR}::text,
                    'reason', 'pending-age-exceeded-two-promoter-ticks',
-                   'scope', ${scope}::text
+                   'scope', ${scope}::text,
+                   'at', to_jsonb(to_timestamp(${startedAt} / 1000.0))
+                 ),
+                 'admissionReview', jsonb_build_object(
+                   'state', 'pending',
+                   'enteredAt', to_jsonb(to_timestamp(${startedAt} / 1000.0)),
+                   'reviewDueAt', to_jsonb(to_timestamp((${startedAt} + ${DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000}) / 1000.0)),
+                   'retryOwner', ${ADMISSION_REVIEW_RETRY_OWNER}::text,
+                   'retryAttempts', 0,
+                   'lastRetryAt', NULL,
+                   'reviewedAt', NULL,
+                   'reviewedBy', NULL,
+                   'terminalAt', NULL,
+                   'terminalOutcome', NULL,
+                   'alert', jsonb_build_object(
+                     'key', ${ADMISSION_REVIEW_ALERT_KEY}::text,
+                     'state', 'open',
+                     'emittedAt', to_jsonb(to_timestamp(${startedAt} / 1000.0)),
+                     'reason', 'pending fail-open admission requires re-review'
+                   )
                  )
                ),
              updated_ts = ${startedAt}
@@ -1956,6 +2140,16 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     for (const row of rows) (autoPromotedByHarness[row.harness_slug] ??= []).push(row.feature_id);
     for (const ids of Object.values(autoPromotedByHarness)) ids.sort();
     const liveness = await readPromoterLiveness(sql, opts.workspaceId, opts.harnessSlug, now(), staleMinutes);
+    const reviewHealth = await readWorkItemAdmissionQueueHealth({ workspaceId: opts.workspaceId, sql });
+    const reviewDebt = reviewHealth.reviewDebt ?? {
+      pending: autoPromoted.length,
+      overdue: 0,
+      reReviewed: 0,
+      stillOpen: 0,
+      terminal: 0,
+      oldestAgeMs: null,
+      sloMs: DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000,
+    };
     const promotedToFirstClaim = await readPromotedToFirstClaimForLedger(
       sql,
       opts.workspaceId,
@@ -1983,9 +2177,10 @@ export async function runWorkItemAdmissionFailOpen(opts: {
         liveness,
         promotedToFirstClaim,
         autoPromotedByHarness,
+        reviewDebt,
       },
     });
-    return { runId, autoPromoted, autoPromotedByHarness, scope, liveness };
+    return { runId, autoPromoted, autoPromotedByHarness, scope, liveness, reviewDebt };
   } catch (error) {
     await failRun(sql, runId, 'fail-open', error, Math.max(0, now() - startedAt));
     throw error;
