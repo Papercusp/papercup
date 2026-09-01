@@ -56,6 +56,20 @@ export default defineTool({
       .optional()
       .describe('Optional one-line reason the target sees on waking (e.g. "your lane is ready — pick it up"). Omit for a bare wake. Auto-truncated to 2000 chars if longer.'),
   }),
+  result: z
+    .object({
+      ok: z.boolean(),
+      to: z.string(),
+      queued: z.number().int().nonnegative(),
+      woken: z.number().int().nonnegative(),
+      pickupConfirmed: z.boolean(),
+      recipient_dead: z.unknown().optional(),
+      recipient_dormant_scheduled: z.unknown().optional(),
+      recipient_alive_not_wakeable: z.unknown().optional(),
+      warning: z.string().optional(),
+      staged: z.number().int().nonnegative().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const workspaceId = identity.workspaceId ?? undefined;

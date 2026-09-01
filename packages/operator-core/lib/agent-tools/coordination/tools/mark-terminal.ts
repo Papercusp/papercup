@@ -112,6 +112,16 @@ export default defineTool({
       .optional()
       .describe('Optional short text appended to the marker title (e.g. a reason, or your own id).'),
   }),
+  result: z
+    .object({
+      ok: z.boolean(),
+      ownerId: z.string(),
+      landed: z.boolean(),
+      via: z.enum(['psu-pty', 'tty']).nullable(),
+      title: z.string().nullable(),
+      reason: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args) {
     const presence = await getPresence(args.ownerId);
     if (!presence) {

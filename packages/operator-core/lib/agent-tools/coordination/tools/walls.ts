@@ -277,6 +277,17 @@ export default defineTool({
       .describe('Include walls whose agent is dead (default true). These need a respawn, not just an answer.'),
     limit: z.number().int().min(1).max(200).optional().describe('Default 50.'),
   }),
+  result: z
+    .object({
+      ok: z.boolean(),
+      count: z.number().int().nonnegative(),
+      waiting: z.number().int().nonnegative(),
+      stranded: z.number().int().nonnegative(),
+      oldestWaitHours: z.number().nullable(),
+      walls: z.array(z.unknown()),
+      note: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     // owner-inbox-single-pane P-005b: the union/liveness-join logic now lives in
     // the exported `listOwnerWalls` (reuse-first — `plans:attention` folds the
