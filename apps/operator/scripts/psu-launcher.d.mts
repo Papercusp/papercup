@@ -1226,16 +1226,52 @@ export function codexAuthJsonReady(raw: any): boolean;
  *
  * The filesystem reader is injectable so the decision remains deterministic in
  * tests. The returned reason is diagnostic only and never includes credentials.
+ *
+ * @param {{
+ *   agent?: string | null,
+ *   headless?: boolean,
+ *   account?: string | null,
+ *   codexHome?: string | null,
+ *   readFile?: (path: string, encoding: string) => string,
+ * }} [opts]
  */
 export function codexFreshDefaultAuthPreflight({ agent, headless, account, codexHome, readFile, }?: {
-    headless?: boolean | undefined;
-    account?: null | undefined;
-    codexHome?: null | undefined;
-    readFile?: typeof readFileSync | undefined;
+    agent?: string | null;
+    headless?: boolean;
+    account?: string | null;
+    codexHome?: string | null;
+    readFile?: (path: string, encoding: string) => string;
 }): {
     checked: boolean;
     ready: boolean;
     reason: string;
+};
+/**
+ * Reconcile Codex's canonical system login from isolated PSU homes.
+ *
+ * A fresh PSU Codex launch runs under a per-session `CODEX_HOME`. When
+ * `~/.codex/auth.json` is absent, the home writer has no canonical file to
+ * symlink, so interactive `codex login` writes a real auth.json into that ONE
+ * session. Without reconciliation every later launch starts empty and asks the
+ * owner to authenticate again. Codex may also atomically replace an inherited
+ * symlink during refresh, producing the same real-file fork.
+ *
+ * Reuse the established Claude credential rule: newest valid refresh wins.
+ * Only real files with a complete ChatGPT access+refresh token participate;
+ * symlinks, gateway/API-key auth, malformed files, and partial logins are
+ * ignored. Promotion is an atomic 0600 rename, with a final freshness recheck
+ * so concurrent launchers cannot overwrite a newer canonical login with an
+ * older snapshot. The return value is deliberately secret-free.
+ *
+ * @param {{ home?: string }} [opts]
+ * @returns {{ promoted: boolean, reason: string, sourceSession?: string }}
+ */
+export function reconcileCodexSystemAuth({ home }?: {
+    home?: string;
+}): {
+    promoted: boolean;
+    reason: string;
+    sourceSession?: string;
 };
 /** Test seam: force the probe result (and reset the memo) so unit tests stay deterministic
  *  regardless of whether this machine happens to be running the proxy. */
@@ -1298,6 +1334,31 @@ export function codexGatewayConfigPatch(configText: string, account?: string | n
  *  remove a provider the thread needs. Pure-ish (one file read); exported for
  *  tests. */
 export function codexRolloutModelProvider(rolloutPath: any): string | null;
+/**
+ * Codex stamps `session_meta.model_provider` into a thread's rollout and requires
+ * that SAME provider when the thread is resumed or forked. Rewriting config.toml
+ * can restore the stamped provider's table, but it cannot move the thread between
+ * the direct system provider and Papercusp's gateway provider.
+ *
+ * Until EI-22039056757537981, the interactive account picker still offered that
+ * impossible switch. A gateway-born thread + "default" was especially deceptive:
+ * `keepExistingWhenUnrouted` correctly preserved the table Codex needed, then the
+ * launcher announced "default system account" even though the thread remained on
+ * :8788. Return the refusal text before spawning so the selected route can never be
+ * silently substituted. A missing binding stays permissive for legacy rollouts
+ * whose provider cannot be established.
+ *
+ * @param {string | null} boundProvider
+ * @param {{ mode?: string } | null} accountRoute
+ * @param {{ fork?: boolean, sessionId?: string | null }} [opts]
+ * @returns {string | null}
+ */
+export function codexResumeAccountRouteError(boundProvider: string | null, accountRoute: {
+    mode?: string;
+} | null, { fork, sessionId }?: {
+    fork?: boolean;
+    sessionId?: string | null;
+}): string | null;
 /**
  * Upsert the extended-window keys into a codex `config.toml` (plan
  * codex-1m-context-window-2026-08-17 P-004). Pure — exported for tests.
@@ -3409,6 +3470,5 @@ export type RunWrapperOptions = {
     onSpawn?: (() => any) | undefined;
     onSpawnFailure?: (() => any) | null | undefined;
 };
-import { readFileSync } from "node:fs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 export {};

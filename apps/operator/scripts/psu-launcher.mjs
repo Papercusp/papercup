@@ -4484,6 +4484,14 @@ export function codexAuthJsonReady(raw) {
  *
  * The filesystem reader is injectable so the decision remains deterministic in
  * tests. The returned reason is diagnostic only and never includes credentials.
+ *
+ * @param {{
+ *   agent?: string | null,
+ *   headless?: boolean,
+ *   account?: string | null,
+ *   codexHome?: string | null,
+ *   readFile?: (path: string, encoding: string) => string,
+ * }} [opts]
  */
 export function codexFreshDefaultAuthPreflight({
   agent,
@@ -4505,6 +4513,133 @@ export function codexFreshDefaultAuthPreflight({
   if (!codexAuthJsonReady(raw))
     return { checked: true, ready: false, reason: "unusable-auth-json" };
   return { checked: true, ready: true, reason: "ready" };
+}
+
+/** Parse the refresh ordering key for a persistent ChatGPT login without ever
+ * returning credential material to the caller. `mtimeMs` is the fallback for
+ * older Codex versions that did not write `last_refresh`. */
+function codexPersistentAuthCandidate(raw, mtimeMs = 0) {
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (
+      parsed?.auth_mode !== "chatgpt" ||
+      !codexAuthJsonReady(raw) ||
+      typeof parsed?.tokens?.refresh_token !== "string" ||
+      !parsed.tokens.refresh_token.trim()
+    )
+      return null;
+    const refreshedAt = Date.parse(String(parsed.last_refresh || ""));
+    return {
+      freshness: Number.isFinite(refreshedAt)
+        ? refreshedAt
+        : Number(mtimeMs) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reconcile Codex's canonical system login from isolated PSU homes.
+ *
+ * A fresh PSU Codex launch runs under a per-session `CODEX_HOME`. When
+ * `~/.codex/auth.json` is absent, the home writer has no canonical file to
+ * symlink, so interactive `codex login` writes a real auth.json into that ONE
+ * session. Without reconciliation every later launch starts empty and asks the
+ * owner to authenticate again. Codex may also atomically replace an inherited
+ * symlink during refresh, producing the same real-file fork.
+ *
+ * Reuse the established Claude credential rule: newest valid refresh wins.
+ * Only real files with a complete ChatGPT access+refresh token participate;
+ * symlinks, gateway/API-key auth, malformed files, and partial logins are
+ * ignored. Promotion is an atomic 0600 rename, with a final freshness recheck
+ * so concurrent launchers cannot overwrite a newer canonical login with an
+ * older snapshot. The return value is deliberately secret-free.
+ *
+ * @param {{ home?: string }} [opts]
+ * @returns {{ promoted: boolean, reason: string, sourceSession?: string }}
+ */
+export function reconcileCodexSystemAuth({ home = homedir() } = {}) {
+  const globalDir = join(home, ".codex");
+  const globalPath = join(globalDir, "auth.json");
+  const candidateAt = (p) => {
+    try {
+      const st = statSync(p);
+      const raw = readFileSync(p, "utf8");
+      const candidate = codexPersistentAuthCandidate(raw, st.mtimeMs);
+      return candidate ? { ...candidate, raw } : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const global = candidateAt(globalPath);
+  let best = null;
+  let dirs = [];
+  try {
+    dirs = readdirSync(join(home, ".papercusp", "su-codex-homes"), {
+      withFileTypes: true,
+    });
+  } catch {
+    return { promoted: false, reason: "no-isolated-homes" };
+  }
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    const p = join(home, ".papercusp", "su-codex-homes", dir.name, "auth.json");
+    try {
+      if (lstatSync(p).isSymbolicLink()) continue;
+    } catch {
+      continue;
+    }
+    const candidate = candidateAt(p);
+    if (
+      candidate &&
+      candidate.freshness > (global?.freshness ?? 0) &&
+      candidate.freshness > (best?.freshness ?? 0)
+    )
+      best = { ...candidate, sourceSession: dir.name };
+  }
+  if (!best) return { promoted: false, reason: "canonical-current" };
+
+  let tempPath = null;
+  try {
+    mkdirSync(globalDir, { recursive: true, mode: 0o700 });
+    tempPath = join(
+      globalDir,
+      `.auth.json.psu-reconcile-${process.pid}-${randomBytes(6).toString("hex")}`,
+    );
+    writeFileSync(tempPath, best.raw, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    chmodSync(tempPath, 0o600);
+    // A concurrent launcher may have promoted a still-newer refresh while this
+    // process prepared its temp file. Never move the canonical clock backward.
+    const current = candidateAt(globalPath);
+    if (current && current.freshness >= best.freshness)
+      return { promoted: false, reason: "canonical-current" };
+    renameSync(tempPath, globalPath);
+    tempPath = null;
+    chmodSync(globalPath, 0o600);
+    return {
+      promoted: true,
+      reason: global
+        ? "newer-isolated-login"
+        : "recovered-missing-system-login",
+      sourceSession: best.sourceSession,
+    };
+  } catch {
+    return { promoted: false, reason: "write-failed" };
+  } finally {
+    if (tempPath) {
+      try {
+        rmSync(tempPath, { force: true });
+      } catch {
+        /* best-effort temp cleanup */
+      }
+    }
+  }
 }
 
 /** Explicit launch-envelope marker for the direct system/CLI credential route.
@@ -4691,6 +4826,58 @@ export function codexRolloutModelProvider(rolloutPath) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Codex stamps `session_meta.model_provider` into a thread's rollout and requires
+ * that SAME provider when the thread is resumed or forked. Rewriting config.toml
+ * can restore the stamped provider's table, but it cannot move the thread between
+ * the direct system provider and Papercusp's gateway provider.
+ *
+ * Until EI-22039056757537981, the interactive account picker still offered that
+ * impossible switch. A gateway-born thread + "default" was especially deceptive:
+ * `keepExistingWhenUnrouted` correctly preserved the table Codex needed, then the
+ * launcher announced "default system account" even though the thread remained on
+ * :8788. Return the refusal text before spawning so the selected route can never be
+ * silently substituted. A missing binding stays permissive for legacy rollouts
+ * whose provider cannot be established.
+ *
+ * @param {string | null} boundProvider
+ * @param {{ mode?: string } | null} accountRoute
+ * @param {{ fork?: boolean, sessionId?: string | null }} [opts]
+ * @returns {string | null}
+ */
+export function codexResumeAccountRouteError(
+  boundProvider,
+  accountRoute,
+  { fork = false, sessionId = null } = {},
+) {
+  if (!boundProvider || !accountRoute?.mode) return null;
+  const boundToGateway = boundProvider === CODEX_GATEWAY_PROVIDER_ID;
+  const requestedGateway =
+    accountRoute.mode === "auto" || accountRoute.mode === "pin";
+  const requestedDefault = accountRoute.mode === "default";
+  if (!requestedDefault && !requestedGateway) return null;
+  if (boundToGateway === requestedGateway) return null;
+
+  const operation = fork ? "fork" : "resume";
+  const thread = sessionId ? ` ${sessionId}` : "";
+  if (boundToGateway) {
+    return (
+      `psu: cannot ${operation} Codex thread${thread} on the default system account: ` +
+      `Codex bound this thread to '${CODEX_GATEWAY_PROVIDER_ID}' in its rollout and does not permit ` +
+      "changing model providers on resume/fork. Your account choice was NOT applied; no agent process was spawned. " +
+      "Resume this thread with --account=auto, or start a NEW system-account session with " +
+      "`psu --agent=codex --account=system`."
+    );
+  }
+  return (
+    `psu: cannot ${operation} Codex thread${thread} through the inference gateway: ` +
+    `Codex bound this thread to direct provider '${boundProvider}' in its rollout and does not permit ` +
+    "changing model providers on resume/fork. Your account choice was NOT applied; no agent process was spawned. " +
+    "Resume this thread with --account=system, or start a NEW gateway-routed session with " +
+    "`psu --agent=codex --account=auto`."
+  );
 }
 
 const CODEX_CONTEXT_WINDOW_BEGIN = "# BEGIN PAPERCUSP_CODEX_CONTEXT_WINDOW";
@@ -9715,6 +9902,19 @@ async function launchResume(
         session.sessionId ?? "",
       );
       const boundProvider = rollout ? codexRolloutModelProvider(rollout) : null;
+      const routeError = codexResumeAccountRouteError(
+        boundProvider,
+        accountEnv,
+        { fork, sessionId: session.sessionId ?? null },
+      );
+      if (routeError) throw new Error(routeError);
+      if (accountEnv?.mode === "default") {
+        const authSync = reconcileCodexSystemAuth();
+        if (authSync.promoted)
+          console.error(
+            "psu: recovered the newest isolated Codex login as the persistent default system login.",
+          );
+      }
       await ensureCodexHomeViaOperator(
         session.coordOwnerId ?? null,
         env.CODEX_HOME,
@@ -12222,6 +12422,16 @@ async function fetchSetupStageSoft({
  */
 async function launchFreshSu(selections, args, { brain = false } = {}) {
   const bootstrapIdempotencyKey = randomUUID();
+  if (
+    selections.agent === "codex" &&
+    accountRoutingMode(args.account) === "default"
+  ) {
+    const authSync = reconcileCodexSystemAuth();
+    if (authSync.promoted)
+      console.error(
+        "psu: recovered the newest isolated Codex login as the persistent default system login.",
+      );
+  }
   const res = await api("/api/agent-mcp/console/bootstrap-su", {
     method: "POST",
     body: JSON.stringify(

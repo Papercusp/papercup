@@ -7,6 +7,7 @@
  *       --changelog-file /path/to/changelog.md
  *
  *   ... --dry-run            # print what it WOULD record + write; touch nothing
+ *   ... --no-changelog       # explicitly record without changelog text (audited escape hatch)
  *   ... --since 2026-07-05   # explicit window start (only needed for the first release)
  *   ... --out <dir>          # where the generated site lands (default: <bundle>/release-history)
  *
@@ -94,6 +95,8 @@ export interface RecordOpts {
   cutAt: Date;
   since: Date | null;
   changelogMd: string | null;
+  /** Permit a changelog-less cut only when the caller makes that choice explicit. */
+  allowNoChangelog?: boolean;
   /** EVERY platform's bundle root — see `releaseBundleRoots`. Not just linux. */
   bundleDirs: string[];
   /** The papercup-rust-mobile repo root (Android/iOS artifacts); null to skip mobile. */
@@ -176,6 +179,24 @@ export function formatCompletenessAlert(
   lines.push(rule);
   lines.push('');
   return lines.join('\n');
+}
+
+/**
+ * Record-time changelog policy. A release cut must carry reviewed changelog text
+ * by default; the only way to intentionally omit it is the explicit
+ * `--no-changelog` escape hatch. Registry rows and page rendering still accept
+ * historical NULL values — this guard protects only new recording operations.
+ */
+export function validateRecordChangelog(
+  changelogMd: string | null,
+  allowNoChangelog = false,
+): string | null {
+  if (allowNoChangelog || (changelogMd != null && changelogMd.trim().length > 0)) return null;
+  return [
+    '[record-release] 🔴 REFUSING TO RECORD — no changelog text was supplied.',
+    '  Generate and review a draft first with --generate-changelog, then re-run with --changelog-file <path>.',
+    '  If this release intentionally has no changelog, pass --no-changelog explicitly.',
+  ].join('\n');
 }
 
 /**
@@ -1008,6 +1029,16 @@ export async function generateSite(
 }
 
 export async function run(opts: RecordOpts): Promise<number> {
+  // Check before opening Postgres or scanning multi-gigabyte artifact roots. A
+  // missing changelog is a request-shape error, so the default path must fail
+  // immediately instead of doing almost all the work and then looking successful.
+  if (!opts.genChangelog) {
+    const changelogError = validateRecordChangelog(opts.changelogMd, opts.allowNoChangelog);
+    if (changelogError) {
+      console.error(changelogError);
+      return 1;
+    }
+  }
   // Keep direct callers subject to the same product boundary as the CLI and
   // --scan-mobile path. The registry is workspace-level, so harness filtering
   // cannot isolate a foreign product once this function records the row.
@@ -1273,7 +1304,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const regenerate = argv.includes('--regenerate') || holdPage || restorePage;
   if (!version && !regenerate) {
     console.error('usage: record-release-cli --version <x.y.z> [--channel alpha] [--git-sha <sha>]');
-    console.error('       [--changelog-file <path>] [--cut-at <iso>] [--since <iso>]');
+    console.error('       [--changelog-file <path>] [--no-changelog] [--cut-at <iso>] [--since <iso>]');
     console.error('       [--bundle <dir>] [--out <dir>] [--dry-run]');
     console.error('   changelog: record-release-cli --version <x.y.z> --generate-changelog [--force-changelog]');
     console.error('              # writes a reviewable draft from the window and STOPS (records nothing)');
@@ -1361,6 +1392,7 @@ export function buildRunOpts(argv: string[]): RecordOpts {
     cutAt: cutAtRaw ? new Date(cutAtRaw) : new Date(),
     since: sinceRaw ? new Date(sinceRaw) : null,
     changelogMd,
+    allowNoChangelog: argv.includes('--no-changelog'),
     bundleDirs,
     mobileRoot,
     mobileProductName,

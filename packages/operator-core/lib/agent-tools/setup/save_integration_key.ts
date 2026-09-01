@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { maskIntegrationKey, readIntegrationCredentials, writeIntegrationCredentials } from '../../integration-credentials';
+import {
+  maskIntegrationKey,
+  readIntegrationCredentials,
+  writeIntegrationCredentials,
+} from '../../integration-credentials';
 
 /**
  * setup:save_integration_key — save a THIRD-PARTY integration API key (one
@@ -12,7 +16,23 @@ import { maskIntegrationKey, readIntegrationCredentials, writeIntegrationCredent
  * (owner-ask-batch-2026-07-06 P-002) — this is where it goes, keyed by a
  * caller-chosen name like `WEATHERAPI_API_KEY`.
  */
-const NAME_RE = /^[A-Z][A-Z0-9_]{2,63}$/;
+const NAME_RE = /^[A-Z][A-Z0-9_]+$/;
+export const INTEGRATION_KEY_NAME_MAX_LENGTH = 255;
+export const INTEGRATION_KEY_VALUE_MAX_LENGTH = 16 * 1024;
+
+export const saveIntegrationKeyArgsSchema = z.object({
+  name: z
+    .string()
+    .min(3)
+    .max(INTEGRATION_KEY_NAME_MAX_LENGTH)
+    .regex(NAME_RE, 'SCREAMING_SNAKE_CASE, 3-255 chars, starting with a letter')
+    .describe('Stable key name the consuming feature will look up, e.g. WEATHERAPI_API_KEY'),
+  value: z
+    .string()
+    .min(4)
+    .max(INTEGRATION_KEY_VALUE_MAX_LENGTH)
+    .describe('The raw secret; stored encrypted, never logged'),
+});
 
 export default defineTool({
   name: 'setup:save_integration_key',
@@ -22,18 +42,13 @@ export default defineTool({
   capability: 'operator:write',
   guidance: {
     when: 'The user hands over an API key/secret for a third-party integration or widget that is not one of the 4 platform provider keys. Choose a stable, descriptive name (e.g. WEATHERAPI_API_KEY) so the feature that consumes it can read it back by the same name.',
-    notWhen: 'The 4 platform provider keys (openai/anthropic/zeroentropy/github_pat) — use setup:save_key for those. Never write ANY secret into a repo file.',
+    notWhen:
+      'The 4 platform provider keys (openai/anthropic/zeroentropy/github_pat) — use setup:save_key for those. Never write ANY secret into a repo file.',
     seeAlso: ['setup:save_key (the 4 platform keys only)'],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'debugger'],
-  args: z.object({
-    name: z
-      .string()
-      .regex(NAME_RE, 'SCREAMING_SNAKE_CASE, 3-64 chars, starting with a letter')
-      .describe('Stable key name the consuming feature will look up, e.g. WEATHERAPI_API_KEY'),
-    value: z.string().min(4).max(4096).describe('The raw secret; stored encrypted, never logged'),
-  }),
+  args: saveIntegrationKeyArgsSchema,
   async handler(args) {
     await writeIntegrationCredentials({ [args.name]: args.value });
     const all = await readIntegrationCredentials();
