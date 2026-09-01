@@ -2098,6 +2098,15 @@ export const FLAGS = {
   // over-eager refusal can never manufacture a false drain. DEFAULT ON (complete + tested;
   // cuttable kill-switch if the gate ever withholds work it should have served).
   SCHEDULER_CONTEXT_PRESSURE_GATE: "papercusp-scheduler-context-pressure-gate",
+  // WI-2092233 — gate the SELF-SELECT claim paths (scheduler:get_next + work_items:claim_next)
+  // on the caller's GOAL-holder authority: ON ⇒ an ELECTED goal holder (or live handoff window)
+  // gets a typed route-it-instead verdict (claim_refused_goal_steward) instead of an item — the
+  // GOAL contract is categorical (never implement; every execution unit is a launched agent), and
+  // the filed breach (the work-on-everything holder self-pulling WI-1801547 then stranding it on
+  // release) is exactly what this prevents. OFF ⇒ today's behavior. Fail-open on an unreadable
+  // authority; the by-id door (work_items:claim) stays deliberately ungated as the escape.
+  // DEFAULT ON (complete + tested; cuttable kill-switch).
+  SCHEDULER_GOAL_STEWARD_GATE: "papercusp-scheduler-goal-steward-gate",
   // work-item-deps-and-readiness-2026-06-22 P-005: the scheduler claim reads the maintained
   // readiness sidecar (work_item_blocked — an indexed anti-join) instead of the inline per-claim
   // NOT EXISTS subquery. Behavior-identical; a performance cutover. DEFAULT ON (derived

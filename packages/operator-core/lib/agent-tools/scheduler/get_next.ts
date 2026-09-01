@@ -55,6 +55,9 @@ import {
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
 import { fetchContextPressure } from '../coordination/context-pressure';
 import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
+import { decideGoalStewardGate, goalStewardRefusalResult } from '../../scheduler/goal-steward-claim-gate';
+import { readGoalHolderAuthority } from '../../goals/holder-authority';
+import { getOrgPg } from '@papercusp/db-org';
 
 /**
  * EI-20099413453852234 — declare the caller's intent for the item it just claimed.
@@ -992,6 +995,11 @@ export default defineTool({
           refusal: ReturnType<typeof contextCriticalRefusalResult>;
         }
       | {
+          /** WI-2092233: caller holds active GOAL-steward authority — serve a route-it-instead verdict. */
+          kind: 'goal-steward';
+          refusal: ReturnType<typeof goalStewardRefusalResult>;
+        }
+      | {
           kind: 'scoped-miss';
           reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
         }
@@ -1051,6 +1059,31 @@ export default defineTool({
         });
         if (contextGate.refuse) {
           return { kind: 'context-critical', refusal: contextCriticalRefusalResult(contextGate) };
+        }
+        // WI-2092233: refuse to SERVE a caller holding active GOAL-steward authority — the GOAL
+        // contract is categorical (the holder never implements; every execution unit is a
+        // launched agent), and the filed breach is exactly a steward self-pull through this tool.
+        // Same shared-decision shape as the context gate above so this surface and
+        // `work_items:claim_next` cannot drift apart. Fails OPEN: an unreadable flag or authority
+        // leaves the verdict unknown and the pull proceeds — withholding work on an unproven
+        // reading would manufacture a false drain (see the gate module's hazard note).
+        const stewardGateEnabled = await getFlag(FLAGS.SCHEDULER_GOAL_STEWARD_GATE, ident.ownerId).catch(() => true);
+        // try/catch rather than .catch(): a synchronous getOrgPg() throw (no org pool in a
+        // unit-test harness) must fail open too, not escape past the promise chain.
+        let stewardAuthority = null as Awaited<ReturnType<typeof readGoalHolderAuthority>> | null;
+        if (stewardGateEnabled && ident.workspaceId) {
+          try {
+            stewardAuthority = await readGoalHolderAuthority(getOrgPg().sql, ident.workspaceId, ident.ownerId);
+          } catch {
+            stewardAuthority = null;
+          }
+        }
+        const stewardGate = decideGoalStewardGate({
+          authority: stewardAuthority,
+          enabled: stewardGateEnabled,
+        });
+        if (stewardGate.refuse) {
+          return { kind: 'goal-steward', refusal: goalStewardRefusalResult(stewardGate) };
         }
         const reconciliation = await reconcileFleetScopeClaims({
           ownerId: ident.ownerId,
@@ -1132,6 +1165,13 @@ export default defineTool({
     // WI-5940: the compact-first verdict. Returned BEFORE every claim path below, so the
     // filing's "and no item is claimed" holds by construction rather than by inspection.
     if (preflightState.kind === 'context-critical') {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(preflightState.refusal) }],
+      };
+    }
+    // WI-2092233: the route-it-instead verdict for an active GOAL steward. Returned BEFORE every
+    // claim path below, so "and no item is claimed" holds by construction.
+    if (preflightState.kind === 'goal-steward') {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(preflightState.refusal) }],
       };
