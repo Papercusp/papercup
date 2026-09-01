@@ -41,6 +41,7 @@ import launchOnPlan, {
   persistedFleetLaunchProfileConflicts,
   fleetRouteSwitchConflict,
   requiresExplicitUnprofiledVisibility,
+  resolveSuperviseGrant,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -53,6 +54,67 @@ const base: MemberLaunchOpts = {
   harness: 'papercup',
   plan: 'p-plan',
 };
+
+// R5 (interrupted-member-recovery-hardening-2026-09-01): how an explicit `supervise`
+// arg reaches the fleet's durable headcount row. Pure so every branch is provable
+// without opening a terminal; the handler only performs the returned `write` and
+// echoes the rest as `superviseGrant` on the result.
+describe('resolveSuperviseGrant (R5 — per-fleet supervise grant delivery)', () => {
+  const config = { plan: 'p', harness: 'h', agent: 'claude' as const, headless: true, carry: 'warm' as const };
+  const row = (over: Partial<{ enabled: boolean; target: number; config: typeof config & { supervise?: boolean; model?: string; role?: string } }> = {}) => ({
+    enabled: true,
+    target: 3,
+    config,
+    ...over,
+  });
+
+  it('is null when the arg is omitted — the stored grant is untouched', () => {
+    expect(resolveSuperviseGrant({ supervise: undefined, profile: null, existing: row() })).toBeNull();
+  });
+
+  it('needs no write when the fresh-fleet recipe already carries the requested value', () => {
+    const r = resolveSuperviseGrant({
+      supervise: true,
+      profile: { target: 2, config: { ...config, supervise: true } },
+      existing: null,
+    });
+    expect(r).toMatchObject({ requested: true, persisted: true, write: null });
+  });
+
+  it('rewrites an ENABLED existing row in place, preserving its target and boot settings', () => {
+    const r = resolveSuperviseGrant({ supervise: true, profile: null, existing: row({ config: { ...config, model: 'opus' } }) });
+    expect(r).toMatchObject({
+      requested: true,
+      persisted: true,
+      write: { target: 3, config: { ...config, model: 'opus', supervise: true } },
+    });
+  });
+
+  it('revokes the same way — false is a write, never an omission', () => {
+    const r = resolveSuperviseGrant({ supervise: false, profile: null, existing: row({ config: { ...config, supervise: true } }) });
+    expect(r?.persisted).toBe(true);
+    expect(r?.write?.config.supervise).toBe(false);
+  });
+
+  it('REPORTS an undeliverable grant on a disabled row instead of arming it or dropping it', () => {
+    const r = resolveSuperviseGrant({ supervise: true, profile: null, existing: row({ enabled: false }) });
+    expect(r).toMatchObject({ requested: true, persisted: false, write: null });
+    expect(r?.reason).toMatch(/disabled/);
+    expect(r?.reason).toMatch(/fleet:headcount-target/);
+  });
+
+  it('REPORTS an undeliverable grant when no homogeneous recipe exists (paired / per-member launch)', () => {
+    const r = resolveSuperviseGrant({ supervise: true, profile: null, existing: null });
+    expect(r).toMatchObject({ requested: true, persisted: false, write: null });
+    expect(r?.reason).toMatch(/no homogeneous headcount recipe/);
+  });
+
+  it('strips the legacy membership label while rewriting (same normalizer as every other persist)', () => {
+    const r = resolveSuperviseGrant({ supervise: true, profile: null, existing: row({ config: { ...config, role: 'member' } }) });
+    expect(r?.write?.config).not.toHaveProperty('role');
+    expect(r?.write?.config.supervise).toBe(true);
+  });
+});
 
 describe('persisted fleet launch profile recovery guard (D-004)', () => {
   const saved = {

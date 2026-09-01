@@ -4139,6 +4139,55 @@ export default defineTool({
       }
     }
 
+    // R5 (interrupted-member-recovery-hardening-2026-09-01): deliver an explicit
+    // per-fleet supervise grant/revoke. A fresh homogeneous fleet already carries it
+    // on the recipe persisted just above (no second write); an existing fleet's
+    // durable row is rewritten in place when it is ENABLED; anything else is
+    // REPORTED on the result as `superviseGrant.persisted:false` — never silently
+    // dropped ("reads as configured while binding nothing" is the D-016/WI-38048
+    // failure class). Ordered before the wave opens so a member launched under a
+    // fresh grant is governed from its first tick, and kept INDEPENDENT of the
+    // wave: a grant write failure is reported, it does not abort a launch that can
+    // still open. The branch logic lives in `resolveSuperviseGrant` (pure, tested).
+    let superviseGrant: { requested: boolean; persisted: boolean; reason: string } | null = null;
+    if (args.supervise != null) {
+      let existing: FleetHeadcountTarget | null = null;
+      let existingReadError: string | null = null;
+      if (persistedHeadcountProfile?.config.supervise !== args.supervise) {
+        try {
+          existing = await getFleetHeadcountTarget(workspaceId, fleetSlug);
+        } catch (error) {
+          existingReadError = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const resolution = resolveSuperviseGrant({
+        supervise: args.supervise,
+        profile: persistedHeadcountProfile,
+        existing,
+      });
+      if (resolution) {
+        const { write, ...outcome } = resolution;
+        superviseGrant =
+          existingReadError && !outcome.persisted
+            ? { ...outcome, reason: `could not read the fleet headcount row (${existingReadError}); ${outcome.reason}` }
+            : outcome;
+        if (write) {
+          try {
+            await setFleetHeadcountTarget({ workspaceId, fleetSlug, target: write.target, config: write.config });
+            persistedHeadcountProfile = { target: write.target, config: write.config };
+          } catch (error) {
+            superviseGrant = {
+              ...outcome,
+              persisted: false,
+              reason: `could not rewrite the fleet headcount row: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            };
+          }
+        }
+      }
+    }
+
     const launchRequestedAt = Date.now();
     const expectedAttestations: FreshLaunchExpectedAttestation[] = Array.from({ length: openCount }, (_v, i) => {
       const folded = resolvedMemberConfig(memberSpecIndex(i));
