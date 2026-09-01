@@ -3370,7 +3370,7 @@ export async function buildLeaderBrief(
     },
     LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
   );
-  const [headcountTargetResult, headcountCurrentResult] = await runLeaderBriefReads(
+  const [headcountTargetResult, headcountCurrentResult, fleetRecordResult] = await runLeaderBriefReads(
     [
       () =>
         withBoundedTimeout(getFleetHeadcountTarget(workspaceId, fleet), {
@@ -3380,17 +3380,26 @@ export async function buildLeaderBrief(
         }),
       () =>
         withBoundedTimeout(
-          liveFleetMemberIds(fleet, workspaceId, 'launch').then((ids) => ids.length),
+          liveFleetMemberIds(fleet, workspaceId, 'launch'),
           {
             fallback: null,
             timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
             label: 'leader-brief:headcountCurrent',
           },
         ),
+      () =>
+        withBoundedTimeout(getFleet(workspaceId, fleet), {
+          fallback: undefined,
+          timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+          label: 'leader-brief:fleetRecord',
+        }),
     ] as const,
   );
   const headcount = projectFleetHeadcountState(
     headcountTargetResult.value,
+    fleetRecordResult.value === undefined
+      ? undefined
+      : fleetRecordResult.value?.lastLaunchTransaction ?? null,
     headcountCurrentResult.value,
   );
   const rosterEntries: DecoratedAgent[] = rosterResult.entries.map((entry) => ({
@@ -3437,7 +3446,10 @@ export async function buildLeaderBrief(
   let fleetCreatedAtMs: number | null = null;
   let launchWorkerAttestation: LeaderBriefLaunchWorkerAttestation | undefined;
   try {
-    const fleetRecord = await boundedLeaderBriefRead('fleet-record', () => getFleet(workspaceId, fleet), null);
+    // Reuse the bounded fleet-record read that supplied the headcount transaction.
+    // A second read could cross a launch-transaction update and make the
+    // attestation block disagree with `summary.headcount` in one response.
+    const fleetRecord = fleetRecordResult.value ?? null;
     fleetCreatedAtMs = fleetRecord?.createdAt ?? null;
     launchWorkerAttestation = compactLaunchWorkerAttestation(fleetRecord?.lastLaunchTransaction);
     const registeredLeader = fleetRecord?.leaderOwnerId ?? null;

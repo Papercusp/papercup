@@ -220,7 +220,7 @@ describe('unguarded-halt rescue — stood-down suppression (ended engine loop)',
     const src = readFileSync(join(__dirname, 'unguarded-halt-rescue-action.ts'), 'utf8');
     const sweepAt = src.indexOf('selectSweepCandidates(');
     const partitionAt = src.indexOf('partitionStoodDown(candidates, loopRows)');
-    const claimableAt = src.indexOf('claimableForCandidate(candidate, ctx.workspaceId)');
+    const claimableAt = src.indexOf('claimabilityForCandidate(candidate, ctx.workspaceId)');
     expect(sweepAt).toBeGreaterThan(-1);
     expect(partitionAt).toBeGreaterThan(sweepAt);
     expect(claimableAt).toBeGreaterThan(partitionAt);

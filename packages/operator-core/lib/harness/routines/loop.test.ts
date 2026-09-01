@@ -67,13 +67,15 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 // autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001) reads the
 // LOOPS flag and best-effort arms an inbox-wake — both mocked so its unit tests
 // stay pure (no PG, no live flag resolver).
-const { getFlagSpy, armInboxWakeSpy } = vi.hoisted(() => ({
+const { getFlagSpy, armInboxWakeSpy, getClaimSpecRecordSpy } = vi.hoisted(() => ({
   getFlagSpy: vi.fn(async () => true),
   armInboxWakeSpy: vi.fn(async () => ({ awaitId: 1, eventKey: 'k', handleNote: 'n', minSleepSec: 60 })),
+  getClaimSpecRecordSpy: vi.fn(),
 }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagSpy }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { LOOPS: 'papercusp-loops' } }));
 vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: armInboxWakeSpy }));
+vi.mock('../../scheduler/claim-spec-store', () => ({ getClaimSpecRecord: getClaimSpecRecordSpy }));
 
 const { recordLoopTransitionSpy, retireFleetLeadershipWatchesForOwnersSpy } = vi.hoisted(() => ({
   recordLoopTransitionSpy: vi.fn(async (..._args: unknown[]) => undefined),
@@ -1119,6 +1121,20 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
   beforeEach(() => {
     getFlagSpy.mockReset().mockResolvedValue(true);
     armInboxWakeSpy.mockReset().mockResolvedValue({ awaitId: 1, eventKey: 'k', handleNote: 'n', minSleepSec: 60 });
+    getClaimSpecRecordSpy.mockReset().mockResolvedValue({
+      source: 'fleet',
+      fleetSlug: 'backlog-drain',
+      harnessSlug: 'papercusp',
+      revision: 5,
+      updatedBy: 'su-leader',
+      updatedAt: '2026-08-31T00:00:00.000Z',
+      spec: {
+        specId: 'fleet:backlog-drain',
+        revision: 5,
+        states: ['open'],
+        view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+      },
+    });
   });
 
   it('skips a LEADER — never auto-arms outside the member role', async () => {
@@ -1127,10 +1143,48 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
     expect(getFlagSpy).not.toHaveBeenCalled();
   });
 
-  it('skips an UNPLANNED member — nothing to derive a goal from', async () => {
+  it('arms a planless member from its authored fleet claim-spec mission', async () => {
     const res = await autoArmFleetMemberLoop({ ...baseOpts, planSlug: null, sql: emptySql as any });
-    expect(res).toEqual({ armed: false, reason: 'no-plan-bound' });
-    expect(getFlagSpy).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ armed: true, reason: 'armed', loopName: 'loop-su-member-1' });
+    expect(getClaimSpecRecordSpy).toHaveBeenCalledWith(
+      { cupId: 'su-member-1', workspaceId: 'ws' },
+      emptySql,
+    );
+    const insertInput = upsertRoutineSpy.mock.calls.at(-1)?.[1];
+    expect(insertInput.payloadTemplate.goal).toContain('fleet:backlog-drain');
+    expect(insertInput.payloadTemplate.goal).toContain('backlog-drain');
+    expect(insertInput.payloadTemplate.goal).toContain('scheduler:get_next');
+  });
+
+  it('fails closed when a planless fleet membership has no authored sentinel', async () => {
+    getClaimSpecRecordSpy.mockResolvedValueOnce({
+      source: 'default',
+      fleetSlug: 'backlog-drain',
+      spec: { specId: 'default', states: ['open'], view: {} },
+      revision: null,
+      updatedBy: null,
+      updatedAt: null,
+    });
+
+    const res = await autoArmFleetMemberLoop({ ...baseOpts, planSlug: null, sql: emptySql as any });
+
+    expect(res).toEqual({ armed: false, reason: 'fleet-claim-spec-unresolved' });
+    expect(upsertRoutineSpy).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a planless member has no claim-spec binding at all', async () => {
+    getClaimSpecRecordSpy.mockResolvedValueOnce({
+      source: 'default',
+      spec: { specId: 'default', states: ['open'], view: {} },
+      revision: null,
+      updatedBy: null,
+      updatedAt: null,
+    });
+
+    const res = await autoArmFleetMemberLoop({ ...baseOpts, planSlug: null, sql: emptySql as any });
+
+    expect(res).toEqual({ armed: false, reason: 'no-claim-spec-bound' });
+    expect(upsertRoutineSpy).not.toHaveBeenCalled();
   });
 
   it('skips when the papercusp-loops flag is OFF', async () => {

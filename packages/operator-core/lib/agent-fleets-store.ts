@@ -298,6 +298,25 @@ export interface FleetHeadcountTarget {
 }
 
 export type FleetHeadcountVerdict = 'disabled' | 'unknown' | 'at-target' | 'under-strength';
+export type FleetHeadcountBasisKind =
+  | 'worker-ready-live-intersection'
+  | 'legacy-live-roster-fallback'
+  | 'unknown';
+
+/** The exact population behind `FleetHeadcountState.current`.
+ *
+ * A launch heartbeat proves only that a process occupies a member seat. Modern
+ * transactions additionally attest that the worker called a tool, installed a
+ * durable wake, pulled the scheduler, and reached a disposition. Productive
+ * headcount is therefore the intersection of those recorded worker-ready ids
+ * with the independently-live launch roster. Legacy fleets have no attestation
+ * field; their old live-roster behavior is retained but named as a fallback.
+ * A failed transaction/roster read stays explicitly unknown. */
+export interface FleetHeadcountBasis {
+  kind: FleetHeadcountBasisKind;
+  liveRosterMembers: number | null;
+  transactionWorkerReadyMembers: number | null;
+}
 
 /** One truthful current-vs-target projection shared by every fleet read surface.
  * `undefined` means the profile read failed; `null` means it succeeded and no
@@ -310,14 +329,59 @@ export interface FleetHeadcountState {
   shortfall: number | null;
   underStrength: boolean | null;
   verdict: FleetHeadcountVerdict;
+  basis: FleetHeadcountBasis;
 }
 
 export function projectFleetHeadcountState(
   profile: FleetHeadcountTarget | null | undefined,
-  current: number | null,
+  transaction: FleetLaunchTransaction | null | undefined,
+  liveMemberIds: readonly string[] | null,
 ): FleetHeadcountState {
-  const measuredCurrent =
-    current == null || !Number.isFinite(current) ? null : Math.max(0, Math.floor(current));
+  const liveIds = liveMemberIds == null
+    ? null
+    : [...new Set(liveMemberIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  const hasWorkerContract = transaction != null && (
+    transaction.workerReadyMemberIds !== undefined ||
+    transaction.workerAttestations !== undefined ||
+    transaction.governor !== undefined
+  );
+  const recordedReadyIds = Array.isArray(transaction?.workerReadyMemberIds)
+    ? [...new Set(transaction.workerReadyMemberIds.filter((id) => typeof id === 'string' && id.length > 0))]
+    : null;
+
+  let measuredCurrent: number | null = null;
+  let basis: FleetHeadcountBasis;
+  if (liveIds == null || transaction === undefined) {
+    basis = {
+      kind: 'unknown',
+      liveRosterMembers: liveIds?.length ?? null,
+      transactionWorkerReadyMembers: recordedReadyIds?.length ?? null,
+    };
+  } else if (recordedReadyIds != null) {
+    const live = new Set(liveIds);
+    measuredCurrent = recordedReadyIds.filter((ownerId) => live.has(ownerId)).length;
+    basis = {
+      kind: 'worker-ready-live-intersection',
+      liveRosterMembers: liveIds.length,
+      transactionWorkerReadyMembers: recordedReadyIds.length,
+    };
+  } else if (!hasWorkerContract) {
+    measuredCurrent = liveIds.length;
+    basis = {
+      kind: 'legacy-live-roster-fallback',
+      liveRosterMembers: liveIds.length,
+      transactionWorkerReadyMembers: null,
+    };
+  } else {
+    // A transaction carrying the worker-attestation contract but no canonical
+    // ready-id projection is incomplete, not legacy. Falling back here would
+    // turn unknown processes into productive capacity — the original defect.
+    basis = {
+      kind: 'unknown',
+      liveRosterMembers: liveIds.length,
+      transactionWorkerReadyMembers: null,
+    };
+  }
   if (profile === undefined) {
     return {
       enabled: null,
@@ -326,6 +390,7 @@ export function projectFleetHeadcountState(
       shortfall: null,
       underStrength: null,
       verdict: 'unknown',
+      basis,
     };
   }
   if (profile == null || !profile.enabled) {
@@ -336,6 +401,7 @@ export function projectFleetHeadcountState(
       shortfall: null,
       underStrength: null,
       verdict: 'disabled',
+      basis,
     };
   }
   if (measuredCurrent == null) {
@@ -346,6 +412,7 @@ export function projectFleetHeadcountState(
       shortfall: null,
       underStrength: null,
       verdict: 'unknown',
+      basis,
     };
   }
   const shortfall = Math.max(0, profile.target - measuredCurrent);
@@ -356,6 +423,7 @@ export function projectFleetHeadcountState(
     shortfall,
     underStrength: shortfall > 0,
     verdict: shortfall > 0 ? 'under-strength' : 'at-target',
+    basis,
   };
 }
 

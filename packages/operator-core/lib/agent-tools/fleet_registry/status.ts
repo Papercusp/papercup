@@ -409,7 +409,7 @@ export default defineTool({
         label: 'fleet:status:headcountTarget',
       }),
       withBoundedTimeout(
-        liveFleetMemberIds(args.fleet, workspaceId, 'launch').then((ids) => ids.length),
+        liveFleetMemberIds(args.fleet, workspaceId, 'launch'),
         {
           fallback: null,
           timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
@@ -453,6 +453,7 @@ export default defineTool({
     ];
     const headcount = projectFleetHeadcountState(
       headcountTargetResult.value,
+      fleet.lastLaunchTransaction,
       headcountCurrentResult.value,
     );
     const populationLifecycle = buildFleetPopulationLifecycle({

@@ -7,7 +7,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { asFleetType, FLEET_TYPES, fleetSlugFromName } from './agent-fleets-store';
+import {
+  asFleetType,
+  FLEET_TYPES,
+  fleetSlugFromName,
+  projectFleetHeadcountState,
+} from './agent-fleets-store';
 
 const LIB_ROOT = fileURLToPath(new URL('.', import.meta.url));
 const STORE_MOCK_START_RE = /vi\.mock\(\s*(['"])[^'"]*agent-fleets-store\1/;
@@ -119,5 +124,103 @@ describe('asFleetType', () => {
 describe('agent-fleets-store full-mock contract', () => {
   it('preserves the runtime FLEET_TYPES vocabulary in every full vi.mock factory', () => {
     expect(fullStoreMocksWithoutFleetTypes()).toEqual([]);
+  });
+});
+
+describe('projectFleetHeadcountState — productive worker population (EI-212754)', () => {
+  const enabled = {
+    workspaceId: 'ws',
+    fleetSlug: 'fleet-a',
+    enabled: true,
+    target: 4,
+    config: {},
+    nextAttemptAt: null,
+    backoffMs: 0,
+    lastError: null,
+  } as never;
+
+  it('counts only transaction worker-ready ids that are also in the live launch roster', () => {
+    expect(projectFleetHeadcountState(
+      enabled,
+      { workerReadyMemberIds: ['su-ready-live', 'su-ready-gone', 'su-ready-gone'] } as never,
+      ['su-ready-live', 'su-unready-live', 'su-other-live', 'su-other-live'],
+    )).toEqual({
+      enabled: true,
+      target: 4,
+      current: 1,
+      shortfall: 3,
+      underStrength: true,
+      verdict: 'under-strength',
+      basis: {
+        kind: 'worker-ready-live-intersection',
+        liveRosterMembers: 3,
+        transactionWorkerReadyMembers: 2,
+      },
+    });
+  });
+
+  it('treats an explicitly empty worker-ready snapshot as measured zero, not legacy', () => {
+    expect(projectFleetHeadcountState(
+      enabled,
+      { workerReadyMemberIds: [] } as never,
+      ['su-live-but-unready'],
+    )).toMatchObject({
+      current: 0,
+      shortfall: 4,
+      verdict: 'under-strength',
+      basis: {
+        kind: 'worker-ready-live-intersection',
+        liveRosterMembers: 1,
+        transactionWorkerReadyMembers: 0,
+      },
+    });
+  });
+
+  it('retains the old live-roster count only for a transaction predating worker attestation', () => {
+    expect(projectFleetHeadcountState(enabled, null, ['su-a', 'su-b'])).toMatchObject({
+      current: 2,
+      shortfall: 2,
+      verdict: 'under-strength',
+      basis: {
+        kind: 'legacy-live-roster-fallback',
+        liveRosterMembers: 2,
+        transactionWorkerReadyMembers: null,
+      },
+    });
+  });
+
+  it('keeps an incomplete modern transaction unknown instead of crediting every live process', () => {
+    expect(projectFleetHeadcountState(
+      enabled,
+      { workerAttestations: [] } as never,
+      ['su-live-but-unverified'],
+    )).toMatchObject({
+      current: null,
+      shortfall: null,
+      underStrength: null,
+      verdict: 'unknown',
+      basis: {
+        kind: 'unknown',
+        liveRosterMembers: 1,
+        transactionWorkerReadyMembers: null,
+      },
+    });
+  });
+
+  it('keeps a failed transaction or roster read unknown with the observed side in its basis', () => {
+    expect(projectFleetHeadcountState(enabled, undefined, ['su-live'])).toMatchObject({
+      current: null,
+      verdict: 'unknown',
+      basis: { kind: 'unknown', liveRosterMembers: 1, transactionWorkerReadyMembers: null },
+    });
+    expect(projectFleetHeadcountState(
+      enabled,
+      { workerReadyMemberIds: ['su-ready'] } as never,
+      null,
+    )).toMatchObject({
+      current: null,
+      verdict: 'unknown',
+      basis: { kind: 'unknown', liveRosterMembers: null, transactionWorkerReadyMembers: 1 },
+    });
   });
 });

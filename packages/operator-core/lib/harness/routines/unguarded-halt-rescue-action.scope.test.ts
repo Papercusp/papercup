@@ -12,7 +12,10 @@ vi.mock('../../scheduler/get-next', () => ({
   readIssueClaimability: mocks.readIssueClaimability,
 }));
 
-import { claimableForCandidate } from './unguarded-halt-rescue-action';
+import {
+  claimabilityForCandidate,
+  claimableForCandidate,
+} from './unguarded-halt-rescue-action';
 
 describe('unguarded-halt rescue claimability scope', () => {
   beforeEach(() => {
@@ -33,11 +36,11 @@ describe('unguarded-halt rescue claimability scope', () => {
 
   it('resolves the candidate effective spec and threads caller-relative scope', async () => {
     await expect(
-      claimableForCandidate(
+      claimabilityForCandidate(
         { agentId: 'member-7', fleetSlug: 'drain-fleet' },
         'resolved-workspace',
       ),
-    ).resolves.toBe(4);
+    ).resolves.toEqual({ claimable: 4, harnessSlug: 'papercusp' });
 
     expect(mocks.getClaimSpecRecord).toHaveBeenCalledWith({
       cupId: 'member-7',
@@ -55,6 +58,12 @@ describe('unguarded-halt rescue claimability scope', () => {
       }),
       { limit: 1, breakdownOnly: true },
     );
+    await expect(
+      claimableForCandidate(
+        { agentId: 'member-7', fleetSlug: 'drain-fleet' },
+        'resolved-workspace',
+      ),
+    ).resolves.toBe(4);
   });
 
   it('uses each member override instead of reusing the fleet sentinel spec', async () => {
@@ -72,11 +81,11 @@ describe('unguarded-halt rescue claimability scope', () => {
     });
 
     await expect(
-      claimableForCandidate(
+      claimabilityForCandidate(
         { agentId: 'narrow-member', fleetSlug: 'drain-fleet' },
         'resolved-workspace',
       ),
-    ).resolves.toBe(1);
+    ).resolves.toEqual({ claimable: 1, harnessSlug: 'papercusp' });
 
     expect(mocks.getClaimSpecRecord).toHaveBeenCalledWith({
       cupId: 'narrow-member',
@@ -111,11 +120,11 @@ describe('unguarded-halt rescue claimability scope', () => {
     });
 
     await expect(
-      claimableForCandidate(
+      claimabilityForCandidate(
         { agentId: 'transitioning-member', fleetSlug: 'drain-fleet' },
         'resolved-workspace',
       ),
-    ).resolves.toBe(0);
+    ).resolves.toBeNull();
     expect(mocks.readIssueClaimability).not.toHaveBeenCalled();
   });
 });

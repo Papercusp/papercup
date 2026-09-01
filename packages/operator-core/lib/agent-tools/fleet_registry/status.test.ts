@@ -188,6 +188,11 @@ describe('fleet:status', () => {
       shortfall: 2,
       underStrength: true,
       verdict: 'under-strength',
+      basis: {
+        kind: 'legacy-live-roster-fallback',
+        liveRosterMembers: 3,
+        transactionWorkerReadyMembers: null,
+      },
     });
     expect(h.liveFleetMemberIds).toHaveBeenCalledWith('rocket', 'ws', 'launch');
   });
@@ -214,6 +219,54 @@ describe('fleet:status', () => {
       shortfall: null,
       underStrength: null,
       verdict: 'disabled',
+      basis: {
+        kind: 'legacy-live-roster-fallback',
+        liveRosterMembers: 2,
+        transactionWorkerReadyMembers: null,
+      },
+    });
+  });
+
+  it('reports productive headcount from worker-ready ids intersected with the live roster', async () => {
+    h.getFleet.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: 'rocket',
+      leaderOwnerId: 'su-leader',
+      controlState: 'active',
+      lastLaunchTransaction: {
+        workerReadyMemberIds: ['su-ready-live', 'su-ready-gone'],
+        unconfirmedMemberIds: [],
+        failed: [],
+      },
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    h.getFleetHeadcountTarget.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: 'rocket',
+      enabled: true,
+      target: 3,
+      config: {},
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    h.liveFleetMemberIds.mockResolvedValueOnce(['su-ready-live', 'su-unready-live']);
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.headcount).toEqual({
+      enabled: true,
+      target: 3,
+      current: 1,
+      shortfall: 2,
+      underStrength: true,
+      verdict: 'under-strength',
+      basis: {
+        kind: 'worker-ready-live-intersection',
+        liveRosterMembers: 2,
+        transactionWorkerReadyMembers: 2,
+      },
     });
   });
 
@@ -575,6 +628,11 @@ describe('fleet:status', () => {
         shortfall: null,
         underStrength: null,
         verdict: 'unknown',
+        basis: {
+          kind: 'legacy-live-roster-fallback',
+          liveRosterMembers: 1,
+          transactionWorkerReadyMembers: null,
+        },
       });
       expect(out.degradedLegs).toContain('headcountTarget');
       warnSpy.mockRestore();
