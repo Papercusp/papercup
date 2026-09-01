@@ -64,6 +64,8 @@ import {
   checkpointQuiescenceItemId,
 } from './checkpoint-serializer-authority';
 import { classifyGateAbort, type GateAbortKind } from './gate-abort-status';
+import { evaluateVerdictRateAlarm, readVerdictRateWindow } from './gate-verdict-rate-alarm';
+import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from './green-checkpoint-schedule';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -1941,6 +1943,10 @@ export async function checkGreenStall(
           lastGreenAt?: number;
           watchdogAlerted?: boolean;
           failingTests?: string[];
+          // P-003 (gate-verdict-liveness): red-state inputs + the rate alarm's own one-shot flag.
+          consecutiveReds?: number;
+          green?: boolean;
+          verdictRateAlarmed?: boolean;
           // P-006 (WI-41755): the typed abort record release-actions.ts writes on an aborted
           // tick. Already inside the `gate_health` jsonb this query selects, so reading it
           // costs nothing extra — it is what lets the re-fire advisory classify the abort.
@@ -2081,6 +2087,87 @@ export async function checkGreenStall(
                 `[green-stall-watchdog] D-006 refire launch failed for ${row.install_slug} (non-fatal, no attempt burned): ${e instanceof Error ? e.message : String(e)}`,
               );
             }
+          }
+        }
+      }
+
+      // ---- P-003 (gate-verdict-liveness): no-verdict RATE alarm ----
+      // MUST run before the `verdict.stalled` block below: its `continue`s (one-shot
+      // watchdogAlerted, flip races) would otherwise skip this for exactly the installs
+      // most likely to need it. Independent axis on purpose — a red verdict resetting
+      // consecutiveNoVerdict must not silence it, so it reads the P-001 fire ledger and
+      // the verdict-bearing clock, never the streak counters. Cost-gated: a green,
+      // un-alarmed gate pays zero extra queries.
+      {
+        const gateRed = (row.gh?.consecutiveReds ?? 0) > 0 || row.gh?.green === false;
+        const rateAlarmed = row.gh?.verdictRateAlarmed ?? false;
+        if (gateRed || rateAlarmed) {
+          try {
+            const target = { workspaceId: row.workspace_id, installSlug: row.install_slug };
+            const window = await readVerdictRateWindow(sql, target);
+            const rate = evaluateVerdictRateAlarm({
+              nowMs: now,
+              gateRed,
+              window,
+              suiteBudgetMs: GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+            });
+            if (rate.alarmed && !rateAlarmed) {
+              // Cross-process exactly-once, same convention as watchdogAlerted below.
+              const flip = await sql`
+                UPDATE harness_shared.routines
+                   SET metadata = jsonb_set(
+                         COALESCE(metadata, '{}'::jsonb),
+                         '{gate_health}',
+                         COALESCE(metadata->'gate_health', '{}'::jsonb) || '{"verdictRateAlarmed":true}'::jsonb
+                       ),
+                       updated_at = now()
+                 WHERE install_slug = ${row.install_slug}
+                   AND target_role = 'system:green-checkpoint'
+                   AND COALESCE((metadata->'gate_health'->>'verdictRateAlarmed')::boolean, false) = false`;
+              if (flip.count === 1) {
+                if (!out.alarmed.includes(row.install_slug)) out.alarmed.push(row.install_slug);
+                const { notifyAttentionOnce } = await import('../attention-notify');
+                await notifyAttentionOnce({
+                  kind: 'intervention',
+                  title: `Green gate is firing but NOT rendering verdicts on ${row.install_slug} (${rate.reason})`,
+                  body:
+                    `${rate.detail} Fires (P-001 anchors) in window: ${window.fires}; verdict-bearing outcomes: ` +
+                    `${window.verdicts}; newest verdict: ${
+                      window.lastVerdictBearingAtMs != null
+                        ? new Date(window.lastVerdictBearingAtMs).toISOString()
+                        : 'none recorded'
+                    }.`,
+                  importance: 'urgent',
+                  dedupeKey: `gate-verdict-rate:${row.install_slug}:${rate.reason}:${row.gh?.consecutiveReds ?? 0}`,
+                  workspaceId: row.workspace_id,
+                  data: {
+                    alarmAxis: 'verdict-rate',
+                    reason: rate.reason,
+                    fires: window.fires,
+                    verdicts: window.verdicts,
+                    lastVerdictBearingAtMs: window.lastVerdictBearingAtMs,
+                  },
+                });
+              }
+            } else if (!rate.alarmed && rateAlarmed) {
+              // Recovery: clear the one-shot so a future episode can page again.
+              await sql`
+                UPDATE harness_shared.routines
+                   SET metadata = jsonb_set(
+                         COALESCE(metadata, '{}'::jsonb),
+                         '{gate_health}',
+                         COALESCE(metadata->'gate_health', '{}'::jsonb) || '{"verdictRateAlarmed":false}'::jsonb
+                       ),
+                       updated_at = now()
+                 WHERE install_slug = ${row.install_slug}
+                   AND target_role = 'system:green-checkpoint'`;
+              if (!out.recovered.includes(row.install_slug)) out.recovered.push(row.install_slug);
+            }
+          } catch (e) {
+            // Fail-soft like every other limb: a broken rate read must not take the sweep down.
+            console.warn(
+              `[green-stall-watchdog] P-003 verdict-rate alarm failed for ${row.install_slug} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+            );
           }
         }
       }

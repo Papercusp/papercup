@@ -107,6 +107,59 @@ export type GateOutcomeClass =
   | 'unknown';
 
 /**
+ * The known-status → class map behind `classifyGateOutcomeStatus`. A MAP rather than a
+ * switch so derived views (P-003's `VERDICT_BEARING_STATUSES`, usable in SQL `= ANY`)
+ * are computed FROM it mechanically instead of hand-copied beside it (derived-truth
+ * ladder rung 1 — a second list is how `failed`-vs-`fail` never-match bugs happen).
+ */
+const GATE_OUTCOME_CLASS_BY_STATUS: Record<string, GateOutcomeClass> = {
+  advanced: 'verdict-green',
+  'advanced-prefix': 'verdict-green',
+  'up-to-date': 'verdict-green',
+  // the one red
+  'not-green': 'verdict-red',
+  // infra aborts / withheld verdicts
+  error: 'no-verdict',
+  cancelled: 'no-verdict',
+  'deadline-exceeded': 'no-verdict',
+  'migrations-pending': 'no-verdict',
+  'infra-inconclusive': 'no-verdict',
+  // Standing pre-suite abort: the repair queue's staging expectation mismatched the tree.
+  'repair-staging-mismatch': 'no-verdict',
+  // P-006/P-007 exit-74 prerequisite outages: refused before any test ran.
+  'dependency-prewarm-missing': 'no-verdict',
+  'dependency-generation-unusable': 'no-verdict',
+  // WI-42207: a WITHHELD verdict (candidate older than the fossil cap at verdict time) —
+  // the suite's opinion was discarded, so nothing was established about the code.
+  'candidate-fossil': 'no-verdict',
+  'not-fast-forward': 'promotion-failed',
+  'create-failed': 'promotion-failed',
+  // The suite judged the code green but the perf gate held promotion — same shape as
+  // not-fast-forward: judged, nothing shipped. See green-checkpoint.ts stampPromotion(false, …).
+  'perf-held': 'promotion-failed',
+  'desktop-perf-held': 'promotion-failed',
+  // mid-run bridge
+  'decision-pending': 'pending',
+  'repair-in-progress': 'skip',
+  // Pre-suite admission refusals without the skipped- prefix: the disk analog of
+  // skipped-memory-budget, and WI-42350's decline-to-rejudge (self-clears on tree movement).
+  'disk-headroom': 'skip',
+  'unchanged-since-verdict': 'skip',
+  // A release-fixer DISPATCH diagnostic row, not a tick outcome — it rides the
+  // green_checkpoint kind but records fixer routing, so it must not read as a verdict.
+  'release-fixer-skipped-stale': 'skip',
+};
+
+/**
+ * The statuses that COUNT as a verdict about the code — derived from the map above, so it
+ * cannot drift from `classifyGateOutcomeStatus`. P-003's rate alarm passes this to SQL
+ * (`status = ANY(...)`) to find the newest verdict-bearing row without a second hand list.
+ */
+export const VERDICT_BEARING_STATUSES: readonly string[] = Object.entries(GATE_OUTCOME_CLASS_BY_STATUS)
+  .filter(([, cls]) => cls === 'verdict-green' || cls === 'verdict-red')
+  .map(([status]) => status);
+
+/**
  * Classify one `kind='green_checkpoint'` status string. Single-homed here on purpose —
  * P-002's taxonomy work and P-003's rate alarm both need this exact map, and two copies
  * of it is how `failed`-vs-`fail` style never-match bugs happen.
@@ -116,29 +169,9 @@ export type GateOutcomeClass =
  * absorbed into a class it may not belong to.
  */
 export function classifyGateOutcomeStatus(status: string): GateOutcomeClass {
-  switch (status) {
-    case 'advanced':
-    case 'advanced-prefix':
-    case 'up-to-date':
-      return 'verdict-green';
-    case 'not-green':
-      return 'verdict-red';
-    case 'error':
-    case 'cancelled':
-    case 'deadline-exceeded':
-    case 'migrations-pending':
-    case 'infra-inconclusive':
-      return 'no-verdict';
-    case 'not-fast-forward':
-    case 'create-failed':
-      return 'promotion-failed';
-    case 'decision-pending':
-      return 'pending';
-    case 'repair-in-progress':
-      return 'skip';
-    default:
-      return status.startsWith('skipped-') ? 'skip' : 'unknown';
-  }
+  const cls = GATE_OUTCOME_CLASS_BY_STATUS[status];
+  if (cls) return cls;
+  return status.startsWith('skipped-') ? 'skip' : 'unknown';
 }
 
 /** One reconstructed day. `unaccounted` = fires with no outcome row that day (killed/vanished). */
