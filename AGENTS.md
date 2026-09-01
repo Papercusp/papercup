@@ -1069,7 +1069,13 @@ training cutoffs; don't guess from memory.
 3. **Add `guidance: { when, notWhen?, chaining?, byRole? }`** 
 
    > It is a ROOT entrypoint that queues behind `scripts/pc-heavy.sh`, which is
-   > what makes it runnable when you actually need it. 
+   > what makes it runnable when you actually need it. To measure ONE tool
+   > instead — seconds, no pc-heavy queue — **`npm run tool-weight -- <tool>`**
+   > (`--json`; `--all` for the catalog). It prints the total AND the per-field
+   > split (`description · when · notWhen · chaining · byRole`), so you cut the
+   > field that is actually heavy instead of eyeballing it — the heavy one is
+   > routinely `chaining`, not `description`.
+
 
 > **Editing a live tool counts too.** In practice nearly every prompt-weight gate
 > red has come from *growing* an existing tool's `description`/`guidance`, not from
