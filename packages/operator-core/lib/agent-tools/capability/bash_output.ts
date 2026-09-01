@@ -857,6 +857,71 @@ export function sampleJobCpu(
   }
 }
 
+/**
+ * EI-22068327735595657: agents naturally reach for `tail` on capability:bash_output
+ * (mirroring capability:read's `tail:N` — and this tool's OWN response fields are
+ * literally named `output_tail` in several recovery branches), and it kept failing
+ * with a raw Zod "unrecognized key" error (2 independent reporters, promoted by the
+ * improvement watchdog). Rather than merely improve the error message, make the
+ * natural call WORK: `tail` trims whichever of `output`/`output_tail` the response
+ * actually carries to its last N lines, applied UNIFORMLY as a post-processing step
+ * over the handler's JSON payload — so every branch (running job, filtered,
+ * stranded/recovered, terminal-ledger-recovered, …) gets tail support for free
+ * without re-deriving it in each one. The read cursor still advances past the FULL
+ * chunk regardless (exactly like `filter`) — `tail` only narrows what is RETURNED.
+ */
+export function truncateToTailLines(text: string, tail: number | undefined): string {
+  if (tail === undefined || tail <= 0 || !text) return text;
+  const lines = text.split('\n');
+  return lines.length <= tail ? text : lines.slice(-tail).join('\n');
+}
+
+/** Fields carrying returned output text across every capability:bash_output response
+ *  shape — the live happy path uses `output`; several stranded/recovery branches ALSO
+ *  (or only) carry `output_tail`. Trimming both, when present, keeps `tail` correct
+ *  regardless of which branch produced the payload. */
+const OUTPUT_TEXT_FIELDS = ['output', 'output_tail'] as const;
+
+export function applyOutputTail<T extends Record<string, unknown>>(payload: T, tail: number | undefined): T {
+  if (tail === undefined || tail <= 0) return payload;
+  let changed = false;
+  const next: Record<string, unknown> = { ...payload };
+  for (const field of OUTPUT_TEXT_FIELDS) {
+    const value = next[field];
+    if (typeof value === 'string') {
+      const truncated = truncateToTailLines(value, tail);
+      if (truncated !== value) {
+        next[field] = truncated;
+        changed = true;
+      }
+    }
+  }
+  return (changed ? next : payload) as T;
+}
+
+/** Apply `tail` to a tool result's JSON text content, uniformly across every
+ *  capability:bash_output return branch. A non-JSON or unexpected content shape is
+ *  left untouched — this only ever narrows an already-produced `output`/`output_tail`
+ *  string field, never changes control flow or error status. */
+export function applyOutputTailToResult<
+  R extends { content: Array<{ type: string; text?: string }>; isError?: boolean },
+>(result: R, tail: number | undefined): R {
+  if (tail === undefined || tail <= 0) return result;
+  return {
+    ...result,
+    content: result.content.map((item) => {
+      if (item.type !== 'text' || typeof item.text !== 'string') return item;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(item.text) as Record<string, unknown>;
+      } catch {
+        return item;
+      }
+      return { ...item, text: JSON.stringify(applyOutputTail(parsed, tail)) };
+    }),
+  };
+}
+
 export default defineTool({
   name: 'capability:bash_output',
   description:
@@ -902,6 +967,14 @@ export default defineTool({
           'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter.',
         ),
       peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
+      tail: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'Return only the LAST N lines of the output text in THIS response (whichever of `output`/`output_tail` it carries — every response branch, including stranded/recovered ones, is covered). The read cursor still advances past the ENTIRE chunk regardless, exactly like `filter` — this only narrows what is RETURNED. Composes with `filter`: filter is applied first, then tail keeps the last N of what remains.',
+        ),
     })
     .superRefine((args, refinementCtx) => {
       // EI-21240465530065342: capability:bash hands the caller BOTH ids at
@@ -920,6 +993,12 @@ export default defineTool({
       }
     }),
   async handler(args, ctx) {
+    // EI-22068327735595657: the ENTIRE existing body below is unchanged and now
+    // runs inside this IIFE; `tail` is applied uniformly to whatever it returns,
+    // from whichever of the many branches below produced it — see
+    // applyOutputTailToResult's doc comment for why this is a wrap rather than a
+    // per-branch change.
+    const result = await (async () => {
     // `bash_id` indexes the process-local JOBS map. `task_id` is the durable
     // carry-safe handle: resolve it once through the existing task ledger, then
     // reuse the exact same live-map/log/identity/terminal-marker path below.
@@ -1504,5 +1583,7 @@ export default defineTool({
       ],
       ...(deadTypecheck || exitMismatch ? { isError: true } : {}),
     };
+    })();
+    return applyOutputTailToResult(result, args.tail);
   },
 });
