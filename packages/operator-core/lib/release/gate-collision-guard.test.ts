@@ -334,9 +334,9 @@ const gitSyncOperation = (over: Partial<GitSyncCollisionProbe['operations'][numb
 
 describe('git-sync restart-collision target set', () => {
   it('covers every host that can execute git-sync and excludes unrelated services', () => {
-    expect([...GIT_SYNC_SENSITIVE_RESTART_TARGETS]).toEqual(['dev', 'staging', 'bg-host']);
+    expect([...GIT_SYNC_SENSITIVE_RESTART_TARGETS]).toEqual(['dev', 'bg-host']);
     expect(isGitSyncSensitiveTarget('dev')).toBe(true);
-    expect(isGitSyncSensitiveTarget('staging')).toBe(true);
+    expect(isGitSyncSensitiveTarget('staging')).toBe(false);
     expect(isGitSyncSensitiveTarget('bg-host')).toBe(true);
     for (const target of ['gateway', 'embed-sidecar', 'mcp-proxy', 'desktop-dev']) {
       expect(isGitSyncSensitiveTarget(target)).toBe(false);
@@ -536,12 +536,14 @@ describe('git-sync collision probe shell', () => {
     expect(judgeGitSyncCollision({ target: 'bg-host', probe, override: false }).kind).toBe('clear');
   });
 
-  it('short-circuits unrelated targets without reading holders', async () => {
+  it('short-circuits unrelated targets, including staging, without reading holders', async () => {
     const readHolders = vi.fn(async () => [
       { resource: 'git-sync:papercusp', owner: 'system:git-sync:1:x', acquiredAtMs: 0, expiresAtMs: 1 },
     ]);
-    const verdict = await checkGitSyncCollision('gateway', false, deps({ readHolders }));
-    expect(verdict.kind).toBe('not-git-sync-sensitive');
+    for (const target of ['gateway', 'staging']) {
+      const verdict = await checkGitSyncCollision(target, false, deps({ readHolders }));
+      expect(verdict.kind).toBe('not-git-sync-sensitive');
+    }
     expect(readHolders).not.toHaveBeenCalled();
   });
 });

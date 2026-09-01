@@ -27,9 +27,12 @@
  *   EMAIL_APP_URL, EMAIL_AUTH_SECRET  (and/or CALENDAR_*)
  */
 import { randomUUID } from 'node:crypto';
+import { Client } from 'pg';
 import { afterAll, describe, expect, it } from 'vitest';
+import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { appServiceAuthHeader } from './app-auth';
 import { appRowFromSourceRecord, buildAppSyncBatch, sourceRefForApp } from './app-rows';
+import type { ProducerSourceRecord } from './app-rows';
 import { deliverAppSyncBatch } from './live-sink';
 import type { ProducerApp } from './owner-mapping';
 
@@ -209,3 +212,146 @@ describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app
     });
   }
 });
+
+// ── WI-933686 — the same round trip, on REAL GOOGLE DATA ────────────────────
+//
+// WHY THIS EXISTS SEPARATELY FROM THE BLOCK ABOVE.
+// That block is deliberately non-disturbing: its header says it uses "a per-run
+// synthetic ownerId and provider id". That makes the AUTH leg, the DELIVERY leg
+// and the APP real — but the DATA fake, and the fake data is precisely the gap
+// WI-933686 was filed for. Acceptance scorecard EI-21832584701743975 rated
+// `web-apps-real-data` only partially-met because both apps' real-data claim
+// rested on the platform delivery ledger and on manual driving, rather than on
+// an executing assertion. This block is that assertion.
+//
+// It changes exactly ONE variable: the record is READ FROM the live
+// `personal_documents` vault (`source='gmail'` / `'calendar'` — the same rows
+// the production producer reads) instead of being synthesized. The converter,
+// the batch builder, the delivery sink, the minted token and the app's own read
+// endpoint are all the identical production path already exercised above.
+//
+// SAFETY — why this is not "writing real things into the owner's app":
+//  • REAL DATA, THROWAWAY OWNER. The gap was that the data was fake, never that
+//    the owner was, so the synthetic ownerId is KEPT. Real Google content proves
+//    the path; the throwaway owner keeps the owner's own store untouched.
+//  • READ-ONLY with respect to Google. It re-delivers content the platform
+//    already holds. It never reaches the draft gateway (Email stays draft-only
+//    by never invoking `mail:reply` at all) and never proposes/updates/deletes a
+//    calendar event, so CALENDAR_TEST_EVENT_LABEL confinement is never engaged.
+//  • OFF BY DEFAULT even when an app IS configured, so an ordinary
+//    `test:affected` run never touches the owner's mail.
+//
+// NON-VACUOUS BY CONSTRUCTION: enabling the flag is an explicit assertion that
+// real data should be present, so an empty vault FAILS loudly here rather than
+// skipping. A test that silently passes when it read nothing would recreate the
+// very defect this item is about — a claim resting on something unexecuted.
+
+const REAL_GOOGLE_ENABLED = process.env.APP_LIVE_REAL_GOOGLE_E2E === '1';
+
+/**
+ * Newest real vault record for a platform source, shaped as the exact
+ * `ProducerSourceRecord` the production producer builds. Returns null when the
+ * vault holds none, so the caller can fail with a specific reason.
+ */
+async function readRealSourceRecord(source: string): Promise<ProducerSourceRecord | null> {
+  const client = new Client({ connectionString: getHarnessAdminUrl() });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      `SELECT source, kind, external_id, occurred_at, title, text, metadata,
+              source_id, provider_account_id
+         FROM harness_shared.personal_documents
+        WHERE source = $1
+          AND external_id IS NOT NULL
+          AND btrim(external_id) <> ''
+        ORDER BY occurred_at DESC NULLS LAST
+        LIMIT 1`,
+      [source],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      source: row.source,
+      kind: row.kind,
+      externalId: row.external_id,
+      occurredAt: row.occurred_at,
+      title: row.title,
+      text: row.text,
+      metadata: row.metadata,
+      sourceId: row.source_id,
+      providerAccountId: row.provider_account_id,
+    };
+  } finally {
+    await client.end();
+  }
+}
+
+describe.skipIf(!REAL_GOOGLE_ENABLED || CASES.length === 0)(
+  'WI-933686 real Google data → app round trip (opt-in: APP_LIVE_REAL_GOOGLE_E2E=1)',
+  () => {
+    for (const c of CASES) {
+      describe.skipIf(!live.get(c.app))(`${c.app}`, () => {
+        const ownerId = `wi933686-live-test-${randomUUID()}`;
+
+        it('delivers a REAL vault record through the production path and the app serves it back', async () => {
+          const record = await readRealSourceRecord(c.source);
+
+          // Loud rather than vacuous: opting in asserts real data IS present.
+          expect(
+            record,
+            `no real '${c.source}' row in harness_shared.personal_documents — ` +
+              'this test cannot prove the real-data path without one. Connect the ' +
+              'provider and let a sync land, or unset APP_LIVE_REAL_GOOGLE_E2E.',
+          ).not.toBeNull();
+
+          // Provenance assertions, on identifiers only — never on message content,
+          // which must not reach a failure message or a CI log.
+          const externalId = String(record!.externalId);
+          expect(record!.source).toBe(c.source);
+          expect(externalId.length).toBeGreaterThan(0);
+          expect(
+            record!.metadata,
+            'a real vault row must carry the provider payload the app consumes',
+          ).toBeTruthy();
+
+          const mapped = appRowFromSourceRecord(record!);
+          expect(mapped, `appForSource must map '${c.source}' to an app`).not.toBeNull();
+          expect(mapped!.app).toBe(c.app);
+          // The mapper keys the app row by the REAL provider id.
+          expect(mapped!.row.id).toBe(externalId);
+
+          const batch = buildAppSyncBatch(c.app, [mapped!.row], { cursor: null });
+          const result = await deliverAppSyncBatch(batch, ownerId, {
+            baseUrl: c.baseUrl,
+            secret: c.secret,
+          });
+          expect(result.status).toBe(200);
+          expect(result.rowCount).toBe(1);
+
+          // RECEIVING END: the app's own read path, under a production-minted token.
+          const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
+          const path = c.app === 'email' ? `/api/threads/${externalId}` : `/api/events/${externalId}`;
+          const res = await fetch(`${c.baseUrl}${path}`, {
+            headers: { authorization },
+            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+          });
+          expect(res.status).toBe(200);
+          const body = (await res.json()) as {
+            messages?: { id: string }[];
+            event?: { id: string };
+          };
+
+          const servedId = c.app === 'email'
+            ? body.messages?.find((m) => m.id === externalId)?.id
+            : body.event?.id;
+          // THE ASSERTION THIS BLOCK EXISTS FOR: data that actually came from
+          // Google traversed the app's own run path, and the app served it back.
+          expect(
+            servedId,
+            `the ${c.app} app must serve back the REAL ${c.source} record it was sent`,
+          ).toBe(externalId);
+        });
+      });
+    }
+  },
+);

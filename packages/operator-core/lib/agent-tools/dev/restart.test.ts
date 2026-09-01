@@ -955,6 +955,26 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(details).toMatchObject({ target: 'staging', viaEnv: true, viaAuthorizeArg: false, reason: null });
   });
 
+  it('staging restart bypasses the git-sync probe and workspace barrier', async () => {
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-STAGING-NO-GITSYNC',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 21,
+    } as never);
+    guardM.mockImplementation(runGuard(fenceOk(21)) as never);
+    probeM.mockResolvedValue({ ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
+
+    const b = body(await call({ confirm: true, target: 'staging' }));
+
+    expect(b).toMatchObject({ ok: true, target: 'staging', restarted: true, drained: true });
+    expect(gitSyncCollisionM).not.toHaveBeenCalled();
+    expect(gitSyncBarrierM).not.toHaveBeenCalled();
+  });
+
   it('clears a latched start-limit before scheduling the restart and reports the recovery', async () => {
     acquireM.mockResolvedValue({
       ok: true,

@@ -27,6 +27,7 @@ import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-g
 import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
 import { persistDedupEdges } from './dedup-edges';
+import type { DedupCandidateStamp } from './dedup-candidates-stamp';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getOrgPg } from '@papercusp/db-org';
@@ -583,6 +584,10 @@ export async function createOneWorkItem(
     let lexicalLeg: WorkItemDedupCoverage['lexical'] = issueAdmission ? 'skipped' : 'skipped';
     let similarOpen: SemanticDupeCandidate[] | undefined;
     let burstCandidates: SemanticDupeCandidate[] = [];
+    // P-001 (silent-intake-central-resolution-2026-09-01): hard-band semantic hits that
+    // a force:true create rode past — tracked so the payload stamp below records them
+    // as 'semantic-hard' rather than misfiling them in the advisory band.
+    let hardSemanticIds: ReadonlySet<string> = new Set();
     if (shouldScreen) {
       const dupes = await findSemanticDupes({
         title: args.title,

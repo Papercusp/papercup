@@ -510,8 +510,11 @@ export async function checkGateCollision(
  * a live `system:git-sync:<pid>:<uuid>` holder whose process is inside the unit
  * being restarted. Reuse {@link gateRunCgroupRelation} so sibling transient units
  * remain isolated and a stale/dead/foreign holder never becomes a false refusal.
+ * The staging operator (`:3170`) is intentionally excluded: it does not host
+ * git-sync execution, and its restart must not contend on the workspace-wide
+ * git-sync barrier used by the dev and bg-host processes.
  */
-export const GIT_SYNC_SENSITIVE_RESTART_TARGETS = ['dev', 'staging', 'bg-host'] as const;
+export const GIT_SYNC_SENSITIVE_RESTART_TARGETS = ['dev', 'bg-host'] as const;
 
 export type GitSyncSensitiveTarget = (typeof GIT_SYNC_SENSITIVE_RESTART_TARGETS)[number];
 
