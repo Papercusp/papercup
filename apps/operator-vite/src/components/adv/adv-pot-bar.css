@@ -106,22 +106,22 @@
   cursor: default;
 }
 .pc-advshell__action--new {
-  background: rgba(167, 139, 250, 0.16);
-  color: #c4b5fd;
-  border-color: rgba(167, 139, 250, 0.4);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent), transparent 58%);
 }
 .pc-advshell__action--new:hover {
-  background: rgba(167, 139, 250, 0.28);
-  color: #e7f7ff;
+  background: color-mix(in srgb, var(--accent), transparent 78%);
+  color: var(--fg);
 }
 .pc-advshell__action--share {
   background: color-mix(in srgb, var(--accent), transparent 86%);
-  color: var(--accent-soft);
+  color: var(--accent-strong);
   border-color: color-mix(in srgb, var(--accent), transparent 62%);
 }
 .pc-advshell__action--share:hover {
   background: color-mix(in srgb, var(--accent), transparent 74%);
-  color: #e7f7ff;
+  color: var(--fg);
 }
 /* Shared = the green "done" tint the Share button takes once the pot IS shared,
    labelled with the live directory visibility (Public / Invite). It stayed
@@ -130,16 +130,16 @@
    passive <span> in exactly one remaining place: the legacy per-harness
    shared.json badge on a NON-pot harness, which has no dialog to open. */
 .pc-advshell__action--shared {
-  background: rgba(34, 197, 94, 0.16);
-  color: #86efac;
-  border-color: rgba(34, 197, 94, 0.4);
+  background: var(--good-bg);
+  color: var(--good);
+  border-color: color-mix(in srgb, var(--good), transparent 60%);
 }
 span.pc-advshell__action--shared {
   cursor: default;
 }
 button.pc-advshell__action--shared:hover {
-  background: rgba(34, 197, 94, 0.28);
-  color: #e7f7ff;
+  background: color-mix(in srgb, var(--good), transparent 78%);
+  color: var(--fg);
 }
 
 /* The row now lives INSIDE .pc-advshell__body, which flattens in-page buttons

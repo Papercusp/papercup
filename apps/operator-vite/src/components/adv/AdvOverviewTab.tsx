@@ -788,7 +788,7 @@ export default function AdvOverviewTab() {
           icon={<Bell size={14} aria-hidden />}
           title="Needs you"
           count={decisions.length}
-          accent="#f59e0b"
+          accent="var(--warn)"
           loading={attentionQ.loading && !attentionQ.data}
           error={attentionQ.error}
           empty={decisions.length === 0}
@@ -810,7 +810,7 @@ export default function AdvOverviewTab() {
           icon={<Users size={14} aria-hidden />}
           title="Agents"
           count={roster.length}
-          accent="#a78bfa"
+          accent="var(--accent-strong)"
           loading={rosterQ.loading && !rosterQ.data}
           error={rosterQ.error ? String((rosterQ.error as Error).message ?? rosterQ.error) : null}
           empty={agentRows.length === 0}
@@ -852,7 +852,7 @@ export default function AdvOverviewTab() {
         <OverviewTile
           icon={<ActivityIcon size={14} aria-hidden />}
           title="Activity"
-          accent="#34d399"
+          accent="var(--good)"
           loading={activityQ.loading && !activityQ.data}
           error={activityQ.error ? String((activityQ.error as Error).message ?? activityQ.error) : null}
           empty={recentActivity.length === 0}
@@ -885,7 +885,7 @@ export default function AdvOverviewTab() {
           icon={<ClipboardList size={14} aria-hidden />}
           title="Work items"
           count={workItemStats.open}
-          accent="#fbbf24"
+          accent="var(--warn)"
           loading={statsQ.loading && !statsQ.data}
           error={statsQ.error ? String((statsQ.error as Error).message ?? statsQ.error) : null}
           empty={workItemStats.total === 0}
@@ -926,7 +926,7 @@ export default function AdvOverviewTab() {
           icon={<Coins size={14} aria-hidden />}
           title="Spend"
           count={spendTile && spendTile.unavailable > 0 ? spendTile.unavailable : undefined}
-          accent="#eab308"
+          accent="var(--warn)"
           loading={(spendQ.loading && !spendQ.data) || (accountsQ.loading && !accountsQ.data)}
           error={
             spendQ.error
@@ -976,7 +976,7 @@ export default function AdvOverviewTab() {
           icon={<Rocket size={14} aria-hidden />}
           title="Deploy"
           count={deployTile?.failingCount || undefined}
-          accent={deployTile?.verdict === 'red' ? '#f87171' : deployTile?.verdict === 'green' ? '#4ade80' : '#94a3b8'}
+          accent={deployTile?.verdict === 'red' ? 'var(--bad)' : deployTile?.verdict === 'green' ? 'var(--good)' : 'var(--fg-mute)'}
           loading={pipelineQ.loading && !pipelineQ.data}
           error={pipelineQ.error ? String((pipelineQ.error as Error).message ?? pipelineQ.error) : null}
           empty={!deployTile}
@@ -1015,7 +1015,7 @@ export default function AdvOverviewTab() {
         <OverviewTile
           icon={<FileText size={14} aria-hidden />}
           title="Operator report"
-          accent="#c084fc"
+          accent="var(--accent-cool)"
           loading={reportsQ.loading && !reportsQ.data}
           error={reportsQ.error ? String((reportsQ.error as Error).message ?? reportsQ.error) : null}
           empty={!reportsQ.data || reportsQ.data.length === 0}
@@ -1047,7 +1047,7 @@ export default function AdvOverviewTab() {
           icon={<HeartPulse size={14} aria-hidden />}
           title="Health"
           count={unhealthy.length}
-          accent="#fb7185"
+          accent="var(--bad)"
           loading={healthQ.loading && !healthQ.data}
           error={healthQ.error ? String((healthQ.error as Error).message ?? healthQ.error) : null}
           empty={unhealthy.length === 0}
@@ -1070,7 +1070,7 @@ export default function AdvOverviewTab() {
         <OverviewTile
           icon={<GraduationCap size={14} aria-hidden />}
           title="Learning"
-          accent="#6ee7b7"
+          accent="var(--good)"
           loading={readinessQ.loading && !readinessQ.data}
           error={readinessQ.error ? String((readinessQ.error as Error).message ?? readinessQ.error) : null}
           empty={!readiness?.report}
@@ -1133,14 +1133,14 @@ export default function AdvOverviewTab() {
           font-weight: 700;
           border-radius: 8px;
           border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
-          background: rgba(255, 255, 255, 0.03);
+          background: var(--bg-2, rgba(255, 255, 255, 0.04));
           color: var(--fg-mute, #7f9bb4);
           cursor: pointer;
         }
         .pc-overview__alerts[data-has-alerts='true'] {
-          color: #fca5a5;
-          border-color: rgba(239, 68, 68, 0.4);
-          background: rgba(239, 68, 68, 0.12);
+          color: var(--bad, #f87171);
+          border-color: color-mix(in srgb, var(--bad, #f87171), transparent 60%);
+          background: var(--bad-bg, rgba(248, 113, 113, 0.10));
         }
         /* Tiles grid */
         .pc-overview__grid {
@@ -1176,8 +1176,9 @@ export default function AdvOverviewTab() {
         .pc-overview__tile-count {
           font-size: 11px;
           font-weight: 700;
-          color: var(--bg, #07101d);
-          background: var(--tile-accent, #7dd3fc);
+          color: var(--fg, #e7f7ff);
+          background: color-mix(in srgb, var(--tile-accent, #7dd3fc) 18%, var(--bg-popover, #0d1829));
+          border: 1px solid color-mix(in srgb, var(--tile-accent, #7dd3fc), transparent 48%);
           border-radius: 999px;
           padding: 1px 7px;
           min-width: 18px;
@@ -1208,7 +1209,7 @@ export default function AdvOverviewTab() {
           gap: 7px;
         }
         .pc-overview__tile-state { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); padding: 6px 0; }
-        .pc-overview__tile-state[data-error='true'] { color: #fca5a5; }
+        .pc-overview__tile-state[data-error='true'] { color: var(--bad, #f87171); }
         /* Plan rows */
         /* Flex on INNER spans only — WebKitGTK ignores flex on <button>. */
         .pc-overview__plan { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
@@ -1219,7 +1220,7 @@ export default function AdvOverviewTab() {
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .pc-overview__plan-frac { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
-        .pc-overview__bar { display: block; height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+        .pc-overview__bar { display: block; height: 5px; border-radius: 999px; background: var(--bg-4, rgba(255, 255, 255, 0.11)); overflow: hidden; }
         .pc-overview__bar-fill {
           display: block;
           height: 100%;
@@ -1245,28 +1246,28 @@ export default function AdvOverviewTab() {
           cursor: pointer;
           transition: background-color 120ms ease;
         }
-        .pc-overview__rowbtn:hover { background: rgba(255, 255, 255, 0.05); }
+        .pc-overview__rowbtn:hover { background: var(--bg-3, rgba(255, 255, 255, 0.07)); }
         .pc-overview__rowbtn:focus-visible {
           outline: 1px solid var(--tile-accent, #7dd3fc);
           outline-offset: -1px;
         }
         .pc-overview__row-dot {
-          width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: #475569;
+          width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--fg-mute, #7f9bb4);
         }
-        .pc-overview__row-dot[data-live='live'] { background: #4ade80; box-shadow: 0 0 6px rgba(74, 222, 128, 0.5); }
-        .pc-overview__row-dot[data-live='idle'] { background: #facc15; }
-        .pc-overview__row-dot[data-imp='urgent'] { background: #f87171; }
-        .pc-overview__row-dot[data-imp='high'] { background: #fb923c; }
-        .pc-overview__row-dot[data-health='crit'] { background: #f87171; box-shadow: 0 0 6px rgba(248, 113, 113, 0.5); }
-        .pc-overview__row-dot[data-health='warn'] { background: #facc15; }
-        .pc-overview__row-dot[data-bar='pass'] { background: #4ade80; }
-        .pc-overview__row-dot[data-bar='fail'] { background: #f87171; }
+        .pc-overview__row-dot[data-live='live'] { background: var(--good, #34d399); box-shadow: 0 0 6px color-mix(in srgb, var(--good, #34d399), transparent 50%); }
+        .pc-overview__row-dot[data-live='idle'] { background: var(--warn, #fbbf24); }
+        .pc-overview__row-dot[data-imp='urgent'] { background: var(--bad, #f87171); }
+        .pc-overview__row-dot[data-imp='high'] { background: var(--warn, #fbbf24); }
+        .pc-overview__row-dot[data-health='crit'] { background: var(--bad, #f87171); box-shadow: 0 0 6px color-mix(in srgb, var(--bad, #f87171), transparent 50%); }
+        .pc-overview__row-dot[data-health='warn'] { background: var(--warn, #fbbf24); }
+        .pc-overview__row-dot[data-bar='pass'] { background: var(--good, #34d399); }
+        .pc-overview__row-dot[data-bar='fail'] { background: var(--bad, #f87171); }
         /* Spend tile account states (P-003): walled = hard red, edge = orange,
            paused = yellow, ok = green. */
-        .pc-overview__row-dot[data-acct='ok'] { background: #4ade80; }
-        .pc-overview__row-dot[data-acct='paused'] { background: #facc15; }
-        .pc-overview__row-dot[data-acct='edge'] { background: #fb923c; }
-        .pc-overview__row-dot[data-acct='walled'] { background: #f87171; box-shadow: 0 0 6px rgba(248, 113, 113, 0.5); }
+        .pc-overview__row-dot[data-acct='ok'] { background: var(--good, #34d399); }
+        .pc-overview__row-dot[data-acct='paused'] { background: var(--warn, #fbbf24); }
+        .pc-overview__row-dot[data-acct='edge'] { background: var(--warn, #fbbf24); }
+        .pc-overview__row-dot[data-acct='walled'] { background: var(--bad, #f87171); box-shadow: 0 0 6px color-mix(in srgb, var(--bad, #f87171), transparent 50%); }
         .pc-overview__row-actor {
           font-size: 10.5px; font-weight: 700; color: var(--fg-mute, #7f9bb4);
           flex-shrink: 0; min-width: 40px; max-width: 64px;
