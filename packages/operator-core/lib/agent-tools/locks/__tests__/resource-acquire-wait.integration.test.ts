@@ -19,7 +19,7 @@ import {
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
 import { _resetListenersForTests } from '../workspace-listener';
-import { acquireResourceExclusiveWithWait } from '../resource-acquire-wait';
+import { acquireResourceExclusiveWithWait, type StaleHolderReclaimedInfo } from '../resource-acquire-wait';
 
 /** Spawn + reap a throwaway child process so we have a REAL pid guaranteed to
  *  be dead by the time it resolves — not a made-up large number that might
@@ -193,7 +193,7 @@ describe('acquireResourceExclusiveWithWait — hostLocalOwnerPid reclaim (EI-186
     });
     expect(first.ok).toBe(true);
 
-    let reclaimed: { holder: { owner: string }; pid: number } | null = null;
+    let reclaimed: StaleHolderReclaimedInfo | null = null;
     const second = await acquireResourceExclusiveWithWait({
       coordinationDomain: ws,
       owner: 'fresh-owner',
@@ -324,7 +324,7 @@ describe('acquireResourceExclusiveWithWait — dead-holder reclaim on the WAITIN
     });
     expect(first.ok).toBe(true);
 
-    let reclaimed: { holder: { owner: string }; pid: number } | null = null;
+    let reclaimed: StaleHolderReclaimedInfo | null = null;
     const startedAt = Date.now();
     // The deploy's own withDrain shape: a DRAIN budget, not a no-wait coalesce.
     const second = await acquireResourceExclusiveWithWait({

@@ -56,7 +56,15 @@ function presenceRow(ownerId: string, over: Partial<PresenceRecord> = {}): Prese
 }
 
 function verdict(ownerId: string, over: Partial<LivenessVerdict> = {}): LivenessVerdict {
-  return { ownerId, sessionState: 'parked', wakeable: true, liveTurn: false, ...over };
+  return {
+    ownerId,
+    sessionState: 'parked',
+    wakeable: true,
+    liveTurn: false,
+    confirmLiveness: null,
+    heartbeatFresh: true,
+    ...over,
+  };
 }
 
 /** A presence store that knows only the SESSION owners, never the peer fire. */
