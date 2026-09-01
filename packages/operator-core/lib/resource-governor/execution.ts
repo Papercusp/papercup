@@ -9,12 +9,8 @@ import {
   type AdmissionRequest,
   type ResourceDemand,
 } from './admission';
-import {
-  PgWorkItemAdmissionQueueStore,
-  WorkItemAdmissionQueueDriver,
-  type AdmissionQueueLeaseClaim,
-  type SqlClient,
-} from './queue';
+import { PgAdmissionLedgerQueueStore } from './admission-ledger-store';
+import { WorkItemAdmissionQueueDriver, type AdmissionQueueLeaseClaim, type SqlClient } from './queue';
 
 export const GOVERNED_EXECUTION_LEASE_TTL_MS = 24 * 60 * 60_000;
 
@@ -36,10 +32,7 @@ export function governedExecutionLeaseTtlForTimeout(timeoutMs: number | undefine
     return GOVERNED_EXECUTION_PROCESS_LEASE_TTL_MS;
   }
   const bounded = Math.floor(timeoutMs) + GOVERNED_EXECUTION_SHORT_LEASE_GRACE_MS;
-  return Math.min(
-    GOVERNED_EXECUTION_SHORT_LEASE_MAX_MS,
-    Math.max(GOVERNED_EXECUTION_SHORT_LEASE_MIN_MS, bounded),
-  );
+  return Math.min(GOVERNED_EXECUTION_SHORT_LEASE_MAX_MS, Math.max(GOVERNED_EXECUTION_SHORT_LEASE_MIN_MS, bounded));
 }
 
 export interface GovernedExecution {
@@ -142,11 +135,7 @@ export async function withGovernedExecution<T>(
     signal.addEventListener('abort', onAbort, { once: true });
   }
   try {
-    execution = await beginGovernedExecution(
-      request,
-      { owner: input.owner, leaseTtlMs: input.leaseTtlMs },
-      deps,
-    );
+    execution = await beginGovernedExecution(request, { owner: input.owner, leaseTtlMs: input.leaseTtlMs }, deps);
     // If the caller aborted while admission/lease acquisition was in flight,
     // the pre-begin cancel may have found no row yet. Re-issue cancellation
     // against the now-materialized execution before starting work.
@@ -247,14 +236,10 @@ export function runGovernedOperation<T>(
   };
   if (input.dedicatedClient) {
     return withGovernedProcessRuntime(input.workspaceId, namespace, (deps) =>
-      withGovernedExecution(request, executionInput, deps, run));
+      withGovernedExecution(request, executionInput, deps, run),
+    );
   }
-  return withGovernedExecution(
-    request,
-    executionInput,
-    governedExecutionRuntime(input.workspaceId, namespace),
-    run,
-  );
+  return withGovernedExecution(request, executionInput, governedExecutionRuntime(input.workspaceId, namespace), run);
 }
 
 export async function beginGovernedExecution<T = unknown>(
@@ -357,7 +342,7 @@ export function governedExecutionRuntime(workspaceId: string, namespace = 'agent
   const key = `${workspaceId}\0${namespace}`;
   let runtime = runtimes.get(key);
   if (!runtime) {
-    const driver = new WorkItemAdmissionQueueDriver(new PgWorkItemAdmissionQueueStore({ workspaceId }), {
+    const driver = new WorkItemAdmissionQueueDriver(new PgAdmissionLedgerQueueStore({ workspaceId }), {
       namespace,
       leaseIdFactory: () => randomUUID(),
     });
@@ -404,9 +389,7 @@ let processRuntimes = new Map<string, GovernedExecutionDeps>();
 let processInFlight = 0;
 
 /** Swap the dedicated-client factory so a unit test never opens a real pool. */
-export function setGovernedProcessClientFactoryForTests(
-  factory: (() => GovernedProcessClient) | null,
-): void {
+export function setGovernedProcessClientFactoryForTests(factory: (() => GovernedProcessClient) | null): void {
   processClientFactory = factory ?? buildDefaultGovernedProcessClient;
 }
 
@@ -421,7 +404,7 @@ function governedProcessRuntime(workspaceId: string, namespace: string): Governe
   let runtime = processRuntimes.get(key);
   if (!runtime) {
     const driver = new WorkItemAdmissionQueueDriver(
-      new PgWorkItemAdmissionQueueStore({ workspaceId, sql: processClient.sql }),
+      new PgAdmissionLedgerQueueStore({ workspaceId, sql: processClient.sql }),
       { namespace, leaseIdFactory: () => randomUUID() },
     );
     runtime = { driver, governor: new Governor(driver) };
@@ -473,21 +456,22 @@ export function admissionContextFromEnvironment(value: string | undefined): Admi
   try {
     const context = JSON.parse(value) as Partial<AdmissionContext>;
     if (
-      context.contractVersion !== 1
-      || typeof context.requestId !== 'string'
-      || !context.requestId
-      || typeof context.rootRequestId !== 'string'
-      || !context.rootRequestId
-      || typeof context.idempotencyKey !== 'string'
-      || !context.idempotencyKey
-      || typeof context.admissionClass !== 'string'
-      || typeof context.priority !== 'number'
-      || !context.demand
-      || typeof context.demand !== 'object'
-      || typeof context.depth !== 'number'
-      || typeof context.createdAtMs !== 'number'
-      || typeof context.decisionGeneration !== 'number'
-    ) return undefined;
+      context.contractVersion !== 1 ||
+      typeof context.requestId !== 'string' ||
+      !context.requestId ||
+      typeof context.rootRequestId !== 'string' ||
+      !context.rootRequestId ||
+      typeof context.idempotencyKey !== 'string' ||
+      !context.idempotencyKey ||
+      typeof context.admissionClass !== 'string' ||
+      typeof context.priority !== 'number' ||
+      !context.demand ||
+      typeof context.demand !== 'object' ||
+      typeof context.depth !== 'number' ||
+      typeof context.createdAtMs !== 'number' ||
+      typeof context.decisionGeneration !== 'number'
+    )
+      return undefined;
     return Object.freeze(context as AdmissionContext);
   } catch {
     return undefined;
