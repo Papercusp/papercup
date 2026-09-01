@@ -1656,3 +1656,220 @@ export async function settleRunPhase(input: {
     return rows[0] ? mapRun(rows[0]) : null;
   });
 }
+
+/* ── P-002: the watchdog's two reads and its one write ────────────────────────
+ *
+ * The decision logic lives in `bulk-run-watchdog.ts` (pure). These are the DB
+ * halves it injects. Both handle BOTH run kinds: an `inbox-resolve` run records
+ * outcomes in `attention_bulk_run_items`, a `plan-cleanup` run in
+ * `plan_cleanup_run_findings`, and the counter-drift case that motivated this
+ * item (`bulk-7d35ee41` — counters claiming 5 auto + 19 recommended against ZERO
+ * rows) is a cleanup run, so a read that covered only the items table would miss
+ * exactly the population it was written for.
+ */
+
+/** One run's facts for the watchdog, with counters DERIVED from its own rows. */
+export interface WatchdogRunRow {
+  runId: string;
+  runKind: BulkRunKind;
+  phase: BulkRunPhase;
+  heartbeatAt: string | null;
+  startedAt: string | null;
+  createdAt: string | null;
+  undecided: number;
+  stored: { autoResolved: number; recommended: number; skipped: number; failed: number };
+  derived: { autoResolved: number; recommended: number; skipped: number; failed: number };
+}
+
+/**
+ * Read the runs worth examining: everything still EXECUTING (any age — a run
+ * stuck in `running` is the whole point) plus anything touched recently, so a
+ * terminal run whose counters are wrong is still reachable for reconciliation
+ * without scanning the full history every tick.
+ */
+export async function readWatchdogRunRows(input?: {
+  workspaceId?: string;
+  /** How far back to look for non-executing runs. Default 7 days. */
+  lookbackMs?: number;
+  limit?: number;
+}): Promise<WatchdogRunRow[]> {
+  const { sql } = getOrgPg();
+  const ws = input?.workspaceId ?? activeWorkspaceId();
+  const lookbackSecs = Math.max(0, input?.lookbackMs ?? 7 * 24 * 60 * 60_000) / 1000;
+  const limit = Math.max(1, Math.min(500, input?.limit ?? 200));
+
+  const rows = await sql<
+    Array<{
+      run_id: string;
+      run_kind: BulkRunKind;
+      phase: BulkRunPhase;
+      heartbeat_at: Date | string | null;
+      started_at: Date | string | null;
+      created_at: Date | string | null;
+      auto_resolved: number;
+      recommended: number;
+      skipped: number;
+      failed: number;
+      d_undecided: number;
+      d_auto: number;
+      d_recommended: number;
+      d_skipped: number;
+      d_failed: number;
+    }>
+  >`
+    SELECT r.run_id, r.run_kind, r.phase, r.heartbeat_at, r.started_at, r.created_at,
+           r.auto_resolved, r.recommended, r.skipped, r.failed,
+           COALESCE(i.undecided, f.undecided, 0)::int      AS d_undecided,
+           COALESCE(i.auto_resolved, f.auto_resolved, 0)::int AS d_auto,
+           COALESCE(i.recommended, f.recommended, 0)::int  AS d_recommended,
+           COALESCE(i.skipped, f.skipped, 0)::int          AS d_skipped,
+           COALESCE(i.failed, f.failed, 0)::int            AS d_failed
+      FROM harness_shared.attention_bulk_runs r
+      -- The two legs mirror recomputeCounters / recomputeCleanupCounters EXACTLY.
+      -- They are the definition of the stored columns, so any divergence here
+      -- would report drift the reconcile then "fixes" back to the wrong value.
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) FILTER (WHERE outcome = 'pending')::int       AS undecided,
+               COUNT(*) FILTER (WHERE outcome = 'auto_resolved')::int AS auto_resolved,
+               COUNT(*) FILTER (WHERE outcome = 'recommended')::int   AS recommended,
+               COUNT(*) FILTER (WHERE outcome IN ('skipped', 'dismissed'))::int AS skipped,
+               COUNT(*) FILTER (WHERE outcome = 'failed')::int        AS failed
+          FROM harness_shared.attention_bulk_run_items
+         WHERE workspace_id = r.workspace_id AND run_id = r.run_id
+      ) i ON r.run_kind <> 'plan-cleanup'
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) FILTER (WHERE outcome = 'pending')::int AS undecided,
+               COUNT(*) FILTER (WHERE outcome IN ('auto_applied', 'accepted'))::int AS auto_resolved,
+               COUNT(*) FILTER (WHERE outcome = 'recommended')::int AS recommended,
+               COUNT(*) FILTER (WHERE outcome IN ('dismissed', 'skipped'))::int AS skipped,
+               COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed
+          FROM harness_shared.plan_cleanup_run_findings
+         WHERE workspace_id = r.workspace_id AND run_id = r.run_id
+      ) f ON r.run_kind = 'plan-cleanup'
+     WHERE r.workspace_id = ${ws}
+       AND (
+             r.phase IN ('pending', 'running')
+             OR r.updated_at > now() - make_interval(secs => ${lookbackSecs})
+           )
+     ORDER BY r.created_at DESC
+     LIMIT ${limit}
+  `;
+
+  return rows.map((r) => ({
+    runId: r.run_id,
+    runKind: r.run_kind,
+    phase: r.phase,
+    heartbeatAt: iso(r.heartbeat_at),
+    startedAt: iso(r.started_at),
+    createdAt: iso(r.created_at),
+    undecided: Number(r.d_undecided ?? 0),
+    stored: {
+      autoResolved: Number(r.auto_resolved ?? 0),
+      recommended: Number(r.recommended ?? 0),
+      skipped: Number(r.skipped ?? 0),
+      failed: Number(r.failed ?? 0),
+    },
+    derived: {
+      autoResolved: Number(r.d_auto ?? 0),
+      recommended: Number(r.d_recommended ?? 0),
+      skipped: Number(r.d_skipped ?? 0),
+      failed: Number(r.d_failed ?? 0),
+    },
+  }));
+}
+
+/** Recompute one run's stored counters from its own rows, whichever table holds them. */
+export async function reconcileRunCounters(
+  runId: string,
+  workspaceId?: string,
+): Promise<void> {
+  const { sql } = getOrgPg();
+  const ws = workspaceId ?? activeWorkspaceId();
+  const run = await getRun(runId, ws);
+  if (!run) return;
+  if (run.runKind === 'plan-cleanup') await recomputeCleanupCounters(sql, runId, ws);
+  else await recomputeCounters(sql, runId, ws);
+}
+
+/**
+ * Fail a STRANDED run and mark its never-decided items, so abandoned work stops
+ * being indistinguishable from work the resolver has not reached yet.
+ *
+ * Three properties worth stating, because each is a way this could go wrong:
+ *
+ * 1. THE STALENESS TEST IS IN THE WRITE, not in a preceding read — the same
+ *    discipline `restartRun` uses. A resolver that heartbeats between the
+ *    watchdog's decision and this UPDATE wins the race, the WHERE matches
+ *    nothing, and the strand cleanly does nothing (`marked: 0`). Checking first
+ *    and writing after would abandon a resolver that had just come back.
+ * 2. DECIDED OUTCOMES ARE NEVER TOUCHED. Only `outcome = 'pending'` rows move,
+ *    so everything the dead resolver actually achieved survives — and survives a
+ *    later `restartRun`, which does not write the items table at all.
+ * 3. FAILING IS RECOVERABLE. `restartRun` explicitly accepts `phase = 'failed'`,
+ *    so this hands the run to the owner (or to P-009's scheduler) in a state that
+ *    can resume, rather than deleting it or silently leaving it 'running' forever.
+ */
+export async function strandStaleRun(input: {
+  runId: string;
+  reason: string;
+  workspaceId?: string;
+  staleAfterMs?: number;
+}): Promise<{ marked: number; phase: BulkRunPhase | null }> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const staleSecs = Math.max(0, input.staleAfterMs ?? RUN_HEARTBEAT_STALE_MS) / 1000;
+
+  return await sql.begin(async (tx) => {
+    const claimed = await tx<Array<{ run_id: string; run_kind: BulkRunKind; phase: BulkRunPhase }>>`
+      UPDATE harness_shared.attention_bulk_runs
+         SET phase = 'failed',
+             error = ${input.reason},
+             finished_at = now(),
+             updated_at = now()
+       WHERE workspace_id = ${ws}
+         AND run_id = ${input.runId}
+         AND phase IN ('pending', 'running')
+         -- Same COALESCE as classifyRunLiveness and restartRun; these three must
+         -- stay in step or a run reads stale to one and live to another.
+         AND COALESCE(heartbeat_at, started_at, created_at)
+               < now() - make_interval(secs => ${staleSecs})
+      RETURNING run_id, run_kind, phase
+    `;
+    if (!claimed[0]) return { marked: 0, phase: null };
+
+    const marked =
+      claimed[0].run_kind === 'plan-cleanup'
+        ? await tx<Array<{ finding_id: string }>>`
+            UPDATE harness_shared.plan_cleanup_run_findings
+               SET outcome = 'failed',
+                   disposition = 'failed',
+                   recommendation_kind = COALESCE(recommendation_kind, 'retry_needed'),
+                   retry_condition = COALESCE(retry_condition, 'restart the run'),
+                   error = ${input.reason},
+                   decided_at = now(),
+                   updated_at = now()
+             WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND outcome = 'pending'
+            RETURNING finding_id
+          `
+        : await tx<Array<{ item_id: string }>>`
+            UPDATE harness_shared.attention_bulk_run_items
+               SET outcome = 'failed',
+                   disposition = 'failed',
+                   -- The honest next step for an abandoned item is a retry, and
+                   -- saying so here is what lets the owner's report distinguish
+                   -- "the resolver judged this unresolvable" from "nobody looked".
+                   recommendation_kind = COALESCE(recommendation_kind, 'retry_needed'),
+                   retry_condition = COALESCE(retry_condition, 'restart the run'),
+                   error = ${input.reason},
+                   decided_at = now(),
+                   updated_at = now()
+             WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND outcome = 'pending'
+            RETURNING item_id
+          `;
+
+    if (claimed[0].run_kind === 'plan-cleanup') await recomputeCleanupCounters(tx, input.runId, ws);
+    else await recomputeCounters(tx, input.runId, ws);
+
+    return { marked: marked.length, phase: 'failed' as const };
+  });
+}
