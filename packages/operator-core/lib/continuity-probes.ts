@@ -45,18 +45,48 @@ const schemaRevisionSchema = z
     'Exact projected-tool-registry revision for this target. Writer-only `live` is expanded to the current target revision before validation; persisted and replayed probes contain the concrete revision.',
   );
 
+/**
+ * EI-22052859235198905 / EI-22057107388066791 / EI-22057804176244287: three
+ * independent reporters guessed a wrong shape for `expect` (a bare string, a
+ * "documented-looking" object with the wrong field names, free-form evidence
+ * text) and got zod's generic structural message back — accurate but not
+ * actionable, unlike the semantic messages `superRefine` below already gives
+ * for a right-shaped-but-wrong-valued predicate. This is the SAME class of fix
+ * as `probeDiscriminatorMessage` above: name the exact shape + a worked
+ * example, and point the free-text/evidence case at the field that wants it.
+ */
+export function continuityPredicateShapeMessage(): string {
+  return (
+    'expect must be a predicate object shaped exactly ' +
+    '{ path: string, op: "exists"|"eq"|"ne"|"gt"|"gte"|"lt"|"lte", value?: string|number|boolean|null } — ' +
+    'not a bare string or a free-form evidence object. Example: { path: "$.state", op: "eq", value: "green" }. ' +
+    'Narrative evidence belongs in `verified`/`recheck` on the check row, not in `expect`.'
+  );
+}
+
 export const continuityPredicateSchema = z
-  .object({
-    path: z.string().min(1).max(240).describe('Dot/bracket path into the JSON result; use "$" for the root value.'),
-    op: z
-      .enum(['exists', 'eq', 'ne', 'gt', 'gte', 'lt', 'lte'])
-      .describe(
-        'Predicate operation. `exists` checks presence and MUST omit `value`; comparison operations require a scalar `value`.',
-      ),
-    value: scalarSchema
-      .optional()
-      .describe('Expected scalar for comparison operations; omit this field when `op` is `exists`.'),
-  })
+  .object(
+    {
+      path: z.string().min(1).max(240).describe('Dot/bracket path into the JSON result; use "$" for the root value.'),
+      op: z
+        .enum(['exists', 'eq', 'ne', 'gt', 'gte', 'lt', 'lte'])
+        .describe(
+          'Predicate operation. `exists` checks presence and MUST omit `value`; comparison operations require a scalar `value`.',
+        ),
+      value: scalarSchema
+        .optional()
+        .describe('Expected scalar for comparison operations; omit this field when `op` is `exists`.'),
+    },
+    {
+      // Only intercept issues this OBJECT itself raises (wrong overall type;
+      // extra/misnamed keys under `.strict()`) — a per-field issue (e.g. an
+      // invalid `op` enum value) keeps its own already-clear message.
+      error: (issue) =>
+        issue.code === 'invalid_type' || issue.code === 'unrecognized_keys'
+          ? continuityPredicateShapeMessage()
+          : undefined,
+    },
+  )
   .strict()
   .superRefine((predicate, ctx) => {
     const hasValue = Object.prototype.hasOwnProperty.call(predicate, 'value');

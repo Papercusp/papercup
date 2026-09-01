@@ -23,6 +23,7 @@ import {
   continuityProbeSchema,
   continuityProbeShapeSchema,
   continuityPredicateSchema,
+  continuityPredicateShapeMessage,
   decodeContinuityProbe,
   encodeContinuityProbe,
   runContinuityProbeBatch,
@@ -318,5 +319,47 @@ describe('probeDiscriminatorMessage — the refusal must name the REMEDY, not ju
     for (const probe of [{ expect: E }, { tool: 't', cell: 'c', schemaRevision: 'live', expect: E }]) {
       expect(messageFor(probe)).toMatch(/probe\.kind is a required discriminator/);
     }
+  });
+});
+
+describe('continuityPredicateShapeMessage — a wrong-shaped `expect` must name the exact contract (EI-22052859235198905 / EI-22057107388066791 / EI-22057804176244287)', () => {
+  // Three independent reporters guessed a wrong shape for `expect` (a bare
+  // string, a same-fields-different-names object, free-form evidence text)
+  // and got zod's generic structural error back. `superRefine` below already
+  // gives a clear message once the shape is RIGHT but the VALUE is wrong
+  // (e.g. `exists` with a `value`) — this covers the shape itself being wrong.
+  const messageFor = (expect: unknown) => {
+    const parsed = continuityPredicateSchema.safeParse(expect);
+    if (parsed.success) throw new Error('expected this shape to be rejected');
+    return parsed.error.issues[0]!.message;
+  };
+
+  it('a bare string is named as the wrong TYPE, not a generic parse failure', () => {
+    expect(messageFor('the state is green')).toBe(continuityPredicateShapeMessage());
+  });
+
+  it('a same-fields-different-names object is named, not silently coerced', () => {
+    expect(messageFor({ field: '$.state', expected: 'green' })).toBe(continuityPredicateShapeMessage());
+  });
+
+  it('a free-form evidence object (extra keys beyond path/op/value) is named', () => {
+    expect(messageFor({ path: '$.state', op: 'eq', value: 'green', evidence: 'observed via curl' })).toBe(
+      continuityPredicateShapeMessage(),
+    );
+  });
+
+  it('the message states the exact shape + a worked example, and redirects narrative evidence', () => {
+    const msg = continuityPredicateShapeMessage();
+    expect(msg).toContain('{ path: string, op:');
+    expect(msg).toContain('{ path: "$.state", op: "eq", value: "green" }');
+    expect(msg).toMatch(/`verified`\/`recheck`/);
+  });
+
+  it('a right-shaped predicate with a wrong VALUE still gets its own specific superRefine message, unaffected', () => {
+    expect(() => continuityPredicateSchema.parse({ path: '$.state', op: 'exists', value: 'green' })).toThrow(
+      /`exists` does not take a value/,
+    );
+    const msg = messageFor({ path: '$.state', op: 'exists', value: 'green' });
+    expect(msg).not.toBe(continuityPredicateShapeMessage());
   });
 });
