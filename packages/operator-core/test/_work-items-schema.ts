@@ -187,6 +187,12 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     -- (Observed: claim-respects-blocking.integration.test.ts went 4/17 red on this.)
     -- GENERATED ALWAYS — never write it directly; write payload.lane.
     lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED,
+    -- condition-singleton identity (migration 741 family): the stop-the-line floor
+    -- (P-013/D-012, work-items-admission.ts stopTheLineExclusionSql) reads
+    -- wi.condition_key on EVERY claim path — a fixture without this column fails the
+    -- claim/preview queries outright with 'column "condition_key" does not exist',
+    -- same class as the lane note above.
+    condition_key text,
     _search tsvector GENERATED ALWAYS AS (
       setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
       setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
