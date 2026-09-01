@@ -45,6 +45,7 @@ const {
   getRun,
   getRunItems,
   setRunPhase,
+  unsafeSetRunPhaseForFixtures,
   readWatchdogRunRows,
   reconcileRunCounters,
   strandStaleRun,
@@ -379,7 +380,7 @@ describe('bulk-run watchdog store (real PG)', () => {
   it('leaves an ALREADY-TERMINAL run alone even when it is ancient', async () => {
     const run = await createRun({ items: seed('t1'), harnessSlug: 'papercusp' });
     await setRunPhase({ runId: run.runId, phase: 'running' });
-    await setRunPhase({ runId: run.runId, phase: 'complete' });
+    await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase: 'complete' });
     await makeStale(run.runId);
 
     // The WHERE restricts to phase IN ('pending','running'), so a finished run
