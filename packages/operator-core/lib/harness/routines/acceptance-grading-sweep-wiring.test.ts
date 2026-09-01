@@ -139,6 +139,16 @@ describe('the sweep asks the gate for recruitment readiness, never shipment perm
   });
 });
 
+describe('system grader dispatch is attributable for lineage enforcement', () => {
+  it('supplies the canonical sweep principal in the candidate workspace', () => {
+    const src = read(ACTION_FILE);
+    expect(src).toContain("kind: 'system'");
+    expect(src).toContain('slug: ACCEPTANCE_GRADING_SWEEP_ACTOR');
+    expect(src).toContain('principal: {');
+    expect(src).toContain("acceptance grading candidate is missing workspace identity");
+  });
+});
+
 /**
  * Extract every module specifier the file actually IMPORTS — static `from '...'` and
  * dynamic `import('...')` alike.

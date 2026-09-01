@@ -176,12 +176,17 @@ registerSystemAction('acceptance-grading-sweep', async () => {
      */
     dispatchGrader: async (row) => {
       const workspaceId = (row as unknown as { workspaceId?: string }).workspaceId;
+      if (!workspaceId) return { ok: false, error: 'acceptance grading candidate is missing workspace identity' };
       const ctx = {
         workspaceId,
         harnessSlug: row.harnessSlug ?? undefined,
+        principal: {
+          kind: 'system',
+          slug: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+          workspaceId,
+        },
         ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
         ownerLabel: 'acceptance grading sweep',
-        source: 'omp-hook-session',
         userId: null,
       } as never;
       try {
