@@ -1060,7 +1060,11 @@ export default defineTool({
                       verdict: lifecycle.derived.verdict,
                       disposition: lifecycle.disposition,
                       contradiction: lifecycle.contradiction,
-                      text: lifecycle.derived.text,
+                      // WI-2140735: the STATUS-AWARE line, not `derived.text`
+                      // — over a shipped plan the graph-only sentence reads
+                      // "the validation path has not begun" because the
+                      // acceptance rubric retired on ship.
+                      text: lifecycle.text,
                       counts: lifecycle.derived.counts,
                       liveItems: lifecycle.derived.liveItems,
                       liveItemsTruncated: lifecycle.derived.liveItemsTruncated,
