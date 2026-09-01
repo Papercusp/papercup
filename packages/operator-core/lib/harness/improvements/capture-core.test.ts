@@ -2663,3 +2663,251 @@ describe('P-001 dedupCandidates payload stamp (silent-intake-central-resolution-
     expect(payload?.dedupCandidates).toBeUndefined();
   });
 });
+
+// ─── P-004 (silent-intake-central-resolution-2026-09-01): detector recurrence fold ───
+
+/** Stateful fixture shared by the two P-004 blocks: rows live in `store`, the
+ *  lifecycle writer actually flips state, and every seam records its calls so the
+ *  assertions exercise what the write DID, not what the return value claimed. */
+function recurrenceDeps(seed: EngineerIssue[] = []): CaptureDeps & {
+  created: CreateIssueInput[];
+  store: EngineerIssue[];
+  occurrences: RecordIssueOccurrenceInput[];
+  stateWrites: { id: string; state: string }[];
+} {
+  const created: CreateIssueInput[] = [];
+  const store: EngineerIssue[] = [...seed];
+  const occurrences: RecordIssueOccurrenceInput[] = [];
+  const stateWrites: { id: string; state: string }[] = [];
+  let nextId = 700;
+  return {
+    created,
+    store,
+    occurrences,
+    stateWrites,
+    recordIssueOccurrence: async (input) => {
+      occurrences.push(input);
+      return null;
+    },
+    searchIssues: async (query) => {
+      void query;
+      return store;
+    },
+    createIssue: async (input) => {
+      created.push(input);
+      const issue = existing({
+        id: `EI-${nextId++}`,
+        title: input.title,
+        kind: (input.kind as 'bug' | 'change') ?? 'bug',
+        payload: input.payload ?? null,
+      });
+      store.push(issue);
+      return issue;
+    },
+    findIssuesByWatchdogKeys: async (keys) =>
+      store.filter((i) => {
+        const k = (i.payload as Record<string, unknown> | null)?.watchdogKey;
+        return typeof k === 'string' && keys.includes(k);
+      }),
+    mergeIssuePayload: async (id, patch) => {
+      const i = store.find((x) => x.id === id);
+      if (!i) return null;
+      i.payload = { ...(i.payload as Record<string, unknown> | null), ...patch };
+      return i;
+    },
+    updateIssuePatch: async (id, patch) => {
+      const i = store.find((x) => x.id === id);
+      if (!i) return null;
+      if (patch.title !== undefined) i.title = patch.title;
+      if (patch.body !== undefined) i.body = patch.body;
+      return i;
+    },
+    setWorkItemStateWithAliasInfo: async (id, requestedState) => {
+      stateWrites.push({ id, state: requestedState });
+      const i = store.find((x) => x.id === id);
+      if (i) i.state = requestedState as EngineerIssue['state'];
+      return {
+        workItem: i ? { id, state: requestedState } : null,
+        requestedState,
+        appliedState: i ? requestedState : null,
+      };
+    },
+  };
+}
+
+describe('captureImprovement — exact-key recurrence REOPENS a watchdog-auto-resolved row (P-004)', () => {
+  const KEY = 'tool-failure:release:checkpoint-run:wait_for_eligibility';
+  const TITLE = 'release:checkpoint-run wait_for_eligibility unavailable';
+
+  /** The EI-22065259669472144 shape: resolved by the watchdog auto-close (which
+   *  stamps terminalOwner='watchdog-auto-close' via setIssueState), key intact. */
+  function autoResolvedRow(p: Partial<EngineerIssue> = {}): EngineerIssue {
+    return existing({
+      id: 'EI-800',
+      title: TITLE,
+      state: 'resolved',
+      terminalOwner: 'watchdog-auto-close',
+      updatedAt: '2026-08-30T12:00:00Z',
+      payload: { watchdogKey: KEY, repeatCount: 3 },
+      ...p,
+    });
+  }
+
+  it('recurrence with fresh evidence REOPENS the canonical row — no sibling minted (EI-22065259669472144)', async () => {
+    const d = recurrenceDeps([autoResolvedRow()]);
+    const res = await captureImprovement(
+      { title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY },
+      d,
+    );
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('coalesced');
+    expect(res.coalescedOnto?.reopened).toBe(true);
+    expect(res.coalescedOnto?.identity).toBe('condition-key');
+    expect(d.created).toHaveLength(0);
+    expect(d.stateWrites).toEqual([{ id: 'EI-800', state: 'open' }]);
+    expect(d.store[0].state).toBe('open');
+    expect((d.store[0].payload as Record<string, unknown>).repeatCount).toBe(4);
+    expect(d.occurrences).toHaveLength(1);
+    expect(d.occurrences[0].reportKind).toBe('coalesced');
+    expect(res.issue?.id).toBe('EI-800');
+  });
+
+  it('STALE evidence does not reopen — the resolved row stands and the filing mints with dedupVerdict stale-evidence', async () => {
+    const d = recurrenceDeps([autoResolvedRow()]);
+    const res = await captureImprovement(
+      {
+        title: TITLE,
+        kind: 'bug',
+        dedupScope: 'open',
+        // Pre-dates the row's resolution (updatedAt 2026-08-30): collector lookback junk.
+        evidenceAt: '2026-08-29T00:00:00Z',
+        watchdogKey: KEY,
+      },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(d.stateWrites).toHaveLength(0);
+    expect(d.store[0].state).toBe('resolved');
+    expect((d.created[0].payload as Record<string, unknown>).dedupVerdict).toBe('stale-evidence');
+  });
+
+  it('CONTROL: an agent-resolved row (terminalOwner ≠ watchdog-auto-close) is NOT reopened — regression re-file mints', async () => {
+    const d = recurrenceDeps([autoResolvedRow({ terminalOwner: 'su-a-real-agent' })]);
+    const res = await captureImprovement(
+      { title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(d.stateWrites).toHaveLength(0);
+    expect(d.store[0].state).toBe('resolved');
+  });
+
+  it('reopen writer failure falls through to the mint — the capture is never lost', async () => {
+    const d = recurrenceDeps([autoResolvedRow()]);
+    d.setWorkItemStateWithAliasInfo = async () => {
+      throw new Error('pg down');
+    };
+    const res = await captureImprovement(
+      { title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY },
+      d,
+    );
+    expect(res.ok).toBe(true);
+    expect(res.created).toBe(true);
+    expect(d.store[0].state).toBe('resolved');
+  });
+
+  it('an OPEN keyed row still wins over the resolved one — WI-39594 coalesce, no reopen call', async () => {
+    const open = existing({ id: 'EI-801', title: TITLE, state: 'open', payload: { watchdogKey: KEY } });
+    const d = recurrenceDeps([autoResolvedRow(), open]);
+    const res = await captureImprovement(
+      { title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY },
+      d,
+    );
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('coalesced');
+    expect(res.issue?.id).toBe('EI-801');
+    expect(res.coalescedOnto?.reopened).toBeUndefined();
+    expect(d.stateWrites).toHaveLength(0);
+  });
+});
+
+describe('captureImprovement — keyless SYSTEM-filer bug folds onto its open exact-titleKey twin (P-004 / EI-22068807981214694)', () => {
+  const CANARY_TITLE = 'coord probe-pair canary breached its cycle SLO';
+
+  it('a keyless system filing coalesces onto the open identical-title twin — ONE open row, occurrence appended', async () => {
+    const twin = existing({ id: 'EI-900', title: CANARY_TITLE, payload: { repeatCount: 9 } });
+    const d = recurrenceDeps([twin]);
+    const res = await captureImprovement(
+      {
+        title: CANARY_TITLE,
+        kind: 'bug',
+        dedupScope: 'open',
+        foundDuring: 'system:coord-probe-canary',
+        body: 'latest breach forensics',
+      },
+      d,
+    );
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('coalesced');
+    expect(res.coalescedOnto?.identity).toBe('title-key');
+    expect(res.issue?.id).toBe('EI-900');
+    expect(d.created).toHaveLength(0);
+    expect((d.store[0].payload as Record<string, unknown>).repeatCount).toBe(10);
+    expect(d.store[0].body).toBe('latest breach forensics');
+    expect(d.occurrences).toHaveLength(1);
+    expect(d.occurrences[0].reportKind).toBe('coalesced');
+  });
+
+  it('CONTROL: the same filing WITHOUT the system marker mints (silent accept + dedupVerdict) — the fold is system-filer-scoped', async () => {
+    const twin = existing({ id: 'EI-901', title: CANARY_TITLE });
+    const d = recurrenceDeps([twin]);
+    const res = await captureImprovement({ title: CANARY_TITLE, kind: 'bug' }, d);
+    expect(res.created).toBe(true);
+    expect((d.created[0].payload as Record<string, unknown>).dedupVerdict).toBe('likely-duplicate');
+  });
+
+  it('a DIFFERENT titleKey mints — the fold is exact normalized-title identity, not similarity', async () => {
+    const twin = existing({ id: 'EI-902', title: CANARY_TITLE });
+    const d = recurrenceDeps([twin]);
+    const res = await captureImprovement(
+      {
+        title: "coord probe-pair canary failed at 'sendMessage'",
+        kind: 'bug',
+        dedupScope: 'open',
+        foundDuring: 'system:coord-probe-canary',
+      },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
+
+  it('force:true skips the fold — the caller asserted distinctness', async () => {
+    const twin = existing({ id: 'EI-903', title: CANARY_TITLE });
+    const d = recurrenceDeps([twin]);
+    const res = await captureImprovement(
+      {
+        title: CANARY_TITLE,
+        kind: 'bug',
+        force: true,
+        foundDuring: 'system:coord-probe-canary',
+      },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
+
+  it('a RESOLVED twin does not absorb the filing — the fold is open-rows-only', async () => {
+    const twin = existing({ id: 'EI-904', title: CANARY_TITLE, state: 'resolved' });
+    const d = recurrenceDeps([twin]);
+    const res = await captureImprovement(
+      {
+        title: CANARY_TITLE,
+        kind: 'bug',
+        dedupScope: 'open',
+        foundDuring: 'system:coord-probe-canary',
+      },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
+});
