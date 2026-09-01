@@ -103,6 +103,17 @@ export default defineTool({
         }
       }
     }),
+  result: z
+    .object({
+      rel: z.string().optional(),
+      ok: z.boolean().optional(),
+      id: z.string().optional(),
+      activeBlockers: z.array(z.unknown()).optional(),
+      capabilityDispositions: z.unknown().optional(),
+      lifecycle: z.unknown().optional(),
+      error: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const items = args.items?.length
