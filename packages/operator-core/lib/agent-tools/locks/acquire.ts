@@ -217,11 +217,7 @@ export default defineTool({
       ]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return {
-        content: [
-          { type: 'text' as const, text: JSON.stringify({ ok: false, error: msg }) },
-        ],
-      };
+      return jsonResult({ ok: false, error: msg });
     }
 
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
@@ -255,11 +251,7 @@ export default defineTool({
         intent: args.intent,
       });
       if (denyReason) {
-        return {
-          content: [
-            { type: 'text' as const, text: JSON.stringify({ ok: false, reason: denyReason, busy: [] }) },
-          ],
-        };
+        return jsonResult({ ok: false, reason: denyReason, busy: [] });
       }
     }
 
@@ -446,14 +438,7 @@ export default defineTool({
         { paths },
       );
       if (!inserted.ok) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy, { ownerId }) }),
-            },
-          ],
-        };
+        return jsonResult({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy, { ownerId }) });
       }
       if ('self_granted' in inserted) {
         return ok(
@@ -485,26 +470,19 @@ export default defineTool({
       // NOTIFY fast path (best-effort; the sweep reconciler is load-bearing).
       await ensureGrantListener(coordinationDomain, identity.workspaceId ?? undefined);
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              queued_for_wake: true,
-              ...(pendingEdit ? { apply_on_grant: true } : {}),
-              ticket_id: inserted.ticket_id,
-              await_id: awaitRow.id,
-              queue_window_sec: WAKE_QUEUE_WINDOW_SEC,
-              wake_handle: handleNote,
-              busy: await enrichBusy(first.busy, { ownerId }),
-              advice: pendingEdit
-                ? `Queued WITH your edit attached (apply-on-grant). END YOUR TURN. On grant the server applies your edit to ${pendingEdit.file} iff old_string still matches exactly once, then drops a PASSIVE inbox note (category lock-edit-applied) — you are NOT woken and the lock is released for you. Only if the region changed under the holder are you woken (granted:true) to redo it. Retract with locks:cancel_wait + events:cancel.`
-                : 'Queued. END YOUR TURN — you will be re-invoked when the grant cascade reaches your ticket (the wake carries lock_id + TTL, already running: edit, then locks:release). If the window lapses without a grant you are woken with granted:false. Retract with locks:cancel_wait + events:cancel.',
-            }),
-          },
-        ],
-      };
+      return jsonResult({
+        ok: false,
+        queued_for_wake: true,
+        ...(pendingEdit ? { apply_on_grant: true } : {}),
+        ticket_id: inserted.ticket_id,
+        await_id: awaitRow.id,
+        queue_window_sec: WAKE_QUEUE_WINDOW_SEC,
+        wake_handle: handleNote,
+        busy: await enrichBusy(first.busy, { ownerId }),
+        advice: pendingEdit
+          ? `Queued WITH your edit attached (apply-on-grant). END YOUR TURN. On grant the server applies your edit to ${pendingEdit.file} iff old_string still matches exactly once, then drops a PASSIVE inbox note (category lock-edit-applied) — you are NOT woken and the lock is released for you. Only if the region changed under the holder are you woken (granted:true) to redo it. Retract with locks:cancel_wait + events:cancel.`
+          : 'Queued. END YOUR TURN — you will be re-invoked when the grant cascade reaches your ticket (the wake carries lock_id + TTL, already running: edit, then locks:release). If the window lapses without a grant you are woken with granted:false. Retract with locks:cancel_wait + events:cancel.',
+      });
     }
 
     if (maxWaitSec === 0) {
@@ -590,14 +568,7 @@ export default defineTool({
       }
 
       if (!inserted.ok) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy, { ownerId }) }),
-            },
-          ],
-        };
+        return jsonResult({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy, { ownerId }) });
       }
 
       // Self-grant — the path freed between our first busy-return and
@@ -845,42 +816,35 @@ export default defineTool({
         );
       }
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              busy: await enrichBusy(finalBusy.busy),
-              ticket_id: ticketId,
-              // EI-19921385348146413: name the real terminal cause instead of an
-              // undifferentiated busy/timeout snapshot. Absent ⇒ genuine wait.max_sec
-              // timeout (the loop condition ran out, not a status-driven break).
-              ...(terminalReason
+      return jsonResult({
+        ok: false,
+        busy: await enrichBusy(finalBusy.busy),
+        ticket_id: ticketId,
+        // EI-19921385348146413: name the real terminal cause instead of an
+        // undifferentiated busy/timeout snapshot. Absent ⇒ genuine wait.max_sec
+        // timeout (the loop condition ran out, not a status-driven break).
+        ...(terminalReason
+          ? {
+              reason: terminalReason,
+              ...(terminalReason === 'waiter_vanished'
                 ? {
-                    reason: terminalReason,
-                    ...(terminalReason === 'waiter_vanished'
-                      ? {
-                          reason_detail:
-                            'the waiter row disappeared mid-wait (janitor sweep, external DELETE, or workspace teardown) — nothing could ever have granted this ticket; retry acquire from scratch',
-                        }
-                      : {}),
-                  }
-                : { reason: 'timeout' }),
-              ...(waitClamped
-                ? {
-                    wait_clamped: {
-                      requested_sec: requestedWaitSec,
-                      capped_sec: MAX_WAIT_SEC,
-                      advice:
-                        `wait was capped at ${MAX_WAIT_SEC}s (the blocking ceiling — the call must return before the ~55s MCP client deadline). For a longer wait, retry with wake_on_grant:true and END YOUR TURN — you are re-invoked when the grant cascade reaches your ticket.`,
-                    },
+                    reason_detail:
+                      'the waiter row disappeared mid-wait (janitor sweep, external DELETE, or workspace teardown) — nothing could ever have granted this ticket; retry acquire from scratch',
                   }
                 : {}),
-            }),
-          },
-        ],
-      };
+            }
+          : { reason: 'timeout' }),
+        ...(waitClamped
+          ? {
+              wait_clamped: {
+                requested_sec: requestedWaitSec,
+                capped_sec: MAX_WAIT_SEC,
+                advice:
+                  `wait was capped at ${MAX_WAIT_SEC}s (the blocking ceiling — the call must return before the ~55s MCP client deadline). For a longer wait, retry with wake_on_grant:true and END YOUR TURN — you are re-invoked when the grant cascade reaches your ticket.`,
+              },
+            }
+          : {}),
+      });
     } finally {
       if (progressTimer) {
         progressTimer.stop();
@@ -892,6 +856,25 @@ export default defineTool({
     }
   },
 });
+
+/**
+ * EI-22077619752041149: this tool declares an object-rooted `result` schema,
+ * which tool-projection advertises to MCP clients as `outputSchema` — and the
+ * MCP spec then requires `structuredContent` on every non-error response.
+ * Strict clients (codex-rs) fail the whole envelope when it is missing, even
+ * though the acquire already executed server-side ("the mutation executes
+ * despite the invalid response envelope"). Every response path therefore
+ * returns the JSON text AND its structured twin through this one constructor;
+ * the dispatch layer passes a handler-set `structuredContent` through
+ * untouched (attachRequestedStructuredContent skips when it is already
+ * present, and reencodableJsonPayload declines to re-encode such a result).
+ */
+function jsonResult(payload: Record<string, unknown>) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    structuredContent: payload,
+  };
+}
 
 function ok(
   owner: string,
@@ -908,29 +891,22 @@ function ok(
   newlyHeld?: string[],
   pathWarning?: string,
 ) {
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: true,
-          lock_id: lockId,
-          // #5 — echo the server-resolved owner so the caller can
-          // verify which identity the lock was taken under.
-          owner,
-          owner_label: ownerLabel,
-          expires_ts: expires.toISOString(),
-          held,
-          ...(newlyHeld !== undefined ? { newly_held: newlyHeld } : {}),
-          ...(waitedSec !== undefined ? { waited_sec: waitedSec } : {}),
-          ...(shaToken
-            ? { sha_token: { required_sha: shaToken.requiredSha, unsynced_risk: shaToken.unsyncedRisk } }
-            : {}),
-          ...(pathWarning ? { path_warning: pathWarning } : {}),
-        }),
-      },
-    ],
-  };
+  return jsonResult({
+    ok: true,
+    lock_id: lockId,
+    // #5 — echo the server-resolved owner so the caller can
+    // verify which identity the lock was taken under.
+    owner,
+    owner_label: ownerLabel,
+    expires_ts: expires.toISOString(),
+    held,
+    ...(newlyHeld !== undefined ? { newly_held: newlyHeld } : {}),
+    ...(waitedSec !== undefined ? { waited_sec: waitedSec } : {}),
+    ...(shaToken
+      ? { sha_token: { required_sha: shaToken.requiredSha, unsynced_risk: shaToken.unsyncedRisk } }
+      : {}),
+    ...(pathWarning ? { path_warning: pathWarning } : {}),
+  });
 }
 
 /**
@@ -970,54 +946,38 @@ function missingRepoPathWarning(
 }
 
 function errorResult(error: string) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-  };
+  return jsonResult({ ok: false, error });
 }
 
 /** EI-9478: the advisory-lock wait timed out before the service could identify
  * a holder. Distinct `reason` plus an explicit unknown holder keeps readers
  * from rendering the timeout as either a foreign hold or proof of no hold. */
 function workspaceContended() {
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: false,
-          reason: 'workspace_contended',
-          transient: true,
-          holder: 'unknown',
-          busy: [],
-          advice:
-            'The lock service could not serialize this call in time (advisory-lock timeout). Holder identity is unknown; this does not prove the requested files are unheld. Do NOT queue wake_on_grant for this timeout because no waiter ticket was returned; retry the operation with backoff or inspect the lock-service state.',
-        }),
-      },
-    ],
-  };
+  return jsonResult({
+    ok: false,
+    reason: 'workspace_contended',
+    transient: true,
+    holder: 'unknown',
+    busy: [],
+    advice:
+      'The lock service could not serialize this call in time (advisory-lock timeout). Holder identity is unknown; this does not prove the requested files are unheld. Do NOT queue wake_on_grant for this timeout because no waiter ticket was returned; retry the operation with backoff or inspect the lock-service state.',
+  });
 }
 
 /** The final upsert result changed under us before a stable holder snapshot
  * could be observed. This is safe to retry, but is not safe to interpret as
  * a confirmed file holder (especially when `busy` is empty). */
 async function upsertRace(busyRows: AcquireBusy[]) {
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: false,
-          reason: 'upsert_race',
-          transient: true,
-          retryable: true,
-          holder: 'unknown',
-          busy: await enrichBusy(busyRows),
-          advice:
-            'The lock changed during the final acquire write and no stable holder snapshot was confirmed. Retry the acquire from scratch; do NOT queue wake_on_grant for this response.',
-        }),
-      },
-    ],
-  };
+  return jsonResult({
+    ok: false,
+    reason: 'upsert_race',
+    transient: true,
+    retryable: true,
+    holder: 'unknown',
+    busy: await enrichBusy(busyRows),
+    advice:
+      'The lock changed during the final acquire write and no stable holder snapshot was confirmed. Retry the acquire from scratch; do NOT queue wake_on_grant for this response.',
+  });
 }
 
 /** EI-19324204900062056: a blocking wait's DB connection dropped (pgbouncer
@@ -1029,45 +989,23 @@ async function upsertRace(busyRows: AcquireBusy[]) {
  * class). The ticket may still be granted server-side later; wake_on_grant
  * picks that up. */
 function waitConnectionUnstable(ticketId: string | null) {
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: false,
-          reason: 'wait_connection_unstable',
-          transient: true,
-          ticket_id: ticketId,
-          busy: [],
-          advice:
-            'The lock service could not confirm the final wait state (a transient DB connection blip outlived the blocking wait). No holder is confirmed to block you. Retry with wake_on_grant:true and END YOUR TURN instead of a long blocking wait.',
-        }),
-      },
-    ],
-  };
+  return jsonResult({
+    ok: false,
+    reason: 'wait_connection_unstable',
+    transient: true,
+    ticket_id: ticketId,
+    busy: [],
+    advice:
+      'The lock service could not confirm the final wait state (a transient DB connection blip outlived the blocking wait). No holder is confirmed to block you. Retry with wake_on_grant:true and END YOUR TURN instead of a long blocking wait.',
+  });
 }
 
 async function busy(busyRows: AcquireBusy[]) {
-  return {
-    content: [
-      { type: 'text' as const, text: JSON.stringify({ ok: false, busy: await enrichBusy(busyRows) }) },
-    ],
-  };
+  return jsonResult({ ok: false, busy: await enrichBusy(busyRows) });
 }
 
 async function tooManyWorkspaces(busyRows: AcquireBusy[]) {
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: false,
-          reason: 'too_many_active_workspaces',
-          busy: await enrichBusy(busyRows),
-        }),
-      },
-    ],
-  };
+  return jsonResult({ ok: false, reason: 'too_many_active_workspaces', busy: await enrichBusy(busyRows) });
 }
 
 /**
