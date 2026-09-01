@@ -209,6 +209,33 @@ export default defineTool({
       confirm: z.boolean().optional(),
     }),
   ]),
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      op: z.enum(['get', 'converge', 'retire']).optional(),
+      target: z.unknown().optional(),
+      repairQueue: z.unknown().nullable().optional(),
+      callerAuthorization: z.unknown().optional(),
+      verdict: z.string().optional(),
+      converged: z.boolean().optional(),
+      dryRun: z.boolean().optional(),
+      judgedSha: z.string().nullable().optional(),
+      stagingTip: z.string().nullable().optional(),
+      nextAction: z.unknown().nullable().optional(),
+      containment: z.unknown().nullable().optional(),
+      wouldMoveRepairHead: z.unknown().optional(),
+      movedRepairHead: z.unknown().optional(),
+      persisted: z.boolean().optional(),
+      auditRecorded: z.boolean().optional(),
+      note: z.string().optional(),
+      reason: z.string().optional(),
+      retired: z.boolean().optional(),
+      alreadyClear: z.boolean().optional(),
+      refused: z.boolean().optional(),
+      casMiss: z.boolean().optional(),
+      current: z.unknown().nullable().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const inspected = await inspectQueue();
     const callerAuthorization = assessFrozenRepairFixerAuthorization(inspected.queue, {
