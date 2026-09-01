@@ -1725,7 +1725,34 @@ export async function persistAdmissionPlan(
     input.nowMs,
   );
   for (const disposition of input.plan.dispositions) {
-    if (disposition.action === 'hold') continue;
+    if (disposition.action === 'hold') {
+      // A hold is still a re-review attempt for a fail-open row. Keep the row
+      // claimable/pending, but advance the durable retry watermark so an owner
+      // can distinguish "never revisited" from repeated ambiguous reviews.
+      await sql`
+        UPDATE harness_shared.work_items
+           SET payload = CASE WHEN admission = 'unreviewed' THEN
+             COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
+               'admissionReview',
+               COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
+                 'state', 'pending',
+                 'retryOwner', ${actor}::text,
+                 'retryAttempts', CASE
+                   WHEN (payload #>> '{admissionReview,retryAttempts}') ~ '^[0-9]+$'
+                     THEN ((payload #>> '{admissionReview,retryAttempts}')::int + 1)
+                   ELSE 1
+                 END,
+                 'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0))
+               )
+             )
+           ELSE payload END,
+               updated_ts = ${input.nowMs}
+         WHERE workspace_id = ${input.workspaceId}
+           AND harness_slug = ${input.harnessSlug}
+           AND feature_id = ${disposition.itemId}
+           AND admission = 'unreviewed'`;
+      continue;
+    }
     if (disposition.action === 'promote') {
       if (!promoteUnmerged) continue;
       await sql`
@@ -1737,6 +1764,11 @@ export async function persistAdmissionPlan(
                    COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
                      'state', CASE WHEN harness_shared.work_item_status_is_terminal(status) THEN 'terminal' ELSE 'reviewed' END,
                      'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                     'retryAttempts', CASE
+                       WHEN (payload #>> '{admissionReview,retryAttempts}') ~ '^[0-9]+$'
+                         THEN ((payload #>> '{admissionReview,retryAttempts}')::int + 1)
+                       ELSE 1
+                     END,
                      'reviewedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
                      'reviewedBy', ${actor}::text,
                      'terminalAt', CASE WHEN harness_shared.work_item_status_is_terminal(status) THEN to_jsonb(to_timestamp(${input.nowMs} / 1000.0)) ELSE NULL END,
@@ -1786,26 +1818,35 @@ export async function persistAdmissionPlan(
                admitted_at = COALESCE(admitted_at, now()),
                admitted_by = COALESCE(admitted_by, ${actor}),
                terminal_reason = ${terminalReason}, terminal_owner = ${actor}, closed_ts = ${input.nowMs},
-               payload = COALESCE(payload, '{}'::jsonb) ||
-                 jsonb_build_object(
-                   'admissionReview', CASE WHEN admission = 'unreviewed' THEN
-                     COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
-                       'state', 'terminal',
+               payload = CASE WHEN admission = 'unreviewed' THEN
+                 COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
+                   'admissionReview', COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
+                     'state', 'terminal',
                        'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                       'retryAttempts', CASE
+                         WHEN (payload #>> '{admissionReview,retryAttempts}') ~ '^[0-9]+$'
+                           THEN ((payload #>> '{admissionReview,retryAttempts}')::int + 1)
+                         ELSE 1
+                       END,
                        'reviewedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                       'reviewedBy', ${actor}::text,
-                       'terminalAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                       'terminalOutcome', 'duplicate-merge',
-                       'alert', jsonb_build_object('key', ${ADMISSION_REVIEW_ALERT_KEY}::text, 'state', 'cleared', 'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)), 'reason', 'review completed')
-                     )
-                   ELSE NULL END,
-                   'admissionMerge',
-                   jsonb_build_object(
+                     'reviewedBy', ${actor}::text,
+                     'terminalAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                     'terminalOutcome', 'duplicate-merge',
+                     'alert', jsonb_build_object('key', ${ADMISSION_REVIEW_ALERT_KEY}::text, 'state', 'cleared', 'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)), 'reason', 'review completed')
+                   ),
+                   'admissionMerge', jsonb_build_object(
                      'canonicalId', ${disposition.canonicalId}::text,
                      'runId', ${input.runId}::text,
                      'actor', ${actor}::text
                    )
-                 ),
+                 )
+               ELSE COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
+                 'admissionMerge', jsonb_build_object(
+                   'canonicalId', ${disposition.canonicalId}::text,
+                   'runId', ${input.runId}::text,
+                   'actor', ${actor}::text
+                 )
+               ) END,
                updated_ts = ${input.nowMs}
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
@@ -1816,25 +1857,33 @@ export async function persistAdmissionPlan(
         UPDATE harness_shared.work_items
            SET status = 'dropped', admission = 'admitted', admitted_at = now(), admitted_by = ${actor},
                terminal_reason = ${terminalReason}, terminal_owner = ${actor}, closed_ts = ${input.nowMs},
-               payload = COALESCE(payload, '{}'::jsonb) ||
-                 jsonb_build_object(
-                   'admissionReview', CASE WHEN admission = 'unreviewed' THEN
-                     COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
-                       'state', 'terminal',
+               payload = CASE WHEN admission = 'unreviewed' THEN
+                 COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
+                   'admissionReview', COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
+                     'state', 'terminal',
                        'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                       'retryAttempts', CASE
+                         WHEN (payload #>> '{admissionReview,retryAttempts}') ~ '^[0-9]+$'
+                           THEN ((payload #>> '{admissionReview,retryAttempts}')::int + 1)
+                         ELSE 1
+                       END,
                        'reviewedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                       'reviewedBy', ${actor}::text,
-                       'terminalAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                       'terminalOutcome', 'duplicate-merge',
-                       'alert', jsonb_build_object('key', ${ADMISSION_REVIEW_ALERT_KEY}::text, 'state', 'cleared', 'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)), 'reason', 'review completed')
-                     )
-                   ELSE NULL END,
-                   'admissionMerge',
-                   jsonb_build_object(
+                     'reviewedBy', ${actor}::text,
+                     'terminalAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                     'terminalOutcome', 'duplicate-merge',
+                     'alert', jsonb_build_object('key', ${ADMISSION_REVIEW_ALERT_KEY}::text, 'state', 'cleared', 'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)), 'reason', 'review completed')
+                   ),
+                   'admissionMerge', jsonb_build_object(
                      'canonicalId', ${disposition.canonicalId}::text,
                      'runId', ${input.runId}::text
                    )
-                 ),
+                 )
+               ELSE COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
+                 'admissionMerge', jsonb_build_object(
+                   'canonicalId', ${disposition.canonicalId}::text,
+                   'runId', ${input.runId}::text
+                 )
+               ) END,
                updated_ts = ${input.nowMs}
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
@@ -2113,7 +2162,7 @@ export async function runWorkItemAdmissionFailOpen(opts: {
                  'admissionReview', jsonb_build_object(
                    'state', 'pending',
                    'enteredAt', to_jsonb(to_timestamp(${startedAt} / 1000.0)),
-                   'reviewDueAt', to_jsonb(to_timestamp((${startedAt} + ${DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000}) / 1000.0)),
+                   'reviewDueAt', to_jsonb(to_timestamp(${startedAt + DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000} / 1000.0)),
                    'retryOwner', ${ADMISSION_REVIEW_RETRY_OWNER}::text,
                    'retryAttempts', 0,
                    'lastRetryAt', NULL,
