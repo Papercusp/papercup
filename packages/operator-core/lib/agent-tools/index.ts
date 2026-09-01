@@ -665,6 +665,7 @@ import './computer/record-trajectory';
 import './dev/restart';
 import './dev/service_health';
 import './supervision/annotate-pause';
+import './supervision/announce-quiesce';
 import './dev/rate_governor_status';
 import './dev/stall_waker_status';
 import './db/migrate';

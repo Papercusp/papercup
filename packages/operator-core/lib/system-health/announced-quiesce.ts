@@ -121,7 +121,16 @@ async function updateState(
 }
 
 async function readState(deps?: Pick<AnnouncedQuiesceStoreDeps, 'read'>): Promise<AnnouncedQuiesceState> {
-  if (deps) return deps.read();
+  if (deps) {
+    try {
+      return await deps.read();
+    } catch {
+      // Fail-CLOSED on read, same as the no-deps path below: this is a promise of
+      // `readActiveAnnouncedQuiesce` itself (see AnnouncedQuiesceEvidence's doc comment),
+      // not something every injected-deps caller must remember to re-wrap.
+      return {};
+    }
+  }
   if (process.env.VITEST) return hermeticFallback;
   try {
     return (await readOperatorState<AnnouncedQuiesceState>('operator_announced_quiesce_state')) ?? {};
