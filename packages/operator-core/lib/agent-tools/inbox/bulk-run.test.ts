@@ -70,6 +70,10 @@ type ExecuteInput = {
 };
 
 function body(result: unknown): ToolBody {
+  const data = (result as { data?: unknown } | null)?.data;
+  if (data != null && typeof data === 'object' && !Array.isArray(data)) {
+    return data as ToolBody;
+  }
   const text = (result as { content?: Array<{ text?: string }> })?.content?.[0]?.text;
   if (typeof text !== 'string') throw new Error(`not a tool response: ${JSON.stringify(result)}`);
   return JSON.parse(text) as ToolBody;
@@ -147,10 +151,9 @@ describe('inbox:bulk-run-report auto_resolved rail', () => {
 describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
   it('bypasses the UI list projection, which intentionally strips actions', async () => {
     const result = body(
-      await bulkRunManifest.handler(
-        { runId: run.runId, includeReported: false },
-        { workspaceId: run.workspaceId } as never,
-      ),
+      await bulkRunManifest.handler({ runId: run.runId, includeReported: false }, {
+        workspaceId: run.workspaceId,
+      } as never),
     );
 
     expect(h.callPlansRead).toHaveBeenCalledWith('attention', {}, { uiProjection: false });
@@ -186,10 +189,9 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
     });
 
     const result = body(
-      await bulkRunManifest.handler(
-        { runId: run.runId, includeReported: false },
-        { workspaceId: run.workspaceId } as never,
-      ),
+      await bulkRunManifest.handler({ runId: run.runId, includeReported: false }, {
+        workspaceId: run.workspaceId,
+      } as never),
     );
 
     expect(h.callPlansRead).toHaveBeenCalledTimes(1);
@@ -243,6 +245,277 @@ describe('inbox:bulk-run-report live-action snapshot reuse', () => {
         ]),
       }),
     );
+  });
+});
+
+describe('inbox:bulk-run-report standing-policy auto-accept', () => {
+  type ReportTestItem = {
+    runId: string;
+    itemId: string;
+    position: number;
+    kind: string;
+    title: string;
+    ref: Record<string, unknown>;
+    ownerAgentId: string;
+    outcome: string;
+  };
+
+  function reportItem(
+    overrides: Partial<{
+      itemId: string;
+      actionId: string;
+      rationale: string;
+      confidenceLevel: 'high' | 'medium' | 'low' | 'insufficient';
+      recommendationKind: 'owner_action' | 'cleanup_candidate' | 'retry_needed' | 'routed' | 'investigate';
+      recommendationLabel: string;
+      recommendationRationale: string;
+      evidenceBasis: string[];
+      responsibility: 'owner' | 'agent' | 'system' | 'engineering' | 'unknown';
+      retryCondition: string;
+    }> = {},
+  ) {
+    return {
+      itemId: item.itemId,
+      outcome: 'recommended' as const,
+      actionId: 'ack',
+      rationale: 'The live evidence supports this terminal action.',
+      confidenceLevel: 'high' as const,
+      ...overrides,
+    };
+  }
+
+  function arrangeSuccessfulAction(activeItem: ReportTestItem = item, actionId = 'ack') {
+    h.getRunItems.mockResolvedValue([activeItem]);
+    h.callPlansRead.mockResolvedValue({
+      groups: [
+        {
+          items: [
+            {
+              id: activeItem.itemId,
+              ref: activeItem.ref,
+              actions: [{ id: actionId, label: 'Resolve' }],
+            },
+          ],
+        },
+      ],
+    });
+    h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => ({
+      actionResult: await input.execute(),
+      item: {
+        ...activeItem,
+        outcome: 'auto_resolved',
+        actionId: input.actionId,
+        rationale: input.rationale,
+      },
+      run: { ...run, autoResolved: 1 },
+      refused: null,
+    }));
+  }
+
+  it('persists first, then auto-accepts an above-floor L1 recommendation through bulk-run-act', async () => {
+    arrangeSuccessfulAction();
+
+    const result = body(
+      await bulkRunReport.handler(
+        {
+          runId: run.runId,
+          items: [
+            reportItem({
+              recommendationKind: 'routed',
+              recommendationLabel: 'Acknowledge message',
+              recommendationRationale: 'The canonical recommendation rationale.',
+              evidenceBasis: ['The message is informational and offers Acknowledge.'],
+              responsibility: 'agent',
+              retryCondition: 'Retry if acknowledgement fails before dispatch.',
+            }),
+          ],
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(h.reportOutcomes.mock.invocationCallOrder[0]).toBeLessThan(
+      h.executeBulkRunAction.mock.invocationCallOrder[0]!,
+    );
+    expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
+    expect(h.executeBulkRunAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        confidenceLevel: 'high',
+        recommendationKind: 'routed',
+        recommendationLabel: 'Acknowledge message',
+        recommendationRationale: 'The canonical recommendation rationale.',
+        evidenceBasis: ['The message is informational and offers Acknowledge.'],
+        responsibility: 'agent',
+        retryCondition: 'Retry if acknowledgement fails before dispatch.',
+      }),
+    );
+    expect(result.autoAccept).toMatchObject({
+      reportedRecommendations: 1,
+      actionCandidates: 1,
+      terminalCandidates: 1,
+      attempted: 1,
+      resolved: 1,
+      leftForReview: 0,
+      unresolved: [],
+    });
+  });
+
+  it.each([
+    [{ level: 'L0', minConfidence: 'high' }, 'high', 'review-all'],
+    [{ level: 'L1', minConfidence: 'high' }, 'medium', 'confidence-below-floor'],
+  ] as const)(
+    'leaves a recommendation reviewable when policy %j refuses confidence %s',
+    async (policy, confidenceLevel, reason) => {
+      h.readStandingBulkAutomationPolicy.mockResolvedValue(policy);
+
+      const result = body(
+        await bulkRunReport.handler({ runId: run.runId, items: [reportItem({ confidenceLevel })] }, {
+          workspaceId: run.workspaceId,
+        } as never),
+      );
+
+      expect(h.reportOutcomes).toHaveBeenCalledTimes(1);
+      expect(h.executeBulkRunAction).not.toHaveBeenCalled();
+      expect(result.autoAccept).toMatchObject({
+        attempted: 1,
+        resolved: 0,
+        leftForReview: 1,
+        unresolved: [
+          expect.objectContaining({
+            itemId: item.itemId,
+            refused: 'automation_policy',
+            reason,
+          }),
+        ],
+      });
+      expect((result.autoAccept as { unresolved: Array<{ message: string }> }).unresolved[0]!.message).toContain(
+        'standing authority',
+      );
+    },
+  );
+
+  it('keeps never-auto recommendations reviewable even at L2 above the floor', async () => {
+    const protectedItem = { ...item, kind: 'smoke-fail', ref: { kind: 'smoke-fail' } };
+    h.getRunItems.mockResolvedValue([protectedItem]);
+    h.callPlansRead.mockResolvedValue({
+      groups: [
+        {
+          items: [{ id: protectedItem.itemId, ref: protectedItem.ref, actions: [{ id: 'resolve', label: 'Resolve' }] }],
+        },
+      ],
+    });
+    h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L2', minConfidence: 'low' });
+
+    const result = body(
+      await bulkRunReport.handler(
+        {
+          runId: run.runId,
+          items: [reportItem({ actionId: 'resolve', confidenceLevel: 'high' })],
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(h.executeBulkRunAction).not.toHaveBeenCalled();
+    expect(result.autoAccept).toMatchObject({
+      attempted: 1,
+      resolved: 0,
+      leftForReview: 1,
+      unresolved: [expect.objectContaining({ refused: 'automation_policy', reason: 'never-auto' })],
+    });
+  });
+
+  it('lets L2 auto-accept an above-floor owner-by-right recommendation', async () => {
+    const ownerItem = {
+      ...item,
+      kind: 'work-item-needs-human',
+      ref: { kind: 'work-item-needs-human', workItemId: 'WI-owner' },
+    };
+    h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L2', minConfidence: 'high' });
+    arrangeSuccessfulAction(ownerItem, 'resolve');
+
+    const result = body(
+      await bulkRunReport.handler(
+        {
+          runId: run.runId,
+          items: [reportItem({ actionId: 'resolve', confidenceLevel: 'high' })],
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
+    expect(result.autoAccept).toMatchObject({ attempted: 1, resolved: 1, leftForReview: 0 });
+  });
+
+  it('does not auto-attempt typed recommendations without a terminal action', async () => {
+    h.callPlansRead.mockResolvedValue({
+      groups: [
+        {
+          items: [
+            {
+              id: item.itemId,
+              ref: item.ref,
+              actions: [{ id: 'discuss', label: 'Discuss' }],
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = body(
+      await bulkRunReport.handler(
+        {
+          runId: run.runId,
+          items: [
+            reportItem({ actionId: 'discuss' }),
+            reportItem({
+              itemId: 'attention-2',
+              actionId: undefined,
+              recommendationKind: 'owner_action',
+              recommendationLabel: 'Owner decision',
+              recommendationRationale: 'This item has no terminal action.',
+              responsibility: 'owner',
+            }),
+          ],
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(h.executeBulkRunAction).not.toHaveBeenCalled();
+    expect(result.autoAccept).toMatchObject({
+      reportedRecommendations: 2,
+      actionCandidates: 1,
+      terminalCandidates: 0,
+      attempted: 0,
+      resolved: 0,
+      leftForReview: 2,
+    });
+  });
+
+  it('surfaces an auto-accept failure while preserving the persisted recommendation', async () => {
+    h.executeBulkRunAction.mockRejectedValue(new Error('store action failed'));
+
+    const result = body(
+      await bulkRunReport.handler({ runId: run.runId, items: [reportItem()] }, {
+        workspaceId: run.workspaceId,
+      } as never),
+    );
+
+    expect(h.reportOutcomes).toHaveBeenCalledTimes(1);
+    expect(result.autoAccept).toMatchObject({
+      attempted: 1,
+      resolved: 0,
+      leftForReview: 1,
+      unresolved: [
+        expect.objectContaining({
+          itemId: item.itemId,
+          error: 'terminal_action_failed',
+          message: 'store action failed',
+        }),
+      ],
+    });
   });
 });
 

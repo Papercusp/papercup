@@ -54,10 +54,7 @@ import {
   type BulkOutcomeReport,
 } from '../../attention/bulk-run-store';
 import { upsertTriage } from '../../attention/triage-store';
-import {
-  notifyBulkRunAndAttentionChanged,
-  notifyBulkRunChanged,
-} from '../../attention/bulk-run-sync';
+import { notifyBulkRunAndAttentionChanged, notifyBulkRunChanged } from '../../attention/bulk-run-sync';
 import {
   dispatchAttentionTerminalAction,
   type TerminalActionDependencies,
@@ -72,10 +69,7 @@ import {
   type BulkRecommendationKind,
   type BulkResponsibility,
 } from '../../attention/bulk-dispositions';
-import {
-  readStandingBulkAutomationPolicy,
-  standingAutomationEligibility,
-} from '../../attention/automation-policy';
+import { readStandingBulkAutomationPolicy, standingAutomationEligibility } from '../../attention/automation-policy';
 
 /**
  * WI-41021 — the resolver's own verbs have to honour the kill switch.
@@ -232,9 +226,9 @@ function innerFailure(name: string, result: unknown): Error | null {
     return new Error(`${name}: ${String(value.error ?? 'operation refused')}`);
   }
   const failed = Array.isArray(value.results)
-    ? value.results.find(
-        (entry) => entry && typeof entry === 'object' && (entry as { ok?: unknown }).ok === false,
-      ) as Record<string, unknown> | undefined
+    ? (value.results.find((entry) => entry && typeof entry === 'object' && (entry as { ok?: unknown }).ok === false) as
+        | Record<string, unknown>
+        | undefined)
     : undefined;
   return failed ? new Error(`${name}: ${String(failed.error ?? failed.detail ?? 'operation refused')}`) : null;
 }
@@ -246,10 +240,7 @@ async function callRequired(call: InnerCall, name: string, args: Record<string, 
 }
 
 /** Exported for the arg-shape contract test (WI-41370) — the inner-call names/keys here are wire contracts, not internals. */
-export function terminalDependencies(input: {
-  call: InnerCall;
-  workspaceId?: string;
-}): TerminalActionDependencies {
+export function terminalDependencies(input: { call: InnerCall; workspaceId?: string }): TerminalActionDependencies {
   const { call } = input;
   return {
     resolveEscalation: ({ msgId, choice }) => callRequired(call, 'coord:resolve', { msg_id: msgId, choice }),
@@ -349,17 +340,17 @@ async function resolveRunId(runId?: string): Promise<string | null> {
 export const bulkRunManifest = defineTool({
   name: 'inbox:bulk-run-manifest',
   description:
-    'Read the BULK RESOLVE run you were launched for: the run row (phase, counters, automation policy, and the owner\'s filter provenance) plus every item with its LIVE options and any persisted typed recommendation. Omit `runId` for the workspace\'s active run. Each item carries `actions:[{ id, label, terminal }]`; terminal:false only opens a sub-surface. You may only report an action id that appears in that list. If actions are empty, report a typed `retry_needed` recommendation with evidence and confidence rather than silently skipping.',
+    "Read the BULK RESOLVE run you were launched for: the run row (phase, counters, automation policy, and the owner's filter provenance) plus every item with its LIVE options and any persisted typed recommendation. Omit `runId` for the workspace's active run. Each item carries `actions:[{ id, label, terminal }]`; terminal:false only opens a sub-surface. You may only report an action id that appears in that list. If actions are empty, report a typed `retry_needed` recommendation with evidence and confidence rather than silently skipping.",
   guidance: {
     when: 'FIRST call when you are woken as a bulk-resolve resolver — it tells you what you are working on and what each item can actually do. Re-read it after a consult reply lands to pick up any item whose options changed.',
     notWhen:
-      'Acting on a single attention item outside a run (use the item\'s own verb: coord:resolve, plans:set-status, inbox:triage). Reading the human inbox generally → plans:attention.',
+      "Acting on a single attention item outside a run (use the item's own verb: coord:resolve, plans:set-status, inbox:triage). Reading the human inbox generally → plans:attention.",
   },
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    runId: z.string().min(1).optional().describe('the run to read; omit for the workspace\'s active run'),
+    runId: z.string().min(1).optional().describe("the run to read; omit for the workspace's active run"),
     includeReported: z
       .boolean()
       .optional()
@@ -387,19 +378,18 @@ export const bulkRunManifest = defineTool({
     const storedRun = await getRun(runId);
     if (!storedRun) {
       return {
-        content: [
-          { type: 'text' as const, text: JSON.stringify({ ok: false, error: 'run_not_found', runId }) },
-        ],
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'run_not_found', runId }) }],
       };
     }
     const executing = storedRun.phase === 'pending' || storedRun.phase === 'running';
-    const heartbeat = featureEnabled && executing
-      ? await recordRunHeartbeat({
-          runId,
-          resolverOwner: identity.ownerId,
-          workspaceId: storedRun.workspaceId,
-        }).catch(() => null)
-      : null;
+    const heartbeat =
+      featureEnabled && executing
+        ? await recordRunHeartbeat({
+            runId,
+            resolverOwner: identity.ownerId,
+            workspaceId: storedRun.workspaceId,
+          }).catch(() => null)
+        : null;
     const ownershipRevoked = featureEnabled && executing && heartbeat === null;
     const run = heartbeat ?? storedRun;
 
@@ -433,9 +423,7 @@ export const bulkRunManifest = defineTool({
             }
           : null,
         reported:
-          r.outcome === 'pending'
-            ? null
-            : { actionId: r.actionId, rationale: r.rationale, confidence: r.confidence },
+          r.outcome === 'pending' ? null : { actionId: r.actionId, rationale: r.rationale, confidence: r.confidence },
       });
     }
 
@@ -487,8 +475,7 @@ export const bulkRunAct = defineTool({
   description:
     'Take ONE terminal action for a BULK RESOLVE run. This is the only verb allowed to create an `auto_resolved` outcome: it locks the run row as a revocable authority token, re-validates that the item still offers the terminal action, dispatches through the exact same shared action map as the Inbox button, writes the REQUIRED attention-triage audit row, records the item outcome, and recomputes counters before releasing the lock. If the owner Stop won first, the action callback is never entered.',
   guidance: {
-    when:
-      'You have direct evidence for one item and will take a terminal action on the owner\'s behalf. Call once per action; use inbox:bulk-run-report only for recommended/skipped/failed records.',
+    when: "You have direct evidence for one item and will take a terminal action on the owner's behalf. Call once per action; use inbox:bulk-run-report only for recommended/skipped/failed records.",
     notWhen:
       'The option only navigates (discuss/answer/open/chat/view-log), the item no longer offers it, or you only want to recommend it for owner review.',
   },
@@ -542,9 +529,7 @@ export const bulkRunAct = defineTool({
     const run = await getRun(runId);
     if (!run) {
       return {
-        content: [
-          { type: 'text' as const, text: JSON.stringify({ ok: false, error: 'run_not_found', runId }) },
-        ],
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'run_not_found', runId }) }],
       };
     }
     const heartbeat = await recordRunHeartbeat({
@@ -585,9 +570,8 @@ export const bulkRunAct = defineTool({
     // so a stale/mismatched display kind can never widen the action's authority.
     const policy = await readStandingBulkAutomationPolicy(run.workspaceId);
     const confidenceLevel =
-      args.confidenceLevel ??
-      (args.confidence === 'high' ? 'high' : args.confidence === 'low' ? 'low' : null);
-    const actionKind = typeof row.ref.kind === 'string' ? row.ref.kind : row.kind ?? '';
+      args.confidenceLevel ?? (args.confidence === 'high' ? 'high' : args.confidence === 'low' ? 'low' : null);
+    const actionKind = typeof row.ref.kind === 'string' ? row.ref.kind : (row.kind ?? '');
     const eligibility = standingAutomationEligibility(policy, actionKind, confidenceLevel);
     if (!eligibility.allowed) {
       return {
@@ -612,9 +596,7 @@ export const bulkRunAct = defineTool({
     const rationale = clampText(args.rationale, LIMITS.ANNOTATION)?.trim() ?? '';
     if (!rationale) {
       return {
-        content: [
-          { type: 'text' as const, text: JSON.stringify({ ok: false, error: 'rationale_required' }) },
-        ],
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'rationale_required' }) }],
       };
     }
 
@@ -646,8 +628,7 @@ export const bulkRunAct = defineTool({
         confidenceLevel: args.confidenceLevel ?? null,
         recommendationKind: args.recommendationKind ?? null,
         recommendationLabel: clampText(args.recommendationLabel, LIMITS.ANNOTATION)?.trim() ?? null,
-        recommendationRationale:
-          clampText(args.recommendationRationale, LIMITS.ANNOTATION)?.trim() ?? null,
+        recommendationRationale: clampText(args.recommendationRationale, LIMITS.ANNOTATION)?.trim() ?? null,
         evidenceBasis: args.evidenceBasis ?? null,
         responsibility: args.responsibility ?? null,
         retryCondition: clampText(args.retryCondition, LIMITS.ANNOTATION)?.trim() ?? null,
@@ -765,12 +746,83 @@ export const bulkRunAct = defineTool({
   },
 });
 
+interface AutoAcceptAttempt {
+  itemId: string;
+  actionId: string;
+  ok: boolean;
+  outcome: string | null;
+  refused: string | null;
+  reason: string | null;
+  error: string | null;
+  message: string | null;
+  reconciliationRequired: boolean;
+}
+
+function toolJsonPayload(result: unknown): Record<string, unknown> {
+  const content = (result as { content?: unknown } | null)?.content;
+  if (!Array.isArray(content)) return {};
+  const block = content.find(
+    (entry) =>
+      entry != null &&
+      typeof entry === 'object' &&
+      (entry as { type?: unknown }).type === 'text' &&
+      typeof (entry as { text?: unknown }).text === 'string',
+  ) as { text: string } | undefined;
+  if (!block) return {};
+  try {
+    const parsed = JSON.parse(block.text) as unknown;
+    return parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function autoAcceptSummary(input: {
+  reportedRecommendations: number;
+  actionCandidates: number;
+  terminalCandidates: number;
+  attempts: AutoAcceptAttempt[];
+}) {
+  const resolved = input.attempts.filter((attempt) => attempt.ok && attempt.outcome === 'auto_resolved').length;
+  const unresolved = input.attempts
+    .filter((attempt) => !attempt.ok || attempt.outcome !== 'auto_resolved')
+    .map((attempt) => ({
+      itemId: attempt.itemId,
+      actionId: attempt.actionId,
+      ...(attempt.refused ? { refused: attempt.refused } : {}),
+      ...(attempt.reason ? { reason: attempt.reason } : {}),
+      ...(attempt.error ? { error: attempt.error } : {}),
+      ...(attempt.message ? { message: attempt.message } : {}),
+      ...(attempt.reconciliationRequired ? { reconciliationRequired: true } : {}),
+    }));
+  return {
+    reportedRecommendations: input.reportedRecommendations,
+    actionCandidates: input.actionCandidates,
+    terminalCandidates: input.terminalCandidates,
+    attempted: input.attempts.length,
+    resolved,
+    leftForReview: input.reportedRecommendations - resolved,
+    unresolved,
+  };
+}
+
 const OutcomeItem = z
   .object({
     itemId: z.string().min(1),
     outcome: z.enum(['recommended', 'skipped', 'failed']),
     disposition: z
-      .enum(['recommended', 'owner_action', 'cleanup_candidate', 'retry_needed', 'routed', 'investigate', 'failed', 'legacy_skipped'])
+      .enum([
+        'recommended',
+        'owner_action',
+        'cleanup_candidate',
+        'retry_needed',
+        'routed',
+        'investigate',
+        'failed',
+        'legacy_skipped',
+      ])
       .optional()
       .describe('typed owner-facing disposition; legacy_skipped is compatibility-only'),
     actionId: z
@@ -783,14 +835,23 @@ const OutcomeItem = z
       .describe('≤2 sentences of WHY — what the owner reads on a recommended item'),
     draftAnswer: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('a drafted free-text reply where the resolution path takes prose, so the owner edits rather than composes'),
+      .describe(
+        'a drafted free-text reply where the resolution path takes prose, so the owner edits rather than composes',
+      ),
     confidence: z
       .enum(['low', 'high'])
       .optional()
-      .describe("'high' = settled from direct evidence or the asker's own reply; 'low' = a consult deadline lapsed and you inferred it anyway"),
-    consulted: z.boolean().optional().describe('true when you sent the asking agent a directed consult about this item'),
+      .describe(
+        "'high' = settled from direct evidence or the asker's own reply; 'low' = a consult deadline lapsed and you inferred it anyway",
+      ),
+    consulted: z
+      .boolean()
+      .optional()
+      .describe('true when you sent the asking agent a directed consult about this item'),
     consultReply: softText(LIMITS.ANNOTATION).optional().describe("the asker's reply, verbatim, when one arrived"),
-    error: softText(LIMITS.ANNOTATION).optional().describe('why it was skipped, or how the dispatch failed — never leave this blank on skipped/failed'),
+    error: softText(LIMITS.ANNOTATION)
+      .optional()
+      .describe('why it was skipped, or how the dispatch failed — never leave this blank on skipped/failed'),
     recommendationKind: z.enum(BULK_RECOMMENDATION_KINDS).optional(),
     recommendationLabel: softText(LIMITS.ANNOTATION).optional(),
     recommendationRationale: softText(LIMITS.ANNOTATION).optional(),
@@ -810,19 +871,39 @@ const OutcomeItem = z
   .superRefine((d, ctx) => {
     if (!d.recommendationKind) return;
     if (!d.recommendationLabel?.trim()) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['recommendationLabel'], message: 'recommendationLabel is required with a typed recommendation' });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['recommendationLabel'],
+        message: 'recommendationLabel is required with a typed recommendation',
+      });
     }
     if (!d.recommendationRationale?.trim() && !d.rationale?.trim()) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['recommendationRationale'], message: 'recommendationRationale or rationale is required with a typed recommendation' });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['recommendationRationale'],
+        message: 'recommendationRationale or rationale is required with a typed recommendation',
+      });
     }
     if (!d.confidenceLevel && !d.confidence) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['confidenceLevel'], message: 'confidenceLevel is required with a typed recommendation' });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['confidenceLevel'],
+        message: 'confidenceLevel is required with a typed recommendation',
+      });
     }
     if (!d.responsibility) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['responsibility'], message: 'responsibility is required with a typed recommendation' });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['responsibility'],
+        message: 'responsibility is required with a typed recommendation',
+      });
     }
     if (d.disposition && d.disposition !== d.recommendationKind && d.disposition !== 'recommended') {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['disposition'], message: 'disposition must match recommendationKind' });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['disposition'],
+        message: 'disposition must match recommendationKind',
+      });
     }
   });
 
@@ -832,8 +913,7 @@ export const bulkRunReport = defineTool({
     'Report non-action outcomes for a BULK RESOLVE run. Every item must carry a typed disposition/recommendation: `recommended` may pre-select a real offered action, while `owner_action`, `cleanup_candidate`, `retry_needed`, `routed`, and `investigate` may omit actionId but require a label, rationale/evidence, responsibility, and confidence. `skipped` is legacy compatibility only and must include its reason. This verb cannot claim `auto_resolved`; terminal effects use inbox:bulk-run-act. Re-reporting overwrites the row and counters remain derived.',
   guidance: {
     when: 'After deciding each item in a bulk-resolve run. Batch several via `items:[…]` rather than one call per item.',
-    notWhen:
-      'Ending the run (inbox:bulk-run-settle). Triaging an attention item outside a run (inbox:triage).',
+    notWhen: 'Ending the run (inbox:bulk-run-settle). Triaging an attention item outside a run (inbox:triage).',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -844,7 +924,16 @@ export const bulkRunReport = defineTool({
       itemId: z.string().min(1).optional().describe('single-item shorthand'),
       outcome: z.enum(['recommended', 'skipped', 'failed']).optional(),
       disposition: z
-        .enum(['recommended', 'owner_action', 'cleanup_candidate', 'retry_needed', 'routed', 'investigate', 'failed', 'legacy_skipped'])
+        .enum([
+          'recommended',
+          'owner_action',
+          'cleanup_candidate',
+          'retry_needed',
+          'routed',
+          'investigate',
+          'failed',
+          'legacy_skipped',
+        ])
         .optional(),
       actionId: z.string().min(1).optional(),
       rationale: softText(LIMITS.ANNOTATION).optional(),
@@ -868,7 +957,11 @@ export const bulkRunReport = defineTool({
     .superRefine((a, ctx) => {
       if (a.items?.length || a.outcome !== 'recommended') return;
       if (!a.actionId && !a.recommendationKind) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['actionId'], message: 'actionId or recommendationKind is required for recommended outcomes' });
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['actionId'],
+          message: 'actionId or recommendationKind is required for recommended outcomes',
+        });
       }
     }),
   async handler(args, ctx) {
@@ -954,9 +1047,7 @@ export const bulkRunReport = defineTool({
     // Validate each proposed action id against what the item ACTUALLY offers,
     // before anything is written. One invocation gets one canonical snapshot;
     // a bad id still fails only its own item.
-    const liveActions = reports.some((report) => Boolean(report.actionId))
-      ? await liveActionsById()
-      : null;
+    const liveActions = reports.some((report) => Boolean(report.actionId)) ? await liveActionsById() : null;
     const accepted: BulkOutcomeReport[] = [];
     const env = await runBulk(
       reports,
@@ -987,8 +1078,7 @@ export const bulkRunReport = defineTool({
           disposition: r.disposition ?? null,
           recommendationKind: r.recommendationKind ?? null,
           recommendationLabel: clampText(r.recommendationLabel, LIMITS.ANNOTATION)?.trim() ?? null,
-          recommendationRationale:
-            clampText(r.recommendationRationale, LIMITS.ANNOTATION)?.trim() ?? null,
+          recommendationRationale: clampText(r.recommendationRationale, LIMITS.ANNOTATION)?.trim() ?? null,
           evidenceBasis: r.evidenceBasis ?? null,
           responsibility: r.responsibility ?? null,
           retryCondition: clampText(r.retryCondition, LIMITS.ANNOTATION)?.trim() ?? null,
@@ -999,6 +1089,12 @@ export const bulkRunReport = defineTool({
     );
 
     let unknown: string[] = [];
+    let autoAccept = autoAcceptSummary({
+      reportedRecommendations: 0,
+      actionCandidates: 0,
+      terminalCandidates: 0,
+      attempts: [],
+    });
     if (accepted.length > 0) {
       const res = await reportOutcomes({
         runId,
@@ -1038,9 +1134,78 @@ export const bulkRunReport = defineTool({
       } catch {
         /* the poll fallback still picks it up */
       }
+
+      // P-008: persist the resolver's recommendation FIRST, then let the
+      // existing action verb decide whether the live standing policy permits
+      // it. This ordering makes every refusal/failure reviewable and keeps the
+      // Stop lock, fresh action check, terminal dispatcher, audit transaction,
+      // and post-dispatch reconciliation rail single-sourced in bulkRunAct.
+      const unknownIds = new Set(unknown);
+      const recommendations = accepted.filter(
+        (report) => report.outcome === 'recommended' && !unknownIds.has(report.itemId),
+      );
+      const actionCandidates = recommendations.filter(
+        (report): report is BulkOutcomeReport & { actionId: string } =>
+          typeof report.actionId === 'string' && report.actionId.length > 0,
+      );
+      const terminalCandidates = actionCandidates.filter((report) =>
+        liveActions?.get(report.itemId)?.some((action) => action.id === report.actionId && action.terminal),
+      );
+      const attempts: AutoAcceptAttempt[] = [];
+      for (const report of terminalCandidates) {
+        const result = toolJsonPayload(
+          await bulkRunAct.handler(
+            {
+              runId,
+              itemId: report.itemId,
+              actionId: report.actionId,
+              rationale: report.rationale ?? report.recommendationRationale ?? '',
+              draftAnswer: report.draftAnswer ?? undefined,
+              confidence: report.confidence ?? undefined,
+              confidenceLevel: report.confidenceLevel ?? undefined,
+              recommendationKind: report.recommendationKind ?? undefined,
+              recommendationLabel: report.recommendationLabel ?? undefined,
+              recommendationRationale: report.recommendationRationale ?? report.rationale ?? undefined,
+              evidenceBasis: report.evidenceBasis ?? undefined,
+              responsibility: report.responsibility ?? undefined,
+              retryCondition: report.retryCondition ?? undefined,
+              consulted: report.consulted === true,
+              consultReply: report.consultReply ?? undefined,
+            },
+            ctx,
+          ),
+        );
+        const attempt: AutoAcceptAttempt = {
+          itemId: report.itemId,
+          actionId: report.actionId,
+          ok: result.ok === true,
+          outcome: typeof result.outcome === 'string' ? result.outcome : null,
+          refused: typeof result.refused === 'string' ? result.refused : null,
+          reason: typeof result.reason === 'string' ? result.reason : null,
+          error: typeof result.error === 'string' ? result.error : null,
+          message: typeof result.message === 'string' ? result.message : null,
+          reconciliationRequired: result.reconciliationRequired === true,
+        };
+        attempts.push(attempt);
+
+        // A revoked run/feature is a run-wide stop signal. A reconciliation
+        // incident means an external effect may have landed without its row;
+        // multiplying effects after either signal would make recovery harder.
+        if ((attempt.refused != null && attempt.refused !== 'automation_policy') || attempt.reconciliationRequired) {
+          break;
+        }
+      }
+      autoAccept = autoAcceptSummary({
+        reportedRecommendations: recommendations.length,
+        actionCandidates: actionCandidates.length,
+        terminalCandidates: terminalCandidates.length,
+        attempts,
+      });
     }
 
-    if (unknown.length === 0) return bulkContent(env);
+    if (unknown.length === 0) {
+      return bulkContent({ ...(env as unknown as Record<string, unknown>), autoAccept });
+    }
     // Unknown ids are surfaced BESIDE the bulk envelope rather than as failures:
     // each reported item that existed still landed, and the resolver needs to
     // know which ids it invented or carried over from a different run.
@@ -1051,6 +1216,7 @@ export const bulkRunReport = defineTool({
         itemIds: unknown,
         why: 'A run acts on exactly the items the owner was looking at; widening it silently would break that guarantee.',
       },
+      autoAccept,
     });
   },
 });
