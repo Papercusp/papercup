@@ -982,6 +982,82 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
+  describe("completion-boundary runtime guard — unbacked verifiedHow:'live-service' REJECTS the close (EI-20096763429995249)", () => {
+    it('rejects a unit-test-only close and never attempts the state write', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the service startup path',
+          testsRun: 'npm run test:file -- bundle-host.test.ts',
+          testResult: '18/18 tests passed',
+          verifiedHow: 'live-service',
+        },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/REJECTED/);
+      expect(r.error).toMatch(/live-service/);
+      expect(r.error).toMatch(/MainPID/);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r.completion).toMatchObject({ summary: 'fixed the service startup path' });
+    });
+
+    it('accepts a named service and falsifiable runtime observations split across evidence fields', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the service startup path',
+          verification: {
+            testsRun: 'dev:restart then systemctl --user show papercup-staging-api.service',
+            testResult:
+              'ActiveState=active; NRestarts=0; MainPID=4242; GET http://localhost:3170/api/health -> 200',
+            verifiedHow: 'live-service',
+          },
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+      expect(r.workItem.state).toBe('passed');
+    });
+
+    it('rejects runtime-looking observations that name no concrete service/unit/process', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'restarted it',
+          testsRun: 'dev:restart target staging',
+          testResult: 'ActiveState=active; MainPID=4242; HTTP 200',
+          verifiedHow: 'live-service',
+        },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/concrete service\/unit\/process/);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('does not fire on record-only evidence because no close is being attempted', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        completion: { summary: 'progress note', verifiedHow: 'live-service' },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+  });
+
   it('passes structured verification evidence to the terminal state writer', async () => {
     getWorkItem.mockResolvedValue(item);
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
@@ -3706,7 +3782,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(parsed.data?.completion?.status).toBe('done');
     });
 
-    it('documents the live-drove-ui artifact requirement in both published branches', () => {
+    it('documents the live evidence requirements in both published branches', () => {
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ properties?: Record<string, { description?: string }> }>;
         oneOf?: Array<{ properties?: Record<string, { description?: string }> }>;
@@ -3723,6 +3799,12 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         expect(description).toContain('testResult');
         expect(description).toContain('filesChanged');
         expect(description).toContain('tauri-agent-tools');
+        expect(description).toContain("verifiedHow:'live-service'");
+        expect(description).toContain('concrete service/unit/process');
+        expect(description).toContain('MainPID');
+        expect(description).toContain('NRestarts');
+        expect(description).toContain('ActiveState');
+        expect(description).toContain('HTTP status');
       }
     });
 
