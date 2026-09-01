@@ -25,6 +25,9 @@ vi.mock('../harness/workspace-for-harness', () => ({
 const notifyAttentionMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../attention-notify', () => ({
   notifyAttention: (...args: unknown[]) => notifyAttentionMock(...args),
+  // The P-003 rate-alarm block lazy-imports notifyAttentionOnce; a mock module
+  // omitting it makes that path throw-into-fail-soft under test, silently.
+  notifyAttentionOnce: (...args: unknown[]) => notifyAttentionMock(...args),
 }));
 const broadcastSevereEventMock = vi.fn().mockResolvedValue(true);
 const broadcastSevereEventResolvedMock = vi.fn().mockResolvedValue(true);
@@ -2974,5 +2977,124 @@ describe('checkGreenStall D-006 actuation (gate-verdict-liveness-and-repair-reli
     await checkGreenStall(sql, { ...home, readGateFireWall: wallClear, launchCheckpoint: launch });
     expect(launch).toHaveBeenCalledTimes(1);
     expect(episodeWrites()[0]?.verdictlessRefire).toMatchObject({ attempts: 1 });
+  });
+});
+
+describe('checkGreenStall P-003 verdict-rate alarm wiring (gate-verdict-liveness-and-repair-reliability-2026-08-31)', () => {
+  // Sweep-level wiring tests for the no-verdict RATE alarm block. The evaluation
+  // itself is pure and tested in gate-verdict-rate-alarm.test.ts; these four pin
+  // the WIRING contract: alarm ⇒ escalation + one-shot flag flip; recovery ⇒ flag
+  // reset; a green un-alarmed gate pays ZERO rate queries; a broken read is
+  // non-fatal to the sweep.
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    notifyAttentionMock.mockClear();
+    readRoutineEngineLivenessMock.mockResolvedValue({ stale: false });
+    resolveCheckpointRoutingMock.mockResolvedValue({ root: '/DEFAULT', extraEnv: {}, clearEnv: [] });
+    isCheckpointRunLockHeldCheapMock.mockReturnValue({ held: false, elapsedSec: null });
+    readCheckpointRunPhaseCheapMock.mockReturnValue(null);
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+    readRoutineEngineLivenessMock.mockReset();
+    resolveCheckpointRoutingMock.mockReset();
+    isCheckpointRunLockHeldCheapMock.mockReset();
+    readCheckpointRunPhaseCheapMock.mockReset();
+  });
+
+  /** A gate with a QUIET verdict clock (recent verdict, recent fire, fresh green
+   *  stamp) so the verdictless/stale limbs stay silent and only the rate block's
+   *  own inputs (consecutiveReds / verdictRateAlarmed / the pipeline_events
+   *  window) drive the outcome. */
+  function makeRateSql(
+    opts: {
+      consecutiveReds?: number;
+      verdictRateAlarmed?: boolean;
+      /** pipeline_events window aggregates, or 'reject' to make that read throw. */
+      window?: { fires: number; verdicts: number; last_verdict_ms: number | null } | 'reject';
+    } = {},
+  ) {
+    const now = Date.now();
+    const row = {
+      install_slug: 'papercusp',
+      workspace_id: 'papercusp-workspace',
+      last_fired_ms: now - 10 * 60_000,
+      last_verdict_ms: now - 10 * 60_000, // recent verdict ⇒ the verdictless limb stays quiet
+      gh: {
+        lastGreenAt: now - 60 * 60_000,
+        watchdogAlerted: false,
+        consecutiveReds: opts.consecutiveReds ?? 0,
+        verdictRateAlarmed: opts.verdictRateAlarmed ?? false,
+      },
+    };
+    const calls: string[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push(text);
+      void values;
+      if (text.includes('FROM harness_shared.routines') && text.includes('SELECT')) {
+        return Promise.resolve([row]);
+      }
+      // The rate-window read is the ONE pipeline_events query aliased `AS fires` —
+      // other limbs legitimately read pipeline_events too, and the cost-gate claim
+      // is about the RATE read specifically.
+      if (text.includes('harness_shared.pipeline_events') && text.includes('AS fires')) {
+        if (opts.window === 'reject') return Promise.reject(new Error('rate window read blew up'));
+        const w = opts.window ?? { fires: 0, verdicts: 0, last_verdict_ms: now - 5 * 60_000 };
+        return Promise.resolve([{ fires: w.fires, verdicts: w.verdicts, last_verdict_ms: w.last_verdict_ms }]);
+      }
+      return Promise.resolve(Object.assign([], { count: 1 }));
+    }) as unknown as import('postgres').Sql;
+    const flipWrites = () => calls.filter((t) => t.includes('"verdictRateAlarmed":true'));
+    const clearWrites = () => calls.filter((t) => t.includes('"verdictRateAlarmed":false'));
+    const rateReads = () => calls.filter((t) => t.includes('harness_shared.pipeline_events') && t.includes('AS fires'));
+    return { sql, calls, flipWrites, clearWrites, rateReads };
+  }
+
+  it('ALARM: red gate + starved verdict rate ⇒ one-shot flag flip + urgent escalation on the verdict-rate axis', async () => {
+    const { sql, flipWrites } = makeRateSql({
+      consecutiveReds: 3,
+      // 1 verdict / 10 fires: under the 0.5 threshold, above any min-fires floor.
+      window: { fires: 10, verdicts: 1, last_verdict_ms: Date.now() - 5 * 60_000 },
+    });
+    const out = await checkGreenStall(sql, {});
+    expect(flipWrites()).toHaveLength(1);
+    expect(out.alarmed).toContain('papercusp');
+    expect(notifyAttentionMock).toHaveBeenCalledTimes(1);
+    const page = notifyAttentionMock.mock.calls[0]?.[0] as {
+      importance?: string;
+      data?: { alarmAxis?: string; reason?: string };
+    };
+    expect(page.importance).toBe('urgent');
+    expect(page.data?.alarmAxis).toBe('verdict-rate');
+    expect(page.data?.reason).toBe('no-verdict-rate');
+  });
+
+  it('RECOVERY: alarmed flag + no-longer-alarming evaluation ⇒ flag reset so a future episode can page again', async () => {
+    // gateRed=false makes the evaluation decline immediately; verdictRateAlarmed=true
+    // still enters the block (recovery must be reachable from a green gate).
+    const { sql, clearWrites, flipWrites } = makeRateSql({ consecutiveReds: 0, verdictRateAlarmed: true });
+    const out = await checkGreenStall(sql, {});
+    expect(clearWrites()).toHaveLength(1);
+    expect(flipWrites()).toHaveLength(0);
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+    expect(out.recovered).toContain('papercusp');
+  });
+
+  it('COST GATE: a green, un-alarmed gate issues ZERO rate-window queries', async () => {
+    const { sql, rateReads } = makeRateSql({ consecutiveReds: 0, verdictRateAlarmed: false });
+    await checkGreenStall(sql, {});
+    expect(rateReads()).toHaveLength(0);
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+  });
+
+  it('FAIL-SOFT: a throwing rate read is non-fatal — the sweep completes, warns, and flips nothing', async () => {
+    const { sql, flipWrites, clearWrites } = makeRateSql({ consecutiveReds: 3, window: 'reject' });
+    await expect(checkGreenStall(sql, {})).resolves.toBeTruthy();
+    expect(flipWrites()).toHaveLength(0);
+    expect(clearWrites()).toHaveLength(0);
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+    expect(warnSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('P-003 verdict-rate alarm failed'))).toBe(true);
   });
 });
