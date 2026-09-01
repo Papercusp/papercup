@@ -95,7 +95,7 @@ export function buildUnattendedRunOwnerDigest(
     count === 0 ? 'It auto-applied nothing.' : `It auto-applied ${count} item${count === 1 ? '' : 's'}:`,
     ...preview,
     `Open the complete evidence trail: ${reportHref}`,
-    `Reversal window closes ${reversalWindowUntil}. Reply to this message before then with the item id(s) to reverse; the recorded action, ref, rationale, and evidence are the compensation authority.`,
+    `Reversal window closes ${reversalWindowUntil}. Open the report and choose Undo on any applied row before then (or reply here with the item id); the recorded action, ref, rationale, and evidence are the compensation authority.`,
   ].join('\n');
   return {
     runId: run.runId,

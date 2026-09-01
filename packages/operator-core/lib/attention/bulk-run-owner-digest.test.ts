@@ -52,7 +52,7 @@ describe('unattended bulk-run owner digest', () => {
     expect(digest.body).not.toContain('conversation:q-1');
     expect(digest.reportHref).toBe('/?opcbr=bulk-nightly-1&oprpt=opcbr');
     expect(Date.parse(digest.reversalWindowUntil) - Date.parse(FINISHED)).toBe(UNATTENDED_REVERSAL_WINDOW_MS);
-    expect(digest.body).toContain('Reply to this message before then');
+    expect(digest.body).toContain('choose Undo on any applied row before then');
   });
 
   it('delivers through durable human inbox + replay-safe attention and dedupes a retry', async () => {

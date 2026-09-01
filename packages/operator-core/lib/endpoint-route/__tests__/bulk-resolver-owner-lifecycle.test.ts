@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
   buildPlanCleanupSystemCall: vi.fn(),
   buildConsoleEnvelope: vi.fn(),
   spawnHeadless: vi.fn(),
+  revertAttentionBulkItemHandle: vi.fn(),
 }));
 
 vi.mock('../../require-flag', () => ({ gateApiRoute: vi.fn(async () => null) }));
@@ -54,6 +55,9 @@ vi.mock('../../attention/bulk-run-store', () => {
 vi.mock('../../attention/bulk-run-sync', () => ({
   notifyBulkRunChanged: (...args: unknown[]) => h.notifyBulkRunChanged(...args),
   notifyPlanCleanupRunChanged: (...args: unknown[]) => h.notifyPlanCleanupRunChanged(...args),
+}));
+vi.mock('../../attention/bulk-run-reversal', () => ({
+  revertAttentionBulkItemHandle: (...args: unknown[]) => h.revertAttentionBulkItemHandle(...args),
 }));
 vi.mock('../../plan-cleanup/run-store', () => ({
   markCleanupFindingAccepted: (...args: unknown[]) => h.markCleanupFindingAccepted(...args),
@@ -318,6 +322,26 @@ describe('Inbox bulk-resolver owner lifecycle', () => {
     });
     expect(h.setRunPhase).not.toHaveBeenCalled();
     expect(h.settleRunPhase).not.toHaveBeenCalled();
+  });
+
+  it('executes one item undo through the shared compensation handle', async () => {
+    h.revertAttentionBulkItemHandle.mockResolvedValueOnce({ reverted: true, note: 'restored source' });
+    const response = await handler(
+      post('/api/admin/attention-bulk-resolve', {
+        op: 'undo-item',
+        runId: 'run-1',
+        itemId: 'coord-message:m-1',
+      }),
+      ctx(),
+    );
+    expect(response.status).toBe(200);
+    expect(h.revertAttentionBulkItemHandle).toHaveBeenCalledWith({
+      kind: 'attention-bulk-item',
+      workspaceId: 'papercusp-workspace',
+      runId: 'run-1',
+      itemId: 'coord-message:m-1',
+    });
+    await expect(response.json()).resolves.toMatchObject({ reverted: true, note: 'restored source' });
   });
 });
 

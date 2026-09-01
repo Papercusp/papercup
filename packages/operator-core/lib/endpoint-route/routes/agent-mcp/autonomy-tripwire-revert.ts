@@ -52,7 +52,7 @@ export default defineTool({
 
     const { getOrgPg } = await import('@papercusp/db-org');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
-    const { getTripwire, markTripwireTripped } = await import('../../../autonomy/tripwire/store');
+    const { getTripwire, markTripwireTripped, markTripwireReverted } = await import('../../../autonomy/tripwire/store');
     const { getAutonomyCategoryPolicy, setAutonomyPolicy } = await import('../../../autonomy/policy-store');
     const { demoteGraduatedLevel } = await import('../../../autonomy/tripwire/core');
 
@@ -68,10 +68,7 @@ export default defineTool({
     }
     if (row.status !== 'armed') {
       // Already cleared / tripped / reverted — nothing to undo (idempotent-friendly).
-      return Response.json(
-        { ok: false, error: 'already_resolved', status: row.status, tripwireId },
-        { status: 409 },
-      );
+      return Response.json({ ok: false, error: 'already_resolved', status: row.status, tripwireId }, { status: 409 });
     }
 
     // Trip it (owner thumbs-down — the strongest counter-signal).
@@ -81,8 +78,7 @@ export default defineTool({
     const policy = await getAutonomyCategoryPolicy(sql, ws, row.category);
     const from = policy.graduatedLevel;
     const to = demoteGraduatedLevel(from);
-    const pinned =
-      policy.ownerOverride != null && (policy.ownerOverride as { pinned?: unknown }).pinned === true;
+    const pinned = policy.ownerOverride != null && (policy.ownerOverride as { pinned?: unknown }).pinned === true;
     let demoted = false;
     if (!policy.locked && !pinned && to !== from) {
       await setAutonomyPolicy(
@@ -92,6 +88,13 @@ export default defineTool({
         actor,
       );
       demoted = true;
+    }
+
+    const { executeRevertVia, makeRevertRegistry, defaultRevertHelpers } =
+      await import('../../../autonomy/tripwire/revert-executor');
+    const revertOutcome = await executeRevertVia(row, makeRevertRegistry(), defaultRevertHelpers());
+    if (revertOutcome.reverted) {
+      await markTripwireReverted(sql, ws, row.id, nowMs);
     }
 
     // The feed (decision.ledger), the policy table's graduated chip (autonomy.policy),
@@ -114,9 +117,8 @@ export default defineTool({
       tripped: true,
       demoted,
       demotion: demoted ? { from, to } : { skipped: policy.locked ? 'locked' : pinned ? 'pinned' : 'no-change' },
-      // The literal action auto-revert executor lands with queen execution (D-020);
-      // today the trip + demotion ARE the effect.
-      note: 'trip recorded + category demoted; literal action auto-revert executor lands with queen execution (D-020)',
+      reverted: revertOutcome.reverted,
+      note: revertOutcome.note,
     });
   },
 });

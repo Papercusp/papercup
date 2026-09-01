@@ -1,14 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import revertTool from './tripwire_revert';
-import {
-  getTripwire,
-  markTripwireTripped,
-  markTripwireReverted,
-} from '../../autonomy/tripwire/store';
+import { getTripwire, markTripwireTripped, markTripwireReverted } from '../../autonomy/tripwire/store';
 import { getAutonomyCategoryPolicy, setAutonomyPolicy } from '../../autonomy/policy-store';
 import { demoteGraduatedLevel } from '../../autonomy/tripwire/core';
 import { notifySyncInvalidate } from '../../sync-sse';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { executeRevertVia } from '../../autonomy/tripwire/revert-executor';
 
 // PG-free unit: the tripwire store + core have their own suites; this pins the
 // TOOL's owner-undo control flow — not_found / already_resolved guards, the
@@ -30,6 +27,11 @@ vi.mock('../../autonomy/policy-store', () => ({
 }));
 vi.mock('../../autonomy/tripwire/core', () => ({ demoteGraduatedLevel: vi.fn() }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
+vi.mock('../../autonomy/tripwire/revert-executor', () => ({
+  executeRevertVia: vi.fn(),
+  makeRevertRegistry: vi.fn(() => new Map()),
+  defaultRevertHelpers: vi.fn(() => ({})),
+}));
 
 const mockGet = vi.mocked(getTripwire);
 const mockTripped = vi.mocked(markTripwireTripped);
@@ -39,6 +41,7 @@ const mockSetPolicy = vi.mocked(setAutonomyPolicy);
 const mockDemote = vi.mocked(demoteGraduatedLevel);
 const mockInvalidate = vi.mocked(notifySyncInvalidate);
 const mockActiveWs = vi.mocked(activeWorkspaceId);
+const mockExecuteRevert = vi.mocked(executeRevertVia);
 
 function tripwire(p: Record<string, unknown> = {}) {
   return {
@@ -78,6 +81,7 @@ describe('autonomy:tripwire_revert tool', () => {
     mockTripped.mockResolvedValue(undefined as never);
     mockReverted.mockResolvedValue(undefined as never);
     mockInvalidate.mockResolvedValue(undefined as never);
+    mockExecuteRevert.mockResolvedValue({ reverted: true, note: 'restored source action' });
   });
 
   it('returns not_found (isError) when the tripwire does not exist — no side effects', async () => {
@@ -93,13 +97,27 @@ describe('autonomy:tripwire_revert tool', () => {
     mockGet.mockResolvedValue(tripwire({ status: 'reverted' }));
     const res = await callTool({ tripwireId: 'tw-1' });
     expect(res.isError).toBe(true);
-    expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: false, reason: 'already_resolved', status: 'reverted' });
+    expect(JSON.parse(res.content[0].text)).toMatchObject({
+      ok: false,
+      reason: 'already_resolved',
+      status: 'reverted',
+    });
     expect(mockTripped).not.toHaveBeenCalled();
   });
 
   it('trips owner-thumbs-down + demotes one step + fires sync-invalidate on the happy path', async () => {
-    const res = await callTool({ tripwireId: 'tw-1', reason: 'too aggressive' }, { principal: { workspaceId: 'ws-prin', slug: 'owner-sue' } });
-    expect(mockTripped).toHaveBeenCalledWith(expect.anything(), 'ws-prin', 'tw-1', 'owner-thumbs-down', expect.any(Number), 'owner-sue');
+    const res = await callTool(
+      { tripwireId: 'tw-1', reason: 'too aggressive' },
+      { principal: { workspaceId: 'ws-prin', slug: 'owner-sue' } },
+    );
+    expect(mockTripped).toHaveBeenCalledWith(
+      expect.anything(),
+      'ws-prin',
+      'tw-1',
+      'owner-thumbs-down',
+      expect.any(Number),
+      'owner-sue',
+    );
     expect(mockSetPolicy).toHaveBeenCalledWith(
       expect.anything(),
       'ws-prin',
@@ -110,9 +128,15 @@ describe('autonomy:tripwire_revert tool', () => {
     // actually refetches — an args-scoped invalidate never matches its query key.
     expect(mockInvalidate).toHaveBeenCalledWith('autonomy.policy');
     const body = JSON.parse(res.content[0].text);
-    expect(body).toMatchObject({ ok: true, tripped: true, demoted: true, demotion: { from: 'medium', to: 'low' }, reverted: false });
-    // executor not wired → no markReverted yet
-    expect(mockReverted).not.toHaveBeenCalled();
+    expect(body).toMatchObject({
+      ok: true,
+      tripped: true,
+      demoted: true,
+      demotion: { from: 'medium', to: 'low' },
+      reverted: true,
+      note: 'restored source action',
+    });
+    expect(mockReverted).toHaveBeenCalledWith(expect.anything(), 'ws-prin', 'tw-1', expect.any(Number));
   });
 
   it('skips the demotion (still trips) when the category is locked', async () => {

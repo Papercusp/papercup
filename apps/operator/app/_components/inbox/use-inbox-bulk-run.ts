@@ -128,6 +128,10 @@ export interface BulkRunItem {
   responsibility?: BulkResponsibility | null;
   confidenceLevel?: BulkConfidence | null;
   retryCondition?: string | null;
+  revertHandle?: Record<string, unknown> | null;
+  reversalWindowUntil?: string | null;
+  revertedAt?: string | null;
+  revertNote?: string | null;
 }
 
 export interface BulkRunState {
@@ -437,6 +441,7 @@ export function useBulkRunOps(): {
     note?: string | null,
   ) => Promise<BulkAcceptResult>;
   reconcileItem: (runId: string, itemId: string) => Promise<BulkAcceptResult>;
+  undoItem: (runId: string, itemId: string) => Promise<BulkAcceptResult>;
   acceptRecommendation: (
     runId: string,
     item: AttentionItem,
@@ -620,6 +625,21 @@ export function useBulkRunOps(): {
     [],
   );
 
+  const undoItem = useCallback(
+    async (runId: string, itemId: string): Promise<BulkAcceptResult> => {
+      try {
+        await postOp({ op: "undo-item", runId, itemId });
+        return { ok: true };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [],
+  );
+
   const acceptRecommendation = useCallback(
     async (runId: string, item: AttentionItem, rec: BulkRunItem) => {
       const actionId = rec.actionId;
@@ -686,6 +706,7 @@ export function useBulkRunOps(): {
     dismiss,
     dismissItem,
     reconcileItem,
+    undoItem,
     acceptRecommendation,
   };
 }
