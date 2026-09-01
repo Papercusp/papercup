@@ -158,6 +158,13 @@ export default defineTool({
   // act on. It now draws on a LADDER-SHARED budget (see get-shape.ts), so a
   // single-item read carries its body out of the slack the checkpoint case leaves
   // behind, while a 100-id bulk read still spends nothing on it.
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      results: z.array(z.unknown()).optional(),
+      counts: z.unknown().optional(),
+    })
+    .passthrough(),
   shape: {
     standard: (data) => shapeWorkItemsGet(data, 'standard'),
     trimmed: (data) => shapeWorkItemsGet(data, 'trimmed'),

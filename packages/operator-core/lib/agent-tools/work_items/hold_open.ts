@@ -107,6 +107,19 @@ export default defineTool({
       harness: z.string().max(80).optional().describe('harness the item lives under (else resolved from the item)'),
     })
     .refine((a) => a.clear === true || Boolean(a.reason), { message: 'pass { reason } to hold, or { clear:true } to lift' }),
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      id: z.string().optional(),
+      held: z.boolean().optional(),
+      heldBy: z.string().nullable().optional(),
+      reason: z.string().optional(),
+      note: z.string().optional(),
+      clearedFrom: z.unknown().optional(),
+      error: z.string().optional(),
+      convention: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const c = ctx as { harnessSlug?: string | null };

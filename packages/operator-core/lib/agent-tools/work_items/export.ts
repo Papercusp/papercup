@@ -138,6 +138,17 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   modality: ['text'],
   args: argsSchema,
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      toDir: z.string().optional(),
+      written: z.number().int().nonnegative().optional(),
+      missing: z.array(z.unknown()).optional(),
+      truncatedByLimit: z.boolean().optional(),
+      error: z.string().optional(),
+      message: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args) {
     if (!args.ids && !args.harness) {
       return {

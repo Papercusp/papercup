@@ -19,14 +19,18 @@ export function isSuAgent(x: unknown): x is SuAgent {
 }
 
 /** Effective/public launch context. The trimmed seed remains fully growable via
- * tools:find/tools:invoke; `full` exists only as a legacy decoder input. */
-export type SuContextSize = 'trimmed';
+ * tools:find/tools:invoke; `full` exists only as a legacy decoder input.
+ * `steward` (WI-2140338) is the explicit opt-in intermediate seed — core spine
+ * + steward verb families — for goal-holder/steward sessions; never a default,
+ * never auto-selected, and deliberately NOT a picker row (the picker vocabulary
+ * in agent-config-constants.ts stays trimmed-only on purpose). */
+export type SuContextSize = 'trimmed' | 'steward';
 export type LegacySuContextSize = 'full' | SuContextSize;
 
-export const SU_CONTEXT_SIZES: readonly SuContextSize[] = ['trimmed'];
+export const SU_CONTEXT_SIZES: readonly SuContextSize[] = ['trimmed', 'steward'];
 
 export function isSuContextSize(x: unknown): x is SuContextSize {
-  return x === 'trimmed';
+  return x === 'trimmed' || x === 'steward';
 }
 
 export { SU_CONTEXT_SIZE, LEGACY_SU_CONTEXT_SIZE, normalizeSuContextSize } from './su-context-size.mjs';

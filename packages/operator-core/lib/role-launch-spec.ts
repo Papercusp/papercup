@@ -50,6 +50,9 @@ import * as path from 'node:path';
 // su-context-size-variants: the always-loaded core spine the codex 'trimmed' variant
 // advertises via ?tools= (the only trim lever codex has — it has no native discovery).
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
+// WI-2140338: the live projected-tool registry — the steward seed derives its
+// exact names from it at spec-build time instead of hand-maintaining a list.
+import { listMcpProjections } from '@papercusp/agent-mcp';
 import { normalizeSuContextSize } from './su-context-size.mjs';
 
 /**
@@ -104,6 +107,60 @@ export const SU_EXTRA_MCP_TOOL_NAMES: readonly string[] = [
   'consult:decline',
   'consult:close',
 ];
+
+/**
+ * WI-2140338 [owner 2026-09-01]: the `steward` intermediate seed — verb FAMILIES
+ * a long-lived goal-holder/steward session predictably needs, expanded to exact
+ * tool names against the LIVE registry at spec-build time (derived-truth ladder
+ * rung 1: the registry owns the names; only this family judgment is curated).
+ * Measured friction basis: graded goal-mode windows show the holder burning
+ * turns on tools:find round-trips + colon-form discovery dead-ends for exactly
+ * these families. NOT 'full' — the whole-catalog launch was retired 2026-08-27
+ * (WI-4608 prompt-too-long deaths; codex code-mode IPC frame overflow, and the
+ * holder IS codex). ~10-40 verbs per family; the seed stays growable, so an
+ * omitted family costs a discovery round-trip, never reachability.
+ */
+export const STEWARD_MCP_TOOL_FAMILIES: readonly string[] = [
+  'goals', // own goal state, tripwires, kill criteria
+  'plans', // full plan lifecycle: audit, decisions, rubric ship gates
+  'pot', // pot linkage — a standing goal spans pots
+  'fleet', // fleet launch / leadership / assignments — the holder's fan-out duty
+  'coord', // full coordination beyond the CORE subset (escalate, handoff, wake…)
+  'work_items', // full ledger beyond the CORE subset (checkpoint, comment, release…)
+  'scheduler', // get_next — the pull loop
+  'events', // await / emit / catalog — gates and parks
+  'blender', // route-idea / grade-idea / ideation-feedback — steward grading rails
+  'scorecards', // card emits + freshness reads
+  'rubrics', // list / search / propose
+  'facts', // standing conclusions (assert / list / retract)
+  'state', // live cells (read / subscribe)
+  'loop', // arm / end / status / checkpoint — the holder's wake source
+  'mode', // auto/ideate/drain registration
+  'locks', // acquire / release / queue
+  'memory', // remember / search
+  'sessions', // self-recall across carry-respawns (search / read)
+  'improvements', // capture — the standing filing reflex
+  'watch', // create — the unified subscription primitive
+];
+
+/**
+ * Expand the steward families against the live projected-tool registry.
+ * `listings` is injectable for tests; production passes nothing and reads
+ * `listMcpProjections()` (populated by the operator's startup side-effect
+ * import of agent-tools/index.ts — the same registry the MCP handler serves).
+ * Union with CORE + SU_EXTRA, deduped, CORE-first so the spine's ordering
+ * (and any downstream prefix heuristics) are preserved.
+ */
+export function stewardSeedToolNames(listings?: readonly { name: string }[]): string[] {
+  const all = listings ?? listMcpProjections();
+  const familyNames = all
+    .map((t) => t.name)
+    .filter((n) => {
+      const i = n.indexOf(':');
+      return i > 0 && STEWARD_MCP_TOOL_FAMILIES.includes(n.slice(0, i));
+    });
+  return [...new Set([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES, ...familyNames])];
+}
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
@@ -257,9 +314,16 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
 
   // All roles use the growable trimmed seed. Historical callers may still pass
   // `full`; normalize it before signing the MCP URL so no role can eagerly load
-  // the catalog or hit a client transport ceiling.
+  // the catalog or hit a client transport ceiling. `steward` (WI-2140338) is an
+  // SU/goal-holder seed with no pipeline-role demand evidence — refuse it loudly
+  // here rather than silently downgrading a config that asked for it.
   const normalizedContextSize = normalizeSuContextSize(input.contextSize);
   if (!normalizedContextSize.ok) throw new Error(normalizedContextSize.error);
+  if (normalizedContextSize.contextSize !== 'trimmed') {
+    throw new Error(
+      `buildRoleLaunchSpec: context size '${normalizedContextSize.contextSize}' is not a pipeline-role mode (roles launch trimmed; 'steward' is an su/goal-holder seed)`,
+    );
+  }
   const contextSize = normalizedContextSize.contextSize;
 
   // Launch-mechanics identity (P-002): the per-session coord/lock owner +
@@ -508,8 +572,10 @@ export interface BuildSuLaunchSpecInput {
    *  tier; there is no longer a tier-derived trim and no frontier-gets-'full'
    *  branch (trimmed-only-agent-context-launch-2026-08-27 P-001/P-002). 'full' is
    *  accepted here ONLY as a deprecated alias for old CLI args and stored rows,
-   *  and `normalizeSuContextSize` maps it to 'trimmed' before launch. */
-  contextSize?: 'full' | 'trimmed' | null;
+   *  and `normalizeSuContextSize` maps it to 'trimmed' before launch. 'steward'
+   *  (WI-2140338) is the explicit opt-in intermediate seed: core spine + the
+   *  steward verb families, expanded against the live registry below. */
+  contextSize?: 'full' | 'trimmed' | 'steward' | null;
   /** The model spec the session launches with (e.g. `ollama/ornith-35b:IQ3_M` or
    *  `anthropic/claude-opus-4-8`). Drives the model-capability tier that gates the
    *  lite tooling tier — the `?tools=` catalog trim below and, downstream, the
@@ -788,7 +854,24 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   if (!normalizedContextSize.ok) throw new Error(normalizedContextSize.error);
   // P-010: su sessions ALWAYS get chat:ask_choice on top of the shared core
   // spine. The seed is growable and therefore preserves full reachability.
-  mcpUrl.searchParams.set('tools', [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
+  // WI-2140338: an explicit 'steward' opt-in widens the seed to the steward verb
+  // families, expanded against the live registry. An empty expansion (registry
+  // not populated) on an EXPLICIT steward request is a process-configuration
+  // error — refuse loudly rather than silently launching a trimmed session the
+  // caller believes is steward-seeded.
+  let seedToolNames: readonly string[];
+  if (normalizedContextSize.contextSize === 'steward') {
+    const steward = stewardSeedToolNames();
+    if (steward.length <= CORE_MCP_TOOL_NAMES.length + SU_EXTRA_MCP_TOOL_NAMES.length) {
+      throw new Error(
+        'buildSuLaunchSpec: contextSize=steward requested but the projected-tool registry expanded no steward-family names — the registry is not populated in this process',
+      );
+    }
+    seedToolNames = steward;
+  } else {
+    seedToolNames = [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES];
+  }
+  mcpUrl.searchParams.set('tools', seedToolNames.join(','));
   const mcpUrlStr = mcpUrl.toString();
   const mcpJsonContents = JSON.stringify(
     {

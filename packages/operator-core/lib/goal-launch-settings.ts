@@ -113,7 +113,11 @@ export const GOAL_HEADCOUNT_BOOT_GRACE_MS = 10 * 60_000;
  */
 export const LAUNCH_PROFILE_AGENTS = ['claude', 'codex', 'omp'] as const;
 export const LAUNCH_PROFILE_CARRY = ['warm', 'cold'] as const;
-export const LAUNCH_PROFILE_CONTEXT_SIZES = ['trimmed'] as const;
+// WI-2140338: 'steward' is the explicit opt-in intermediate tool seed (core
+// spine + steward verb families — see STEWARD_MCP_TOOL_FAMILIES in
+// role-launch-spec.ts) for goal-holder roles. 'trimmed' stays the default;
+// 'full' stays retired (WI-4608) and is deliberately NOT in this set.
+export const LAUNCH_PROFILE_CONTEXT_SIZES = ['trimmed', 'steward'] as const;
 
 /**
  * Headed vs headless, as the EDITOR's three states (P-001, D-002).
