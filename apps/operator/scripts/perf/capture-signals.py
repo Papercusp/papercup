@@ -478,7 +478,10 @@ def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
             # windows. `memory.events` is the kernel's own monotonic per-cgroup
             # record of exactly that: `high` counts MemoryHigh throttle/reclaim
             # events, `max` counts hard-ceiling hits. Being CUMULATIVE, it
-            # attributes an episode even when nobody sampled during it.
+            # preserves evidence that an episode happened even when nobody
+            # sampled during it; it does NOT prove that the same cgroup owns a
+            # later PSI window. Consumers must label these rows as historical
+            # context unless a contemporaneous event delta is also available.
             #
             # BOTH scopes are captured, and the difference is load-bearing:
             #   * `memory.events` is HIERARCHICAL (includes descendants). It is the
@@ -552,9 +555,10 @@ def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
     # `top` is ranked by SIZE, so truncating it at top_n can discard a
     # small-but-thrashing cgroup entirely — the stall signal would be dropped
     # before any responder ever read it. Rank the throttled cgroups separately
-    # so "who is stalling" survives the size cap independently of "who is
-    # biggest". These are two different questions; answering the second and
-    # labelling it the first is the defect this list exists to close.
+    # so "who has recorded reclaim events" survives the size cap independently
+    # of "who is biggest". These are two different questions. Because the event
+    # counters are monotonic lifetime totals, this list is a historical lead,
+    # not proof of who owns the current PSI window.
     def _events(row, key):
         return row.get(key) or 0
 

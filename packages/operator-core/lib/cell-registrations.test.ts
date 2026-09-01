@@ -508,6 +508,17 @@ describe('EI-20449419111876508: host.memoryPressure is a readable shared-writer 
     expect(assessment!.evidence).not.toContain(HOST_MEMORY_PRESSURE_CELL.headline);
     expect(assessment!.codes['stable-low-free'].meaning).toMatch(/free memory is below the declared capacity warning threshold/);
   });
+
+  it('does not present cumulative cgroup reclaim counters as current-window causation', () => {
+    const action = HOST_MEMORY_PRESSURE_CELL.assessment!.codes.critical.safeAction;
+    expect(action).toMatch(/cumulative historical leads/);
+    expect(action).toMatch(/current-window/);
+    expect(action).not.toMatch(/remove the attributed pressure source/);
+
+    const attribution = MEMORY_CGROUP_ATTRIBUTION_CELL.assessment!;
+    expect(attribution.codes.crit.meaning).toMatch(/historical owner context/);
+    expect(attribution.codes.crit.meaning).toMatch(/not current-window causal proof/);
+  });
 });
 
 describe('EI-21572281184148497: memory.cgroupAttribution is a readable shared-writer lens', () => {

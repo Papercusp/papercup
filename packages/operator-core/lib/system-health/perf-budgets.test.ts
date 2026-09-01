@@ -591,8 +591,11 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     });
     const reason = v.memoryPressure.reasons.join(' ');
     expect(reason).toContain('/tiny.scope');
+    expect(reason).toContain('historically reclaim-active cgroup');
+    expect(reason).toContain('current-window owner unconfirmed');
     expect(reason).toContain('147593 cumulative MemoryMax hit(s)');
     expect(reason).toContain('0.50% of largest captured cgroup');
+    expect(reason).not.toContain('reclaim-attributed cgroup');
   });
 
   it('does not alarm on a healthy memory PSI reading', () => {

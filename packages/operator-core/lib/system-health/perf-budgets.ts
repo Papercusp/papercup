@@ -199,8 +199,9 @@ export interface MemoryPressureCgroupAttribution {
     memoryShareOfLargestCapturedCgroup: number | null;
   }>;
   /**
-   * Cgroups that actually took reclaim events, ranked by events rather than size
-   * — the causal counterpart to size-ranked `top`.
+   * Cgroups that have recorded reclaim events, ranked by events rather than size.
+   * These are monotonic lifetime counters, so they are stronger historical owner
+   * context than size-ranked `top`, but they are NOT current-window causal proof.
    *
    * `null` means the capture predates the reclaim-event fields, which is NOT the
    * same as "nothing was throttled" and must never be rendered as an all-clear.
@@ -623,29 +624,33 @@ function formatCgroupOwner(row: MemoryPressureCgroupAttribution['top'][number]):
  *  number that INVITES attributing the stall to "low memory" (EI-21006730273601832:
  *  ~51 GiB MemAvailable was live at the very reading that paged full avg60=5.13). */
 function withCgroupAttribution(reason: string, attribution: MemoryPressureCgroupAttribution | null): string {
-  // PSI measures STALLS, so a cgroup that actually took reclaim events is causal
-  // evidence, while the largest cgroup is only circumstantial. Prefer the former
-  // and SAY WHICH ONE the reader is getting — labelling a size ranking
-  // "attributed" is what let 13 investigations mistake the biggest workload for
-  // the responsible one (EI-21025158485847408).
-  const stalling = attribution?.throttled?.find((row) => row.subtreeOnly === false) ?? null;
-  if (stalling) {
-    const gb = (stalling.memoryBytes / 1024 ** 3).toFixed(2);
+  // PSI measures stalls during the current avg60 window, while memory.events.local
+  // is a monotonic lifetime counter. A positive row proves that this cgroup owned
+  // SOME reclaim episode, but without a delta it cannot prove that it owns THIS
+  // PSI window. Prefer that historical owner lead over a size-only row, but label
+  // the temporal mismatch explicitly so responders do not terminate a quiet scope
+  // based on an old large counter (EI-22024545594707184).
+  const historicalOwner = attribution?.throttled?.find((row) => row.subtreeOnly === false) ?? null;
+  if (historicalOwner) {
+    const gb = (historicalOwner.memoryBytes / 1024 ** 3).toFixed(2);
     const parts = [
-      stalling.highEventsCumulative !== null && stalling.highEventsCumulative > 0
-        ? `${stalling.highEventsCumulative} cumulative MemoryHigh throttle(s)`
+      historicalOwner.highEventsCumulative !== null && historicalOwner.highEventsCumulative > 0
+        ? `${historicalOwner.highEventsCumulative} cumulative MemoryHigh throttle(s)`
         : null,
-      stalling.maxEventsCumulative !== null && stalling.maxEventsCumulative > 0
-        ? `${stalling.maxEventsCumulative} cumulative MemoryMax hit(s)`
+      historicalOwner.maxEventsCumulative !== null && historicalOwner.maxEventsCumulative > 0
+        ? `${historicalOwner.maxEventsCumulative} cumulative MemoryMax hit(s)`
         : null,
-      stalling.oomKillEventsCumulative !== null && stalling.oomKillEventsCumulative > 0
-        ? `${stalling.oomKillEventsCumulative} cumulative oom-kill(s)`
+      historicalOwner.oomKillEventsCumulative !== null && historicalOwner.oomKillEventsCumulative > 0
+        ? `${historicalOwner.oomKillEventsCumulative} cumulative oom-kill(s)`
         : null,
     ].filter(Boolean);
-    const share = stalling.memoryShareOfLargestCapturedCgroup === null
+    const share = historicalOwner.memoryShareOfLargestCapturedCgroup === null
       ? ''
-      : `, ${(stalling.memoryShareOfLargestCapturedCgroup * 100).toFixed(2)}% of largest captured cgroup`;
-    return `${reason}; reclaim-attributed cgroup: ${stalling.path} (${gb}GB${share}, ${parts.join(', ')})`;
+      : `, ${(historicalOwner.memoryShareOfLargestCapturedCgroup * 100).toFixed(2)}% of largest captured cgroup`;
+    return (
+      `${reason}; historically reclaim-active cgroup (cumulative counters; current-window owner unconfirmed): ` +
+      `${historicalOwner.path} (${gb}GB${share}, ${parts.join(', ')})`
+    );
   }
   // No cgroup owns an event, but an ancestor may still carry a subtree record of
   // one whose cgroup has since been removed. That is the ONLY surviving evidence
@@ -664,7 +669,7 @@ function withCgroupAttribution(reason: string, attribution: MemoryPressureCgroup
       ? ''
       : ` (${(exited.memoryShareOfLargestCapturedCgroup * 100).toFixed(2)}% of largest captured cgroup)`;
     return (
-      `${reason}; no live cgroup owns a reclaim event, but ${exited.path} retains ` +
+      `${reason}; no live cgroup owns a reclaim event; historical cgroup ${exited.path} retains ` +
       `${exited.subtreeMaxEventsCumulative} cumulative MemoryMax hit(s)${kills} from descendants that have since exited${share} — ` +
       `attribute there, not to the largest cgroup`
     );

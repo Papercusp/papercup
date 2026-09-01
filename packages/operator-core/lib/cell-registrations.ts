@@ -1141,7 +1141,7 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
       critical: {
         meaning: 'PSI reports tasks stalling on memory reclaim at the critical threshold.',
         safeAction:
-          'Stop adding load, and remove the attributed pressure source named in `memory.cgroupAttribution` rather than restarting blindly.',
+          'Stop adding load. Treat `memory.cgroupAttribution` reclaim counters as cumulative historical leads only; verify a current-window event or working-set delta before terminating a process, and do not restart blindly.',
       },
       warning: {
         meaning: 'PSI reports reclaim stalling at the warning threshold.',
@@ -1206,12 +1206,12 @@ export const MEMORY_CGROUP_ATTRIBUTION_CELL: CellSpec = {
     path: 'memory.pressure',
     codes: {
       crit: {
-        meaning: 'The same perf capture reports critical memory pressure; attribution rows provide bounded owner context for the stall.',
-        safeAction: 'Inspect the attribution rows before removing load, and do not treat the largest cgroup as confirmed cause without reclaim-event evidence.',
+        meaning: 'The same perf capture reports critical memory pressure; attribution rows provide bounded historical owner context, not current-window causal proof.',
+        safeAction: 'Inspect cumulative reclaim counters as leads, then verify a current-window event or working-set delta before removing a process; never treat the largest cgroup as confirmed cause.',
       },
       warn: {
-        meaning: 'The same perf capture reports sustained memory reclaim pressure; attribution rows provide bounded owner context.',
-        safeAction: 'Reduce or inspect load, then use the attribution rows to identify the likely producer.',
+        meaning: 'The same perf capture reports sustained memory reclaim pressure; attribution rows provide bounded historical owner context.',
+        safeAction: 'Reduce or inspect load, then verify a contemporaneous delta before identifying a producer from cumulative attribution rows.',
       },
       ok: {
         meaning: 'The same perf capture reports no PSI memory-pressure threshold crossing.',
