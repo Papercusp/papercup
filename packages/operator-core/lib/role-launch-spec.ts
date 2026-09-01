@@ -229,8 +229,12 @@ export interface BuildRoleLaunchSpecInput {
    * Omitted → 'trimmed'. Do NOT reintroduce a role-based auto-select or offer
    * 'full' in new UI/API schemas; accept the legacy spelling only at durable and
    * CLI boundaries. Canonical policy + normalizer: `su-context-size.mjs`.
+   *
+   * 'steward' (WI-2140338) is accepted at this TYPE boundary (HTTP callers pass
+   * loose strings) but REFUSED at runtime for pipeline roles — it is an
+   * su/goal-holder seed with no pipeline-role demand evidence.
    */
-  contextSize?: 'full' | 'trimmed' | null;
+  contextSize?: 'full' | 'trimmed' | 'steward' | null;
 }
 
 export interface RoleLaunchSpec {
@@ -574,7 +578,7 @@ export interface BuildSuLaunchSpecInput {
    *  accepted here ONLY as a deprecated alias for old CLI args and stored rows,
    *  and `normalizeSuContextSize` maps it to 'trimmed' before launch. 'steward'
    *  (WI-2140338) is the explicit opt-in intermediate seed: core spine + the
-   *  steward verb families, expanded against the live registry below. */
+   *  steward verb families, expanded against the live registry above. */
   contextSize?: 'full' | 'trimmed' | 'steward' | null;
   /** The model spec the session launches with (e.g. `ollama/ornith-35b:IQ3_M` or
    *  `anthropic/claude-opus-4-8`). Drives the model-capability tier that gates the

@@ -268,6 +268,9 @@ describe('goalLaunchSettingsSchema', () => {
     expect(launchProfileSchema.safeParse({ carry: 'warm' }).success).toBe(true);
     expect(launchProfileSchema.safeParse({ carry: 'hot' }).success).toBe(false);
     expect(launchProfileSchema.safeParse({ contextSize: 'trimmed' }).success).toBe(true);
+    // WI-2140338: steward is the explicit opt-in intermediate seed a goal
+    // profile may pin; 'full' stays retired (WI-4608).
+    expect(launchProfileSchema.safeParse({ contextSize: 'steward' }).success).toBe(true);
     expect(launchProfileSchema.safeParse({ contextSize: 'full' }).success).toBe(false);
     expect(launchProfileSchema.safeParse({ contextSize: 'medium' }).success).toBe(false);
   });

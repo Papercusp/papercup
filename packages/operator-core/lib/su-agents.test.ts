@@ -17,11 +17,12 @@ describe('su-agents', () => {
 // su-context-size-variants (WI-1282): the initial-context SIZE a launched SU
 // session boots with, orthogonal to the agent.
 describe('su-context-size guards', () => {
-  it('advertises only the growable trimmed context size', () => {
-    expect(SU_CONTEXT_SIZES).toEqual(['trimmed']);
+  it('advertises the growable trimmed seed + the explicit steward opt-in (WI-2140338), never full', () => {
+    expect(SU_CONTEXT_SIZES).toEqual(['trimmed', 'steward']);
+    expect(SU_CONTEXT_SIZES).not.toContain('full');
   });
 
-  it('isSuContextSize accepts only the public trimmed size', () => {
+  it('isSuContextSize accepts only the public sizes', () => {
     for (const s of SU_CONTEXT_SIZES) expect(isSuContextSize(s)).toBe(true);
     expect(isSuContextSize('full')).toBe(false);
   });

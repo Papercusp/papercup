@@ -82,7 +82,8 @@ const launchSu = defineTool({
       // agent-config helper rather than reimplementing suffix rules here or in
       // the PUI client.
       effort?: string | null;
-      // su-context-size-variants: 'full' | 'trimmed' — initial-context size.
+      // su-context-size-variants: 'trimmed' | 'steward' (legacy 'full' →
+      // 'trimmed') — initial tool-seed size (WI-2140338).
       context_size?: string | null;
       // WI-2140338 [owner 2026-09-01]: session compaction ceiling in TOKENS,
       // emitted as `--compaction-limit` (the MemberSpec seam). Null/omitted =

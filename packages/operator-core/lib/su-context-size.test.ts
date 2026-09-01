@@ -90,19 +90,39 @@ describe('normalizeSuContextSize — the legacy-alias chokepoint', () => {
   it('cannot return an effective full for ANY input — the invariant, not one case', () => {
     const inputs: unknown[] = [
       undefined, null, '', '   ', 'trimmed', 'full', ' full ', 'FULL', 'enormous',
+      'steward', ' steward ', 'STEWARD', 'Steward',
       0, 1, true, false, {}, [], ['full'], { contextSize: 'full' }, () => 'full', Symbol,
       Number.NaN, Infinity, '__proto__', 'null', 'undefined',
     ];
     for (const input of inputs) {
       const r = normalizeSuContextSize(input);
       if (r.ok) {
-        // The single assertion this whole file exists to make.
-        expect(r.contextSize, `input ${String(input)} resolved to an effective mode`).toBe('trimmed');
+        // The single assertion this whole file exists to make: no input ever
+        // resolves to the retired whole-catalog mode.
+        expect(['trimmed', 'steward'], `input ${String(input)} resolved to an effective mode`).toContain(r.contextSize);
       } else {
         // A rejection is equally acceptable — what must never happen is ok:true with 'full'.
         expect(r.received, String(input)).toBeTypeOf('string');
       }
     }
+  });
+
+  it('accepts steward ONLY as the exact explicit spelling (WI-2140338)', () => {
+    const r = normalizeSuContextSize('steward');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.contextSize).toBe('steward');
+    expect(r.explicit).toBe(true); // never a default — the opt-in contract
+    expect(r.normalizedLegacyFull).toBe(false);
+    // Whitespace-trimmed like every other spelling; case near-misses refuse.
+    expect(normalizeSuContextSize('  steward  ')).toMatchObject({ ok: true, contextSize: 'steward' });
+    for (const nearMiss of ['STEWARD', 'Steward', 'stewart', 'steward ']) {
+      const n = normalizeSuContextSize(nearMiss);
+      if (nearMiss.trim() === 'steward') continue;
+      expect(n.ok, nearMiss).toBe(false);
+    }
+    // The default is unchanged: nothing requested still resolves trimmed.
+    expect(normalizeSuContextSize(undefined)).toMatchObject({ ok: true, contextSize: 'trimmed', explicit: false });
   });
 
   it('only claims normalizedLegacyFull when the caller actually said full', () => {
