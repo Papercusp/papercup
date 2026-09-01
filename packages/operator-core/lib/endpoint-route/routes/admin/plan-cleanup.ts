@@ -42,7 +42,10 @@ import {
   resolverSpawnOutcome,
 } from './attention-bulk-resolve';
 import type { EffectiveBulkResolverLaunch } from '../../../agent-config-constants';
-import { bulkAutomationSnapshot } from '../../../attention/bulk-dispositions';
+import {
+  bulkAutomationSnapshot,
+  normalizeBulkAutomationPolicy,
+} from '../../../attention/bulk-dispositions';
 import { readStandingBulkAutomationPolicy } from '../../../attention/automation-policy';
 
 export const MAX_RUN_PLANS = 200;
