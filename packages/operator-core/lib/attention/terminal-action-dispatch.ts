@@ -12,6 +12,7 @@
  */
 
 import { isNavigateAction } from './types';
+import { ACKNOWLEDGEMENT_ACTION_IDS, isAcknowledgementKind } from './terminal-coverage';
 
 export interface TerminalAttentionItem {
   id: string;
@@ -51,6 +52,40 @@ export interface TerminalActionDependencies {
     itemId: string;
     action: 'resolve';
     note: string;
+  }): Promise<void>;
+  /**
+   * P-003 — clear the OWNER-ACTION gate on a work-item so it returns to the
+   * agents. `statusGated` means the row's own `status` is `needs-human` (the
+   * feature-family leg of the source query) and must be moved off it as well;
+   * the `payload.needsOwnerAction`/`needsHuman` keys are cleared either way,
+   * because a row can carry both and clearing one leaves the card standing
+   * (EI-21675115869134466 — the sticky-payload leak).
+   */
+  clearWorkItemOwnerGate(input: {
+    workItemId: string;
+    harnessSlug?: string | null;
+    statusGated: boolean;
+  }): Promise<void>;
+  /** P-003 — close a work-item as won't-do, carrying the caller's audit rationale
+   *  as the completion evidence a terminal state requires. */
+  closeWorkItem(input: {
+    workItemId: string;
+    harnessSlug?: string | null;
+    rationale: string;
+  }): Promise<void>;
+  /** P-003 — resolve an open question conversation. `acceptedAnswer` carries the
+   *  owner's (or resolver's drafted) text when there is one; a bare close still
+   *  records why it was closed. */
+  resolveConversation(input: {
+    conversationId: string;
+    acceptedAnswer: string;
+  }): Promise<void>;
+  /** P-003 — close an open client-session gate (`session_pending_gates`), the
+   *  same transition the watcher/hook performs when the ask clears. */
+  closeSessionGate(input: {
+    sessionId: string;
+    client: string;
+    refId: string;
   }): Promise<void>;
   /**
    * Best-effort owner-authoritative reply delivery for named escalation picks.
