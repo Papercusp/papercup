@@ -47,7 +47,7 @@ import { findConditionObject, linkWorkItemToCondition, type ConditionObject } fr
 // and this module imports work-items.ts — so admission importing THIS module would cycle.
 // Re-exported in full so every existing `from './condition-bridge'` importer keeps working
 // unchanged — the CLAIM_STATES_ALLOWLIST re-export precedent (work-items.ts / EI-11300).
-import { actionableConditionFor } from './actionable-conditions';
+import { actionableConditionFor, isActionableConditionKey } from './actionable-conditions';
 export {
   ACTIONABLE_CONDITIONS,
   ACTIONABLE_CONDITION_PREFIXES,

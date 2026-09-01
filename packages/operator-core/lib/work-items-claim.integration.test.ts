@@ -120,6 +120,11 @@ beforeAll(async () => {
   db = await createFreshPgDb('wi-claim');
   h.sql = db.sql;
   await db.sql.unsafe(HFC_DDL);
+  // EI-22040912157347872: every live claim/list path now reads the durable
+  // plan-item assignment floor. Install the production table in this narrowed
+  // fixture so its claim assertions exercise the real schema instead of failing
+  // before the floor can be evaluated.
+  await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   // The claim path emits awaited claim/release events and arms lifecycle-bound

@@ -12165,7 +12165,7 @@
           "POST"
         ]
       },
-      "description": "WIND DOWN a named fleet — a TYPED, BINDING control state (registry control_state=winding-down + reason/by/ts), not a free-text ask: live members get a fleet-scoped control cue (checkpoint → release claims/locks → loop:end → ack leader; pull no new work), and LATE JOINERS see the state at orient. Invokers: the owner (su session), THAT fleet's leader, or an Overwatch (system-authority) pane — anyone else is refused (EI-9501 class). Reverse with fleet:resume; fleet:pause is an alias of this.",
+      "description": "WIND DOWN a named fleet — a TYPED, BINDING control state (registry control_state=winding-down + reason/by/ts), not a free-text ask: live members get a fleet-scoped control cue (checkpoint → release claims/locks → await the resume gate → loop:end → ack leader; pull no new work), and LATE JOINERS see the state at orient. The park DECLARES a latching resume gate members await instead of stopping wake-less; fleet:resume fires it. Invokers: the owner (su session), THAT fleet's leader, or an Overwatch (system-authority) pane — anyone else is refused (EI-9501 class). Reverse with fleet:resume; fleet:pause is an alias of this.",
       "capabilities": [
         "fleet:wind-down"
       ],

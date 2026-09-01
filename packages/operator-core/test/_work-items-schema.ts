@@ -577,6 +577,34 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     expires_ts timestamptz NOT NULL,
     last_activity_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
+  );
+  -- Mirrors libs/papercusp/libs/db/sql/140-plan-item-assignments.sql (columns only — same
+  -- superset-only fixture stance as plan_item_claims above). The plan-lane claim floor
+  -- (reservedPlanLaneExclusionSql, work-items.ts) gained an UNCONDITIONAL
+  -- plan_item_assignments + agent_name_sessions leg (EI-22040912157347872), so every
+  -- claim/preview query in this fixture family 42P01s without these relations — the same
+  -- lane/condition_key fixture-lag class the comments above record.
+  CREATE TABLE IF NOT EXISTS harness_shared.plan_item_assignments (
+    workspace_id text NOT NULL,
+    harness_slug text NOT NULL,
+    plan_slug text NOT NULL,
+    item_id text NOT NULL,
+    assignee_name text,
+    assigned_by_user text,
+    assigned_ts timestamptz,
+    released_ts timestamptz,
+    strategy text,
+    note text,
+    PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
+  );
+  -- Mirrors migration 140's agent_name_sessions (adoption binding read by the same floor leg).
+  CREATE TABLE IF NOT EXISTS harness_shared.agent_name_sessions (
+    workspace_id text NOT NULL,
+    session_owner_id text NOT NULL,
+    agent_name text NOT NULL,
+    owner_user text NOT NULL,
+    adopted_at timestamptz DEFAULT now() NOT NULL,
+    PRIMARY KEY (workspace_id, session_owner_id)
   );`;
 
 /**

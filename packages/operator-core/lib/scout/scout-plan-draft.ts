@@ -15,6 +15,8 @@
  */
 
 import { withPlanLock as realWithPlanLock } from '../agent-tools/plans/with-plan-lock';
+import { recordPlanRevision, type PlanSessionRef } from '../agent-tools/plans/revisions';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { SCOUT_DRAFT_LOOP_NOTE } from './feedback-loop-prompt';
 
 /** Append the `-YYYY-MM-DD` filename suffix (plan convention) when absent. */
@@ -79,6 +81,10 @@ export interface CreateScoutPlanDraftInput {
   rationale?: string;
   harnessSlug?: string;
   workspaceId?: string;
+  /** Identity attributed to the initial revision. Route callers pass their resolved su identity. */
+  revisionIdentity?: AgentIdentity;
+  /** Resolved conversation provenance for that initial revision. */
+  revisionSession?: PlanSessionRef;
   /** ISO date (YYYY-MM-DD); defaults to today. */
   date?: string;
   /**
@@ -93,9 +99,10 @@ export interface CreateScoutPlanDraftInput {
 
 export interface ScoutPlanDraftDeps {
   withPlanLock: typeof realWithPlanLock;
+  recordPlanRevision?: typeof recordPlanRevision;
 }
 
-const defaultDeps: ScoutPlanDraftDeps = { withPlanLock: realWithPlanLock };
+const defaultDeps: ScoutPlanDraftDeps = { withPlanLock: realWithPlanLock, recordPlanRevision };
 
 /**
  * Create a DRAFT plan from the Scout loop (system-side). Returns the (dated) slug
@@ -120,6 +127,27 @@ export async function createScoutPlanDraft(
       intent: `scout:plans-new ${slug}`,
       ...(input.harnessSlug ? { harnessSlug: input.harnessSlug } : {}),
       ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      // The initial revision is part of the same canonical writer contract as plans:new.
+      // Keep the hook best-effort, matching every other plan revision capture path.
+      afterWrite: async (writtenBody, scope) => {
+        const identity = input.revisionIdentity ?? {
+          ownerId: 'scout:route-idea',
+          ownerLabel: 'scout · route-idea',
+          source: 'static-client',
+          workspaceId: scope.workspaceId,
+          userId: null,
+        };
+        await (deps.recordPlanRevision ?? recordPlanRevision)({
+          planSlug: slug,
+          harnessSlug: scope.harnessSlug,
+          workspaceId: scope.workspaceId,
+          content: writtenBody,
+          rationale: input.rationale ?? null,
+          identity,
+          sessionId: input.revisionSession?.sessionId ?? null,
+          sessionKind: input.revisionSession?.sessionKind ?? null,
+        });
+      },
     },
     async (current) => {
       if (current !== null) return { newBody: null, value: { created: false } }; // exists — idempotent

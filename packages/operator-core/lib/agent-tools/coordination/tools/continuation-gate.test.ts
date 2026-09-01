@@ -353,6 +353,30 @@ describe('isFleetWindDownLoopEndAuthorized (EI-21012758172744411)', () => {
     expect(isFleetWindDownLoopEndAuthorized({ ...authorized, cues: [] })).toBe(false);
     expect(isFleetWindDownLoopEndAuthorized({ ...authorized, cues: null })).toBe(false);
   });
+
+  // ── WI-2034563: the exception must not authorize STRANDING ────────────────
+  describe('park resume path (WI-2034563)', () => {
+    it('NEGATIVE: a park that publishes a way back withdraws the wake-less authorization', () => {
+      // This is the incident in one assertion. The tuple is otherwise perfect — a
+      // claimless member, a genuine typed leader cue, a real winding-down fleet — and
+      // it is exactly the tuple that let ~23 of 45 members end their only wake source
+      // and sit unreachable for hours. When the park expects them back, they must hold
+      // the declared gate instead; a member that DOES hold one never reaches this
+      // predicate, because the parked-await read upstream already clears the guard.
+      expect(isFleetWindDownLoopEndAuthorized({ ...authorized, parkOffersResumePath: true })).toBe(false);
+    });
+
+    it('POSITIVE: a terminal/legacy park (no way back) keeps the historical authorization', () => {
+      // Load-bearing for rollout: every pre-mig-1065 wind-down resolves to false here,
+      // so no fleet parked today is wedged by the rule above.
+      expect(isFleetWindDownLoopEndAuthorized({ ...authorized, parkOffersResumePath: false })).toBe(true);
+      expect(isFleetWindDownLoopEndAuthorized({ ...authorized, parkOffersResumePath: null })).toBe(true);
+      expect(isFleetWindDownLoopEndAuthorized({ ...authorized, parkOffersResumePath: undefined })).toBe(true);
+      // Omitting the field entirely is the same reading, which is what keeps every
+      // caller that predates this input correct rather than accidentally denied.
+      expect(isFleetWindDownLoopEndAuthorized(authorized)).toBe(true);
+    });
+  });
 });
 
 describe('fleet wind-down authorization reaches the critical no-PTY gate only', () => {

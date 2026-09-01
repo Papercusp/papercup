@@ -48,11 +48,7 @@ import {
   markSessionBriefReleased,
 } from '../../session-brief';
 import { buildAnnouncedKey } from '../../events/await/announce-key';
-import {
-  FLEET_PARK_DEFAULT_RESUME_GATE,
-  describeParkResumePath,
-  resolveFleetParkResumePath,
-} from '../../fleet-park-resume-path';
+import { FLEET_PARK_DEFAULT_RESUME_GATE } from '../../fleet-park-resume-path';
 
 export type FleetControlAction = 'wind-down' | 'resume';
 
@@ -148,6 +144,15 @@ export function fleetControlCueText(
     // park declares a resume gate, the cue now hands over that exact key FIRST —
     // copied from the declaration, never retyped — so the member's stop leaves an
     // await behind and fleet:resume's fire is what wakes it.
+    // The three cases are deliberately distinct, and the third is NOT the default:
+    // an omitted `park` means the caller supplied no park information at all, which
+    // must keep the historical wording rather than assert something about a park it
+    // never read. Only a park that POSITIVELY declared no gate gets the warning.
+    const historicalStop =
+      'Then end any armed loop with loop:end. If an autonomy-implying mode remains active without a ' +
+      'deliberate independent event await, retry with loop:end { acknowledgeOpenDirectives:true, ' +
+      'acknowledgeWakeLessAutonomy:true }; alternatively register an events:await wake or exit the mode ' +
+      'before ending the loop.';
     const stopInstruction = park?.gate
       ? `Then hand over your wake source BEFORE you stop: register events:await { event: '${park.gate}' } ` +
         '(copy that key EXACTLY — a retyped key never rendezvouses; it LATCHES, so registering after ' +
@@ -158,9 +163,10 @@ export function fleetControlCueText(
         ? 'Then end any armed loop with loop:end. This park is TERMINAL — no resume is expected, so a ' +
           'wake-less stop is correct here; if an autonomy-implying mode remains active, retry with ' +
           'loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }.'
-        : 'Then end any armed loop with loop:end. ⚠ This park declared NO resume gate, so nothing will ' +
-          'wake you once you stop: prefer registering an events:await (or staying armed at a long ' +
-          'interval) over acknowledgeWakeLessAutonomy, and tell the leader which you chose.';
+        : park
+          ? '⚠ This park declared NO resume gate, so nothing will wake you once you stop. ' + historicalStop +
+            ' Prefer the await over the acknowledgement, and tell the leader which you chose.'
+          : historicalStop;
     const deadline =
       park?.expiresAt != null
         ? ` The park is bounded: it is due to lift by ${new Date(park.expiresAt).toISOString()}.`
@@ -468,6 +474,45 @@ async function runFleetControlPostSaga(args: {
     cueMsgId = cueWork.result.value.cueMsgId;
   }
 
+  // ── WI-2034563: firing the park's declared gate IS the resume ──────────────
+  // A resume cue only reaches members that are still LIVE and listening. The
+  // members this work exists for are precisely the ones that are not: they ended
+  // their loops and parked on the gate, so a coord cue cannot reach them and only
+  // the emit can. `args.fleet` is the PRE-flip record, which is where the gate the
+  // park declared still lives (the flip itself clears it). Fail-soft with a named
+  // warning — the state is already lifted, and a member left parked on an unfired
+  // gate is a reportable fault, never a silent one.
+  let resumeFire: FleetControlPostSagaResult['resumeFire'];
+  const declaredGate =
+    args.action === 'resume' && !args.alreadyInState ? (args.fleet.controlResumeGate ?? '').trim() : '';
+  if (declaredGate) {
+    const fireWork = await startBoundedOptional(
+      async () => {
+        const { emitAwaitedEvent } = await import('../../events/await/engine');
+        return emitAwaitedEvent({
+          key: declaredGate,
+          workspaceId: args.workspaceId,
+          source: args.ownerId,
+          summary: `Fleet ${args.slug} RESUMED — the park declared this gate; pick your lane back up.`,
+          payload: { fleet: args.slug, controlState: 'active', by: args.ownerId, reason: effectiveReason },
+        });
+      },
+      { fallback: null, timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS, label: 'fleet:resume:fireGate' },
+    );
+    if (fireWork.result.degraded) degraded = true;
+    const emitted = fireWork.result.value as { waiters?: number } | null;
+    resumeFire = emitted
+      ? { gate: declaredGate, fired: true, waiters: emitted.waiters ?? 0 }
+      : {
+          gate: declaredGate,
+          fired: false,
+          warning:
+            `The fleet is ACTIVE again, but firing its declared resume gate '${declaredGate}' did not ` +
+            'complete. Members parked on that key were NOT woken by this call and cannot be reached by ' +
+            `the resume cue either. Re-fire it: events:emit { event: '${declaredGate}', summary: 'fleet resumed' }.`,
+        };
+  }
+
   return {
     effectiveReason,
     ...(drainStamp ? { drainStamp } : {}),
@@ -475,6 +520,7 @@ async function runFleetControlPostSaga(args: {
     notified,
     cueMsgId,
     ...(record ? { record } : {}),
+    ...(resumeFire ? { resumeFire } : {}),
     degraded,
   };
 }
@@ -498,6 +544,21 @@ export async function applyFleetControl(
     skipAuthorization?: boolean;
     /** Internal callers do not have a session harness fallback. */
     sessionHarness?: string | null;
+    /** WI-2034563 (wind-down only): the gate NAME this park publishes for members to
+     *  await. Scoped to `fleet:<slug>:<name>` before it is declared or stored, so two
+     *  fleets parking on the same name cannot collide on the flat rendezvous plane.
+     *  Omitted ⇒ FLEET_PARK_DEFAULT_RESUME_GATE, because a park that publishes NO key
+     *  is the defect, not the default. */
+    resumeGate?: string | null;
+    /** WI-2034563 (wind-down only): bound the park to this many seconds. Sets the
+     *  registry deadline AND the declaration's own lapse, so an abandoned park does
+     *  not leave a standing declaration behind it. */
+    resumeWithinSec?: number | null;
+    /** WI-2034563 (wind-down only): this park is deliberately TERMINAL — nobody is
+     *  coming back, so no gate is declared and a member's wake-less loop:end stays
+     *  authorized. The janitorial reconcile path (every member already terminal) and
+     *  a real end-of-mission shutdown are the legitimate users. */
+    noResumePath?: boolean;
   },
 ): Promise<FleetControlResult> {
   const { ownerId, workspaceId, identity } = resolveFleetCaller(ctx);
@@ -582,10 +643,71 @@ export async function applyFleetControl(
   // durable boundary has landed.
   const targetState = ACTION_TO_STATE[action];
   const alreadyInState = fleet.controlState === targetState;
+
+  // ── WI-2034563: mint + DECLARE the park's resume gate BEFORE persisting it ──
+  // Declaring first is the honest order: the row must never advertise a key that
+  // has no announcement behind it, because the announcement is what makes the key
+  // discoverable (orient's announcedGates) and — the part that matters for a member
+  // parking late after a carry-respawn — what LATCHES the eventual fire. If the
+  // declaration fails we store NO gate and say so, rather than publishing a key that
+  // silently behaves like an ordinary unlatched event.
+  let park: FleetParkDirectivePlan | null = null;
+  let resumePath: FleetControlResumePathReceipt | undefined;
+  if (action === 'wind-down') {
+    const terminal = opts?.noResumePath === true;
+    const expiresAt =
+      !terminal && typeof opts?.resumeWithinSec === 'number' && Number.isFinite(opts.resumeWithinSec) && opts.resumeWithinSec > 0
+        ? Date.now() + Math.floor(opts.resumeWithinSec) * 1000
+        : null;
+    if (terminal) {
+      park = { gate: null, expiresAt: null, terminal: true };
+      resumePath = { gate: null, terminal: true };
+    } else {
+      const gateName = opts?.resumeGate?.trim() || FLEET_PARK_DEFAULT_RESUME_GATE;
+      const gateKey = buildAnnouncedKey(gateName, { kind: 'fleet', ref: slug });
+      try {
+        const { registerAnnouncement } = await import('../../events/await/store');
+        await registerAnnouncement({
+          subscriberId: ownerId,
+          eventKey: gateKey,
+          note: `Fleet ${slug} resume gate — fired by fleet:resume. Members parked under this wind-down await this key.`,
+          scopeKind: 'fleet',
+          scopeRef: slug,
+          logicalGateKey: `fleet-park-resume:${slug}`,
+          boundTo: { kind: 'fleet-leadership', ref: slug },
+          expiresSec:
+            expiresAt === null ? null : Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000)),
+        });
+        park = { gate: gateKey, expiresAt, terminal: false };
+        resumePath = { gate: gateKey, declared: true, expiresAt, terminal: false };
+      } catch (e) {
+        park = { gate: null, expiresAt, terminal: false };
+        resumePath = {
+          gate: null,
+          declared: false,
+          expiresAt,
+          terminal: false,
+          warning:
+            `Could not declare the resume gate '${gateKey}' (${e instanceof Error ? e.message : String(e)}), so ` +
+            'this park is being recorded WITHOUT one and members are being told so. Declare it by hand — ' +
+            `events:emit { event: '${gateName}', announce: true, announceScope: 'fleet', announceScopeRef: '${slug}' } ` +
+            '— and re-issue the wind-down, or resume the fleet.',
+        };
+      }
+    }
+  }
+
   const updated = await setFleetControlState(
     workspaceId,
     slug,
-    { state: targetState, reason: reason ?? null, by: ownerId },
+    {
+      state: targetState,
+      reason: reason ?? null,
+      by: ownerId,
+      resumeGate: park?.gate ?? null,
+      expiresAt: park?.expiresAt ?? null,
+      noResumePath: park?.terminal === true,
+    },
     undefined,
     fleet.leaderOwnerId,
   );
@@ -609,6 +731,7 @@ export async function applyFleetControl(
         ownerId,
         slug,
         workspaceId,
+        park,
         opts,
       }),
     {
@@ -632,6 +755,27 @@ export async function applyFleetControl(
     cueMsgId: postResult?.cueMsgId ?? null,
     ...(postResult?.drainStamp ? { drainStamp: postResult.drainStamp } : {}),
     ...(postResult?.pauseHolds ? { pauseHolds: postResult.pauseHolds } : {}),
+    // WI-2034563: the wind-down's declared path, or the resume's fire receipt. On a
+    // resume the fire outcome supersedes the (absent) declaration receipt; a
+    // post-saga that timed out before the fire reports the intent WITHOUT claiming
+    // it landed, because "the gate was fired" is exactly the claim a leader would
+    // otherwise act on while members stayed parked.
+    ...(postResult?.resumeFire
+      ? { resumePath: postResult.resumeFire as FleetControlResumePathReceipt }
+      : action === 'resume' && !alreadyInState && (fleet.controlResumeGate ?? '').trim()
+        ? {
+            resumePath: {
+              gate: (fleet.controlResumeGate ?? '').trim(),
+              fired: false,
+              warning:
+                'The fleet is ACTIVE again, but this call returned before its declared resume gate was ' +
+                'confirmed fired. Members parked on that key may still be asleep — re-fire it with ' +
+                'events:emit, or verify with events:status.',
+            } satisfies FleetControlResumePathReceipt,
+          }
+        : resumePath
+          ? { resumePath }
+          : {}),
     ...(post.degraded ? { postControlPending: true } : {}),
     ...(post.degraded || postResult?.degraded ? { postControlDegraded: true } : {}),
   };
@@ -663,6 +807,9 @@ export async function windDownGoalFleet(args: {
     args.fleetSlug,
     'wind-down',
     `goal ${args.goalId} reached ${args.status} — standing drain fleet wind-down`,
-    { skipAuthorization: true, sessionHarness: null },
+    // WI-2034563: a goal that reached a terminal status is not coming back, so this
+    // park is genuinely TERMINAL. Declaring a resume gate here would publish a key
+    // nobody will ever fire and would refuse members' loop:end for no reason.
+    { skipAuthorization: true, sessionHarness: null, noResumePath: true },
   );
 }

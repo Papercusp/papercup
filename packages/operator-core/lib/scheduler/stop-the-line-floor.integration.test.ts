@@ -107,7 +107,14 @@ afterAll(async () => {
   await db?.cleanup?.();
 });
 beforeEach(async () => {
-  setFlagOverridesForTest({ [FLAGS.SCHEDULER_MAINTAINED_READY]: false });
+  // SCHEDULER_ISSUES_CLAIMABLE off: the FEATURE FAMILY case asserts the feature door in
+  // isolation — with tier-3 on, claimNextWorkItem correctly falls through to the issue
+  // family and serves the EXEMPT repair bug (the red-streak condition item itself), which
+  // is the intended live behavior but not the door under test.
+  setFlagOverridesForTest({
+    [FLAGS.SCHEDULER_MAINTAINED_READY]: false,
+    [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false,
+  });
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
 });
 afterEach(() => setFlagOverridesForTest({}));

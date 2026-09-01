@@ -237,6 +237,48 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     });
   });
 
+  // WI-2034563 / P-008: shaped away, `underStrength` reads as MISSING capacity when
+  // the seats are alive and parked by the leader's own directive — and the response to
+  // missing capacity is to relaunch, which is the wrong move and the expensive one.
+  it('keeps the policy-parked capacity row beside headcount at the normal monitor tier', () => {
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: {
+          fleet: 'nonp2p-bug-drain',
+          members: 45,
+          headcount: { enabled: true, target: 45, current: 22, shortfall: 23, underStrength: true },
+          policyParked: {
+            members: 23,
+            kind: 'gate',
+            by: 'su-leader',
+            reason: 'D-059 stand-down',
+            gate: 'fleet:nonp2p-bug-drain:resume',
+            expiresAt: null,
+            expired: false,
+            parkedForMs: 3 * 3_600_000,
+            indefinite: false,
+            message:
+              '23 members of nonp2p-bug-drain policy-parked by su-leader (D-059 stand-down) for 3h. ' +
+              "LOST CAPACITY, recoverable: fire the declared resume gate 'fleet:nonp2p-bug-drain:resume' " +
+              '(fleet:resume does this) to wake every member parked on it. Do NOT relaunch them — they are alive and waiting.',
+          },
+        },
+      },
+      'trimmed',
+    ) as { summary: Record<string, unknown> };
+
+    expect(out.summary.policyParked).toMatchObject({
+      members: 23,
+      kind: 'gate',
+      gate: 'fleet:nonp2p-bug-drain:resume',
+      indefinite: false,
+    });
+    // The verdict half has to survive too: the row's whole job is to stop the leader
+    // relaunching alive members, and only `message` carries that instruction.
+    expect(String((out.summary.policyParked as { message: string }).message)).toContain('Do NOT relaunch');
+  });
+
   it('retains the dark-fleet verdict, reason, and independent falsifier at the normal monitor tier', () => {
     const out = shapeLeaderBrief(
       {

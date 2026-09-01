@@ -382,6 +382,18 @@ function compactSummary(value: unknown, ultra = false): unknown {
   if (headcount && 'basis' in headcount) headcount.basis = compactHeadcountBasis(headcount.basis);
   if (headcount) out.headcount = headcount;
 
+  // WI-2034563: policy-parked capacity must survive shaping and sit BESIDE headcount.
+  // Shaped away, a leader reads `underStrength` with nothing saying the missing seats
+  // are alive and parked by their own directive — which is exactly the reading that
+  // makes relaunching look like the fix. `message` carries the whole verdict, so it
+  // is kept long enough to stay actionable (it names the gate to fire).
+  const policyParked = pick(
+    source.policyParked,
+    ['members', 'kind', 'by', 'gate', 'expiresAt', 'expired', 'parkedForMs', 'indefinite', 'message'],
+    420,
+  );
+  if (policyParked) out.policyParked = policyParked;
+
   if ('claimable_now' in source) out.claimable_now = compactClaimableNow(source.claimable_now);
 
   const pool = pick(

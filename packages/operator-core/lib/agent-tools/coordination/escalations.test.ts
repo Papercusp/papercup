@@ -11,6 +11,7 @@ import {
   listEscalations,
   listEscalationsPaginated,
   openEscalation,
+  reopenEscalation,
   resolveEscalation,
   resolveEscalationsBatch,
 } from './escalations';
@@ -638,6 +639,30 @@ describe('resolveEscalation — concurrent resolves elect ONE announcer (WI-1076
   it('an unknown msg_id still reports not_found (the gate did not swallow it)', async () => {
     configureCoordLog(new InMemoryCoordLog());
     expect(await resolveEscalation({ msg_id: 'nope', choice: 'auto-resolved', resolver: 'w' })).toBe('not_found');
+  });
+
+  it('reopen appends a compensation and the next resolve closes generation 1', async () => {
+    const log = new InMemoryCoordLog();
+    const opened = await openOne(log);
+    await resolveEscalation({ msg_id: opened.msg_id, choice: 'first', resolver: 'resolver-1' });
+
+    const reopened = await reopenEscalation({
+      msg_id: opened.msg_id,
+      by: 'owner',
+      note: 'undo unattended pass',
+    });
+    expect(typeof reopened).not.toBe('string');
+    expect((await listEscalations({ status: 'open' })).map((row) => row.msg_id)).toEqual([opened.msg_id]);
+
+    await resolveEscalation({ msg_id: opened.msg_id, choice: 'second', resolver: 'resolver-2' });
+    const events = await log.readEvents('escalations');
+    expect(events.filter((event) => event.kind === 'escalation_reopened')).toHaveLength(1);
+    const resolves = events.filter((event) => event.kind === 'escalation_resolved');
+    expect(resolves.map((event) => event.msg_id).sort()).toEqual([
+      resolvedEventId(opened.msg_id),
+      resolvedEventId(opened.msg_id, 1),
+    ].sort());
+    expect(resolves.find((event) => event.msg_id === resolvedEventId(opened.msg_id, 1))?.generation).toBe(1);
   });
 });
 

@@ -197,6 +197,10 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('871-lifecycle-bound-watches.sql')).simple();
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HFC_DDL);
+  // EI-22040912157347872: claim refusal details evaluate the same durable
+  // assignment floor as the engine claim path. Keep this focused fixture on the
+  // production schema so a missing table cannot collapse the refusal envelope.
+  await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim trust-leg join (mig 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL); // work_item_deps + work_item_blocked readiness (migs 367/379) — claimNextWorkItem references them UNCONDITIONALLY
   // HFC_DDL (the shared _work-items-schema fixture) is the COMPLETE post-374 schema:

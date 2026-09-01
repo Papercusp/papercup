@@ -46,6 +46,19 @@ vi.mock('./leader-control', () => ({
   retireFleetLeaderWatches: vi.fn(async () => 0),
   ensureFleetLeaderControl: vi.fn(async () => ({ healthy: true, repaired: true })),
 }));
+// WI-2034563: the park's resume gate is DECLARED through the await store and FIRED
+// through the await engine. Both hit PG, so mock them for the DB-free unit surface —
+// and mock them separately, because the two halves fail independently: a declaration
+// that does not land must store no gate, and a fire that does not land must report
+// members still parked rather than a clean resume.
+const registerAnnouncementM = vi.fn(async () => ({ id: 1, causalGeneration: 1 }));
+const emitAwaitedEventM = vi.fn(async () => ({ waiters: 2 }));
+vi.mock('../../events/await/store', () => ({
+  registerAnnouncement: (...a: unknown[]) => registerAnnouncementM(...(a as [])),
+}));
+vi.mock('../../events/await/engine', () => ({
+  emitAwaitedEvent: (...a: unknown[]) => emitAwaitedEventM(...(a as [])),
+}));
 
 import {
   applyFleetControl,
@@ -94,6 +107,9 @@ function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
     controlReason: null,
     controlBy: null,
     controlAt: null,
+    controlResumeGate: null,
+    controlExpiresAt: null,
+    controlNoResumePath: false,
     lastLaunchTransaction: null,
     createdAt: 1,
     updatedAt: 1,
@@ -183,6 +199,42 @@ describe('fleetControlCueText (pure)', () => {
     expect(fleetControlCueText('wind-down', 'backend', null, '4c85f', 'm-cue').body).toContain(
       "coord:ack { msg_id: 'm-cue' }",
     );
+  });
+
+  // WI-2034563: the stop instruction is park-shaped. An OMITTED park means the caller
+  // supplied no park information (the case asserted above) and must keep the
+  // historical wording; a park that positively declares a gate, or positively
+  // declares none, each say something different and neither may be the default.
+  it('wind-down with a declared gate: hand over the key, do not stop wake-less', () => {
+    const { body } = fleetControlCueText('wind-down', 'backend', 'release cut', '4c85f', 'm-cue', {
+      gate: 'fleet:backend:resume',
+      expiresAt: null,
+      terminal: false,
+    });
+    expect(body).toContain("events:await { event: 'fleet:backend:resume' }");
+    expect(body).toContain('Do NOT pass acknowledgeWakeLessAutonomy');
+    expect(body).not.toContain('acknowledgeWakeLessAutonomy:true');
+  });
+
+  it('wind-down with a deadline names it, so a park is visibly bounded', () => {
+    const at = Date.parse('2026-09-01T18:00:00.000Z');
+    const { body } = fleetControlCueText('wind-down', 'backend', null, '4c85f', 'm-cue', {
+      gate: 'fleet:backend:resume',
+      expiresAt: at,
+      terminal: false,
+    });
+    expect(body).toContain('2026-09-01T18:00:00.000Z');
+  });
+
+  it('wind-down with a park that declared NO gate warns instead of silently reading as routine', () => {
+    const { body } = fleetControlCueText('wind-down', 'backend', null, '4c85f', 'm-cue', {
+      gate: null,
+      expiresAt: null,
+      terminal: false,
+    });
+    expect(body).toContain('declared NO resume gate');
+    // The escape hatch is still reachable — this warns, it does not wedge.
+    expect(body).toContain('acknowledgeWakeLessAutonomy:true');
   });
 
   /**
@@ -278,6 +330,11 @@ describe('applyFleetControl', () => {
       state: 'winding-down',
       reason: 'release cut',
       by: callerRef.ownerId,
+      // WI-2034563: an ordinary wind-down publishes the default resume gate, so a
+      // park created without thinking about it still leaves members a way back.
+      resumeGate: 'fleet:backend:resume',
+      expiresAt: null,
+      noResumePath: false,
     }, undefined, callerRef.ownerId);
     const sendOpts = sendM.mock.calls[0][1] as unknown as Record<string, unknown>;
     expect(sendOpts.to).toEqual(['m-1', 'm-2']);
@@ -406,6 +463,11 @@ describe('applyFleetControl', () => {
       state: 'active',
       reason: 'incident cleared',
       by: callerRef.ownerId,
+      // A resume clears the park's columns: an ACTIVE row must never carry a dead
+      // park's gate for a later reader to mistake for a live one.
+      resumeGate: null,
+      expiresAt: null,
+      noResumePath: false,
     }, undefined, callerRef.ownerId);
     expect((sendM.mock.calls[0][1] as { summary: string }).summary).toContain('RESUMED');
     const resumeExtra = (sendM.mock.calls[0][1] as { extra?: Record<string, unknown> }).extra;
@@ -464,6 +526,11 @@ describe('applyFleetControl', () => {
         state: 'winding-down',
         reason: 'goal goal-1 reached killed — standing drain fleet wind-down',
         by: 'su-stopper',
+        // WI-2034563: a terminal goal is not coming back, so this park is TERMINAL —
+        // no gate is published and members' wake-less loop:end stays authorized.
+        resumeGate: null,
+        expiresAt: null,
+        noResumePath: true,
       },
       undefined,
       'su-goal-agent',
@@ -562,6 +629,134 @@ describe('applyFleetControl', () => {
       const r = await applyFleetControl({} as never, 'backend', 'wind-down', 'just because');
       expect(setControlM.mock.calls[0][2].reason).toBe('just because');
       expect(r.drainStamp).toBeUndefined();
+    });
+  });
+
+  // ── WI-2034563 / P-008: the park directive's resume path ──────────────────
+  // The incident these cover: a wind-down published no key, members were told to
+  // end their loops, and ~23 of 45 sat unreachable for 2.5-6h with claims held.
+  describe('park resume path (WI-2034563)', () => {
+    it('declares the default gate, scoped to the fleet, and reports it', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      const r = await applyFleetControl({} as never, 'backend', 'wind-down', 'release cut');
+      expect(registerAnnouncementM).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventKey: 'fleet:backend:resume',
+          scopeKind: 'fleet',
+          scopeRef: 'backend',
+          logicalGateKey: 'fleet-park-resume:backend',
+        }),
+      );
+      expect(r.resumePath).toMatchObject({ gate: 'fleet:backend:resume', declared: true, terminal: false });
+    });
+
+    it('scopes a leader-named gate rather than trusting a bare name on the flat key plane', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      await applyFleetControl({} as never, 'backend', 'wind-down', 'phase break', {
+        resumeGate: 'phase3-open',
+      });
+      expect(registerAnnouncementM.mock.calls[0][0]).toMatchObject({ eventKey: 'fleet:backend:phase3-open' });
+    });
+
+    it('resumeWithinSec bounds BOTH the registry deadline and the declaration lapse', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      const before = Date.now();
+      const r = await applyFleetControl({} as never, 'backend', 'wind-down', 'short pause', {
+        resumeWithinSec: 1800,
+      });
+      const persisted = setControlM.mock.calls[0][2];
+      expect(persisted.expiresAt).toBeGreaterThanOrEqual(before + 1800 * 1000);
+      // An abandoned park must not leave a standing declaration behind it.
+      const declared = registerAnnouncementM.mock.calls[0][0] as { expiresSec: number | null };
+      expect(declared.expiresSec).toBeGreaterThan(0);
+      expect(declared.expiresSec).toBeLessThanOrEqual(1800);
+      expect(r.resumePath?.expiresAt).toBe(persisted.expiresAt);
+    });
+
+    it('noResumePath declares NO gate and records the park terminal', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      const r = await applyFleetControl({} as never, 'backend', 'wind-down', 'mission over', {
+        noResumePath: true,
+      });
+      expect(registerAnnouncementM).not.toHaveBeenCalled();
+      expect(setControlM.mock.calls[0][2]).toMatchObject({ resumeGate: null, noResumePath: true });
+      expect(r.resumePath).toMatchObject({ gate: null, terminal: true });
+    });
+
+    it('a failed declaration stores NO gate and warns — never a phantom key on the row', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      registerAnnouncementM.mockRejectedValueOnce(new Error('pg down'));
+      const r = await applyFleetControl({} as never, 'backend', 'wind-down', 'release cut');
+      // The row must never advertise a key with no announcement behind it: an
+      // undeclared key does not latch, so a member registering late would miss the fire.
+      expect(setControlM.mock.calls[0][2].resumeGate).toBeNull();
+      expect(r.resumePath).toMatchObject({ gate: null, declared: false });
+      expect(r.resumePath?.warning).toContain('fleet:backend:resume');
+    });
+
+    it('the wind-down cue hands over the exact key to await INSTEAD of a wake-less stop', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      membersM.mockResolvedValue(['m-1']);
+      await applyFleetControl({} as never, 'backend', 'wind-down', 'release cut');
+      const body = (sendM.mock.calls[0][1] as { bodyWithMsgId: (m: string) => string }).bodyWithMsgId('m-cue');
+      expect(body).toContain("events:await { event: 'fleet:backend:resume' }");
+      // The old text ended at acknowledgeWakeLessAutonomy, which is precisely how the
+      // members stranded themselves while complying.
+      expect(body).toContain('Do NOT pass acknowledgeWakeLessAutonomy');
+    });
+
+    it('a TERMINAL park still tells members a wake-less stop is correct', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+      membersM.mockResolvedValue(['m-1']);
+      await applyFleetControl({} as never, 'backend', 'wind-down', 'mission over', { noResumePath: true });
+      const body = (sendM.mock.calls[0][1] as { bodyWithMsgId: (m: string) => string }).bodyWithMsgId('m-cue');
+      expect(body).toContain('TERMINAL');
+      expect(body).toContain('acknowledgeWakeLessAutonomy');
+    });
+
+    it('RESUME fires the gate the park declared and reports how many were waiting', async () => {
+      getFleetM.mockResolvedValue(
+        fleet({
+          leaderOwnerId: callerRef.ownerId,
+          controlState: 'winding-down',
+          controlResumeGate: 'fleet:backend:resume',
+        }),
+      );
+      const r = await applyFleetControl({} as never, 'backend', 'resume', 'incident cleared');
+      // A resume CUE only reaches live listeners; the members this exists for ended
+      // their loops and parked on the key, so only the emit can reach them.
+      expect(emitAwaitedEventM).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'fleet:backend:resume' }),
+      );
+      expect(r.resumePath).toMatchObject({ gate: 'fleet:backend:resume', fired: true, waiters: 2 });
+    });
+
+    it('a resume whose gate fire fails reports members possibly still parked', async () => {
+      getFleetM.mockResolvedValue(
+        fleet({
+          leaderOwnerId: callerRef.ownerId,
+          controlState: 'winding-down',
+          controlResumeGate: 'fleet:backend:resume',
+        }),
+      );
+      emitAwaitedEventM.mockRejectedValueOnce(new Error('emit failed'));
+      // withBoundedTimeout logs the degraded leg; that log IS the expected behaviour
+      // here, so assert it is silenced deliberately rather than letting the
+      // fail-on-console guard read a covered failure path as an unexpected warning.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const r = await applyFleetControl({} as never, 'backend', 'resume', 'incident cleared');
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+      expect(r.ok).toBe(true); // the state IS lifted — the fire is the optional leg
+      expect(r.resumePath).toMatchObject({ gate: 'fleet:backend:resume', fired: false });
+      expect(r.resumePath?.warning).toContain('were NOT woken');
+    });
+
+    it('a resume on a legacy park (no declared gate) fires nothing and claims nothing', async () => {
+      getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId, controlState: 'winding-down' }));
+      const r = await applyFleetControl({} as never, 'backend', 'resume', 'lane refilled');
+      expect(emitAwaitedEventM).not.toHaveBeenCalled();
+      expect(r.resumePath).toBeUndefined();
     });
   });
 });

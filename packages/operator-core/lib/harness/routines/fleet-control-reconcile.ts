@@ -255,7 +255,17 @@ export async function defaultFleetControlReconcileDeps(
       const updated = await setFleetControlState(
         workspaceId,
         fleetSlug,
-        { state: 'winding-down', reason, by: 'system:fleet-control-reconcile' },
+        {
+          state: 'winding-down',
+          reason,
+          by: 'system:fleet-control-reconcile',
+          // WI-2034563: this reconcile only fires when EVERY known member is already
+          // in a terminal session state — there is nobody left to park, so the park is
+          // TERMINAL by construction. Declaring a resume gate here would publish a key
+          // with no possible awaiter, and leader-brief would then report a janitorial
+          // tidy-up as recoverable lost capacity.
+          noResumePath: true,
+        },
         db,
         undefined,
         expected,

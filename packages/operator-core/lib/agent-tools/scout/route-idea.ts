@@ -29,6 +29,7 @@ import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { createScoutPlanDraft, type CreateScoutPlanDraftInput } from '../../scout/scout-plan-draft';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { preserveAgentReviewAuthorityBeforePlanRoute } from '../../harness/improvements/agent-review';
+import { resolvePlanRevisionSessionRef } from '../plans/revisions';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { hardText, softText, LIMITS } from '../limits';
 
@@ -175,6 +176,7 @@ export async function runRouteIdea(
   const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
   const harnessSlug =
     typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : 'papercusp';
+  const revisionSession = await resolvePlanRevisionSessionRef(ctx as never, identity);
 
   // ── Re-route path: an already-filed su feature → the plan rail (wi stays open).
   if (args.featureId) {
@@ -187,6 +189,7 @@ export async function runRouteIdea(
       harnessSlug,
       ...(workspaceId ? { workspaceId } : {}),
       revisionIdentity: identity,
+      revisionSession,
       rationale: buildRouteRationale({ framing: issue.body || null, sourceRef: `wi:${issue.id}` }),
     });
     const planRef = `plan:${slug}`;
@@ -230,6 +233,7 @@ export async function runRouteIdea(
     harnessSlug,
     ...(workspaceId ? { workspaceId } : {}),
     revisionIdentity: identity,
+    revisionSession,
     rationale: buildRouteRationale({
       framing: d.framing,
       mechanism: d.mechanism,
