@@ -1191,8 +1191,14 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
               'change', 'watch:third', 6, 6, '[0.04,0,0.999]'::vector, 'gemma',
               'admitted', now(), 'test')`;
 
+    let calls = 0;
     let active = 0;
     let maxActive = 0;
+    let postCanaryArrivals = 0;
+    let releaseRendezvous!: () => void;
+    const rendezvous = new Promise<void>((resolve) => {
+      releaseRendezvous = resolve;
+    });
     const result = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
@@ -1201,9 +1207,25 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       shardConcurrency: 2,
       census: { chunkCount: 2, targetTokens: 110 },
       llmCall: async (input) => {
+        const call = (calls += 1);
         active += 1;
         maxActive = Math.max(maxActive, active);
-        await new Promise((resolve) => setTimeout(resolve, 75));
+        if (call > 1) {
+          // Call #1 is the runner's serviceability canary: it deliberately runs alone
+          // (every other batch awaits its gate before spending model capacity), so it
+          // must NOT join the rendezvous — a barrier that includes it deadlocks by
+          // design. The two post-canary batches belong to different shards and are
+          // dispatched by independent workers, so a healthy runner overlaps them; this
+          // rendezvous observes that overlap deterministically instead of hoping two
+          // 75ms sleep windows collide (the old shape flaked under load whenever the
+          // between-call heartbeat SQL writes staggered the windows by more than the
+          // sleep). The 10s race is an escape hatch, never the happy path: a runner
+          // regressed to serial dispatch times out here, lets the run complete, and
+          // fails the maxActive assertion below honestly instead of hanging.
+          postCanaryArrivals += 1;
+          if (postCanaryArrivals >= 2) releaseRendezvous();
+          await Promise.race([rendezvous, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+        }
         active -= 1;
         const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
         return {
