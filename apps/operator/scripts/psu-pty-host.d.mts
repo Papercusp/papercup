@@ -29,6 +29,18 @@ export function hostCodeStaleness({ loaded, path, }?: {
  */
 export function reexecExitCodeFrom(env?: EnvironmentMap, ppid?: number): number | null;
 /**
+ * A host-code adoption re-exec is safe only when no human terminal is bridged.
+ * Interactive carry-respawns must stay inside the current PTY host: exiting the
+ * launcher visibly tears down the TUI and a missed successor handoff falls into
+ * the fresh-session wizard. Headless hosts have no such continuity boundary and
+ * may still adopt current on-disk host code.
+ */
+export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty }: {
+    onReexec: any;
+    reexecCode: any;
+    bridgeTty: any;
+}): boolean;
+/**
  * Publish the parent-visible proof for a plain launch kickoff.
  *
  * The parent creates an empty 0600 file before detaching the child and passes

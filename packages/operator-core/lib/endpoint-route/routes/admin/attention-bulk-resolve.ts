@@ -65,9 +65,11 @@ import {
 } from '../../../attention/bulk-run-store';
 import { notifyBulkRunChanged } from '../../../attention/bulk-run-sync';
 import {
+  bulkAutomationSnapshot,
   normalizeBulkAutomationPolicy,
   type BulkAutomationPolicy,
 } from '../../../attention/bulk-dispositions';
+import { readStandingBulkAutomationPolicy } from '../../../attention/automation-policy';
 
 /** Cap one run so a mis-click on an unfiltered inbox cannot enqueue thousands. */
 const MAX_RUN_ITEMS = 200;
@@ -738,23 +740,30 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   // created-then-failed run in the owner's history when retyping one field fixes it.
   const preflight = preflightResolverLaunch(body.launch);
   if (!preflight.ok) return preflight.response;
+  // P-006: launch policy comes from the standing workspace row. Any policy
+  // fields in body.launch are legacy profile knobs and are ignored here; the
+  // run stores this exact value as its immutable audit receipt.
+  const standingPolicy = await readStandingBulkAutomationPolicy();
+  const automationPolicy = bulkAutomationSnapshot(standingPolicy);
+  const launch = {
+    ...preflight.launch,
+    automationMode: automationPolicy.mode,
+    minConfidence: automationPolicy.minConfidence,
+  };
 
   try {
     const run = await createRun({
       items,
       filterSnapshot: filter,
-      launchSnapshot: preflight.launch,
-      automationPolicy: normalizeBulkAutomationPolicy({
-        mode: preflight.launch.automationMode,
-        minConfidence: preflight.launch.minConfidence,
-      }),
+      launchSnapshot: launch,
+      automationPolicy,
       requestedBy: 'owner',
       harnessSlug: harness,
     });
 
     const resolverOwner = `su-${randomUUID()}`;
     await setRunPhase({ runId: run.runId, phase: 'pending', resolverOwner });
-    const launched = await launchResolver(run.runId, items.length, harness, preflight.launch, resolverOwner);
+    const launched = await launchResolver(run.runId, items.length, harness, launch, resolverOwner);
     if (launched.ok) {
       await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner });
     } else {

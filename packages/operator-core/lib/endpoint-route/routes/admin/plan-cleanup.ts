@@ -42,7 +42,8 @@ import {
   resolverSpawnOutcome,
 } from './attention-bulk-resolve';
 import type { EffectiveBulkResolverLaunch } from '../../../agent-config-constants';
-import { normalizeBulkAutomationPolicy } from '../../../attention/bulk-dispositions';
+import { bulkAutomationSnapshot } from '../../../attention/bulk-dispositions';
+import { readStandingBulkAutomationPolicy } from '../../../attention/automation-policy';
 
 export const MAX_RUN_PLANS = 200;
 
@@ -468,6 +469,15 @@ export async function planCleanupHandler(req: Request, ctx: RouteContext): Promi
   // uses, so the two panes cannot drift into judging one profile differently.
   const preflight = preflightResolverLaunch(body.launch);
   if (!preflight.ok) return preflight.response;
+  // P-006: the workspace standing policy is the source of truth; profile
+  // policy fields are legacy launch controls and do not override it.
+  const standingPolicy = await readStandingBulkAutomationPolicy();
+  const automationPolicy = bulkAutomationSnapshot(standingPolicy);
+  const launch = {
+    ...preflight.launch,
+    automationMode: automationPolicy.mode,
+    minConfidence: automationPolicy.minConfidence,
+  };
 
   try {
     const run = await createRun({
@@ -475,11 +485,8 @@ export async function planCleanupHandler(req: Request, ctx: RouteContext): Promi
       runKind: 'plan-cleanup',
       seedRefs: planSlugs,
       filterSnapshot: filter,
-      launchSnapshot: preflight.launch,
-      automationPolicy: normalizeBulkAutomationPolicy({
-        mode: preflight.launch.automationMode,
-        minConfidence: preflight.launch.minConfidence,
-      }),
+      launchSnapshot: launch,
+      automationPolicy,
       requestedBy: 'owner',
       harnessSlug: harness,
     });

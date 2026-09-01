@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 839,
+  "count": 840,
   "tools": [
     {
       "name": "ablation:report",
@@ -14555,6 +14555,37 @@
         "when": "To check whether the improvement watchdog is running and healthy — when it last ticked, which collectors failed, what it captured vs declined vs deferred, and which standing signals the key pre-filter is dropping. The first stop for \"why did/didn't the watchdog file X?\" — and for the auto-implement lane's dispatch ledger (\"did the dispatch fire / is a worker on it / did it die?\").",
         "notWhen": "You want the captured backlog itself — improvements:digest. You want one improvement — work_items:get { id }. You want to file one — improvements:capture.",
         "chaining": "improvements:watchdog-status → work_items:get on a captured/self-escalated/dispatched id → improvements:digest for the full backlog triage."
+      }
+    },
+    {
+      "name": "inbox:automation-policy",
+      "http": {
+        "path": "/api/agent-tools/inbox/automation-policy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the standing workspace Inbox automation policy. `level` (L0 review-all, L1 delegable, L2 owner-by-right) and `minConfidence` are independent axes. L0 is the conservative default; never-auto remains unreachable. Per-run automationPolicy values are launch receipts, not this source of truth.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Changing the workspace-wide authority ladder or confidence floor for future unattended Inbox runs.",
+        "notWhen": "Inspecting what an existing run used — read its automationPolicy launch receipt instead.",
+        "chaining": "Set one axis at a time when desired; omitted fields retain their current standing value."
       }
     },
     {
@@ -31273,7 +31304,7 @@
           "POST"
         ]
       },
-      "description": "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is history-cleared instead of parking the item; authority cannot fabricate the others. Internal deps stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history. Main/:3070/green-checkpoint blockers are refused for ordinary implementation items: use staging/current-build unless a concrete deployed-only property is named with a staging limitation; final shipment and gate-repair items remain allowed.",
+      "description": "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
       "capabilities": [
         "work_items:write"
       ],
@@ -31300,7 +31331,7 @@
       "guidance": {
         "when": "Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.",
         "notWhen": "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker. Do not use a main/:3070/green-checkpoint blocker to pause ordinary implementation; staging/current-build is the acceptance plane. Only final shipment or a named deployed-only property may wait on the release plane.",
-        "chaining": "work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind from a ref naming one active blocker; pass kind when the ref is reused. Clearing the last blocker returns a feature blocked→todo or drops the issue-family claim hold."
+        "chaining": "work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind from a ref naming one active blocker; pass kind when the ref is reused."
       }
     },
     {
