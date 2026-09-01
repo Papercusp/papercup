@@ -708,6 +708,25 @@ export default defineTool({
       .default('architect')
       .describe('Role for the builder chat (default "architect").'),
   }),
+  // The materialization result is deliberately extensible (source-acquisition
+  // and builder diagnostics add fields over time). These are the documented
+  // top-level fields; passthrough keeps the compound operation lossless.
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      harnessSlug: z.string().optional(),
+      path: z.string().optional(),
+      filesCopied: z.number().int().nonnegative().optional(),
+      template: z.unknown().optional(),
+      guideBranch: z.string().nullable().optional(),
+      sourceCheckout: z.unknown().nullable().optional(),
+      supplyChain: z.unknown().optional(),
+      releaseGateTestCommand: z.unknown().optional(),
+      builder: z.unknown().optional(),
+      status: z.number().int().optional(),
+      error: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     return composeNewApp(
       {

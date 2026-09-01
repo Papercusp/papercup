@@ -451,6 +451,35 @@ export default defineTool({
       .optional()
       .describe('(stage mode) Optional deadline in seconds — omitted means the bench remains registered until the wake event fires.'),
   }),
+  // Stage and list modes intentionally share one extensible envelope. The
+  // documented refusal fields (`ok`, `error`) are explicit; passthrough keeps
+  // nested lane/bench diagnostics lossless as the coordination surface evolves.
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      error: z.string().optional(),
+      fleet: z.string().nullable().optional(),
+      member: z.string().optional(),
+      fleets: z.array(z.string()).optional(),
+      hint: z.string().optional(),
+      reason: z.string().optional(),
+      budget_ms: z.number().int().nonnegative().optional(),
+      bench_id: z.string().optional(),
+      event: z.string().optional(),
+      pattern: z.boolean().optional(),
+      stagedAssignment: z.string().nullable().optional(),
+      expires_ts: z.string().nullable().optional(),
+      registered: z.boolean().optional(),
+      wake_handle_note: z.string().optional(),
+      benched_by: z.string().nullable().optional(),
+      benched_count: z.number().int().nonnegative().optional(),
+      benched: z.array(z.unknown()).optional(),
+      lane: z.unknown().optional(),
+      forced: z.boolean().optional(),
+      force_note: z.string().optional(),
+      advice: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     // Resolved defensively (mirrors fleet:leader-brief): a read-mostly fleet
     // tool should still work for `list` even if identity resolution fails —

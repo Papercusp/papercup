@@ -48,6 +48,9 @@ describe('launchAgent', () => {
       kickoff_prompt: null,
       defer_spawn: false,
       context_size: null,
+      // WI-2140338: session compaction ceiling in tokens — null unless a goal
+      // launch profile (or explicit caller) pins one.
+      compaction_limit: null,
       // The launch body always carries the fleet/account keys, explicitly null when
       // the caller passes none — a GUI launch must never omit `account` (psu with no
       // --account opens an interactive picker that hangs the spawn). Pinned here so

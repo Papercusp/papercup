@@ -197,6 +197,30 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: argsSchema,
+  // Activation and completion are two envelopes from one audited write path.
+  // Publish their shared load-bearing fields plus the completion diagnostics;
+  // passthrough preserves the phase-specific additions without making prose a
+  // second source of response types.
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      phase: z.enum(['activation', 'completion']).optional(),
+      auditSeq: z.number().int().nonnegative().optional(),
+      auditedPlanRevision: z.unknown().optional(),
+      mappings: z.unknown().optional(),
+      sourceRefsResolved: z.number().int().nonnegative().optional(),
+      slug: z.string().optional(),
+      itemsAuditedThisPass: z.number().int().nonnegative().optional(),
+      itemsCarriedForward: z.number().int().nonnegative().optional(),
+      coverage: z.unknown().optional(),
+      uncoveredItems: z.array(z.string()).optional(),
+      partial: z.boolean().optional(),
+      problems: z.array(z.unknown()).optional(),
+      rejectedItemIds: z.array(z.string()).optional(),
+      error: z.string().optional(),
+      message: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
