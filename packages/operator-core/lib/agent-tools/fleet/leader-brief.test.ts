@@ -46,6 +46,7 @@ import {
   runBoundedLeaderBriefReads,
   runLeaderBriefWithinDeadline,
   runLeaderBriefReads,
+  resolveLeaderBriefFleet,
   selectLeaderBriefMembers,
   shouldRefreshLeaderControlForBrief,
   topExcludedFloors,
@@ -57,6 +58,74 @@ import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('resolveLeaderBriefFleet — durable leadership is the omitted-fleet authority (EI-22022804992915961)', () => {
+  const agent = {
+    presenceFleet: null as string | null,
+    ledFleets: [] as string[],
+    resolveCallerMembership: true,
+  };
+
+  it('uses the sole durable led fleet even when presence points at another fleet', () => {
+    expect(
+      resolveLeaderBriefFleet({
+        ...agent,
+        presenceFleet: 'latest-joined',
+        ledFleets: ['actually-led'],
+      }),
+    ).toEqual({ kind: 'led', fleet: 'actually-led' });
+  });
+
+  it('fails closed when the agent leads several fleets, even if presence matches one', () => {
+    expect(
+      resolveLeaderBriefFleet({
+        ...agent,
+        presenceFleet: 'fleet-b',
+        ledFleets: ['fleet-a', 'fleet-b'],
+      }),
+    ).toEqual({ kind: 'ambiguous', fleets: ['fleet-a', 'fleet-b'] });
+  });
+
+  it('fails closed when several led fleets have no matching presence target', () => {
+    expect(
+      resolveLeaderBriefFleet({
+        ...agent,
+        presenceFleet: 'not-led',
+        ledFleets: ['fleet-a', 'fleet-b'],
+      }),
+    ).toEqual({ kind: 'ambiguous', fleets: ['fleet-a', 'fleet-b'] });
+    expect(
+      resolveLeaderBriefFleet({ ...agent, ledFleets: ['fleet-a', 'fleet-b'] }),
+    ).toEqual({ kind: 'ambiguous', fleets: ['fleet-a', 'fleet-b'] });
+  });
+
+  it('preserves explicit fleet selection and read-only viewer no-target behavior', () => {
+    expect(
+      resolveLeaderBriefFleet({
+        ...agent,
+        explicitFleet: 'explicit-fleet',
+        presenceFleet: 'presence-fleet',
+        ledFleets: ['led-fleet'],
+      }),
+    ).toEqual({ kind: 'explicit', fleet: 'explicit-fleet' });
+    expect(
+      resolveLeaderBriefFleet({
+        ...agent,
+        resolveCallerMembership: false,
+        presenceFleet: 'presence-fleet',
+        ledFleets: ['led-fleet'],
+      }),
+    ).toEqual({ kind: 'none' });
+  });
+
+  it('retains presence fallback when no durable leadership exists', () => {
+    expect(resolveLeaderBriefFleet({ ...agent, presenceFleet: 'member-fleet' })).toEqual({
+      kind: 'presence',
+      fleet: 'member-fleet',
+    });
+    expect(resolveLeaderBriefFleet(agent)).toEqual({ kind: 'none' });
+  });
+});
 
 describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
   it('reuses the resolver, observation-inclusive source, occurrence writer, and builder', async () => {
