@@ -3,7 +3,7 @@
  * that stops producing turns is never noticed or acted on; handler in
  * `stalled-loops-action.ts`, sweep in `stalled-loops-guard.ts`).
  *
- *   - `sweep-stalled-loops` (hourly): disarm ACTIVE `loop-%` routines whose
+ *   - `sweep-stalled-loops` (every 5 min): disarm ACTIVE `loop-%` routines whose
  *     `computeTurnsStalled` verdict is true, then broadcast a single fleet-wide
  *     notice naming every disarmed owner. SQL + one best-effort broadcast; spawns
  *     no agent. Idempotent (an already-disarmed loop never matches `active = true`
@@ -14,6 +14,20 @@
  * ENDED), and nothing in the system ever noticed or acted on it — `turnsStalled`'s
  * only consumer was the read-only `loop:status` tool, which nobody was asking about
  * a session that was, by definition, no longer running.
+ *
+ * CADENCE (EI-22061372138351689). Originally hourly. `computeTurnsStalled` already
+ * withholds the verdict until `turnsStalledFloorMs` (>=30min) has elapsed since the
+ * last real turn, so an hourly sweep stacks a SECOND, uncontrolled delay on top of
+ * that floor: a loop that stalls moments after one sweep waits up to ~60 more
+ * minutes for the next one before recovery even starts. Measured live: a session
+ * whose last turn completed at 11:21:12Z sat black-holed — fires landing, no turn
+ * following, no reachability — until the next hourly tick at ~12:07-12:09Z, ~48
+ * minutes after the floor alone would have sufficed. The sweep itself is cheap (a
+ * handful of SELECT/UPDATEs, idempotent, at most one best-effort broadcast per
+ * pass — see siblings like gate-watcher's every-2-min and claim-integrity-sweep's
+ * every-10-min cadence), so there is no cost reason to hold it to an hour. Every 5
+ * minutes bounds the sweep's OWN contribution to <=5 min, leaving the 30-min floor
+ * as the dominant (and already well-reasoned) term.
  *
  * NOT flag-gated (pure liveness housekeeping over a signal already computed and
  * displayed by loop:status — no owner-authority surface; mirrors gc-dead-loops).
@@ -32,10 +46,11 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.STALLED_LOOPS_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
-/** Hourly at :07 past the hour — a handful of SELECT/UPDATEs plus at most one
- *  best-effort broadcast per pass. Offset from gc-plan-runs (:12) and
- *  gc-dead-loops (daily :18) so the janitors don't contend. */
-const CRON = '0 7 * * * *';
+/** Every 5 minutes — a handful of SELECT/UPDATEs plus at most one best-effort
+ *  broadcast per pass (EI-22061372138351689: was hourly at :07, which stacked up
+ *  to ~60 extra minutes of pure sweep-cadence delay on top of the verdict's own
+ *  30-min floor before a dead loop's recovery even started). */
+const CRON = '0 */5 * * * *';
 
 async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');
@@ -64,7 +79,7 @@ async function main(): Promise<void> {
   `;
   console.log(
     `[seed-stalled-loops-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `hourly sweep disarming turns-stalled loop-<ownerId> routine rows` +
+      `every-5-min sweep disarming turns-stalled loop-<ownerId> routine rows` +
       (dryRun ? ', dry_run=true' : '') +
       '.',
   );
