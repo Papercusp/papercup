@@ -36,6 +36,7 @@ import {
 } from './deploy';
 import { realDeps, realRunUnderDeployLock } from './deploy-deps';
 import type { RealDepsOpts } from './deploy-deps';
+import type { DeployParityEvent } from './deploy-parity';
 
 /** The marker the deploy CLI prints its plan JSON behind, so the release-trigger routine
  *  parses ONE delimited line instead of brace-slicing all of stdout (P-008). MUST stay in
@@ -75,6 +76,14 @@ export interface DeployCliDeps {
    *  reason) as `recordRefused`: tests inject a no-op so a coalesce-path test never
    *  writes fixture rows into production pipeline_events. */
   recordCoalesced?: (ev: { holder: string | null; holderAlive: boolean | null }) => Promise<void>;
+  /** P-015 deploy honesty: record the parity consequence of a COMPLETED deploy —
+   *  a successful FORCED (un-green) deploy opens the `deploy-parity:<harness>`
+   *  condition + standing fact (tested≠deployed is now loud + durable); a
+   *  successful GREEN deploy clears them and verifies main==origin/main
+   *  (default the real recordDeployParityAfterDeploy). Same injectable shape
+   *  (and same reason) as `recordRefused`: tests inject a no-op so they never
+   *  write live facts / coord broadcasts from a stubbed deploy. */
+  recordParity?: (ev: DeployParityEvent) => Promise<void>;
   /** EI-13729: single-flight the ENTIRE gather+execute flow (default
    *  `realRunUnderDeployLock` — the `release-deploy` resource, try-only). A
    *  concurrent `--execute` while another holds it COALESCES (skips, exit 0)
@@ -110,6 +119,7 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   const executeDeploy = injected.executeDeploy ?? realExecuteDeploy;
   const recordRefused = injected.recordRefused ?? recordRefusedDeploy;
   const recordCoalesced = injected.recordCoalesced ?? recordCoalescedDeploy;
+  const recordParity = injected.recordParity ?? recordDeployParityAfterDeploy;
   const runUnderDeployLock = injected.runUnderDeployLock ?? realRunUnderDeployLock;
 
   const arg = (flag: string): string | undefined => {
@@ -198,6 +208,17 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
 
     const res = await executeDeploy(cfg, plan, deps, { rollbackOnFailure: !has('--no-rollback') });
     out(JSON.stringify({ ok: res.ok, rolledBack: res.rolledBack, error: res.error, steps: res.steps }, null, 2));
+    // P-015 deploy honesty — best-effort AFTER the result is known: a forced
+    // success opens the tested≠deployed fact + condition; a green success
+    // clears them. Must never change the exit code (same rule as the other
+    // telemetry writers here).
+    await recordParity({
+      ok: res.ok,
+      green: plan.green,
+      targetSha: plan.targetSha,
+      installSlug: process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug(),
+      integrationRoot: cfg.integrationRoot,
+    }).catch(() => {});
     return res.ok ? 0 : 1;
   };
 
@@ -300,6 +321,13 @@ async function recordCoalescedDeploy(ev: { holder: string | null; holderAlive: b
   } catch {
     /* best-effort */
   }
+}
+
+/** P-015: the real parity recorder — lazy-imports the module (which itself
+ *  lazy-imports its PG/coord deps) so an `import` of this CLI stays light. */
+async function recordDeployParityAfterDeploy(ev: DeployParityEvent): Promise<void> {
+  const { recordDeployParity, realDeployParityDeps } = await import('./deploy-parity');
+  await recordDeployParity(ev, await realDeployParityDeps());
 }
 
 // Run as the CLI only — the ESM equivalent of `require.main === module`,

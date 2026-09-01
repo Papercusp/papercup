@@ -53,14 +53,10 @@ function makePlan(over: Partial<DeployPlan> = {}): DeployPlan {
 function makeStubDeps(over: Partial<DeployDeps> = {}): DeployDeps {
   return {
     withDrain: async (fn) => fn(),
-    readReleaseTriggerControl: async () => ({
-      name: 'release-trigger',
-      active: true,
-      cron: null,
-      lastFiredAtMs: null,
-      nextFireAtMs: null,
-      pause: null,
-    }),
+    // null is a valid RoutineInfo read ("routine not found") and keeps this stub
+    // robust to RoutineInfo widening — main() never reads it (executeDeploy is
+    // stubbed), so the value is inert here.
+    readReleaseTriggerControl: async () => null,
     readLiveReleaseCertification: async (targetSha) => ({
       status: 'certified', targetSha, certified: true, reason: 'exact source certified',
       bankPath: '/tmp/verdicts.jsonl', evidence: null, invalidLines: 0,
@@ -98,7 +94,11 @@ const alwaysAcquires = async <T>(fn: () => Promise<T>): Promise<{ acquired: true
   result: await fn(),
 });
 
-const silent = { out: () => {}, err: () => {}, runUnderDeployLock: alwaysAcquires };
+// P-015: recordParity defaults to the REAL fact/coord writer — stubbed here so
+// no test ever writes live facts or severe-event broadcasts from a stubbed
+// deploy (same rule as recordRefused/recordCoalesced). Tests that assert on it
+// override with their own vi.fn.
+const silent = { out: () => {}, err: () => {}, runUnderDeployLock: alwaysAcquires, recordParity: async () => {} };
 
 describe('deploy-cli main() — the gate chokepoint', () => {
   it('REFUSES a non-green target without --force → exit 2, executeDeploy NEVER called', async () => {
@@ -304,7 +304,9 @@ describe('deploy-cli main() — the gate chokepoint', () => {
     const runUnderDeployLock = vi.fn(alwaysAcquires);
     const code = await main({
       ...silent,
-      runUnderDeployLock,
+      // The Mock<> wrapper narrows the generic return below the field's union
+      // type; the underlying function shape is exactly alwaysAcquires.
+      runUnderDeployLock: runUnderDeployLock as typeof alwaysAcquires,
       argv: ['node', 'deploy-cli.ts'],
       cfg,
       gatherPlan: async () => makePlan({ green: true }),
@@ -327,5 +329,46 @@ describe('deploy-cli main() — the gate chokepoint', () => {
       executeDeploy,
     });
     expect(executeDeploy.mock.calls[0]![3]).toEqual({ rollbackOnFailure: false });
+  });
+
+  it('P-015: a COMPLETED deploy reports its parity consequence — forced ok → { ok:true, green:false }', async () => {
+    const recordParity = vi.fn(async () => {});
+    const plan = makePlan({ green: false, forced: true, noop: false });
+    const code = await main({
+      ...silent,
+      recordParity,
+      argv: ['node', 'deploy-cli.ts', '--force', '--execute'],
+      cfg,
+      gatherPlan: async () => plan,
+      makeDeps: () => makeStubDeps(),
+      executeDeploy: async () => okResult(plan),
+    });
+    expect(code).toBe(0);
+    expect(recordParity).toHaveBeenCalledTimes(1);
+    expect(recordParity).toHaveBeenCalledWith({
+      ok: true,
+      green: false,
+      targetSha: plan.targetSha,
+      installSlug: expect.any(String),
+      integrationRoot: cfg.integrationRoot,
+    });
+  });
+
+  it('P-015: a parity-recorder failure never changes the exit code (best-effort by construction)', async () => {
+    const recordParity = vi.fn(async () => {
+      throw new Error('facts store unreachable');
+    });
+    const plan = makePlan({ green: true, noop: false });
+    const code = await main({
+      ...silent,
+      recordParity,
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: async () => plan,
+      makeDeps: () => makeStubDeps(),
+      executeDeploy: async () => okResult(plan),
+    });
+    expect(recordParity).toHaveBeenCalledTimes(1);
+    expect(code).toBe(0);
   });
 });
