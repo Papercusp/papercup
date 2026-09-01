@@ -1286,7 +1286,7 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
       fleetRole: 'member',
       sql,
     });
-    expect(res).toEqual({ armed: false, reason: 'no-plan-bound' });
+    expect(res).toEqual({ armed: false, reason: 'no-claim-spec-bound' });
     expect(await getLoopStatus('su-unplanned-member-test', { sql })).toBeNull();
   });
 
