@@ -558,7 +558,21 @@ export async function checkCodexRolloutPersistence(
       if (verdict.stalled && verdict.reason) {
         stalled.push({ snapshot, reason: verdict.reason, workspaceId: row.workspace_id });
       }
-      if (snapshot.pidAlive && read.rolloutPath) {
+      // EI-22057873022417601: provider terminal records are authoritative even
+      // when adv_sessions.pid is NULL. Interactive psu sessions (and their
+      // carry-respawn successors) can keep one open adv row without a launcher
+      // pid while the managed host and native rollout remain live. Gating this
+      // scan on pidAlive made every such session invisible to the three-failure
+      // cleanup: the affected successor accepted five turns, each ending in
+      // task_complete.error, while the watchdog skipped its readable rollout.
+      //
+      // The PID gate still belongs to the rollout-persistence freshness alarm
+      // above, where a dead process must not be called stalled. It is neither
+      // needed nor desirable here: the query already selects non-ended Codex
+      // rows, a successful terminal resets the trailing failure streak, and a
+      // stale open row whose rollout ends in repeated provider failures should
+      // be closed by this cleanup too.
+      if (read.rolloutPath) {
         let tail: string | null = null;
         try {
           tail = await (opts.readRolloutTail ?? readCodexRolloutTail)(

@@ -210,6 +210,50 @@ describe('checkCodexRolloutPersistence provider cleanup', () => {
     }
   });
 
+  it('detects repeated provider failures for an open PID-less psu/carry-respawn session', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codex-watchdog-pidless-'));
+    const previousHome = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+    process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
+    const day = join(root, 'session-44', 'sessions', '2026', '08', '27');
+    await mkdir(day, { recursive: true });
+    await writeFile(
+      join(day, 'rollout-2026-08-27T00-00-00-session-44.jsonl'),
+      [
+        providerTaskCompleteLine('t-1', 'internal_server_error', 'high demand'),
+        providerTaskCompleteLine('t-2', 'internal_server_error', 'high demand'),
+        providerTaskCompleteLine('t-3', 'internal_server_error', 'high demand'),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+    const sql = (async (strings: TemplateStringsArray): Promise<unknown[]> => {
+      const query = strings.join('');
+      if (query.includes('SELECT id, coord_owner_id AS owner_id')) {
+        return [{ id: 44, owner_id: 'owner-44', pid: null, workspace_id: 'workspace-1' }];
+      }
+      if (query.includes('INSERT INTO harness_shared.harness_escalations')) {
+        return [{ phase: 'codex-provider-failure:44' }];
+      }
+      return [];
+    }) as unknown;
+
+    try {
+      const result = await checkCodexRolloutPersistence(sql as never, {
+        pidAlive: () => {
+          throw new Error('a NULL pid must not be probed');
+        },
+      });
+      expect(result.providerFailureSessionIds).toEqual(['44']);
+      expect(result.providerAlarmed).toEqual(['44']);
+      expect(result.providerEndedSessionIds).toEqual(['44']);
+      expect(lifecycleMocks.endSession).toHaveBeenCalledWith(44, null, 'reconciler', { throwOnError: true });
+      expect(lifecycleMocks.releaseWorkItems).toHaveBeenCalledWith('owner-44');
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+      else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = previousHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not release wakes or claims when the authoritative end write fails', async () => {
     const root = await mkdtemp(join(tmpdir(), 'codex-watchdog-end-failure-'));
     const previousHome = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;

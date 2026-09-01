@@ -266,6 +266,9 @@ function undeclaredTypeReferences(bindings: string): string[] {
       if (name) declared.add(name);
     }
   }
+  for (const m of code.matchAll(/\bimport\s+\*\s+as\s+([A-Za-z_$][\w$]*)/g)) {
+    declared.add(m[1]);
+  }
   // Generic parameters, e.g. `function typedError<T, E>(...)` / `type Foo<T> = ...`.
   for (const m of code.matchAll(/\b(?:function|type|interface|class)\s+[\w$]+\s*<([^>]*)>/g)) {
     for (const param of m[1].split(',')) {
