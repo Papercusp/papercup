@@ -703,6 +703,28 @@ const fieldProvenanceArg = z
       'than authored, so adoption measurement never counts them as sender intent.',
   );
 
+/**
+ * D-084 / D-002: `basedOn` is an envelope output, never caller input.
+ *
+ * Keep the field declared in both generated input schemas so a deferred caller
+ * gets the contract (and a useful refusal) instead of the generic unknown-key
+ * error. `deriveBasedOn` remains the only writer; accepting authored provenance
+ * here would let a sender claim reads the invocation log cannot support.
+ */
+const basedOnArg = z
+  .never({
+    error:
+      '`basedOn` is OUTPUT-ONLY: the send seam auto-derives it from this session\'s recent reads. ' +
+      'Do not author or pass it; omit `basedOn` from the request. If you need to explain a claim, ' +
+      'use the authored `body[].premises` field instead.',
+  })
+  .optional()
+  .describe(
+    'OUTPUT-ONLY — `basedOn` is auto-derived from this session\'s recent reads and stamped on the ' +
+      'envelope after validation. Never author or pass it; omit this field. Use `body[].premises` ' +
+      'for authored claim references.',
+  );
+
 // EI-19295149246007753 guard (b): exported so send-arg-shape.test.ts can assert
 // FIELD-NAME PARITY between this (the items[] axis's canonical field set) and the
 // top-level single-form object schema below — the residual risk after fix (a): a
@@ -722,6 +744,7 @@ export const itemSpec = z.object({
   // `body[]`, and message-fields.ts REFUSES either half on the wrong side.
   blocking: blockingArg,
   why: whyArg,
+  basedOn: basedOnArg,
   files: z.array(z.string()).optional(),
   // P-005/D-097: normally supplied by the send seam from the sender's declared
   // plan lane, so the arg exists only to OVERRIDE. Said here because tier 1's
@@ -2222,9 +2245,9 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. `why` is { goalRef, note? }, not prose. `body[].blockedOn` names a section\'s wait (structured, diffable). `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
+    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. `why` is { goalRef, note? }, not prose. `basedOn` is OUTPUT-ONLY and auto-derived from recent reads — omit it; use `body[].premises` for authored claim references. `body[].blockedOn` names a section\'s wait (structured, diffable). `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
   guidance: {
-    when: 'Share context or ask. The `summary` is the required inbox headline; include `to` and `expects`; `body` is for detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, none exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. Waiting on something? `blockedOn: { kind, ref }` on the section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
+    when: 'Share context or ask. The `summary` is the required inbox headline; include `to` and `expects`; `body` is for detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, none exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. `basedOn` is OUTPUT-ONLY and auto-derived from recent reads — omit it; use `body[].premises` for authored claim references. Waiting on something? `blockedOn: { kind, ref }` on the section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
     argRedirects: sectionOnlyArgRedirects,
     returns:
       'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. A body above the 600-character default inbox cap is refused before a load-bearing expects:ack/answer/action send; an expects:none FYI may persist with top-level `bodyDeliveryWarning` because truncation is then explicit. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
@@ -2573,6 +2596,7 @@ export default defineTool({
     // per-section.
     blocking: blockingArg,
     why: whyArg,
+    basedOn: basedOnArg,
     fieldProvenance: fieldProvenanceArg,
     files: z.array(z.string()).optional(),
     plan_slug: z.string().optional(),
