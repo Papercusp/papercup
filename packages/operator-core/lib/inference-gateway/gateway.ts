@@ -1775,6 +1775,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const codexTiered = !!codexTierLayer;
   const tierMap = tierLayer?.map;
   const codexTierMap = codexTierLayer?.map;
+  /**
+   * One absorb-budget calculation for every provider lane. The lane-neutral
+   * recovery decision consumes only the resulting deadline; role/tier policy
+   * stays here at the gateway boundary where request headers are available.
+   */
+  const absorbDeadlineForRequest = (
+    req: http.IncomingMessage,
+    requestTierMap: PriorityTierMap | undefined,
+  ): number => {
+    const priLabel = effectivePriorityLabel(req.headers);
+    const reqTier = requestTierMap ? tierOf(priLabel ?? undefined, requestTierMap) : undefined;
+    let effectiveMs = requestAbsorbMs > 0 ? Math.round(requestAbsorbMs * absorbTierFactor(reqTier)) : 0;
+    if (
+      interactiveAbsorbMs > 0 &&
+      effectiveMs > interactiveAbsorbMs &&
+      priLabel !== undefined &&
+      HUMAN_PRIORITY_LABELS.has(priLabel)
+    ) {
+      effectiveMs = interactiveAbsorbMs;
+    }
+    return effectiveMs > 0 ? Date.now() + effectiveMs : 0;
+  };
   const baseTierCaps: Record<number, number> = { ...(tierLayer?.config.caps ?? {}) };
   const codexBaseTierCaps: Record<number, number> = { ...(codexTierLayer?.config.caps ?? {}) };
   const queue = new PriorityAdmissionQueue({
@@ -4052,20 +4074,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // park-retry loop and finally shed. 0 = OFF (the slot-hold deadline above is the only bound, as before).
       // P-003 (safe variant): scale the budget by the request's TIER so a high-priority caller out-waits a batch
       // one for the recovered account (the priority-throttle-park OUTCOME, no governor wait-queue). Identity off.
-      const priLabel = effectivePriorityLabel(req.headers);
-      const reqTier = tierMap ? tierOf(priLabel ?? undefined, tierMap) : undefined;
-      let effAbsorbMs = requestAbsorbMs > 0 ? Math.round(requestAbsorbMs * absorbTierFactor(reqTier)) : 0;
-      // INTERACTIVE FAIL-FAST: a human-facing caller (interactive/operator) sheds fast instead of being held
-      // through the storm — cap their absorb (see INTERACTIVE_ABSORB_MS). Autonomous roles keep the full hold.
-      if (
-        interactiveAbsorbMs > 0 &&
-        effAbsorbMs > interactiveAbsorbMs &&
-        priLabel !== undefined &&
-        HUMAN_PRIORITY_LABELS.has(priLabel)
-      ) {
-        effAbsorbMs = interactiveAbsorbMs;
-      }
-      const absorbDeadlineAt = effAbsorbMs > 0 ? Date.now() + effAbsorbMs : 0;
+      const absorbDeadlineAt = absorbDeadlineForRequest(req, tierMap);
 
       /*
        * KERNEL ADOPTION — plan `gateway-kernel-adoption-2026-08-29`, P-006.
@@ -4913,7 +4922,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   // and absorb have all failed on a HARD opus wall, so opus is
                   // exhausted pool-wide. An opus-floored critical role would
                   // otherwise hard-fail here; sonnet-vs-nothing wins.
-                  if (!opusDowngraded && !transient && (status === 403 || status === 429) && model.includes('opus')) {
+                  if (
+                    !opusDowngraded &&
+                    !decision.transient &&
+                    (status === 403 || status === 429) &&
+                    model.includes('opus')
+                  ) {
                     interception.taken = { ...base, action: 'downgrade', waitMs: 0, backoffMs: 0 };
                     throw INTERCEPT;
                   }
@@ -6870,8 +6884,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
    * than reading kernel route internals; typing it `unknown` states that honestly and keeps
    * one shared seam usable at every site instead of one bespoke type per transport.
    */
+  class GatewayLanePark extends Error {
+    constructor(
+      readonly wait: () => Promise<void>,
+      readonly resume: () => Promise<unknown>,
+    ) {
+      super('inference-gateway: provider lane parked for recovery');
+      this.name = 'GatewayLanePark';
+    }
+  }
+
   type GatewayLaneAdmission = {
     run<TResult>(context: unknown, task: () => Promise<TResult>): Promise<TResult>;
+    /**
+     * Cooperatively settle the current lane task (releasing its queue slot), do
+     * bounded work while holding no slot, then re-enter with a continuation that
+     * captures the request's already-parsed state. Only the real provider-lane
+     * controller implements this; the kernel-facing `run` remains pass-through.
+     */
+    park?<TResult>(wait: () => Promise<void>, resume: () => Promise<TResult>): Promise<TResult>;
   };
 
   /**
@@ -6920,7 +6951,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     url: string,
     laneAdmission: GatewayLaneAdmission,
   ): Promise<void> {
-    return laneAdmission.run(undefined, () => proxyOpenAiAdmitted(req, res, url, passThroughLaneAdmission));
+    const admittedLaneControl: GatewayLaneAdmission = laneAdmission.park
+      ? {
+          run: passThroughLaneAdmission.run,
+          park: laneAdmission.park,
+        }
+      : passThroughLaneAdmission;
+    return laneAdmission.run(undefined, () => proxyOpenAiAdmitted(req, res, url, admittedLaneControl));
   }
 
   const legacyAdmissionSignal = new AbortController().signal;
@@ -7878,8 +7915,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
      * `inFlightReg` for `oldestHeldSlotAgeMs` and for reclaim targeting, so a merely-QUEUED
      * request there could be destroyed while holding no slot.
      */
-    const providerLaneAdmission: GatewayLaneAdmission = {
-      run: (_context, task) => {
+    const runProviderLaneTask = <TResult>(task: () => Promise<TResult>): Promise<TResult> => {
         stageSpan?.admissionQueued('provider', providerAdmissionObservation());
         return admissionQueue.run(
           pri,
@@ -7921,6 +7957,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
           },
           tier !== undefined ? { tier } : undefined,
         );
+    };
+    const providerLaneAdmission: GatewayLaneAdmission = {
+      run: async (_context, initialTask) => {
+        let task = initialTask;
+        for (;;) {
+          try {
+            return await runProviderLaneTask(task);
+          } catch (error) {
+            if (!(error instanceof GatewayLanePark)) throw error;
+            await error.wait();
+            task = error.resume as typeof task;
+          }
+        }
+      },
+      park: async (wait, resume) => {
+        throw new GatewayLanePark(wait, resume);
       },
     };
     // P-011 / D-027: the last two lanes left the strangler bridge together. They share one
