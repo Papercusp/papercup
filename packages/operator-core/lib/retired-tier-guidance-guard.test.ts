@@ -234,6 +234,44 @@ describe('authorization role lists are access-control data, not guidance', () =>
     ).toBeGreaterThan(0);
   });
 
+  // EI-22050938303232651 — the SHORT denial form the majority of agent-tools sites use.
+  // The fixture deliberately pairs it with the `review` / `owner` words that make the
+  // segment eligible, exactly as inbox/automation-policy.ts's description does; without
+  // them the case would pass for the wrong reason (no authority word, never eligible).
+  it('does not flag the short operator-config authorization-denial form', () => {
+    expect(
+      offenders(
+        't.ts',
+        `const description = 'Read or set the policy. L0 review-all, L2 owner-by-right.'; if (!ok) throw new Error('config:doors-set requires operator, architect, or mug role');`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not flag the short form with a plural verb ("writes require …")', () => {
+    expect(
+      offenders(
+        't.ts',
+        `const description = 'Read or set the standing policy. L0 review-all, L2 owner-by-right.'; if (!ok) throw new Error('inbox:automation-policy writes require operator, architect, or mug role');`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('still flags a real prescription adjacent to the short authorization form', () => {
+    expect(
+      offenders(
+        't.ts',
+        `const d = 'config:doors-set requires operator, architect, or mug role; the Mug dispatches work.';`,
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('preserves length and line positions for the short form', () => {
+    const source = `const e = 'config:doors-set requires operator, architect, or mug role';\nconst d = 'The Mug dispatches work.';\n`;
+    const normalized = guidanceTextFor('t.ts', source);
+    expect(normalized).toHaveLength(source.length);
+    expect(offenders('t.ts', source).map((o: { line: number }) => o.line)).toEqual([2]);
+  });
+
   it('does not turn an ordinary role mention into an authorization exemption', () => {
     expect(offenders('t.ts', `const d = 'The Mug dispatches work; it requires the operator.';`).length).toBeGreaterThan(0);
   });

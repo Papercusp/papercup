@@ -239,10 +239,21 @@ function blankRoleConfigKeys(text) {
  * the exact operator-config authorization list is blanked. A real prescription
  * elsewhere in the same clause remains visible. Blanking is length-preserving,
  * so reported line numbers stay exact.
+ *
+ * The predicate's callers spell the denial two ways, and BOTH are the same
+ * access-control value (measured 2026-09-01: 25 `agent-tools` sites use the
+ * short form, 6 the long one):
+ *   · long:  `… requires an operator-config write role (operator, architect, or mug …`
+ *   · short: `… requires operator, architect, or mug role` — also with the plural
+ *            verb, `… writes require operator, architect, or mug role`.
+ * Recognising only the long form is how `inbox/automation-policy.ts` was reported
+ * as a retired-executor prescription (EI-22050938303232651): its short-form denial
+ * shares a segment with a `description` that legitimately says `review` and
+ * `owner`, and the un-blanked `mug` supplied the role half of the offence.
  */
 function blankRoleAuthorizationLists(text) {
   const AUTHORIZATION_LIST_RE =
-    /\brequires\s+(?:an\s+)?operator-config\s+write\s+role\s*\(\s*operator\s*,\s*architect\s*,\s*or\s*(queen|mug|kettle)\b/gi;
+    /\brequires?\s+(?:an?\s+)?(?:operator-config\s+write\s+role\s*\(\s*)?operator\s*,\s*architect\s*,\s*or\s*(queen|mug|kettle)\b/gi;
   const chars = text.split("");
   AUTHORIZATION_LIST_RE.lastIndex = 0;
   for (const match of text.matchAll(AUTHORIZATION_LIST_RE)) {
