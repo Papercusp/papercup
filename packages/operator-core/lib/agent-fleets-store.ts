@@ -295,7 +295,7 @@ export interface FleetHeadcountConfig {
   /** Inline fleet-specific first-turn brief, composed with the member baseline at launch. */
   brief?: string;
   launchContext?: string;
-  contextSize?: 'trimmed';
+  contextSize?: 'trimmed' | 'steward';
   compactionLimit?: number;
   carry?: 'warm' | 'cold';
   extraArgs?: string[];
