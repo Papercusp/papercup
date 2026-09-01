@@ -1,7 +1,10 @@
+import { homedir } from "node:os";
+
 import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES,
+  NodeWorkspaceHostAgentProbeRunner,
   WORKSPACE_HOST_CANARY_AGENTS,
   probeWorkspaceHostAgentAuthentication,
   probeWorkspaceHostAgents,
@@ -10,7 +13,7 @@ import {
   type WorkspaceHostAgentProbeOutcome,
   type WorkspaceHostAgentProbeRunner,
   type WorkspaceHostCanaryAgent,
-} from './workspace-host-agent-authentication';
+} from "./workspace-host-agent-authentication";
 
 const NOW = () => new Date('2026-08-25T22:30:00.000Z');
 
@@ -190,6 +193,22 @@ describe('workspace-host agent authentication probes', () => {
       expect(invocation.timeoutMs).toBeGreaterThan(0);
       expect(Number.isFinite(invocation.timeoutMs)).toBe(true);
     }
+  });
+
+  it("uses a supplied probe environment as the complete child environment", async () => {
+    const home = homedir();
+    const outcome = await new NodeWorkspaceHostAgentProbeRunner().run({
+      command: "/usr/bin/env",
+      args: [],
+      timeoutMs: 5_000,
+      env: { HOME: home, USER: "workspace", PROBE_SENTINEL: "present" },
+    });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stdout).toContain("PROBE_SENTINEL=present");
+    expect(outcome.stdout).toContain(`HOME=${home}`);
+    expect(outcome.stdout).not.toContain("OPENAI_API_KEY=");
+    expect(outcome.stdout).not.toContain("ANTHROPIC_API_KEY=");
+    expect(outcome.stdout).not.toContain("PATH=");
   });
 
   it('gives the same account a stable digest and different accounts different digests', () => {

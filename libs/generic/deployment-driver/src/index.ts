@@ -320,6 +320,9 @@ export {
   WORKSPACE_HOST_RUNTIME_ROOT,
   WORKSPACE_HOST_STATE_ROOT,
   WORKSPACE_HOST_DATA_ROOT,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
+  WORKSPACE_HOST_PRIVILEGED_CONDUIT_SUDOERS,
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
   WORKSPACE_HOST_BOOTSTRAP_CHECKS,
   WORKSPACE_HOST_GLIBC_SONAMES,
@@ -487,6 +490,33 @@ export {
   createProductionWorkspaceHostCredentialMaterializers,
   createProductionWorkspaceHostRemoteInitializerDeps,
 } from "./workspace-host-remote-initializer-host";
+
+export type {
+  WorkspaceHostAgentHomeFamily,
+  WorkspaceHostAgentHomeFile,
+  WorkspaceHostAgentHomeBundle,
+  WorkspaceHostAgentHomeState,
+  WorkspaceHostAgentHomeFilesystem,
+  WorkspaceHostAgentHomeConsumerOptions,
+  WorkspaceHostAgentHomeConsumerEvidence,
+} from "./workspace-host-agent-home";
+export {
+  WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+  WORKSPACE_HOST_AGENT_HOME_FILES,
+  WORKSPACE_HOST_AGENT_HOME_STATE_VERSION,
+  WORKSPACE_HOST_AGENT_HOME_FAMILIES,
+  WorkspaceHostAgentHomeStateError,
+  WorkspaceHostAgentHomeBundleError,
+  WorkspaceHostAgentHomeConsumer,
+  parseWorkspaceHostAgentHomeBundle,
+  encodeWorkspaceHostAgentHomeBundle,
+  workspaceHostAgentHomePaths,
+  workspaceHostAgentHomeDirectories,
+  workspaceHostAgentHomeStatePath,
+  encodeWorkspaceHostAgentHomeState,
+  parseWorkspaceHostAgentHomeState,
+  requireExplicitWorkspaceHostHome,
+} from "./workspace-host-agent-home";
 
 // Credential MATERIAL DELIVERY (D-215). A separate protocol, entrypoint and bin from the remote
 // initializer above, because the two programs have opposite relationships with secret material:

@@ -123,7 +123,10 @@ class RecordingHost implements WorkspaceHostRemoteInitializerHost {
   constructor(
     private readonly options: {
       readonly agents?: WorkspaceHostAgentAuthenticationReport;
-      readonly repository?: { visibility: 'public' | 'private'; cloned: boolean };
+      readonly repository?: {
+        visibility: "public" | "private";
+        cloned: boolean;
+      };
       readonly evidence?: Record<string, unknown>;
       readonly clock?: () => Date;
     } = {},
@@ -134,28 +137,39 @@ class RecordingHost implements WorkspaceHostRemoteInitializerHost {
     // handler finished rather than when the request was parsed.
     const ranAt = this.options.clock?.().toISOString();
     this.calls.push({ op, input });
-    return Promise.resolve({ ...(this.options.evidence ?? { op }), ...(ranAt ? { ranAt } : {}) });
+    return Promise.resolve({
+      ...(this.options.evidence ?? { op }),
+      ...(ranAt ? { ranAt } : {}),
+    });
   }
 
   createWorkspace(input: unknown) {
-    return this.record('createWorkspace', input);
+    return this.record("createWorkspace", input);
   }
   cloneRepository(input: unknown) {
-    return this.record('cloneRepository', input);
+    return this.record("cloneRepository", input);
   }
   pairWorkspace(input: unknown) {
-    return this.record('pairWorkspace', input);
+    return this.record("pairWorkspace", input);
   }
   importWorkspace(input: unknown) {
-    return this.record('importWorkspace', input);
+    return this.record("importWorkspace", input);
   }
   probeAgentAuthentication(): Promise<WorkspaceHostAgentAuthenticationReport> {
-    this.calls.push({ op: 'probeAgentAuthentication', input: undefined });
+    this.calls.push({ op: "probeAgentAuthentication", input: undefined });
     return Promise.resolve(this.options.agents ?? agentReport());
   }
-  describeClonedRepository() {
-    this.calls.push({ op: 'describeClonedRepository', input: undefined });
-    return Promise.resolve(this.options.repository ?? { visibility: 'private' as const, cloned: true });
+  describeClonedRepository(input?: {
+    destination: string;
+    visibility: "public" | "private";
+  }) {
+    this.calls.push({ op: "describeClonedRepository", input });
+    return Promise.resolve(
+      this.options.repository ?? {
+        visibility: "private" as const,
+        cloned: true,
+      },
+    );
   }
 }
 
@@ -274,31 +288,35 @@ function lifecycleDelivery(generation = 1): WorkspaceHostCredentialDeliverySet {
 
 /** Valid `input` for each of the six step kinds — the table every dispatch test walks. */
 const STEP_INPUTS: Record<string, Record<string, unknown>> = {
-  'create-workspace': { workspaceId: 'ws-1', hostId: 'byoc-canary-01' },
-  'clone-repository': {
-    repositoryUrl: 'https://github.com/Papercusp/papercusp-byoc-canary.git',
-    visibility: 'private',
-    destination: '/srv/workspace/repo',
-    credentialChannel: 'git',
+  "create-workspace": { workspaceId: "ws-1", hostId: "byoc-canary-01" },
+  "clone-repository": {
+    repositoryUrl: "https://github.com/Papercusp/papercusp-byoc-canary.git",
+    visibility: "private",
+    destination: "/srv/workspace/repo",
+    credentialChannel: "git",
   },
-  'pair-workspace': {
-    sourceWorkspaceId: 'ws-source',
-    pairingReference: { kind: 'pairing', ref: 'pair-abc' },
-    include: ['repositories'],
+  "pair-workspace": {
+    sourceWorkspaceId: "ws-source",
+    pairingReference: { kind: "pairing", ref: "pair-abc" },
+    include: ["repositories"],
   },
-  'import-workspace': {
-    sourceWorkspaceId: 'ws-source',
-    sourceSnapshotRef: 'snap-1',
-    include: ['files'],
+  "import-workspace": {
+    sourceWorkspaceId: "ws-source",
+    sourceSnapshotRef: "snap-1",
+    include: ["files"],
   },
-  'bind-credential': gitBindInput(),
-  'verify-initialization': { sourceKind: 'repository', requiredChannels: ['cloud', 'git', 'agent'] },
+  "bind-credential": gitBindInput(),
+  "verify-initialization": {
+    sourceKind: "git",
+    requiredChannels: ["cloud", "git", "agent"],
+    repository: { destination: "repositories/private", visibility: "private" },
+  },
   // The four credential-lifecycle kinds (D-114). They take the SAME flattened input as
   // bind-credential, which is the property that lets one wire envelope serve both families.
   bind: gitBindInput(),
-  'verify-bound': gitBindInput(),
+  "verify-bound": gitBindInput(),
   revoke: gitBindInput(),
-  'verify-revoked': gitBindInput(),
+  "verify-revoked": gitBindInput(),
 };
 
 /** The host seam (or resolver) each kind must reach. */
@@ -866,16 +884,21 @@ describe('executeWorkspaceHostRemoteInitializerStep', () => {
         deps,
       );
       expect(response.publicEvidence).toMatchObject({
-        sourceKind: 'repository',
-        requiredChannels: ['cloud', 'git', 'agent'],
-        repository: { visibility: 'private', cloned: true },
-        agentContractVersion: WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
+        sourceKind: "git",
+        requiredChannels: ["cloud", "git", "agent"],
+        repository: { visibility: "private", cloned: true },
+        agentContractVersion:
+          WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
       });
       const agents = (response.publicEvidence as { agents: Record<string, { authenticated: boolean }> })
         .agents;
       for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
         expect(agents[agent].authenticated).toBe(true);
       }
+      expect(deps.host.calls).toContainEqual({
+        op: "describeClonedRepository",
+        input: { destination: "repositories/private", visibility: "private" },
+      });
     });
 
     it('THROWS when an agent is not authenticated, rather than reporting it in evidence', async () => {
@@ -906,11 +929,28 @@ describe('executeWorkspaceHostRemoteInitializerStep', () => {
       await expect(
         executeWorkspaceHostRemoteInitializerStep(
           parseWorkspaceHostRemoteInitializerRequest(
-            request('verify-initialization', { sourceKind: 'repository', requiredChannels: 'git' }),
+            request("verify-initialization", {
+              sourceKind: "git",
+              requiredChannels: "git",
+            }),
           ),
           makeDeps(),
         ),
       ).rejects.toThrow(/requiredChannels must be an array of strings/);
+    });
+
+    it("requires a repository destination and visibility for a git source", async () => {
+      await expect(
+        executeWorkspaceHostRemoteInitializerStep(
+          parseWorkspaceHostRemoteInitializerRequest(
+            request("verify-initialization", {
+              sourceKind: "git",
+              requiredChannels: ["cloud", "git", "agent"],
+            }),
+          ),
+          makeDeps(),
+        ),
+      ).rejects.toThrow(/step.input.repository must be an object/);
     });
   });
 });

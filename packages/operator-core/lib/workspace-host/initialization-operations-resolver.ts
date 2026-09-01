@@ -33,9 +33,9 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 // @ts-expect-error -- buildless plain-JS mutex module intentionally has no declaration file.
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import {
-  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
-  WORKSPACE_HOST_RUNTIME_ROOT,
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
   type WorkspaceHostDeliveryCapabilities,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostInitializationHostOperations,
@@ -470,16 +470,8 @@ const CONTROLLER_ENV = {
   gcloudExecutable: 'PAPERCUSP_WORKSPACE_HOST_GCLOUD_EXECUTABLE',
 } as const;
 
-const DEFAULT_CONTROLLER_REMOTE_ENTRYPOINT = join(
-  WORKSPACE_HOST_RUNTIME_ROOT,
-  'current',
-  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.remoteInitializer,
-);
-const DEFAULT_CONTROLLER_DELIVERY_ENTRYPOINT = join(
-  WORKSPACE_HOST_RUNTIME_ROOT,
-  'current',
-  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.credentialDelivery,
-);
+const DEFAULT_CONTROLLER_REMOTE_ENTRYPOINT = WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT;
+const DEFAULT_CONTROLLER_DELIVERY_ENTRYPOINT = WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT;
 const SYSTEMD_STATE_DIRECTORY_ENV = 'STATE_DIRECTORY';
 
 /**

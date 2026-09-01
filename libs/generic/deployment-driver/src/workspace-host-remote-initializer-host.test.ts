@@ -2,19 +2,35 @@ import { describe, expect, it } from 'vitest';
 
 import {
   WorkspaceHostOperationError,
+  WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT,
   createProductionWorkspaceHostRemoteInitializerDeps,
   type WorkspaceHostCommandInput,
   type WorkspaceHostSystem,
-} from './workspace-host-remote-initializer-host';
+} from "./workspace-host-remote-initializer-host";
+import { WORKSPACE_HOST_DATA_ROOT } from "./workspace-host-bootstrap";
+import {
+  encodeWorkspaceHostAgentHomeBundle,
+  workspaceHostAgentHomePaths,
+} from "./workspace-host-agent-home";
 import {
   buildWorkspaceHostCredentialReference,
   buildWorkspaceHostCredentialRevocationReference,
 } from './workspace-host-credential-namespace';
+import { workspaceHostCredentialMaterialPath } from "./workspace-host-credential-delivery";
+import type {
+  WorkspaceHostAgentProbeInvocation,
+  WorkspaceHostAgentProbeRunner,
+} from "./workspace-host-agent-authentication";
 
 const MATERIAL_ROOT = '/credentials';
-const MATERIAL_PATH = `${MATERIAL_ROOT}/git-short-lived-delegation/7/material`;
+const MATERIAL_PATH = workspaceHostCredentialMaterialPath(
+  MATERIAL_ROOT,
+  "git-short-lived-delegation",
+  7,
+);
 const AUTHORIZATION_MATERIAL = 'https://git-user:private-token-value@github.com';
 const NOW = new Date('2026-08-26T22:00:00.000Z');
+const AGENT_FIELDS = { hostId: "host-1", agentSet: "claude-codex-omp" };
 
 class RecordingSystem implements WorkspaceHostSystem {
   readonly commands: WorkspaceHostCommandInput[] = [];
@@ -47,8 +63,17 @@ class RecordingSystem implements WorkspaceHostSystem {
   }
 }
 
-function gitBinding(expiresAt = '2026-08-26T23:00:00.000Z') {
-  const fields = { forge: 'github', owner: 'papercupai', repository: 'private-canary' };
+function place(system: RecordingSystem, path: string, bytes: Buffer): void {
+  system.files.set(path, Buffer.from(bytes));
+  system.present.add(path);
+}
+
+function gitBinding(expiresAt = "2026-08-26T23:00:00.000Z", generation = 7) {
+  const fields = {
+    forge: "github",
+    owner: "papercupai",
+    repository: "private-canary",
+  };
   return {
     channel: "git" as const,
     credentialRef: {
@@ -60,13 +85,37 @@ function gitBinding(expiresAt = '2026-08-26T23:00:00.000Z') {
     },
     delivery: {
       kind: "short-lived-delegation" as const,
-      generation: 7,
+      generation,
       audience: "workspace-host-canary",
       expiresAt,
       revocationRef: buildWorkspaceHostCredentialRevocationReference(
         "git-short-lived-delegation",
         fields,
-        7,
+        generation,
+      ),
+    },
+    requestedAt: "2026-08-26T21:00:00.000Z",
+  };
+}
+
+function agentBinding(generation = 7) {
+  return {
+    channel: "agent" as const,
+    credentialRef: {
+      kind: "agent" as const,
+      ref: buildWorkspaceHostCredentialReference(
+        "agent-encrypted-reference",
+        AGENT_FIELDS,
+      ),
+    },
+    delivery: {
+      kind: "encrypted-reference" as const,
+      generation,
+      audience: "workspace-host-canary",
+      revocationRef: buildWorkspaceHostCredentialRevocationReference(
+        "agent-encrypted-reference",
+        AGENT_FIELDS,
+        generation,
       ),
     },
     requestedAt: "2026-08-26T21:00:00.000Z",
@@ -84,105 +133,250 @@ function fixture() {
   return { system, deps };
 }
 
-describe('ProductionWorkspaceHostRemoteInitializerHost private Git credentials', () => {
-  it('consumes only bound git-channel material outside argv and public evidence', async () => {
+describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials", () => {
+  it("consumes only bound git-channel material outside argv and public evidence", async () => {
     const { system, deps } = fixture();
-    system.present.add(MATERIAL_PATH);
-    system.present.add('/workspaces/repository/.git');
-    await deps.credentials.run('bind', gitBinding());
+    place(system, MATERIAL_PATH, Buffer.from(AUTHORIZATION_MATERIAL));
+    system.present.add("/workspaces/repository/.git");
+    await deps.credentials.run("bind", gitBinding());
 
-    const evidence = await deps.host.cloneRepository({
-      repositoryUrl: 'https://github.com/papercupai/private-canary.git',
-      visibility: 'private',
-      destination: 'repository',
-      credentialChannel: 'git',
+    // A fresh dependency graph models the next SSH step/new process. The bind must survive it.
+    const fresh = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+    const evidence = await fresh.host.cloneRepository({
+      repositoryUrl: "https://github.com/papercupai/private-canary.git",
+      visibility: "private",
+      destination: "repository",
+      credentialChannel: "git",
     });
 
     expect(system.commands).toHaveLength(1);
     const command = system.commands[0]!;
     expect(command.args).toEqual([
-      'clone',
-      '--quiet',
-      'https://github.com/papercupai/private-canary.git',
-      '/workspaces/repository',
+      "clone",
+      "--quiet",
+      "https://github.com/papercupai/private-canary.git",
+      "/workspaces/repository",
     ]);
     expect(command.env).toMatchObject({
-      GIT_TERMINAL_PROMPT: '0',
-      GIT_CONFIG_KEY_0: 'credential.helper',
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_KEY_0: "credential.helper",
       GIT_CONFIG_VALUE_0: `store --file=${MATERIAL_PATH}`,
     });
     expect(JSON.stringify(command.args)).not.toContain(AUTHORIZATION_MATERIAL);
     expect(JSON.stringify(evidence)).not.toContain(MATERIAL_PATH);
     expect(JSON.stringify(evidence)).not.toContain(AUTHORIZATION_MATERIAL);
     expect(evidence).toMatchObject({
-      visibility: 'private',
-      credentialChannel: 'git',
+      visibility: "private",
+      credentialChannel: "git",
       cloned: true,
     });
   });
 
-  it('fails closed before spawning git when bound material is absent', async () => {
+  it("fails closed before spawning git when bound material is absent", async () => {
     const { system, deps } = fixture();
-    system.present.add(MATERIAL_PATH);
-    await deps.credentials.run('bind', gitBinding());
+    place(system, MATERIAL_PATH, Buffer.from(AUTHORIZATION_MATERIAL));
+    await deps.credentials.run("bind", gitBinding());
     system.present.delete(MATERIAL_PATH);
 
     await expect(
       deps.host.cloneRepository({
-        repositoryUrl: 'https://github.com/papercupai/private-canary.git',
-        visibility: 'private',
-        destination: 'repository',
-        credentialChannel: 'git',
+        repositoryUrl: "https://github.com/papercupai/private-canary.git",
+        visibility: "private",
+        destination: "repository",
+        credentialChannel: "git",
       }),
-    ).rejects.toThrow('bound git credential material is absent');
+    ).rejects.toThrow("bound git credential material is absent");
     expect(system.commands).toEqual([]);
   });
 
-  it('refuses a private clone routed through any channel other than git', async () => {
+  it("refuses a private clone routed through any channel other than git", async () => {
     const { system, deps } = fixture();
 
     await expect(
       deps.host.cloneRepository({
-        repositoryUrl: 'https://github.com/papercupai/private-canary.git',
-        visibility: 'private',
-        destination: 'repository',
-        credentialChannel: 'cloud',
+        repositoryUrl: "https://github.com/papercupai/private-canary.git",
+        visibility: "private",
+        destination: "repository",
+        credentialChannel: "cloud",
       }),
     ).rejects.toThrow("must consume the bound 'git' credential channel");
     expect(system.commands).toEqual([]);
   });
 
-  it('fails closed before spawning git when bound material is expired', async () => {
+  it("fails closed before spawning git when bound material is expired", async () => {
     const { system, deps } = fixture();
-    system.present.add(MATERIAL_PATH);
-    await deps.credentials.run('bind', gitBinding('2026-08-26T21:59:59.000Z'));
+    place(system, MATERIAL_PATH, Buffer.from(AUTHORIZATION_MATERIAL));
+    await deps.credentials.run("bind", gitBinding("2026-08-26T21:59:59.000Z"));
 
     await expect(
       deps.host.cloneRepository({
-        repositoryUrl: 'https://github.com/papercupai/private-canary.git',
-        visibility: 'private',
-        destination: 'repository',
-        credentialChannel: 'git',
+        repositoryUrl: "https://github.com/papercupai/private-canary.git",
+        visibility: "private",
+        destination: "repository",
+        credentialChannel: "git",
       }),
-    ).rejects.toThrow('bound git credential material has expired');
+    ).rejects.toThrow("bound git credential material has expired");
     expect(system.commands).toEqual([]);
   });
 
-  it('fails closed before spawning git after the active binding is revoked', async () => {
+  it("fails closed before spawning git after the active binding is revoked", async () => {
     const { system, deps } = fixture();
     const binding = gitBinding();
-    system.present.add(MATERIAL_PATH);
-    await deps.credentials.run('bind', binding);
-    await deps.credentials.run('revoke', binding);
+    place(system, MATERIAL_PATH, Buffer.from(AUTHORIZATION_MATERIAL));
+    await deps.credentials.run("bind", binding);
+    await deps.credentials.run("revoke", binding);
 
     await expect(
       deps.host.cloneRepository({
-        repositoryUrl: 'https://github.com/papercupai/private-canary.git',
-        visibility: 'private',
-        destination: 'repository',
-        credentialChannel: 'git',
+        repositoryUrl: "https://github.com/papercupai/private-canary.git",
+        visibility: "private",
+        destination: "repository",
+        credentialChannel: "git",
       }),
     ).rejects.toBeInstanceOf(WorkspaceHostOperationError);
     expect(system.commands).toEqual([]);
+  });
+
+  it("keeps a newer Git generation active when an old process revokes its generation", async () => {
+    const { system, deps } = fixture();
+    place(system, MATERIAL_PATH, Buffer.from(AUTHORIZATION_MATERIAL));
+    await deps.credentials.run("bind", gitBinding());
+
+    const generation8Path = workspaceHostCredentialMaterialPath(
+      MATERIAL_ROOT,
+      "git-short-lived-delegation",
+      8,
+    );
+    place(
+      system,
+      generation8Path,
+      Buffer.from("https://git-user:rotated@github.com"),
+    );
+    const rotated = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+    await rotated.credentials.run(
+      "bind",
+      gitBinding("2026-08-26T23:00:00.000Z", 8),
+    );
+
+    // Model a delayed generation-7 process after generation 8 is already active.
+    const stale = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+    await stale.credentials.run("revoke", gitBinding());
+    await stale.credentials.run("verify-revoked", gitBinding());
+
+    system.present.add("/workspaces/repository/.git");
+    await rotated.host.cloneRepository({
+      repositoryUrl: "https://github.com/papercupai/private-canary.git",
+      visibility: "private",
+      destination: "repository",
+      credentialChannel: "git",
+    });
+    expect(system.commands.at(-1)?.env?.GIT_CONFIG_VALUE_0).toBe(
+      `store --file=${generation8Path}`,
+    );
+  });
+
+  it("keeps the canonical workspace root aligned with the bootstrap data root", () => {
+    expect(WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT).toBe(
+      WORKSPACE_HOST_DATA_ROOT,
+    );
+  });
+});
+
+describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer", () => {
+  it("materializes delivered bytes into native homes and verifies them in a fresh process", async () => {
+    const { system, deps } = fixture();
+    const bundle = encodeWorkspaceHostAgentHomeBundle({
+      claude: Buffer.from('{"account":"claude-canary"}'),
+      codex: Buffer.from('{"account":"codex-canary"}'),
+      omp: Buffer.from('{"account":"omp-canary"}'),
+    });
+    const materialPath = workspaceHostCredentialMaterialPath(
+      MATERIAL_ROOT,
+      "agent-encrypted-reference",
+      7,
+    );
+    place(system, materialPath, bundle);
+
+    await deps.credentials.run("bind", agentBinding());
+    const fresh = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+    await expect(
+      fresh.credentials.run("verify-bound", agentBinding()),
+    ).resolves.toMatchObject({
+      family: "agent-encrypted-reference",
+      generation: 7,
+    });
+
+    const paths = workspaceHostAgentHomePaths("/home/papercusp-workspace");
+    expect(system.files.get(paths.claude)).toEqual(
+      Buffer.from('{"account":"claude-canary"}'),
+    );
+    expect(system.files.get(paths.codex)).toEqual(
+      Buffer.from('{"account":"codex-canary"}'),
+    );
+    expect(system.files.get(paths.omp)).toEqual(
+      Buffer.from('{"account":"omp-canary"}'),
+    );
+
+    await fresh.credentials.run("revoke", agentBinding());
+    for (const path of Object.values(paths))
+      expect(system.files.has(path)).toBe(false);
+    await expect(
+      fresh.credentials.run("verify-revoked", agentBinding()),
+    ).resolves.toMatchObject({
+      operation: "verify-revoked",
+    });
+  });
+});
+
+describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment", () => {
+  it("passes only explicit workspace identity variables, never ambient controller credentials", async () => {
+    const invocations: WorkspaceHostAgentProbeInvocation[] = [];
+    const runner: WorkspaceHostAgentProbeRunner = {
+      async run(invocation) {
+        invocations.push(invocation);
+        return invocation.command === "omp"
+          ? { exitCode: 0, stdout: '{"account":"can…001"}' }
+          : { exitCode: 0, stdout: "logged in as canary@example.test" };
+      },
+    };
+    const system = new RecordingSystem();
+    const host = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      agentProbeRunner: runner,
+      now: () => NOW,
+    }).host;
+    await host.probeAgentAuthentication();
+    for (const invocation of invocations) {
+      expect(invocation.env).toEqual({
+        HOME: "/home/papercusp-workspace",
+        USER: "papercusp-workspace",
+        LOGNAME: "papercusp-workspace",
+        PATH: "/opt/papercusp/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      });
+      expect(invocation.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+      expect(invocation.env).not.toHaveProperty("OPENAI_API_KEY");
+    }
   });
 });

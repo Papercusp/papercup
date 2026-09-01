@@ -9,6 +9,9 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
   WORKSPACE_HOST_DATA_ROOT,
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
+  WORKSPACE_HOST_PRIVILEGED_CONDUIT_SUDOERS,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
   WORKSPACE_HOST_GLIBC_SONAMES,
   WORKSPACE_HOST_NATIVE_SONAME_TO_APT_PACKAGE,
   WORKSPACE_HOST_RUNTIME_ROOT,
@@ -21,7 +24,7 @@ import {
   validateWorkspaceHostBootstrapAttestation,
   type WorkspaceHostBootstrapAttestation,
   type WorkspaceHostBootstrapInput,
-} from './workspace-host-bootstrap';
+} from "./workspace-host-bootstrap";
 import { deriveWorkspaceHostCanonicalArtifactUrls } from './workspace-host-build-manifest';
 
 const DIGEST = 'a'.repeat(64);
@@ -162,6 +165,20 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(first).toContain('bin/omp');
     expect(first).toContain('Environment=PAPERCUSP_BIND_HOST=127.0.0.1');
     expect(first).toContain(
+      `REMOTE_INITIALIZER_CONDUIT='${WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT}'`,
+    );
+    expect(first).toContain(
+      `CREDENTIAL_DELIVERY_CONDUIT='${WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT}'`,
+    );
+    expect(first).toContain(
+      `PRIVILEGED_CONDUIT_SUDOERS='${WORKSPACE_HOST_PRIVILEGED_CONDUIT_SUDOERS}'`,
+    );
+    expect(first).toContain("initializer conduit: refused argv");
+    expect(first).toContain("credential delivery conduit: refused argv");
+    expect(first).toContain("Cmnd_Alias PAPERCUSP_WORKSPACE_HOST_INITIALIZER");
+    expect(first).toContain("Cmnd_Alias PAPERCUSP_WORKSPACE_HOST_DELIVERY");
+    expect(first).toContain('visudo -cf "$PRIVILEGED_CONDUIT_SUDOERS"');
+    expect(first).toContain(
       'Environment=PUI_COMPANION_WASM=$RUNTIME_ROOT/current/$PUI_COMPANION_PATH',
     );
     expect(first).toContain(
@@ -183,7 +200,7 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(first).not.toContain('RWQpublickey');
     expect(first).not.toMatch(/PAPERCUSP_(?:API_KEY|TOKEN|PASSWORD)=/);
     expect(first).not.toContain('AllowTcpForwarding yes');
-    expect(first).not.toMatch(/NOPASSWD|usermod .*sudo/);
+    expect(first).not.toMatch(/usermod .*sudo/);
   });
 
   /**
@@ -268,6 +285,33 @@ describe('buildWorkspaceHostBootstrap', () => {
         input({ isolation: { workspaceGroup: 'papercusp' } }),
       ),
     ).toThrow(/workspace SSH group must differ/);
+  });
+
+  it("grants only the two fixed protocol argv through root-owned conduits", () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    const conduit = script.slice(
+      script.indexOf(
+        'install -o root -g root -m 0755 /dev/null "$REMOTE_INITIALIZER_CONDUIT"',
+      ),
+      script.indexOf('cat > "/etc/systemd/system/$SERVICE_NAME.service"'),
+    );
+
+    expect(conduit).toContain(
+      "papercusp-remote-initializer --protocol-version papercusp-gcp-iap-initialization-v2 --json-stdin",
+    );
+    expect(conduit).toContain(
+      "papercusp-deliver-material --protocol-version papercusp-workspace-host-credential-delivery-v1 --json-stdin",
+    );
+    expect(conduit.match(/NOPASSWD:/g)).toHaveLength(1);
+    expect(conduit).not.toMatch(
+      /ALL=\(ALL|NOPASSWD:\s*ALL|\*|\beval\b|\bsh -c\b/,
+    );
+    expect(conduit).toContain(
+      "Defaults!PAPERCUSP_WORKSPACE_HOST_INITIALIZER env_reset, !setenv",
+    );
+    expect(conduit).toContain(
+      "Defaults!PAPERCUSP_WORKSPACE_HOST_DELIVERY env_reset, !setenv",
+    );
   });
 
   it('rejects non-public provenance, unsafe entrypoints, and secret-shaped metadata', () => {

@@ -16,9 +16,9 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
-  WORKSPACE_HOST_RUNTIME_ROOT,
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
   assertWorkspaceHostSecretIsolation,
   type WorkspaceHostDesiredSpec,
 } from '@papercusp/deployment-driver';
@@ -221,16 +221,8 @@ describe('resolveWorkspaceHostInitializationControllerProfile', () => {
     expect(resolveWorkspaceHostInitializationControllerProfile({ STATE_DIRECTORY: stateDirectory })).toEqual({
       sshUser: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
       knownHostsFile: join(stateDirectory, 'known_hosts'),
-      remoteEntrypoint: join(
-        WORKSPACE_HOST_RUNTIME_ROOT,
-        'current',
-        DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.remoteInitializer,
-      ),
-      deliveryEntrypoint: join(
-        WORKSPACE_HOST_RUNTIME_ROOT,
-        'current',
-        DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.credentialDelivery,
-      ),
+      remoteEntrypoint: WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
+      deliveryEntrypoint: WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
     });
   });
 
