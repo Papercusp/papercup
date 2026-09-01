@@ -456,6 +456,14 @@ export type AnnounceChannelOpts = {
   /** WI-559 issue-2: fresh-announce-per-connection factory (see JoinHarnessSwarmOpts). */
   buildOurAnnounce?: () => Promise<SignedAnnounce>;
   onAnnounce?: JoinHarnessSwarmOpts['onAnnounce'];
+  /**
+   * Handle-scoped identity for this registration. `joinHarnessSwarm` supplies
+   * one so `SwarmHandle.close()` can remove exactly its entry from a shared
+   * (muxer, topic) state without disturbing same-topic sibling harnesses.
+   * Direct callers may omit it and retain the historical log-key dedup.
+   * @internal
+   */
+  registrationKey?: symbol;
 };
 
 /**
@@ -486,8 +494,8 @@ export type AnnounceChannelOpts = {
  * `sentKeys` dedups sends by log_core_key (idempotent across re-pair/reconnect).
  */
 type TopicAnnounceState = {
-  /** Local harnesses on this topic, keyed by their own log_core_key (dedup). */
-  entries: Map<string, AnnounceChannelOpts>;
+  /** Local harnesses on this topic, keyed by handle token or log key (dedup). */
+  entries: Map<string | symbol, AnnounceChannelOpts>;
   /** Lazy-accept pair-notifier registered for this (muxer, topic). */
   paired: boolean;
   /** The live channel's message sink, set once the channel is created. */
@@ -1148,12 +1156,17 @@ function createAnnounceChannel(
  *  connection, wire inbound announces to `onAnnounce`, and send `ourAnnounce`.
  *  Defensive: any protomux error is swallowed — a peer that can't speak the
  *  announce protocol still replicates over the same connection. */
-export function openAnnounceChannel(
-  socket: unknown,
-  topic: Buffer,
-  opts: AnnounceChannelOpts,
-): void {
-  if (!opts.onAnnounce && !opts.ourAnnounce) return;
+export function openAnnounceChannel(socket: unknown, topic: Buffer, opts: AnnounceChannelOpts): () => void {
+  // Keep the disposer stable across every setup phase. A handle may close
+  // while the stream's `opened` promise is still pending; recording that early
+  // release prevents the eventual setup from resurrecting a retired entry.
+  let released = false;
+  let releaseImpl: (() => void) | null = null;
+  const release = (): void => {
+    released = true;
+    releaseImpl?.();
+  };
+  if (!opts.onAnnounce && !opts.ourAnnounce) return release;
   try {
     // Corestore/Hypercore attaches Protomux to the NoiseSecretStream, not always
     // the outer Hyperswarm socket. Use `socket.noiseStream` when present so the
@@ -1190,15 +1203,28 @@ export function openAnnounceChannel(
     // Register/refresh THIS harness's entry, keyed by its own log_core_key so a
     // reconnect/replay on the same muxer de-dups rather than double-registering.
     // (A send-only harness with no ourAnnounce falls back to a positional key.)
-    const entryKey = opts.ourAnnounce?.log_core_key ?? `__reader-${state.entries.size}`;
+    const entryKey = opts.registrationKey ?? opts.ourAnnounce?.log_core_key ?? `__reader-${state.entries.size}`;
     // WI-1544 (defect iii): a RE-registration of an already-known log on this
     // (muxer, topic) means the harness re-joined the topic over a surviving
     // connection (rekey / join-retry). The peer may have missed (or dropped)
     // the original announce, and sentKeys would suppress it forever — clear
     // this log's dedup mark so the flush below re-sends a fresh signed frame
     // (receivers are idempotent).
-    if (state.entries.has(entryKey)) state.sentKeys.delete(entryKey);
+    const announceLogKey = opts.ourAnnounce?.log_core_key;
+    if (state.entries.has(entryKey) && announceLogKey) state.sentKeys.delete(announceLogKey);
     state.entries.set(entryKey, opts);
+    // A socket/muxer can outlive one harness join because the process swarm is
+    // shared. Return a handle-scoped release instead of waiting for WeakMap GC:
+    // the latter happens only when the physical socket dies, so a closed or
+    // restarted harness otherwise remains in `entries` and is re-announced by
+    // every periodic sweep forever. Identity-check the value because a later
+    // refresh may have replaced this registration under the same key.
+    releaseImpl = (): void => {
+      if (state.entries.get(entryKey) !== opts) return;
+      state.entries.delete(entryKey);
+      if (announceLogKey) state.sentKeys.delete(announceLogKey);
+    };
+    if (released) releaseImpl();
     // LAZY-ACCEPT pair-notifier, ONCE per muxer. Register at protocol scope and
     // dispatch by the incoming topic id, matching directory-swarm.ts. Live
     // Protomux delivers late remote opens to the protocol-level pair notifier;
@@ -1246,6 +1272,10 @@ export function openAnnounceChannel(
     // frame corked forever on packaged shared-swarm sockets, so the peer never
     // sees it and `onopen` never fires.
     const createWhenReady = () => {
+      // The owning handle may have closed while the Noise stream was still
+      // opening. Do not create an orphan channel for an empty state; a sibling
+      // that joined before this callback ran still makes the channel here.
+      if (state.entries.size === 0) return;
       createAnnounceChannel(mux, topic, state);
       // If the channel had already opened, flush this late-joining harness's
       // announce now (the onopen flush already fired and won't re-run for it).
@@ -1261,6 +1291,7 @@ export function openAnnounceChannel(
   } catch {
     // Announce channel is best-effort; replication still proceeds.
   }
+  return release;
 }
 
 /**
@@ -2390,6 +2421,10 @@ export async function joinHarnessSwarm(
   // join succeeds (below); unregistered in `close()`.
   const topicRejoinCoordinator = getTopicRejoinCoordinator(opts.swarm, opts.topic, topicHex);
   const rejoinParticipantToken = Symbol(`joinHarnessSwarm:${topicHex.slice(0, 16)}`);
+  // Stable across this handle's connection callbacks. The announce state is
+  // keyed by muxer, so wrappers around one physical muxer stay deduplicated;
+  // same-topic sibling handles receive distinct symbols.
+  const announceRegistrationToken = Symbol(`announce:${topicHex.slice(0, 16)}`);
   let connectionCount = 0;
   let liveConnectionCount = 0;
   // WI-752 self-heal state: the start of the current FAST-refresh window (join
@@ -2412,6 +2447,8 @@ export async function joinHarnessSwarm(
   // `forceRejoinNow` sweeps this (filtered through the cross-harness
   // `swarmJoinSocketTopics` registry) before every leave()+join().
   const mySockets = new Set<unknown>();
+  /** Per-live-socket release for THIS handle's announce registration. */
+  const releaseAnnounceBySocket = new Map<unknown, () => void>();
   /**
    * EI-18687938054040755: sockets whose data path has ALREADY been reported as
    * proven, so the positive is logged exactly once per socket.
@@ -2588,6 +2625,8 @@ export async function joinHarnessSwarm(
       // so a real close never needs eviction help). Prune our own bookkeeping so
       // a later forceRejoinNow doesn't waste a destroy() on an already-dead ref.
       mySockets.delete(socket);
+      releaseAnnounceBySocket.get(socket)?.();
+      releaseAnnounceBySocket.delete(socket);
       swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
     });
     const remotePublicKeyHex = extractPublicKeyHex(peerInfo);
@@ -2654,11 +2693,17 @@ export async function joinHarnessSwarm(
       // handed to the sidecar, so this in-process announce channel cannot ride
       // it — admission must move to / be driven from the sidecar in the full
       // cutover. See substrate-replication-offload.ts "KNOWN LIMITATION".
-      openAnnounceChannel(socket, opts.topic, {
+      // A connection event may be replayed for the same socket. Release this
+      // handle's prior registration first; the stable token keeps wrappers
+      // around one muxer deduplicated while siblings remain isolated.
+      releaseAnnounceBySocket.get(socket)?.();
+      const releaseAnnounce = openAnnounceChannel(socket, opts.topic, {
         ourAnnounce: opts.ourAnnounce,
         buildOurAnnounce: opts.buildOurAnnounce,
         onAnnounce: opts.onAnnounce,
+        registrationKey: announceRegistrationToken,
       });
+      releaseAnnounceBySocket.set(socket, releaseAnnounce);
       // P-201: register the pot-git serve plane on the SAME connection/muxer
       // the announce channel just rode — additive, never-throwing, no-op when
       // `hiveGitServe` is omitted (every non-pot-git harness, unchanged).
@@ -2682,6 +2727,8 @@ export async function joinHarnessSwarm(
         wireHiveGitDial(socket, opts.topic, opts.hiveGitDial.selfDevicePubkeyBase64, opts.hiveGitDial.sign);
       }
     } catch (e) {
+      releaseAnnounceBySocket.get(socket)?.();
+      releaseAnnounceBySocket.delete(socket);
       // WI-5895: a throw here (store.replicate / openAnnounceChannel /
       // wireHiveGitServe / wireHiveGitDial) means this socket completed the
       // Noise handshake and LOOKS alive on every liveness check, but is
@@ -3375,6 +3422,18 @@ export async function joinHarnessSwarm(
       // ever-joined topic.
       topicRejoinCoordinator.unregister(rejoinParticipantToken);
       releaseTopicRejoinCoordinatorIfEmpty(opts.swarm, topicHex);
+      // The muxer/socket can stay live for a same-topic sibling after this
+      // handle closes. Remove only THIS harness's announce entry now; otherwise
+      // periodic reflush keeps advertising its retired log and inbound frames
+      // keep reaching its closed callback until the physical socket dies.
+      for (const releaseAnnounce of releaseAnnounceBySocket.values()) {
+        try {
+          releaseAnnounce();
+        } catch {
+          /* best-effort — announce cleanup must not block swarm teardown */
+        }
+      }
+      releaseAnnounceBySocket.clear();
       if (opts.swarm.off) opts.swarm.off('connection', handler);
       try {
         // WI-5923: prefer the REFCOUNTED session-level teardown

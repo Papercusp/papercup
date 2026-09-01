@@ -32,11 +32,14 @@ const fakeChannels = new Map<unknown, FakeChannelState>();
 vi.mock('protomux', () => {
   return {
     default: class FakeProtomux {
+      isProtomux = true;
       socket: unknown;
       constructor(socket: unknown) {
         this.socket = socket;
       }
       static from(socket: unknown): FakeProtomux {
+        const existing = (socket as { userData?: unknown } | null)?.userData;
+        if (existing instanceof FakeProtomux) return existing;
         return new FakeProtomux(socket);
       }
       createChannel(opts: { protocol: string; onopen?: () => void }) {
@@ -609,6 +612,55 @@ describe('joinHarnessSwarm — forceRejoin topic-scoped coordination (WI-5923)',
 });
 
 describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {
+  it('close removes only that harness announce registration while a same-topic sibling stays live', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const first = fakeStore();
+    const second = fakeStore();
+    const firstInbound = vi.fn();
+    const secondInbound = vi.fn();
+    const h1 = await joinHarnessSwarm({
+      store: first.store,
+      topic: topic32(),
+      swarm,
+      ourAnnounce: announceFixture({ log_core_key: 'a1'.repeat(32) }),
+      onAnnounce: firstInbound,
+    });
+    const h2 = await joinHarnessSwarm({
+      store: second.store,
+      topic: topic32(),
+      swarm,
+      ourAnnounce: announceFixture({ log_core_key: 'b2'.repeat(32) }),
+      onAnnounce: secondInbound,
+    });
+
+    const socket = { __muxId: 'same-topic-close', pipe: vi.fn(), destroy: vi.fn() };
+    emit('connection', socket, { publicKey: Buffer.from('22'.repeat(32), 'hex') });
+    const ch = fakeChannels.get(socket)!;
+    const beforeClose = announceFixture({ log_core_key: 'c3'.repeat(32) });
+    ch.onmessage!(beforeClose);
+    await Promise.resolve();
+    expect(firstInbound).toHaveBeenCalledTimes(1);
+    expect(secondInbound).toHaveBeenCalledTimes(1);
+
+    await h1.close();
+
+    const afterClose = announceFixture({ log_core_key: 'd4'.repeat(32) });
+    ch.onmessage!(afterClose);
+    await Promise.resolve();
+    // The closed harness is gone from TopicAnnounceState; the same-topic
+    // sibling remains registered on the surviving shared channel.
+    expect(firstInbound).toHaveBeenCalledTimes(1);
+    expect(secondInbound).toHaveBeenCalledTimes(2);
+
+    // The outbound side is cleaned too: forcing the surviving sibling's
+    // explicit reflush must not resurrect the closed harness's announce.
+    const sentAtClose = ch.sent.length;
+    h2.refreshAnnounce?.();
+    expect(ch.sent.slice(sentAtClose).map((frame) => frame.log_core_key)).toEqual(['b2'.repeat(32)]);
+
+    await h2.close();
+  });
+
   it('sends ourAnnounce + opens the channel on a non-banned connection', async () => {
     const { swarm, emit } = fakeSwarm();
     const { store } = fakeStore();
