@@ -48,6 +48,7 @@ import {
   classifyStaleFailureEntries,
   formatStaleFailureSummary,
   formatTreeDriftAdvisory,
+  formatSelectedFilesLine,
 } from "./lib/vitest-summary.mjs";
 import {
   selectRelatedTests,
@@ -6240,6 +6241,54 @@ if (notCheckedNonGating) {
 // possibly-misreported exit code alone.
 const resultLine = (status) =>
   `AFFECTED_TESTS_RESULT status=${status} tasks=${tasks.length} failed=${failed} quarantinedFailed=${quarantinedFailed} timedOutTasks=${timedOutTasks} undeterminedTasks=${undeterminedTasks}`;
+// EI-19416573016968871: which files RAN, stated by the run itself. The verdict log already
+// names the files that FAILED; without this counterpart "no FAIL row for X" is
+// indistinguishable from "X never ran", and because test:affected only runs the workspaces
+// the changed paths map into, the second case is common. That absence reads as a POSITIVE
+// observation, so agents used it to DATE regressions and reached confident, wrong causal
+// stories (measured 2026-08-03: two agents independently, one chasing an innocent commit).
+//
+// Emitted HERE — after `resultLine` is defined and BEFORE the refused/failed/passed
+// branches — so it appears on every exit path that actually EXECUTED tasks. A run that
+// PASSED is exactly when this matters most ("was X green at candidate Y?"), so gating it
+// on failure the way the per-file break set is gated would miss the whole point.
+//
+// ⚠ DELIBERATELY ABSENT from the pre-execution exits, and that is load-bearing rather than
+// an oversight. This line asserts which files RAN. The `--dry` exit and the two
+// deadline-insufficient/admission-starved `refused` exits all terminate upstream of here
+// with tasks SELECTED BUT NEVER RUN, so emitting there would publish a file list that
+// never executed — reintroducing, one level down, precisely the "absence/presence reads as
+// an execution fact" confusion this line exists to remove. Those paths already say what
+// happened in their own `status=` token (`dry-run`, `refused`). Selection and execution are
+// different questions; only this line's audience conflates them, so only it must not.
+//
+// `t.relatedFiles` is set only where narrowing actually produced a positional file list;
+// any task without one ran WITHOUT such a list and is named in `unenumerated` rather than
+// omitted. Omitting them is what would let `coverage=complete` lie.
+const selectedFilesLine = () => {
+  const entries = [];
+  const unenumerated = [];
+  for (const t of tasks) {
+    if (Array.isArray(t.relatedFiles) && t.relatedFiles.length > 0) {
+      for (const f of t.relatedFiles)
+        entries.push({ workspace: t.ws.name, file: f.replaceAll("\\", "/") });
+    } else {
+      unenumerated.push({
+        task: `${t.ws.name} :: ${t.script}`,
+        reason: relatedOnly ? "not-narrowed" : "wide-run",
+      });
+    }
+  }
+  entries.sort((a, b) =>
+    `${a.workspace}\0${a.file}`.localeCompare(`${b.workspace}\0${b.file}`),
+  );
+  return formatSelectedFilesLine({
+    runToken: RUN_TOKEN,
+    entries,
+    unenumerated,
+  });
+};
+errSync(selectedFilesLine());
 const taskCgroupPidsEventsMaxEnd =
   failed || undeterminedTasks ? readTaskCgroupPidsEventMax() : null;
 const refusedForks = pidsEventRefusalDelta({

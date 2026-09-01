@@ -193,4 +193,30 @@ describe('the runner wires it in (a formatter nothing calls is not a fix)', () =
     expect(failureOnly, 'failure summary call not found — instrument is stale').toBeGreaterThan(-1);
     expect(call).toBeLessThan(failureOnly);
   });
+
+  it('stays DOWNSTREAM of every exit that selects tasks without running them', () => {
+    // Verified empirically: `--dry` reaches a summary and legitimately prints NO selected-
+    // files line. That absence is the contract, not a gap — on these paths tasks are
+    // SELECTED BUT NEVER RUN, so publishing them as executed would reintroduce the exact
+    // confusion this line removes. A refactor that hoists the emission above any of them
+    // would start asserting files ran when they did not, silently and on a green log.
+    const call = source.indexOf('errSync(selectedFilesLine())');
+    expect(call, 'selected-files line is never emitted').toBeGreaterThan(-1);
+
+    for (const preExecutionExit of [
+      'status=dry-run',
+      'reason=deadline-insufficient',
+      'reason=admission-starved',
+    ]) {
+      const at = source.indexOf(preExecutionExit);
+      // Positive control: an exit that vanished means the instrument is stale, not that
+      // the ordering is safe.
+      expect(at, `pre-execution exit '${preExecutionExit}' not found — instrument is stale`).toBeGreaterThan(-1);
+      expect(
+        at,
+        `selected-files is emitted BEFORE the '${preExecutionExit}' exit — it would claim ` +
+          `files ran when that path never ran them`,
+      ).toBeLessThan(call);
+    }
+  });
 });
