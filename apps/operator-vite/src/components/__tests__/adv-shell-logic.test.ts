@@ -30,12 +30,31 @@ import {
   nextAdvMaxLevel,
   prevAdvMaxLevel,
   advMaxToggleLabel,
+  PORTAL_EMBED_ADV_CONTENT_IDS,
+  PORTAL_EMBED_ADV_TAB_IDS,
+  portalEmbedAdvTab,
+  portalEmbedAdvTabs,
 } from '../adv/AdvShell';
 import type { SelectEntry, SelectGroup, SelectOption } from '@/app/harness/Select';
 
 // ─── ADV_TABS structural invariants ──────────────────────────────────────────
 
 describe('ADV_TABS', () => {
+  it('defines the cloud-embedded Papercusp allowlist as Overview, HUD, Work, and Learning', () => {
+    expect([...PORTAL_EMBED_ADV_TAB_IDS]).toEqual(['overview', 'hud', 'learning', 'harnesses']);
+    expect(portalEmbedAdvTabs(ADV_TABS, true).map((tab) => tab.id)).toEqual([
+      'overview', 'hud', 'harnesses', 'learning',
+    ]);
+    expect(portalEmbedAdvTabs(ADV_TABS, false)).toEqual([...ADV_TABS]);
+    expect([...PORTAL_EMBED_ADV_CONTENT_IDS]).toEqual([
+      'overview', 'hud', 'learning', 'harnesses', 'workflows', 'brainstorm',
+    ]);
+    expect(portalEmbedAdvTab('workflows', true)).toBe('workflows');
+    expect(portalEmbedAdvTab('brainstorm', true)).toBe('brainstorm');
+    expect(portalEmbedAdvTab('docs', true)).toBe('overview');
+    expect(portalEmbedAdvTab('harnesses', true)).toBe('harnesses');
+  });
+
   it('every tab has the required shape (id, label, icon, accent, accentRgb)', () => {
     for (const tab of ADV_TABS) {
       expect(tab.id).toBeTruthy();
