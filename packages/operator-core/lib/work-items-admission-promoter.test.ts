@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   admissionPairKey,
+  ADMISSION_REVIEW_ALERT_KEY,
+  ADMISSION_REVIEW_RETRY_OWNER,
+  DEFAULT_ADMISSION_REVIEW_SLO_MINUTES,
+  buildAdmissionReviewMetadata,
   buildPromoterPrompt,
   decideWorkItemAdmissionProducerPressure,
   deriveAdmissionRunOutcome,
@@ -55,6 +59,60 @@ describe('decideWorkItemAdmissionProducerPressure', () => {
     expect(decideWorkItemAdmissionProducerPressure(queueHealth(0, 10, 180 * 60_000 + 1))).toMatchObject({
       level: 'deep',
       maxIdeators: 1,
+    });
+  });
+});
+
+describe('admission review metadata', () => {
+  const nowMs = Date.parse('2026-08-26T12:00:00Z');
+
+  it('creates an open pending review debt record with an age SLO and retry owner', () => {
+    expect(buildAdmissionReviewMetadata({ state: 'pending', nowMs })).toEqual({
+      state: 'pending',
+      enteredAt: '2026-08-26T12:00:00.000Z',
+      reviewDueAt: new Date(nowMs + DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000).toISOString(),
+      retryOwner: ADMISSION_REVIEW_RETRY_OWNER,
+      retryAttempts: 0,
+      lastRetryAt: null,
+      reviewedAt: null,
+      reviewedBy: null,
+      terminalAt: null,
+      terminalOutcome: null,
+      alert: {
+        key: ADMISSION_REVIEW_ALERT_KEY,
+        state: 'open',
+        emittedAt: '2026-08-26T12:00:00.000Z',
+        reason: 'pending fail-open admission requires re-review',
+      },
+    });
+  });
+
+  it('closes the alert and records reviewed/terminal outcomes', () => {
+    const reviewed = buildAdmissionReviewMetadata({
+      state: 'reviewed',
+      nowMs,
+      enteredAtMs: nowMs - 10_000,
+      retryAttempts: 2,
+      reviewedBy: 'system:reviewer',
+    });
+    expect(reviewed).toMatchObject({
+      state: 'reviewed',
+      enteredAt: '2026-08-26T11:59:50.000Z',
+      retryAttempts: 2,
+      reviewedAt: '2026-08-26T12:00:00.000Z',
+      reviewedBy: 'system:reviewer',
+      alert: { state: 'cleared', key: ADMISSION_REVIEW_ALERT_KEY },
+    });
+    const terminal = buildAdmissionReviewMetadata({
+      state: 'terminal',
+      nowMs,
+      terminalOutcome: 'duplicate-merge',
+    });
+    expect(terminal).toMatchObject({
+      state: 'terminal',
+      terminalAt: '2026-08-26T12:00:00.000Z',
+      terminalOutcome: 'duplicate-merge',
+      alert: { state: 'cleared' },
     });
   });
 });

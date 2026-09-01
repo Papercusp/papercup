@@ -255,6 +255,85 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(llmCall).not.toHaveBeenCalled();
   });
 
+  it('re-reviews a fail-open row, increments retry attempts, and clears its alert', async () => {
+    await seedItem({ id: 'WI-unreviewed', admission: 'unreviewed', vector: null });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_build_object(
+           'admissionFailOpen', jsonb_build_object('reason', 'pending-age-exceeded-two-promoter-ticks'),
+           'admissionReview', jsonb_build_object(
+             'state', 'pending',
+             'enteredAt', '2026-08-26T10:00:00Z',
+             'reviewDueAt', '2026-08-26T11:00:00Z',
+             'retryOwner', 'system:work-item-admission-promoter',
+             'retryAttempts', 0,
+             'alert', jsonb_build_object('key', 'work-item-admission-review-debt', 'state', 'open')
+           )
+         )
+       WHERE feature_id = 'WI-unreviewed'`;
+
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-rereview',
+      sql: db.sql,
+      llmCall: vi.fn(),
+      now: () => NOW,
+    });
+
+    expect(result).toMatchObject({ promoted: 1, merged: 0, held: 0, modelCalled: false });
+    const [row] = await db.sql<Array<{ admission: string; payload: Record<string, any> }>>`
+      SELECT admission, payload FROM harness_shared.work_items WHERE feature_id = 'WI-unreviewed'`;
+    expect(row).toMatchObject({
+      admission: 'admitted',
+      payload: {
+        admissionReview: {
+          state: 'reviewed',
+          retryAttempts: 1,
+          reviewedBy: 'system:work-item-admission-promoter',
+          alert: { key: 'work-item-admission-review-debt', state: 'cleared' },
+        },
+      },
+    });
+  });
+
+  it('terminalizes an unreviewed duplicate with a terminal review outcome', async () => {
+    await seedItem({ id: 'WI-canonical', admission: 'admitted', vector: '[1,0,0]' });
+    await seedItem({ id: 'WI-unreviewed-duplicate', admission: 'unreviewed', vector: '[1,0,0]' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_build_object('admissionReview', jsonb_build_object(
+           'state', 'pending', 'retryAttempts', 0,
+           'enteredAt', '2026-08-26T10:00:00Z',
+           'reviewDueAt', '2026-08-26T11:00:00Z',
+           'alert', jsonb_build_object('key', 'work-item-admission-review-debt', 'state', 'open')
+         ))
+       WHERE feature_id = 'WI-unreviewed-duplicate'`;
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-rereview-merge',
+      sql: db.sql,
+      llmCall: judgementCall('r-finding-merge'),
+      now: () => NOW,
+    });
+
+    expect(result).toMatchObject({ promoted: 0, merged: 1, held: 0, modelCalled: true });
+    const [row] = await db.sql<Array<{ status: string; payload: Record<string, any> }>>`
+      SELECT status, payload FROM harness_shared.work_items WHERE feature_id = 'WI-unreviewed-duplicate'`;
+    expect(row).toMatchObject({
+      status: 'dropped',
+      payload: {
+        admissionReview: {
+          state: 'terminal',
+          retryAttempts: 1,
+          terminalOutcome: 'duplicate-merge',
+          alert: { key: 'work-item-admission-review-debt', state: 'cleared' },
+        },
+      },
+    });
+  });
+
   it('keeps and cross-links an R-remedy pair', async () => {
     await seedItem({ id: 'WI-1', summary: 'remedy: intake lease' });
     await seedItem({ id: 'WI-2', summary: 'remedy: refractory window' });
@@ -387,11 +466,23 @@ describe('work-item admission promoter (real Postgres)', () => {
     });
     expect(result.autoPromoted).toEqual(['WI-old']);
     expect(result.liveness).toMatchObject({ stale: true, reason: 'promoter routine is inactive' });
-    const rows = await db.sql<Array<{ feature_id: string; admission: string }>>`
-      SELECT feature_id, admission FROM harness_shared.work_items ORDER BY feature_id`;
+    expect(result.reviewDebt).toMatchObject({ pending: 1, overdue: 1, reReviewed: 0, stillOpen: 0, terminal: 0 });
+    const rows = await db.sql<Array<{ feature_id: string; admission: string; payload: Record<string, unknown> }>>`
+      SELECT feature_id, admission, payload FROM harness_shared.work_items ORDER BY feature_id`;
     expect(rows).toEqual([
-      { feature_id: 'WI-fresh', admission: 'pending' },
-      { feature_id: 'WI-old', admission: 'unreviewed' },
+      { feature_id: 'WI-fresh', admission: 'pending', payload: {} },
+      {
+        feature_id: 'WI-old',
+        admission: 'unreviewed',
+        payload: expect.objectContaining({
+          admissionReview: expect.objectContaining({
+            state: 'pending',
+            retryOwner: 'system:work-item-admission-promoter',
+            retryAttempts: 0,
+            alert: expect.objectContaining({ key: 'work-item-admission-review-debt', state: 'open' }),
+          }),
+        }),
+      },
     ]);
   });
 
@@ -503,6 +594,25 @@ describe('work-item admission promoter (real Postgres)', () => {
     await seedItem({ id: 'WI-claimed-slow', admission: 'admitted' });
     await db.sql`
       UPDATE harness_shared.work_items
+         SET payload = CASE feature_id
+           WHEN 'WI-unreviewed' THEN jsonb_build_object('admissionReview', jsonb_build_object(
+             'state', 'pending',
+             'enteredAt', '2026-08-26T10:00:00Z',
+             'reviewDueAt', '2026-08-26T11:00:00Z',
+             'retryAttempts', 0,
+             'alert', jsonb_build_object('key', 'work-item-admission-review-debt', 'state', 'open')
+           ))
+           WHEN 'WI-claimed-fast' THEN jsonb_build_object('admissionReview', jsonb_build_object(
+             'state', 'reviewed', 'reviewedAt', '2026-08-26T11:00:00Z'
+           ))
+           WHEN 'WI-claimed-slow' THEN jsonb_build_object('admissionReview', jsonb_build_object(
+             'state', 'terminal', 'terminalAt', '2026-08-26T11:00:00Z', 'terminalOutcome', 'duplicate-merge'
+           ))
+           ELSE payload
+         END
+       WHERE feature_id IN ('WI-unreviewed', 'WI-claimed-fast', 'WI-claimed-slow')`;
+    await db.sql`
+      UPDATE harness_shared.work_items
          SET admitted_at = CASE feature_id
                WHEN 'WI-claimed-fast' THEN '2026-08-26T10:00:00Z'::timestamptz
                WHEN 'WI-claimed-slow' THEN '2026-08-26T11:00:00Z'::timestamptz
@@ -546,6 +656,14 @@ describe('work-item admission promoter (real Postgres)', () => {
       promotedToFirstClaim: { sampleSize: 2, p50Ms: 3000, p95Ms: 4800 },
       latestCensus: { runId: 'promoter-rise', after: 8 },
       latestCensusRise: { runId: 'promoter-rise', delta: 1 },
+      reviewDebt: {
+        pending: 1,
+        overdue: 1,
+        reReviewed: 1,
+        stillOpen: 1,
+        terminal: 1,
+        oldestAgeMs: expect.any(Number),
+      },
     });
     expect(snapshot.censusTrend.map((point) => point.runId)).toEqual(['census-old', 'promoter-rise']);
     await expect(
