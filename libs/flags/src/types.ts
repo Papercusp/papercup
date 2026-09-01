@@ -2183,6 +2183,17 @@ export const FLAGS = {
   // agents that already exist), is throttled per agent and capped per tick, and
   // recovers work that is otherwise lost silently. OFF ⇒ pure no-op.
   UNGUARDED_HALT_RESCUE: "papercusp-unguarded-halt-rescue",
+  // interrupted-member-recovery-hardening-2026-09-01 P-003 (R1/R2): gates the
+  // wake-BEFORE-page rung inside `system:reconcile-silent-halts`. The sweep's
+  // owner page previously fired with NO wake attempt (plan D-001) even though
+  // its subject is a live process holding stranded work. ON ⇒ one wake attempt
+  // per (owner, disarm-epoch) rides the same sendMessage+wakeRecipients path as
+  // UNGUARDED_HALT_RESCUE (opens no new sessions — it only re-wakes existing
+  // ones; the wake-executor ladder can RESUME a dead-but-resumable process),
+  // and the owner page becomes the NEXT sweep tick's fallback when the wake
+  // produced no real turn. DEFAULT ON. OFF ⇒ exactly the pre-P-003 page-only
+  // behavior — a reversible runtime kill-switch.
+  SILENT_HALT_WAKE_FIRST: "papercusp-silent-halt-wake-first",
   // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): gates the LLM-facing
   // SEMANTIC-delta opt-in (mode:delta merge responses) — the silent-wrong-merge
   // hazard the owner BUILD decision agreed to retire BY TEST. DEFAULT ON
