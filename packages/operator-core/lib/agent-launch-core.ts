@@ -405,8 +405,9 @@ export function buildAgentLaunchCommand(opts: {
   headless?: boolean;
   /** psu --carry: persist warm/cold recovery behavior on a fresh fleet member. */
   carry?: 'warm' | 'cold' | null;
-  /** psu --context-size: the growable trimmed startup seed. */
-  contextSize?: 'trimmed' | null;
+  /** psu --context-size: the growable trimmed startup seed, or the explicit
+   *  'steward' intermediate (core + steward verb families, WI-2140338). */
+  contextSize?: 'trimmed' | 'steward' | null;
   /** psu --compaction-limit: seed the session's soft compaction limit (tokens) at launch. */
   compactionLimit?: number | null;
   /** psu --role for the launched agent. */
@@ -566,7 +567,7 @@ export interface MemberLaunchOpts {
   /** Durable launch-mode overlay inherited from the launching session. */
   launchMode?: LaunchMode | null;
   profile?: string;
-  contextSize?: 'trimmed';
+  contextSize?: 'trimmed' | 'steward';
   /** psu --compaction-limit: seed the session's soft compaction limit (tokens) at launch
    *  (per-member-declarative-launch-specs P-005) — removes the brief-instruction workaround. */
   compactionLimit?: number;
