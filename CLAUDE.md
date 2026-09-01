@@ -671,6 +671,11 @@ SELECT file_path, status FROM harness_shared.test_runs
 Then for each path, `git rev-parse <candidate>:<path>` vs `git rev-parse <repairHead>:<path>`: **DIFFERENT blobs mean the fix ALREADY LANDED** and the file is awaiting re-verification, not repair. Equal blobs are the real queue. For a path inside a SUBMODULE the blobs are identical while the gitlink moved, so use `git diff --raw <candidate> <repairHead> -- <sub> | grep '^:160000'` instead — a blob compare there answers about the wrong object, in the false-negative direction. And `filesJudged` is the AFFECTED RADIUS, never the ~6,700-file suite: an empty failing list is **not** "the gate is green".
 
 
+⚠ **A hand-written population query over `harness_shared.work_items` is mostly OBSERVATION LANE — the tools exclude it by default and raw SQL does not.** `work_items:list` / `:search` / `:claimable` all default `includeObservations:false`, because a `lane='observation'` row is an agent's turn-end reflection: never claimable, never triaged, and correctly carrying no assignee and no plan link. Raw SQL has no such default, so `SELECT … FROM work_items WHERE <predicate>` answers about a different population than every tool you would compare it against — and the gap is widening fast (measured 2026-09-01: of open items whose title matches `P-[0-9]{3}`, 2,194 of 2,340 were observations; four weeks earlier the same query was 417 of 472). Add `AND lane IS DISTINCT FROM 'observation'` whenever you mean WORK, and say which population a count describes.
+
+A title or prose regex compounds it, because it cannot distinguish an item that EXECUTES a reference from one that merely CITES it — observations cite constantly ("…defeats P-006", "another agent owns P-018", "do not claim P-008"). So "N items reference X" is never "N items are doing X", and a remediation sized from the first number can be an order of magnitude too large.
+
+
 ## Code-describing metadata: derive, pin, or attest — never hand-maintain
 
 ## Code-describing metadata: derive, pin, or attest — never hand-maintain
