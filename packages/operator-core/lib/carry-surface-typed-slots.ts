@@ -45,7 +45,12 @@ const WALL_MARKER_RE = /\bOWNER-WALL\b|\[wall\]/i;
 const OWNER_QUESTION_RES: RegExp[] = [
   /\b(?:ask|asking|need(?:s)? to ask|should ask|must ask)\s+(?:the\s+)?(?:owner|human)\b/i,
   /\bquestion\s+for\s+(?:the\s+)?(?:owner|human)\b/i,
-  /\b(?:waiting|waits?|blocked|pending|holding|held)\s+(?:on|for)\s+(?:the\s+)?owner(?:'s)?\s*(?:input|answer|decision|confirmation|approval|response|reply|ruling|go|sign-?off)?\b/i,
+  // A non-possessive owner is ambiguous but conventionally means the human
+  // owner ("waiting on the owner to decide"). A possessive owner must name
+  // the human decision being awaited; otherwise phrases such as "wait for
+  // the owner's build/restart" describe a peer-owned artifact dependency.
+  /\b(?:waiting|waits?|blocked|pending|holding|held)\s+(?:on|for)\s+(?:the\s+)?owner(?!'s\b)\b/i,
+  /\b(?:waiting|waits?|blocked|pending|holding|held)\s+(?:on|for)\s+(?:the\s+)?owner's(?:\s+\w+){0,2}\s+(?:input|answer|decision|confirmation|approval|response|reply|ruling|go|sign-?off)\b/i,
   /\bneeds?\s+(?:the\s+)?owner(?:'s)?\s+(?:input|answer|decision|confirmation|approval|response|reply|ruling|go|sign-?off)\b/i,
   /\bowner\s+(?:to\s+)?(?:decide|confirm|answer|approve|weigh in|choose)\b/i,
 ];

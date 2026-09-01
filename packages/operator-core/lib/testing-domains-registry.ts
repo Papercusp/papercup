@@ -26,7 +26,14 @@
  * generalized 5 carry tier `generalized`.
  */
 
-import { defineTestDomain, getTestDomain, universalDomains, applyRoleGlobs, type TestDomain } from './testing-domains';
+import {
+  defineTestDomain,
+  getTestDomain,
+  listTestDomains,
+  universalDomains,
+  applyRoleGlobs,
+  type TestDomain,
+} from './testing-domains';
 
 // The operator's role→globs map for the lib's universal domains: it supplies
 // the concrete endpoint-test paths the lib leaves as the 'endpoints' role
@@ -1668,31 +1675,12 @@ defineTestDomain({
   ],
 });
 
-const PAPERCUSP_IDS = [
-  'test-runs', 'coverage', 'vitals', 'chaos-desktop', 'ai-explore',
-  'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
-  'plans', 'operator', 'design', 'plugins', 'transport', 'instance-spec', 'mobile',
-  'provisioning', 'docs', 'dogfood',
-  // Subsystems + catch-alls added by the test-framework coverage audit.
-  'gym', 'scout', 'inference-gateway', 'behaviour-suite', 'dream', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
-  // First-party Rust crates (Cargo) surfaced via per-crate manifestPath cargo runners (EI-1610) — the repo has no root Cargo workspace.
-  'rust',
-  // papercusp-desktop bash self-tests, previously referenced by nothing (EI-18725214765732588).
-  'desktop-selftests',
-  // The local-hive orchestration loop (Queen/bee) as a cohesive subsystem view.
-  'hive',
-  // The cross-Hive (shared-hive) federation substrate as a cohesive subsystem view.
-  'shared-pot',
-  // The hyperbee-substrate performance suite (bench runners; files overlap dogfood by design).
-  'p2p-perf',
-  // The adversarial coordination test suite as a cohesive cross-subsystem view.
-  'coordination-suite',
-] as const;
-
-export const papercuspRegistry: TestDomain[] = PAPERCUSP_IDS.map((id) => {
-  const d = getTestDomain(id);
-  if (!d) throw new Error(`testing-domains-registry: papercusp domain '${id}' not registered`);
-  return d;
-});
-
-export const adminRegistry: TestDomain[] = [...operatorUniversal, ...papercuspRegistry];
+/**
+ * The registration Map is the canonical domain identity set. Deriving these
+ * views from it closes the stale-declaration direction: adding a domain is one
+ * registration, not a registration plus a second hand-maintained id list.
+ * Universal entries are the only entries excluded from the Papercusp view;
+ * `adminRegistry` preserves the shared Map's complete, deterministic order.
+ */
+export const adminRegistry: TestDomain[] = listTestDomains();
+export const papercuspRegistry: TestDomain[] = adminRegistry.filter((d) => d.tier !== 'universal');

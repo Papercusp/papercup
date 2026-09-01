@@ -97,6 +97,19 @@ describe('EI-19988500685566622: negation and third-party-subject suppression', (
     expect(lintOwnerQuestionSlots('work-item owner to confirm the event emitter.').flagged).toBe(false);
   });
 
+  it('does NOT flag a possessive owner that owns a peer artifact, not a human decision', () => {
+    expect(
+      lintOwnerQuestionSlots("Wait for the owner's true exit-0 build and single restart").flagged,
+    ).toBe(false);
+    expect(lintOwnerQuestionSlots("waiting on the owner's build artifact").flagged).toBe(false);
+  });
+
+  it('still flags a possessive owner when a human decision is awaited', () => {
+    expect(lintOwnerQuestionSlots("waiting on the owner's approval before the force-push").flagged).toBe(true);
+    expect(lintOwnerQuestionSlots("blocked on the owner's decision about the schema split").flagged).toBe(true);
+    expect(lintOwnerQuestionSlots("waiting for the owner's final decision about the schema split").flagged).toBe(true);
+  });
+
   it('calibration: the SAME trigger phrase, undenied and about the writer, still flags', () => {
     expect(lintOwnerQuestionSlots('blocked on the owner: no idea when this unblocks.').flagged).toBe(true);
     expect(lintOwnerQuestionSlots('need to ask the owner here, this closes on its own.').flagged).toBe(true);

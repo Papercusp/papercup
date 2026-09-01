@@ -8,8 +8,8 @@
  * `outputJsonSchema`. Two directional checks then keep the public contract
  * honest:
  *
- *  1. structural field tokens in the first authored `{ ... }` shape clause
- *     must resolve to a property somewhere in the registered schema;
+ *  1. top-level field tokens in the first authored `{ ... }` shape clause
+ *     must resolve to top-level properties in the registered schema;
  *  2. every top-level registered property must survive the compact shape
  *     rendered by tools:find.
  *
@@ -60,7 +60,7 @@ function firstBalancedShapeClause(text: string): string | null {
   return null;
 }
 
-/** Field names from every object level nested inside the first shape clause. */
+/** Top-level field names from the first authored shape clause. */
 export function structuralReturnFields(returns: unknown): string[] {
   if (typeof returns !== 'string') return [];
   const clause = firstBalancedShapeClause(returns);
@@ -71,6 +71,8 @@ export function structuralReturnFields(returns: unknown): string[] {
   let quote: '"' | "'" | '`' | null = null;
   let escaped = false;
   let parenDepth = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
   const flush = () => {
     const match = segment.trim().match(/^([A-Za-z_$][\w$-]*)(?:\?|\[\])?/);
     if (match) fields.add(match[1]!);
@@ -90,9 +92,37 @@ export function structuralReturnFields(returns: unknown): string[] {
       segment += char;
       continue;
     }
-    if (char === '(') parenDepth += 1;
-    if (char === ')') parenDepth = Math.max(0, parenDepth - 1);
-    if (parenDepth === 0 && (char === ',' || char === ';' || char === '{' || char === '}')) {
+    if (char === '{') {
+      if (braceDepth === 0 && bracketDepth === 0 && parenDepth === 0) flush();
+      braceDepth += 1;
+      continue;
+    }
+    if (char === '}') {
+      braceDepth = Math.max(0, braceDepth - 1);
+      continue;
+    }
+    if (braceDepth > 0) continue;
+    if (char === '[') {
+      if (bracketDepth === 0 && parenDepth === 0) flush();
+      bracketDepth += 1;
+      continue;
+    }
+    if (char === ']') {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+    if (bracketDepth > 0) continue;
+    if (char === '(') {
+      if (parenDepth === 0) flush();
+      parenDepth += 1;
+      continue;
+    }
+    if (char === ')') {
+      parenDepth = Math.max(0, parenDepth - 1);
+      continue;
+    }
+    if (parenDepth > 0) continue;
+    if (parenDepth === 0 && (char === ',' || char === ';')) {
       flush();
       continue;
     }
@@ -100,26 +130,6 @@ export function structuralReturnFields(returns: unknown): string[] {
   }
   flush();
   return [...fields];
-}
-
-function schemaFieldNames(schema: unknown, out = new Set<string>(), seen = new Set<object>()): Set<string> {
-  if (!schema || typeof schema !== 'object' || seen.has(schema as object)) return out;
-  seen.add(schema as object);
-  const node = schema as JsonSchema;
-  const properties = node.properties;
-  if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
-    for (const [name, child] of Object.entries(properties as JsonSchema)) {
-      out.add(name);
-      schemaFieldNames(child, out, seen);
-    }
-  }
-  schemaFieldNames(node.items, out, seen);
-  schemaFieldNames(node.additionalProperties, out, seen);
-  for (const key of ['anyOf', 'oneOf', 'allOf'] as const) {
-    const branches = node[key];
-    if (Array.isArray(branches)) for (const branch of branches) schemaFieldNames(branch, out, seen);
-  }
-  return out;
 }
 
 function topLevelSchemaFields(schema: JsonSchema): string[] {
@@ -148,7 +158,7 @@ export function returnSchemaViolations(
       continue;
     }
 
-    const schemaFields = schemaFieldNames(schema);
+    const schemaFields = new Set(topLevelSchemaFields(schema));
     const promisedMissing = structuralReturnFields(returns).filter((field) => !schemaFields.has(field));
     if (promisedMissing.length > 0) {
       violations.push({ tool: name, kind: 'promised-field-missing', fields: promisedMissing });
