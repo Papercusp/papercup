@@ -33,7 +33,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
 import { greenCheckpointDbPoolSetenvArgs } from './release/checkpoint-db-pool';
-import { isFixtureLogLine } from './release/checkpoint-log-tags';
+import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './release/checkpoint-log-tags';
 import {
   GREEN_CHECKPOINT_SIGKILL_GRACE_MS,
   GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
@@ -591,11 +591,6 @@ function parseSystemctlShow(stdout: string): Record<string, string> {
   }
   return out;
 }
-
-/** The marker printed by green-checkpoint.ts after every terminal result. Keep this literal
- *  aligned with the producer and release-actions' parser; importing either higher-level module
- *  would pull side effects into this low-level launcher. */
-const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
 
 /** Written by the transient unit's ExecStopPost, outside the checkpoint process. */
 export const GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER = '__GREEN_CHECKPOINT_SYSTEMD_TERMINAL__';
