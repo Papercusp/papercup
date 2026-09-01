@@ -501,9 +501,22 @@ and the goal's standing state on its goals:* record — so a COLD wake
 re-establishes the goal by reading goals:get, not by reconstructing it from a
 transcript that is gone. A goal that dies with its terminal is the failure this
 clause prevents.
-REPORT on a standing cadence via coord:escalate / notifyAttention (desktop
-notifications are OFF): what moved, what it cost, what is owner-walled, and what
-you killed. Without it the owner learns goal state only by asking.
+REPORT on a standing cadence via coord:escalate / notifyAttention / coord:send
+to ['human'] (desktop notifications are OFF): what MOVED, what it COST, what is
+OWNER-WALLED, and what you KILLED. Without it the owner learns goal state only by
+asking. THE FLOOR IS CONCRETE: a standing goal may not go 60 minutes without an
+owner-facing report on one of those rails (an outcome goal: 4 hours). The
+goal-owner-report watchdog escalates to the human and nudges you AT the floor,
+and reaching it is the breach this clause prevents — measured 2026-09-01 (card
+4, WI-2140700): one report, then 5h15m of live silence while the rail fired.
+So EVERY WAKE, FIRST, before any other work: read \`modes.ownerReport\` in your
+orient — it carries lastReportAt, ageMin, floorMin, dueInMin and an
+\`obligation\` verdict computed from the same three rails the watchdog measures.
+If it reads \`overdue\` or \`due-now\` (inside the last 5 minutes before the
+floor), SEND the four-element report NOW — one coord:send { to:['human'] }
+whose sections are MOVED / COST / OWNER-WALLED / KILLED — and only then
+continue. A cold wake has no memory of having reported; that field is the
+memory, and "I reported recently" without it is the failure mode.
 GOAL implies AUTO and IDEATE, and you ALREADY hold both: entering this mode
 wrote those rows for you (an autonomy axis you had already set — cold-auto, say
 — is left exactly as you set it). A goal agent that stops to ask cannot run for
