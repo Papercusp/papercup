@@ -1797,6 +1797,34 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     return effectiveMs > 0 ? Date.now() + effectiveMs : 0;
   };
+  /** Wait through gateway-owned recovery work without letting the downstream
+   * idle timer kill a request whose silence is intentional. Abort wakes the
+   * wait immediately so a disconnected caller never leaves a parked timer. */
+  const waitForCodexRecovery = async (
+    res: http.ServerResponse,
+    waitMs: number,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    if (waitMs <= 0 || signal.aborted) return;
+    res.setTimeout(downstreamIdleMs > 0 ? waitMs + downstreamIdleMs : 0);
+    try {
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          signal.removeEventListener('abort', finish);
+          resolve();
+        };
+        const timer = setTimeout(finish, waitMs);
+        timer.unref?.();
+        signal.addEventListener('abort', finish, { once: true });
+      });
+    } finally {
+      res.setTimeout(downstreamIdleMs);
+    }
+  };
   const baseTierCaps: Record<number, number> = { ...(tierLayer?.config.caps ?? {}) };
   const codexBaseTierCaps: Record<number, number> = { ...(codexTierLayer?.config.caps ?? {}) };
   const queue = new PriorityAdmissionQueue({
@@ -6121,16 +6149,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (routing.ownerId) {
                 recordStall(routing.ownerId, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
               }
-              const resetAt = parsed.resetAt ?? Date.now() + LOADSHED_RETRY_AFTER_SEC * 1000;
-              const retryAfterSec = Math.min(
-                BEE_RETRY_AFTER_CAP_S,
-                Math.max(1, Math.ceil((resetAt - Date.now()) / 1000)),
-              );
-              outHeaders['retry-after'] = String(retryAfterSec);
-              outHeaders[RETRIES_EXHAUSTED_HEADER] = String(attemptsSeen);
+              const shaped = shapeTerminalThrottle({
+                attempts: attemptsSeen,
+                retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+                retryAfter: {
+                  resetAt: parsed.resetAt,
+                  fallbackSec: LOADSHED_RETRY_AFTER_SEC,
+                  capS: BEE_RETRY_AFTER_CAP_S,
+                },
+              });
+              Object.assign(outHeaders, shaped.headers);
               log(
                 'warn',
-                `inference-gateway: codex upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (${parsed.transient ? 'transient burst' : 'window walled'}; retry-after ${retryAfterSec}s${routing.ownerId ? `; stall recorded for '${routing.ownerId}'` : ''})`,
+                `inference-gateway: codex upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (${parsed.transient ? 'transient burst' : 'window walled'}; retry-after ${shaped.retryAfterSec}s${routing.ownerId ? `; stall recorded for '${routing.ownerId}'` : ''})`,
               );
             }
             recordRoute(routing.ownerId, metadata.accountId, 'codex');
@@ -6608,6 +6639,32 @@ export function createInferenceGateway(deps: GatewayDeps) {
       },
     });
 
+    type BearerThrottleIntercept = {
+      action: 'wait' | 'absorb';
+      waitMs: number;
+      backoffMs: number;
+      resetAt: number | null;
+      accountId: string;
+    };
+    const recovery = {
+      transientWaitedMs: 0,
+      retryDeadlineAt: Date.now() + internalRetryDeadlineMs,
+      absorbDeadlineAt: absorbDeadlineForRequest(req, codexTierMap),
+    };
+    const INTERCEPT_BEARER_THROTTLE = new Error('codex bearer: outer recovery intercepted before relay');
+    const interception: { taken: BearerThrottleIntercept | null } = { taken: null };
+    const takeBearerIntercept = (): BearerThrottleIntercept | null => {
+      const taken = interception.taken;
+      interception.taken = null;
+      return taken;
+    };
+    let attemptsUsed = 0;
+    let attemptsThisPass = 0;
+    let continuationActive = false;
+    const runBearerRecovery = async (): Promise<void> => {
+      continuationActive = false;
+      interception.taken = null;
+      attemptsThisPass = 0;
     try {
       await executeGatewayRequestKernel({
         request: {
@@ -6650,7 +6707,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // against the slot this request already holds.
           run: (context, task) => kernelAdmission.run(context, task),
           observeAttempt: ({ context, response, error }) => {
-            attemptsSeen = context.attempt;
+            attemptsThisPass = context.attempt;
+            attemptsSeen = attemptsUsed + context.attempt;
             const account = context.route.accountId ?? lastAccountId;
             lastAccountId = account;
             if (lastRouteKey !== null && lastRouteKey !== context.route.key) codexFailovers++;
@@ -6710,19 +6768,61 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // covers the rest.)
             if (status === 429) {
               const parsed = parseCodexRateReset(metadata.headers);
+              const now = Date.now();
+              const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
+              const decision = decideThrottleRecovery({
+                status,
+                retryIntent: true,
+                lastExhaustResetAt: ladderResetAt,
+                state: {
+                  transientWaitedMs: recovery.transientWaitedMs,
+                  retryDeadlineAt: recovery.retryDeadlineAt,
+                  absorbDeadlineAt: recovery.absorbDeadlineAt,
+                  headersSent: res.headersSent,
+                },
+                budgets: {
+                  waitCapMs: ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+                  transientTotalWaitBudgetMs: TRANSIENT_TOTAL_WAIT_BUDGET_MS,
+                  overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
+                },
+                now,
+              });
+              if (decision.action === 'wait') {
+                interception.taken = {
+                  action: 'wait',
+                  waitMs: decision.waitMs,
+                  backoffMs: 0,
+                  resetAt: parsed.resetAt,
+                  accountId: metadata.accountId,
+                };
+                throw INTERCEPT_BEARER_THROTTLE;
+              }
+              if (decision.action === 'absorb') {
+                interception.taken = {
+                  action: 'absorb',
+                  waitMs: 0,
+                  backoffMs: decision.backoffMs,
+                  resetAt: parsed.resetAt,
+                  accountId: metadata.accountId,
+                };
+                throw INTERCEPT_BEARER_THROTTLE;
+              }
               if (wantOwner) {
                 recordStall(wantOwner, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
               }
-              const resetAt = parsed.resetAt ?? Date.now() + LOADSHED_RETRY_AFTER_SEC * 1000;
-              const retryAfterSec = Math.min(
-                BEE_RETRY_AFTER_CAP_S,
-                Math.max(1, Math.ceil((resetAt - Date.now()) / 1000)),
-              );
-              outHeaders['retry-after'] = String(retryAfterSec);
-              outHeaders[RETRIES_EXHAUSTED_HEADER] = String(attemptsSeen);
+              const shaped = shapeTerminalThrottle({
+                attempts: attemptsSeen,
+                retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+                retryAfter: {
+                  resetAt: parsed.resetAt,
+                  fallbackSec: LOADSHED_RETRY_AFTER_SEC,
+                  capS: BEE_RETRY_AFTER_CAP_S,
+                },
+              });
+              Object.assign(outHeaders, shaped.headers);
               log(
                 'warn',
-                `inference-gateway: Codex bearer upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (retry-after ${retryAfterSec}s${wantOwner ? `; stall recorded for '${wantOwner}'` : ''})`,
+                `inference-gateway: Codex bearer upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (retry-after ${shaped.retryAfterSec}s${wantOwner ? `; stall recorded for '${wantOwner}'` : ''})`,
               );
             }
             recordRoute(wantOwner, metadata.accountId, 'codex');
@@ -6771,6 +6871,41 @@ export function createInferenceGateway(deps: GatewayDeps) {
         },
       });
     } catch (error) {
+      const taken = takeBearerIntercept();
+      if (error === INTERCEPT_BEARER_THROTTLE && taken) {
+        attemptsUsed += attemptsThisPass;
+        continuationActive = true;
+        if (taken.action === 'wait') {
+          recovery.transientWaitedMs += taken.waitMs;
+          log(
+            'warn',
+            `inference-gateway: Codex bearer pool transiently throttled → wait ${taken.waitMs}ms + retry (wait-budget ${recovery.transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`,
+          );
+          await waitForCodexRecovery(res, taken.waitMs, reqAbort.signal);
+          return runBearerRecovery();
+        }
+        if (!kernelAdmission.park) {
+          throw new Error('inference-gateway: codex bearer absorb requires cooperative lane admission');
+        }
+        const now = Date.now();
+        const remainingMs = Math.max(0, recovery.absorbDeadlineAt - now);
+        const capacityWaitMs = taken.resetAt
+          ? Math.max(0, taken.resetAt - now)
+          : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
+        const waitMs = Math.min(remainingMs, capacityWaitMs);
+        recovery.transientWaitedMs = 0;
+        log(
+          'warn',
+          `inference-gateway: Codex bearer absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms, then re-enter (${remainingMs}ms budget left)`,
+        );
+        return kernelAdmission.park(
+          async () => {
+            await waitForCodexRecovery(res, waitMs, reqAbort.signal);
+            recovery.retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
+          },
+          runBearerRecovery,
+        );
+      }
       endCacheProbe();
       const failure =
         error instanceof GatewayRequestKernelError
@@ -6862,10 +6997,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
         { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
       );
     } finally {
-      endCacheProbe();
-      req.off('aborted', onReqAborted);
-      res.off('close', onResClose);
+      if (!continuationActive) {
+        endCacheProbe();
+        req.off('aborted', onReqAborted);
+        res.off('close', onResClose);
+      }
     }
+    };
+    await runBearerRecovery();
   }
 
   /**
