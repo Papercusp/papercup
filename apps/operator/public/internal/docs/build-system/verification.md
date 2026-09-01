@@ -221,7 +221,7 @@ Same window-loads check as Linux.
 
 ### 4. Flag bootstrap test
 
-Inside the Mac VM, find the operator port (`ss -tnp` doesn't exist; use `lsof -iTCP -sTCP:LISTEN -P`) and curl `/api/flags/bootstrap`. Same expected JSON.
+Inside the Mac VM, find the operator port (`ss -tnp` doesn't exist; use `lsof -iTCP -sTCP:LISTEN -P`) and curl `/api/flags/bootstrap`. Same expected JSON. ⚠ A 200 proves LIVENESS, not PROVENANCE: something is listening, not necessarily the artifact under test. Confirm the listening pid lives under the installed app bundle before reading it as a pass — see [a-200-proves-liveness-not-provenance](/internal/docs/agent-insights/a-200-proves-liveness-not-provenance).
 
 ### 5. Verify no `.papercusp/` was created
 

@@ -31,6 +31,9 @@ const status = await driver.status(idempotencyKey);
 Ad-hoc, from SQL — remember the tenant predicate:
 
 ```sql
+-- sql-snippet-justified: reads payload->'resource_governor' JSONB fields and filters on a
+-- payload-> predicate — a shape no work_items:* tool projects; the routing table itself routes
+-- payload-> predicates to SQL.
 SELECT feature_id,
        payload->'resource_governor'->>'state'          AS state,
        payload->'resource_governor'->>'idempotencyKey' AS key,
