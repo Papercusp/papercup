@@ -10,13 +10,14 @@
  * doc↔doc cosine, resolveBackfillEmbedder) and ranks it against OPEN items'
  * migration-551 vectors:
  *
- *   similarity ≥ hard (default 0.93) → the create is REFUSED
- *     (`duplicate_semantic`, force:true overrides — same contract as EI-316);
+ *   similarity ≥ hard (default 0.93) → the create PROCEEDS since P-002
+ *     (silent-intake-central-resolution-2026-09-01, D-001: every filing is
+ *     accepted — the `duplicate_semantic` refusal is retired); the hit is
+ *     stamped 'semantic-hard' in payload.dedupCandidates + persisted as
+ *     dedup_edges, where the central resolver reads it;
  *   similarity ≥ soft (default 0.85) → the create PROCEEDS, and the soft band is
  *     PERSISTED as similarity edges for the promoter (work-queue-admission-and-bulk-
- *     dedup-2026-08-24 D-010) rather than returned to the filer as an advisory. The
- *     hard band still ships as `similarOpen[]` on the REFUSAL, where it names the
- *     item the caller should work instead.
+ *     dedup-2026-08-24 D-010) rather than returned to the filer as an advisory.
  *
  * FAIL-OPEN is the prime directive: a create must never be blocked by embedder
  * health. Any error, a missing migration, a dims mismatch (harrier@1024), or

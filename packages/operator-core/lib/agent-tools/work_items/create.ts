@@ -516,7 +516,8 @@ export default defineTool({
             error: res.error,
             ...(res.message !== undefined ? { message: res.message } : {}),
             ...(res.existing !== undefined ? { existing: res.existing } : {}),
-            // P-008: duplicate_semantic carries the cosine-matched OPEN items.
+            // P-008 (P-002: dedup refusals are goal-gate-only now): carries the
+            // cosine-matched OPEN items when the refusal had them.
             ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),
             ...(res.admissionIdentity !== undefined ? { admissionIdentity: res.admissionIdentity } : {}),
             ...(res.dedupCoverage !== undefined ? { dedupCoverage: res.dedupCoverage } : {}),

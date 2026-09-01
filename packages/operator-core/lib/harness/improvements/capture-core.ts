@@ -140,22 +140,21 @@ export interface CaptureImprovementInput {
   /** Only run the dedup search, do not create. */
   checkDuplicatesOnly?: boolean;
   /**
-   * Which duplicates may DECLINE the create: 'all' (default — agents see every
-   * likely dup and decide) or 'open' (only an OPEN dup declines — the watchdog's
-   * mode: a RESOLVED duplicate means the problem regressed, so re-file it).
+   * Which duplicates count toward the file-time dedup VERDICT (P-002: annotation
+   * on the created row, no longer a decline): 'all' (default) or 'open' (only an
+   * OPEN dup counts — the watchdog's mode: a RESOLVED duplicate means the problem
+   * regressed, so it re-files verdict-free unless the evidence is stale, D-002).
    */
   dedupScope?: 'all' | 'open';
   /**
-   * Lowest semantic band eligible to DECLINE this capture. Default `'hard'` —
-   * today's behavior, and the right default for a human/agent filing: a soft hit
-   * stays advisory because widening the blocking net trades a missed duplicate
-   * for a LOST filing, the more expensive failure (see `blockEligible` below).
+   * Lowest semantic band eligible to carry the file-time dedup VERDICT (P-002:
+   * payload.dedupVerdict annotation — the decline it used to gate is retired).
+   * Default `'hard'`: a soft hit stays advisory because a soft-band identity
+   * guess is not evidence of duplication (see `blockEligible` below).
    *
-   * `'soft'` lets a soft-band hit decline too, and is for HIGH-VOLUME MACHINE
-   * ideation ONLY — the Scout capture port (`buildCapturePort`), where the
-   * trade-off inverts: a declined capture is ATTRIBUTED to the existing sibling
-   * (`created:false` + that sibling's id), so nothing is lost, and the generator
-   * re-proposes freely. There is no human intent to strand.
+   * `'soft'` lets a soft-band hit carry the verdict too, and is for HIGH-VOLUME
+   * MACHINE ideation ONLY — the Scout capture port (`buildCapturePort`), where
+   * near-siblings dominate the corpus and the resolver wants them flagged.
    *
    * Measured 2026-08-09 (plan learning-loop-identity-and-consumption-2026-08-08,
    * D-032/D-033): of 507 open Scout-minted items carrying the `improvementBody`
@@ -430,7 +429,10 @@ export interface FoldLinkEffect {
 export interface CaptureImprovementResult {
   ok: true;
   created: boolean;
-  reason?: 'likely-duplicate' | 'check-only' | 'stale-evidence' | 'coalesced' | 'promoted';
+  // P-002 (D-001): 'likely-duplicate' / 'stale-evidence' left this union with the
+  // search-first decline — a duplicate-classified filing now CREATES, carrying
+  // payload.dedupVerdict instead of a created:false reason.
+  reason?: 'check-only' | 'coalesced' | 'promoted';
   /** P-006/D-004: present ONLY on a coalesce. What this write did to the row it
    *  merged onto, and whether the caller's own text survived. */
   coalescedOnto?: CoalesceEffect;
@@ -1546,7 +1548,7 @@ export async function captureImprovement(
     return typeof k === 'string' ? k : null;
   };
   // P-011: a soft semantic hit is advisory-only — visible in possibleDuplicates,
-  // never eligible to decline the capture (mirrors the create-time work-item
+  // never eligible to carry the dedup verdict (mirrors the create-time work-item
   // guard's soft band → similarOpen contract).
   // P-007: a CONTAINMENT hit is advisory-only, exactly like a soft semantic hit. Widening
   // the surfacing net is cheap (you see one more candidate); widening the BLOCKING net

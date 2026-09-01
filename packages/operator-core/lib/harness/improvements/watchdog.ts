@@ -4978,8 +4978,15 @@ async function runWatchdogTickBody(
       console.warn(`[improvement-watchdog] capture failed for ${s.source}:${s.key}: ${e instanceof Error ? e.message : e}`);
       continue;
     }
-    if (res.created && res.issue) captured.push(res.issue.id);
-    else if (res.reason === 'likely-duplicate' || res.reason === 'stale-evidence') declinedDuplicates += 1;
+    if (res.created && res.issue) {
+      captured.push(res.issue.id);
+      // P-002 (silent-intake-central-resolution-2026-09-01, D-001): the search-first
+      // decline is retired — a would-be duplicate now FILES, carrying the verdict as
+      // payload.dedupVerdict. The metric keeps its meaning (duplicate-classified
+      // captures this tick) by counting the annotation instead of the decline.
+      const verdict = (res.issue.payload as Record<string, unknown> | undefined)?.dedupVerdict;
+      if (verdict === 'likely-duplicate' || verdict === 'stale-evidence') declinedDuplicates += 1;
+    }
   }
 
   // P-002: the watchdog watches itself. If a collector is failing THIS tick, check
