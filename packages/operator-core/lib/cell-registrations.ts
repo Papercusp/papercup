@@ -1181,7 +1181,7 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'host:memory_pressure', path: 'memory.pressure' },
   shape:
-    '{ memory: { pressure: "ok"|"warn"|"crit"|null, measuredAt, ageMs, stale, psiMemorySome60, psiMemoryFull60, cgroupAttribution: { accounting, partial, top[{ path, memoryBytes, swapBytes, directPids }] }|null, thresholds: { source, psiMemorySomeWarn, psiMemoryFullCrit, staleMs, blindMs }, reasons[], unknown[] }, host: { measuredAt, memFreePct, memTotalGb, psiMemSome60 } }',
+    '{ memory: { pressure: "ok"|"warn"|"crit"|null, measuredAt, ageMs, stale, psiMemorySome60, psiMemoryFull60, cgroupAttribution: { accounting, partial, largestCapturedCgroup: { path, memoryBytes }|null, top[{ path, memoryBytes, swapBytes, directPids, memoryShareOfLargestCapturedCgroup }], throttled: [{ path, memoryBytes, memoryShareOfLargestCapturedCgroup, highEventsCumulative, maxEventsCumulative, oomKillEventsCumulative, subtreeMaxEventsCumulative, subtreeOomKillEventsCumulative, subtreeOnly: true|false|null }]|null }|null, thresholds: { source, psiMemorySomeWarn, psiMemoryFullCrit, staleMs, blindMs }, reasons[], unknown[] }, host: { measuredAt, memFreePct, memTotalGb, psiMemSome60 } }',
 };
 
 /**
@@ -1237,7 +1237,7 @@ export const MEMORY_CGROUP_ATTRIBUTION_CELL: CellSpec = {
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'host:memory_pressure', path: 'memory.cgroupAttribution' },
   shape:
-    '{ memory: { cgroupAttribution: { accounting, partial, throttled, top[{ path, memoryBytes, swapBytes, directPids }] }|null, pressure: "ok"|"warn"|"crit"|null, unknown[] } }',
+    '{ memory: { cgroupAttribution: { accounting, partial, largestCapturedCgroup: { path, memoryBytes }|null, throttled: [{ path, memoryBytes, memoryShareOfLargestCapturedCgroup, highEventsCumulative, maxEventsCumulative, oomKillEventsCumulative, subtreeMaxEventsCumulative, subtreeOomKillEventsCumulative, subtreeOnly: true|false|null }]|null, top[{ path, memoryBytes, swapBytes, directPids, memoryShareOfLargestCapturedCgroup }] }|null, pressure: "ok"|"warn"|"crit"|null, unknown[] } }',
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════

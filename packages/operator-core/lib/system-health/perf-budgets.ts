@@ -180,11 +180,23 @@ export interface PerfSignalsV1 {
 export interface MemoryPressureCgroupAttribution {
   accounting: 'cgroup-v2-inclusive-descendants' | string;
   partial: boolean;
+  /**
+   * The denominator used by `memoryShareOfLargestCapturedCgroup`. This is the
+   * largest row in the bounded capture, not a host-total measurement. Keeping
+   * the path and level beside the fraction prevents a small cgroup's live
+   * memory level from being read as a standalone pressure magnitude.
+   */
+  largestCapturedCgroup: {
+    path: string;
+    memoryBytes: number;
+  } | null;
   top: Array<{
     path: string;
     memoryBytes: number;
     swapBytes: number | null;
     directPids: number | null;
+    /** Fraction of the explicitly named largest captured cgroup level. */
+    memoryShareOfLargestCapturedCgroup: number | null;
   }>;
   /**
    * Cgroups that actually took reclaim events, ranked by events rather than size
@@ -196,16 +208,18 @@ export interface MemoryPressureCgroupAttribution {
   throttled: Array<{
     path: string;
     memoryBytes: number;
+    /** Fraction of the explicitly named largest captured cgroup level. */
+    memoryShareOfLargestCapturedCgroup: number | null;
     /** Own events (`memory.events.local`). */
-    highEvents: number;
-    maxEvents: number;
-    oomKillEvents: number;
+    highEventsCumulative: number | null;
+    maxEventsCumulative: number | null;
+    oomKillEventsCumulative: number | null;
     /** Inclusive of descendants — retains an exited child's history. */
-    subtreeMaxEvents: number;
-    subtreeOomKillEvents: number;
-    /** True when this row has no own events and is evidence only about
-     *  descendants, at least one of which may no longer exist. */
-    subtreeOnly: boolean;
+    subtreeMaxEventsCumulative: number | null;
+    subtreeOomKillEventsCumulative: number | null;
+    /** True when all own event counters are measured and zero, false when an
+     *  own counter is positive, and null when the counters are incomplete. */
+    subtreeOnly: boolean | null;
   }> | null;
 }
 
@@ -440,7 +454,7 @@ function summarizeCgroupMemory(
   cgroup: PerfSignalsV1['signals']['cgroupMemory'],
 ): MemoryPressureCgroupAttribution | null {
   if (!cgroup || !Array.isArray(cgroup.top)) return null;
-  const top = [...cgroup.top]
+  const topRows = [...cgroup.top]
     .filter((row) => typeof row?.path === 'string' && typeof row?.memoryBytes === 'number')
     .sort((a, b) => b.memoryBytes - a.memoryBytes)
     .slice(0, 8)
@@ -450,7 +464,22 @@ function summarizeCgroupMemory(
       swapBytes: typeof row.swapBytes === 'number' ? row.swapBytes : null,
       directPids: typeof row.directPids === 'number' ? row.directPids : null,
     }));
-  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const largestCapturedCgroup = topRows[0]
+    ? { path: topRows[0].path, memoryBytes: topRows[0].memoryBytes }
+    : null;
+  const memoryShareOfLargestCapturedCgroup = (memoryBytes: number): number | null =>
+    largestCapturedCgroup && largestCapturedCgroup.memoryBytes > 0
+      ? memoryBytes / largestCapturedCgroup.memoryBytes
+      : null;
+  const top = topRows.map((row) => ({
+    ...row,
+    memoryShareOfLargestCapturedCgroup: memoryShareOfLargestCapturedCgroup(row.memoryBytes),
+  }));
+  // Event fields are cumulative counters, but older captures and partially-read
+  // cgroups may omit one or more of them. Preserve that distinction: zero is a
+  // measured count, while null means the counter was not measured.
+  const nullableNum = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
   // A capture predating the reclaim-event fields carries no `throttled` array at
   // all. Project that as null — an empty array would assert "nothing was
   // throttled", turning a MISSING measurement into a false all-clear, which is
@@ -460,24 +489,29 @@ function summarizeCgroupMemory(
         .filter((row) => typeof row?.path === 'string' && typeof row?.memoryBytes === 'number')
         .slice(0, 8)
         .map((row) => {
-          const highEvents = num(row.throttledHighEvents);
-          const maxEvents = num(row.throttledMaxEvents);
-          const oomKillEvents = num(row.oomKillEvents);
+          const highEvents = nullableNum(row.throttledHighEvents);
+          const maxEvents = nullableNum(row.throttledMaxEvents);
+          const oomKillEvents = nullableNum(row.oomKillEvents);
+          const ownEventsMeasured = highEvents !== null && maxEvents !== null && oomKillEvents !== null;
           return {
             path: row.path,
             memoryBytes: row.memoryBytes,
-            highEvents,
-            maxEvents,
-            oomKillEvents,
-            subtreeMaxEvents: num(row.throttledMaxEventsSubtree),
-            subtreeOomKillEvents: num(row.oomKillEventsSubtree),
-            subtreeOnly: highEvents === 0 && maxEvents === 0 && oomKillEvents === 0,
+            memoryShareOfLargestCapturedCgroup: memoryShareOfLargestCapturedCgroup(row.memoryBytes),
+            highEventsCumulative: highEvents,
+            maxEventsCumulative: maxEvents,
+            oomKillEventsCumulative: oomKillEvents,
+            subtreeMaxEventsCumulative: nullableNum(row.throttledMaxEventsSubtree),
+            subtreeOomKillEventsCumulative: nullableNum(row.oomKillEventsSubtree),
+            subtreeOnly: ownEventsMeasured
+              ? highEvents === 0 && maxEvents === 0 && oomKillEvents === 0
+              : null,
           };
         })
     : null;
   return {
     accounting: cgroup.accounting,
     partial: cgroup.partial === true,
+    largestCapturedCgroup,
     top,
     throttled,
   };
@@ -577,7 +611,10 @@ function formatCgroupOwner(row: MemoryPressureCgroupAttribution['top'][number]):
   const gb = (row.memoryBytes / 1024 ** 3).toFixed(2);
   const swap = row.swapBytes !== null ? `, ${(row.swapBytes / 1024 ** 3).toFixed(2)}GB swap` : '';
   const pids = row.directPids !== null ? `, ${row.directPids} direct pid(s)` : '';
-  return `${row.path} (${gb}GB${swap}${pids})`;
+  const share = row.memoryShareOfLargestCapturedCgroup === null
+    ? ''
+    : `, ${(row.memoryShareOfLargestCapturedCgroup * 100).toFixed(2)}% of largest captured cgroup`;
+  return `${row.path} (${gb}GB${swap}${pids}${share})`;
 }
 
 /** Append the cgroup-attribution clause to a memory-pressure reason, or an explicit
@@ -591,27 +628,44 @@ function withCgroupAttribution(reason: string, attribution: MemoryPressureCgroup
   // and SAY WHICH ONE the reader is getting — labelling a size ranking
   // "attributed" is what let 13 investigations mistake the biggest workload for
   // the responsible one (EI-21025158485847408).
-  const stalling = attribution?.throttled?.find((row) => !row.subtreeOnly) ?? null;
+  const stalling = attribution?.throttled?.find((row) => row.subtreeOnly === false) ?? null;
   if (stalling) {
     const gb = (stalling.memoryBytes / 1024 ** 3).toFixed(2);
     const parts = [
-      stalling.highEvents > 0 ? `${stalling.highEvents} MemoryHigh throttle(s)` : null,
-      stalling.maxEvents > 0 ? `${stalling.maxEvents} MemoryMax hit(s)` : null,
-      stalling.oomKillEvents > 0 ? `${stalling.oomKillEvents} oom-kill(s)` : null,
+      stalling.highEventsCumulative !== null && stalling.highEventsCumulative > 0
+        ? `${stalling.highEventsCumulative} cumulative MemoryHigh throttle(s)`
+        : null,
+      stalling.maxEventsCumulative !== null && stalling.maxEventsCumulative > 0
+        ? `${stalling.maxEventsCumulative} cumulative MemoryMax hit(s)`
+        : null,
+      stalling.oomKillEventsCumulative !== null && stalling.oomKillEventsCumulative > 0
+        ? `${stalling.oomKillEventsCumulative} cumulative oom-kill(s)`
+        : null,
     ].filter(Boolean);
-    return `${reason}; reclaim-attributed cgroup: ${stalling.path} (${gb}GB, ${parts.join(', ')})`;
+    const share = stalling.memoryShareOfLargestCapturedCgroup === null
+      ? ''
+      : `, ${(stalling.memoryShareOfLargestCapturedCgroup * 100).toFixed(2)}% of largest captured cgroup`;
+    return `${reason}; reclaim-attributed cgroup: ${stalling.path} (${gb}GB${share}, ${parts.join(', ')})`;
   }
   // No cgroup owns an event, but an ancestor may still carry a subtree record of
   // one whose cgroup has since been removed. That is the ONLY surviving evidence
   // of a short-lived producer, so surface it rather than falling through to size.
   const exited = attribution?.throttled?.find(
-    (row) => row.subtreeOnly && (row.subtreeMaxEvents > 0 || row.subtreeOomKillEvents > 0),
+    (row) =>
+      row.subtreeOnly === true &&
+      ((row.subtreeMaxEventsCumulative !== null && row.subtreeMaxEventsCumulative > 0) ||
+        (row.subtreeOomKillEventsCumulative !== null && row.subtreeOomKillEventsCumulative > 0)),
   );
   if (exited) {
-    const kills = exited.subtreeOomKillEvents > 0 ? `, ${exited.subtreeOomKillEvents} oom-kill(s)` : '';
+    const kills = exited.subtreeOomKillEventsCumulative !== null && exited.subtreeOomKillEventsCumulative > 0
+      ? `, ${exited.subtreeOomKillEventsCumulative} cumulative oom-kill(s)`
+      : '';
+    const share = exited.memoryShareOfLargestCapturedCgroup === null
+      ? ''
+      : ` (${(exited.memoryShareOfLargestCapturedCgroup * 100).toFixed(2)}% of largest captured cgroup)`;
     return (
       `${reason}; no live cgroup owns a reclaim event, but ${exited.path} retains ` +
-      `${exited.subtreeMaxEvents} MemoryMax hit(s)${kills} from descendants that have since exited — ` +
+      `${exited.subtreeMaxEventsCumulative} cumulative MemoryMax hit(s)${kills} from descendants that have since exited${share} — ` +
       `attribute there, not to the largest cgroup`
     );
   }
@@ -621,7 +675,9 @@ function withCgroupAttribution(reason: string, attribution: MemoryPressureCgroup
     const basis =
       attribution?.throttled === null
         ? 'capture predates reclaim-event attribution, so stall ownership is UNMEASURED'
-        : 'no cgroup recorded a reclaim event';
+        : attribution?.throttled?.some((row) => row.subtreeOnly === null)
+          ? 'one or more cgroups have incomplete reclaim-event fields, so stall ownership is UNMEASURED'
+          : 'no cgroup recorded a reclaim event';
     return `${reason}; largest cgroup by size (NOT confirmed as the staller — ${basis}): ${formatCgroupOwner(owner)}`;
   }
   return `${reason}; no cgroup memory attribution captured — mechanism unconfirmed, do not attribute to low free RAM`;

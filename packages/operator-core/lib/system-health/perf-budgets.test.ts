@@ -452,19 +452,147 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(v.memoryPressure.cgroupAttribution).toEqual({
       accounting: 'cgroup-v2-inclusive-descendants',
       partial: false,
+      largestCapturedCgroup: { path: '/user.slice', memoryBytes: 100_000 },
       // This synthetic capture predates the reclaim-event producer. Null keeps
       // "unmeasured" distinct from the false all-clear of an empty array.
       throttled: null,
       top: [
-        { path: '/user.slice', memoryBytes: 100_000, swapBytes: 20_000, directPids: 0 },
+        {
+          path: '/user.slice',
+          memoryBytes: 100_000,
+          swapBytes: 20_000,
+          directPids: 0,
+          memoryShareOfLargestCapturedCgroup: 1,
+        },
         {
           path: '/user.slice/user@1000.service/app.slice/papercup-dev-api.service',
           memoryBytes: 60_000,
           swapBytes: 10_000,
           directPids: 17,
+          memoryShareOfLargestCapturedCgroup: 0.6,
         },
       ],
     });
+  });
+
+  it('preserves cumulative counter units and tri-state own-event knowledge', () => {
+    const v = evaluatePerfSignals(
+      sig({
+        psi: { memory: { full: { avg60: 8.17 } } },
+        cgroupMemory: {
+          accounting: 'cgroup-v2-inclusive-descendants',
+          partial: false,
+          top: [
+            {
+              path: '/user.slice',
+              memoryBytes: 100_000,
+              swapBytes: 0,
+              directPids: 0,
+            },
+            {
+              path: '/tiny.scope',
+              memoryBytes: 500,
+              swapBytes: 0,
+              directPids: 1,
+            },
+          ],
+          throttled: [
+            {
+              path: '/tiny.scope',
+              memoryBytes: 500,
+              swapBytes: 0,
+              directPids: 1,
+              throttledHighEvents: 0,
+              throttledMaxEvents: 147_593,
+              oomKillEvents: 0,
+              throttledMaxEventsSubtree: 147_593,
+              oomKillEventsSubtree: 0,
+            },
+            {
+              path: '/descendant-owner',
+              memoryBytes: 3_000,
+              swapBytes: 0,
+              directPids: 0,
+              throttledHighEvents: 0,
+              throttledMaxEvents: 0,
+              oomKillEvents: 0,
+              throttledMaxEventsSubtree: 7,
+              oomKillEventsSubtree: 2,
+            },
+            {
+              path: '/partially-observed',
+              memoryBytes: 2_000,
+              swapBytes: 0,
+              directPids: 0,
+              throttledHighEvents: 0,
+              // Missing maxEvents is unknown, not a measured zero.
+              oomKillEvents: 0,
+              throttledMaxEventsSubtree: 4,
+              oomKillEventsSubtree: 0,
+            },
+          ],
+          scannedCgroups: 3,
+          candidateCgroups: 3,
+          maxScanned: 4096,
+          maxRows: 40,
+          budgetSec: 5,
+        },
+      }),
+      NOW,
+    );
+
+    expect(v.memoryPressure.cgroupAttribution).toMatchObject({
+      largestCapturedCgroup: { path: '/user.slice', memoryBytes: 100_000 },
+      top: [
+        expect.objectContaining({
+          path: '/user.slice',
+          memoryShareOfLargestCapturedCgroup: 1,
+        }),
+        expect.objectContaining({
+          path: '/tiny.scope',
+          memoryShareOfLargestCapturedCgroup: 0.005,
+        }),
+      ],
+      throttled: [
+        {
+          path: '/tiny.scope',
+          memoryBytes: 500,
+          memoryShareOfLargestCapturedCgroup: 0.005,
+          highEventsCumulative: 0,
+          maxEventsCumulative: 147_593,
+          oomKillEventsCumulative: 0,
+          subtreeMaxEventsCumulative: 147_593,
+          subtreeOomKillEventsCumulative: 0,
+          subtreeOnly: false,
+        },
+        {
+          path: '/descendant-owner',
+          memoryBytes: 3_000,
+          memoryShareOfLargestCapturedCgroup: 0.03,
+          highEventsCumulative: 0,
+          maxEventsCumulative: 0,
+          oomKillEventsCumulative: 0,
+          subtreeMaxEventsCumulative: 7,
+          subtreeOomKillEventsCumulative: 2,
+          subtreeOnly: true,
+        },
+        {
+          path: '/partially-observed',
+          memoryBytes: 2_000,
+          memoryShareOfLargestCapturedCgroup: 0.02,
+          highEventsCumulative: 0,
+          maxEventsCumulative: null,
+          oomKillEventsCumulative: 0,
+          subtreeMaxEventsCumulative: 4,
+          subtreeOomKillEventsCumulative: 0,
+          subtreeOnly: null,
+        },
+      ],
+    });
+    const reason = v.memoryPressure.reasons.join(' ');
+    expect(reason).toContain('/tiny.scope');
+    expect(reason).toContain('147593 cumulative MemoryMax hit(s)');
+    expect(reason).toContain('0.50% of largest captured cgroup');
   });
 
   it('does not alarm on a healthy memory PSI reading', () => {

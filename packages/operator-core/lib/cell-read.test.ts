@@ -852,6 +852,10 @@ describe('EI-21572281184148497 — attribution cell reads the existing host reso
     const attribution = {
       accounting: 'cgroup-v2-inclusive-descendants',
       partial: false,
+      largestCapturedCgroup: {
+        path: '/user.slice/papercup-dev-api.service',
+        memoryBytes: 48 * 1024 ** 3,
+      },
       throttled: null,
       top: [
         {
@@ -859,6 +863,7 @@ describe('EI-21572281184148497 — attribution cell reads the existing host reso
           memoryBytes: 48 * 1024 ** 3,
           swapBytes: 4 * 1024 ** 3,
           directPids: 17,
+          memoryShareOfLargestCapturedCgroup: 1,
         },
       ],
     };
