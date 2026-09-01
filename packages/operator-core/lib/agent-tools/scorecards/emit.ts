@@ -42,6 +42,7 @@ import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from '.
 import {
   collapseCriticsToSoleParty,
   resolveAcceptanceGraderEligibility,
+  retiredAcceptanceRubricRefusal,
 } from './grader-eligibility';
 import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../acceptance-grader';
 import { gradingCardDigestExcerpt } from '../../consult/grading-cascade';
@@ -480,14 +481,7 @@ export async function emitScorecard(
   // revision reads, deduplication, deterministic checks, or the ledger write.
   // Historical cards remain readable through scorecards:list.
   if (rubric.kind === 'acceptance' && rubric.status === 'retired') {
-    return {
-      ok: false as const,
-      code: 'retired_acceptance_rubric' as const,
-      error:
-        `acceptance rubric '${args.rubricRef}' is retired with its terminal subject plan — ` +
-        'no new grading or acceptance verdict may be emitted. Read the existing scorecards; ' +
-        're-propose a new active rubric revision if genuinely new review work is required.',
-    };
+    return { ok: false as const, ...retiredAcceptanceRubricRefusal(rubric) };
   }
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };

@@ -793,6 +793,36 @@ export default defineTool({
         }
       }),
   ),
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      created: z.boolean().optional(),
+      issue: z.unknown().optional(),
+      topics: z.array(z.unknown()).optional(),
+      possibleDuplicates: z.array(z.unknown()).optional(),
+      dedupCoverage: z.unknown().optional(),
+      alreadyDecided: z.unknown().optional(),
+      reason: z.string().optional(),
+      hint: z.string().optional(),
+      coalescedOnto: z.unknown().optional(),
+      staleCodeWarning: z.unknown().optional(),
+      priorArt: z.array(z.unknown()).optional(),
+      shippedCodeSearch: z.unknown().optional(),
+      experimentGap: z.unknown().optional(),
+      lensAttribution: z.unknown().optional(),
+      groundingGap: z.unknown().optional(),
+      agentReview: z.unknown().optional(),
+      agentReviewFailure: z.unknown().optional(),
+      notified: z.unknown().optional(),
+      linked: z.array(z.unknown()).optional(),
+      possiblyStaleSchema: z.unknown().optional(),
+      warnings: z.array(z.unknown()).optional(),
+      error: z.string().optional(),
+      retryable: z.boolean().optional(),
+      pgCode: z.string().optional(),
+      message: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
     // EI-21601117899178959: direct handler callers (including older in-process

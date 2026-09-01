@@ -90,7 +90,14 @@ export type GraderEligibilityReport =
  * that answers.
  */
 async function reportGraderEligibility(
-  rubric: { rubricId: string; kind?: string | null; workspaceId?: string | null; proposedBy?: string | null; createdBy?: string | null },
+  rubric: {
+    rubricId: string;
+    kind?: string | null;
+    status?: string | null;
+    workspaceId?: string | null;
+    proposedBy?: string | null;
+    createdBy?: string | null;
+  },
   caller: ScorecardEvaluateCaller | undefined,
 ): Promise<GraderEligibilityReport> {
   if (!caller || rubric.kind !== 'acceptance') return null;
