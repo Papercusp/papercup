@@ -720,7 +720,7 @@ export async function createFleetIfAbsent(
     input.colorScheme ?? (await allocateSchemeForWorkspace(input.workspaceId, sql));
   const inserted = (await s.unsafe(
     `INSERT INTO harness_shared.agent_fleets (${COLS})
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL, NULL, NULL, $8, $8, $9)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL, NULL, NULL, $8, $8, $9, NULL, NULL, false)
      ON CONFLICT (workspace_id, fleet_slug) DO NOTHING
      RETURNING ${COLS}`,
     [
