@@ -1669,6 +1669,13 @@ describe('affected-tests: --print-affected includes repo-wide guards (EI-2009918
       'AFFECTED_GUARD\t@papercusp/operator-core\tlint:chunk-safe\t' +
         'npm run --silent --workspace @papercusp/operator-core lint:chunk-safe',
     );
+    const forwardedGuardLine = lines.find((line) =>
+      line.startsWith('AFFECTED_GUARD\t@papercusp/operator-core\tlint:vimock-export-strands\t'),
+    );
+    expect(forwardedGuardLine).toContain(
+      'npm run --silent --workspace @papercusp/operator-core lint:vimock-export-strands -- ' +
+        '--files=apps/operator/app/adv/hud/GoalSessionsRail.tsx --base ',
+    );
     expect(out).not.toContain('AFFECTED_TESTS_RESULT');
     expect(out).not.toContain('(repo-wide invariant guard:');
   });
