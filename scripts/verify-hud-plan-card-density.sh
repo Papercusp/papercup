@@ -49,6 +49,19 @@ PID="${VERIFY_TAURI_PID:?verify-tauri-headless.sh must export VERIFY_TAURI_PID}"
 POLL="${VERIFY_TAURI_POLL:?verify-tauri-headless.sh must export VERIFY_TAURI_POLL}"
 SETTLE="${VERIFY_TAURI_SETTLE:-}"
 
+# The wrapper gives us an agent-owned X display.  The narrow-viewport pass
+# below resizes only that isolated window, never the owner's real desktop.
+X_DISPLAY="${VERIFY_TAURI_DISPLAY:-${DISPLAY:-}}"
+NARROW_WID=""
+NARROW_ORIG_W=""
+NARROW_ORIG_H=""
+restore_narrow_window() {
+  if [ -n "$NARROW_WID" ] && [ -n "$NARROW_ORIG_W" ] && [ -n "$NARROW_ORIG_H" ]; then
+    DISPLAY="$X_DISPLAY" xdotool windowsize "$NARROW_WID" "$NARROW_ORIG_W" "$NARROW_ORIG_H" >/dev/null 2>&1 || true
+  fi
+}
+trap restore_narrow_window EXIT
+
 # The floor the acceptance criterion names: the weighted spec's minmax minima.
 # Pinning gridTemplateColumns to these literals puts all three card columns at
 # their narrowest simultaneously, which is what "at the grid floor" means.
@@ -95,6 +108,37 @@ say "2. installing probes"
   // exactly the population the density work touched and nothing else.
   P.cards = () => [...document.querySelectorAll(".hud__card")]
     .filter(c => c.querySelector(".hud__cardtitle"));
+
+  // The acceptance bar distinguishes the ordinary two-line form from the
+  // settled-column one-line form.  Keep that distinction in the evidence
+  // rather than reporting one blended min/max that could hide an unmeasured
+  // population.  The class is written by EntityCardBody from card.column;
+  // `hud__card--entity` is the shared marker and is deliberately excluded.
+  P.groupHeights = () => {
+    const groups = { twoLine: [], settled: [], unknown: [] };
+    for (const c of P.cards()) {
+      const col = [...c.classList]
+        .map(x => x.match(/^hud__card--(.+)$/)?.[1])
+        .find(x => x && x !== "entity") || "unknown";
+      const group = col === "ready" || col === "done" ? "settled" : (col === "unknown" ? "unknown" : "twoLine");
+      groups[group].push(Math.round(c.getBoundingClientRect().height));
+    }
+    return groups;
+  };
+  P.groupSummary = () => Object.fromEntries(Object.entries(P.groupHeights()).map(([name, values]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    return [name, {
+      cards: values.length,
+      minHeight: sorted.length ? sorted[0] : null,
+      maxHeight: sorted.length ? sorted[sorted.length - 1] : null,
+      medianHeight: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null,
+      distinctHeights: [...new Set(sorted)],
+    }];
+  }));
+  P.hasBothForms = () => {
+    const g = P.groupHeights();
+    return g.twoLine.length >= 1 && g.settled.length >= 1;
+  };
 
   // HEIGHT. Measured against a baseline captured at natural width.
   //
@@ -271,6 +315,11 @@ say "3a. DENSITY AS SHIPPED at the current sha — whole population, ambient lay
 "$POLL" --require '.hud__cardtitle' --require-min 1 \
   --eval 'window.__hudprobe.cards().length >= 1' \
   || fatal "no plan cards to measure"
+# A single aggregate histogram can hide a missing settled-column population.
+# Require both forms to be present before recording the whole-board number;
+# the narrow viewport pass below repeats this guard after the real resize.
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hasBothForms()' \
+  || fatal "the live Plans board did not render both ordinary and settled plan-card forms; the density population is incomplete."
 settle
 "$TAT" eval --pid "$PID" '
 (() => {
@@ -286,6 +335,7 @@ settle
     titlesClamped: P.titlesClamped(),
     hudWidth: P.cols().clientWidth,
     viewport: window.innerWidth + "x" + window.innerHeight,
+    populations: P.groupSummary(),
   }, null, 1);
 })()'
 
@@ -448,9 +498,67 @@ say "5. DENSITY at the floor — whole population"
     medianHeight: sorted[Math.floor(sorted.length / 2)],
     distinctHeights: [...new Set(sorted)],
     titlesClamped: P.titlesClamped(),
+    populations: P.groupSummary(),
   }, null, 1);
 })()'
+
+# ── 5a. TRUE NARROW-VIEWPORT REPEAT ────────────────────────────────────────
+# The earlier evidence forced the weighted grid to its CSS floor but left the
+# OS viewport at whatever size the verifier happened to boot.  Acceptance
+# requires a real narrow-window run as well.  Resolve the largest X11 window
+# owned by this verifier PID, save its dimensions, resize only that isolated
+# window, then repeat the floor measurements and all four controls.
+say "5a. narrow viewport — resize the agent-owned Tauri window and repeat the floor proof"
+[ -n "$X_DISPLAY" ] || fatal "no isolated X display was exported; cannot prove a true narrow viewport"
+command -v xdotool >/dev/null 2>&1 || fatal "xdotool is required to resize the isolated verifier window"
+command -v xwininfo >/dev/null 2>&1 || fatal "xwininfo is required to resolve the isolated verifier window"
+BEST_AREA=0
+while IFS= read -r candidate; do
+  [ -n "$candidate" ] || continue
+  GEOM="$(DISPLAY="$X_DISPLAY" xwininfo -id "$candidate" 2>/dev/null || true)"
+  W="$(awk '/Width:/{print $2; exit}' <<<"$GEOM")"
+  H="$(awk '/Height:/{print $2; exit}' <<<"$GEOM")"
+  case "$W:$H" in
+    ''|*:|:*|*[^0-9:]*|0:*|*:0) continue ;;
+  esac
+  AREA=$((W * H))
+  if [ "$AREA" -gt "$BEST_AREA" ]; then
+    BEST_AREA="$AREA"
+    NARROW_WID="$candidate"
+    NARROW_ORIG_W="$W"
+    NARROW_ORIG_H="$H"
+  fi
+done < <(DISPLAY="$X_DISPLAY" xdotool search --pid "$PID" 2>/dev/null || true)
+[ -n "$NARROW_WID" ] || fatal "could not resolve an X11 window owned by verifier PID $PID"
+if [ "$NARROW_ORIG_W" -le 800 ]; then
+  fatal "the verifier window is already at ${NARROW_ORIG_W}px wide; no narrower viewport contrast is available"
+fi
+DISPLAY="$X_DISPLAY" xdotool windowsize --sync "$NARROW_WID" 800 600 \
+  || fatal "could not resize the isolated verifier window to 800x600"
+"$POLL" --require '.hud__cardtitle' --eval 'window.innerWidth <= 820 && window.innerHeight <= 620' \
+  || fatal "the Tauri webview did not report the requested narrow viewport after resize"
+settle
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hasBothForms()' \
+  || fatal "the narrow viewport did not render both ordinary and settled plan-card forms"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tpl("floor") && window.__hudprobe.tracksAre("floor")' \
+  || fatal "could not apply the weighted grid floor in the narrow viewport"
+"$TAT" eval --pid "$PID" '
+(() => ({ MEASURE: "narrow-viewport-floor",
+  viewport: window.innerWidth + "x" + window.innerHeight,
+  tracks: window.__hudprobe.tracks(),
+  populations: window.__hudprobe.groupSummary(),
+  cardWidths: [...new Set(window.__hudprobe.cards().map(c => Math.round(c.getBoundingClientRect().width)))]
+}))()'
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.grown() === 0' \
+  || fatal "narrow viewport MODE (i) RED: plan cards grow taller than the roomy baseline"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.railOut() === 0' \
+  || fatal "narrow viewport MODE (iii) RED: activity rail is clipped"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.pageOverflow() === 0' \
+  || fatal "narrow viewport MODE (ii) RED: an ancestor above the grid scrolls horizontally"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hclip() === 0' \
+  || fatal "narrow viewport MODE (iv) RED: card content overflows horizontally"
 "$TAT" eval --pid "$PID" 'window.__hudprobe.tpl(null)' >/dev/null || true
+echo "  narrow viewport floor proof: GREEN (viewport ${NARROW_ORIG_W}x${NARROW_ORIG_H} → 800x600; all four modes clean)"
 
 # ── 6. SCOPED TO PLAN CARDS — the live half ────────────────────────────────
 # The unit half of this criterion is asserted at HudEntityColumns.test.tsx:918
