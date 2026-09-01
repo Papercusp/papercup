@@ -20,7 +20,7 @@ const NOW = 1_000_000_000;
 function laneHealth(claimable: number | null): FleetLaneHealth {
   return {
     claimable: claimable ?? 0,
-    matchedByFilter: claimable,
+    matchedByFilter: claimable ?? 0,
     excluded: {},
     issueFamily: { claimable: claimable ?? 0, matchedByFilter: claimable ?? 0, excluded: {} },
     featureFamily: null,
