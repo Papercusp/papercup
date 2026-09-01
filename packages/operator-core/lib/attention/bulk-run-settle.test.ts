@@ -17,7 +17,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { deriveSettleOutcome } from './bulk-run-store';
+import { deriveSettleOutcome, setRunPhase } from './bulk-run-store';
 
 describe('deriveSettleOutcome', () => {
   describe('inbox-resolve', () => {
@@ -203,5 +203,23 @@ describe('deriveSettleOutcome', () => {
     });
     expect(out.phase).toBe('review');
     expect(out.phase).not.toBe('complete');
+  });
+});
+
+describe("setRunPhase type contract — 'complete' is earned, never set", () => {
+  it("rejects phase:'complete' at compile time, directing callers to settleRunPhase", () => {
+    // The lie WI-2104919 repaired (migration 1064) was minted by writing
+    // phase='complete' directly. deriveSettleOutcome guards the settle seam;
+    // this pins the OTHER seam: setRunPhase's input type excludes 'complete',
+    // so a future production caller cannot quietly re-mint the shape. The pin
+    // fires under lint:tsc (vitest never typechecks): if someone widens the
+    // type back to BulkRunPhase, the @ts-expect-error below becomes unused and
+    // the typecheck fails.
+    type SetRunPhaseInput = Parameters<typeof setRunPhase>[0];
+    // @ts-expect-error 'complete' is excluded — a run completes only via settleRunPhase.
+    const rejected: SetRunPhaseInput = { runId: 'x', phase: 'complete' };
+    void rejected;
+    const allowed: SetRunPhaseInput = { runId: 'x', phase: 'failed' };
+    expect(allowed.phase).toBe('failed');
   });
 });

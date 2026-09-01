@@ -166,7 +166,12 @@ describe('bulk-run watchdog store (real PG)', () => {
     // Two decided, one still pending — the shape the watchdog has to recognise.
     await db.adminSql`
       UPDATE harness_shared.attention_bulk_run_items
-         SET outcome = 'auto_resolved', decided_at = now()
+         SET outcome = 'auto_resolved', decided_at = now(),
+             -- migration 1063: new auto_resolved rows must carry a compensation
+             -- handle; this fixture never exercises reversal, so a minimal
+             -- honest handle satisfies the constraint without claiming more.
+             revert_handle = '{"kind":"test-fixture"}'::jsonb,
+             reversal_window_until = now() + interval '72 hours'
        WHERE workspace_id = ${h.ws} AND run_id = ${run.runId}
          AND item_id = ${items[0]!.itemId}
     `;
@@ -244,7 +249,12 @@ describe('bulk-run watchdog store (real PG)', () => {
     const items = await getRunItems(run.runId);
     await db.adminSql`
       UPDATE harness_shared.attention_bulk_run_items
-         SET outcome = 'auto_resolved', decided_at = now()
+         SET outcome = 'auto_resolved', decided_at = now(),
+             -- migration 1063: new auto_resolved rows must carry a compensation
+             -- handle; this fixture never exercises reversal, so a minimal
+             -- honest handle satisfies the constraint without claiming more.
+             revert_handle = '{"kind":"test-fixture"}'::jsonb,
+             reversal_window_until = now() + interval '72 hours'
        WHERE workspace_id = ${h.ws} AND run_id = ${run.runId}
          AND item_id = ${items[0]!.itemId}
     `;
@@ -268,7 +278,9 @@ describe('bulk-run watchdog store (real PG)', () => {
     // One genuinely decided item, which must survive untouched.
     await db.adminSql`
       UPDATE harness_shared.attention_bulk_run_items
-         SET outcome = 'auto_resolved', disposition = 'auto_resolved', decided_at = now()
+         SET outcome = 'auto_resolved', disposition = 'auto_resolved', decided_at = now(),
+             revert_handle = '{"kind":"test-fixture"}'::jsonb,
+             reversal_window_until = now() + interval '72 hours'
        WHERE workspace_id = ${h.ws} AND run_id = ${run.runId}
          AND item_id = ${items[0]!.itemId}
     `;
