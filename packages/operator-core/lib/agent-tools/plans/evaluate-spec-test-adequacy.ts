@@ -36,10 +36,10 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict.',
+    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. Two distinct response shapes: on evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock } where rows is legitimately [] when no clause is eligible (no lifecycleStatus active/accepted match, or the specIds/workItemIds/planItemIds filter matched nothing). Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
   guidance: {
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
-    notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit.',
+    notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
     chaining:
       'plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy with current fingerprints → scorecards:emit each passing draft. P-007 consumes current emitted rows at work_items:complete.',
     seeAlso: ['plans:get-spec-evidence', 'scorecards:emit', 'rubrics:get spec-test-adequacy'],

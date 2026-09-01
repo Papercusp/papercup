@@ -83,6 +83,12 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       // cheap enough (one bool) to keep even in the trimmed tier.
       intentDivergent: r.intentDivergent ?? null,
       fleet: r.fleetSlug ?? null,
+      // EI-22072194984361823: kept at every tier, like contextPressure/coordHook
+      // — this is exactly the routing-decision signal a caller needs BEFORE
+      // spending a send/dispatch/claim on a candidate, not something worth
+      // hiding behind payloadTier:"full".
+      fleetControlState: r.fleetControlState ?? null,
+      canAcquireWork: r.canAcquireWork ?? null,
       isSelf: r.isSelf === true,
     };
     if (tier === "trimmed") return base;

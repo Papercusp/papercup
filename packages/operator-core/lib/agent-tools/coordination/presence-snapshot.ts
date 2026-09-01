@@ -601,6 +601,24 @@ export async function assemblePresenceSnapshot(
       .catch(() => {}),
   ]);
 
+  // EI-22072194984361823: the fleet's CONTROL state (active|winding-down),
+  // batched for exactly the distinct slugs this roster touched above. Must
+  // run AFTER the Promise.all (it depends on `fleet`'s resolved slugs), and is
+  // skipped for a cross-workspace scope (wsId null) — agent_fleets is
+  // workspace-scoped and there is no single cheap query across all of them.
+  // Fail-soft like every other join here: a read error just leaves every row
+  // without the field, never blocks or corrupts the roster.
+  let fleetControl = new Map<string, { controlState: 'active' | 'winding-down'; controlReason: string | null }>();
+  if (wsId && fleet.size > 0) {
+    try {
+      const { getFleetControlStates } = await import('../../agent-fleets-store');
+      const slugs = [...new Set([...fleet.values()].map((m) => m.fleetSlug).filter((s): s is string => !!s))];
+      fleetControl = await getFleetControlStates(wsId, slugs);
+    } catch {
+      /* fail-soft — see comment above */
+    }
+  }
+
   /** Attach the P-001 wakeability signals via the shared liveness oracle
    *  (presence-derivation-unification-2026-07-17 P-002): deriveVerdict is the
    *  ONE place all input legs (stale + wakeable + liveTurn + hardStale + pid
@@ -682,7 +700,21 @@ export async function assemblePresenceSnapshot(
    *  (toStableRosterRow emits them only when present, so no null spam for non-members). */
   const withFleet = (r: RosterRow): RosterRow => {
     const f = fleet.get(r.ownerId);
-    return f ? { ...r, fleetSlug: f.fleetSlug, fleetRole: f.fleetRole } : r;
+    if (!f) return r;
+    // EI-22072194984361823: absent from fleetControl ⇒ fail-open 'active', the
+    // SAME policy fleetControlWindDownRefusal applies to an unresolvable fleet.
+    const controlState = f.fleetSlug ? fleetControl.get(f.fleetSlug)?.controlState ?? 'active' : 'active';
+    // The winding-down gate is MEMBER-only (resolveFleetScopeContext never
+    // resolves a leader's scope) — a leader reads canAcquireWork:true even on
+    // a winding-down fleet, because nothing actually blocks its own claims.
+    const canAcquireWork = !(f.fleetRole === 'member' && controlState === 'winding-down');
+    return {
+      ...r,
+      fleetSlug: f.fleetSlug,
+      fleetRole: f.fleetRole,
+      fleetControlState: controlState,
+      canAcquireWork,
+    };
   };
 
   const activeEnriched = mergeTier1(active, joins, now)
