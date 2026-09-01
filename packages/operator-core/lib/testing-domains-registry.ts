@@ -286,10 +286,6 @@ defineTestDomain({
     { id: 'e2e', label: 'E2E', globs: [
         'apps/operator/e2e/harness-*.spec.ts',
       ] },
-    // Tauri desktop sidecar harness-path resolution (promptHarnessRoot / harnessRoot).
-    // papercusp-desktop/src-tauri/sidecar is NOT an npm workspace, so this vitest test
-    // was invisible to the tab + skipped by the gate until wired here (orphan-test audit).
-    { id: 'sidecar-paths', label: 'Sidecar paths', globs: ['papercusp-desktop/src-tauri/sidecar/harness/**/*.test.ts'] },
   ],
 });
 
@@ -303,7 +299,6 @@ defineTestDomain({
     { id: 'cards', label: 'Cards', globs: ['packages/operator-core/lib/voice-cards/**/*.test.ts'] },
     { id: 'engines', label: 'Engines', globs: [
         'packages/operator-core/lib/voice-engines/**/*.test.ts',
-        'packages/operator-core/lib/voice-engines.test.ts',
         'packages/operator-core/lib/voice-engine-health.test.ts',
       ] },
     { id: 'persona', label: 'Persona', globs: [
@@ -321,7 +316,6 @@ defineTestDomain({
     // without a per-file registry edit.
     { id: 'lib', label: 'Lib', globs: [
         'packages/operator-core/lib/voice-*.test.ts',
-        'packages/operator-core/lib/voice/**/*.test.ts',
       ] },
     { id: 'smoke', label: 'Smoke', runners: [
         { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/el-suite-test.mjs'], label: 'el-suite' },
@@ -376,7 +370,6 @@ defineTestDomain({
       description: 'Auth principals, device JWT, OAuth, audit, rate-limit, power-user.',
       globs: [
         'packages/operator-core/lib/agent-tools/coordination/identity*.test.ts',
-        'packages/operator-core/lib/agent-tools/locks/identity*.test.ts',
         'packages/operator-core/lib/auth.test.ts',
         'packages/operator-core/lib/auth-*.test.ts',
         'packages/operator-core/lib/device-jwt*.test.ts',
@@ -393,7 +386,6 @@ defineTestDomain({
         // Explicit positive list — my dependency-free matcher doesn't
         // support extglob negation (!(coordination|locks)).
         'packages/operator-core/lib/agent-tools/agent_chats/**/*.test.ts',
-        'packages/operator-core/lib/agent-tools/agents/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/agent_tools/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/architect/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/capability/**/*.test.ts',
@@ -401,15 +393,12 @@ defineTestDomain({
         'packages/operator-core/lib/agent-tools/backup/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/chat/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/cross_harness/**/*.test.ts',
-        'packages/operator-core/lib/agent-tools/delegates/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/dev/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/docs/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/flags/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/harness/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/harness_docs/**/*.test.ts',
-        'packages/operator-core/lib/agent-tools/hooks/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/memory/**/*.test.ts',
-        'packages/operator-core/lib/agent-tools/omp/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/operator/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/oracle/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/plans/**/*.test.ts',
@@ -421,7 +410,6 @@ defineTestDomain({
         'packages/operator-core/lib/agent-tools/instance/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/tasks/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/ui/**/*.test.ts',
-        'packages/operator-core/lib/agent-tools/wiki/**/*.test.ts',
         'packages/agent-mcp/**/*.test.ts',
       ],
     },
@@ -451,8 +439,6 @@ defineTestDomain({
       globs: [
         'packages/operator-core/lib/agent-tools/plans/__tests__/add-*.test.ts',
         'packages/operator-core/lib/agent-tools/plans/__tests__/set-*.test.ts',
-        'packages/operator-core/lib/agent-tools/plans/__tests__/new.test.ts',
-        'packages/operator-core/lib/agent-tools/plans/__tests__/lint.test.ts',
       ],
     },
     {
@@ -470,7 +456,6 @@ defineTestDomain({
       label: 'Revisions',
       globs: [
         'packages/operator-core/lib/agent-tools/plans/__tests__/revision-*.test.ts',
-        'packages/operator-core/lib/agent-tools/plans/__tests__/diff.test.ts',
       ],
     },
     {
@@ -478,7 +463,6 @@ defineTestDomain({
       label: 'Concurrency',
       globs: [
         'packages/operator-core/lib/agent-tools/plans/__tests__/concurrency*.test.ts',
-        'packages/operator-core/lib/agent-tools/plans/__tests__/e2e.test.ts',
       ],
     },
     {
@@ -513,21 +497,16 @@ defineTestDomain({
         'packages/operator-core/lib/__tests__/client-navigation.test.ts',
         'packages/operator-core/lib/__tests__/desktop-static-host.test.ts',
         'packages/operator-core/lib/__tests__/desktop-ui-intents.test.ts',
-        'packages/operator-core/lib/__tests__/operator-vite-dev-mode.test.ts',
         'packages/operator-core/lib/__tests__/lazy-with-retry.test.ts',
-        'packages/operator-core/lib/__tests__/navigation-progress-helpers.test.ts',
         'apps/operator/app/admin/testing/_lib/recorder-start-params.test.ts',
         'apps/operator/app/_components/__tests__/SupportChatButton.test.tsx',
         'apps/operator/app/_components/__tests__/ChatwootWidget.test.tsx',
         'apps/operator/app/_components/__tests__/UiPresenceProvider.test.tsx',
         'apps/operator/app/_components/__tests__/OperatorChatSidebar.test.ts',
         'apps/operator/app/_components/__tests__/UserPicker.test.tsx',
-        'packages/operator-core/lib/__tests__/PluginIframe.test.tsx',
-        'packages/operator-core/lib/__tests__/notify.test.ts',
         'packages/operator-core/lib/__tests__/workspaces-tauri.test.ts',
         'apps/operator/app/_components/__tests__/routePending.test.ts',
         'apps/operator/app/_components/__tests__/RouteLink.test.ts',
-        'apps/operator/app/_components/__tests__/RouteProgressProvider.test.ts',
         'apps/operator/app/_components/__tests__/ChromeShellNav.test.ts',
       ],
     },
@@ -541,8 +520,7 @@ defineTestDomain({
   tier: 'domain',
   sections: [
     { id: 'brain', label: 'Brain', globs: ['packages/operator-core/lib/operator-converse*.test.ts'] },
-    { id: 'cards', label: 'Cards', globs: ['packages/operator-core/lib/operator-card*.test.ts'] },
-    { id: 'suggestions', label: 'Suggestions', globs: ['packages/operator-core/lib/operator-suggest*.test.ts', 'packages/operator-core/lib/operator-scan*.test.ts'] },
+    { id: 'suggestions', label: 'Suggestions', globs: ['packages/operator-core/lib/operator-suggest*.test.ts'] },
     { id: 'audit', label: 'Audit', globs: ['packages/operator-core/lib/operator-audit*.test.ts'] },
     { id: 'persona', label: 'Persona', globs: ['packages/operator-core/lib/operator-persona*.test.ts', 'packages/operator-core/lib/operator-prompt*.test.ts'] },
     { id: 'state', label: 'State', globs: ['packages/operator-core/lib/operator-state*.test.ts', 'packages/operator-core/lib/operator-trigger*.test.ts'] },
@@ -558,14 +536,11 @@ defineTestDomain({
   description: 'Design phase: IR, adapters, spec, tokens, phase flow.',
   tier: 'domain',
   sections: [
-    { id: 'ir', label: 'IR', globs: ['packages/operator-core/lib/design-ir*.test.ts'] },
-    { id: 'adapters', label: 'Adapters', globs: ['packages/operator-core/lib/design-adapter*.test.ts'] },
     { id: 'spec', label: 'Spec', globs: ['packages/operator-core/lib/design-spec/**/*.test.ts'] },
     { id: 'phase-flow', label: 'Phase flow', globs: ['packages/operator-core/lib/design-phase*.test.ts'] },
     // Catch-the-rest for the design-* lib surface + design-tokens outputs.
     { id: 'lib', label: 'Lib', globs: [
         'packages/operator-core/lib/design-*.test.ts',
-        'packages/operator-core/lib/design/**/*.test.ts',
         'design-tokens/**/*.test.ts',
       ] },
     // Live E2E smoke (needs a running operator) — surfaced as a runner.
@@ -649,7 +624,6 @@ defineTestDomain({
     // Catch-the-rest for the device-*/mobile-* lib surface.
     { id: 'lib', label: 'Lib', globs: [
         'packages/operator-core/lib/device-*.test.ts',
-        'packages/operator-core/lib/mobile-*.test.ts',
       ] },
   ],
 });
@@ -681,7 +655,6 @@ defineTestDomain({
         'packages/operator-core/lib/search/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/search/**/*.test.ts',
       ] },
-    { id: 'adapters', label: 'Adapters', globs: ['packages/operator-core/lib/agent-tools/cross_harness/docs*.test.ts'] },
     // The doc-freshness engine + the doc-steward (docs-corpus-audit WS2 P-008): drift detection,
     // anchoring, the post-sync sweep + self-bootstrap + create-seed, and the doc-steward dispatch
     // (the LLM consumer that re-syncs a drifted doc to the code).
@@ -818,12 +791,6 @@ defineTestDomain({
         'packages/operator-core/lib/endpoint-route/routes/users/__tests__/**/*.test.ts',
       ],
     },
-    {
-      id: 'e2e',
-      label: 'E2E',
-      description: 'Browser collaboration flows (Playwright).',
-      globs: ['apps/operator/e2e/collab-*.spec.ts'],
-    },
   ],
 });
 
@@ -923,8 +890,6 @@ defineTestDomain({
   sections: [
     { id: 'lib', label: 'Lib', globs: [
         'packages/operator-core/lib/gym/**/*.test.ts',
-        'packages/operator-core/lib/gym/**/*.test.tsx',
-        'packages/operator-core/lib/gym-*.test.ts',
       ] },
     // Self-contained boot E2Es (testcontainer PG + a dedicated headless
     // gym-operator; no live operator needed) — surfaced as runners.
@@ -1057,7 +1022,6 @@ defineTestDomain({
   sections: [
     { id: 'lib', label: 'Lib', globs: [
         'packages/operator-core/lib/dbos/**/*.test.ts',
-        'packages/operator-core/lib/dbos-*.test.ts',
       ] },
     { id: 'integration', label: 'Integration', globs: ['apps/operator/test/dbos-*.integration.test.ts'] },
   ],
@@ -1071,8 +1035,6 @@ defineTestDomain({
   sections: [
     { id: 'lib', label: 'Lib', globs: [
         'packages/operator-core/lib/workspace-*.test.ts',
-        'packages/operator-core/lib/workspaces-*.test.ts',
-        'packages/operator-core/lib/workspace/**/*.test.ts',
       ] },
   ],
 });
@@ -1094,7 +1056,6 @@ defineTestDomain({
         // Root-level operator-vite tests (e.g. dev-dist-prune.test.ts — the
         // dev-watch build-churn tooling lives at the package root, not src/).
         'apps/operator-vite/*.test.ts',
-        'apps/operator-vite/*.test.tsx',
       ] },
   ],
 });
@@ -1147,22 +1108,18 @@ defineTestDomain({
   sections: [
     { id: 'repo-root', label: 'repo root', globs: [
         '*.test.ts',
-        '*.test.tsx',
       ] },
     { id: 'lib-root', label: 'lib (root)', globs: [
         'packages/operator-core/lib/*.test.ts',
-        'packages/operator-core/lib/*.test.tsx',
       ] },
     { id: 'lib-subdirs', label: 'lib (subdirs)', globs: [
         'packages/operator-core/lib/*/*.test.ts',
         'packages/operator-core/lib/*/*.test.tsx',
         'packages/operator-core/lib/*/__tests__/**/*.test.ts',
-        'packages/operator-core/lib/*/__tests__/**/*.test.tsx',
         'packages/operator-core/lib/endpoint-route/routes/**/*.test.ts',
       ] },
     { id: 'lib-tests', label: 'lib/__tests__', globs: [
         'packages/operator-core/lib/__tests__/**/*.test.ts',
-        'packages/operator-core/lib/__tests__/**/*.test.tsx',
       ] },
     { id: 'app', label: 'app', globs: [
         'apps/operator/app/**/*.test.ts',
@@ -1171,7 +1128,6 @@ defineTestDomain({
     { id: 'bin-scripts', label: 'bin / scripts', globs: [
         'apps/operator/bin/**/*.test.ts',
         'apps/operator/scripts/**/*.test.ts',
-        'apps/operator/scripts/**/*.test.mjs',
         'scripts/*.test.ts',
         'scripts/*.test.mjs',
       ] },
@@ -1197,14 +1153,11 @@ defineTestDomain({
       ] },
     { id: 'papercusp', label: 'libs/papercusp', globs: [
         'libs/papercusp/packages/**/*.test.ts',
-        'libs/papercusp/packages/**/*.test.tsx',
-        'libs/papercusp/packages/**/*.spec.ts',
         'libs/papercusp/libs/**/*.test.ts',
       ] },
     { id: 'operator-libs', label: 'operator libs', globs: [
         'libs/papercusp-shared/src/**/*.test.ts',
         'libs/papercusp-shared/src/**/*.test.tsx',
-        'libs/papercusp-export-state/src/**/*.test.ts',
         'libs/papercusp-publish-auth/src/**/*.test.ts',
         'libs/host-platform/src/**/*.test.ts',
         'libs/flags/src/**/*.test.ts',
@@ -1228,7 +1181,6 @@ defineTestDomain({
     { id: 'packages', label: 'packages', globs: [
         'packages/**/*.test.ts',
         'packages/**/*.test.tsx',
-        'packages/**/*.spec.ts',
       ] },
     // No broad tools/**/*.test.* or tools/**/*.spec.* promise here. The only
     // canonical tests under tools/ are the WebdriverIO specs, registered with
@@ -1280,7 +1232,6 @@ defineTestDomain({
         'packages/operator-core/lib/fleet/hive-wake-loop.integration.test.ts',
         'packages/operator-core/lib/events/await/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/coordination/tools/deliver-and-wake.test.ts',
-        'packages/operator-core/lib/agent-tools/coordination/tools/await-inbox*.test.ts',
       ],
     },
     {
@@ -1308,12 +1259,6 @@ defineTestDomain({
       globs: ['packages/operator-core/lib/fleet/spawn-reclaim.integration.test.ts'],
     },
     {
-      id: 'hive-wake',
-      label: 'Pot wake',
-      description: 'The Mug wake routine — pot:wake / declare-wake / urgent-wake scheduling and the hive-wake PG path.',
-      globs: ['packages/operator-core/lib/hive/**/*.test.ts'],
-    },
-    {
       id: 'host-health',
       label: 'Host health',
       description: 'Operator self-protection: the memory watchdog (bounded-RSS self-recycle) and the event-loop-lag gauge.',
@@ -1327,13 +1272,6 @@ defineTestDomain({
       label: 'Apiary IQ battery',
       description: 'The Apiary instance-gym: corpus seeder, the seven metric collectors, and the Beekeeper runner.',
       globs: ['packages/operator-core/lib/iq-battery/**/*.test.ts'],
-    },
-    {
-      id: 'run-eval',
-      label: 'Hive run evaluation',
-      description:
-        'The Hive-run-evaluation battery (sibling of the apiary): seeded scenarios with an objective optimum (parallelism math + validation), the throwaway-hive run harness, and the determinism + repeat-distribution controls.',
-      globs: ['packages/operator-core/lib/hive-eval/**/*.test.ts'],
     },
   ],
 });

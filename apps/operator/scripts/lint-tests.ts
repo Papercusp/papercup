@@ -44,6 +44,7 @@ import type { Dirent } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findUnrunnableTests } from '@papercusp/operator-core/lib/test-executor-runnability';
+import { ADMIN_TEST_SUITE_IDS } from '@papercusp/operator-core/lib/admin-test-suites-shared';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveRepoRoot(__dirname);
@@ -243,10 +244,36 @@ async function findShellTests(): Promise<string[]> {
   return (await walkAll(REPO_ROOT, SHELL_TEST_RE)).sort();
 }
 
+export interface ContractRunner {
+  kind: string;
+  filePath?: string;
+  script?: string;
+  manifestPath?: string;
+  suiteId?: string;
+  cmd?: string;
+  args?: string[];
+}
+
+export interface ContractSection {
+  id: string;
+  globs?: string[];
+  runners?: ContractRunner[];
+}
+
+export interface ContractDomain {
+  id: string;
+  sections?: ContractSection[];
+}
+
+/** Load the complete declaration contract (including runner descriptors). */
+export async function loadContract(): Promise<{ domains?: ContractDomain[] }> {
+  const raw = await readFile(join(REPO_ROOT, '.papercusp/testing-domains.json'), 'utf8');
+  return JSON.parse(raw) as { domains?: ContractDomain[] };
+}
+
 /** Load every glob declared in the harness testing contract. */
 async function loadContractGlobs(): Promise<string[]> {
-  const raw = await readFile(join(REPO_ROOT, '.papercusp/testing-domains.json'), 'utf8');
-  const parsed = JSON.parse(raw) as { domains?: { sections?: { globs?: string[] }[] }[] };
+  const parsed = await loadContract();
   const globs: string[] = [];
   for (const d of parsed.domains ?? []) {
     for (const s of d.sections ?? []) {
@@ -254,6 +281,75 @@ async function loadContractGlobs(): Promise<string[]> {
     }
   }
   return globs;
+}
+
+/**
+ * Declaration-side semantic attestation.  A registry declaration is a claim
+ * about the live tree, so every glob must resolve to at least one canonical
+ * test and every explicit runner must point at an executable target.  This
+ * closes the stale-declaration direction that the orphan check cannot see.
+ */
+export interface DeclarationFinding {
+  kind: 'stale-glob' | 'empty-section' | 'missing-runner-target' | 'unknown-admin-suite';
+  domain: string;
+  section: string;
+  value: string;
+  detail: string;
+}
+
+export async function attestDeclarations(
+  contract: { domains?: ContractDomain[] },
+  repoRoot: string,
+  files: readonly string[],
+  exists: (path: string) => boolean = existsSync,
+): Promise<DeclarationFinding[]> {
+  const findings: DeclarationFinding[] = [];
+  const compiledCache = new Map<string, CompiledGlob>();
+  const matches = (glob: string): string[] => {
+    let compiled = compiledCache.get(glob);
+    if (!compiled) { compiled = compileGlob(glob); compiledCache.set(glob, compiled); }
+    return files.filter((file) => globMatches(compiled!, file));
+  };
+  for (const domain of contract.domains ?? []) {
+    for (const section of domain.sections ?? []) {
+      const globs = section.globs ?? [];
+      const runners = section.runners ?? [];
+      for (const glob of globs) {
+        if (matches(glob).length === 0) {
+          findings.push({ kind: 'stale-glob', domain: domain.id, section: section.id, value: glob,
+            detail: 'glob matches no canonical test file' });
+        }
+      }
+      if (globs.length > 0 && runners.length === 0 && globs.every((glob) => matches(glob).length === 0)) {
+        findings.push({ kind: 'empty-section', domain: domain.id, section: section.id, value: section.id,
+          detail: 'section declares globs but resolves to no live tests' });
+      }
+      for (const runner of runners) {
+        if (runner.kind === 'admin-suite') {
+          if (!runner.suiteId || !ADMIN_TEST_SUITE_IDS.includes(runner.suiteId as never)) {
+            findings.push({ kind: 'unknown-admin-suite', domain: domain.id, section: section.id,
+              value: runner.suiteId ?? '<missing>', detail: 'suiteId is not registered in ADMIN_TEST_SUITES' });
+          }
+          continue;
+        }
+        const targets: string[] = [];
+        if (runner.filePath) targets.push(runner.filePath);
+        if (runner.manifestPath) targets.push(runner.manifestPath);
+        for (const arg of runner.args ?? []) {
+          // Runner args that name a repository file.  Commands/flags and
+          // package names are intentionally ignored.
+          if (arg.includes('/') || /\.(?:mjs|mts|ts|tsx|js|jsx|sh|json|toml)$/.test(arg)) targets.push(arg);
+        }
+        for (const target of targets) {
+          if (!exists(join(repoRoot, target))) {
+            findings.push({ kind: 'missing-runner-target', domain: domain.id, section: section.id,
+              value: target, detail: `${runner.kind} runner target does not exist` });
+          }
+        }
+      }
+    }
+  }
+  return findings;
 }
 
 /** Return canonical test files matching NO registry glob (invisible in the tab). */
@@ -328,6 +424,15 @@ async function main(): Promise<void> {
       `Fix the owning Vitest include/exclude, Playwright/WebdriverIO executor, or registry declaration.`);
   }
 
+  const contract = await loadContract();
+  const declarations = await attestDeclarations(contract, REPO_ROOT, await walkAll(REPO_ROOT));
+  for (const finding of declarations) {
+    const prefix = finding.kind === 'stale-glob' ? '[STALE_GLOB]' :
+      finding.kind === 'empty-section' ? '[EMPTY_SECTION]' :
+      finding.kind === 'missing-runner-target' ? '[RUNNER_TARGET]' : '[ADMIN_SUITE]';
+    offenders.push(`${prefix} ${finding.domain}/${finding.section}: ${finding.value}\n        → ${finding.detail}`);
+  }
+
   // Forbidden #4: bash *.test.sh / *.spec.sh — invisible to every CI runner
   // (test:affected only globs Vitest *.test.ts) AND a known foot-gun (`set -e`
   // + `((x++))` aborts after Test 1, so later assertions silently never run).
@@ -372,4 +477,4 @@ async function main(): Promise<void> {
   process.stdout.write('  every registry-visible canonical test resolves to an executing runner\n');
 }
 
-void main();
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) void main();
