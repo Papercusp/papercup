@@ -12,7 +12,9 @@ import {
   getFleet,
   getFleetHeadcountTarget,
   projectFleetHeadcountState,
+  FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
 } from '../../agent-fleets-store';
+import { executingOwnersSince } from '../../fleet/assignments';
 import {
   listFleetRosterDiagnosed,
   splitFleetRosterCounts,
@@ -442,6 +444,23 @@ export default defineTool({
     // the three top-level optional legs) into one flat, order-stable list —
     // absent entirely when nothing degraded, so a healthy call's payload is
     // byte-identical to pre-WI-3818 behavior.
+    // WI-2034624: `current` is attested from recent agent-origin execution over
+    // the canonical live roster, so it depends on the roster leg above and runs
+    // after it. A degraded/failed read stays `null` — measurement resolves that
+    // to UNKNOWN rather than to a transaction-scoped undercount.
+    const headcountExecutingResult = await withBoundedTimeout(
+      headcountCurrentResult.value == null
+        ? Promise.resolve(null)
+        : executingOwnersSince(
+            headcountCurrentResult.value,
+            FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+          ),
+      {
+        fallback: null,
+        timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+        label: 'fleet:status:headcountExecuting',
+      },
+    );
     const degradedLegs: string[] = [
       ...rosterResult.degradedLegs.map((leg: FleetRosterDegradedLeg) => `roster.${leg}`),
       ...(completionStatsResult.degraded ? ['completionStats'] : []),
@@ -450,11 +469,19 @@ export default defineTool({
       ...(headcountTargetResult.degraded ? ['headcountTarget'] : []),
       ...(headcountCurrentResult.degraded ? ['headcountCurrent'] : []),
       ...(everMembersResult.degraded ? ['everMembers'] : []),
+      // Only a genuinely-failed attestation is its own degraded leg: when the
+      // roster leg already failed, this one was never attempted and reporting it
+      // would name the wrong cause.
+      ...(headcountCurrentResult.value != null &&
+      (headcountExecutingResult.degraded || headcountExecutingResult.value == null)
+        ? ['headcountExecuting']
+        : []),
     ];
     const headcount = projectFleetHeadcountState(
       headcountTargetResult.value,
       fleet.lastLaunchTransaction,
       headcountCurrentResult.value,
+      headcountExecutingResult.value,
     );
     const populationLifecycle = buildFleetPopulationLifecycle({
       fleet: args.fleet,

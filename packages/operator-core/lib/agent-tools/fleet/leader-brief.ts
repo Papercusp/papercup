@@ -87,6 +87,7 @@ import {
 } from '../../fleet/fleet-roster';
 import {
   agentOriginToolCallOwnersSince,
+  executingOwnersSince,
   shouldRecoverClaimFromHealth,
   type AgentAssignment,
   type ClaimHealth,
@@ -3406,7 +3407,7 @@ export async function buildLeaderBrief(
   const headcountExecutingRead = await withBoundedTimeout(
     headcountCurrentResult.value == null
       ? Promise.resolve(null)
-      : agentOriginToolCallOwnersSince(
+      : executingOwnersSince(
           headcountCurrentResult.value,
           FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
         ),

@@ -27,7 +27,7 @@ import {
 } from '../../agent-fleets-store';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
-import { agentOriginToolCallOwnersSince } from '../../fleet/assignments';
+import { executingOwnersSince } from '../../fleet/assignments';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import {
   composeModelSpec,
@@ -919,7 +919,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     const now = Date.now();
     liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
       .filter((id) => id !== fleet.leaderOwnerId);
-    executingMemberIds = await agentOriginToolCallOwnersSince(
+    executingMemberIds = await executingOwnersSince(
       liveMemberIds,
       FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
     );
@@ -1407,7 +1407,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         .filter((id) => id !== launcherOwnerId);
       // Re-attest over the post-launch roster: the members just opened are the
       // ones whose execution the next deficit must account for.
-      executingMemberIds = await agentOriginToolCallOwnersSince(
+      executingMemberIds = await executingOwnersSince(
         liveMemberIds,
         FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
       );
