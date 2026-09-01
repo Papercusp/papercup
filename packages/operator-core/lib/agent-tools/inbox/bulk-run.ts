@@ -257,12 +257,12 @@ export function terminalDependencies(input: { call: InnerCall; workspaceId?: str
     async wakePlanLoop({ reason }) {
       await callRequired(call, 'pot:wake', { source: 'user', reason });
     },
-    dismissImprovement: ({ issueId }) =>
+    dismissImprovement: ({ issueId, rationale }) =>
       callRequired(call, 'improvements:triage', {
         mode: 'triage-one',
         ideaId: issueId,
         decision: 'reject',
-        reason: 'Dismissed from the Queue by the owner',
+        reason: rationale,
       }),
     decideStandingApproval: (args) => callRequired(call, 'operator:standing_approvals_decide', args),
     triageAttentionItem: (args) => callRequired(call, 'inbox:triage', args),
