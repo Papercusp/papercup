@@ -38,6 +38,16 @@
  * reached release yet, or a fix that has not. Agreement is reported as agreement, never
  * as correctness.
  *
+ * ── ASSESSMENT-FIRST CUTOVER ────────────────────────────────────────────────
+ *
+ * D-001/D-003 replaced inference from a raw headline plus its unknown channel with
+ * an explicit, decision-ready assessment. For a cell that declares an assessment:
+ * a resolved assessment is the complete semantic answer even when the separate raw
+ * measurement is honestly `null` (for example `no-active-run`); an unavailable or
+ * missing assessment is a live failure. The raw-null rules below remain for legacy
+ * fixtures/cells that do not declare an assessment. Applying them to an assessed
+ * cell would reconstruct the retired falsifier-era contract.
+ *
  * ── THE FOUR VERDICTS FOR "THE ANSWER CARRIES NO MEASUREMENT" ────────────────
  *
  * This plan has now hit the same shape at every layer (P-001 `no-producer` vs `no-data`;
@@ -128,6 +138,10 @@ export interface CellObservation {
   hoist?: ObservedHoist | null;
   /** True when the SPEC declares `unknownHoist` — so an absent hoist can be judged. */
   declaresHoist: boolean;
+  /** Explicit decision-ready semantic result carried by the same resolver payload. */
+  assessment?: import('./cell-read').CellAssessmentRead | null;
+  /** True when the cell SPEC declares an assessment (omission is then a failure). */
+  declaresAssessment?: boolean;
   /** Top-level key set of the tool payload, sorted. Used only by the (c) non-oracle check. */
   keys?: readonly string[];
   /** Set when the read itself failed (transport, envelope, unparseable body). */
@@ -140,6 +154,8 @@ export interface CellObservation {
 
 export type MatrixVerdict =
   | 'ok'
+  | 'assessment-missing'
+  | 'assessment-unavailable'
   | 'unexplained-null'
   | 'hoist-drifted'
   | 'hoist-missing'
@@ -309,6 +325,63 @@ export function judgeSquare(obs: CellObservation): SquareResult {
           'not silent. The registration and the resolver shape have moved apart.',
       };
     }
+  }
+
+  // D-001/D-003 — semantic meaning comes from the explicit assessment, never from
+  // generic inference over the separate raw headline. Keep this after hoist checks:
+  // assessment replaces semantic inference, not the independent read-health guard.
+  if (obs.declaresAssessment) {
+    const assessment = obs.assessment;
+    if (assessment === null || assessment === undefined) {
+      return {
+        ...base,
+        verdict: 'assessment-missing',
+        detail:
+          'the spec declares an assessment but the value read emitted no assessment field — the caller received ' +
+          'a raw measurement without the decision-ready meaning or safe action the cell contract requires.',
+      };
+    }
+    if (assessment.status === 'unavailable') {
+      // Condition (b) deliberately supplies a subject with nothing behind it. An
+      // explicit unavailable assessment is therefore the honest, branchable answer:
+      // it carries the diagnosis and safe action that the old raw-null heuristic had
+      // to infer. On condition (a), by contrast, the driver chose a known-good subject,
+      // so unavailable is either a bad probe or a real resolver/registration defect.
+      if (obs.condition === 'subject-degrades') {
+        return {
+          ...base,
+          verdict: 'ok',
+          detail: `degradation explained by assessment/${assessment.unknown.code}: ${assessment.unknown.detail}`,
+        };
+      }
+      return {
+        ...base,
+        verdict: 'assessment-unavailable',
+        detail:
+          `the assessment is unavailable (${assessment.unknown.code}): ${assessment.unknown.detail} ` +
+          `Safe action: ${assessment.safeAction}`,
+      };
+    }
+    if (
+      assessment.code.trim() === '' ||
+      assessment.meaning.trim() === '' ||
+      assessment.safeAction.trim() === '' ||
+      !Array.isArray(assessment.evidence) ||
+      assessment.evidence.some((e) => e.drifted || e.truncatedByDoor)
+    ) {
+      return {
+        ...base,
+        verdict: 'assessment-unavailable',
+        detail:
+          'the read labelled its assessment resolved but omitted a branchable code/meaning/safe action, or carried ' +
+          'drifted/truncated evidence — a partial assessment is not decision-ready.',
+      };
+    }
+    return {
+      ...base,
+      verdict: 'ok',
+      detail: `assessment resolved: ${assessment.code} — ${assessment.meaning}`,
+    };
   }
 
   const empty = obs.hoist ? isMeasuredEmpty(obs.hoist) : true;

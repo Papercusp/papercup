@@ -100,9 +100,80 @@ describe('KNOWN POSITIVE #2 — WI-6485, re-derived from the verbatim live read'
     ...HOISTED,
   };
 
+  const resolved: CellObservation = {
+    ...observed,
+    declaresAssessment: true,
+    assessment: {
+      status: 'resolved',
+      path: 'assessments.gateCandidate',
+      code: 'no-active-run',
+      meaning: 'No gate run is in flight — a measured absence, not a failed read.',
+      safeAction: 'Nothing to wait on; fire a checkpoint run if a verdict is needed now.',
+      evidence: [
+        { path: 'changeInCandidate.missingReason', value: null },
+        { path: 'changeInCandidate.nextCandidateSha', value: 'next-candidate-sha' },
+      ],
+    },
+  };
+
   it('finds it — a real subject produced a null with the channel claiming it looked', () => {
     const sq = judgeSquare(observed);
     expect(sq.verdict).toBe('unexplained-null');
+  });
+
+  it('D-009: the same raw null is honest once the resolver assesses it as no-active-run', () => {
+    const sq = judgeSquare(resolved);
+    expect(sq.verdict).toBe('ok');
+    expect(sq.detail).toContain('no-active-run');
+  });
+
+  it('does not let a declared assessment disappear or become unavailable behind that raw null', () => {
+    expect(judgeSquare({ ...resolved, assessment: null }).verdict).toBe('assessment-missing');
+    expect(
+      judgeSquare({
+        ...resolved,
+        assessment: {
+          status: 'unavailable',
+          path: 'assessments.gateCandidate',
+          code: null,
+          meaning: null,
+          safeAction: 'Re-read the full resolver before acting.',
+          evidence: [],
+          unknown: { code: 'not-measured', detail: 'candidate assessment was not measured' },
+        },
+      }).verdict,
+    ).toBe('assessment-unavailable');
+  });
+
+  it('accepts an unavailable assessment for the deliberately degrading subject', () => {
+    expect(
+      judgeSquare({
+        ...resolved,
+        condition: 'subject-degrades',
+        assessment: {
+          status: 'unavailable',
+          path: 'assessments.gateCandidate',
+          code: null,
+          meaning: null,
+          safeAction: 'Fix the supplied subject and re-read.',
+          evidence: [],
+          unknown: { code: 'insufficient-data', detail: 'the supplied subject does not resolve' },
+        },
+      }).verdict,
+    ).toBe('ok');
+  });
+
+  it('does not accept a nominally resolved assessment whose evidence drifted', () => {
+    if (resolved.assessment?.status !== 'resolved') throw new Error('fixture must resolve');
+    expect(
+      judgeSquare({
+        ...resolved,
+        assessment: {
+          ...resolved.assessment,
+          evidence: [{ path: 'changeInCandidate.missingReason', value: undefined, drifted: true }],
+        },
+      }).verdict,
+    ).toBe('assessment-unavailable');
   });
 
   it('is filed on BOTH squares it surfaces through — one defect, two reachable paths', () => {

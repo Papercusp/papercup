@@ -94,8 +94,17 @@ function observe(
   out: ReadOutcome,
 ): CellObservation {
   const declaresHoist = spec?.unknownHoist !== undefined;
+  const declaresAssessment = spec?.assessment !== undefined && spec.assessment !== null;
   if (out.error !== undefined || !out.payload) {
-    return { cell, condition, port, status: 'value', declaresHoist, readError: out.error ?? 'no payload' };
+    return {
+      cell,
+      condition,
+      port,
+      status: 'value',
+      declaresHoist,
+      declaresAssessment,
+      readError: out.error ?? 'no payload',
+    };
   }
   const p = out.payload;
   const status = p.status as CellObservation['status'];
@@ -113,6 +122,12 @@ function observe(
     // them here, or `hoist-missing` is erased before the verdict logic ever sees it.
     ...(declaresHoist ? { hoist: hoistRaw ?? null } : {}),
     declaresHoist,
+    // Distinguish an omitted assessment from an explicitly unavailable one. The
+    // former is a delivery-contract break; the latter carries its own safe action.
+    ...(declaresAssessment
+      ? { assessment: (p.assessment as CellObservation['assessment'] | undefined) ?? null }
+      : {}),
+    declaresAssessment,
     keys: Object.keys(p).sort(),
   };
 }
@@ -129,7 +144,12 @@ function observe(
  * merely happens to be quiet today would make this square flap.
  */
 const SUBJECTS: Record<string, { withValue: string | null; degrades: string }> = {
-  path: { withValue: 'CLAUDE.md', degrades: 'does/not/exist.probe.ts' },
+  // Keep the positive control STABLE. CLAUDE.md is a shared hot file and routinely
+  // carries a peer's newer/dirty edit, which correctly makes its assessment
+  // unavailable and turns a valid probe into a false matrix failure. This README is
+  // tracked, clean, present in main, and deployed; the matrix still verifies that live
+  // truth rather than assuming it from this comment.
+  path: { withValue: 'apps/operator/README.md', degrades: 'does/not/exist.probe.ts' },
   // Resolved live from the DB — see `resolveLiveHolder`.
   ownerId: { withValue: null, degrades: 'su-no-such-owner-p004-probe' },
 };
