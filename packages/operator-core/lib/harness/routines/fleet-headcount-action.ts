@@ -10,12 +10,14 @@ import {
   claimFleetLaunchSlot,
   getFleet,
   listFleetHeadcountTargets,
+  measureFleetProductiveHeadcount,
   mergeFleetLaunchWorkerAttestations,
   recordFleetHeadcountAttempt,
   releaseFleetLaunchSlot,
   setFleetHeadcountTarget,
   setFleetLaunchTransaction,
   type FleetHeadcountConfig,
+  type FleetHeadcountBasis,
   type FleetLaunchCapacitySnapshot,
   type FleetLaunchGovernorAction,
   type FleetLaunchGovernorState,
@@ -76,6 +78,8 @@ export interface FleetHeadcountGovernorAssessment {
   unverifiedMemberIds: string[];
   pendingOpenedMemberIds: string[];
   pruneCandidateIds: string[];
+  productiveMemberCount: number | null;
+  headcountBasis: FleetHeadcountBasis;
   deficit: number;
   action: FleetLaunchGovernorAction;
   actionOwnerId: string | null;
@@ -140,117 +144,17 @@ export function assessFleetHeadcountGovernor(args: {
         (args.now ?? Date.now()) - (transaction?.requestedAt ?? 0) < FLEET_HEADCOUNT_LAUNCH_WINDOW_MS
       ),
   );
+  const currentProbeOwners = new Set(transaction?.governor?.probeOwnerIds ?? []);
   const retryable = unreadyMemberIds.filter(
-    (ownerId) => (attempts[ownerId] ?? 0) < retryLimit,
+    (ownerId) => currentProbeOwners.has(ownerId) && (attempts[ownerId] ?? 0) < retryLimit,
   );
-  const deficit = computeHeadcountDeficit(target, liveMemberIds.length);
+  const headcountMeasurement = measureFleetProductiveHeadcount(transaction, liveMemberIds);
+  const productiveMemberCount = headcountMeasurement.current;
+  const deficit = productiveMemberCount == null
+    ? 0
+    : computeHeadcountDeficit(target, productiveMemberCount);
 
-  if (pruneCandidateIds.length > 0) {
-    return {
-      target,
-      productiveCapacityFloor,
-      liveMemberIds,
-      workerReadyMemberIds,
-      unreadyMemberIds,
-      unverifiedMemberIds,
-      pendingOpenedMemberIds,
-      pruneCandidateIds,
-      deficit,
-      action: 'prune',
-      actionOwnerId: pruneCandidateIds[0],
-      spawnCount: 1,
-      reason: `typed worker stages stayed non-ready for ${retryLimit} governor observation(s)`,
-    };
-  }
-  if (pendingOpenedMemberIds.length > 0) {
-    return {
-      target,
-      productiveCapacityFloor,
-      liveMemberIds,
-      workerReadyMemberIds,
-      unreadyMemberIds,
-      unverifiedMemberIds,
-      pendingOpenedMemberIds,
-      pruneCandidateIds,
-      deficit,
-      action: 'wait',
-      actionOwnerId: null,
-      spawnCount: 0,
-      reason: 'an opened member is still unverified; a late healthy boot must settle before replay',
-    };
-  }
-  if (retryable.length > 0) {
-    return {
-      target,
-      productiveCapacityFloor,
-      liveMemberIds,
-      workerReadyMemberIds,
-      unreadyMemberIds,
-      unverifiedMemberIds,
-      pendingOpenedMemberIds,
-      pruneCandidateIds,
-      deficit,
-      action: 'retry',
-      actionOwnerId: retryable[0],
-      spawnCount: 0,
-      reason: 'worker stages are observed but not yet terminal; retry after durable backoff',
-    };
-  }
-  if (unreadyMemberIds.length > 0) {
-    return {
-      target,
-      productiveCapacityFloor,
-      liveMemberIds,
-      workerReadyMemberIds,
-      unreadyMemberIds,
-      unverifiedMemberIds,
-      pendingOpenedMemberIds,
-      pruneCandidateIds,
-      deficit,
-      action: 'wait',
-      actionOwnerId: null,
-      spawnCount: 0,
-      reason: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
-    };
-  }
-  if (deficit > 0) {
-    const floorMet = workerReadyMemberIds.length >= productiveCapacityFloor;
-    return {
-      target,
-      productiveCapacityFloor,
-      liveMemberIds,
-      workerReadyMemberIds,
-      unreadyMemberIds,
-      unverifiedMemberIds,
-      pendingOpenedMemberIds,
-      pruneCandidateIds,
-      deficit,
-      action: 'spawn',
-      actionOwnerId: null,
-      spawnCount: floorMet ? Math.min(deficit, FLEET_HEADCOUNT_BULK_WAVE_SIZE) : 1,
-      reason: floorMet
-        ? 'productive-capacity floor is evidenced; a bounded refill wave is safe'
-        : 'productive-capacity floor is not yet evidenced; open one canary only',
-    };
-  }
-  if (unverifiedMemberIds.length > 0) {
-    return {
-      target,
-      productiveCapacityFloor,
-      liveMemberIds,
-      workerReadyMemberIds,
-      unreadyMemberIds,
-      unverifiedMemberIds,
-      pendingOpenedMemberIds,
-      pruneCandidateIds,
-      deficit,
-      action: 'wait',
-      actionOwnerId: null,
-      spawnCount: 0,
-      reason: 'live members without typed worker attestation remain unknown and are never pruned',
-    };
-  }
-  return {
+  const common = {
     target,
     productiveCapacityFloor,
     liveMemberIds,
@@ -259,7 +163,87 @@ export function assessFleetHeadcountGovernor(args: {
     unverifiedMemberIds,
     pendingOpenedMemberIds,
     pruneCandidateIds,
+    productiveMemberCount,
+    headcountBasis: headcountMeasurement.basis,
     deficit,
+  };
+
+  if (productiveMemberCount == null) {
+    return {
+      ...common,
+      action: 'wait',
+      actionOwnerId: null,
+      spawnCount: 0,
+      reason: 'productive headcount is unknown; refill fails closed until the worker-ready snapshot is readable',
+    };
+  }
+
+  if (pruneCandidateIds.length > 0) {
+    return {
+      ...common,
+      action: 'prune',
+      actionOwnerId: pruneCandidateIds[0],
+      spawnCount: 1,
+      reason: `typed worker stages stayed non-ready for ${retryLimit} governor observation(s)`,
+    };
+  }
+  if (pendingOpenedMemberIds.length > 0) {
+    return {
+      ...common,
+      action: 'wait',
+      actionOwnerId: null,
+      spawnCount: 0,
+      reason: 'an opened member is still unverified; a late healthy boot must settle before replay',
+    };
+  }
+  if (retryable.length > 0) {
+    return {
+      ...common,
+      action: 'retry',
+      actionOwnerId: retryable[0],
+      spawnCount: 0,
+      reason: 'worker stages are observed but not yet terminal; retry after durable backoff',
+    };
+  }
+  if (unreadyMemberIds.length > 0) {
+    return {
+      ...common,
+      action: 'wait',
+      actionOwnerId: null,
+      spawnCount: 0,
+      reason: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
+    };
+  }
+  if (deficit > 0) {
+    const floorMet = workerReadyMemberIds.length >= productiveCapacityFloor;
+    const hasUnverifiedSeats = unverifiedMemberIds.length > 0;
+    return {
+      ...common,
+      action: 'spawn',
+      actionOwnerId: null,
+      spawnCount: hasUnverifiedSeats
+        ? 1
+        : floorMet
+          ? Math.min(deficit, FLEET_HEADCOUNT_BULK_WAVE_SIZE)
+          : 1,
+      reason: hasUnverifiedSeats
+        ? 'unverified live seats do not satisfy productive headcount; open one canary to avoid an unbounded oversubscription wave'
+        : floorMet
+          ? 'productive-capacity floor is evidenced; a bounded refill wave is safe'
+          : 'productive-capacity floor is not yet evidenced; open one canary only',
+    };
+  }
+  if (unverifiedMemberIds.length > 0) {
+    return {
+      ...common,
+      action: 'wait',
+      actionOwnerId: null,
+      spawnCount: 0,
+      reason: 'live members without typed worker attestation remain unknown and are never pruned',
+    };
+  }
+  return {
+    ...common,
     action: 'none',
     actionOwnerId: null,
     spawnCount: 0,
@@ -296,6 +280,9 @@ export function governorVerdictForAssessment(
     unverifiedMemberIds: [
       ...new Set([...assessment.unverifiedMemberIds, ...assessment.pendingOpenedMemberIds]),
     ],
+    productiveMemberCount: assessment.productiveMemberCount,
+    headcountBasis: assessment.headcountBasis,
+    deficit: assessment.deficit,
     action,
     reason: overrides.reason ?? assessment.reason,
   };

@@ -80,6 +80,11 @@ export interface FleetLaunchGovernorVerdict {
   workerReadyMemberIds: string[];
   unreadyMemberIds: string[];
   unverifiedMemberIds: string[];
+  /** Productive-capacity measurement used by the writer. Optional on verdicts
+   * persisted before WI-2007032. */
+  productiveMemberCount?: number | null;
+  headcountBasis?: FleetHeadcountBasis;
+  deficit?: number;
   action: FleetLaunchGovernorAction;
   reason: string;
 }
@@ -318,6 +323,71 @@ export interface FleetHeadcountBasis {
   transactionWorkerReadyMembers: number | null;
 }
 
+/** Canonical measurement shared by the read surfaces and the refill governor.
+ * Keeping the population decision here prevents a truthful status read from
+ * disagreeing with the writer that decides whether another member is needed. */
+export interface FleetProductiveHeadcountMeasurement {
+  current: number | null;
+  basis: FleetHeadcountBasis;
+}
+
+export function measureFleetProductiveHeadcount(
+  transaction: FleetLaunchTransaction | null | undefined,
+  liveMemberIds: readonly string[] | null,
+): FleetProductiveHeadcountMeasurement {
+  const liveIds = liveMemberIds == null
+    ? null
+    : [...new Set(liveMemberIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  const hasWorkerContract = transaction != null && (
+    transaction.workerReadyMemberIds !== undefined ||
+    transaction.workerAttestations !== undefined ||
+    transaction.governor !== undefined
+  );
+  const recordedReadyIds = Array.isArray(transaction?.workerReadyMemberIds)
+    ? [...new Set(transaction.workerReadyMemberIds.filter((id) => typeof id === 'string' && id.length > 0))]
+    : null;
+
+  if (liveIds == null || transaction === undefined) {
+    return {
+      current: null,
+      basis: {
+        kind: 'unknown',
+        liveRosterMembers: liveIds?.length ?? null,
+        transactionWorkerReadyMembers: recordedReadyIds?.length ?? null,
+      },
+    };
+  }
+  if (recordedReadyIds != null) {
+    const live = new Set(liveIds);
+    return {
+      current: recordedReadyIds.filter((ownerId) => live.has(ownerId)).length,
+      basis: {
+        kind: 'worker-ready-live-intersection',
+        liveRosterMembers: liveIds.length,
+        transactionWorkerReadyMembers: recordedReadyIds.length,
+      },
+    };
+  }
+  if (!hasWorkerContract) {
+    return {
+      current: liveIds.length,
+      basis: {
+        kind: 'legacy-live-roster-fallback',
+        liveRosterMembers: liveIds.length,
+        transactionWorkerReadyMembers: null,
+      },
+    };
+  }
+  return {
+    current: null,
+    basis: {
+      kind: 'unknown',
+      liveRosterMembers: liveIds.length,
+      transactionWorkerReadyMembers: null,
+    },
+  };
+}
+
 /** One truthful current-vs-target projection shared by every fleet read surface.
  * `undefined` means the profile read failed; `null` means it succeeded and no
  * saved profile exists. A disabled profile may still carry target=1 for recipe
@@ -337,51 +407,10 @@ export function projectFleetHeadcountState(
   transaction: FleetLaunchTransaction | null | undefined,
   liveMemberIds: readonly string[] | null,
 ): FleetHeadcountState {
-  const liveIds = liveMemberIds == null
-    ? null
-    : [...new Set(liveMemberIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
-  const hasWorkerContract = transaction != null && (
-    transaction.workerReadyMemberIds !== undefined ||
-    transaction.workerAttestations !== undefined ||
-    transaction.governor !== undefined
+  const { current: measuredCurrent, basis } = measureFleetProductiveHeadcount(
+    transaction,
+    liveMemberIds,
   );
-  const recordedReadyIds = Array.isArray(transaction?.workerReadyMemberIds)
-    ? [...new Set(transaction.workerReadyMemberIds.filter((id) => typeof id === 'string' && id.length > 0))]
-    : null;
-
-  let measuredCurrent: number | null = null;
-  let basis: FleetHeadcountBasis;
-  if (liveIds == null || transaction === undefined) {
-    basis = {
-      kind: 'unknown',
-      liveRosterMembers: liveIds?.length ?? null,
-      transactionWorkerReadyMembers: recordedReadyIds?.length ?? null,
-    };
-  } else if (recordedReadyIds != null) {
-    const live = new Set(liveIds);
-    measuredCurrent = recordedReadyIds.filter((ownerId) => live.has(ownerId)).length;
-    basis = {
-      kind: 'worker-ready-live-intersection',
-      liveRosterMembers: liveIds.length,
-      transactionWorkerReadyMembers: recordedReadyIds.length,
-    };
-  } else if (!hasWorkerContract) {
-    measuredCurrent = liveIds.length;
-    basis = {
-      kind: 'legacy-live-roster-fallback',
-      liveRosterMembers: liveIds.length,
-      transactionWorkerReadyMembers: null,
-    };
-  } else {
-    // A transaction carrying the worker-attestation contract but no canonical
-    // ready-id projection is incomplete, not legacy. Falling back here would
-    // turn unknown processes into productive capacity — the original defect.
-    basis = {
-      kind: 'unknown',
-      liveRosterMembers: liveIds.length,
-      transactionWorkerReadyMembers: null,
-    };
-  }
   if (profile === undefined) {
     return {
       enabled: null,

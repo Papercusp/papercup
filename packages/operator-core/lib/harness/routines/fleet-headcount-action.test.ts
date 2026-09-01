@@ -150,6 +150,75 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     expect(bulk).toMatchObject({ action: 'spawn', spawnCount: 3, workerReadyMemberIds: ['su-a', 'su-b'] });
   });
 
+  it('uses worker-ready live capacity for the deficit and advances one canary beside unverified seats', () => {
+    const current = transaction(['su-ready', 'su-unverified-a', 'su-unverified-b'], {
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-ready'],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: ['su-ready'],
+      workerAttestations: [workerAttestation('su-ready', true)],
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+
+    expect(assessFleetHeadcountGovernor({
+      target: 3,
+      productiveCapacityFloor: 1,
+      liveMemberIds: ['su-ready', 'su-unverified-a', 'su-unverified-b'],
+      transaction: current,
+      now: 20_000,
+    })).toMatchObject({
+      productiveMemberCount: 1,
+      deficit: 2,
+      headcountBasis: { kind: 'worker-ready-live-intersection' },
+      action: 'spawn',
+      spawnCount: 1,
+      pruneCandidateIds: [],
+      unverifiedMemberIds: ['su-unverified-a', 'su-unverified-b'],
+    });
+  });
+
+  it('waits on a stale non-ready attestation outside the current probe cohort until its fate is proven', () => {
+    const current = transaction(['su-ready', 'su-stale-unready'], {
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-ready'],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: ['su-ready'],
+      workerAttestations: [
+        workerAttestation('su-ready', true),
+        workerAttestation('su-stale-unready', false),
+      ],
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+
+    expect(assessFleetHeadcountGovernor({
+      target: 2,
+      liveMemberIds: ['su-ready', 'su-stale-unready'],
+      transaction: current,
+      now: 20_000,
+    })).toMatchObject({
+      productiveMemberCount: 1,
+      deficit: 1,
+      action: 'wait',
+      spawnCount: 0,
+      pruneCandidateIds: [],
+      unreadyMemberIds: ['su-stale-unready'],
+    });
+  });
+
   it('waits on an unverified late boot, then cancels replay when that exact member proves ready', () => {
     const slow = transaction(['su-slow']);
     const before = assessFleetHeadcountGovernor({
@@ -255,6 +324,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     const member = transaction(['su-dark'], {
       verifiedMemberIds: ['su-dark'],
       unconfirmedMemberIds: [],
+      workerReadyMemberIds: [],
       workerAttestations: [workerAttestation('su-dark', false)],
       governor: {
         version: 1,
@@ -308,6 +378,35 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     expect(result).toMatchObject({ action: 'wait', pruneCandidateIds: [] });
   });
 
+  it('prunes a repeatedly non-ready live member after the bounded launch window', () => {
+    const member = transaction(['su-stuck'], {
+      requestedAt: 1_000,
+      verifiedMemberIds: ['su-stuck'],
+      workerReadyMemberIds: [],
+      workerAttestations: [workerAttestation('su-stuck', false)],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-stuck'],
+        attestationAttempts: { 'su-stuck': FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    expect(assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: ['su-stuck'],
+      transaction: member,
+      now: 1_000 + 300_000,
+    })).toMatchObject({
+      action: 'prune',
+      actionOwnerId: 'su-stuck',
+      productiveMemberCount: 0,
+      deficit: 1,
+      pruneCandidateIds: ['su-stuck'],
+    });
+  });
+
   it('emits a distinct accountable terminal verdict without rewriting liveness or progress', () => {
     const assessment = assessFleetHeadcountGovernor({
       target: 2,
@@ -326,6 +425,13 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       workerReadyMemberIds: [],
       unreadyMemberIds: [],
       unverifiedMemberIds: [],
+      productiveMemberCount: 0,
+      headcountBasis: {
+        kind: 'legacy-live-roster-fallback',
+        liveRosterMembers: 0,
+        transactionWorkerReadyMembers: null,
+      },
+      deficit: 2,
       action: 'spawn',
       reason: 'productive-capacity floor is not yet evidenced; open one canary only',
     });
