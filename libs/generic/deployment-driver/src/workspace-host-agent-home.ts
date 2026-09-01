@@ -3,6 +3,10 @@ import { withWorkspaceHostCredentialFilesystemLock } from "./workspace-host-cred
 
 /** The sealed material format installed into one workspace user's native agent homes. */
 export const WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION =
+  "papercusp-workspace-host-agent-home-bundle-v2";
+
+/** Read compatibility for material sealed before local-inference OMP was supported (D-230). */
+export const WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION =
   "papercusp-workspace-host-agent-home-bundle-v1";
 
 export const WORKSPACE_HOST_AGENT_HOME_FILES = {
@@ -24,9 +28,22 @@ export type WorkspaceHostAgentHomeFamily =
 export type WorkspaceHostAgentHomeFile =
   keyof typeof WORKSPACE_HOST_AGENT_HOME_FILES;
 
+export interface WorkspaceHostAgentHomeBundleFiles {
+  readonly claude: Buffer;
+  readonly codex: Buffer;
+  /**
+   * `null` means OMP is intentionally credential-free and must prove readiness by local inference.
+   * It is not encoded as `{}` because creating a plausible-looking auth file would turn absence of
+   * credentials into fabricated authentication state.
+   */
+  readonly omp: Buffer | null;
+}
+
 export interface WorkspaceHostAgentHomeBundle {
-  readonly contractVersion: typeof WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION;
-  readonly files: Readonly<Record<WorkspaceHostAgentHomeFile, Buffer>>;
+  readonly contractVersion:
+    | typeof WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION
+    | typeof WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION;
+  readonly files: WorkspaceHostAgentHomeBundleFiles;
 }
 
 /** Public, secret-free record of which delivered generation currently backs the native homes. */
@@ -148,9 +165,12 @@ export function parseWorkspaceHostAgentHomeBundle(
   }
   const body = record(parsed, "agent-home material");
   exactKeys(body, ["contractVersion", "files"], "agent-home material");
-  if (body.contractVersion !== WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION) {
+  if (
+    body.contractVersion !== WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION &&
+    body.contractVersion !== WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION
+  ) {
     throw new WorkspaceHostAgentHomeBundleError(
-      `agent-home material must use ${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}`,
+      `agent-home material must use ${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION} or ${WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION}`,
     );
   }
   const files = record(body.files, "agent-home material.files");
@@ -160,24 +180,29 @@ export function parseWorkspaceHostAgentHomeBundle(
     "agent-home material.files",
   );
   return {
-    contractVersion: WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+    contractVersion: body.contractVersion,
     files: {
       claude: decodeJsonFile(files.claude, "claude"),
       codex: decodeJsonFile(files.codex, "codex"),
-      omp: decodeJsonFile(files.omp, "omp"),
+      omp:
+        body.contractVersion === WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION &&
+        files.omp === null
+          ? null
+          : decodeJsonFile(files.omp, "omp"),
     },
   };
 }
 
 /** Explicit secret-bearing encoder used by setup code and hermetic tests. */
 export function encodeWorkspaceHostAgentHomeBundle(
-  files: Readonly<Record<WorkspaceHostAgentHomeFile, Buffer>>,
+  files: WorkspaceHostAgentHomeBundleFiles,
 ): Buffer {
-  for (const [label, bytes] of Object.entries(files)) {
-    decodeJsonFile(
-      bytes.toString("base64"),
-      label as WorkspaceHostAgentHomeFile,
-    );
+  for (const label of ["claude", "codex"] as const) {
+    const bytes = files[label];
+    decodeJsonFile(bytes.toString("base64"), label);
+  }
+  if (files.omp !== null) {
+    decodeJsonFile(files.omp.toString("base64"), "omp");
   }
   return Buffer.from(
     JSON.stringify({
@@ -185,7 +210,7 @@ export function encodeWorkspaceHostAgentHomeBundle(
       files: {
         claude: files.claude.toString("base64"),
         codex: files.codex.toString("base64"),
-        omp: files.omp.toString("base64"),
+        omp: files.omp?.toString("base64") ?? null,
       },
     }),
     "utf8",
@@ -367,7 +392,11 @@ function compareBytes(left: Buffer, right: Buffer): boolean {
 }
 
 /**
- * Installs and verifies the three native agent credential files from delivered material.
+ * Installs and verifies the managed native agent credential files from delivered material.
+ *
+ * A v2 bundle may explicitly name OMP as credential-free (`files.omp: null`). In that case the
+ * consumer positively removes and verifies absence of `.omp/agent/auth.json`; the separate D-230
+ * readiness probe must prove real local inference. Claude and Codex remain mandatory material.
  *
  * The active record is committed LAST. A fresh initializer process therefore sees either the
  * previous complete generation or the new complete generation, never a process-local half-state.
@@ -537,6 +566,21 @@ export class WorkspaceHostAgentHomeConsumer {
       for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
         const existing = await this.filesystem.readFileIfPresent(paths[label]);
         const bytes = bundle.files[label];
+        if (bytes === null) {
+          if (existing !== null) {
+            await this.removeNativeFile(paths[label], family, generation);
+          }
+          if (this.filesystem.pathKind) {
+            const kind = await this.filesystem.pathKind(paths[label]);
+            if (kind !== "missing") {
+              throw new WorkspaceHostAgentHomeStateError(
+                `workspace agent-home file '${label}' must be absent for credential-free verification`,
+                { family, generation },
+              );
+            }
+          }
+          continue;
+        }
         if (existing === null || !compareBytes(existing, bytes)) {
           await this.filesystem.writePrivateFile(paths[label], bytes);
         }
@@ -626,9 +670,12 @@ export class WorkspaceHostAgentHomeConsumer {
           for (const label of Object.keys(
             paths,
           ) as WorkspaceHostAgentHomeFile[]) {
+            const expectedBytes = bundle.files[label];
             if (this.filesystem.pathKind) {
               const kind = await this.filesystem.pathKind(paths[label]);
-              if (kind !== "file") {
+              if (
+                expectedBytes === null ? kind !== "missing" : kind !== "file"
+              ) {
                 throw new WorkspaceHostAgentHomeStateError(
                   `agent-home file '${label}' is absent, stale, or points outside the explicit home`,
                   { family, generation },
@@ -636,10 +683,19 @@ export class WorkspaceHostAgentHomeConsumer {
               }
             }
             const bytes = await this.filesystem.readFileIfPresent(paths[label]);
+            if (expectedBytes === null) {
+              if (bytes !== null) {
+                throw new WorkspaceHostAgentHomeStateError(
+                  `agent-home file '${label}' must be absent for credential-free verification`,
+                  { family, generation },
+                );
+              }
+              continue;
+            }
             if (
               bytes === null ||
               current.files[label] !== paths[label] ||
-              !compareBytes(bytes, bundle.files[label])
+              !compareBytes(bytes, expectedBytes)
             ) {
               throw new WorkspaceHostAgentHomeStateError(
                 `agent-home file '${label}' is absent, stale, or points outside the explicit home`,

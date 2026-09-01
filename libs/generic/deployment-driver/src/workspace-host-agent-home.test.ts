@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+  WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION,
   WorkspaceHostAgentHomeConsumer,
   encodeWorkspaceHostAgentHomeState,
   encodeWorkspaceHostAgentHomeBundle,
@@ -167,7 +168,7 @@ function consumer(
 }
 
 describe("workspace-host sealed agent-home bundle", () => {
-  it("round-trips exactly three fixed native-home JSON files", () => {
+  it("round-trips exactly three fixed native-home JSON members", () => {
     const parsed = parseWorkspaceHostAgentHomeBundle(
       encodeWorkspaceHostAgentHomeBundle(files),
     );
@@ -180,6 +181,60 @@ describe("workspace-host sealed agent-home bundle", () => {
       codex: `${HOME}/.codex/auth.json`,
       omp: `${HOME}/.omp/agent/auth.json`,
     });
+  });
+
+  it("reads legacy three-file bundles without weakening their required OMP member", () => {
+    const material = Buffer.from(
+      JSON.stringify({
+        contractVersion: WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION,
+        files: Object.fromEntries(
+          Object.entries(files).map(([label, bytes]) => [
+            label,
+            bytes.toString("base64"),
+          ]),
+        ),
+      }),
+    );
+    const parsed = parseWorkspaceHostAgentHomeBundle(material);
+    expect(parsed.contractVersion).toBe(
+      WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION,
+    );
+    expect(parsed.files).toEqual(files);
+
+    const withoutOmp = JSON.parse(material.toString("utf8"));
+    delete withoutOmp.files.omp;
+    expect(() =>
+      parseWorkspaceHostAgentHomeBundle(
+        Buffer.from(JSON.stringify(withoutOmp)),
+      ),
+    ).toThrow(/exactly/);
+  });
+
+  it("represents local-inference OMP as absence and removes stale auth bytes on rotation", async () => {
+    const credentialFreeOmp = { ...rotated, omp: null };
+    const material = encodeWorkspaceHostAgentHomeBundle(credentialFreeOmp);
+    const encoded = JSON.parse(material.toString("utf8"));
+    expect(encoded.files.omp).toBeNull();
+    expect(parseWorkspaceHostAgentHomeBundle(material).files.omp).toBeNull();
+
+    const filesystem = new MemoryAgentHomeFilesystem();
+    await consumer(filesystem).install(
+      "agent-encrypted-reference",
+      1,
+      encodeWorkspaceHostAgentHomeBundle(files),
+    );
+    const ompPath = workspaceHostAgentHomePaths(HOME).omp;
+    expect(filesystem.files.has(ompPath)).toBe(true);
+
+    await consumer(filesystem).install(
+      "agent-encrypted-reference",
+      2,
+      material,
+    );
+    await expect(
+      consumer(filesystem).verify("agent-encrypted-reference", 2, material),
+    ).resolves.toMatchObject({ generation: 2, present: true });
+    expect(filesystem.files.has(ompPath)).toBe(false);
   });
 
   it("rejects an omitted, extra, malformed, or non-JSON member without echoing bytes", () => {
