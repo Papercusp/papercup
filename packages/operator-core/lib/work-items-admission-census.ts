@@ -540,7 +540,13 @@ function corpusWhere(sql: OrgSql, opts: Pick<AdmissionCensusRunOptions, 'workspa
     AND (${a}.status IS NULL OR NOT (${a}.status = ANY(${terminal}::text[])))`;
 }
 
-async function readCorpus(sql: OrgSql, opts: AdmissionCensusRunOptions): Promise<AdmissionCensusItem[]> {
+/**
+ * The corpus definition ("every open lane bug") — every non-terminal,
+ * non-observation work item in one workspace/harness. Exported for the P-007
+ * whole-corpus resolver pass, which reuses this exact definition rather than
+ * re-deriving its own `corpusWhere` (reuse-first mandate).
+ */
+export async function readCorpus(sql: OrgSql, opts: AdmissionCensusRunOptions): Promise<AdmissionCensusItem[]> {
   const rows = await sql<CorpusDbRow[]>`
     SELECT wi.feature_id AS id,
            COALESCE(wi.title, '') AS title,
