@@ -28,6 +28,7 @@ import * as os from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
+import { modeById, modeImpliesAutonomy } from '@papercusp/operator-core/lib/modes/registry';
 
 /** Defaults to the real hook. `PROBE_HOOK` points the suite at a COPY outside the
  *  tree so a mutant can be proven to FAIL these guards without ever mutating the
@@ -59,12 +60,26 @@ beforeEach(async () => {
       } catch {
         /* ignore */
       }
+      /* The stub echoes `impliesAutonomy` because the hook BRANCHES on it (an
+         autonomy-implying mode is announced as suspending the ask-first posture;
+         one that implies nothing must not be). Derived from the real registry
+         rather than hardcoded here, so this fake cannot quietly disagree with the
+         tool it stands in for — if a mode's implications change, both move. */
+      const last = bodies[bodies.length - 1];
+      const modeId =
+        last?.name === 'mode:set' ? String(last.arguments?.mode ?? '') : '';
+      const def = modeId ? modeById(modeId) : null;
+      const payload: Record<string, unknown> = { ok: true };
+      if (def) {
+        payload.impliesAutonomy =
+          def.axis === 'autonomy' || modeImpliesAutonomy(def.id);
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
-          result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] },
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
         }),
       );
     });
@@ -223,6 +238,9 @@ describe('owner-granted mode auto-registration', () => {
       ['can you go into auto mode', 'auto'],
       ['go into auto mode and fix the errors', 'auto'],
       ['auto mode please', 'auto'],
+      ['go into audit mode on the p2p program', 'audit'],
+      ['audit mode', 'audit'],
+      ['put yourself in audit mode on the release plans', 'audit'],
     ] as const) {
       bodies = [];
       fs.rmSync(join(home, '.papercusp', 'mode-autoreg'), { recursive: true, force: true });
@@ -298,6 +316,92 @@ describe('owner-granted mode auto-registration', () => {
       await submit(phrase);
       expect(modeCalls(), `must still exit: ${phrase}`).toHaveLength(1);
       expect(modeCalls()[0].arguments).toMatchObject({ enabled: false });
+    }
+  });
+
+  /**
+   * AUDIT scope capture (audit-mode-2026-09-01 P-004).
+   *
+   * "go into audit mode ON SUCH AND SUCH" — the scope is the whole point of the
+   * directive, and AUDIT declares no `requiresSubject`, so nothing downstream
+   * refuses a scopeless entry. If the hook drops it, the mode registers, every
+   * surface reads healthy, and the agent is left guessing what it was pointed at
+   * — the same silent-nothing shape the GOAL subject guard exists to prevent.
+   */
+  it('carries the AUDIT scope through as `instructions`', async () => {
+    const r = await submit('go into audit mode on the p2p program and tell me what is left');
+    expect(modeCalls()).toHaveLength(1);
+    expect(modeCalls()[0].arguments).toMatchObject({ mode: 'audit', enabled: true });
+    expect(String(modeCalls()[0].arguments.instructions)).toContain('p2p program');
+  });
+
+  it('registers AUDIT without a scope rather than refusing the directive', async () => {
+    const r = await submit('audit mode');
+    expect(r.status).toBe(0);
+    expect(modeCalls()).toHaveLength(1);
+    expect(modeCalls()[0].arguments).toMatchObject({ mode: 'audit', enabled: true });
+    expect(modeCalls()[0].arguments.instructions).toBeUndefined();
+  });
+
+  /**
+   * The reason the hook's AUDIT trigger is NARROWER than the AUDIT contract's
+   * spoken vocabulary. Unlike "drain"/"ideate", `audit` is ordinary working
+   * vocabulary in this repo — plans:audit, the activation audit, the code-truth
+   * audit — so a bare-verb frame would arm a whole-program audit on routine
+   * requests. This hook's own asymmetry governs: failing to turn a mode ON is
+   * safe, arming one nobody asked for is not. Every phrase below uses the verb
+   * and must NOT arm; the agent still registers those forms itself, per the
+   * playbook section.
+   */
+  it('does not arm AUDIT off the bare verb — "audit" is ordinary working vocabulary here', async () => {
+    for (const phrase of [
+      'run the activation audit on this plan',
+      'audit the citations before you close it',
+      'do a code-truth audit of P-003',
+      'the audit found two contradictions',
+      'can you audit whether this number is real',
+    ]) {
+      bodies = [];
+      fs.rmSync(join(home, '.papercusp', 'mode-autoreg'), { recursive: true, force: true });
+      const r = await submit(phrase);
+      expect(modeCalls(), `must NOT arm: ${phrase}`).toHaveLength(0);
+      expect(r.context, `must NOT arm: ${phrase}`).not.toContain('⟦mode⟧');
+    }
+  });
+
+  it('exits AUDIT on an explicit exit directive', async () => {
+    await submit('go into audit mode on the p2p program');
+    bodies = [];
+    const r = await submit('exit audit mode');
+    expect(modeCalls()).toHaveLength(1);
+    expect(modeCalls()[0].arguments).toMatchObject({ mode: 'audit', enabled: false });
+    expect(r.context).toContain('AUDIT mode EXITED');
+  });
+
+  /**
+   * The announcement must not manufacture a grant. AUDIT and IDEATE imply no
+   * autonomy, so telling their agent "the ask-first default is SUSPENDED" hands
+   * it a posture the owner never granted — on AUDIT, the one mode whose whole
+   * discipline is to observe rather than act. The branch is driven by mode:set's
+   * own `impliesAutonomy`, so this stays correct if a mode's implications change.
+   */
+  it('only claims the ask-first suspension for a mode that actually implies autonomy', async () => {
+    for (const [phrase, suspended] of [
+      ['go into audit mode on the p2p program', false],
+      ['switch to ideate mode', false],
+      ['put yourself in auto mode', true],
+      ['go into drain mode', true],
+    ] as const) {
+      bodies = [];
+      fs.rmSync(join(home, '.papercusp', 'mode-autoreg'), { recursive: true, force: true });
+      const r = await submit(phrase);
+      expect(r.context, `phrase: ${phrase}`).toContain('mode REGISTERED');
+      if (suspended) {
+        expect(r.context, `phrase: ${phrase}`).toMatch(/ask-first default is SUSPENDED/i);
+      } else {
+        expect(r.context, `phrase: ${phrase}`).not.toMatch(/ask-first default is SUSPENDED/i);
+        expect(r.context, `phrase: ${phrase}`).toMatch(/implies no autonomy posture/i);
+      }
     }
   });
 
