@@ -150,6 +150,57 @@ describe('loadRoleCapabilities', () => {
   );
 
   test(
+    'content-fixer can use its narrow coordination/work-item workflow (both dispatch gates)',
+    { timeout: 60_000 },
+    async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'content-fixer');
+      for (const capability of ['coord:read', 'coord:write', 'work_items:read', 'work_items:write']) {
+        expect(caps.has(capability), `content-fixer missing ${capability}`).toBe(true);
+      }
+      for (const capability of [
+        'docs:read',
+        'harness:read',
+        'locks:read',
+        'locks:write',
+        'plans:read',
+        'plans:write',
+        'operator:write',
+        'testing:run',
+        'capability:fs-write',
+        'capability:bash',
+      ]) {
+        expect(caps.has(capability), `content-fixer must not receive ${capability}`).toBe(false);
+      }
+
+      const [
+        { COORD_ROLES },
+        { default: orient },
+        { default: createWorkItem },
+        { default: checkpoint },
+        { default: complete },
+        { default: escalate },
+      ] = await Promise.all([
+        import('../../../agent-tools/coordination/roles.js'),
+        import('../../../agent-tools/coordination/tools/orient.js'),
+        import('../../../agent-tools/work_items/create.js'),
+        import('../../../agent-tools/work_items/checkpoint.js'),
+        import('../../../agent-tools/work_items/complete.js'),
+        import('../../../agent-tools/coordination/tools/escalate.js'),
+      ]);
+      expect(COORD_ROLES).toContain('content-fixer');
+      for (const [name, tool] of [
+        ['coord:orient', orient],
+        ['work_items:create', createWorkItem],
+        ['work_items:checkpoint', checkpoint],
+        ['work_items:complete', complete],
+        ['coord:escalate', escalate],
+      ] as const) {
+        expect(tool.agentRoles, `${name} must admit content-fixer`).toContain('content-fixer');
+      }
+    },
+  );
+
+  test(
     'judge can emit, verify, read evidence, and capture defects without gaining implementation powers',
     { timeout: 60_000 },
     async () => {
