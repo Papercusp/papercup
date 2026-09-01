@@ -21,6 +21,7 @@ function row(ownerId: string, mode = 'grade'): ModeRow {
     ownerDirected: false,
     setAt: '2026-08-31T00:00:00.000Z',
     subject: null,
+    impliedBy: null,
   };
 }
 
