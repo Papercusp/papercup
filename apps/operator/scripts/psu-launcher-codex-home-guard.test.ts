@@ -37,7 +37,8 @@ import { join } from 'node:path';
 import {
   codexGatewayConfigPatch,
   codexRolloutModelProvider,
-  codexResumeAccountRouteError,
+  codexResumeRouteNotice,
+  stripCodexGatewayRoot,
   codexAuthJsonReady,
   codexFreshDefaultAuthPreflight,
   reconcileCodexSystemAuth,
@@ -357,13 +358,35 @@ describe('codexGatewayConfigPatch — a default-mode RESUME must not strip a bou
   // An empty patch (no account pin, gateway off) means "this LAUNCH has no gateway
   // route". It does NOT mean "this HOME has no gateway thread".
 
-  it('keepExistingWhenUnrouted: leaves a gateway-born config byte-identical', () => {
+  it('keepProviderTableWhenUnrouted: keeps the provider TABLE but drops the ROOT model_provider key', () => {
+    // EI-22086713788860638: codex resumes with the CURRENT config's model_provider,
+    // so the root key must follow the route picked THIS launch (default ⇒ no key ⇒
+    // codex's built-in `openai`), while the table the rollout names must still
+    // resolve (WI-38706). The pre-fix "byte-identical" behaviour left the root key
+    // in place, which is how a "default" resume silently stayed on :8788 (EI-22039).
     const out = codexGatewayConfigPatch(REAL_CONFIG, null, {
       gatewayOn: false,
-      keepExistingWhenUnrouted: true,
+      keepProviderTableWhenUnrouted: true,
     });
-    expect(out).toBe(REAL_CONFIG);
+    expect(out).not.toBe(REAL_CONFIG);
     expect(out).toContain('[model_providers.papercusp-codex-gateway]');
+    expect(out).toContain('# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER');
+    expect(out).not.toContain('# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT');
+    expect(out).not.toMatch(/^model_provider\s*=/m);
+    expect(out).toContain('[mcp_servers.papercusp-su]');
+    // idempotent: patching the rootless output again changes nothing
+    expect(codexGatewayConfigPatch(out, null, { gatewayOn: false, keepProviderTableWhenUnrouted: true })).toBe(out);
+  });
+
+  it('stripCodexGatewayRoot removes exactly the ROOT block and nothing else', () => {
+    const out = stripCodexGatewayRoot(REAL_CONFIG);
+    expect(out).not.toContain('PAPERCUSP_CODEX_GATEWAY_ROOT');
+    expect(out).not.toContain('model_provider = "papercusp-codex-gateway"');
+    expect(out).toContain('# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER');
+    expect(out).toContain('[model_providers.papercusp-codex-gateway]');
+    expect(out).toContain('[mcp_servers.papercusp-su]');
+    expect(out.startsWith('\n')).toBe(false);
+    expect(stripCodexGatewayRoot('')).toBe('');
   });
 
   it('WITHOUT the flag the provider table is stripped — the pre-fix behaviour, kept for a fresh launch', () => {
@@ -373,57 +396,80 @@ describe('codexGatewayConfigPatch — a default-mode RESUME must not strip a bou
     expect(out).toContain('[mcp_servers.papercusp-su]');
   });
 
-  it('a real route still rewrites the block even when keepExistingWhenUnrouted is set', () => {
+  it('a real route still rewrites the block even when keepProviderTableWhenUnrouted is set', () => {
     // The flag is a floor, not a freeze: an ACTIVE route must still be applied.
     const out = codexGatewayConfigPatch(REAL_CONFIG, null, {
       gatewayOn: true,
       ownerId: 'su-test',
-      keepExistingWhenUnrouted: true,
+      keepProviderTableWhenUnrouted: true,
     });
     expect(out).toContain('[model_providers.papercusp-codex-gateway]');
     expect(out).toContain('# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER');
+    expect(out).toContain('model_provider = "papercusp-codex-gateway"');
     expect(out).toContain('[mcp_servers.papercusp-su]');
   });
 
-  it('keepExistingWhenUnrouted on an EMPTY config yields empty (nothing to preserve)', () => {
-    expect(codexGatewayConfigPatch('', null, { gatewayOn: false, keepExistingWhenUnrouted: true })).toBe('');
+  it('a direct-born config (no gateway blocks) gains ROOT + PROVIDER when the launch routes the gateway', () => {
+    // The owner-hit case (EI-22086713788860638): a thread born on the system login,
+    // resumed with --account=auto. The patch is what makes codex resume it on the pool.
+    const direct = `[mcp_servers.papercusp-su]\ncommand = "npx"\n`;
+    const out = codexGatewayConfigPatch(direct, null, { gatewayOn: true, ownerId: 'su-test', priority: 'su' });
+    expect(out).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(out).toContain('[model_providers.papercusp-codex-gateway]');
+    expect(out).toContain('"x-papercusp-owner" = "su-test"');
+    expect(out).toContain('[mcp_servers.papercusp-su]');
+  });
+
+  it('keepProviderTableWhenUnrouted on an EMPTY config yields empty (nothing to preserve)', () => {
+    expect(codexGatewayConfigPatch('', null, { gatewayOn: false, keepProviderTableWhenUnrouted: true })).toBe('');
   });
 });
 
-describe('codexResumeAccountRouteError — an account choice may not lie about the rollout provider', () => {
-  it('refuses default for a gateway-born thread and gives both truthful routes', () => {
-    const error = codexResumeAccountRouteError(
-      'papercusp-codex-gateway',
-      { mode: 'default' },
-      { sessionId: 'thread-gateway' },
-    );
-    expect(error).toContain('cannot resume Codex thread thread-gateway on the default system account');
-    expect(error).toContain('Your account choice was NOT applied');
-    expect(error).toContain('--account=auto');
-    expect(error).toContain('psu --agent=codex --account=system');
+describe('codexResumeRouteNotice — a cross-family account switch is APPLIED and disclosed, never refused', () => {
+  // EI-22086713788860638: the predecessor of this function (codexResumeAccountRouteError,
+  // EI-22039) threw here, asserting Codex "does not permit changing model providers on
+  // resume/fork". Measured false on Codex 0.152.0 in both directions (exec + TUI). The
+  // notice is what survives: the owner learns the thread is moving families.
+  const NEVER_REFUSE = ['cannot resume', 'cannot fork', 'NOT applied', 'no agent process was spawned'];
+
+  it('direct-born thread + gateway route (the owner-hit case): a notice naming both sides, no refusal', () => {
+    const notice = codexResumeRouteNotice('openai', { mode: 'auto' }, { sessionId: 'thread-direct' });
+    expect(notice).toContain('resuming Codex thread thread-direct through the inference gateway');
+    expect(notice).toContain('auto-routed');
+    expect(notice).toContain("born on direct provider 'openai'");
+    expect(notice).toContain('the switch is applied');
+    for (const refusal of NEVER_REFUSE) expect(notice).not.toContain(refusal);
   });
 
-  it('allows gateway routes for a gateway-born thread', () => {
-    expect(codexResumeAccountRouteError('papercusp-codex-gateway', { mode: 'auto' })).toBe(null);
-    expect(codexResumeAccountRouteError('papercusp-codex-gateway', { mode: 'pin' })).toBe(null);
-  });
-
-  it('refuses gateway routing for a direct-system thread, including native fork', () => {
-    const error = codexResumeAccountRouteError(
+  it('a pin names the account; a fork says fork', () => {
+    const notice = codexResumeRouteNotice(
       'openai',
-      { mode: 'auto' },
+      { mode: 'pin', id: 'pool-acct-3' },
       { fork: true, sessionId: 'thread-direct' },
     );
-    expect(error).toContain('cannot fork Codex thread thread-direct through the inference gateway');
-    expect(error).toContain("direct provider 'openai'");
-    expect(error).toContain('Resume this thread with --account=system');
-    expect(error).toContain('psu --agent=codex --account=auto');
-    expect(codexResumeAccountRouteError('openai', { mode: 'default' })).toBe(null);
+    expect(notice).toContain('forking Codex thread thread-direct');
+    expect(notice).toContain("pinned to account 'pool-acct-3'");
   });
 
-  it('does not invent a restriction for legacy rollouts with no provider binding', () => {
-    expect(codexResumeAccountRouteError(null, { mode: 'default' })).toBe(null);
-    expect(codexResumeAccountRouteError(null, { mode: 'auto' })).toBe(null);
+  it('gateway-born thread + default route: a notice that the table stays so the rollout still resolves', () => {
+    const notice = codexResumeRouteNotice('papercusp-codex-gateway', { mode: 'default' }, { sessionId: 'thread-gateway' });
+    expect(notice).toContain('resuming Codex thread thread-gateway on the default system account');
+    expect(notice).toContain("born on 'papercusp-codex-gateway'");
+    expect(notice).toContain('provider table stays');
+    for (const refusal of NEVER_REFUSE) expect(notice).not.toContain(refusal);
+  });
+
+  it('same-family resumes are silent', () => {
+    expect(codexResumeRouteNotice('papercusp-codex-gateway', { mode: 'auto' })).toBe(null);
+    expect(codexResumeRouteNotice('papercusp-codex-gateway', { mode: 'pin', id: 'x' })).toBe(null);
+    expect(codexResumeRouteNotice('openai', { mode: 'default' })).toBe(null);
+  });
+
+  it('says nothing for legacy rollouts with no provider binding, or with no route', () => {
+    expect(codexResumeRouteNotice(null, { mode: 'default' })).toBe(null);
+    expect(codexResumeRouteNotice(null, { mode: 'auto' })).toBe(null);
+    expect(codexResumeRouteNotice('openai', null)).toBe(null);
+    expect(codexResumeRouteNotice('openai', { mode: 'weird' })).toBe(null);
   });
 });
 
@@ -480,11 +526,15 @@ describe('the composed invariant: a stub home + a bound rollout is DETECTABLE an
 
     expect(isCodexHomeLaunchReady(dir)).toBe(false);
     expect(codexRolloutModelProvider(p)).toBe('papercusp-codex-gateway');
-    // and once rebuilt, a default-mode resume must not undo the rebuild
+    // and once rebuilt, a default-mode resume must not undo the rebuild — it keeps
+    // the table the rollout resolves and only lets the root key follow the route
     writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
     expect(isCodexHomeLaunchReady(dir)).toBe(true);
-    expect(
-      codexGatewayConfigPatch(REAL_CONFIG, null, { gatewayOn: false, keepExistingWhenUnrouted: true }),
-    ).toContain('[model_providers.papercusp-codex-gateway]');
+    const defaultResume = codexGatewayConfigPatch(REAL_CONFIG, null, {
+      gatewayOn: false,
+      keepProviderTableWhenUnrouted: true,
+    });
+    expect(defaultResume).toContain('[model_providers.papercusp-codex-gateway]');
+    expect(defaultResume).not.toContain('model_provider = "papercusp-codex-gateway"');
   });
 });
