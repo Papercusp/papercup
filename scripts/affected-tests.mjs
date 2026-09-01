@@ -3457,6 +3457,30 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     script: "lint:prompt-projections",
     appliesTo: (f) => PROMPT_PROJECTION_TRIGGER_PATHS.has(f),
   },
+  {
+    // EI-19453217565223331 — `positions.deployed` is git ancestry, not proof that
+    // the serving process loaded the new bytes.  The detector scans production
+    // source across apps/packages/libs/scripts, so a new reader outside the
+    // operator-core workspace must still receive a local signal.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-deployed-liveness-read",
+    // The in-suite test executes the real detector over the tracked tree.  When
+    // operator-core is already affected, that test is the host-suite ratchet and
+    // the narrow task is skipped; outside edits attach this exact lint task.
+    hostSuiteRatchet:
+      "packages/operator-core/lib/__tests__/deployed-liveness-read-guard.test.ts",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/check-no-deployed-liveness-read.mjs" ||
+      f ===
+        "packages/operator-core/lib/__tests__/deployed-liveness-read-guard.test.ts" ||
+      (/^(?:apps|packages|libs|scripts)\//.test(f) &&
+        /\.(?:[cm]?[jt]sx?)$/.test(f) &&
+        !/(?:^|\/)(?:_retired|dist|dist-sidecar|node_modules|build|\.next|target|coverage|env-sidecars)\//.test(
+          f,
+        )),
+  },
 ];
 
 const workspaces = [
