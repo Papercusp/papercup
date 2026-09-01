@@ -15,6 +15,7 @@ import {
   formatCompletenessAlert,
   formatMobileRegressionAlert,
   isImplausiblyTiny,
+  main,
   MIN_PLAUSIBLE_ARTIFACT_BYTES,
   releaseBundleRoots,
   releaseTag,
@@ -22,6 +23,7 @@ import {
   scanMobileArtifactSources,
   scanMobileArtifacts,
   scanProvenancedAndroidArtifactSources,
+  validateRecordChangelog,
   validateMobileProductName,
 } from './record-release-cli';
 
@@ -701,6 +703,34 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
     } finally {
       if (previous === undefined) delete process.env.PAPERCUSP_SKIP_ANDROID;
       else process.env.PAPERCUSP_SKIP_ANDROID = previous;
+    }
+  });
+
+  it('requires changelog text by default and carries the explicit no-changelog escape hatch', () => {
+    expect(buildRunOpts(['--version', '1.2.3']).allowNoChangelog).toBe(false);
+    expect(buildRunOpts(['--version', '1.2.3', '--no-changelog']).allowNoChangelog).toBe(true);
+  });
+});
+
+describe('validateRecordChangelog — fail closed on accidental changelog omission (EI-20072519085830387)', () => {
+  it('rejects missing and whitespace-only changelogs unless explicitly opted out', () => {
+    expect(validateRecordChangelog(null)).toMatch(/REFUSING TO RECORD/);
+    expect(validateRecordChangelog('  \n\t')).toMatch(/--no-changelog/);
+    expect(validateRecordChangelog(null, true)).toBeNull();
+    expect(validateRecordChangelog('  \n\t', true)).toBeNull();
+  });
+
+  it('accepts reviewed changelog text', () => {
+    expect(validateRecordChangelog('## Highlights\n\n- Fixed auto-update')).toBeNull();
+  });
+
+  it('stops the real CLI path before opening the registry when the changelog is omitted', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await expect(main(['--version', '1.2.3'])).resolves.toBe(1);
+      expect(error).toHaveBeenCalledWith(expect.stringMatching(/REFUSING TO RECORD/));
+    } finally {
+      error.mockRestore();
     }
   });
 });
