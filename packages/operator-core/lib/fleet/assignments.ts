@@ -843,6 +843,72 @@ export async function agentOriginToolCallOwnersSince(
 }
 
 /**
+ * WI-2034624: the NATIVE half of the same question `agentOriginToolCallOwnersSince`
+ * answers with the MCP half.
+ *
+ * `tool_invocations` records MCP calls ONLY, so an agent reading with `cat`,
+ * searching with `grep` and editing with the native Read/Edit tools produces NO
+ * row there at all — and this box's bypass-permissions preamble actively steers
+ * agents toward exactly those. `harness_shared.agent_activity` is the ledger
+ * that DOES record them. Neither ledger is complete on its own and each is
+ * incomplete in the SAME direction: a missing row can only make a working agent
+ * look idle.
+ *
+ * Measured 2026-09-01 over live fleet members (60min window): fleet
+ * `nonp2p-bug-drain-luna-max-50` had 50 live members, 28 visible in
+ * tool_invocations, 30 in agent_activity, 30 in the union. Fleet
+ * `windows-parity` had 1 live member, 0 in tool_invocations, 1 in
+ * agent_activity — an MCP-only reading calls that fleet's only working member
+ * idle and the governor replaces a filled seat.
+ *
+ * `null` means the leg failed; callers must preserve that UNKNOWN state.
+ */
+export async function nativeToolCallOwnersSince(
+  coordOwnerIds: string[],
+  windowMs = 30 * 60_000,
+): Promise<Set<string> | null> {
+  const ids = [...new Set(coordOwnerIds.filter((id) => !!id && !id.startsWith('fed:')))];
+  if (ids.length === 0) return new Set();
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return new Set();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ owner_id: string }[]>`
+      SELECT DISTINCT owner_id
+        FROM harness_shared.agent_activity
+       WHERE owner_id = ANY(${ids}::text[])
+         AND created_at > now() - (${windowMs} * interval '1 millisecond')
+    `;
+    return new Set(rows.map((row) => row.owner_id).filter((id) => typeof id === 'string' && id.length > 0));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The complete execution signal: owners visible in EITHER tool ledger.
+ *
+ * ⚠ A PARTIAL union is not returned. If either leg fails this answers `null`
+ * (UNKNOWN), because a half-read union UNDER-counts, and under-counting a
+ * capacity signal is the precise harm WI-2034624 exists to remove: it spawns
+ * replacements for seats that are already filled and working, and every
+ * churned boot re-burns the quota that is the real constraint. Both legs query
+ * the same Postgres, so in practice they fail together; a caller that fails
+ * closed on the rare single-leg failure loses far less than one that silently
+ * reports a fraction of the fleet as idle.
+ */
+export async function executingOwnersSince(
+  coordOwnerIds: string[],
+  windowMs = 30 * 60_000,
+): Promise<Set<string> | null> {
+  const [mcp, native] = await Promise.all([
+    agentOriginToolCallOwnersSince(coordOwnerIds, windowMs),
+    nativeToolCallOwnersSince(coordOwnerIds, windowMs),
+  ]);
+  if (mcp == null || native == null) return null;
+  return new Set([...mcp, ...native]);
+}
+
+/**
  * EI-18763117665515043: does this work-item claim's LINKED plan item — resolved
  * via the SAME two-mechanism stamp `planItemLaneBlockReason` already uses for the
  * pre-claim self-select gate (payload.plan_item back-pointer, or the
