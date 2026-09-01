@@ -3228,8 +3228,20 @@ export function computeStages(
                   ? ` (computed ${Math.round(g.checkpointRunInFlight.asOfAgeMs / 1000)}s ago)`
                   : ''
               } — the live lock read did not answer, so treat this as a hint, not a measurement, before firing anything.`;
+    // P-004 (gate-verdict-liveness-and-repair-reliability-2026-08-31): APPEND the
+    // shared standing pause banner — who holds the gate, since when, and when it
+    // auto-resumes (or that nothing will). `fireStaleReason` carries it
+    // (projectGreenCheckpointPause composes it, so the surfaces cannot drift).
+    //
+    // ⚠ APPEND, never REPLACE — and keep the ORIGINAL sentence whole. Both halves are
+    // load-bearing to EI-21271222700908558's assertions here: the "DELIBERATELY PAUSED"
+    // phrase readers match on, AND the pause reason. A caller may hand-build a `gate`
+    // whose `fireStaleReason` carries neither (fixtures do), so deriving either from it
+    // loses a signal. The mild reason-duplication in production is the cost of a
+    // rendering that cannot drop information for ANY caller shape.
     const pauseDetail = g.pause
-      ? `Gate is DELIBERATELY PAUSED (active:false)${g.pause.reason ? `: ${g.pause.reason}` : ''} — no scheduled fire can occur until the hold is resumed.`
+      ? `Gate is DELIBERATELY PAUSED (active:false)${g.pause.reason ? `: ${g.pause.reason}` : ''} — no scheduled fire can occur until the hold is resumed.` +
+        (g.fireStaleReason ? ` ${g.fireStaleReason}` : '')
       : null;
     const repairQueueDetail = g.repairQueue
       ? `Frozen repair queue ${g.repairQueue.candidate.slice(0, 12)} is ${g.repairQueue.phase} at head ${g.repairQueue.repairHead.slice(0, 12)} ` +
@@ -4259,8 +4271,15 @@ function leadClause(p: Omit<PipelinePosition, 'summary'>): string {
   }
   const at = p.blockedOn.toUpperCase();
   if (p.blockedOn === 'gate' && p.gate.pause) {
+    // P-004: carry the SAME standing banner the gate detail renders — this is the one
+    // line a caller reads before deciding whether the gate is failing or merely off,
+    // and it must name the holder and the auto-resume deadline, not just the reason.
+    // Appended after the existing phrase for the same reason as `pauseDetail` above.
     const reason = p.gate.pause.reason ? `: ${p.gate.pause.reason}` : '';
-    return `BLOCKED AT GATE — green-checkpoint is DELIBERATELY PAUSED (active:false)${reason}; no scheduled fire can occur until the hold is resumed. `;
+    return (
+      `BLOCKED AT GATE — green-checkpoint is DELIBERATELY PAUSED (active:false)${reason}; no scheduled fire can occur until the hold is resumed. ` +
+      (p.gate.fireStaleReason ? `${p.gate.fireStaleReason} ` : '')
+    );
   }
   if (!p.nextAction) return `WAITING AT ${at} (nothing to do — this leg is advancing on its own). `;
   // When the lever belongs to a LATER stage than where the change sits, say both: "the leg
