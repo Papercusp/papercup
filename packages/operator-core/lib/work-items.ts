@@ -1196,6 +1196,24 @@ function issueShapeFilterArgs(filter: ListWorkItemsFilter) {
   };
 }
 
+/**
+ * Append every mapped row onto `out` without ever calling a function with one
+ * argument per row.
+ *
+ * EI-22068903877831794: `out.push(...rows.map(fn))` builds a SINGLE call frame
+ * carrying `rows.length` arguments. V8 caps that argument count well below the
+ * row counts a full-harness, unbounded (`rowLimit === null`) file export can
+ * return — this harness alone holds >150k issue-family rows — so the spread
+ * form throws `RangeError: Maximum call stack size exceeded` past the ceiling
+ * (observed ~10s in, on the issue-family branch) instead of scaling with the
+ * export's whole reason for existing: an uncapped read. A `for` loop calls
+ * `push` once per row (O(1) arguments each time, never O(n)), so it has no
+ * such ceiling and costs nothing extra over the spread form it replaces.
+ */
+export function pushMapped<Row, Out>(out: Out[], rows: readonly Row[], mapRow: (row: Row) => Out): void {
+  for (const row of rows) out.push(mapRow(row));
+}
+
 async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: number | null): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
   const q = filter.q?.trim();
@@ -1268,7 +1286,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
          }
        ORDER BY ${filter.orderByRank ? sql`assignee_rank ASC NULLS LAST, updated_ts DESC` : sql`updated_ts DESC NULLS LAST`}
        ${rowLimit === null ? sql`` : sql`LIMIT ${rowLimit}`}`;
-    out.push(...rows.map(featureRowToWorkItem));
+    pushMapped(out, rows, featureRowToWorkItem);
   }
 
   // Issues are always top-level (no parent edge today), so a `parent` filter excludes them.
@@ -1306,7 +1324,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
       rowLimit === null
         ? await listAllIssuesForFileExport(issueFilter)
         : await listIssues({ ...issueFilter, limit: rowLimit });
-    out.push(...issues.map(issueToWorkItem));
+    pushMapped(out, issues, issueToWorkItem);
   }
 
   out.sort(filter.orderByRank ? compareByHeadOfLine : compareByRecency);
