@@ -467,7 +467,7 @@ function RosterStyles() {
   return (
     <style>{`
       .pc-advshell__agents-pill-wrap { display: inline-flex; }
-      .pc-agents-pill__thinking { color: #6aa84f; font-weight: 600; }
+      .pc-agents-pill__thinking { color: var(--good, #34d399); font-weight: 600; }
       .pc-agents-pill__dots { display: inline-flex; gap: 2px; margin-left: 6px; }
       .pc-agents-pill__dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
       .pc-agents-pill__machines { color: var(--fg-mute); }
