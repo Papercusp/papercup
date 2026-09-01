@@ -68,6 +68,7 @@ import {
   listCodexInstalledModels,
   normalizeCodexCliModel,
   isCodexModelDenied,
+  CODEX_DENIED_MODEL_IDS,
   resolveCodexModel,
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 // WI-126377: the ONE builder for this picker's rows + the effort intersection
@@ -125,6 +126,41 @@ import {
 
 export const AGENTS = ["claude", "omp", "codex"];
 
+/** The caller/origin marker used when PUI invokes the real PSU picker. */
+export const PUI_TUI_ORIGIN = "pui";
+
+/**
+ * Build the public interactive backend choices. PUI is a launcher destination,
+ * not an agent backend, so it is deliberately kept out of AGENTS (the backend
+ * validation set) and added only to this picker. A PUI-originated invocation
+ * filters the destination back out to prevent recursive `pui workbench`
+ * launches.
+ */
+export function agentPickerChoices({ tui = null } = {}) {
+  const choices = AGENTS.map((agent) => ({ name: agent, value: agent }));
+  if (tui !== PUI_TUI_ORIGIN)
+    choices.push({ name: "pui", value: "pui" });
+  return choices;
+}
+
+/** Exact command used when the PSU picker selects the PUI destination. */
+export function puiWorkbenchCommand() {
+  return { bin: "pui", args: ["workbench"] };
+}
+
+/** Run the PUI workbench command in the current terminal, preserving status. */
+export function launchPuiWorkbench({
+  spawnImpl = spawnSync,
+  cwd = process.cwd(),
+  env = sanitizeInheritedEnv(process.env),
+} = {}) {
+  const { bin, args } = puiWorkbenchCommand();
+  const result = spawnImpl(bin, args, { cwd, env, stdio: "inherit" });
+  if (result?.error)
+    throw new Error(`psu: failed to launch PUI workbench: ${result.error.message}`);
+  return result?.status ?? (result?.signal ? 1 : 0);
+}
+
 /**
  * The side-effect-free CLI reference shown by `psu --help`.
  *
@@ -145,6 +181,7 @@ Session selection:
 
 Launch context:
   --agent=<claude|omp|codex>         Backend to launch
+  --tui=<pui>                       Caller origin (PUI hides recursive PUI choice)
   --role=<role>                      Launch a role-scoped session
   --workspace=<slug>                 Workspace context
   --harness=<slug>                   Harness context
@@ -672,6 +709,7 @@ export function parseArgs(argv) {
     kickoffPromptText: null,
     label: null,
     headless: false,
+    tui: null,
   };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
@@ -698,6 +736,7 @@ export function parseArgs(argv) {
   let pendingPlan = false;
   let pendingModeSubject = false;
   let pendingModeInstructions = false;
+  let pendingTui = false;
   for (const a of argv) {
     if (rest) {
       out.passthrough.push(a);
@@ -748,6 +787,16 @@ export function parseArgs(argv) {
     if (pendingModeInstructions) {
       pendingModeInstructions = false;
       out.modeInstructions = a;
+      continue;
+    }
+    if (pendingTui) {
+      pendingTui = false;
+      if (a !== PUI_TUI_ORIGIN) {
+        throw new Error(
+          `--tui=${a} is not recognized — the only supported caller origin is \`${PUI_TUI_ORIGIN}\`.`,
+        );
+      }
+      out.tui = a;
       continue;
     }
     // `--account <id>` (space form) — the previous token armed this; take the
@@ -1021,6 +1070,18 @@ export function parseArgs(argv) {
     else if (a.startsWith("--mode-instructions="))
       out.modeInstructions = a.slice("--mode-instructions=".length);
     else if (a === "--mode-owner-directed") out.modeOwnerDirected = true;
+    // PUI-origin marker: when PUI delegates new-session creation to this
+    // launcher, hide the PUI destination so the picker cannot recurse.
+    else if (a === "--tui") pendingTui = true;
+    else if (a.startsWith("--tui=")) {
+      const rawTui = a.slice("--tui=".length);
+      if (rawTui !== PUI_TUI_ORIGIN) {
+        throw new Error(
+          `--tui=${rawTui} is not recognized — the only supported caller origin is \`${PUI_TUI_ORIGIN}\`.`,
+        );
+      }
+      out.tui = rawTui;
+    }
     // Skip the confirm when resuming an UNTRACKED (non-psu) session (for scripts).
     else if (a === "--yes" || a === "-y") out.yes = true;
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
@@ -5819,15 +5880,11 @@ async function api(path, opts = {}) {
   return json;
 }
 
-async function pickAgent() {
+async function pickAgent({ tui = null } = {}) {
   const { select } = await import("@inquirer/prompts");
   return select({
     message: "Agent",
-    choices: [
-      { name: "claude", value: "claude" },
-      { name: "omp", value: "omp" },
-      { name: "codex", value: "codex" },
-    ],
+    choices: agentPickerChoices({ tui }),
   });
 }
 
@@ -10923,6 +10980,7 @@ async function chooseResumeTarget(session, args) {
     codexSkipIds: RESUME_MODEL_MENU.filter((row) => row.backend === "codex").map(
       (row) => normalizeCodexCliModel(row.value),
     ),
+    codexDeniedIds: CODEX_DENIED_MODEL_IDS,
   });
   // A `select` cannot be typed into, so it is unusable at catalog scale (the OMP
   // registry measured 499 rows on this box). Above the threshold the picker
@@ -12342,7 +12400,11 @@ async function main() {
   if (args.picker) {
     // Honor any flags as preselections; prompt only for what was omitted.
     const p = presetsFromArgs(args);
-    const agent = p.needAgent ? await pickAgent() : p.agent;
+    const agent = p.needAgent ? await pickAgent({ tui: args.tui }) : p.agent;
+    if (agent === "pui") {
+      process.exitCode = launchPuiWorkbench();
+      return;
+    }
     // su-context-size-variants: 'trimmed' is the only live context size, so there is
     // nothing left to prompt for — assign it directly rather than opening a
     // single-choice picker. A --context-size= flag has already set args.contextSize by
