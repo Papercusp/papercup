@@ -1,7 +1,11 @@
 # Shared-host CPU performance policy — installation (WI-37533)
 
 `papercusp-host-performance.service` sets both cpufreq's governor and the
-independent `amd-pstate-epp` preference to `performance` on every CPU policy.
+independent `amd-pstate-epp` preference to `performance` on every CPU policy. It
+also reserves 34,000 × 2 MiB huge pages before PostgreSQL starts. The unit is a
+`RequiredBy` dependency of `postgresql@18-main.service`: if Linux cannot reserve
+all pages, it fails loud and PostgreSQL does not start with a silent
+`huge_pages=try` fallback.
 The shared development host has no battery and runs latency-sensitive PostgreSQL,
 Node, TypeScript and git work continuously; the stock `powersave` governor kept
 all 128 logical CPUs near base clock even though hardware boost was enabled.
@@ -26,9 +30,18 @@ systemctl is-enabled papercusp-host-performance.service
 systemctl is-active papercusp-host-performance.service
 for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do cat "$f"; done | sort -u
 for f in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do cat "$f"; done | sort -u
+cat /proc/sys/vm/nr_hugepages
+sudo -u postgres psql -tAc "show shared_memory_size_in_huge_pages; show huge_pages; show huge_pages_status"
 ```
 
-Both populations must contain only `performance`. Roll back with
+Both CPU populations must contain only `performance`, `nr_hugepages` must be at
+least 34,000, and PostgreSQL must report `huge_pages=on` plus
+`huge_pages_status=on`. A live fragmented host may accept only part of the
+reservation; the service deliberately fails in that case. Reboot so allocation
+happens before PostgreSQL consumes ~64 GiB, then run
+`npx tsx scripts/pg-autotune.ts --apply` through the normal DB-resource drain.
+
+Roll back with
 `sudo systemctl disable --now papercusp-host-performance.service`, remove the two
 installed files, daemon-reload, and write the prior policy back through sysfs.
 
