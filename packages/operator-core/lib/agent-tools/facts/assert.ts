@@ -40,7 +40,11 @@ import { isAssumptionFact, factVersions } from '../../agent-facts/store';
 import { assessKeyContest, type KeyContestAssessment } from '../../facts/contested-key';
 import { resolveScopeRefAlias } from './scope-ctx';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
-import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
+import {
+  carryProvenanceFields,
+  ownerAttributionEnforcement,
+  stampCarrySurfaceProvenance,
+} from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
 import { neutralizeToolCallTags } from '../../text-safety';
 import { factMeasurementHint } from '../../fact-measurement-detector';
@@ -782,6 +786,22 @@ export default defineTool({
           : args.slot === 'guard-rail'
             ? normalizeGuardRailSlot(args.key, safeBody)
             : { key: args.key, body: safeBody };
+    // P-016 / EI-212678: classify BEFORE persistence. A response-only lint can
+    // be dropped by the caller while the fact is then folded as clean authority.
+    // A verified owner-turn source is the sole exception; all other owner prose
+    // is retained but downgraded to suspected with a loud source stamp.
+    const preWriteStamp = await stampCarrySurfaceProvenance(slotted.body, identity.ownerId);
+    const ownerEnforcement = ownerAttributionEnforcement(slotted.body, preWriteStamp);
+    const verifiedOwnerSource = sourceProvenance?.kind === 'owner-turn' && sourceProvenance.verified;
+    const enforceUnverifiedOwner = ownerEnforcement.unverified && !verifiedOwnerSource;
+    if (enforceUnverifiedOwner) {
+      sourceProvenance = {
+        kind: 'owner-turn',
+        verified: false,
+        error: 'owner_attribution_unverified',
+        verifiedAt: new Date().toISOString(),
+      };
+    }
     // EI-20191817484694278: a durable fact can carry a moving count/status and
     // age into a confident lie. Detect the shape at the write boundary so the
     // author can tighten it immediately; this is advisory and fail-soft.
@@ -856,10 +876,10 @@ export default defineTool({
       key: slotted.key,
       body: slotted.body,
       ...(args.supersedes ? { supersedes: args.supersedes } : {}),
-      sourceRef: args.sourceRef ?? null,
+      sourceRef: enforceUnverifiedOwner ? args.sourceRef ?? 'owner-turn' : args.sourceRef ?? null,
       audienceScope: args.audienceScope ?? null,
       sourceProvenance,
-      confidence: args.confidence ?? null,
+      confidence: enforceUnverifiedOwner ? 'suspected' : args.confidence ?? null,
       subjectVolatile: normalizedMeasurement.subjectVolatile === true,
       measuredAt: normalizedMeasurement.measuredAt ?? null,
       kind: args.kind ?? null,
@@ -928,7 +948,9 @@ export default defineTool({
     }
     // WI-3801 lint + P-014 turn-ref verification/origin stamp — warn-only,
     // no fields on the common clean case.
-    const provenanceFields = await carryProvenanceFields(slotted.body, identity.ownerId);
+    const provenanceFields = await carryProvenanceFields(slotted.body, identity.ownerId, {
+      precomputedStamp: preWriteStamp,
+    });
     // EI-10952: a body over the cap is TRUNCATED, not rejected (P-007 — the hard
     // reject cost 7 whole facts in 14d, so truncate-not-reject stays). But the
     // caller was never TOLD: the response was a clean `ok:true` and the fact
