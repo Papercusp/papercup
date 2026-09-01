@@ -174,8 +174,14 @@ const INTERPOLATED_ACTION = /\$\{[^}]*(?:\baction\b|\blastBurn\b|\bburnAction\b|
 /** String literals, in the three forms this codebase writes them. */
 const STRING_LITERALS = /`(?:[^`\\]|\\.)*`|'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g;
 
-/** Interfaces and type aliases; the body is located by brace matching, not by regex. */
-const TYPE_DECL = /\bexport\s+interface\s+([A-Za-z0-9_]+)\s*(?:extends\s+[^{]+)?\{|\binterface\s+([A-Za-z0-9_]+)\s*(?:extends\s+[^{]+)?\{/g;
+/**
+ * Interfaces AND object-literal type aliases; the body is located by brace matching, not by regex.
+ * The alias form is here because `type X = { action: BurnAction }` is the same carrier wearing
+ * different syntax, and a guard that only knew `interface` would hand the next author a one-keyword
+ * way around it. An alias built from `Pick<BurnVerdict, …>` needs no check — it inherits the
+ * contract from the type it is projecting.
+ */
+const TYPE_DECL = /\b(?:export\s+)?interface\s+([A-Za-z0-9_]+)\s*(?:extends\s+[^{]+)?\{|\b(?:export\s+)?type\s+([A-Za-z0-9_]+)\s*=\s*\{/g;
 
 const ACTION_TYPED_FIELD = /:\s*BurnAction\b/;
 /** Any field whose NAME ends in `disposition` and whose TYPE is `BurnDisposition` — so a persisted

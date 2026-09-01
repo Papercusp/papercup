@@ -134,6 +134,27 @@ describe('pool-burn lever (WI-41147 leg b)', () => {
     expect(onClean).not.toHaveBeenCalled();
   });
 
+  it('the shed log line states what the verdict RESTS ON, not just the action (P-005)', async () => {
+    // The reader-contract at its live seam. `pool burn 'shed'` is what this line used to emit,
+    // and an operator or agent reading it had no way to tell an exhausted provider window (wait
+    // for the reset) from the governor pacing us off a projection (the accounts still serve, and
+    // throttling the fleet is the wrong remedy — D-001). The static guard forbids composing the
+    // action by hand; this asserts the disposition actually reaches the reader.
+    const lines: string[] = [];
+    handle = startLoopPressureGovernor({
+      intervalMs: 1e9,
+      burnIntervalMs: 1e9,
+      readPressure: () => 'ok',
+      readPoolBurn: async () => poolBurn('shed', 'pacing-projection'),
+      onPenalty: () => {},
+      onClean: () => {},
+      log: (line) => lines.push(line),
+    });
+    await handle.tickBurn();
+    expect(lines.join('\n')).toContain('pacing projection, not a measured wall');
+    expect(lines.join('\n')).not.toMatch(/pool burn 'shed'/);
+  });
+
   it('escalation throttle→shed is a new, worse episode — second penalty', async () => {
     let action: 'none' | 'throttle' | 'shed' = 'throttle';
     const onPenalty = vi.fn();

@@ -151,6 +151,18 @@ describe('burn-verdict disposition reader-contract (P-005)', () => {
       expect(carriers[0]!.carriesDisposition).toBe(true);
     });
 
+    it('catches a carrier declared as a type ALIAS — not just an interface', () => {
+      // The same carrier wearing different syntax. A guard that only knew `interface` would hand
+      // the next author a one-keyword way around it.
+      const carriers = findBurnCarrierTypes(
+        'fixture.ts',
+        'export type PoolRead = {\n  action: BurnAction;\n  reason: string;\n};',
+      );
+      expect(carriers).toHaveLength(1);
+      expect(carriers[0]!.name).toBe('PoolRead');
+      expect(carriers[0]!.carriesDisposition).toBe(false);
+    });
+
     it('accepts a persisted stamp whose field is NAMED for what it stamps', () => {
       // `lastBurnAction` / `lastBurnDisposition` — the contract is about the PAIR being present,
       // not about one blessed field name.

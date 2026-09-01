@@ -427,6 +427,11 @@ export function renderPoolBurnLabel(agg: Pick<PoolBurnAggregate, 'action' | 'dis
   if (agg.disposition === 'pacing-projection') {
     return `${head} (pacing projection, not a measured wall; ${c['pacing-projection']} account(s) projected, 0 measured)`;
   }
+  // `no-verdict` beside a NON-none action is not reachable from `evaluateBurn` (the two are
+  // stamped together at one branch), but a hand-built aggregate can express it. Rendering that as
+  // "no wall asserted" would state the opposite of the action it leads with, so say what is
+  // actually true — the basis is missing. Mirrors burn-alert's own fallback wording.
+  if (agg.action !== 'none') return `${head} (disposition unavailable)`;
   return `${head} (no wall asserted)`;
 }
 

@@ -807,6 +807,19 @@ describe('renderPoolBurnLabel — the ONE pool-verdict rendering (P-005)', () =>
     ).toBe('SHED (pacing projection, not a measured wall; 3 account(s) projected, 0 measured)');
   });
 
+  it('never renders an ACTION beside "no wall asserted" — it says the basis is missing', () => {
+    // Not reachable from evaluateBurn (action and disposition are stamped at one branch), but a
+    // hand-built aggregate can express it, and "SHED (no wall asserted)" states the opposite of
+    // the action it leads with. An honest fallback beats a fluent contradiction.
+    expect(
+      renderPoolBurnLabel({
+        action: 'shed',
+        disposition: 'no-verdict',
+        dispositionCounts: { 'measured-wall': 0, 'pacing-projection': 0, 'no-verdict': 0 },
+      }),
+    ).toBe('SHED (disposition unavailable)');
+  });
+
   it('names the measured half AND the projected half when they are mixed', () => {
     expect(
       renderPoolBurnLabel({
