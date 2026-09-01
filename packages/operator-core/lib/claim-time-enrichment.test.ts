@@ -37,6 +37,12 @@ vi.mock('./source-citation-claim-port', () => ({
   getClaimTimeSourceCitation: vi.fn(async () => null),
   sourceCitationWarning: vi.fn(() => null),
 }));
+vi.mock('./stale-path-hints-claim-port', () => ({
+  getClaimTimeStalePathAdvisory: vi.fn(async () => ({
+    stalePathRefs: ['apps/operator/app/_components/LeftSidebar.tsx'],
+    stalePathRefsNote: 'advisory stale path refs',
+  })),
+}));
 
 import { buildClaimTimeEnrichment } from './claim-time-enrichment';
 
@@ -58,6 +64,22 @@ describe('buildClaimTimeEnrichment behavior-contract leg', () => {
     expect(enrichmentDelivery.delivered).toEqual([]);
     expect(enrichmentDelivery.failed).toEqual([]);
     expect(enrichmentDelivery.omitted.find((o) => o.leg === 'behaviorContract')?.reason).toBe('skipped-no-input');
+  });
+});
+
+describe('buildClaimTimeEnrichment stalePathRefs leg (EI-20049758099997696)', () => {
+  it('carries title/summary refs through the shared claim-time enrichment', async () => {
+    const enrichment = await buildClaimTimeEnrichment({
+      workItem: {
+        id: 'WI-stale-ref',
+        title: 'Remove the old sidebar',
+        summary: 'The old path is apps/operator/app/_components/LeftSidebar.tsx',
+        payload: null,
+      },
+    });
+    expect(enrichment.stalePathRefs).toEqual(['apps/operator/app/_components/LeftSidebar.tsx']);
+    expect(enrichment.stalePathRefsNote).toBe('advisory stale path refs');
+    expect(enrichment.enrichmentDelivery.delivered).toContain('pathHints');
   });
 });
 
