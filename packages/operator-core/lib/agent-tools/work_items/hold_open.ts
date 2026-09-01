@@ -75,7 +75,8 @@ export default defineTool({
       'neither close it nor self-select it while you do. Your claim stays; work continues.',
     notWhen:
       'You are WALKING AWAY from the item, or the fence must OUTLIVE your session — that is work_items:park (checkpoint ' +
-      '+ release) or release { claimHold:true } (release + hold). Blocked on a dependency → set_state{blocked}. Done → ' +
+      '+ release) or release { claimHold:true } (release + hold). Blocked on an external event/gate/runtime/human condition → ' +
+      'work_items:set_blocker. Blocked by another work-item → work_items:link { rel:"blocks" }. Done → ' +
       'complete (a holder completing their own held item is allowed).',
     chaining:
       'work_items:hold_open { id, reason } → work → complete/set_state yourself (holder passes the guard), or hold_open { id, clear:true } to hand it back to normal lifecycle.',

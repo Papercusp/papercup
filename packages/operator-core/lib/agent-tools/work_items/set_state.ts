@@ -40,6 +40,7 @@ import {
   preflightPlaneCloseLive,
   renderPlaneClosePreflightWarning,
 } from '../../agent-plane-close-preflight';
+import { activeExternalBlockers } from '../../external-blockers';
 
 /**
  * Keep the batch-level refusal diagnosis bounded and stable. Per-item errors remain
@@ -139,12 +140,14 @@ export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set lifecycle state for one OR many work-items. Unified states are open|wip|blocked|needs-human|done|dropped; legacy aliases fold to the unified state with terminal_reason preserved. Terminal states require both completionRef and an explicit assumptions declaration (`"none"` or an array of facts:assert keys). Issue needs-human/blocked writes exclude from self-select; plan-linked feature blocking must use plans:set-status. Reopening a completed item requires `force:true`. Supports { id, state }, { ids:[…], state }, or heterogeneous items[]. Results include aliased/requestedState/appliedState — inspect appliedState, not only ok.',
+    'Set lifecycle state for one OR many work-items. Unified states are open|wip|blocked|needs-human|done|dropped; legacy aliases fold to the unified state with terminal_reason preserved. Terminal states require both completionRef and an explicit assumptions declaration (`"none"` or an array of facts:assert keys). A blocked write must have an active typed external blocker from work_items:set_blocker; internal work-item dependencies use work_items:link { rel:"blocks" }. Issue needs-human/blocked writes exclude from self-select; plan-linked feature blocking must use plans:set-status. Reopening a completed item requires `force:true`. Supports { id, state }, { ids:[…], state }, or heterogeneous items[]. Results include aliased/requestedState/appliedState — inspect appliedState, not only ok.',
   guidance: {
-    when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. Batch with { ids:[…], state } or items[]. Plan-linked feature blocks use plans:set-status; needs-human/blocked exclude from self-select. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
-    chaining: 'work_items:claim → … → work_items:set_state { state, completionRef, assumptions }.',
+    when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. Batch with { ids:[…], state } or items[]. Before state:"blocked", record a typed external blocker with work_items:set_blocker (event/gate/runtime/human), or link an internal dependency with work_items:link { rel:"blocks" }; a bare blocked state is refused. Plan-linked feature blocks use plans:set-status; needs-human/blocked exclude from self-select. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
+    chaining: 'work_items:claim → … → work_items:set_blocker or work_items:link → work_items:set_state { state:"blocked" }; terminal writes use completionRef + assumptions.',
     seeAlso: [
       'work_items:complete (terminal state WITH a structured completion record)',
+      'work_items:set_blocker { id, kind, ref, summary } (typed external event/gate/runtime/human blocker)',
+      'work_items:link { source, target, rel:"blocks" } (internal work-item dependency)',
       'plans:set-status { item, status:"blocked" } (the source-of-truth park for plan-linked feature items)',
       'work_items:release (drop a claim without changing state; claimHold:true parks an issue-family item out of claim_next self-select — WI-2797)',
       'work_items:set_priority (steer backlog order, not lifecycle state)',
@@ -232,6 +235,16 @@ export default defineTool({
                 `work-item '${it.id}' is linked to plan item(s) ${planStamp.plan_slug}#${itemIds}; ` +
                   'direct state:"blocked" writes are not durable because the plan item is the source of truth. ' +
                   `Use plans:set-status { slug: "${planStamp.plan_slug}", item: "${planStamp.item_ids[0]}", status: "blocked" } instead.`,
+              );
+            }
+            if (activeExternalBlockers(current.payload).length === 0) {
+              throw new Error(
+                `work-item '${it.id}' has no active typed blocker; refusing a reasonless state:"blocked" write. ` +
+                  'For an external event, gate, runtime condition, or human capability, use ' +
+                  'work_items:set_blocker { id, kind, capability, ref, summary, nextVerb } — it records the ' +
+                  'machine-readable reason and parks the lifecycle. For another work-item dependency, use ' +
+                  'work_items:link { source: "<blocker-id>", target: "' + it.id + '", rel: "blocks" } instead; ' +
+                  'do not write blocked state separately for a linked work dependency.',
               );
             }
           }

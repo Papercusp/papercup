@@ -37,7 +37,8 @@ export default defineTool({
       'end of a stint) and intend it to be RESUMED — by you or anyone. The checkpoint should let a cold successor ' +
       'continue without re-deriving: done / left / approach / gotchas.',
     notWhen:
-      'The item is DONE (work_items:complete), blocked on a dependency (work_items:set_state{blocked} with the reason), ' +
+      'The item is DONE (work_items:complete), blocked on an external condition (work_items:set_blocker records the typed reason), ' +
+      'blocked by another work-item (work_items:link { rel:"blocks" } records the dependency), ' +
       'or you are abandoning it as wrong/obsolete (set_state{dropped}). Park = "good work, paused on purpose".',
     chaining:
       'work_items:park { id, checkpoint, reason } → later work_items:claim/pickup re-injects the checkpoint. ' +
