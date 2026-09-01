@@ -46,8 +46,12 @@ export async function upsertTriage(input: {
 }
 
 /** Clear an item's triage (revert it to untriaged). */
-export async function clearTriage(itemId: string, workspaceId?: string): Promise<void> {
-  const { sql } = getOrgPg();
+export async function clearTriage(
+  itemId: string,
+  workspaceId?: string,
+  transaction?: Sql | TransactionSql,
+): Promise<void> {
+  const sql = transaction ?? getOrgPg().sql;
   const ws = workspaceId ?? activeWorkspaceId();
   await sql`
     DELETE FROM harness_shared.attention_triage

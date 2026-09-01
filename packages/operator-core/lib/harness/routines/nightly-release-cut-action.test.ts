@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { execFileSync } from 'node:child_process';
 
 const taskManager = vi.hoisted(() => ({ managedSpawn: vi.fn() }));
 vi.mock('../../task-manager/managed-spawn', () => ({ managedSpawn: taskManager.managedSpawn }));
@@ -12,6 +13,7 @@ import {
   buildNightlyCutInvocation,
   nextNightlyVersion,
   nightlyReleaseRoot,
+  readDesktopVersionAtSource,
   runNightlyCut,
 } from './nightly-release-cut-action';
 
@@ -26,6 +28,14 @@ describe('nextNightlyVersion', () => {
 
   it('rejects malformed versions', () => {
     expect(() => nextNightlyVersion('0.0', new Date())).toThrow(/X\.Y\.Z/);
+  });
+});
+
+describe('readDesktopVersionAtSource', () => {
+  it('reads the desktop package version from the exact gitlink pinned by main', () => {
+    const sourceRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../..');
+    const sourceSha = execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'main^{commit}'], { encoding: 'utf8' }).trim();
+    expect(readDesktopVersionAtSource(sourceRoot, sourceSha)).toMatch(/^\d+\.\d+\.\d+(?:-[0-9a-z.-]+)?$/);
   });
 });
 

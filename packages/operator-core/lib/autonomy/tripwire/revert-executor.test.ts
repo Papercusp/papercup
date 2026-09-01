@@ -35,13 +35,20 @@ function rowWith(revertHandle: RevertHandle): TripwireRow {
   };
 }
 
-function fakeHelpers(): { helpers: RevertHelpers; calls: { state: unknown[]; priority: unknown[] } } {
-  const calls = { state: [] as unknown[], priority: [] as unknown[] };
+function fakeHelpers(): {
+  helpers: RevertHelpers;
+  calls: { state: unknown[]; priority: unknown[]; bulk: unknown[] };
+} {
+  const calls = { state: [] as unknown[], priority: [] as unknown[], bulk: [] as unknown[] };
   return {
     calls,
     helpers: {
       setWorkItemState: async (id, state, opts) => void calls.state.push({ id, state, opts }),
       setWorkItemPriority: async (id, priority, opts) => void calls.priority.push({ id, priority, opts }),
+      revertAttentionBulkItem: async (handle) => {
+        calls.bulk.push(handle);
+        return { reverted: true, note: 'bulk item restored' };
+      },
     },
   };
 }
@@ -84,6 +91,28 @@ describe('built-in reverters', () => {
     expect(out.reverted).toBe(false);
     expect(calls.state).toEqual([]);
   });
+
+  it('attention-bulk-item delegates a validated pointer to the shared compensation adapter', async () => {
+    const { helpers, calls } = fakeHelpers();
+    const handle = {
+      kind: 'attention-bulk-item',
+      version: 1,
+      workspaceId: 'ws-1',
+      runId: 'run-1',
+      itemId: 'scout-grade:1',
+    };
+    const out = await executeRevertVia(rowWith(handle), makeRevertRegistry(), helpers);
+    expect(out).toEqual({ reverted: true, note: 'bulk item restored' });
+    expect(calls.bulk).toEqual([handle]);
+
+    const invalid = await executeRevertVia(
+      rowWith({ kind: 'attention-bulk-item', workspaceId: 'ws-1', runId: 'run-1' }),
+      makeRevertRegistry(),
+      helpers,
+    );
+    expect(invalid.reverted).toBe(false);
+    expect(calls.bulk).toEqual([handle]);
+  });
 });
 
 describe('executeRevertVia dispatch', () => {
@@ -120,7 +149,11 @@ describe('executeRevertVia dispatch', () => {
     expect(seen).toMatchObject({ kind: 'flag-flip', priorEnabled: false });
   });
 
-  it('ships exactly the two canonical built-ins', () => {
-    expect(Object.keys(BUILTIN_REVERTERS).sort()).toEqual(['work-item-priority', 'work-item-state']);
+  it('ships the canonical built-ins plus the Inbox bulk compensation extension', () => {
+    expect(Object.keys(BUILTIN_REVERTERS).sort()).toEqual([
+      'attention-bulk-item',
+      'work-item-priority',
+      'work-item-state',
+    ]);
   });
 });

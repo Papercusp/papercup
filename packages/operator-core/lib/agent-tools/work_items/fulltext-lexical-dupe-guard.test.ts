@@ -1,7 +1,7 @@
 /**
  * fulltext-lexical-dupe-guard.test — EI-19298062354262754: work_items:create's
- * advisory reuse of improvements:capture's own search-first dedup (full-text
- * search + title-token Jaccard, no embedding, no recency window), always
+ * advisory reuse of the unified work-item search-first dedup (full-text
+ * search + title/summary-token Jaccard, no embedding, no recency window), always
  * advisory (never blocks), and fail-open on every error mode (mirrors
  * semantic-dupe-guard.test.ts / recent-lexical-dupe-guard.test.ts's contract).
  */
@@ -12,15 +12,22 @@ import {
   type FulltextLexicalDupeRow,
 } from './fulltext-lexical-dupe-guard';
 
-const row = (id: string, title: string, state = 'open', scope = 'harness:papercusp'): FulltextLexicalDupeRow => ({
+const row = (
+  id: string,
+  title: string,
+  state = 'open',
+  harness: string | null = 'papercusp',
+  summary?: string,
+): FulltextLexicalDupeRow => ({
   id,
   title,
+  ...(summary === undefined ? {} : { summary }),
   state,
-  scope,
+  harness,
 });
 
 const depsWith = (rows: FulltextLexicalDupeRow[]): FulltextLexicalDupeDeps => ({
-  searchIssues: async () => rows,
+  searchWorkItems: async () => rows,
 });
 
 afterEach(() => {
@@ -95,32 +102,58 @@ describe('classification (advisory-only)', () => {
     expect(r).toEqual([]);
   });
 
-  it('derives harness from scope (harness:<slug> vs operator)', async () => {
+  it('keeps the normalized harness from either work-item family', async () => {
     const r = await findFulltextLexicalDupes(
       { title: 'shared concern' },
-      depsWith([row('EI-1', 'shared concern', 'open', 'operator')]),
+      depsWith([row('F-1', 'shared concern', 'open', 'potato-storefront')]),
     );
     expect(r).not.toBeNull();
-    expect(r![0].harness).toBeNull();
+    expect(r![0].harness).toBe('potato-storefront');
   });
 
-  it('passes the title through to searchIssues', async () => {
-    const calls: Array<{ query: string; limit?: number }> = [];
+  it('catches a cross-family candidate returned by the unified search seam', async () => {
+    const r = await findFulltextLexicalDupes(
+      { title: 'build potato storefront app' },
+      depsWith([row('F-1', 'scope', 'open', 'papercusp', 'build potato storefront app')]),
+    );
+    expect(r).not.toBeNull();
+    expect(r!.map((candidate) => candidate.id)).toEqual(['F-1']);
+  });
+
+  it('uses title and summary together so summary-only overlap is surfaced', async () => {
+    const calls: string[] = [];
     const deps: FulltextLexicalDupeDeps = {
-      searchIssues: async (query, limit) => {
-        calls.push({ query, limit });
+      searchWorkItems: async (query) => {
+        calls.push(query);
+        return [row('WI-1', 'scope decision', 'open', 'papercusp', 'can you make me an app for selling potatoes')];
+      },
+    };
+    const r = await findFulltextLexicalDupes(
+      { title: 'build storefront', summary: 'can you make me an app for selling potatoes' },
+      deps,
+    );
+    expect(r).not.toBeNull();
+    expect(r!.map((candidate) => candidate.id)).toEqual(['WI-1']);
+    expect(calls).toEqual(['build storefront\ncan you make me an app for selling potatoes']);
+  });
+
+  it('passes the combined title and summary through to the unified search seam', async () => {
+    const calls: string[] = [];
+    const deps: FulltextLexicalDupeDeps = {
+      searchWorkItems: async (query) => {
+        calls.push(query);
         return [];
       },
     };
-    await findFulltextLexicalDupes({ title: 'a fresh title' }, deps);
-    expect(calls).toEqual([{ query: 'a fresh title', limit: 20 }]);
+    await findFulltextLexicalDupes({ title: 'a fresh title', summary: 'body words' }, deps);
+    expect(calls).toEqual(['a fresh title\nbody words']);
   });
 });
 
 describe('fail-open — every failure mode returns null (create proceeds)', () => {
   it('search throw', async () => {
     const deps: FulltextLexicalDupeDeps = {
-      searchIssues: async () => {
+      searchWorkItems: async () => {
         throw new Error('db down');
       },
     };
@@ -131,7 +164,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
     vi.useFakeTimers();
     try {
       const deps: FulltextLexicalDupeDeps = {
-        searchIssues: () => new Promise<FulltextLexicalDupeRow[]>(() => {}), // never settles
+        searchWorkItems: () => new Promise<FulltextLexicalDupeRow[]>(() => {}), // never settles
       };
       const p = findFulltextLexicalDupes({ title: 't' }, deps);
       await vi.advanceTimersByTimeAsync(1600);
@@ -145,7 +178,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
     vi.stubEnv('PAPERCUSP_WI_FULLTEXT_DUPE', 'off');
     let touched = false;
     const deps: FulltextLexicalDupeDeps = {
-      searchIssues: async () => {
+      searchWorkItems: async () => {
         touched = true;
         return [];
       },

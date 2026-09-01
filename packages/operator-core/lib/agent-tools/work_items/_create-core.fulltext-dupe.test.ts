@@ -2,9 +2,8 @@
  * _create-core.fulltext-dupe.test — EI-19298062354262754's fulltext-lexical-dupe-guard
  * wire-in contract on createOneWorkItem: NEVER blocks (advisory-only, like the
  * recent-lexical guard); merges into the candidate set alongside anything the other
- * guards already found, deduped by id; skipped entirely under force:true; skipped
- * for feature-family kinds (feature/chunk — engineer_issues has no rows for
- * them); a null verdict (fail-open) leaves the set untouched. The guard's own
+ * guards already found, deduped by id; skipped entirely under force:true; a null
+ * verdict (fail-open) leaves the set untouched. The guard's own
  * scoring logic is covered by fulltext-lexical-dupe-guard.test.ts.
  *
  * The merged set is observed at `persistDedupEdges` — where a SUCCESSFUL create now
@@ -148,8 +147,8 @@ describe('createOneWorkItem × fulltext-lexical dupe guard (EI-19298062354262754
     expect(fulltextM).not.toHaveBeenCalled();
   });
 
-  it('passes just the title through (no harness — capture-core.ts scopes it the same way)', async () => {
-    await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
-    expect(fulltextM).toHaveBeenCalledWith({ title: 't' });
+  it('passes title and summary through for summary-aware unified dedup', async () => {
+    await createOneWorkItem({ kind: 'bug', title: 't', summary: 'body words' }, ctx);
+    expect(fulltextM).toHaveBeenCalledWith({ title: 't', summary: 'body words' });
   });
 });

@@ -36,6 +36,9 @@ export interface RevertHelpers {
     opts: { harness?: string; by?: string; allowNonCanonical?: boolean; skipCompletionGate?: boolean },
   ) => Promise<unknown>;
   setWorkItemPriority: (id: string, priority: number | null, opts: { harness?: string }) => Promise<unknown>;
+  /** P-010 Inbox bulk compensation. Optional for injected legacy/test helpers;
+   *  the built-in fails closed when the host has not wired it. */
+  revertAttentionBulkItem?: (handle: RevertHandle) => Promise<RevertOutcome>;
 }
 
 /** A reverter undoes one handle kind. MUST NOT throw for control flow — return reverted:false. */
@@ -73,6 +76,21 @@ export const BUILTIN_REVERTERS: Readonly<Record<string, Reverter>> = {
     const harness = str(h.harness) ?? undefined;
     await helpers.setWorkItemPriority(id, prior, harness ? { harness } : {});
     return { reverted: true, note: `restored work-item ${id} → priority ${prior ?? 'null'}` };
+  },
+  'attention-bulk-item': async (h, helpers) => {
+    const workspaceId = str(h.workspaceId);
+    const runId = str(h.runId);
+    const itemId = str(h.itemId);
+    if (!workspaceId || !runId || !itemId) {
+      return {
+        reverted: false,
+        note: 'attention-bulk-item handle missing workspaceId/runId/itemId',
+      };
+    }
+    if (!helpers.revertAttentionBulkItem) {
+      return { reverted: false, note: 'attention-bulk-item reverter is not wired on this host' };
+    }
+    return await helpers.revertAttentionBulkItem(h);
   },
 };
 
@@ -114,6 +132,9 @@ export function defaultRevertHelpers(): RevertHelpers {
     },
     async setWorkItemPriority(id, priority, opts) {
       return (await import('../../work-items')).setWorkItemPriority(id, priority, opts);
+    },
+    async revertAttentionBulkItem(handle) {
+      return (await import('../../attention/bulk-run-reversal')).revertAttentionBulkItemHandle(handle);
     },
   };
 }

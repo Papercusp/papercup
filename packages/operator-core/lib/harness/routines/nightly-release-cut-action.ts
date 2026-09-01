@@ -54,6 +54,25 @@ export function readDesktopVersion(desktopRoot: string): string {
   return parsed.version;
 }
 
+/** Read the desktop version from the exact submodule commit pinned by a
+ * superproject source SHA. The staging working tree may already be ahead of
+ * green main, so reading its package.json would bind a main cut to moving bytes. */
+export function readDesktopVersionAtSource(sourceRoot: string, sourceSha: string): string {
+  const treeLine = execFileSync('git', ['-C', sourceRoot, 'ls-tree', sourceSha, '--', 'papercusp-desktop'], {
+    encoding: 'utf8',
+  }).trim();
+  const match = /^160000 commit ([0-9a-f]{40})\tpapercusp-desktop$/.exec(treeLine);
+  if (!match) throw new Error(`source ${sourceSha} has no pinned papercusp-desktop gitlink`);
+  const body = execFileSync(
+    'git',
+    ['-C', path.join(sourceRoot, 'papercusp-desktop'), 'show', `${match[1]}:package.json`],
+    { encoding: 'utf8' },
+  );
+  const parsed = JSON.parse(body) as { version?: unknown };
+  if (typeof parsed.version !== 'string') throw new Error(`pinned papercusp-desktop ${match[1]} has no string version`);
+  return parsed.version;
+}
+
 export function integrationRoot(): string {
   return process.env.PAPERCUSP_INTEGRATION_ROOT ?? path.resolve(process.cwd(), '..', '..');
 }
@@ -219,7 +238,9 @@ export async function runNightlyCut(
   const sourceSha = opts.sourceSha ?? execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'main^{commit}'], { encoding: 'utf8' }).trim();
   if (!/^[0-9a-f]{40}$/.test(sourceSha)) return { status: 'skipped', reason: 'could not resolve an exact 40-character source SHA' };
   const desktopRoot = path.join(root, 'papercusp-desktop');
-  const baseVersion = (opts.readVersion ?? readDesktopVersion)(desktopRoot);
+  const baseVersion = opts.readVersion
+    ? opts.readVersion(desktopRoot)
+    : readDesktopVersionAtSource(sourceRoot, sourceSha);
   const version = nextNightlyVersion(baseVersion, opts.now);
   const invocation = buildNightlyCutInvocation(root, sourceRoot, version, sourceSha, ownerName, env);
   const lockPath = opts.lockPath ?? NIGHTLY_RELEASE_LOCK_PATH;

@@ -642,16 +642,14 @@ export async function createOneWorkItem(
         if (fresh.length > 0) similarOpen = [...(similarOpen ?? []), ...fresh];
       }
     }
-    // EI-19298062354262754: the improvements:capture-parity prescreen — the SAME
-    // full-text search-first dedup (searchIssuesForDedup + titleSimilarity /
-    // DUP_THRESHOLD) capture-core.ts already uses, reused here rather than a second
-    // divergent implementation. Advisory-only, merged into the same `similarOpen`
-    // field, deduped against anything the guards above already found. Issue-family
-    // kinds only — engineer_issues (what searchIssuesForDedup queries) has no
-    // feature/chunk rows.
+    // EI-19298062354262754: the unified work-item full-text search-first prescreen
+    // (searchWorkItems with semantic:false + title/summary Jaccard) is reused here
+    // rather than a second divergent implementation. Advisory-only, merged into the
+    // same `similarOpen` field, deduped against anything the guards above already
+    // found. It intentionally spans both work-item families.
     let fulltextDupes: SemanticDupeCandidate[] | null = null;
     if (shouldScreen && issueAdmission) {
-      fulltextDupes = await findFulltextLexicalDupes({ title: args.title });
+      fulltextDupes = await findFulltextLexicalDupes({ title: args.title, summary: args.summary });
       lexicalLeg = fulltextDupes === null ? 'unavailable' : 'ok';
       if (fulltextDupes && fulltextDupes.length > 0) {
         const seen = new Set((similarOpen ?? []).map((c) => c.id));

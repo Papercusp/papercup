@@ -186,6 +186,7 @@ export async function runRouteIdea(
       title: issue.title,
       harnessSlug,
       ...(workspaceId ? { workspaceId } : {}),
+      revisionIdentity: identity,
       rationale: buildRouteRationale({ framing: issue.body || null, sourceRef: `wi:${issue.id}` }),
     });
     const planRef = `plan:${slug}`;
@@ -228,6 +229,7 @@ export async function runRouteIdea(
     title: d.title,
     harnessSlug,
     ...(workspaceId ? { workspaceId } : {}),
+    revisionIdentity: identity,
     rationale: buildRouteRationale({
       framing: d.framing,
       mechanism: d.mechanism,

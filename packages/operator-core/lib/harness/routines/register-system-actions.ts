@@ -335,6 +335,17 @@ import './gc-dead-loops-action';
 // read-only loop:status tool). Auto-pause + a single fleet-wide broadcast naming
 // every disarmed owner (a cluster is usually one systemic event, not N failures).
 import './stalled-loops-action';
+// `system:reconcile-silent-halts` — the STRANDED-WORK sibling of the two loop-liveness sweeps
+// (WI-35718). sweep-stalled-loops acts on ARMED loops that stopped producing turns;
+// unguarded-halt-rescue WAKES a halted session when there is a reason to (fleet active, load 0,
+// work claimable). Neither covers a halted session that HOLDS a claimed work-item — that is
+// unguarded-halt-rescue's conjunct (2) excluding it by design, and it is the case where the harm
+// is concrete rather than speculative: the owner is heartbeat-fresh so the dead-owner claim
+// reaper will not reclaim the item, and the session takes no turns so nothing advances it. The
+// item sits claimed and unworkable whether the agent is recoverable OR abandoned — which is why
+// this is the one case that does not require resolving that distinction. Pages the OWNER (never
+// the halted agent's inbox, which does not wake a session) and touches no loop.
+import './silent-halt-action';
 // `system:sweep-wedged-pty-hosts` — the LIVENESS sibling of sweep-stalled-loops above
 // (EI-20287339148365013). That one keys on ARMED LOOPS, so it cannot see a session that
 // never armed one — and a psu-pty host whose owner-composer wedges defers every wake
@@ -454,6 +465,10 @@ import './autonomy-trust-scan-action';
 // direction that hands out blocked work — was going unobserved.
 import './readiness-drift-monitor-action';
 import './cargo-test-action';
+// WI-36794: daily Linux GUI-only nightly release cut. The action returns after
+// launching the long build through managedSpawn, so the durable routine step stays
+// short while the child remains tracked and resource-capped.
+import './nightly-release-cut-action';
 // p2p-git-live-activation-2026-07-09 P-205 (G-9): `system:pot-git-gc` — the
 // ephemeral (tier:'ephemeral') per-hive-home cadence bounding a hive-git bare
 // store's namespace-ref growth. Self-gates on `hiveGit.mode` (a no-op for

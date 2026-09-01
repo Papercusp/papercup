@@ -12,6 +12,7 @@ import {
   SILENT_HALT_HEARTBEAT_FRESH_MS,
   SILENT_HALT_MAX_PAGES_PER_SWEEP,
   type SilentHaltCandidate,
+  type SilentHaltSweepDeps,
 } from './silent-halt-reconcile';
 
 const MIN = 60 * 1000;
@@ -26,6 +27,7 @@ function haltedInput(over: Partial<Parameters<typeof evaluateSilentHalt>[0]> = {
     lastRealTurnAgeMs: 120 * MIN,
     inactiveForMs: 120 * MIN,
     intervalSec: 60,
+    heldWorkItems: 1,
     ...over,
   };
 }
@@ -49,6 +51,22 @@ describe('evaluateSilentHalt', () => {
     const v = evaluateSilentHalt(haltedInput({ heartbeatAgeMs: null }));
     expect(v.halted).toBe(false);
     expect(v.exemption).toMatch(/no-presence-row/);
+  });
+
+  it('BOUNDARY (unguarded-halt-rescue) — a load-0 halt is NOT ours; that module wakes it', () => {
+    // unguarded-halt-rescue-action.ts (2026-07-26) targets exactly the load-0 population and
+    // WAKES it, which beats bothering a human. Double-reporting it here would be noise. This
+    // test is the seam between the two modules: if it ever fails, they have started overlapping.
+    const v = evaluateSilentHalt(haltedInput({ heldWorkItems: 0 }));
+    expect(v.halted).toBe(false);
+    expect(v.exemption).toMatch(/holds-no-work/);
+  });
+
+  it('held work is what JUSTIFIES the page — the strand is real either way', () => {
+    // The one case that survives the abandoned-vs-halted ambiguity without resolving it: a
+    // heartbeat-fresh owner is not reclaimed by the dead-owner reaper, and a session taking no
+    // turns will not advance the item, so it is stuck whichever the agent turns out to be.
+    expect(evaluateSilentHalt(haltedInput({ heldWorkItems: 2 })).halted).toBe(true);
   });
 
   it('a stale heartbeat means the process is gone, not halted', () => {
@@ -132,7 +150,7 @@ function sweepHarness(
           nowMs,
           readCandidates: async () => candidates,
           readLoopStatuses: (async () => new Map(Object.entries(statuses))) as never,
-          notify,
+          notify: notify as unknown as SilentHaltSweepDeps['notify'],
         },
       }),
   };
@@ -147,6 +165,7 @@ function candidate(over: Partial<SilentHaltCandidate> = {}): SilentHaltCandidate
     heartbeatAgeMs: 30 * 1000,
     inactiveForMs: 120 * MIN,
     pendingAwaits: 0,
+    heldWorkItems: 1,
     modes: [{ mode: 'auto' }],
     ...over,
   };
