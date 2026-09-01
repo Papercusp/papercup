@@ -53,7 +53,7 @@ import { summarizeStreakCause, type StreakCauseDigest, type StreakTick } from '.
 // this module never got that treatment because the tag was believed to live in apps/operator. It
 // does not — it lives in operator-core (checkpoint-log-tags.ts, moved down by
 // EI-19395755190419540), i.e. in THIS package, so the funnel is a plain relative import.
-import { orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
+import { GREEN_CHECKPOINT_RESULT_MARKER, orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
 import { classifyGateAbort, isRecordedInconclusiveStatus } from '../../release/gate-abort-status';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import { admitCheckpointMemory } from '../../release/checkpoint-memory-admission';
@@ -101,10 +101,9 @@ export { buildIsolatedScopeArgv };
 export { CHECKPOINT_FORKS_BY_MODE, checkpointScopeMemoryMaxG };
 
 /** Markers the release CLIs print their result JSON behind (P-008) — parse ONE delimited
- *  line instead of brace-slicing all of stdout (fragile to any log line with braces). MUST
- *  match the literals in green-checkpoint.ts / deploy-cli.ts (operator-core cannot import
- *  the apps/operator tier, so the contract is duplicated by value). */
-const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+ *  line instead of brace-slicing all of stdout (fragile to any log line with braces).
+ *  The checkpoint marker comes from the zero-import shared leaf; DEPLOY_PLAN_MARKER remains
+ *  local because its producer has no second operator-core consumer. */
 const DEPLOY_PLAN_MARKER = '__DEPLOY_PLAN__';
 
 /** Parse the JSON on the line carrying `marker`, or null if absent/unparseable. */
