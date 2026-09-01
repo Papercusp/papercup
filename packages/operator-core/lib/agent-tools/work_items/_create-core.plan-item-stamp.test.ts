@@ -39,6 +39,7 @@ vi.mock('../../work-items', () => ({
   getWorkItem: vi.fn(async () => null),
   linkWorkItem: (...args: unknown[]) => linkWorkItemMock(...(args as [never])),
   isWorkItemKind: (k: string) => ['feature', 'chunk', 'bug', 'change', 'task'].includes(k),
+  isDeprecatedWorkItemKind: (k: string) => k === 'chunk',
   familyOf: (k: string) => (['bug', 'change', 'task'].includes(k) ? 'issue' : 'feature'),
   ensureClaimHoldAttribution: (payload: unknown) => payload,
 }));
