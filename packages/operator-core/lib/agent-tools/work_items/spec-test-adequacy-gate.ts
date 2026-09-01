@@ -290,7 +290,9 @@ export async function specTestAdequacyCompletionGate(
       reason:
         `current spec-test-adequacy attestation required for ${potentiallyTestRequiring
           .map((clause) => `${clause.specId}@${clause.revision}`)
-          .join(', ')}; pass specAdequacy.classRef and current evidence fingerprints`,
+          .join(', ')}; pass a TOP-LEVEL \`specAdequacy\` argument to work_items:complete — a SIBLING of ` +
+        `\`completion\`, never nested inside it (\`completion.specAdequacy\` is rejected) — with ` +
+        `\`classRef\` and current evidence fingerprints`,
     });
   }
 
