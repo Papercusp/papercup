@@ -132,6 +132,31 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
       ),
     ).toEqual({ paths: ['source.ts'], groups: [] });
   });
+
+  it('requires both the lock owner and work-item to match before expanding a cohort', () => {
+    const attribution = new Map<string, FileAttribution>([
+      ['source.ts', { agent: 'su-peer', workItems: ['WI-atomic'] }],
+      ['source.test.ts', { agent: 'su-peer', workItems: ['WI-atomic'] }],
+      ['other-work.ts', { agent: 'su-peer', workItems: ['WI-other'] }],
+      ['other-owner.ts', { agent: 'su-other', workItems: ['WI-atomic'] }],
+    ]);
+
+    expect(
+      expandAtomicLiveLockExclusions(
+        ['source.ts', 'source.test.ts', 'other-work.ts', 'other-owner.ts'],
+        [{ path: 'source.ts', owner: 'su-peer', intent: 'editing source', goalRef: 'WI-atomic' }],
+        attribution,
+      ),
+    ).toEqual({
+      paths: ['source.test.ts', 'source.ts'],
+      groups: [{
+        key: JSON.stringify(['su-peer', 'WI-atomic']),
+        owner: 'su-peer',
+        goalRef: 'WI-atomic',
+        paths: ['source.test.ts', 'source.ts'],
+      }],
+    });
+  });
 });
 
 describe('git-sync commit identity', () => {
