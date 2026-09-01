@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { exportParityProblems, formatProblems } from './lib/declaration-export-parity.js';
+import { orphanedJsdocProblems, formatOrphanedJsdoc } from './lib/orphaned-jsdoc.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CONFIG = 'tsconfig.declarations.json';
@@ -244,6 +245,26 @@ export function check(repoRoot = REPO_ROOT, config = CONFIG): void {
           `${CONFIG} — for these modules generation emits a WEAKER type than the\n` +
           `hand-written declaration; the measurement is in the header of\n` +
           `scripts/lib/declaration-export-parity.ts.)`,
+      );
+      process.exit(1);
+    }
+
+    // A JSDoc block stranded before ANOTHER JSDoc block documents nothing, so tsc infers the
+    // signature and the emit above is DEGRADED but self-consistent — the byte-compare cannot
+    // see it, and once committed it stays "up to date" forever (EI-19448039697242208).
+    const orphaned = formatOrphanedJsdoc(
+      orphanedJsdocProblems(
+        new Map(declaredInputs.map((mjs) => [mjs, readFileSync(join(repoRoot, mjs), 'utf8')])),
+      ),
+    );
+    if (orphaned.length) {
+      console.error(
+        `✗ orphaned JSDoc — these blocks document a signature but are followed by another\n` +
+          `  doc block, so their types are silently dropped:\n   ${orphaned.join('\n   ')}`,
+      );
+      console.error(
+        `\nMove each block to sit immediately above the function it documents, then run\n` +
+          `\`npm run gen:declarations\` and commit the result.`,
       );
       process.exit(1);
     }
