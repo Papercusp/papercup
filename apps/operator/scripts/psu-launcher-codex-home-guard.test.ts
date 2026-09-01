@@ -23,14 +23,24 @@
  * Run: cd apps/operator && npx vitest run scripts/psu-launcher-codex-home-guard.test.ts
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  lstatSync,
+  symlinkSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   codexGatewayConfigPatch,
   codexRolloutModelProvider,
+  codexResumeAccountRouteError,
   codexAuthJsonReady,
   codexFreshDefaultAuthPreflight,
+  reconcileCodexSystemAuth,
   isCodexHomeLaunchReady,
 } from './psu-launcher.mjs';
 
@@ -103,6 +113,79 @@ describe('codexFreshDefaultAuthPreflight — headless default launches need loca
   });
 });
 
+describe('reconcileCodexSystemAuth — one interactive login survives later PSU launches', () => {
+  const auth = (lastRefresh: string, marker: string) => JSON.stringify({
+    auth_mode: 'chatgpt',
+    last_refresh: lastRefresh,
+    tokens: {
+      access_token: `access-${marker}`,
+      refresh_token: `refresh-${marker}`,
+      account_id: 'same-account',
+    },
+  });
+  const sessionAuth = (name: string) =>
+    join(dir, '.papercusp', 'su-codex-homes', name, 'auth.json');
+  const globalAuth = () => join(dir, '.codex', 'auth.json');
+  const writeSession = (name: string, raw: string) => {
+    mkdirSync(join(dir, '.papercusp', 'su-codex-homes', name), { recursive: true });
+    writeFileSync(sessionAuth(name), raw, { mode: 0o600 });
+  };
+
+  it('promotes only the newest complete real-file login when the canonical login is missing', () => {
+    writeSession('session-old', auth('2026-09-01T01:00:00Z', 'old'));
+    writeSession('session-new', auth('2026-09-01T02:00:00Z', 'new'));
+    writeSession('session-partial', JSON.stringify({
+      auth_mode: 'chatgpt',
+      last_refresh: '2026-09-01T03:00:00Z',
+      tokens: { access_token: 'partial-no-refresh' },
+    }));
+
+    const result = reconcileCodexSystemAuth({ home: dir });
+
+    expect(result).toEqual({
+      promoted: true,
+      reason: 'recovered-missing-system-login',
+      sourceSession: 'session-new',
+    });
+    expect(readFileSync(globalAuth(), 'utf8')).toBe(auth('2026-09-01T02:00:00Z', 'new'));
+    expect(lstatSync(globalAuth()).mode & 0o777).toBe(0o600);
+    expect(JSON.stringify(result)).not.toContain('access-new');
+    expect(JSON.stringify(result)).not.toContain('refresh-new');
+  });
+
+  it('promotes a newer isolated refresh but never rolls a newer canonical login backward', () => {
+    mkdirSync(join(dir, '.codex'), { recursive: true });
+    writeFileSync(globalAuth(), auth('2026-09-01T02:00:00Z', 'global'), { mode: 0o600 });
+    writeSession('session-newer', auth('2026-09-01T03:00:00Z', 'newer'));
+
+    expect(reconcileCodexSystemAuth({ home: dir })).toEqual({
+      promoted: true,
+      reason: 'newer-isolated-login',
+      sourceSession: 'session-newer',
+    });
+    expect(readFileSync(globalAuth(), 'utf8')).toContain('access-newer');
+
+    writeSession('session-stale', auth('2026-09-01T01:00:00Z', 'stale'));
+    expect(reconcileCodexSystemAuth({ home: dir })).toEqual({
+      promoted: false,
+      reason: 'canonical-current',
+    });
+    expect(readFileSync(globalAuth(), 'utf8')).toContain('access-newer');
+  });
+
+  it('ignores auth symlinks so the canonical file is never copied back onto itself', () => {
+    mkdirSync(join(dir, '.codex'), { recursive: true });
+    writeFileSync(globalAuth(), auth('2026-09-01T02:00:00Z', 'global'), { mode: 0o600 });
+    mkdirSync(join(dir, '.papercusp', 'su-codex-homes', 'session-link'), { recursive: true });
+    symlinkSync(globalAuth(), sessionAuth('session-link'));
+
+    expect(reconcileCodexSystemAuth({ home: dir })).toEqual({
+      promoted: false,
+      reason: 'canonical-current',
+    });
+  });
+});
+
 describe('launchFreshSu — preflights the exact fresh Codex home before spawning', () => {
   it('runs the default-account headless auth preflight before runWrapper', () => {
     const source = readFileSync(
@@ -110,10 +193,13 @@ describe('launchFreshSu — preflights the exact fresh Codex home before spawnin
       'utf8',
     );
     const body = source.slice(source.indexOf('async function launchFreshSu('));
+    const reconcile = body.indexOf('reconcileCodexSystemAuth()');
     const bootstrap = body.indexOf('const res = await api("/api/agent-mcp/console/bootstrap-su"');
     const preflight = body.indexOf('codexFreshDefaultAuthPreflight({', bootstrap);
     const spawn = body.indexOf('runWrapper({', preflight);
 
+    expect(reconcile).toBeGreaterThan(-1);
+    expect(reconcile).toBeLessThan(bootstrap);
     expect(bootstrap).toBeGreaterThan(-1);
     expect(preflight).toBeGreaterThan(bootstrap);
     expect(body.slice(preflight, spawn)).toContain('headless: args.headless');
@@ -301,6 +387,43 @@ describe('codexGatewayConfigPatch — a default-mode RESUME must not strip a bou
 
   it('keepExistingWhenUnrouted on an EMPTY config yields empty (nothing to preserve)', () => {
     expect(codexGatewayConfigPatch('', null, { gatewayOn: false, keepExistingWhenUnrouted: true })).toBe('');
+  });
+});
+
+describe('codexResumeAccountRouteError — an account choice may not lie about the rollout provider', () => {
+  it('refuses default for a gateway-born thread and gives both truthful routes', () => {
+    const error = codexResumeAccountRouteError(
+      'papercusp-codex-gateway',
+      { mode: 'default' },
+      { sessionId: 'thread-gateway' },
+    );
+    expect(error).toContain('cannot resume Codex thread thread-gateway on the default system account');
+    expect(error).toContain('Your account choice was NOT applied');
+    expect(error).toContain('--account=auto');
+    expect(error).toContain('psu --agent=codex --account=system');
+  });
+
+  it('allows gateway routes for a gateway-born thread', () => {
+    expect(codexResumeAccountRouteError('papercusp-codex-gateway', { mode: 'auto' })).toBe(null);
+    expect(codexResumeAccountRouteError('papercusp-codex-gateway', { mode: 'pin' })).toBe(null);
+  });
+
+  it('refuses gateway routing for a direct-system thread, including native fork', () => {
+    const error = codexResumeAccountRouteError(
+      'openai',
+      { mode: 'auto' },
+      { fork: true, sessionId: 'thread-direct' },
+    );
+    expect(error).toContain('cannot fork Codex thread thread-direct through the inference gateway');
+    expect(error).toContain("direct provider 'openai'");
+    expect(error).toContain('Resume this thread with --account=system');
+    expect(error).toContain('psu --agent=codex --account=auto');
+    expect(codexResumeAccountRouteError('openai', { mode: 'default' })).toBe(null);
+  });
+
+  it('does not invent a restriction for legacy rollouts with no provider binding', () => {
+    expect(codexResumeAccountRouteError(null, { mode: 'default' })).toBe(null);
+    expect(codexResumeAccountRouteError(null, { mode: 'auto' })).toBe(null);
   });
 });
 
