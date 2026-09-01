@@ -129,6 +129,7 @@ function actionLabel(
   item: AttentionItem | undefined,
   runItem: BulkRunItem,
 ): string {
+  if (runItem.revertedAt) return "Reverted";
   const action = runItem.actionId;
   if (runItem.recommendationLabel) return runItem.recommendationLabel;
   if (action) {
@@ -141,6 +142,35 @@ function actionLabel(
   if (runItem.outcome === "skipped") return "Skipped";
   if (runItem.outcome === "failed") return "Failed";
   return "Resolved";
+}
+
+export function bulkUndoAvailability(
+  item: Pick<
+    BulkRunItem,
+    "outcome" | "revertHandle" | "reversalWindowUntil" | "revertedAt"
+  >,
+  nowMs = Date.now(),
+): { available: boolean; reason?: string } {
+  if (item.revertedAt)
+    return { available: false, reason: "This action was already reverted." };
+  if (item.outcome !== "auto_resolved" || !item.revertHandle) {
+    return {
+      available: false,
+      reason:
+        "Only an auto-applied action with a compensation handle can be undone.",
+    };
+  }
+  const deadline = item.reversalWindowUntil
+    ? Date.parse(item.reversalWindowUntil)
+    : Number.NaN;
+  if (!Number.isFinite(deadline))
+    return {
+      available: false,
+      reason: "This historical action has no undo deadline.",
+    };
+  if (deadline <= nowMs)
+    return { available: false, reason: "The bounded undo window has expired." };
+  return { available: true };
 }
 
 function reviewStatus(
@@ -633,6 +663,7 @@ export default function InboxBulkReport({
     acceptRecommendation,
     dismissItem,
     reconcileItem,
+    undoItem,
     resume,
     restart,
     stop,
@@ -821,6 +852,30 @@ export default function InboxBulkReport({
     [busy, clearItemError, onClose, reconcileItem, run.runId],
   );
 
+  const undoOne = useCallback(
+    async (runItem: BulkRunItem) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        const result = await undoItem(run.runId, runItem.itemId);
+        if (!result.ok) {
+          setLocalErrors((previous) =>
+            new Map(previous).set(
+              runItem.itemId,
+              result.error ?? "The action could not be undone.",
+            ),
+          );
+          return;
+        }
+        clearItemError(runItem.itemId);
+        setNotice(`Reverted ${runItem.title ?? runItem.itemId}.`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, clearItemError, run.runId, undoItem],
+  );
+
   // P-008: Inbox already HAD Retry/Dismiss/Reconcile — buried in a drill-in
   // that only mounts for `pending` rows carrying a hydrated snapshot, so the
   // rows that most needed recovery (no snapshot, already failed) had none.
@@ -834,6 +889,11 @@ export default function InboxBulkReport({
       // handlers — never the wording. Plans' `recheck` is one line away here
       // rather than a re-implementation.
     ): ReviewRowMenuAction[] => [
+      reviewRowControl("undo", {
+        disabled: !bulkUndoAvailability(runItem).available,
+        disabledReason: bulkUndoAvailability(runItem).reason,
+        run: () => void undoOne(runItem),
+      }),
       reviewRowControl("apply-one", {
         disabled: !item || runItem.outcome !== "recommended",
         disabledReason: !item
@@ -867,7 +927,7 @@ export default function InboxBulkReport({
         run: () => void dismissOne(runItem),
       }),
     ],
-    [acceptSingle, dismissOne, onOpenThread, reconcileOne, retryItem],
+    [acceptSingle, dismissOne, onOpenThread, reconcileOne, retryItem, undoOne],
   );
 
   const groups = useMemo(

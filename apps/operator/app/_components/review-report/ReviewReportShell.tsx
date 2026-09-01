@@ -256,6 +256,7 @@ export const REVIEW_ROW_CONTROLS = {
     label: (subject: string) => `Reconcile with the live ${subject}`,
   },
   retry: { label: () => "Send back to the resolver" },
+  undo: { label: () => "Undo this applied action" },
   dismiss: {
     label: (subject: string) => `Dismiss this ${subject}`,
     tone: "danger" as const,
