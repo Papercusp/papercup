@@ -450,6 +450,7 @@ function compactMember(value: unknown): unknown {
         'load',
         'stalled',
         'contextPressure',
+        'contextPressureAgeSec',
         'dormant',
         'spinning',
         'isSelf',
