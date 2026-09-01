@@ -81,6 +81,7 @@ import {
   createCodexOAuthKernelAdapter,
   type CodexOAuthFetchResponse,
 } from './codex-oauth-kernel-adapter';
+import { decideThrottleRecovery, shapeTerminalThrottle } from './throttle-recovery-ladder';
 import {
   createCodexCliKernelAdapter,
   type CodexCliChunk,
@@ -4866,48 +4867,45 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const retryIntent = classification !== null && classification.kind !== 'forward';
 
                 if (retryIntent) {
-                  // A genuinely transient throttle resets within the recovery cap; a
-                  // usage cap or org pause is hours out and is never waited on.
-                  const transient =
-                    lastExhaustResetAt > 0 &&
-                    lastExhaustResetAt - Date.now() <= ALL_THROTTLED_RECOVERY_WAIT_CAP_MS;
-                  const waitMs = Math.min(
-                    Math.max(0, lastExhaustResetAt - Date.now()),
-                    ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
-                    // Never wait PAST the wedge-prevention deadline.
-                    Math.max(0, retryDeadlineAt - Date.now()),
-                  );
+                  const decision = decideThrottleRecovery({
+                    status,
+                    retryIntent,
+                    lastExhaustResetAt,
+                    state: {
+                      transientWaitedMs,
+                      retryDeadlineAt,
+                      absorbDeadlineAt,
+                      headersSent: res.headersSent,
+                    },
+                    budgets: {
+                      waitCapMs: ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+                      transientTotalWaitBudgetMs: TRANSIENT_TOTAL_WAIT_BUDGET_MS,
+                      overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
+                    },
+                  });
                   const base: Omit<Intercept, 'action' | 'waitMs' | 'backoffMs'> = {
                     status,
                     outHeaders,
                     peeked: metadata.peekedBody ?? '',
-                    transient,
+                    transient: decision.transient,
                   };
                   // (1) BOUNDED TRANSIENT WAIT. Rotation could not help, but the
                   // throttle is SHORT and capacity exists — wait the penalty out and
                   // retry the recovered account on this same slot.
-                  if (
-                    transient &&
-                    waitMs > 0 &&
-                    transientWaitedMs + waitMs <= TRANSIENT_TOTAL_WAIT_BUDGET_MS &&
-                    Date.now() < retryDeadlineAt
-                  ) {
-                    interception.taken = { ...base, action: 'wait', waitMs, backoffMs: 0 };
+                  if (decision.action === 'wait') {
+                    interception.taken = { ...base, action: 'wait', waitMs: decision.waitMs, backoffMs: 0 };
                     throw INTERCEPT;
                   }
                   // (2) EXTENDED ABSORPTION. Release the slot (the wait below holds
                   // NONE, so it cannot wedge), wait the throttle out, re-acquire on
                   // the pool's current best, and retry — so the caller WAITS and
                   // succeeds instead of receiving an error.
-                  if (absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
+                  if (decision.action === 'absorb') {
                     interception.taken = {
                       ...base,
                       action: 'absorb',
                       waitMs: 0,
-                      // A 529 does not rate-pause the account, so its re-acquire
-                      // would return immediately → back off first. A rate-429's
-                      // re-acquire already waits out the account's penalty.
-                      backoffMs: status === 529 ? OVERLOAD_529_BACKOFF_MS : 0,
+                      backoffMs: decision.backoffMs,
                     };
                     throw INTERCEPT;
                   }
@@ -4964,8 +4962,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 // forward a raw upstream `x-should-retry: true` that invites a
                 // downstream SDK to retry a terminal condition silently forever.
                 if (status === 429 || status === 529) {
-                  outHeaders['x-should-retry'] = 'false';
-                  outHeaders[RETRIES_EXHAUSTED_HEADER] = String(attemptsUsed);
+                  Object.assign(
+                    outHeaders,
+                    shapeTerminalThrottle({
+                      attempts: attemptsUsed,
+                      retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+                      suppressClientRetry: true,
+                    }).headers,
+                  );
                   log(
                     'warn',
                     `inference-gateway: upstream ${status} on '${metadata.accountId}' for ${model} was not rescued (retry-intent=${retryIntent}) after ${attemptsUsed} attempt(s) — forwarding terminal ${status} with x-should-retry=false`,
@@ -5174,8 +5178,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // and name the attempt count so "slow" is distinguishable from
               // "never" without grepping the gateway log.
               if (taken.status === 429 || taken.status === 529) {
-                taken.outHeaders['x-should-retry'] = 'false';
-                taken.outHeaders[RETRIES_EXHAUSTED_HEADER] = String(attemptsUsed);
+                Object.assign(
+                  taken.outHeaders,
+                  shapeTerminalThrottle({
+                    attempts: attemptsUsed,
+                    retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+                    suppressClientRetry: true,
+                  }).headers,
+                );
                 log(
                   'warn',
                   `inference-gateway: upstream ${taken.status} retry ladder EXHAUSTED on '${active.accountId}' for ${model} after ${attemptsUsed} attempt(s) — forwarding terminal ${taken.status} with x-should-retry=false`,

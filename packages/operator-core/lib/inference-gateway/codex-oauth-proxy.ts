@@ -38,6 +38,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { parseBridgeModel } from './codex-cli-bridge';
+import { parseProviderReset } from './provider-reset';
 
 /** The ChatGPT backend that serves codex Responses for ChatGPT-subscription auth. */
 export const CODEX_CHATGPT_BACKEND_BASE =
@@ -892,8 +893,8 @@ export function parseCodexRateReset(
   const lower: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(h)) lower[key.toLowerCase()] = value;
   let retryAfterMs: number | null = null;
-  const ra = lower['retry-after'];
-  if (ra && /^\d+$/.test(ra.trim())) retryAfterMs = Number(ra.trim()) * 1000;
+  const retryAfterAt = parseProviderReset(lower['retry-after'], nowMs);
+  if (retryAfterAt !== undefined && retryAfterAt > nowMs) retryAfterMs = retryAfterAt - nowMs;
 
   const windows = parseCodexRateLimitHeaders(lower, nowMs);
   let walledResetAt: number | null = null;
@@ -908,7 +909,37 @@ export function parseCodexRateReset(
   consider(windows.utilization, windows.windowResetAt);
   consider(windows.utilization7d, windows.windowResetAt7d);
 
-  let resetAt: number | null = walledResetAt;
+  // api.openai.com's bearer lane speaks the generic OpenAI dialect rather than
+  // the ChatGPT subscription's x-codex-* windows. Reset values are durations
+  // (`1s`, `6m0s`, `250ms`) and a zero remaining meter names the exhausted
+  // window. As above, if both request and token meters are exhausted, the
+  // account is not serviceable until BOTH clear, so the later reset wins.
+  let transientResetAt: number | null = null;
+  const considerOpenAi = (remainingRaw: string | undefined, resetRaw: string | undefined) => {
+    const remainingText = remainingRaw?.trim();
+    const remaining = remainingText && /^-?\d+(?:\.\d+)?$/.test(remainingText) ? Number(remainingText) : null;
+    const resetAt = parseProviderReset(resetRaw, nowMs);
+    if (remaining !== null && Number.isFinite(remaining) && remaining <= 0) {
+      sawExhausted = true;
+      if (resetAt !== undefined && resetAt > nowMs) {
+        walledResetAt = walledResetAt === null ? resetAt : Math.max(walledResetAt, resetAt);
+      }
+      return;
+    }
+    // A 429 without a zero-remaining marker is a pacing/burst throttle. Preserve
+    // its real boundary for the bounded-wait rung without relabelling it a wall.
+    if (resetAt !== undefined && resetAt > nowMs) {
+      transientResetAt = transientResetAt === null ? resetAt : Math.max(transientResetAt, resetAt);
+    }
+  };
+  considerOpenAi(lower['x-ratelimit-remaining-requests'], lower['x-ratelimit-reset-requests']);
+  considerOpenAi(lower['x-ratelimit-remaining-tokens'], lower['x-ratelimit-reset-tokens']);
+  const genericResetAt = parseProviderReset(lower['x-ratelimit-reset'], nowMs);
+  if (genericResetAt !== undefined && genericResetAt > nowMs) {
+    transientResetAt = transientResetAt === null ? genericResetAt : Math.max(transientResetAt, genericResetAt);
+  }
+
+  let resetAt: number | null = walledResetAt ?? transientResetAt;
   if (retryAfterMs !== null) {
     const fromRetryAfter = nowMs + retryAfterMs;
     resetAt = resetAt === null ? fromRetryAfter : Math.max(resetAt, fromRetryAfter);

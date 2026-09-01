@@ -554,6 +554,53 @@ describe('parseCodexRateReset — the codex-dialect 429 reset parser (WI-2038027
     expect(r.transient).toBe(true);
   });
 
+  it('api.openai.com request exhaustion parses a sub-second x-ratelimit duration as a wall', () => {
+    const r = parseCodexRateReset(
+      {
+        'x-ratelimit-remaining-requests': '0',
+        'x-ratelimit-reset-requests': '250ms',
+        'x-ratelimit-remaining-tokens': '42',
+        'x-ratelimit-reset-tokens': '6m0s',
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBe(NOW + 250);
+    expect(r.transient).toBe(false);
+  });
+
+  it('api.openai.com waits for BOTH exhausted meters — the later compound duration wins', () => {
+    const r = parseCodexRateReset(
+      {
+        'x-ratelimit-remaining-requests': '0',
+        'x-ratelimit-reset-requests': '1s',
+        'x-ratelimit-remaining-tokens': '0',
+        'x-ratelimit-reset-tokens': '6m0s',
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBe(NOW + 360_000);
+    expect(r.transient).toBe(false);
+  });
+
+  it('api.openai.com reset evidence without a zero meter stays transient and waitable', () => {
+    const r = parseCodexRateReset(
+      {
+        'x-ratelimit-remaining-requests': '7',
+        'x-ratelimit-reset-requests': '1s',
+      },
+      NOW,
+    );
+    expect(r.resetAt).toBe(NOW + 1_000);
+    expect(r.transient).toBe(true);
+  });
+
+  it('retry-after accepts the same duration dialect without misreading milliseconds as minutes', () => {
+    const r = parseCodexRateReset({ 'retry-after': '250ms' }, NOW);
+    expect(r.retryAfterMs).toBe(250);
+    expect(r.resetAt).toBe(NOW + 250);
+    expect(r.transient).toBe(true);
+  });
+
   it('retry-after floors a window-derived reset upward, never shortens it', () => {
     const r = parseCodexRateReset(
       {
