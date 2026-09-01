@@ -359,10 +359,16 @@ export async function assertStagedSeedCarriesNoIdentity(inp: {
   });
   const merged = new Map<IdentityKey, string>(machine);
   const known = new Set([...machine.values()].map((v) => v.toLowerCase()));
+  // The neutral label is the FIX, not an identity (see resolveIdentityLiterals) — but it can
+  // arrive HERE through the release set: audit-release-bundle.py's live hostname probe runs
+  // inside the UTS child and reports the neutral label, and the projection's redact list keeps
+  // it. Cut #4 (2026-09-01) red-ed on exactly that — `release-literal:2` = 'papercusp-build'
+  // at rocksdb.creating.host.identity in 4 SSTs, after a 3h scan. Fold it here as well.
+  const neutral = inp.neutralHostname.trim().toLowerCase();
   let n = 0;
   for (const lit of inp.extraLiterals ?? []) {
     const v = lit.trim();
-    if (v.length < 3 || known.has(v.toLowerCase())) continue;
+    if (v.length < 3 || known.has(v.toLowerCase()) || v.toLowerCase() === neutral) continue;
     known.add(v.toLowerCase());
     merged.set(`release-literal:${n++}`, v);
   }

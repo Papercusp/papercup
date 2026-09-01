@@ -259,6 +259,33 @@ describe('assertStagedSeedCarriesNoIdentity', () => {
     }
   });
 
+  it('never hunts the NEUTRAL label when it arrives through the release set (cut #4, 2026-09-01)', async () => {
+    // audit-release-bundle.py --identity-literals runs inside the UTS child, so its live
+    // hostname probe reports the neutral label and the projection's redact list carries it
+    // into extraLiterals. A correctly-neutralized SST stamps that label into
+    // rocksdb.creating.host.identity on purpose — hunting it reds every clean cut.
+    const dir = await stageDir({ 'corestore/db/000009.sst': binaryBody(`host.identity${NEUTRAL}`) });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const v = await assertStagedSeedCarriesNoIdentity({
+        dir,
+        neutralHostname: NEUTRAL,
+        env: {},
+        probe,
+        extraLiterals: [NEUTRAL, NEUTRAL.toUpperCase(), 'zqxhandle'],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.literalKeys).toContain('release-literal:0'); // zqxhandle is still hunted
+      expect(v.literalKeys).not.toContain('release-literal:1'); // both neutral spellings folded
+    } finally {
+      warn.mockRestore();
+    }
+    // NON-VACUITY: the same bytes with a real host in the release set still red.
+    await expect(
+      assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: 'other-neutral', env: {}, probe, extraLiterals: [NEUTRAL] }),
+    ).rejects.toThrow(/release-literal:0@/);
+  });
+
   it('passes a neutralized seed AND says on stderr what it measured', async () => {
     const dir = await stageDir({
       'corestore/db/000009.sst': binaryBody(`host.identity${NEUTRAL}`),
