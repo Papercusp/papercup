@@ -30732,7 +30732,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You are gating an item — verifying, awaiting evidence, or keeping a recurring/leader item alive — and peers must neither close it nor self-select it while you do. Your claim stays; work continues.",
-        "notWhen": "You are WALKING AWAY from the item, or the fence must OUTLIVE your session — that is work_items:park (checkpoint + release) or release { claimHold:true } (release + hold). Blocked on a dependency → set_state{blocked}. Done → complete (a holder completing their own held item is allowed).",
+        "notWhen": "You are WALKING AWAY from the item, or the fence must OUTLIVE your session — that is work_items:park (checkpoint + release) or release { claimHold:true } (release + hold). Blocked on an external event/gate/runtime/human condition → work_items:set_blocker. Blocked by another work-item → work_items:link { rel:\"blocks\" }. Done → complete (a holder completing their own held item is allowed).",
         "chaining": "work_items:hold_open { id, reason } → work → complete/set_state yourself (holder passes the guard), or hold_open { id, clear:true } to hand it back to normal lifecycle."
       }
     },
@@ -30958,7 +30958,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You are deliberately shelving in-flight work to pick something else up (a redirect, a higher-priority item, end of a stint) and intend it to be RESUMED — by you or anyone. The checkpoint should let a cold successor continue without re-deriving: done / left / approach / gotchas.",
-        "notWhen": "The item is DONE (work_items:complete), blocked on a dependency (work_items:set_state{blocked} with the reason), or you are abandoning it as wrong/obsolete (set_state{dropped}). Park = \"good work, paused on purpose\".",
+        "notWhen": "The item is DONE (work_items:complete), blocked on an external condition (work_items:set_blocker records the typed reason), blocked by another work-item (work_items:link { rel:\"blocks\" } records the dependency), or you are abandoning it as wrong/obsolete (set_state{dropped}). Park = \"good work, paused on purpose\".",
         "chaining": "work_items:park { id, checkpoint, reason } → later work_items:claim/pickup re-injects the checkpoint. For a do-not-self-select shelf add work_items:release { claimHold:true } semantics via a follow-up release call."
       }
     },
@@ -31482,7 +31482,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Use for lifecycle changes. Prefer work_items:complete for terminal evidence. Batch with { ids:[…], state } or items[]. Before state:\"blocked\", record a typed external blocker with work_items:set_blocker (event/gate/runtime/human), or link an internal dependency with work_items:link { rel:\"blocks\" }; a bare blocked state is refused. Plan-linked feature blocks use plans:set-status; needs-human/blocked exclude from self-select. Before `force:true`, read terminalOwner/ref. If work_items:complete times out, first re-read work_items:get; if the item is still open, retry the exact same completion payload (including assumptions). If you use work_items:set_state as the fallback, carry the same assumptions declaration and pass completionRef too. Shape: an ARRAY of facts:assert keys — assumptions: [\"my-fact-key\"] (note the brackets, even for a single key) — or the bare literal assumptions: \"none\".",
-        "chaining": "work_items:claim → … → work_items:set_blocker or work_items:link → work_items:set_state { state:\"blocked\" }; terminal writes use completionRef + assumptions."
+        "chaining": "work_items:claim → … → work_items:set_blocker (records + parks an external blocker) OR work_items:link (records an internal dependency). Use set_state { state:\"blocked\" } only when an active typed external blocker already exists; terminal writes use completionRef + assumptions."
       }
     },
     {

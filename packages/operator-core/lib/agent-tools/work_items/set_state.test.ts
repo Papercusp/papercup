@@ -143,16 +143,94 @@ describe('work_items:set_state handler (keyed-array)', () => {
     expect(armM).not.toHaveBeenCalled();
   });
 
-  it('keeps standalone blocked writes on the existing lifecycle path', async () => {
+  it('refuses a standalone blocked write without an active typed blocker', async () => {
+    mockResolvedTyped(getM, workItem({ id: 'WI-standalone', state: 'wip', payload: {} }));
     const b = await body({ id: 'WI-standalone', state: 'blocked' });
 
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(String(b.results[0].error)).toMatch(/no active typed blocker/);
+    expect(String(b.results[0].error)).toMatch(/work_items:set_blocker/);
+    expect(String(b.results[0].error)).toMatch(/work_items:link/);
+    expect(setM).not.toHaveBeenCalled();
+    expect(armM).not.toHaveBeenCalled();
+  });
+
+  it('accepts a standalone blocked write when an active typed external blocker exists', async () => {
+    mockResolvedTyped(
+      getM,
+      workItem({
+        id: 'WI-typed',
+        state: 'wip',
+        payload: {
+          externalBlockers: [
+            {
+              kind: 'event',
+              capability: 'live-dependency',
+              capabilitySource: 'explicit',
+              ref: 'deploy:complete',
+              summary: 'await deploy',
+              status: 'active',
+              createdAt: '2026-09-01T00:00:00.000Z',
+              createdBy: 'me',
+              updatedAt: '2026-09-01T00:00:00.000Z',
+            },
+          ],
+        },
+      }),
+    );
+    const b = await body({ id: 'WI-typed', state: 'blocked' });
+
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(setM).toHaveBeenCalledWith('WI-standalone', 'blocked', {
+    expect(setM).toHaveBeenCalledWith('WI-typed', 'blocked', {
       harness: undefined,
       by: 'me',
       completionRef: undefined,
       force: undefined,
     });
+  });
+
+  it('does not treat cleared blocker history as an active reason to block', async () => {
+    mockResolvedTyped(
+      getM,
+      workItem({
+        id: 'WI-cleared',
+        state: 'wip',
+        payload: {
+          externalBlockers: [
+            {
+              kind: 'runtime',
+              ref: 'service:ready',
+              summary: 'service was unavailable',
+              status: 'cleared',
+              createdAt: '2026-09-01T00:00:00.000Z',
+              createdBy: 'me',
+              updatedAt: '2026-09-01T00:01:00.000Z',
+              clearedAt: '2026-09-01T00:01:00.000Z',
+              clearedBy: 'me',
+            },
+          ],
+        },
+      }),
+    );
+
+    const b = await body({ id: 'WI-cleared', state: 'blocked' });
+
+    expect(b.counts).toMatchObject({ ok: 0, failed: 1 });
+    expect(String(b.results[0].error)).toMatch(/no active typed blocker/);
+    expect(setM).not.toHaveBeenCalled();
+  });
+});
+
+describe('work_items:set_state — typed blocker guidance (WI-39529)', () => {
+  it('routes external and work-item dependency reasons to their structured writers', () => {
+    const description = (tool as { description?: string }).description ?? '';
+    const guidance = (tool as { guidance?: { when?: string; chaining?: string; seeAlso?: string[] } }).guidance;
+    const text = [description, guidance?.when, guidance?.chaining, ...(guidance?.seeAlso ?? [])].join('\n');
+
+    expect(text).toContain('work_items:set_blocker');
+    expect(text).toContain('work_items:link');
+    expect(text).toContain('active typed external blocker');
+    expect(text).toContain('rel:"blocks"');
   });
 });
 
