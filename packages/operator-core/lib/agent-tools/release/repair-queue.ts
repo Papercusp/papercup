@@ -230,6 +230,9 @@ export default defineTool({
       note: z.string().optional(),
       reason: z.string().optional(),
       retired: z.boolean().optional(),
+      // WI-1105109: the post-retire procedure statement. Declared rather than left to
+      // .passthrough() so it is part of the contract a test can pin.
+      nextStep: z.string().optional(),
       alreadyClear: z.boolean().optional(),
       refused: z.boolean().optional(),
       casMiss: z.boolean().optional(),
@@ -431,6 +434,19 @@ export default defineTool({
       target: inspected.target,
       auditRecorded,
       current: currentDiagnostic,
+      // WI-1105109 [owner 2026-08-30, OWNER-interactive]: "make sure another agent
+      // uses the frozen candidate system next and doesn't retire it like you did".
+      //
+      // A SUCCESSFUL retire is the exact moment the treadmill restarts. The recorded
+      // failure was not the retire — that one was correct — it was firing
+      // release:checkpoint-run TWICE immediately afterwards, each cutting a FRESH
+      // candidate at tip. `notWhen` already forbids retiring "merely to make the gate
+      // move", but guidance is read BEFORE the call and the mistake happens AFTER it,
+      // so the answer has to travel on the RESULT the caller is holding when they
+      // choose their next move.
+      nextStep: result.retired
+        ? 'The next scheduled green-checkpoint run RE-FREEZES a candidate on its own — retiring does not stall the gate, so nothing needs firing to restart it. Do NOT call release:checkpoint-run to make the gate move: it always cuts a FRESH candidate at the current tip, which is the pre-D-001 re-cut-at-tip treadmill D-007 diagnosed (each cut re-admits the whole sweep and imports breakage faster than fixes land). To land a fix on the judged lineage, use release:repair-queue { op: "converge" }.'
+        : undefined,
     });
   },
 });
