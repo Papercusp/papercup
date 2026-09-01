@@ -79,6 +79,7 @@ import {
   runFreshContextWarmInject,
   type FreshContextDeps,
 } from './wake-executor-fresh-context';
+import { appendCrashResumeAdvisory } from './crash-resume-advisory';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
@@ -3301,6 +3302,15 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         sendCoordMessage,
       );
     }
+    // R4 (P-004 / WI-2140461, D-002): this is the process-exited rung — the wake
+    // is about to RESUME a session whose process died, so the delivered turn
+    // carries the crash-resume re-verify advisory (EI-16611 class). Appended
+    // HERE, after channel selection, so every in-place inject above stays
+    // byte-identical (D-002's channel-agnostic wakeTurnText contract).
+    const resumeText = appendCrashResumeAdvisory(text, {
+      agent: resumeAgent,
+      endedAtIso: typeof fresh?.endedAt === 'string' ? fresh.endedAt : null,
+    });
     const resume = resumeCommandFor(
       {
         agent: resumeAgent,
@@ -3308,7 +3318,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         ompThreadId: fresh?.ompThreadId ?? handle.ompThreadId,
         coordOwnerId: fresh?.coordOwnerId ?? null,
       },
-      text,
+      resumeText,
       accountRoute,
     );
     const cwd = fresh?.cwd ?? handle.cwd;
@@ -3485,7 +3495,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         rows: 36,
       });
       if (resume.promptViaPty) {
-        const injected = await injectOmpWakeTurnWhenReady({ pty: h, wakeText: text, write });
+        const injected = await injectOmpWakeTurnWhenReady({ pty: h, wakeText: resumeText, write });
         if (!injected.ok) {
           try {
             kill(h.id, h.accessScope);
