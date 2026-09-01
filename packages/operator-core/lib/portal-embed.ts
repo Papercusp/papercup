@@ -11,8 +11,27 @@ export const PORTAL_EMBED_ORIGIN_PARAM = 'portalOrigin' as const;
 export const PORTAL_EMBED_MESSAGE = 'papercusp:portal-embed' as const;
 export const PORTAL_EMBED_PROTOCOL_VERSION = 1 as const;
 
+/**
+ * Pane-only operator documents the portal frames as OUTER-SHELL SIDEBARS
+ * (owner ask 2026-09-01: the Accounts steering rail and the Papercup chat are
+ * sidebars of the cloud portal page, not of the embedded Papercusp app).
+ * Each renders exactly one dock — no header, no tab strip, no other dock —
+ * docked to the frame it lives in; the portal owns open/closed state and width.
+ * Declared before PORTAL_EMBED_PATH_PREFIXES, which spreads it (a `const` is
+ * not hoisted).
+ */
+export const PORTAL_PANES_PATH_PREFIX = '/portal-panes' as const;
+
 /** Operator documents that may be framed by the hosted portal. */
-export const PORTAL_EMBED_PATH_PREFIXES = ['/adv', '/tasks-roster', '/plans', '/inbox'] as const;
+export const PORTAL_EMBED_PATH_PREFIXES = ['/adv', '/tasks-roster', '/plans', '/inbox', PORTAL_PANES_PATH_PREFIX] as const;
+
+export const PORTAL_PANE_PATHS = {
+  /** The far-left steering rail: Accounts / Papercup / Pulse. */
+  steering: `${PORTAL_PANES_PATH_PREFIX}/steering`,
+  /** The Papercup chat dock with its Learning / Fleet / Peers faces. */
+  chat: `${PORTAL_PANES_PATH_PREFIX}/chat`,
+} as const;
+export type PortalPaneId = keyof typeof PORTAL_PANE_PATHS;
 
 export const PORTAL_EMBED_THEMES = ['light', 'dark', 'system'] as const;
 export type PortalEmbedTheme = (typeof PORTAL_EMBED_THEMES)[number];
