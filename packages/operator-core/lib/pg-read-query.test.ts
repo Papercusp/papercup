@@ -21,6 +21,7 @@ import {
   buildSessionTurnPartsJsonAdvisory,
   buildNativeToolAttributionAdvisory,
   buildAgentActivityLedgerAdvisory,
+  buildAgentFactsSupersessionAdvisory,
   buildEpochUnitAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
@@ -2628,5 +2629,103 @@ describe('buildBacklogFlowAdvisory — lane-predicate detection (EI-214121615739
   it('stays silent when a real lane column reference survives stripping', () => {
     const sql = "SELECT count(*) FROM harness_shared.work_items WHERE payload->>'lane' = 'bug'";
     expect(buildBacklogFlowAdvisory(sql)).toBeNull();
+  });
+});
+
+/**
+ * EI-19450552881841590 — `superseded_at` misread in both directions.
+ *
+ * The filing measured the omission direction on 2026-08-03 (naive 139 vs a real
+ * cap population of 50). Re-measured 2026-09-01 the trap is live and larger —
+ * naive 471 vs 200 — but its COMPOSITION moved: supersession is now only 131 of
+ * the 271-row gap, with conventions 81 and exempt wall:/dead-end:/guard-rail:
+ * slots 59. That is why the remedy names all five clauses; an advisory that
+ * fixed only the clause the filing named would return a predicate still wrong by
+ * ~140 rows while carrying this tool's authority.
+ */
+describe('buildAgentFactsSupersessionAdvisory — superseded_at means neither "live" nor "evicted"', () => {
+  const AF = 'harness_shared.agent_facts';
+
+  it('fires on the naive liveness predicate every audit of this table reaches for', () => {
+    const advisory = buildAgentFactsSupersessionAdvisory(
+      `SELECT count(*) FROM ${AF}\n` +
+        ` WHERE workspace_id = 'papercusp-workspace' AND scope = 'harness'\n` +
+        `   AND scope_ref = 'papercusp'\n` +
+        `   AND retracted_at IS NULL AND expires_at > now()`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('superseded_at IS NULL');
+    // Names the direction of the error, which is what stops the false headline.
+    expect(advisory).toContain('cap has stopped enforcing');
+  });
+
+  /**
+   * Load-bearing, not decoration. Adding `superseded_at IS NULL` alone closes 131
+   * of 271 rows; a reader who stopped there would believe a still-wrong number.
+   * If a later edit trims the remedy to just the named clause, this fails.
+   */
+  it('hands back all five clauses, not just the one the filing named', () => {
+    const advisory = buildAgentFactsSupersessionAdvisory(
+      `SELECT * FROM ${AF} WHERE retracted_at IS NULL`,
+    )!;
+    expect(advisory).toContain('is NOT enough');
+    expect(advisory).toContain('source_hive IS NULL');
+    expect(advisory).toContain("key NOT LIKE 'guard-rail:%'");
+    expect(advisory).toContain("COALESCE(kind,'') <> 'convention'");
+    // And routes to the surfaces that already scope correctly.
+    expect(advisory).toContain('facts:list');
+    expect(advisory).toContain('dryRun');
+  });
+
+  it('fires the OPPOSITE direction: superseded rows read as evictions', () => {
+    const advisory = buildAgentFactsSupersessionAdvisory(
+      `SELECT count(*) FROM ${AF} WHERE superseded_at IS NOT NULL AND superseded_at > now() - interval '6 hours'`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('NOT an eviction marker');
+    // Hands over the column that actually marks destruction, plus the live-successor
+    // test that separates a correction from a real loss.
+    expect(advisory).toContain('evicted_at IS NOT NULL');
+    expect(advisory).toContain('live successor');
+  });
+
+  it('stays silent for a reader already distinguishing supersession from eviction', () => {
+    expect(
+      buildAgentFactsSupersessionAdvisory(
+        `SELECT count(*) FILTER (WHERE evicted_at IS NOT NULL) FROM ${AF} WHERE superseded_at IS NOT NULL`,
+      ),
+    ).toBeNull();
+  });
+
+  it('stays silent once the omitted clause is present', () => {
+    expect(
+      buildAgentFactsSupersessionAdvisory(
+        `SELECT * FROM ${AF} WHERE superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()`,
+      ),
+    ).toBeNull();
+  });
+
+  it('does not fire on a read that makes no liveness claim, or on another table', () => {
+    // No liveness marker at all — counting every version is a legitimate question.
+    expect(buildAgentFactsSupersessionAdvisory(`SELECT key, count(*) FROM ${AF} GROUP BY 1`)).toBeNull();
+    expect(
+      buildAgentFactsSupersessionAdvisory(
+        'SELECT * FROM harness_shared.work_items WHERE retracted_at IS NULL AND expires_at > now()',
+      ),
+    ).toBeNull();
+  });
+
+  /**
+   * The builder matches the literal-and-comment-stripped body, so a column named
+   * inside a quoted string or a `--` comment is not treated as a predicate. Without
+   * this, quoting the correct predicate in a comment would silence the advisory.
+   */
+  it('does not count `superseded_at` mentioned only in a comment or string literal', () => {
+    const advisory = buildAgentFactsSupersessionAdvisory(
+      `SELECT count(*) FROM ${AF}\n` +
+        ` -- remember to add superseded_at IS NULL here\n` +
+        ` WHERE retracted_at IS NULL AND body <> 'superseded_at'`,
+    );
+    expect(advisory).toBeTruthy();
   });
 });

@@ -25,6 +25,7 @@ import {
   buildSessionTurnPartsJsonAdvisory,
   buildNativeToolAttributionAdvisory,
   buildAgentActivityLedgerAdvisory,
+  buildAgentFactsSupersessionAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
@@ -324,6 +325,15 @@ export default defineTool({
     // or a hand-rolled window that work_items:burn_down already computes with the caveats attached.
     // Measured together on 2026-08-17: the three inverted the sign of a backlog trend reported to the owner.
     const backlogFlowAdvisory = advisoryOf(() => buildBacklogFlowAdvisory(sql));
+    // EI-19450552881841590 — the agent_facts sibling of the two above, and the
+    // reason it is its own builder: those warn about work_items populations,
+    // this one about a column whose NAME implies the opposite of its semantics.
+    // `superseded_at` is stamped by ordinary re-assertion, so omitting it counts
+    // dead versions as live ("the cap stopped enforcing") while trusting it
+    // counts corrections as destroyed facts ("an eviction storm"). Both readings
+    // are well-formed numbers that survive review, which is why the advisory
+    // fires at the moment of the query rather than leaving it to discipline.
+    const agentFactsSupersessionAdvisory = advisoryOf(() => buildAgentFactsSupersessionAdvisory(sql));
     // EI-20103748074297088 — two more ways a read returns a well-formed ZERO that reads as a
     // real answer. Kept as their own builders, like the three above, because each is a
     // DIFFERENT failure: the tenant advisory warns the rows may be from the wrong tenant;
@@ -366,6 +376,7 @@ export default defineTool({
       epochUnitAdvisory,
       claimabilityAdvisory,
       backlogFlowAdvisory,
+      agentFactsSupersessionAdvisory,
       nullPathAdvisory,
       jsonbTypeofAdvisory,
       splitEvidenceAdvisory,

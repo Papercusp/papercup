@@ -2207,6 +2207,104 @@ export function buildAgentActivityLedgerAdvisory(rawSql: string): string | null 
 }
 
 /**
+ * The agent_facts SUPERSESSION advisory (EI-19450552881841590) — two opposite
+ * misreadings of one column, in one builder because they are the same defect
+ * seen from either side: `superseded_at` does not mean what its neighbours imply.
+ *
+ * DIRECTION A — omitting it. `retracted_at IS NULL AND expires_at > now()` reads
+ * like "live standing facts" and is the predicate every audit of this table
+ * reaches for. P-008 versioning supersedes IN PLACE: re-asserting a key writes a
+ * new row and stamps `superseded_at` on the old one. It does NOT stamp
+ * `retracted_at` (the old version was replaced, not retracted) and does NOT
+ * shorten `expires_at` — so a superseded row keeps BOTH liveness markers intact
+ * indefinitely, and only `superseded_at IS NULL` separates it from a current one.
+ * The count then reads as "the cap has stopped enforcing", which is alarming,
+ * plausible and false.
+ *
+ * DIRECTION B — trusting it. A reader who DOES filter `superseded_at IS NOT NULL`
+ * tends to read those rows as destroyed facts, i.e. cap evictions. They are
+ * overwhelmingly ordinary re-assertions. Measured 2026-09-01 over 6h,
+ * workspace-wide: 3035 rows superseded, 0 of them evicted, and all 3035 have a
+ * live successor under the same (scope, scope_ref, key). Eviction stamps
+ * `evicted_at` (together with `retracted_at`); supersession never does.
+ *
+ * ⚠ THE REMEDY NAMES ALL FIVE CLAUSES, not just `superseded_at`. When the filing
+ * was written (2026-08-03) supersession was ~97% of the inflation (86 of 89), so
+ * "add superseded_at" was then a complete fix. It is not any more. Measured
+ * 2026-09-01 on scope='harness', scope_ref='papercusp': naive 471 vs cap
+ * population 200, and the 271-row excess decomposes as superseded 131 (48%),
+ * conventions 81 (30%), exempt wall:/dead-end:/guard-rail: slots 59 (22%) —
+ * summing exactly to the gap. An advisory naming only the clause the filing
+ * named would hand back a predicate still wrong by ~140 rows while carrying this
+ * tool's authority, which is the false-confidence failure the advisories above
+ * exist to prevent.
+ *
+ * ⚠ DELIBERATE BOUNDARY: direction A fires only when `superseded_at` is absent
+ * entirely. A query that filters it but still counts conventions and exempt
+ * slots remains over-counted and this stays silent, because firing on every
+ * liveness-shaped read would be noise that trains readers to skip advisories —
+ * and a reader who got the hard clause right is shown the other four in the
+ * remedy text anyway. That is a chosen tradeoff, not an oversight.
+ *
+ * The clause list mirrors `capPopulationPredicate` in agent-facts/store.ts. If
+ * the cap's exemptions change, change this text in the same edit.
+ */
+export function buildAgentFactsSupersessionAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => bareTableName(t) === 'agent_facts')) return null;
+
+  // Identifiers, so match the literal-and-comment-stripped body: a column named
+  // inside a quoted string or a `--` comment is not a predicate.
+  const body = stripSqlLiteralsAndComments(rawSql);
+  const mentionsSuperseded = /\bsuperseded_at\b/i.test(body);
+
+  // DIRECTION B: superseded rows read as destroyed/evicted facts. Fires only when
+  // the query never mentions `evicted_at`, so a reader already distinguishing the
+  // two is not lectured.
+  if (mentionsSuperseded) {
+    if (/\bevicted_at\b/i.test(body)) return null;
+    const asDestruction = /\bsuperseded_at\s+IS\s+NOT\s+NULL\b/i.test(body);
+    if (!asDestruction) return null;
+    return (
+      '⚠ superseded_at is NOT an eviction marker: it is stamped by ordinary re-assertion ' +
+      '(facts:assert upserts by key, superseding the prior version in place), so counting these ' +
+      'rows as destroyed facts overstates cap pressure — usually by everything. Measured 6h ' +
+      'workspace-wide on 2026-09-01: 3035 rows superseded, 0 of them evicted, and all 3035 still ' +
+      'have a LIVE successor under the same (scope, scope_ref, key) — i.e. nothing was lost. The ' +
+      'cap sweep stamps `evicted_at` (alongside `retracted_at`); supersession never does. To count ' +
+      'real destruction use `evicted_at IS NOT NULL`. To count genuine LOSS, additionally require ' +
+      'that no live successor exists for that (scope, scope_ref, key) — a superseded row whose key ' +
+      'was simply rewritten is a correction, not a loss.'
+    );
+  }
+
+  // DIRECTION A: a liveness-shaped read missing the clause. A query mentioning
+  // neither marker is not making a liveness claim, so warning there is noise.
+  if (!/\bretracted_at\b/i.test(body) && !/\bexpires_at\b/i.test(body)) return null;
+
+  return (
+    '⚠ this reads like a "live standing facts" query but omits `superseded_at IS NULL`, so it ' +
+    'counts SUPERSEDED versions as live. Re-asserting a key supersedes the old row in place ' +
+    'WITHOUT stamping `retracted_at` and WITHOUT shortening `expires_at`, so a superseded row ' +
+    'keeps both liveness markers intact forever — the error grows with how diligently the fleet ' +
+    'CORRECTS facts, and it reads as "the per-scope cap has stopped enforcing". Measured ' +
+    "2026-09-01 on scope='harness', scope_ref='papercusp': this predicate returns 471 where the " +
+    'population the cap actually caps is 200. Adding `superseded_at IS NULL` alone is NOT enough ' +
+    '— it closes only 131 of the 271-row gap (conventions account for 81, exempt slots 59). The ' +
+    'full predicate, mirroring capPopulationPredicate in agent-facts/store.ts:\n' +
+    "  WHERE workspace_id = :ws AND scope = :scope AND coalesce(scope_ref,'') = :ref\n" +
+    '    AND source_hive IS NULL          -- local partition; federated rows cap per-source\n' +
+    '    AND superseded_at IS NULL        -- CURRENT versions only\n' +
+    '    AND retracted_at IS NULL AND expires_at > now()\n' +
+    "    AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%' AND key NOT LIKE 'guard-rail:%'\n" +
+    "    AND COALESCE(kind,'') <> 'convention'\n" +
+    'Prefer `facts:list { scope, scopeRef }`, which already scopes correctly; this advisory exists ' +
+    'for reads that drop to SQL. For the live at-cap forecast including the ranked next victim, ' +
+    '`facts:assert { dryRun: true }` reports populationSize/cap/atCap from that same predicate.'
+  );
+}
+
+/**
  * Flag the seconds-as-milliseconds epoch trap on tool-invocation recency reads
  * (EI-20261119579595975).
  *
