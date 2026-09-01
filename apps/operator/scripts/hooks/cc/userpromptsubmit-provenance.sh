@@ -469,6 +469,19 @@ def register_owner_mode(text):
         note += "\n" + warn.strip()
     return note
 
+def record_owner_prompt(prompt, native_session):
+    """Best-effort durable carrier for the ingest-side affirmative stamp.
+    The hook's local verdict remains authoritative for the prompt UX: an
+    unreachable operator must never block UserPromptSubmit."""
+    if not isinstance(native_session, str) or not native_session.strip():
+        return
+    _mcp_call('sessions:record-prompt-origin', {
+        'sessionId': native_session.strip(),
+        'sourceKind': 'claude',
+        'promptHash': sha256_hex(prompt),
+        'submittedAtMs': round(now_ms),
+    })
+
 
 m = ENVELOPE_RE.match(prompt)
 if m:
@@ -559,6 +572,10 @@ else:
         )
         # This branch — and ONLY this branch — is a genuine human turn, so it is
         # the only place a mode grant may be honoured automatically.
+        try:
+            record_owner_prompt(prompt, data.get('session_id') or data.get('sessionId'))
+        except Exception:
+            pass  # fail-open: persistence is advisory to the prompt path
         try:
             _note = register_owner_mode(prompt)
         except Exception:
