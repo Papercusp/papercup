@@ -150,7 +150,7 @@ Launch context:
   --no-plan                          Launch without a plan
   --model=<model[:effort]>           Model and optional effort
   --profile=<engineer|power>         SU prompt profile
-  --context-size=trimmed             Context payload tier (legacy full normalizes to trimmed)
+  --context-size=trimmed|steward     Initial tool seed (steward = core + steward verb families, WI-2140338; legacy full normalizes to trimmed)
   --compaction-limit=<tokens>        Requested compaction limit
   --launch-context=<path>            Additional launch brief
   --kickoff=<text>                   Seed the first user turn

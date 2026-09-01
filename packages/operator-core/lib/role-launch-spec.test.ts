@@ -74,7 +74,25 @@ vi.mock('./papercusp-root', () => ({
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildRoleLaunchSpec, buildLaunchSpec, SU_EXTRA_MCP_TOOL_NAMES } from './role-launch-spec';
+import {
+  buildRoleLaunchSpec,
+  buildLaunchSpec,
+  SU_EXTRA_MCP_TOOL_NAMES,
+  stewardSeedToolNames,
+} from './role-launch-spec';
+
+// WI-2140338: switchable partial mock of the projected-tool registry read, so the
+// steward-seed tests are deterministic regardless of what this test process has
+// registered. `listings: null` ⇒ passthrough to the real registry.
+const stewardMockState = vi.hoisted(() => ({ listings: null as null | { name: string }[] }));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
+  const real = (await importOriginal()) as Record<string, unknown>;
+  const realList = real.listMcpProjections as (...a: unknown[]) => { name: string }[];
+  return {
+    ...real,
+    listMcpProjections: (...args: unknown[]) => stewardMockState.listings ?? realList(...args),
+  };
+});
 import { resolveProjectDir } from './spawn-config';
 import { readSuperuserToken } from './superuser-token';
 // su-context-size-variants (WI-1282): the always-loaded core spine the codex
