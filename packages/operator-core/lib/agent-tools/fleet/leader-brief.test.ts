@@ -36,6 +36,7 @@ import {
   LEADER_BRIEF_READ_CONCURRENCY,
   LEADER_BRIEF_TOTAL_TIMEOUT_MS,
   projectMember,
+  projectFleetAdmissionBlockRead,
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
@@ -56,6 +57,7 @@ import {
 import leaderBriefTool from './leader-brief';
 import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
+import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 
@@ -94,9 +96,10 @@ describe('resolveLeaderBriefFleet — durable leadership is the omitted-fleet au
         ledFleets: ['fleet-a', 'fleet-b'],
       }),
     ).toEqual({ kind: 'ambiguous', fleets: ['fleet-a', 'fleet-b'] });
-    expect(
-      resolveLeaderBriefFleet({ ...agent, ledFleets: ['fleet-a', 'fleet-b'] }),
-    ).toEqual({ kind: 'ambiguous', fleets: ['fleet-a', 'fleet-b'] });
+    expect(resolveLeaderBriefFleet({ ...agent, ledFleets: ['fleet-a', 'fleet-b'] })).toEqual({
+      kind: 'ambiguous',
+      fleets: ['fleet-a', 'fleet-b'],
+    });
   });
 
   it('preserves explicit fleet selection and read-only viewer no-target behavior', () => {
@@ -191,7 +194,9 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
     const result = await readLeaderBriefFleetMetrics(
       { workspaceId: 'ws', fleet: 'fleet-a', harness: 'papercusp' },
       {
-        resolveScope: async () => { throw new Error('scope store offline'); },
+        resolveScope: async () => {
+          throw new Error('scope store offline');
+        },
         listItems: vi.fn(),
         readOccurrences: vi.fn(),
         build: vi.fn(),
@@ -232,10 +237,7 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     const startedAt = Date.now();
     try {
       const result = await runBoundedLeaderBriefReads(
-        [
-          () => new Promise<string>(() => {}),
-          async () => 'read-1',
-        ] as const,
+        [() => new Promise<string>(() => {}), async () => 'read-1'] as const,
         ['fallback-0', 'fallback-1'],
         'test',
         2,
@@ -271,6 +273,24 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('fleet:leader-brief admission-block availability (EI-22054599451266989)', () => {
+  it('projects an unavailable read as null, never as a numeric zero', () => {
+    expect(
+      projectFleetAdmissionBlockRead({
+        available: false,
+        blocks: null,
+        reason: 'optional read failed',
+      }),
+    ).toEqual({ blocks: [], count: null });
+  });
+
+  it('keeps a measured empty result as a real zero', () => {
+    expect(projectFleetAdmissionBlockRead({ available: true, blocks: [] })).toEqual({ blocks: [], count: 0 });
+    const blocks = [{ dependencyEscape: null }] as FleetAdmissionBlock[];
+    expect(projectFleetAdmissionBlockRead({ available: true, blocks })).toEqual({ blocks, count: 1 });
   });
 });
 
@@ -329,11 +349,13 @@ describe('fleet:leader-brief launch worker attestation projection (P-003)', () =
             schedulerPull: { status: 'satisfied', calls: 1, successfulCalls: 1 },
             disposition: { status: 'satisfied', kind: 'no-claim', reason: 'lane_drained' },
           },
-          failures: [{
-            stage: 'durableWake',
-            code: 'durable-wake-missing',
-            detail: 'No durable wake.',
-          }],
+          failures: [
+            {
+              stage: 'durableWake',
+              code: 'durable-wake-missing',
+              detail: 'No durable wake.',
+            },
+          ],
         },
       ],
       failed: [],
@@ -385,10 +407,12 @@ describe('fleet:leader-brief launch worker attestation projection (P-003)', () =
   });
 
   it('omits the block for legacy transactions that predate worker attestation', () => {
-    expect(compactLaunchWorkerAttestation({
-      transactionId: 'legacy',
-      requestedMemberIds: [],
-    } as never)).toBeUndefined();
+    expect(
+      compactLaunchWorkerAttestation({
+        transactionId: 'legacy',
+        requestedMemberIds: [],
+      } as never),
+    ).toBeUndefined();
   });
 
   it('surfaces a governor-only terminal verdict without inventing worker stages', () => {
@@ -514,12 +538,8 @@ describe('leader-brief leadership refresh boundary (EI-21355781180893454)', () =
   };
 
   it('does not repair a winding-down leader after loop:end', () => {
-    expect(
-      shouldRefreshLeaderControlForBrief({ ...activeLeader, controlState: 'active' }),
-    ).toBe(true);
-    expect(
-      shouldRefreshLeaderControlForBrief({ ...activeLeader, controlState: 'winding-down' }),
-    ).toBe(false);
+    expect(shouldRefreshLeaderControlForBrief({ ...activeLeader, controlState: 'active' })).toBe(true);
+    expect(shouldRefreshLeaderControlForBrief({ ...activeLeader, controlState: 'winding-down' })).toBe(false);
   });
 
   it('keeps the write disabled for read-only viewers and missing fleet records', () => {
@@ -918,9 +938,7 @@ describe('computeFleetExecutionCollapseAlert (WI-583276)', () => {
   });
 
   it('stays clean when the fleet is working or has no held claims', () => {
-    expect(
-      computeFleetExecutionCollapseAlert({ roster, agentOriginOwnerIds: new Set(['su-a']) }).alert,
-    ).toBe(false);
+    expect(computeFleetExecutionCollapseAlert({ roster, agentOriginOwnerIds: new Set(['su-a']) }).alert).toBe(false);
     expect(
       computeFleetExecutionCollapseAlert({
         roster: roster.map(({ agentId }) => ({ agentId, claims: [] })),
@@ -997,7 +1015,9 @@ describe('fleet:leader-brief — profile-derived zero-awaiters advisory (P-015)'
       ).resolves.toBeUndefined();
       expect(warn).toHaveBeenCalledTimes(expectedKeys.length);
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('[bounded-timeout] leader-brief:monitoring-blind-awaiters failed: await store unavailable'),
+        expect.stringContaining(
+          '[bounded-timeout] leader-brief:monitoring-blind-awaiters failed: await store unavailable',
+        ),
       );
     } finally {
       warn.mockRestore();
@@ -1523,7 +1543,14 @@ describe('projectMember (pure)', () => {
     expect(m.monitorState).toBeNull();
     expect(m.nextFireAt).toBeNull();
     expect(m.contextPressure).toBeNull();
+    expect(m.contextPressureAgeSec).toBeNull();
     expect(m.loopMode).toBeNull();
+  });
+
+  it('carries the context-pressure estimate age beside its bucket', () => {
+    const m = projectMember(baseAgent({ contextPressure: 'critical', contextPressureAgeSec: 840 }), NOW);
+    expect(m.contextPressure).toBe('critical');
+    expect(m.contextPressureAgeSec).toBe(840);
   });
 
   it('EI-21125380796386851: projects suspect+wakeable distinctly from terminal dead', () => {
@@ -1602,7 +1629,6 @@ describe('computeBenchSuggestion (pure, EI-9943)', () => {
     expect(s).toBeDefined();
   });
 
-
   it('surfaces per-work-item claimHealth so a leader sees the recovery verdict', () => {
     const health = {
       status: 'waiting' as const,
@@ -1610,9 +1636,12 @@ describe('computeBenchSuggestion (pure, EI-9943)', () => {
       expected_cadence_ms: 600_000,
       evidence: [{ writer: 'events_await', signal: 'exact_dependency_waits', value: ['gate:ready'] }],
     };
-    const m = projectMember(baseAgent({
-      claims: [{ type: 'work-item', id: 'WI-claim', claimHealth: health }] as never,
-    }), NOW);
+    const m = projectMember(
+      baseAgent({
+        claims: [{ type: 'work-item', id: 'WI-claim', claimHealth: health }] as never,
+      }),
+      NOW,
+    );
     expect(m.workItemIds).toEqual(['WI-claim']);
     expect(m.claimHealth?.['WI-claim']).toEqual(health);
   });
