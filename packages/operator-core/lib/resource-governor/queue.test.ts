@@ -8,8 +8,12 @@ import {
 import {
   PgWorkItemAdmissionQueueStore,
   WorkItemAdmissionQueueDriver,
+  mapGovernorQueuePopulationRows,
+  mapQueueLeaseOwnerRows,
+  selectEndedLeaseOwners,
   type DurableAdmissionQueueStore,
   type DurableAdmissionRecord,
+  type QueueLeaseOwnerObservation,
   type QueueMutationResult,
   type QueueReconciliationResult,
   type StoredAdmissionRecord,
@@ -271,17 +275,107 @@ function governor(
   };
 }
 
-function recordingSqlClient() {
+function recordingSqlClient(activeRows: unknown[] = []) {
   const queries: Array<{ text: string; values: unknown[] }> = [];
   const tx = (strings: TemplateStringsArray, ...values: unknown[]) => {
     queries.push({ text: strings.join('?'), values });
-    return Promise.resolve([] as unknown[]);
+    return Promise.resolve(
+      strings.join('?').includes('SELECT feature_id AS receipt_id') ? activeRows : ([] as unknown[]),
+    );
   };
-  const client = {
+  const client = Object.assign(tx, {
     begin: async (callback: (transaction: unknown) => Promise<unknown>) => callback(tx),
-  } as never;
+  }) as never;
   return { client, queries };
 }
+
+describe('resource-governor queue liveness and census boundaries (EI-219699)', () => {
+  it('selects only explicit ended owners and preserves every ambiguous state', () => {
+    const rows: QueueLeaseOwnerObservation[] = [
+      { receiptId: 'WI-ended', leaseId: 'lease-ended', owner: 'ended' },
+      { receiptId: 'WI-suspect', leaseId: 'lease-suspect', owner: 'suspect' },
+      { receiptId: 'WI-live', leaseId: 'lease-live', owner: 'live' },
+      { receiptId: 'WI-parked', leaseId: 'lease-parked', owner: 'parked' },
+      { receiptId: 'WI-unknown', leaseId: 'lease-unknown', owner: 'unknown' },
+      { receiptId: 'WI-stale', leaseId: 'lease-stale', owner: 'stale' },
+    ];
+    const verdicts = new Map([
+      ['ended', { sessionState: 'ended' as const }],
+      ['suspect', { sessionState: 'suspect' as const }],
+      ['live', { sessionState: 'live' as const }],
+      ['parked', { sessionState: 'parked' as const }],
+      ['unknown', { sessionState: null }],
+      ['stale', { sessionState: 'draining' as const }],
+    ]);
+    expect(selectEndedLeaseOwners(rows, verdicts)).toEqual([rows[0]]);
+  });
+
+  it('maps complete census rows and PostgreSQL numeric strings without bounding the input', () => {
+    expect(
+      mapGovernorQueuePopulationRows([
+        {
+          admission_class: ' agent ',
+          depth: '12',
+          oldest_age_ms: '2500',
+          arrivals: '8',
+          drained: 3,
+          observed_window_ms: '60000',
+        },
+        {
+          admission_class: 'empty',
+          depth: 0,
+          oldest_age_ms: null,
+          arrivals: 1,
+          drained: 1,
+          observed_window_ms: 60000,
+        },
+      ]),
+    ).toEqual([
+      { admissionClass: 'agent', depth: 12, oldestAgeMs: 2500, arrivals: 8, drained: 3, observedWindowMs: 60000 },
+      { admissionClass: 'empty', depth: 0, arrivals: 1, drained: 1, observedWindowMs: 60000 },
+    ]);
+  });
+
+  it('resolves distinct active owners before mutation and emits compare-and-release identity guards', async () => {
+    const { client, queries } = recordingSqlClient([
+      { receipt_id: 'WI-dead', lease_id: 'lease-dead', owner: 'owner-dead' },
+      { receipt_id: 'WI-live', lease_id: 'lease-live', owner: 'owner-live' },
+      { receipt_id: 'WI-dead-2', lease_id: 'lease-dead-2', owner: 'owner-dead' },
+    ]);
+    const resolveSessionStatesFn = async (subjects: readonly { ownerId: string }[], options: unknown) => {
+      expect(subjects).toEqual([{ ownerId: 'owner-dead' }, { ownerId: 'owner-live' }]);
+      expect(options).toMatchObject({ hydratePerId: true, nowMs: 5_000 });
+      return new Map([
+        ['owner-dead', { sessionState: 'ended' as const }],
+        ['owner-live', { sessionState: 'live' as const }],
+      ]);
+    };
+    const store = new PgWorkItemAdmissionQueueStore({
+      sql: client,
+      workspaceId: 'workspace-test',
+      resolveSessionStatesFn: resolveSessionStatesFn as never,
+    });
+
+    await expect(store.reconcileExpired('test', 5_000)).resolves.toMatchObject({ requeued: 0 });
+    const ownerEnded = queries.find((query) => query.text.includes("'owner-ended'"));
+    expect(ownerEnded).toBeDefined();
+    expect(ownerEnded?.text).toContain('jsonb_to_recordset');
+    expect(ownerEnded?.text).toContain("lease'->>'leaseId'");
+    expect(ownerEnded?.text).toContain("lease'->>'owner'");
+    expect(ownerEnded?.text).toContain('identity.lease_id');
+    expect(ownerEnded?.text).toContain('identity.owner');
+    expect(ownerEnded?.text).toContain('FOR UPDATE OF item SKIP LOCKED');
+  });
+
+  it('maps active lease identity rows conservatively, dropping incomplete rows', () => {
+    expect(
+      mapQueueLeaseOwnerRows([
+        { receipt_id: ' WI-1 ', lease_id: ' lease-1 ', owner: ' owner-1 ' },
+        { receipt_id: 'WI-2', lease_id: null, owner: 'owner-2' },
+      ]),
+    ).toEqual([{ receiptId: 'WI-1', leaseId: 'lease-1', owner: 'owner-1' }]);
+  });
+});
 
 describe('WorkItemAdmissionQueueDriver', () => {
   it('bounds PostgreSQL queue mutations with database-side lock and statement timeouts', async () => {

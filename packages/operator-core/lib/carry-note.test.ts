@@ -976,6 +976,26 @@ describe('lintUncheckedExternalClaims — carried claims must carry their probe 
     expect(flags[0]).toContain('MUST');
   });
 
+  it('flags a stale path handle when marker absence is used to authorize a re-run (EI-20137618267685442)', () => {
+    const prose =
+      'The log is /tmp/wi-hudpane-affected.log; marker ABSENT means the old run died, so re-run npm run test:affected.';
+    expect(lintUncheckedExternalClaims(prose, '')).toEqual([prose]);
+  });
+
+  it('treats a path handle as covered only when a check row carries the same handle', () => {
+    const prose = 'The log is /tmp/wi-hudpane-affected.log; marker ABSENT means re-run the suite.';
+    const probes = renderCheckLine({
+      claim: 'the affected run is still live or finished',
+      recheck: 'kill -0 <pid> and grep ===EXIT: /tmp/wi-hudpane-affected.log',
+    });
+    expect(lintUncheckedExternalClaims(prose, probes)).toEqual([]);
+  });
+
+  it('flags bare pid and bash_id handles when their lifecycle is asserted without a probe', () => {
+    expect(lintUncheckedExternalClaims('pid: 4812 is dead; re-run the affected suite.', '')).toHaveLength(1);
+    expect(lintUncheckedExternalClaims('bash_id=0mt8rdwku1p1azr046o is still running.', '')).toHaveLength(1);
+  });
+
   it('sees 10-char short-shas (the form this fleet habitually quotes)', () => {
     expect(lintUncheckedExternalClaims('deploy 8655a22cf1 MUST land first', '')).toHaveLength(1);
     // …but a plain number is not a hash.

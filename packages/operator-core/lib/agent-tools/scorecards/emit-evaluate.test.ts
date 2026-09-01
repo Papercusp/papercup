@@ -360,6 +360,179 @@ describe('emitScorecard', () => {
     expect(captureM).not.toHaveBeenCalled();
   });
 
+  it('refuses another complete independent card for the same rubric revision and returns every existing id', async () => {
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-INDEPENDENT-1',
+        rubricRef: 'test-rubric',
+        rubricRevision: 7,
+        ratings: RATINGS,
+        createdBy: 'su-peer',
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+      {
+        issueId: 'EI-INDEPENDENT-2',
+        rubricRef: 'test-rubric',
+        rubricRevision: 7,
+        ratings: RATINGS,
+        createdBy: 'su-peer-2',
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
+
+    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-grader' });
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'existing_independent_scorecards',
+      existingIndependentScorecardIds: ['EI-INDEPENDENT-1', 'EI-INDEPENDENT-2'],
+      acknowledgementRequired: 'acknowledgeExisting:true',
+    });
+    expect((r as { error: string }).error).toContain('revision 7');
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('explicit acknowledgement permits an intentional additional independent card', async () => {
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-INDEPENDENT',
+        rubricRef: 'test-rubric',
+        rubricRevision: 7,
+        ratings: RATINGS,
+        createdBy: 'su-peer',
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'test-rubric',
+        ratings: {
+          ...RATINGS,
+          'crit-a': { rating: 'pass', evidence: 'new independent observation' },
+        },
+        acknowledgeExisting: true,
+      },
+      { createdBy: 'su-grader' },
+    );
+
+    expect(r).toMatchObject({ ok: true, created: true, issueId: 'ISS-1' });
+    expect(captureM).toHaveBeenCalledTimes(1);
+  });
+
+  it('force:true does not bypass the same-revision independent-card acknowledgement guard', async () => {
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-INDEPENDENT',
+        rubricRef: 'test-rubric',
+        rubricRevision: 7,
+        ratings: { 'crit-a': { rating: 'fail', evidence: 'new evidence' }, 'crit-b': RATINGS['crit-b'] },
+        createdBy: 'su-peer',
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 4,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
+
+    const r = await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: RATINGS, force: true },
+      { createdBy: 'su-grader' },
+    );
+
+    expect(r).toMatchObject({ ok: false, code: 'existing_independent_scorecards' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale, incomplete, synthesized, and same-grader cards when deciding whether acknowledgement is needed', async () => {
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-OLD-REVISION',
+        rubricRef: 'test-rubric',
+        rubricRevision: 6,
+        ratings: RATINGS,
+        createdBy: 'su-peer',
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+      {
+        issueId: 'EI-INCOMPLETE',
+        rubricRef: 'test-rubric',
+        rubricRevision: 7,
+        ratings: RATINGS,
+        createdBy: 'su-peer',
+        missingKeys: ['crit-b'],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 5,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+      {
+        issueId: 'EI-SYNTHETIC',
+        rubricRef: 'test-rubric',
+        rubricRevision: 7,
+        ratings: RATINGS,
+        createdBy: 'su-peer',
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: true,
+        score10: 10,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+      {
+        issueId: 'EI-SAME-GRADER',
+        rubricRef: 'test-rubric',
+        rubricRevision: 7,
+        ratings: RATINGS,
+        createdBy: 'su-grader',
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
+
+    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-grader' });
+
+    expect(r).toMatchObject({ ok: true, created: true });
+    expect(captureM).toHaveBeenCalledTimes(1);
+  });
+
+  it('types acknowledgement as a literal true', () => {
+    expect(scorecardEmitArgs.safeParse({ rubricRef: 'test-rubric', ratings: RATINGS }).success).toBe(true);
+    expect(
+      scorecardEmitArgs.safeParse({ rubricRef: 'test-rubric', ratings: RATINGS, acknowledgeExisting: true }).success,
+    ).toBe(true);
+    expect(
+      scorecardEmitArgs.safeParse({ rubricRef: 'test-rubric', ratings: RATINGS, acknowledgeExisting: false }).success,
+    ).toBe(false);
+  });
+
   it('CHANGED rubric revision vs the latest scorecard files a new card even when evidence is unchanged', async () => {
     const fingerprint = scorecardEvidenceFingerprint({ rubricRef: 'test-rubric', ratings: RATINGS });
     listM.mockResolvedValue([

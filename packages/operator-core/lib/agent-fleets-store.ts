@@ -304,22 +304,61 @@ export interface FleetHeadcountTarget {
 
 export type FleetHeadcountVerdict = 'disabled' | 'unknown' | 'at-target' | 'under-strength';
 export type FleetHeadcountBasisKind =
-  | 'worker-ready-live-intersection'
+  | 'agent-origin-execution-attested'
   | 'legacy-live-roster-fallback'
   | 'unknown';
 
+/**
+ * How far back an agent-origin tool call still attests that a live member seat
+ * is productive (WI-2034624 / P-007).
+ *
+ * Deliberately WIDER than the 30-minute wedge-detection window
+ * `agentOriginToolCallOwnersSince` defaults to, because the two windows answer
+ * opposite questions and pay opposite costs. Wedge detection wants to notice
+ * silence FAST; capacity sizing wants to avoid mistaking a legitimately parked
+ * member for a missing one. A member parked on the standard 1800s
+ * `events:await` makes no call for a full 30 minutes while productively holding
+ * its seat, so a 30-minute sizing window would read it as absent and the
+ * governor would spawn a replacement for a seat that is already filled — the
+ * exact churn this constant exists to stop. Over-counting costs a fleet that
+ * runs slightly light for up to an hour; under-counting costs perpetual
+ * relaunch churn that re-burns quota on every boot and worsens the real
+ * constraint. Detection of a genuinely wedged member is NOT this signal's job:
+ * `fleet:leader-brief`'s WI-583276 alert owns it, on its own tighter window.
+ */
+export const FLEET_HEADCOUNT_EXECUTION_WINDOW_MS = 60 * 60_000;
+
 /** The exact population behind `FleetHeadcountState.current`.
  *
- * A launch heartbeat proves only that a process occupies a member seat. Modern
- * transactions additionally attest that the worker called a tool, installed a
- * durable wake, pulled the scheduler, and reached a disposition. Productive
- * headcount is therefore the intersection of those recorded worker-ready ids
- * with the independently-live launch roster. Legacy fleets have no attestation
- * field; their old live-roster behavior is retained but named as a fallback.
- * A failed transaction/roster read stays explicitly unknown. */
+ * A launch heartbeat proves only that a process occupies a member seat, so
+ * `current` is attested from RECENT AGENT-ORIGIN EXECUTION intersected with the
+ * independently-live launch roster (`agentOriginToolCallOwnersSince`, the same
+ * telemetry WI-583276 established as authoritative turn provenance).
+ *
+ * ⚠ WI-2034624: `current` must NEVER be scoped to the CURRENT LAUNCH
+ * TRANSACTION. It once was — the intersection of `transaction.workerReadyMemberIds`
+ * with the live roster — and a member launched by a PRIOR transaction, or
+ * rebuilt by a carry-respawn, never re-enters that recorded set. The fleet then
+ * reads permanently under-strength (measured 2026-09-01: `current 3` of target
+ * 50, while 37 roster members were live and ~22 were demonstrably executing),
+ * the governor keeps requesting replacements it does not need, and the churn
+ * compounds — 144 ever-members in 13h on one fleet, 932 lifetime on its
+ * predecessor. Transaction worker-readiness remains the right evidence for
+ * verifying THAT TRANSACTION (prune/retry/wait), and the governor still uses it
+ * for exactly that; it is not a population. `transactionWorkerReadyMembers` is
+ * retained here as a DIAGNOSTIC only, never as the count.
+ *
+ * Legacy fleets carry no worker contract at all; their old live-roster behavior
+ * is retained but named as a fallback. A failed roster or telemetry read stays
+ * explicitly unknown rather than silently narrowing the population. */
 export interface FleetHeadcountBasis {
   kind: FleetHeadcountBasisKind;
   liveRosterMembers: number | null;
+  /** Live members with an agent-origin tool call inside the sizing window.
+   * `null` when the telemetry leg failed or was not attempted. */
+  executingMembers: number | null;
+  /** DIAGNOSTIC ONLY — the current transaction's recorded worker-ready ids.
+   * Never the population behind `current`; see the WI-2034624 note above. */
   transactionWorkerReadyMembers: number | null;
 }
 
@@ -331,9 +370,19 @@ export interface FleetProductiveHeadcountMeasurement {
   basis: FleetHeadcountBasis;
 }
 
+/**
+ * `executingMemberIds` is REQUIRED, not optional, and that is load-bearing: an
+ * optional attestation is one a call site can silently omit, and omitting it is
+ * precisely the WI-2034624 defect (a transaction-scoped population standing in
+ * for a fleet-wide one). Making it required means the compiler names every
+ * surface that must supply the evidence. `null` states honestly that the
+ * telemetry leg failed or timed out; it must never be read as "nobody is
+ * executing", so it resolves to UNKNOWN rather than to a narrower count.
+ */
 export function measureFleetProductiveHeadcount(
   transaction: FleetLaunchTransaction | null | undefined,
   liveMemberIds: readonly string[] | null,
+  executingMemberIds: ReadonlySet<string> | null,
 ): FleetProductiveHeadcountMeasurement {
   const liveIds = liveMemberIds == null
     ? null
@@ -346,34 +395,44 @@ export function measureFleetProductiveHeadcount(
   const recordedReadyIds = Array.isArray(transaction?.workerReadyMemberIds)
     ? [...new Set(transaction.workerReadyMemberIds.filter((id) => typeof id === 'string' && id.length > 0))]
     : null;
+  // Attested seats, over the CANONICAL live roster — deliberately independent of
+  // which launch transaction created each member (WI-2034624).
+  const executingLive = liveIds != null && executingMemberIds != null
+    ? liveIds.filter((ownerId) => executingMemberIds.has(ownerId))
+    : null;
 
-  if (liveIds == null || transaction === undefined) {
+  if (liveIds == null) {
     return {
       current: null,
       basis: {
         kind: 'unknown',
-        liveRosterMembers: liveIds?.length ?? null,
+        liveRosterMembers: null,
+        executingMembers: null,
         transactionWorkerReadyMembers: recordedReadyIds?.length ?? null,
       },
     };
   }
-  if (recordedReadyIds != null) {
-    const live = new Set(liveIds);
+  if (executingLive != null) {
     return {
-      current: recordedReadyIds.filter((ownerId) => live.has(ownerId)).length,
+      current: executingLive.length,
       basis: {
-        kind: 'worker-ready-live-intersection',
+        kind: 'agent-origin-execution-attested',
         liveRosterMembers: liveIds.length,
-        transactionWorkerReadyMembers: recordedReadyIds.length,
+        executingMembers: executingLive.length,
+        transactionWorkerReadyMembers: recordedReadyIds?.length ?? null,
       },
     };
   }
-  if (!hasWorkerContract) {
+  // No execution telemetry. A legacy fleet with no worker contract keeps its
+  // historical live-roster reading; anything else stays honestly unknown rather
+  // than falling back to the transaction-scoped population.
+  if (transaction !== undefined && !hasWorkerContract) {
     return {
       current: liveIds.length,
       basis: {
         kind: 'legacy-live-roster-fallback',
         liveRosterMembers: liveIds.length,
+        executingMembers: null,
         transactionWorkerReadyMembers: null,
       },
     };
@@ -383,7 +442,8 @@ export function measureFleetProductiveHeadcount(
     basis: {
       kind: 'unknown',
       liveRosterMembers: liveIds.length,
-      transactionWorkerReadyMembers: null,
+      executingMembers: null,
+      transactionWorkerReadyMembers: recordedReadyIds?.length ?? null,
     },
   };
 }
@@ -406,10 +466,12 @@ export function projectFleetHeadcountState(
   profile: FleetHeadcountTarget | null | undefined,
   transaction: FleetLaunchTransaction | null | undefined,
   liveMemberIds: readonly string[] | null,
+  executingMemberIds: ReadonlySet<string> | null,
 ): FleetHeadcountState {
   const { current: measuredCurrent, basis } = measureFleetProductiveHeadcount(
     transaction,
     liveMemberIds,
+    executingMemberIds,
   );
   if (profile === undefined) {
     return {

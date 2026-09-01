@@ -235,6 +235,12 @@ export const scorecardEmitArgs = z
       .boolean()
       .optional()
       .describe('File even when the canonical evidence fingerprint matches the latest scorecard.'),
+    acknowledgeExisting: z
+      .literal(true)
+      .optional()
+      .describe(
+        'Acknowledge that complete independent scorecards already exist for this rubric revision. Required to append another; force:true only bypasses unchanged-evidence deduplication and never substitutes for this acknowledgement.',
+      ),
   })
   .strict();
 
@@ -990,6 +996,45 @@ export async function emitScorecard(
         };
       }
     }
+    // EI-22001573837456548: scorecard history is append-only and independent
+    // graders cannot retract a redundant card. Read a bounded, complete-enough
+    if (!args.acceptance && !args.acknowledgeExisting) {
+      // This is intentionally a broader read than the source-hive-scoped latest
+      // read below: the redundancy tuple is (rubricRef, rubricRevision), not
+      // (rubricRef, sourceHive, rubricRevision). `force` intentionally does not
+      // bypass this guard; it only means "the evidence changed despite the latest
+      // fingerprint".
+      const priorScorecards = await listScorecards({ rubricRef: args.rubricRef, limit: 500 });
+      const existingIndependentScorecardIds = priorScorecards
+        .filter(
+          (card) =>
+            card.rubricRef === args.rubricRef &&
+            (card.rubricRevision ?? null) === (rubricRevision ?? null) &&
+            card.rubricResolved &&
+            card.missingKeys.length === 0 &&
+            (card.extraKeys?.length ?? 0) === 0 &&
+            !card.synthesized &&
+            card.createdBy != null &&
+            card.createdBy !== input.createdBy &&
+            !card.acceptance,
+        )
+        .map((card) => card.issueId);
+      if (existingIndependentScorecardIds.length > 0) {
+        const revisionLabel = rubricRevision == null ? 'unversioned' : String(rubricRevision);
+        return {
+          ok: false as const,
+          code: 'existing_independent_scorecards' as const,
+          error:
+            `complete independent scorecard(s) already exist for rubric '${args.rubricRef}' revision ${revisionLabel}: ` +
+            `${existingIndependentScorecardIds.join(', ')} — re-run with acknowledgeExisting:true to append another; ` +
+            'force:true only bypasses unchanged-evidence deduplication and does not acknowledge existing cards',
+          existingIndependentScorecardIds,
+          acknowledgementRequired: 'acknowledgeExisting:true' as const,
+        };
+      }
+    }
+    // Preserve the existing source-hive partition for unchanged-evidence dedup.
+    // The broad population read above is only for the cross-hive redundancy guard.
     const latest = (await listScorecards({ rubricRef: args.rubricRef, sourceHive, limit: 1 }))[0];
     const latestFingerprint = latest
       ? (latest.evidenceFingerprint ??
@@ -1290,13 +1335,13 @@ export default defineTool({
   name: 'scorecards:emit',
   profile: 'engineer',
   description:
-    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Stamps the running generation, stores deterministic instrument snapshots, and declines unchanged evidence by fingerprint unless force:true.",
+    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. When complete independent scorecards already exist for the same rubric revision, acknowledgeExisting:true is required to append another; force:true only bypasses unchanged-evidence deduplication. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Stamps the running generation and stores deterministic instrument snapshots.",
   guidance: {
     when: 'Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.',
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     chaining:
-      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; do not pass supersedes on the author acceptance.',
+      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. If emit returns existing_independent_scorecards, inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
   },
   capability: 'coord:write',

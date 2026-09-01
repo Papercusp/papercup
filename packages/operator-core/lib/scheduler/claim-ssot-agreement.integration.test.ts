@@ -401,7 +401,9 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seedPlan('assigned-plan', 'ready');
     await seedPlanLinkedIssue('WI-ASSIGNED-PLAN', 'assigned-plan', 'P-ASSIGNED');
     await seedAssignment('assigned-plan', 'P-ASSIGNED', 'su-route-owner');
-    await seedPlan('draft-plan', 'draft'); // 11c. reserved to an ordinary draft plan
+    // Ordinary draft is the shipped FREE control: without a live lease/assignment it has no
+    // occupant and must not starve generic backlog (migration 920 remained a draft experiment).
+    await seedPlan('draft-plan', 'draft');
     await seedPlanLinkedIssue('WI-DRAFT-PLAN', 'draft-plan', 'P-DRAFT');
     await seedPlan('paused-lifecycle-plan', 'paused'); // 11d. reserved to an ordinary paused plan
     await seedPlanLinkedIssue('WI-PAUSED-LIFECYCLE', 'paused-lifecycle-plan', 'P-PAUSED');
@@ -432,6 +434,7 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
       'WI-CHANGE',
       'WI-DEP-OK',
       'WI-DONE-PLAN-FREE',
+      'WI-DRAFT-PLAN',
       'WI-READY-FREE',
       'WI-LEGACY-HUMAN',
       'WI-OP',

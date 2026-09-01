@@ -794,6 +794,40 @@ interface GateTestRunRow {
   duration_ms: number | string | null;
 }
 
+/** Injectable seams for the signed-verdict producer. Production callers omit this;
+ * focused tests provide deterministic registry/manifest/identity/DB fakes without
+ * touching a real checkout, keychain, or Postgres. */
+export interface SignedGateVerdictPublishDeps {
+  canonicalRepoKey?: (entry: { slug: string; github_repository_id?: number; github_remote?: string; pot_repo_key?: string }) => string;
+  loadHarnessRegistry?: (workspaceId: string, opts?: { fresh?: boolean }) => Promise<{ projects: Array<{
+    slug: string;
+    path?: string;
+    harness_kind?: string;
+    hive_slug?: string;
+    pot_repo_key?: string;
+  }> }>;
+  buildShardManifestAtSha?: (repoPath: string, sha: string) => Promise<{
+    manifest: {
+      shards: Array<{ shardId: string; workspaceDir: string; layer: 'unit' | 'integration' }>;
+      unreadableWorkspaces?: Array<unknown>;
+    };
+    inputsHashByShardId: Record<string, string>;
+  }>;
+  readTestRuns?: (runId: string, stagingSha: string) => Promise<GateTestRunRow[]>;
+  resolveLocalGithubIdentity?: () => Promise<{ kind: string; githubUserId?: number }>;
+  resolveDeviceKeychainId?: (githubUserId: number) => string;
+  loadOrGenerateDeviceKeypair?: (keychainId: string) => Promise<{ pubkeyBase64: string }>;
+  signWithDeviceKey?: (keychainId: string, bytes: Buffer) => Promise<Buffer>;
+  signGateVerdict?: typeof import('../../sync/pot-git/gate/verdicts').signGateVerdict;
+  gateVerdictId?: typeof import('../../sync/pot-git/gate/verdicts').gateVerdictId;
+  insertGateVerdict?: (args: {
+    target: GateVerdictTarget;
+    hiveHomeSlug: string | null;
+    signed: import('../../sync/pot-git/gate/verdicts').GateVerdict;
+    verdictId: string;
+  }) => Promise<void>;
+}
+
 interface SignedGateShard {
   repoKey: string;
   stagingSha: string;
@@ -822,6 +856,7 @@ interface SignedGateShard {
 export async function publishSignedGateVerdicts(
   target: GateVerdictTarget,
   verdict: CheckpointVerdict,
+  deps: SignedGateVerdictPublishDeps = {},
 ): Promise<SignedGateVerdictPublishResult> {
   if (!isRecordableVerdict(verdict.reason)) {
     return { published: 0, skipped: 0, reason: 'not-recordable' };
@@ -835,18 +870,41 @@ export async function publishSignedGateVerdicts(
   }
 
   try {
-    const [{ loadHarnessRegistry }, { canonicalRepoKey }, { buildShardManifestAtSha }] =
+    const [{ loadHarnessRegistry: importedLoadRegistry }, { canonicalRepoKey: importedCanonicalRepoKey }, { buildShardManifestAtSha: importedBuildManifest }] =
       await Promise.all([
-        import('../../harness-registry'),
+        deps.loadHarnessRegistry ? Promise.resolve({ loadHarnessRegistry: deps.loadHarnessRegistry }) : import('../../harness-registry'),
         import('../../sync/pot-git/repo-identity'),
-        import('../../sync/pot-git/gate/shards'),
+        deps.buildShardManifestAtSha ? Promise.resolve({ buildShardManifestAtSha: deps.buildShardManifestAtSha }) : import('../../sync/pot-git/gate/shards'),
       ]);
+    const loadHarnessRegistry = importedLoadRegistry as NonNullable<SignedGateVerdictPublishDeps['loadHarnessRegistry']>;
+    const canonicalRepoKey = deps.canonicalRepoKey ?? importedCanonicalRepoKey;
     const registry = await loadHarnessRegistry(target.workspaceId, { fresh: true });
     const entry = registry.projects.find((project) => project.slug === target.installSlug);
     if (!entry?.path) return { published: 0, skipped: 0, reason: 'registry-unreadable' };
 
-    const manifestResult = await buildShardManifestAtSha(entry.path, stagingSha).catch(() => null);
+    const manifestResult = await (deps.buildShardManifestAtSha
+      ? deps.buildShardManifestAtSha(entry.path, stagingSha)
+      : importedBuildManifest(
+          entry.path,
+          stagingSha,
+          undefined,
+          async (gitlinkPath) => {
+            // The gate producer runs on the managed checkout, where initialized
+            // submodules already hold the ODBs needed to read committed workspace
+            // package.json files. Resolve only descendants of that checkout; an
+            // absent/uninitialized submodule remains explicitly unreadable below.
+            const repoPath = path.resolve(entry.path, gitlinkPath);
+            const root = `${path.resolve(entry.path)}${path.sep}`;
+            return repoPath.startsWith(root) && existsSync(repoPath) ? { repoPath } : null;
+          },
+        )).catch(() => null);
     if (!manifestResult) return { published: 0, skipped: 0, reason: 'manifest-unreadable' };
+    // A manifest that explicitly reports workspaces behind an unresolved gitlink is
+    // incomplete. Publishing the readable subset would make the aggregate gate look
+    // covered while silently omitting a suite, so fail closed for the whole run.
+    if (manifestResult.manifest.unreadableWorkspaces?.length) {
+      return { published: 0, skipped: 0, reason: 'manifest-unreadable' };
+    }
 
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
@@ -854,26 +912,35 @@ export async function publishSignedGateVerdicts(
     // harness_slug NULL (those rows describe the isolated gate tree).  The
     // run-group UUID is the exact, non-guessable join key; source+commit keep
     // unrelated local rows out even if a caller accidentally reuses a UUID.
-    const rows = (await sql.unsafe(
-      `SELECT file_path, status, duration_ms
-         FROM harness_shared.test_runs
-        WHERE run_group_id = $1
-          AND source = 'ci'
-          AND commit_sha = $2
-        ORDER BY file_path`,
-      [runId, stagingSha],
-    )) as GateTestRunRow[];
+    const rows = deps.readTestRuns
+      ? await deps.readTestRuns(runId, stagingSha)
+      : ((await sql.unsafe(
+          `SELECT file_path, status, duration_ms
+             FROM harness_shared.test_runs
+            WHERE run_group_id = $1
+              AND source = 'ci'
+              AND commit_sha = $2
+            ORDER BY file_path`,
+          [runId, stagingSha],
+        )) as GateTestRunRow[]);
     if (!rows.length) return { published: 0, skipped: 0, reason: 'no-test-rows' };
 
-    const identity = await (await import('../../identity/resolve-local-github-identity'))
-      .resolveLocalGithubIdentity();
+    const identity = deps.resolveLocalGithubIdentity
+      ? await deps.resolveLocalGithubIdentity()
+      : await (await import('../../identity/resolve-local-github-identity')).resolveLocalGithubIdentity();
     if (identity.kind !== 'ok') return { published: 0, skipped: rows.length, reason: 'identity-unreadable' };
-    const keychainId = (await import('../../identity/device-keychain-id')).resolveDeviceKeychainId(
-      identity.githubUserId,
-    );
-    const keypair = await (await import('../../identity/attest')).loadOrGenerateDeviceKeypair(keychainId);
-    const signWithDeviceKey = (await import('../../identity/sign-with-device-key')).signWithDeviceKey;
-    const { signGateVerdict, gateVerdictId } = await import('../../sync/pot-git/gate/verdicts');
+    if (typeof identity.githubUserId !== 'number') return { published: 0, skipped: rows.length, reason: 'identity-unreadable' };
+    const keychainId = deps.resolveDeviceKeychainId
+      ? deps.resolveDeviceKeychainId(identity.githubUserId)
+      : (await import('../../identity/device-keychain-id')).resolveDeviceKeychainId(identity.githubUserId);
+    const keypair = deps.loadOrGenerateDeviceKeypair
+      ? await deps.loadOrGenerateDeviceKeypair(keychainId)
+      : await (await import('../../identity/attest')).loadOrGenerateDeviceKeypair(keychainId);
+    const signWithDeviceKey = deps.signWithDeviceKey
+      ?? (await import('../../identity/sign-with-device-key')).signWithDeviceKey;
+    const verdictFns = await import('../../sync/pot-git/gate/verdicts');
+    const signGateVerdict = deps.signGateVerdict ?? verdictFns.signGateVerdict;
+    const gateVerdictId = deps.gateVerdictId ?? verdictFns.gateVerdictId;
 
     const normalize = (file: string): string => file.replaceAll('\\', '/').replace(/^\.\//, '');
     const layerForFile = (file: string): 'unit' | 'integration' =>
@@ -935,29 +1002,33 @@ export async function publishSignedGateVerdicts(
         (bytes) => signWithDeviceKey(keychainId, bytes),
       );
       const verdictId = gateVerdictId(signed);
-      await sql.unsafe(
-        `INSERT INTO harness_shared.gate_verdicts
-          (workspace_id, verdict_id, harness_slug, schema_v, repo_key, staging_sha,
-           shard_id, inputs_hash, verdict, duration_ms, device_pubkey, verdict_ts,
-           sig, origin, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'local', now())
-         ON CONFLICT (workspace_id, verdict_id) DO NOTHING`,
-        [
-          target.workspaceId,
-          verdictId,
-          hiveHomeSlug,
-          signed.v,
-          signed.repo_key,
-          signed.staging_sha,
-          signed.shard_id,
-          signed.inputs_hash,
-          signed.verdict,
-          signed.duration_ms,
-          signed.device_pubkey,
-          signed.ts,
-          signed.sig,
-        ],
-      );
+      if (deps.insertGateVerdict) {
+        await deps.insertGateVerdict({ target, hiveHomeSlug, signed, verdictId });
+      } else {
+        await sql.unsafe(
+          `INSERT INTO harness_shared.gate_verdicts
+            (workspace_id, verdict_id, harness_slug, schema_v, repo_key, staging_sha,
+             shard_id, inputs_hash, verdict, duration_ms, device_pubkey, verdict_ts,
+             sig, origin, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'local', now())
+           ON CONFLICT (workspace_id, verdict_id) DO NOTHING`,
+          [
+            target.workspaceId,
+            verdictId,
+            hiveHomeSlug,
+            signed.v,
+            signed.repo_key,
+            signed.staging_sha,
+            signed.shard_id,
+            signed.inputs_hash,
+            signed.verdict,
+            signed.duration_ms,
+            signed.device_pubkey,
+            signed.ts,
+            signed.sig,
+          ],
+        );
+      }
       published += 1;
     }
     return { published, skipped: Math.max(0, rows.length - shards.length) };
@@ -1331,6 +1402,18 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   // A pinned candidate is retained as diagnostic pipeline evidence, but it must not become
   // shared gate state or trigger any repair/escalation machinery.
   if (isPinnedCheckpointVerdict(verdict)) return true;
+  // P-303: the terminal producer has the one exact (runId, candidate) pair that can
+  // bind CI file outcomes to committed DG-2 shard inputs. Publish here, once, after
+  // the recordability + pinned-diagnostic guards. The publisher is fail-closed and
+  // additive: absent/ambiguous evidence writes no signed fact and never changes the
+  // ordinary gate-health verdict below.
+  const signedVerdicts = await publishSignedGateVerdicts(target, verdict);
+  if (signedVerdicts.published > 0) {
+    console.log(
+      `${orchestratorStdoutTag()} published ${signedVerdicts.published} signed gate shard verdict(s)` +
+        (signedVerdicts.skipped > 0 ? ` (${signedVerdicts.skipped} test row(s) unmatched)` : ''),
+    );
+  }
   // EI-19405864032365760: `summary` rides along so the 'migrations-pending' abort path can name
   // the pending migration in `gate_health.inconclusive` — it is the only field carrying it.
   await trackGateStall(

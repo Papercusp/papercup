@@ -16,6 +16,7 @@ import {
   releaseFleetLaunchSlot,
   setFleetHeadcountTarget,
   setFleetLaunchTransaction,
+  FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
   type FleetHeadcountConfig,
   type FleetHeadcountBasis,
   type FleetLaunchCapacitySnapshot,
@@ -26,6 +27,7 @@ import {
 } from '../../agent-fleets-store';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
+import { agentOriginToolCallOwnersSince } from '../../fleet/assignments';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import {
   composeModelSpec,
@@ -89,11 +91,20 @@ export interface FleetHeadcountGovernorAssessment {
 
 /** Pure P-004 policy. It consumes typed launch evidence but never substitutes it
  * for live roster state: readiness is intersected with the independently-read
- * live ids, and an unverified/slow boot can only produce wait/retry. */
+ * live ids, and an unverified/slow boot can only produce wait/retry.
+ *
+ * WI-2034624: transaction worker-readiness governs THIS TRANSACTION'S own
+ * prune/retry/wait decisions and nothing else. The population the deficit is
+ * sized from comes from `executingMemberIds` — recent agent-origin execution
+ * over the canonical live roster — so a member launched by a prior transaction
+ * or rebuilt by a carry-respawn counts exactly like one this transaction
+ * opened. `executingMemberIds` is required for that reason: a caller that could
+ * omit it would silently resurrect the transaction-scoped count. */
 export function assessFleetHeadcountGovernor(args: {
   target: number;
   productiveCapacityFloor?: number;
   liveMemberIds: readonly string[];
+  executingMemberIds: ReadonlySet<string> | null;
   transaction: FleetLaunchTransaction | null | undefined;
   retryLimit?: number;
   now?: number;
@@ -148,7 +159,11 @@ export function assessFleetHeadcountGovernor(args: {
   const retryable = unreadyMemberIds.filter(
     (ownerId) => currentProbeOwners.has(ownerId) && (attempts[ownerId] ?? 0) < retryLimit,
   );
-  const headcountMeasurement = measureFleetProductiveHeadcount(transaction, liveMemberIds);
+  const headcountMeasurement = measureFleetProductiveHeadcount(
+    transaction,
+    liveMemberIds,
+    args.executingMemberIds,
+  );
   const productiveMemberCount = headcountMeasurement.current;
   const deficit = productiveMemberCount == null
     ? 0
@@ -174,7 +189,7 @@ export function assessFleetHeadcountGovernor(args: {
       action: 'wait',
       actionOwnerId: null,
       spawnCount: 0,
-      reason: 'productive headcount is unknown; refill fails closed until the worker-ready snapshot is readable',
+      reason: 'productive headcount is unknown; refill fails closed until the live roster and the agent-origin execution attestation are both readable',
     };
   }
 
@@ -849,6 +864,10 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     ? { transactionId: transaction.transactionId, updatedAt: transaction.updatedAt }
     : null;
   let liveMemberIds: string[] = [];
+  // WI-2034624: the population `current` is sized from. `null` = the telemetry
+  // leg failed, which the measurement resolves to UNKNOWN (refill fails closed)
+  // rather than to a narrower, transaction-scoped count.
+  let executingMemberIds: ReadonlySet<string> | null = null;
   let assessment: FleetHeadcountGovernorAssessment | null = null;
   let claimedLaunchSlotAt: number | null = null;
   let spawnAttempted = false;
@@ -884,6 +903,10 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     const now = Date.now();
     liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
       .filter((id) => id !== fleet.leaderOwnerId);
+    executingMemberIds = await agentOriginToolCallOwnersSince(
+      liveMemberIds,
+      FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+    );
 
     // Legacy launch records have no truthful --launched-by correlation. Adopt
     // the independently-live roster into a fresh, unprobed transaction before
@@ -906,6 +929,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
           target: attempt.target,
           productiveCapacityFloor,
           liveMemberIds,
+          executingMemberIds,
           transaction,
           now,
         });
@@ -931,6 +955,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       target: attempt.target,
       productiveCapacityFloor,
       liveMemberIds,
+      executingMemberIds,
       transaction,
       now,
     });

@@ -1847,6 +1847,37 @@ function droppedClaims(
 // ── External-state-claim lint (P-009) ────────────────────────────────────────
 
 const CLAIM_ASSERTION_RE = /\b(MUST|expects?|alarm if|will\s+(?:roll|change|move|land)|anchor(?:ed)?\s+on)\b/i;
+/**
+ * EI-20137618267685442: process/file handles are external state too, but the
+ * motivating carry prose did not use one of CLAIM_ASSERTION_RE's verbs (it
+ * said "the log is /tmp/..." and then treated an absent marker as permission
+ * to re-run). Keep this deliberately narrow: only familiar durable handle
+ * shapes plus a lifecycle/action word enter the advisory, so ordinary paths
+ * in narrative prose remain quiet.
+ */
+const PROCESS_HANDLE_RE: ReadonlyArray<RegExp> = [
+  /(?:^|[\s`"'(])\/(?:tmp|var\/tmp|run|var\/run|home)\/[^\s`"',;)]+/i,
+  /\b(?:pid|process\s+id)\s*[:=#]?\s*\d+\b/i,
+  /\bbash[_ -]?id\s*[:=#]?\s*[A-Za-z0-9._:-]+\b/i,
+];
+const PROCESS_HANDLE_ACTION_RE =
+  /\b(?:absent|missing|not\s+found|dead|stale|alive|running|finished|complete|completion|marker|grep|poll|await|re-?run|relaunch|start|run|wait)\b/i;
+
+function hasProcessHandleClaim(line: string): boolean {
+  return PROCESS_HANDLE_RE.some((pattern) => pattern.test(line)) && PROCESS_HANDLE_ACTION_RE.test(line);
+}
+
+function processHandleTokens(line: string): string[] {
+  const tokens: string[] = [];
+  for (const pattern of PROCESS_HANDLE_RE) {
+    const matches = line.match(pattern) ?? [];
+    for (const match of matches) {
+      const token = match.trim().replace(/^[`"'(]+/, '');
+      if (token) tokens.push(token);
+    }
+  }
+  return tokens;
+}
 const CLAIM_TOKEN_RES: ReadonlyArray<RegExp> = [
   // content-hash / sha-like: ≥8 hex with at least one letter (review fold #4 — this
   // fleet habitually quotes 10-char short-shas; the letter requirement keeps plain
@@ -1892,7 +1923,8 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
   });
   for (const rawLine of (prose ?? '').split('\n')) {
     const line = rawLine.trim();
-    if (!line || !CLAIM_ASSERTION_RE.test(line)) continue;
+    const processHandleClaim = hasProcessHandleClaim(line);
+    if (!line || (!CLAIM_ASSERTION_RE.test(line) && !processHandleClaim)) continue;
     const coveredByRowId = probeIdPatterns.some((pattern) => pattern.test(line));
     const tokens: string[] = [];
     for (const re of CLAIM_TOKEN_RES) {
@@ -1904,6 +1936,10 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
       CLAIM_NOUN_RE.lastIndex = 0;
       for (const m of line.matchAll(CLAIM_NOUN_RE)) tokens.push(m[0]);
     }
+    // Handle-shaped claims need their own coverage anchor. A path/PID/
+    // bash_id is the identity a successor can re-check; without it, a marker
+    // assertion can silently refer to a different run after a respawn.
+    if (processHandleClaim) tokens.push(...processHandleTokens(line));
     if (tokens.length === 0) continue;
     // EI-21494640395547961: exact-substring coverage misses a check row that carries
     // the SAME concern in different words ("generation identity through its terminal

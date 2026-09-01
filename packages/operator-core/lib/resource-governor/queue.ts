@@ -223,10 +223,20 @@ interface QueueDbRow {
   created_ts: number | string | null;
 }
 
-interface QueueLeaseOwnerDbRow {
+export interface QueueLeaseOwnerDbRow {
   receipt_id: string | null;
   lease_id: string | null;
   owner: string | null;
+}
+
+/** Raw row returned by the read-only queue population census. */
+export interface GovernorQueuePopulationDbRow {
+  admission_class: string | null;
+  depth: number | string | null;
+  oldest_age_ms: number | string | null;
+  arrivals: number | string | null;
+  drained: number | string | null;
+  observed_window_ms: number | string | null;
 }
 
 /** Read-only queue census row consumed by the governor state snapshot. */
@@ -246,6 +256,145 @@ export interface QueueLeaseOwnerObservation {
   readonly owner: string;
 }
 
+export const GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS = 60_000;
+
+function nonNegativeDbNumber(value: number | string | null | undefined): number | null {
+  const number = typeof value === 'string' && value.trim() === '' ? NaN : Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+/** Map the nullable/stringly PostgreSQL result into the typed lease identity. */
+export function mapQueueLeaseOwnerRows(
+  rows: readonly QueueLeaseOwnerDbRow[],
+): QueueLeaseOwnerObservation[] {
+  return rows.flatMap((row) => {
+    const receiptId = row.receipt_id?.trim();
+    const leaseId = row.lease_id?.trim();
+    const owner = row.owner?.trim();
+    return receiptId && leaseId && owner ? [{ receiptId, leaseId, owner }] : [];
+  });
+}
+
+/** Map the complete queue census without allowing PostgreSQL's numeric strings to leak. */
+export function mapGovernorQueuePopulationRows(
+  rows: readonly GovernorQueuePopulationDbRow[],
+): GovernorQueuePopulationObservation[] {
+  return rows.map((row) => {
+    const admissionClass = row.admission_class?.trim();
+    if (!admissionClass) throw new Error('resource-governor queue census returned an empty admission class');
+    const depth = nonNegativeDbNumber(row.depth);
+    const arrivals = nonNegativeDbNumber(row.arrivals);
+    const drained = nonNegativeDbNumber(row.drained);
+    const observedWindowMs = nonNegativeDbNumber(row.observed_window_ms);
+    if (depth === null || arrivals === null || drained === null || observedWindowMs === null) {
+      throw new Error(`resource-governor queue census returned invalid totals for '${admissionClass}'`);
+    }
+    const oldestAgeMs = nonNegativeDbNumber(row.oldest_age_ms);
+    return {
+      admissionClass,
+      depth,
+      ...(oldestAgeMs === null ? {} : { oldestAgeMs }),
+      arrivals,
+      drained,
+      observedWindowMs,
+    };
+  });
+}
+
+/**
+ * Read the complete per-class queue population for a workspace.
+ *
+ * This is intentionally a read-only query. It includes active receipts plus rows
+ * created or driven terminal during the observation window, so a class with no
+ * current depth can still contribute an arrival/drain sample. There is no LIMIT:
+ * the snapshot builder performs bounded shaping only after it has computed totals
+ * from this complete population.
+ */
+export async function readGovernorQueuePopulation(
+  sql: SqlClient,
+  workspaceId: string,
+  nowMs = Date.now(),
+  observationWindowMs = GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
+): Promise<GovernorQueuePopulationObservation[]> {
+  const observedAtMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const windowMs = Number.isFinite(observationWindowMs) && observationWindowMs > 0
+    ? Math.floor(observationWindowMs)
+    : GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS;
+  const windowStartMs = observedAtMs - windowMs;
+  const rows = await sql<GovernorQueuePopulationDbRow[]>`
+    WITH governor_rows AS (
+      SELECT payload->'resource_governor' AS record
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+         AND btrim(COALESCE(payload->'resource_governor'->>'admissionClass', '')) <> ''
+         AND (
+           payload->'resource_governor'->>'state' IN ('queued', 'eligible', 'leased', 'running')
+           OR (
+             jsonb_typeof(payload->'resource_governor'->'enqueuedAtMs') = 'number'
+             AND (payload->'resource_governor'->>'enqueuedAtMs')::double precision BETWEEN ${windowStartMs} AND ${observedAtMs}
+           )
+           OR (
+             payload->'resource_governor'->>'state' IN ('completed', 'cancelled', 'superseded', 'expired')
+             AND jsonb_typeof(payload->'resource_governor'->'updatedAtMs') = 'number'
+             AND (payload->'resource_governor'->>'updatedAtMs')::double precision BETWEEN ${windowStartMs} AND ${observedAtMs}
+           )
+         )
+    )
+    SELECT record->>'admissionClass' AS admission_class,
+           COUNT(*) FILTER (
+             WHERE record->>'state' IN ('queued', 'eligible', 'leased', 'running')
+           )::int AS depth,
+           MAX(
+             CASE
+               WHEN record->>'state' IN ('queued', 'eligible', 'leased', 'running')
+                AND jsonb_typeof(record->'enqueuedAtMs') = 'number'
+               THEN GREATEST(0, ${observedAtMs} - (record->>'enqueuedAtMs')::double precision)
+             END
+           )::double precision AS oldest_age_ms,
+           COUNT(*) FILTER (
+             WHERE jsonb_typeof(record->'enqueuedAtMs') = 'number'
+               AND (record->>'enqueuedAtMs')::double precision BETWEEN ${windowStartMs} AND ${observedAtMs}
+           )::int AS arrivals,
+           COUNT(*) FILTER (
+             WHERE record->>'state' IN ('completed', 'cancelled', 'superseded', 'expired')
+               AND jsonb_typeof(record->'updatedAtMs') = 'number'
+               AND (record->>'updatedAtMs')::double precision BETWEEN ${windowStartMs} AND ${observedAtMs}
+           )::int AS drained,
+           ${windowMs}::bigint AS observed_window_ms
+      FROM governor_rows
+     GROUP BY record->>'admissionClass'
+     ORDER BY record->>'admissionClass' ASC`;
+  return mapGovernorQueuePopulationRows(rows);
+}
+
+/** Read active receipt identities without taking row locks or mutating state. */
+export async function readActiveGovernorLeaseOwners(
+  sql: SqlClient,
+  workspaceId: string,
+  namespace: string | null = null,
+): Promise<QueueLeaseOwnerObservation[]> {
+  const namespacePredicate =
+    namespace === null ? sql`` : sql`AND payload->'resource_governor'->>'namespace' = ${namespace}`;
+  const rows = await sql<QueueLeaseOwnerDbRow[]>`
+    SELECT feature_id AS receipt_id,
+           payload->'resource_governor'->'lease'->>'leaseId' AS lease_id,
+           payload->'resource_governor'->'lease'->>'owner' AS owner
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+       ${namespacePredicate}
+       AND payload->'resource_governor'->>'state' IN ('leased', 'running')
+       AND jsonb_typeof(payload->'resource_governor'->'lease') = 'object'
+       AND btrim(COALESCE(payload->'resource_governor'->'lease'->>'leaseId', '')) <> ''
+       AND btrim(COALESCE(payload->'resource_governor'->'lease'->>'owner', '')) <> ''
+     ORDER BY feature_id ASC`;
+  return mapQueueLeaseOwnerRows(rows);
+}
+
+/** Short alias for callers that already have a queue-oriented vocabulary. */
+export const readQueuePopulation = readGovernorQueuePopulation;
+
 /**
  * Select only leases whose shared liveness verdict is explicitly `ended`.
  *
@@ -261,8 +410,6 @@ export function selectEndedLeaseOwners(
 ): QueueLeaseOwnerObservation[] {
   return rows.filter((row) => verdicts.get(row.owner)?.sessionState === 'ended');
 }
-
-export const GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS = 60_000;
 
 function jsonObject(value: unknown): Record<string, unknown> | null {
   let current = value;
@@ -817,10 +964,65 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     return rows[0] ?? null;
   }
 
+  /** Read active lease identities for the liveness reconciliation pass. */
+  async readActiveLeaseOwners(namespace: string | null = null): Promise<QueueLeaseOwnerObservation[]> {
+    // A few lightweight test/dry-run clients expose only `begin`; there is no
+    // read-capable SQL function to call in that shape. Treat the optional
+    // enrichment as unavailable without logging a false production warning.
+    if (typeof this.sql !== 'function') return [];
+    return readActiveGovernorLeaseOwners(this.sql, this.workspaceId, namespace);
+  }
+
+  /** Read the complete queue population used by the durable governor snapshot. */
+  async readQueuePopulation(
+    nowMs = Date.now(),
+    observationWindowMs = GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
+  ): Promise<GovernorQueuePopulationObservation[]> {
+    return readGovernorQueuePopulation(this.sql, this.workspaceId, nowMs, observationWindowMs);
+  }
+
+  /** Explicitly named alias for callers that use the state-snapshot vocabulary. */
+  readGovernorQueuePopulation(
+    nowMs = Date.now(),
+    observationWindowMs = GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS,
+  ): Promise<GovernorQueuePopulationObservation[]> {
+    return this.readQueuePopulation(nowMs, observationWindowMs);
+  }
+
+  private async endedLeaseOwners(namespace: string | null, nowMs = Date.now()): Promise<QueueLeaseOwnerObservation[]> {
+    let active: QueueLeaseOwnerObservation[];
+    try {
+      active = await this.readActiveLeaseOwners(namespace);
+    } catch (error) {
+      // Liveness is an enrichment leg. A failed read must preserve every lease and
+      // leave the existing TTL/deadline reconciliation able to run.
+      console.warn(
+        `[resource-governor] active lease liveness read failed: ${error instanceof Error ? error.message : error}`,
+      );
+      return [];
+    }
+    const owners = [...new Set(active.map((row) => row.owner))];
+    if (owners.length === 0) return [];
+    const resolve =
+      this.resolveSessionStatesFn ?? (await import('../agent-tools/coordination/liveness-oracle')).resolveSessionStates;
+    try {
+      const verdicts = await resolve(owners.map((ownerId) => ({ ownerId })), { hydratePerId: true, nowMs });
+      return selectEndedLeaseOwners(active, verdicts);
+    } catch (error) {
+      // Unknown liveness is never owner death. Keep the lease intact and allow
+      // the independent TTL/deadline/abandonment legs to proceed.
+      console.warn(
+        `[resource-governor] active lease liveness resolution failed: ${error instanceof Error ? error.message : error}`,
+      );
+      return [];
+    }
+  }
+
   private async reconcileExpiredRows(
     tx: SqlClient,
     namespace: string | null,
     nowMs: number,
+    endedLeaseOwners: readonly QueueLeaseOwnerObservation[] = [],
   ): Promise<QueueReconciliationResult> {
     // Every admission process has its own driver instance.  An in-memory promise
     // therefore cannot prevent N processes from entering these broad UPDATEs at
@@ -836,6 +1038,57 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     }
     const namespacePredicate =
       namespace === null ? tx`` : tx`AND payload->'resource_governor'->>'namespace' = ${namespace}`;
+    const ended = endedLeaseOwners.length === 0
+      ? []
+      : await tx<QueueDbRow[]>`
+          WITH candidates AS (
+            SELECT item.workspace_id, item.harness_slug, item.feature_id, identity.lease_id, identity.owner
+              FROM harness_shared.work_items AS item
+              JOIN jsonb_to_recordset(${JSON.stringify(endedLeaseOwners.map((row) => ({
+                receipt_id: row.receiptId,
+                lease_id: row.leaseId,
+                owner: row.owner,
+              })))}::text::jsonb) AS identity(
+                receipt_id text,
+                lease_id text,
+                owner text
+              )
+                ON identity.receipt_id = item.feature_id
+             WHERE item.workspace_id = ${this.workspaceId}
+               ${namespace === null ? tx`` : tx`AND item.payload->'resource_governor'->>'namespace' = ${namespace}`}
+               AND item.payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+               AND item.payload->'resource_governor'->>'state' IN ('leased', 'running')
+               AND item.payload->'resource_governor'->'lease'->>'leaseId' = identity.lease_id
+               AND item.payload->'resource_governor'->'lease'->>'owner' = identity.owner
+             ORDER BY item.updated_ts ASC, item.feature_id ASC
+             FOR UPDATE OF item SKIP LOCKED
+             LIMIT ${RECONCILE_BATCH_SIZE}
+          )
+          UPDATE harness_shared.work_items AS item
+             SET payload = jsonb_set(
+                   item.payload,
+                   ARRAY['resource_governor']::text[],
+                   ((item.payload->'resource_governor') - 'lease') || jsonb_build_object(
+                     'state', 'queued',
+                     'updatedAtMs', ${nowMs}::bigint,
+                     'decision', jsonb_build_object(
+                       'generation', COALESCE((item.payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
+                       'atMs', ${nowMs}::bigint,
+                       'reason', 'owner-ended',
+                       'evidence', jsonb_build_object(
+                         'owner', candidates.owner,
+                         'leaseId', candidates.lease_id,
+                         'sessionState', 'ended'
+                       )
+                     )
+                   ),
+                   true
+                 ),
+                 status = 'open', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
+             FROM candidates
+            WHERE (item.workspace_id, item.harness_slug, item.feature_id) =
+                  (candidates.workspace_id, candidates.harness_slug, candidates.feature_id)
+           RETURNING item.feature_id, item.payload, item.status, item.taken_by, item.created_ts`;
     const requeued = await tx<QueueDbRow[]>`
       WITH candidates AS (
         SELECT workspace_id, harness_slug, feature_id
@@ -957,20 +1210,22 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
        RETURNING item.feature_id, item.payload, item.status, item.taken_by, item.created_ts`;
 
     return {
-      requeued: requeued.length,
+      requeued: ended.length + requeued.length,
       expired: expired.length,
       abandoned: abandoned.length,
-      total: requeued.length + expired.length + abandoned.length,
+      total: ended.length + requeued.length + expired.length + abandoned.length,
     };
   }
 
   async reconcileExpired(namespace: string, nowMs: number): Promise<QueueReconciliationResult> {
-    return this.transaction((tx) => this.reconcileExpiredRows(tx, namespace, nowMs));
+    const endedLeaseOwners = await this.endedLeaseOwners(namespace, nowMs);
+    return this.transaction((tx) => this.reconcileExpiredRows(tx, namespace, nowMs, endedLeaseOwners));
   }
 
   /** Reconcile every governor namespace for the periodic maintenance workflow. */
   async reconcileExpiredAll(nowMs = Date.now()): Promise<QueueReconciliationResult> {
-    return this.transaction((tx) => this.reconcileExpiredRows(tx, null, nowMs));
+    const endedLeaseOwners = await this.endedLeaseOwners(null, nowMs);
+    return this.transaction((tx) => this.reconcileExpiredRows(tx, null, nowMs, endedLeaseOwners));
   }
 
   private async writeRecord(
@@ -1126,8 +1381,12 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     nowMs: number,
     selection?: QueueLeaseSelection,
   ): Promise<QueueMutationResult | null> {
+    // Liveness is read before entering the mutation transaction. The transaction
+    // below only compares these captured identities while updating, so a renewed
+    // or reassigned lease cannot be reclaimed from a stale verdict.
+    const endedLeaseOwners = await this.endedLeaseOwners(namespace, nowMs);
     return this.transaction(async (tx) => {
-      await this.reconcileExpiredRows(tx, namespace, nowMs);
+      await this.reconcileExpiredRows(tx, namespace, nowMs, endedLeaseOwners);
 
       let rows: QueueDbRow[];
       if (!selection) {
@@ -1267,8 +1526,9 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     ttlMs: number,
     nowMs: number,
   ): Promise<QueueMutationResult | null> {
+    const endedLeaseOwners = await this.endedLeaseOwners(namespace, nowMs);
     return this.transaction(async (tx) => {
-      await this.reconcileExpiredRows(tx, namespace, nowMs);
+      await this.reconcileExpiredRows(tx, namespace, nowMs, endedLeaseOwners);
       const row = await this.findReceiptRow(tx, receiptId, true);
       if (!row) return null;
       const stored = storedFromRow(row);

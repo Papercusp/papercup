@@ -172,6 +172,7 @@ import {
   shouldWarnOnStallClearMiss,
   annotateFailingTestsWithFlakeStats,
   releaseToolingStatus,
+  publishSignedGateVerdicts,
   DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX,
   resolveGreenCheckpointDbPoolMax,
   RELEASE_FIXER_DEDUP_MS,
@@ -2760,6 +2761,77 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       const d = buildCheckpointDetail({ reason: 'advanced', green: true, candidate: 'a'.repeat(40) });
       expect(d.retriage).toBeUndefined();
     });
+  });
+});
+
+describe('P-303: signed gate-verdict producer', () => {
+  const candidate = 'a'.repeat(40);
+  const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+
+  function deps(overrides: Partial<import('./release-actions').SignedGateVerdictPublishDeps> = {}) {
+    const inserted: Array<{ target: typeof target; hiveHomeSlug: string | null; signed: import('../../sync/pot-git/gate/verdicts').GateVerdict; verdictId: string }> = [];
+    const base: import('./release-actions').SignedGateVerdictPublishDeps = {
+      loadHarnessRegistry: async () => ({
+        projects: [{ slug: 'my-harness', path: '/tmp/my-harness', harness_kind: 'hive', pot_repo_key: 'repo-pin' }],
+      }),
+      buildShardManifestAtSha: async () => ({
+        manifest: {
+          shards: [
+            { shardId: '@p/core::unit', workspaceDir: 'packages/core', layer: 'unit' },
+            { shardId: '@p/core::integration', workspaceDir: 'packages/core', layer: 'integration' },
+          ],
+        },
+        inputsHashByShardId: {
+          '@p/core::unit': '1'.repeat(64),
+          '@p/core::integration': '2'.repeat(64),
+        },
+      }),
+      readTestRuns: async () => [
+        { file_path: 'packages/core/src/core.test.ts', status: 'pass', duration_ms: 12 },
+        { file_path: 'packages/core/integration/core.integration.test.ts', status: 'fail', duration_ms: 9 },
+      ],
+      resolveLocalGithubIdentity: async () => ({ kind: 'ok', githubUserId: 7 }),
+      resolveDeviceKeychainId: (id) => `github:${id}`,
+      loadOrGenerateDeviceKeypair: async () => ({ pubkeyBase64: Buffer.alloc(32).toString('base64') }),
+      signWithDeviceKey: async () => Buffer.from('signature'),
+      insertGateVerdict: async (row) => {
+        inserted.push(row);
+      },
+      ...overrides,
+    };
+    return { base, inserted };
+  }
+
+  it('fails closed before any dependency work when run identity is incomplete', async () => {
+    const { base, inserted } = deps();
+    const result = await publishSignedGateVerdicts(target, { reason: 'up-to-date', candidate: 'short', runId: 'run-1' }, base);
+    expect(result).toEqual({ published: 0, skipped: 0, reason: 'missing-run-identity' });
+    expect(inserted).toHaveLength(0);
+  });
+
+  it('publishes one signed fact per evidenced shard with measured outcome and duration', async () => {
+    const { base, inserted } = deps();
+    const result = await publishSignedGateVerdicts(
+      target,
+      { reason: 'up-to-date', green: true, candidate, runId: 'run-1' },
+      base,
+    );
+    expect(result).toEqual({ published: 2, skipped: 0 });
+    expect(inserted).toHaveLength(2);
+    expect(inserted.map((r) => [r.hiveHomeSlug, r.signed.repo_key, r.signed.staging_sha, r.signed.shard_id, r.signed.verdict, r.signed.duration_ms])).toEqual([
+      ['my-harness', 'repo-pin', candidate, '@p/core::unit', 'pass', 12],
+      ['my-harness', 'repo-pin', candidate, '@p/core::integration', 'fail', 9],
+    ]);
+    expect(inserted[0].verdictId).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('does not turn skipped or cancelled rows into a signed pass', async () => {
+    const { base, inserted } = deps({
+      readTestRuns: async () => [{ file_path: 'packages/core/src/core.test.ts', status: 'skip', duration_ms: 12 }],
+    });
+    const result = await publishSignedGateVerdicts(target, { reason: 'up-to-date', candidate, runId: 'run-1' }, base);
+    expect(result).toEqual({ published: 0, skipped: 1, reason: 'no-test-rows' });
+    expect(inserted).toHaveLength(0);
   });
 });
 
