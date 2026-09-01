@@ -19,6 +19,7 @@
  * way back (undici already decoded the body) and forces `accept-encoding: identity` upstream.
  */
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { describeAdmissionCeiling } from './admission-ceiling';
 import { describeGatewayLiveAdmissionState } from './admission-state-model';
