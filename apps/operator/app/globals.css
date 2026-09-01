@@ -5103,9 +5103,9 @@ body.h-harness-top-collapsed .pc-header {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  --pc-voice-icon: #f8fdff;
+  --pc-voice-icon: var(--fg);
   --pc-voice-icon-fill: var(--accent);
-  color: #effbff;
+  color: var(--fg);
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.34);
   border-radius: 999px;
   background: radial-gradient(circle at 18% 18%, rgba(255,255,255,0.08), transparent 22%),
@@ -5220,7 +5220,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .pc-voice-btn-label {
-  color: #f4fdff;
+  color: var(--fg);
   font-size: 12.5px;
   font-weight: 820;
   text-transform: uppercase;
@@ -23505,7 +23505,7 @@ body:has(.operator-panel) {
 }
 
 .operator-wordmark__title {
-  color: #f4f8ff;
+  color: var(--fg);
   font-weight: 760;
   line-height: 1;
 }
