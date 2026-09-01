@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isChromelessPath, isPortalEmbedLocation } from './chromeless-routes';
+import { isChromelessPath, isPortalEmbedLocation, routeHasSteeringSidebar } from './chromeless-routes';
 
 describe('route presentation predicates', () => {
   it('keeps ordinary iframe routes chromeless', () => {
@@ -20,5 +20,13 @@ describe('route presentation predicates', () => {
     expect(isPortalEmbedLocation('/plans', '?portalEmbed=1')).toBe(true);
     expect(isPortalEmbedLocation('/inbox', '?portalEmbed=yes')).toBe(true);
     expect(isPortalEmbedLocation('/plans', '')).toBe(false);
+  });
+
+  it('retains the steering sidebar on /adv while focused extracted routes stay bare', () => {
+    expect(routeHasSteeringSidebar('/adv')).toBe(true);
+    expect(routeHasSteeringSidebar('/adv/HUD')).toBe(true);
+    expect(routeHasSteeringSidebar('/plans')).toBe(false);
+    expect(routeHasSteeringSidebar('/inbox')).toBe(false);
+    expect(routeHasSteeringSidebar('/tasks-roster')).toBe(false);
   });
 });

@@ -29,6 +29,18 @@ export function isChromelessPath(pathname: string): boolean {
   return CHROMELESS_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+/**
+ * Whether the operator's steering sidebar belongs on this route.
+ *
+ * Portal-embedded `/adv` intentionally remains eligible: the hosted cloud
+ * experience keeps the existing Accounts rail beside Papercup Chat. Focused
+ * extracted surfaces (`/plans`, `/inbox`, task roster) remain bare because
+ * they are members of CHROMELESS_PREFIXES.
+ */
+export function routeHasSteeringSidebar(pathname: string): boolean {
+  return !isChromelessPath(pathname);
+}
+
 // Portal-hosted /adv documents use a query contract rather than a new route.
 // Re-export the browser-safe protocol predicate instead of maintaining a
 // second spelling here; ChromeShell and the theme bridge must never drift.
