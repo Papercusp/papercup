@@ -1614,6 +1614,73 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     expect(openEscalationMock).not.toHaveBeenCalled(); // never 3 CONSECUTIVE nulls
   });
 
+  it('WI-2140608: an IDLE blind session never accumulates a streak — no turns, nothing to overflow', async () => {
+    estimateMock.mockResolvedValue(null);
+    for (let i = 0; i < 5; i++) {
+      const out = await checkCompactionCompliance(fakeSql({ seeded: idle() }));
+      expect(out.bootConfigAlerts).toEqual([]);
+    }
+    expect(openEscalationMock).not.toHaveBeenCalled();
+    // A row with NO recorded activity (never took a turn since presence started) is idle too.
+    const never = [{ owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_active_at: null }];
+    for (let i = 0; i < 5; i++) await checkCompactionCompliance(fakeSql({ seeded: never }));
+    expect(openEscalationMock).not.toHaveBeenCalled();
+  });
+
+  it('WI-2140608: idle sweeps neither advance nor reset the streak — three ACTIVE null sweeps over any span escalate', async () => {
+    estimateMock.mockResolvedValue(null);
+    await checkCompactionCompliance(fakeSql({ seeded: active() })); // active-null 1
+    await checkCompactionCompliance(fakeSql({ seeded: active() })); // active-null 2
+    for (let i = 0; i < 3; i++) await checkCompactionCompliance(fakeSql({ seeded: idle() })); // parked — no change
+    expect(openEscalationMock).not.toHaveBeenCalled();
+    const p = await checkCompactionCompliance(fakeSql({ seeded: active() })); // active-null 3 ⇒ escalate
+    expect(p.bootConfigAlerts).toEqual([{ owner: 'blind', kind: 'dark-telemetry', detail: '3 null sweeps' }]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    const [, input] = openEscalationMock.mock.calls[0] as unknown as [unknown, { summary: string }];
+    expect(input.summary).toContain('ACTIVE watchdog sweeps');
+    expect(input.summary).not.toContain('since boot'); // the old wording asserted a boot-time defect that the data refuted
+  });
+
+  it('WI-2140608: a recovered estimate resolves the open dark-telemetry row and re-arms the guard', async () => {
+    estimateMock.mockResolvedValue(null);
+    for (let i = 0; i < 3; i++) await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    listEscalationsMock.mockResolvedValue([
+      { msg_id: 'esc-1', from: 'compaction-watchdog', subjectSignature: 'compaction-watchdog:boot-config:blind:dark-telemetry' },
+      { msg_id: 'esc-other', from: 'compaction-watchdog', subjectSignature: 'compaction-watchdog:boot-config:other:dark-telemetry' },
+    ]);
+    estimateMock.mockResolvedValue(210_000);
+    const rec = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    expect(rec.bootConfigRecovered).toEqual([{ owner: 'blind', kind: 'dark-telemetry' }]);
+    expect(listEscalationsMock).toHaveBeenCalledWith({ status: 'open' });
+    expect(resolveEscalationMock).toHaveBeenCalledTimes(1);
+    expect(resolveEscalationMock.mock.calls[0][0]).toMatchObject({
+      msg_id: 'esc-1',
+      choice: 'recovered',
+      resolver: 'compaction-watchdog',
+    });
+    // Steady state: a resolved session never re-touches the escalation store.
+    const steady = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    expect(steady.bootConfigRecovered).toEqual([]);
+    expect(listEscalationsMock).toHaveBeenCalledTimes(1);
+    // Re-darkening re-escalates (the guard was re-armed) on a fresh row.
+    estimateMock.mockResolvedValue(null);
+    for (let i = 0; i < 3; i++) await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    expect(openEscalationMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('WI-2140608: a failed lookup/resolve keeps the guard armed so the next pass retries', async () => {
+    estimateMock.mockResolvedValue(null);
+    for (let i = 0; i < 3; i++) await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    listEscalationsMock.mockRejectedValueOnce(new Error('pg down'));
+    estimateMock.mockResolvedValue(210_000);
+    const p1 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    expect(p1.bootConfigRecovered).toEqual([]);
+    const p2 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    expect(p2.bootConfigRecovered).toEqual([{ owner: 'blind', kind: 'dark-telemetry' }]);
+    expect(resolveEscalationMock).not.toHaveBeenCalled(); // no open row was listed ⇒ nothing to resolve, guard still cleared
+  });
+
   it('a context-DEAD session (P-019) is not double-counted as dark telemetry', async () => {
     resetContextDeathEscalationsForTests();
     estimateMock.mockResolvedValue(null);
@@ -1642,7 +1709,9 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
   it('flags a Codex session whose rollout telemetry stays dark now that native compaction is disabled (D-011)', async () => {
     estimateMock.mockResolvedValue(null);
     resolveSessionRefMock.mockResolvedValue({ agent: 'codex', sessionId: 's-codex', sessionKey: 42 });
-    const codexSeeded = [{ owner_id: 'codex-sess', owner_label: 'su · codex-sess', compaction_limit: 207_000 }];
+    const codexSeeded = [
+      { owner_id: 'codex-sess', owner_label: 'su · codex-sess', compaction_limit: 207_000, last_active_at: new Date().toISOString() },
+    ];
     openEscalationMock.mockClear();
     let last;
     for (let i = 0; i < 3; i++) last = await checkCompactionCompliance(fakeSql({ seeded: codexSeeded }));
@@ -1653,7 +1722,9 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
   });
 
   it('does NOT exempt a raw NULL adv_sessions owner when reconciliation recovers a real Claude session', async () => {
-    const recovered = [{ owner_id: 'recovered-no-row', owner_label: 'su · recovered', compaction_limit: 300_000 }];
+    const recovered = [
+      { owner_id: 'recovered-no-row', owner_label: 'su · recovered', compaction_limit: 300_000, last_active_at: new Date().toISOString() },
+    ];
     estimateMock.mockResolvedValue(null);
     // The incident shape: the primary DB row is absent, but the owner-scoped
     // self-relaunch event recovered the live native id. The synthetic-principal
