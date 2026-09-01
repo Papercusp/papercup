@@ -285,13 +285,12 @@ afterEach(() => {
 });
 
 describe('AdvShell — strip + header', () => {
-  it('keeps only Overview, HUD, Learning, and Work in a portal-embedded Papercusp frame', async () => {
+  it('renders no tab strip at all in a portal-embedded frame — every tab is a portal rail entry (owner ask 2026-09-01)', async () => {
     routeState.search = '?portalEmbed=1&portalTheme=light';
-    await renderShell();
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent?.trim())).toEqual([
-      'overview', 'hud', 'work', 'learning',
-    ]);
+    await renderShell({ expectTabs: false });
+    expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByRole('button', { name: 'More sections' })).toBeNull();
+    expect(document.querySelector('.pc-advshell__header')).toBeNull();
   });
 
   it('keeps a dedicated extracted-tab embed body without restoring any Papercusp tab chrome', async () => {
@@ -306,7 +305,9 @@ describe('AdvShell — strip + header', () => {
   it('normalizes a stale non-portal tab deep link to Overview in the cloud embed', async () => {
     routeState.search = '?portalEmbed=1&portalTheme=light&tab=docs';
     nuqsState.tab = 'docs';
-    await renderShell();
+    // No strip in any portal embed (owner ask 2026-09-01) — the normalisation
+    // is the URL write, not a rendered tab.
+    await renderShell({ expectTabs: false });
     expect(nuqsSetters.tab).toHaveBeenCalledWith('overview');
   });
 

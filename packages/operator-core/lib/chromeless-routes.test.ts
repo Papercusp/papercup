@@ -9,6 +9,10 @@ describe('route presentation predicates', () => {
     expect(isChromelessPath('/tasks-roster')).toBe(true);
     expect(isChromelessPath('/plans')).toBe(true);
     expect(isChromelessPath('/inbox')).toBe(true);
+    // The portal's pane-only documents (owner ask 2026-09-01) carry no chrome:
+    // each renders exactly one dock, and the OTHER dock must not mount around it.
+    expect(isChromelessPath('/portal-panes/steering')).toBe(true);
+    expect(isChromelessPath('/portal-panes/chat')).toBe(true);
   });
 
   it('recognises the portal embed query only on operator /adv routes', () => {
@@ -28,5 +32,18 @@ describe('route presentation predicates', () => {
     expect(routeHasSteeringSidebar('/plans')).toBe(false);
     expect(routeHasSteeringSidebar('/inbox')).toBe(false);
     expect(routeHasSteeringSidebar('/tasks-roster')).toBe(false);
+  });
+
+  it('drops the steering sidebar from a PORTAL-EMBEDDED /adv — the portal frames it as its own sidebar', () => {
+    // Owner ask 2026-09-01: the Accounts rail and the Papercup chat are sidebars
+    // of the outer cloud-portal page, framed from /portal-panes/*. An embedded
+    // tab body that mounted the rail again would show it twice side by side.
+    expect(routeHasSteeringSidebar('/adv', '?portalEmbed=1&tab=hud')).toBe(false);
+    expect(routeHasSteeringSidebar('/adv', 'portalEmbed=true')).toBe(false);
+    // Outside the portal the query contract is absent and the rail stays.
+    expect(routeHasSteeringSidebar('/adv', '?tab=hud')).toBe(true);
+    expect(routeHasSteeringSidebar('/adv', '?portalEmbed=0')).toBe(true);
+    // The pane documents themselves are chromeless; the ROUTE mounts the dock.
+    expect(routeHasSteeringSidebar('/portal-panes/steering', '?portalEmbed=1')).toBe(false);
   });
 });

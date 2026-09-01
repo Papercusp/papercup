@@ -20,6 +20,11 @@ describe('portalEmbed protocol', () => {
     expect(isPortalEmbedLocation('/plans', '?portalEmbed=1')).toBe(true);
     expect(isPortalEmbedLocation('/inbox', '?portalEmbed=true')).toBe(true);
     expect(isPortalEmbedLocation('/plans', '')).toBe(false);
+    // The pane-only documents the portal frames as its OWN sidebars (owner ask
+    // 2026-09-01) follow the same contract, so the theme bridge tracks them.
+    expect(isPortalEmbedLocation('/portal-panes/steering', '?portalEmbed=1')).toBe(true);
+    expect(isPortalEmbedLocation('/portal-panes/chat', '?portalEmbed=1&portalTheme=dark')).toBe(true);
+    expect(isPortalEmbedLocation('/portal-panes/chat', '')).toBe(false);
   });
 
   it('maps portal themes to the operator semantic themes', () => {

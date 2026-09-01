@@ -284,6 +284,29 @@ describe('<LeftSidebar> shell', () => {
     expect(screen.queryByTestId('panel-hives')).toBeNull();
   });
 
+  // Owner ask 2026-09-01: the cloud portal frames this rail as ITS OWN sidebar
+  // (/portal-panes/steering). Docked = the rail is the whole document: always
+  // open even against ?lsb=false, no collapse/expand/resize controls (the
+  // portal owns those), and no body-class layout reservation.
+  it('renders docked as an always-open pane with no collapse, expand, or resize controls', async () => {
+    render(
+      <NuqsTestingAdapter searchParams="?lsb=false&lst=pulse">
+        <LeftSidebar docked />
+      </NuqsTestingAdapter>,
+    );
+    const rail = screen.getByTestId('left-sidebar');
+    expect(rail.getAttribute('data-docked')).toBe('true');
+    expect(rail.getAttribute('data-collapsed')).toBe('false');
+    expect(rail.classList.contains('pclsb--docked')).toBe(true);
+    expect((rail as HTMLElement).style.width).toBe('100%');
+    // The ?lst= deep link still picks the tab, so the portal can target one.
+    expect(rail.getAttribute('data-tab')).toBe('pulse');
+    expect(await screen.findByTestId('panel-pulse')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Collapse sidebar' })).toBeNull();
+    expect(screen.queryByRole('separator', { name: 'Resize sidebar' })).toBeNull();
+    await waitFor(() => expect(document.body.classList.contains('has-left-sidebar')).toBe(false));
+  });
+
   it('collapses to the icon rail on ?lsb=false and unmounts the active panel', () => {
     renderRail('?lsb=false');
     const rail = screen.getByTestId('left-sidebar');

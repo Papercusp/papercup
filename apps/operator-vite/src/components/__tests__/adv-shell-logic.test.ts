@@ -40,19 +40,21 @@ import type { SelectEntry, SelectGroup, SelectOption } from '@/app/harness/Selec
 // ─── ADV_TABS structural invariants ──────────────────────────────────────────
 
 describe('ADV_TABS', () => {
-  it('defines the cloud-embedded Papercusp allowlist as Overview, HUD, Work, and Learning', () => {
-    expect([...PORTAL_EMBED_ADV_TAB_IDS]).toEqual(['overview', 'hud', 'learning', 'harnesses']);
-    expect(portalEmbedAdvTabs(ADV_TABS, true).map((tab) => tab.id)).toEqual([
-      'overview', 'hud', 'harnesses', 'learning',
-    ]);
+  it('renders NO Papercusp tab strip inside a cloud embed — every framed tab is a portal rail entry (owner ask 2026-09-01)', () => {
+    expect([...PORTAL_EMBED_ADV_TAB_IDS]).toEqual([]);
+    expect(portalEmbedAdvTabs(ADV_TABS, true)).toEqual([]);
     expect(portalEmbedAdvTabs(ADV_TABS, false)).toEqual([...ADV_TABS]);
+    // The content-only destinations the portal frames as `/adv?tab=<id>`:
+    // Overview, HUD, Work (harnesses) and Learning joined Workflows + Brainstorm.
     expect([...PORTAL_EMBED_ADV_CONTENT_IDS]).toEqual([
-      'overview', 'hud', 'learning', 'harnesses', 'workflows', 'brainstorm',
+      'overview', 'hud', 'harnesses', 'learning', 'workflows', 'brainstorm',
     ]);
-    expect(portalEmbedAdvTab('workflows', true)).toBe('workflows');
-    expect(portalEmbedAdvTab('brainstorm', true)).toBe('brainstorm');
+    for (const id of ['overview', 'hud', 'harnesses', 'learning', 'workflows', 'brainstorm'] as const) {
+      expect(portalEmbedAdvTab(id, true)).toBe(id);
+    }
+    // A stale deep link to a tab the portal does not frame lands on Overview.
     expect(portalEmbedAdvTab('docs', true)).toBe('overview');
-    expect(portalEmbedAdvTab('harnesses', true)).toBe('harnesses');
+    expect(portalEmbedAdvTab('docs', false)).toBe('docs');
   });
 
   it('every tab has the required shape (id, label, icon, accent, accentRgb)', () => {
