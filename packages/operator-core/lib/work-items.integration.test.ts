@@ -3107,6 +3107,45 @@ describe('EI-22040912157347872 — active plan-item assignments reserve generic 
   });
 });
 
+// WI-41737 — the durable route ruling can predate (or outlive) the current item lease.
+// A ready plan is normally free backlog, so the decision is the ONLY reservation in this
+// fixture. This is the feature-family half of the live P-007 counterexample that reopened
+// WI-41737 after an assignment-only fix was mistakenly treated as sufficient.
+describe('WI-41737 — direct/self-only plan decisions reserve generic self-select', () => {
+  it('reserves only the decision-referenced item and keeps claim-by-id available to the route owner', async () => {
+    const slug = 'wi-41737-direct-route';
+    await db.sql`INSERT INTO harness_shared.harness_plans
+                   (workspace_id, harness_slug, plan_slug, status, op_status)
+                 VALUES ('default', 'papercup', ${slug}, 'ready', NULL)`;
+    await db.sql`INSERT INTO harness_shared.plan_decisions
+                   (workspace_id, harness_slug, plan_slug, decision_id, seq, title, body, item_refs)
+                 VALUES ('default', 'papercup', ${slug}, 'D-006', 6,
+                         'Direct execution route',
+                         'This Codex session implements the plan directly; no subagents or fleet are used.',
+                         ARRAY['P-007']::text[])`;
+
+    const reserved = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'self-only shipment lane',
+      harness: 'papercup',
+      createdBy: 'route-owner',
+      payload: { plan_item: { plan_slug: slug, item_id: 'P-007', harness_slug: 'papercup' } },
+    });
+    const free = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'unreferenced sibling lane',
+      harness: 'papercup',
+      createdBy: 'route-owner',
+      payload: { plan_item: { plan_slug: slug, item_id: 'P-008', harness_slug: 'papercup' } },
+    });
+
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === reserved.id)).toBe(false);
+    expect(list.some((w) => w.id === free.id)).toBe(true);
+    expect((await wi.claimWorkItem(reserved.id, 'route-owner', { harness: 'papercup' }))?.id).toBe(reserved.id);
+  });
+});
+
 // WI-38258 — a scheduled plan run used to be DEADLOCKED BY CONSTRUCTION. `system:plan-run`
 // mints its instance plan at status='active' and stamps every minted work-item's
 // payload.plan_item at that same instance, so the lifecycle leg of this floor reserved the run's
