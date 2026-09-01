@@ -44,6 +44,11 @@ export const CANONICAL_ANCHOR: Readonly<Record<string, string>> = Object.freeze(
   GATE_PROMOTION: 'candidate=',
   AFFECTED_TESTS_RESULT: 'status=',
   AFFECTED_TESTS_FAILING_FILES: 'run=',
+  // EI-19416573016968871. The SELECTION counterpart to the break set. Its whole purpose is
+  // to make "X is absent from this run" decidable, so a recipe that greps it unanchored —
+  // matching the vitest test names that echo the marker — would hand back an impostor match
+  // for precisely the question the line exists to answer.
+  AFFECTED_TESTS_SELECTED_FILES: 'run=',
   // WI-38300. Emitted only when absorption's residue is load-correlated, so its ABSENCE is
   // the common case — which is exactly the shape that makes a bare grep dangerous here: a
   // run with no load-suspect residue matches only the vitest test names that echo the
