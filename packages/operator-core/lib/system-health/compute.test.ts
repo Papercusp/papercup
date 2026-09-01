@@ -6,6 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { GovernorQueuePopulationObservation } from '../resource-governor/queue';
 const {
   backgroundWorkersEnabledMock,
   getFlagMock,
@@ -38,7 +39,9 @@ const {
     errors: [],
   })),
   computeNextFireAtMock: vi.fn(),
-  readGovernorQueuePopulationMock: vi.fn(async (..._args: unknown[]) => []),
+  readGovernorQueuePopulationMock: vi.fn(
+    async (..._args: unknown[]): Promise<GovernorQueuePopulationObservation[]> => [],
+  ),
   GovernorStateSnapshotWriterMock: vi.fn(function () {
     return { publish: governorWriterPublishMock };
   }),

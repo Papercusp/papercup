@@ -765,6 +765,7 @@ describe('work_items:burn_down', () => {
         ownerDirected: true,
         setAt: '2026-08-13T08:00:00.000Z',
         subject: null,
+        impliedBy: null,
       },
     ]);
 

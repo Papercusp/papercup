@@ -6,6 +6,7 @@ import {
   hasAutonomyPosture,
   type LoopDeadManDeps,
 } from './loop-dead-man';
+import type { ModeRow } from '../../modes/store';
 
 describe('evaluateDeadManGuard (P2a — pure dead-man decision)', () => {
   const base = { armedAtMs: 1_000_000, nowMs: 1_000_000, fireCount: 0 };
@@ -258,7 +259,7 @@ type GetModesFn = NonNullable<LoopDeadManDeps['getModes']>;
 type NotifyFn = NonNullable<LoopDeadManDeps['notify']>;
 
 /** A complete `agent_modes` row — only `mode` drives the verdict, the rest is shape. */
-const modeRow = (mode: string) => ({
+const modeRow = (mode: string): ModeRow => ({
   workspaceId: 'ws',
   ownerId: 'su-halted',
   axisKey: 'autonomy',
@@ -271,6 +272,8 @@ const modeRow = (mode: string) => ({
   // has nothing to be "about". Present because ModeRow requires it — a partial
   // row here would compile only until the next field is added.
   subject: null,
+  // Directly registered modes have no implication parent (migration 1075).
+  impliedBy: null,
 });
 
 /** A routines row that carries the owner/workspace the page needs. */
