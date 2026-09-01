@@ -136,5 +136,7 @@ describe('production wiring', () => {
     expect(seed).toContain("cron: '0 0 3 * * *'");
     expect(seed).toContain('activeDefault: true');
     expect(seed).toContain("'skip', 'skip-old'");
+    expect(seed).toContain("const onlyIndex = process.argv.findIndex((arg) => arg === '--only' || arg.startsWith('--only='))");
+    expect(seed).toContain('const routines = only ? ROUTINES.filter((r) => r.name === only) : ROUTINES;');
   });
 });
