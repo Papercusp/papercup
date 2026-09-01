@@ -62,6 +62,7 @@ export const TERMINAL_PLAN_ITEM_STATUSES: ReadonlySet<string> = new Set(['done',
 const FLIPPABLE_PLAN_ITEM_STATUSES: ReadonlySet<string> = new Set(['todo', 'wip', 'blocked']);
 
 export type CleanupFindingKind =
+  | 'enlist-plan'
   | 'flip-to-done'
   | 'cleared-blocker'
   | 'finish-plan'
@@ -71,6 +72,7 @@ export type CleanupFindingKind =
 
 /** Stable ordering for deterministic output (and for grouped report rendering). */
 export const CLEANUP_FINDING_KINDS: readonly CleanupFindingKind[] = [
+  'enlist-plan',
   'flip-to-done',
   'cleared-blocker',
   'finish-plan',
@@ -108,6 +110,17 @@ export interface CleanupFinding {
   autoApply: boolean;
   autoApplyBlockedBy: 'live-agents' | 'judgment-call' | null;
   evidence: CleanupEvidenceRef[];
+  /** Canonical write payload for findings whose action needs state outside the
+   *  plan row. It is deliberately scan-time data: the dispatcher only receives
+   *  a freshly re-verified finding, so the worklist value and CAS version are
+   *  current at the instant the action starts. */
+  action?: {
+    kind: 'enlist-plan';
+    goalId: string;
+    planRef: string;
+    worklist: string[];
+    expectedVersion: number;
+  };
 }
 
 // ── inputs (plain rows — populated by gather.ts, or by test fixtures) ────────
@@ -127,8 +140,14 @@ export interface CleanupPlanInput {
   harnessSlug: string;
   planSlug: string;
   title: string | null;
+  /** Authored lifecycle status. Only ready/active plans may be enlisted; a
+   *  draft must pass plans:audit before activation and is never inferred here. */
+  status?: string | null;
   /** harness_plans.op_status: 'started' | 'paused' | 'done' | null */
   opStatus: string | null;
+  /** Owner-authored dispatch priority (lower = sooner, null = last). */
+  opPriority?: number | null;
+  createdAtMs?: number | null;
   archived: boolean;
   updatedAtMs: number | null;
   nowState: string | null;
@@ -172,6 +191,14 @@ export interface CleanupScanInputs {
   plans: CleanupPlanInput[];
   linkedWorkItems: LinkedWorkItemInput[];
   claims: PlanItemClaimInput[];
+  /** The active bundled Work-on-everything instance selected by gather. Null
+   *  means this workspace has no eligible standing goal, so enlistment is a
+   *  no-op while the other cleanup rules still run. */
+  goalWorklist?: {
+    goalId: string;
+    refs: string[];
+    version: number;
+  } | null;
 }
 
 export interface CleanupScanOptions {
@@ -183,10 +210,14 @@ export interface CleanupScanOptions {
   /** How long an all-terminal plan must sit untouched before an
    *  archive-candidate finding fires. */
   archiveStaleMs?: number;
+  /** Maximum new worklist refs emitted by this scan. The deterministic runner
+   *  passes its remaining RUN budget here so rescans/retries cannot exceed it. */
+  enlistPlanLimit?: number;
 }
 
 export const DEFAULT_CLAIM_GRACE_MS = 10 * 60 * 1000;
 export const DEFAULT_ARCHIVE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+export const DEFAULT_ENLIST_PLAN_LIMIT = 20;
 
 const PLAN_ITEM_REF = /\bP-\d{3,}\b/g;
 
@@ -257,6 +288,59 @@ export function scanForCleanupFindings(
   const claimGraceMs = opts.claimGraceMs ?? DEFAULT_CLAIM_GRACE_MS;
   const archiveStaleMs = opts.archiveStaleMs ?? DEFAULT_ARCHIVE_STALE_MS;
   const findings: CleanupFinding[] = [];
+  const enlistRankByFindingId = new Map<string, number>();
+
+  // ── enlist-plan ────────────────────────────────────────────────────────
+  // Rank globally before applying the bound. This is the queue order the
+  // deterministic runner consumes, so a low-priority plan can never displace
+  // a higher-priority candidate merely because its slug sorts first.
+  const goalWorklist = inputs.goalWorklist;
+  if (goalWorklist) {
+    const existing = new Set(goalWorklist.refs);
+    const eligible = inputs.plans
+      .filter((plan) => {
+        if (plan.archived || (plan.status !== 'ready' && plan.status !== 'active')) return false;
+        const qualified = `plan:${plan.harnessSlug}/${plan.planSlug}`;
+        const unqualified = `plan:${plan.planSlug}`;
+        return !existing.has(qualified) && !existing.has(unqualified);
+      })
+      .sort((a, b) => {
+        const ap = a.opPriority ?? Number.POSITIVE_INFINITY;
+        const bp = b.opPriority ?? Number.POSITIVE_INFINITY;
+        return ap - bp ||
+          (a.createdAtMs ?? Number.POSITIVE_INFINITY) - (b.createdAtMs ?? Number.POSITIVE_INFINITY) ||
+          a.planSlug.localeCompare(b.planSlug) ||
+          a.harnessSlug.localeCompare(b.harnessSlug);
+      })
+      .slice(0, Math.max(0, opts.enlistPlanLimit ?? DEFAULT_ENLIST_PLAN_LIMIT));
+
+    for (const [rank, plan] of eligible.entries()) {
+      const idx = indexPlan(plan, inputs);
+      const planRef = `plan:${plan.harnessSlug}/${plan.planSlug}`;
+      const finding: CleanupFinding = {
+        ...mkFinding(plan, 'enlist-plan', null, {
+          target: `${goalWorklist.goalId}.worklist`,
+          from: `${goalWorklist.refs.length} plan ref(s)`,
+          to: `append ${planRef}`,
+          confidence: 'provable',
+          evidence: [{
+            kind: 'plan',
+            ref: plan.planSlug,
+            note: `status=${plan.status}; op_priority=${plan.opPriority ?? 'unset'}; absent from goal worklist v${goalWorklist.version}`,
+          }],
+        }, idx.liveAgentOwners),
+        action: {
+          kind: 'enlist-plan',
+          goalId: goalWorklist.goalId,
+          planRef,
+          worklist: goalWorklist.refs,
+          expectedVersion: goalWorklist.version,
+        },
+      };
+      enlistRankByFindingId.set(finding.findingId, rank);
+      findings.push(finding);
+    }
+  }
 
   for (const plan of [...inputs.plans].sort((a, b) => a.planSlug.localeCompare(b.planSlug))) {
     if (plan.archived) continue;
@@ -426,9 +510,18 @@ export function scanForCleanupFindings(
 
   const kindOrder = new Map(CLEANUP_FINDING_KINDS.map((k, i) => [k, i]));
   return findings.sort(
-    (a, b) =>
-      a.planSlug.localeCompare(b.planSlug) ||
-      (kindOrder.get(a.kind)! - kindOrder.get(b.kind)!) ||
-      (a.itemId ?? '').localeCompare(b.itemId ?? ''),
+    (a, b) => {
+      const aEnlistRank = enlistRankByFindingId.get(a.findingId);
+      const bEnlistRank = enlistRankByFindingId.get(b.findingId);
+      if (aEnlistRank !== undefined || bEnlistRank !== undefined) {
+        if (aEnlistRank !== undefined && bEnlistRank !== undefined) {
+          return aEnlistRank - bEnlistRank;
+        }
+        return aEnlistRank !== undefined ? -1 : 1;
+      }
+      return a.planSlug.localeCompare(b.planSlug) ||
+        (kindOrder.get(a.kind)! - kindOrder.get(b.kind)!) ||
+        (a.itemId ?? '').localeCompare(b.itemId ?? '');
+    },
   );
 }
