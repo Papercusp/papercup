@@ -195,6 +195,9 @@ export async function launchGoalHolderSession(
     model,
     account: resolved.effective.account,
     contextSize: resolved.effective.contextSize,
+    // WI-2140338 [owner 2026-09-01]: a goal may pin its holder's token ceiling
+    // (e.g. the model's full ~1M window). Absent stays absent — tier default.
+    compactionLimit: resolved.effective.compactionLimit,
     // D-002: unpinned resolves to headless, which is what this door hardcoded
     // before the key existed — so every goal that has pinned nothing launches
     // exactly as it did. Only an explicit `headless:false` on the goal's launch

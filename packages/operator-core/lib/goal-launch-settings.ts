@@ -331,6 +331,16 @@ export const launchProfileSchema = z
     carry: z.enum(LAUNCH_PROFILE_CARRY).optional(),
     contextSize: z.enum(LAUNCH_PROFILE_CONTEXT_SIZES).optional(),
     /**
+     * WI-2140338 [owner 2026-09-01]: the session's compaction ceiling in TOKENS,
+     * threaded to the spawn as `--compaction-limit` (the same argv seam fleet
+     * MemberSpec.compactionLimit rides). Lets a goal pin its holder to the model's
+     * full window (e.g. 1_000_000 on a ~1M-window model) instead of the tier
+     * default. Absent = unpinned = the tier/system default, per this schema's
+     * absent-stays-absent rule. Distinct from `contextSize`, which sizes the
+     * initial TOOL surface, not the token window.
+     */
+    compactionLimit: z.number().int().min(50_000).max(2_000_000).optional(),
+    /**
      * D-002: ABSENT means UNPINNED, not `false`.
      *
      * Every existing goal document omits this key, and the one activation door
