@@ -509,6 +509,9 @@ import './durable-escalation-orphan-sweep-action';
 // retirement of stale legacy payload.needsHuman attention markers. The action
 // fails closed for every typed owner/capability gate and mutates payload only.
 import './legacy-needs-human-reconcile-action';
+// autonomous-inbox-resolution-2026-08-31 P-009: durable routinesTick backstop
+// for the existing supervised Inbox bulk-resolver launch path.
+import './inbox-bulk-resolve-action';
 import './work-item-admission-daily-digest-action';
 import './work-item-durable-park-audit-action';
 // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`

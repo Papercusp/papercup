@@ -548,6 +548,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'One bounded payload-only reconciliation of retired needsHuman markers against live work-item lifecycle and typed blocker state — no spawn/dispatch/wake',
   },
+  'system:inbox-bulk-resolve': {
+    spend: 'llm',
+    why: 'Starts the supervised Inbox resolver agent, which can bill model turns',
+  },
   'system:consult-expiry-sweep': {
     spend: 'llm',
     why: 'Expiry emit wakes a hard-blocked parked requester (latched consult:reply key), and a wake bills a turn',
