@@ -90,7 +90,11 @@ export type {
   CompletionTreeStampProbe,
   CompletionTreeStampForEvidenceProbe,
 } from './completion-freshness';
-import { isBackedLiveDroveUiClaim, verifyLiveDroveUiArtifacts } from '../../completion-audit';
+import {
+  isBackedLiveDroveUiClaim,
+  isBackedLiveServiceClaim,
+  verifyLiveDroveUiArtifacts,
+} from '../../completion-audit';
 import {
   liveDriveAcceptanceGap,
   liveDriveAcceptanceMessage,
@@ -204,7 +208,7 @@ const completionSpec = z
   )
   .describe(
     // EI-39573: publish the same repair shape that the schema-level string refusal returns.
-    "Structured completion record: { summary, verification?: { filesChanged?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `completion.verification` is strict: use only the listed evidence keys; put test/typecheck/diff details in `testsRun`/`testResult` (or top-level `tests`), not `verification.tests`, `verification.typecheck`, or `verification.diff`. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing'` for coarse queryable modes. For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in `summary`, `testsRun`, `testResult`, or `filesChanged` (a screenshot/capture image path or a recorded `tauri-agent-tools` capture/screenshot/check invocation); inspect the captured image when applicable. Use 'unit'/'manual'/'integration' when no live artifact was inspected. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. " +
+    "Structured completion record: { summary, verification?: { filesChanged?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `completion.verification` is strict: use only the listed evidence keys; put test/typecheck/diff details in `testsRun`/`testResult` (or top-level `tests`), not `verification.tests`, `verification.typecheck`, or `verification.diff`. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'live-service'|'manual'|'already-passing'` for coarse queryable modes. For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in `summary`, `testsRun`, `testResult`, or `filesChanged` (a screenshot/capture image path or a recorded `tauri-agent-tools` capture/screenshot/check invocation); inspect the captured image when applicable. `verifiedHow:'live-service'` requires `testsRun`/`testResult` to jointly name the concrete service/unit/process and a falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). Use 'unit'/'manual'/'integration' when no live artifact or runtime process was inspected. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. " +
       // observation-and-recall-surface-honesty-2026-08-16 P-001: coordNotes is the second
       // input to checkpoint-harvest, so it carries the same first-line-is-the-title rule as
       // loop:checkpoint { insight }. Shared constant, never re-worded here — the guard test
@@ -2533,6 +2537,7 @@ async function completeOne(
   // artifact. Scan the persisted evidence shape for that citation, while the
   // authority judgement above remains scoped to structured verification fields.
   const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceToPersist);
+  const unbackedLiveServiceClose = closeIntentRequested && !isBackedLiveServiceClaim(completionEvidenceToPersist);
 
   // EI-18797014705631713: citing an artifact is not the same as HAVING one. The text
   // check above proves a path was written down; this reads the file. A screenshot of a
@@ -2608,6 +2613,12 @@ async function completeOne(
 
   if (assumptionsError) {
     stateError = `REJECTED — ${assumptionsError}`;
+  } else if (unbackedLiveServiceClose) {
+    stateError =
+      `REJECTED — this completion claims verifiedHow:'live-service' to close ${it.id}, but ` +
+      '`testsRun`/`testResult` do not jointly cite both a concrete service/unit/process and a ' +
+      'falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). ' +
+      "Cite the live command and observation, or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send.";
   } else if (unbackedLiveDroveUiClose) {
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +
