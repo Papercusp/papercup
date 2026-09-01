@@ -169,14 +169,56 @@ export async function resolveBoundDisplay(ctx: ComputerCtx): Promise<DesktopTarg
       };
     }
   }
-  // 2. P-003 (D-004): the REGISTRY. Finds a session this process does not hold in
+  // 2. Process-env fallback (direct/SU/dev + frame per-slot marker).
+  //    An explicit marker is the current caller binding and must win over a
+  //    stale nonterminal scope row. Resolve its registry row by display only
+  //    for geometry enrichment; never let scope inventory choose another display.
+  const display = (process.env.PAPERCUSP_COMPUTER_DISPLAY ?? process.env.PAPERCUSP_AGENT_DISPLAY ?? '').trim();
+  if (display) {
+    assertSandboxDisplay(display); // throws on :0 / malformed
+
+    // D-006 / P-006 — "resolution rides the DesktopSession lease". The frame path
+    // (`PAPERCUSP_AGENT_DISPLAY`, set by orchestrator-runner) exports a display and
+    // NO geometry, so the DEFAULT_W/H below is an ASSUMPTION — and on a frame it is
+    // the wrong one: frame slots run 1920x1080 (deployment config default, mirrored
+    // by display-allocator's registration). Believing 1024x768 there made the model
+    // unable to address the bottom-right ~72% of its own screen.
+    //
+    // The registry already knows the truth for exactly these displays, so ask it
+    // before falling back to a guess. Best-effort: missing inventory must not take
+    // capability:computer down when the explicit marker still identifies the target.
+    try {
+      const byDisplay = await resolveLocalDesktopByDisplay({
+        workspaceId: activeWorkspaceId(),
+        display,
+      });
+      if (byDisplay) {
+        return {
+          display,
+          width: byDisplay.displayGeometry.width,
+          height: byDisplay.displayGeometry.height,
+          capture: {
+            width: byDisplay.captureGeometry.width,
+            height: byDisplay.captureGeometry.height,
+          },
+        };
+      }
+    } catch {
+      /* fall through to the env geometry — a missing inventory is not a missing desktop */
+    }
+
+    const w = Number(process.env.PAPERCUSP_COMPUTER_WIDTH) || DEFAULT_W;
+    const h = Number(process.env.PAPERCUSP_COMPUTER_HEIGHT) || DEFAULT_H;
+    return { display, width: w, height: h, capture: { ...DEFAULT_CAPTURE_GEOMETRY } };
+  }
+
+  // 3. P-003 (D-004): the REGISTRY. Finds a session this process does not hold in
   //    its Map — a frame slot or a VM guest — which step 1 structurally cannot see.
-  //    Ordered AFTER the in-process lease on purpose: that Map holds the actual
-  //    child process and so remains the liveness authority, while a row is only a
-  //    CLAIM about a process. This step is therefore purely ADDITIVE — it resolves
-  //    where there was previously nothing, and never overrides a live local lease.
-  //    Best-effort: a registry outage must not take capability:computer down when
-  //    the env fallback below would still have served the caller.
+  //    Ordered AFTER the in-process lease and explicit env marker on purpose: the
+  //    Map holds the actual child process and the marker is the caller's current
+  //    binding, while a row is only a CLAIM about a process. This step is therefore
+  //    purely ADDITIVE — it resolves where there was previously nothing, and never
+  //    overrides a live local lease or explicit display marker.
   if (hive) {
     try {
       const session = await resolveDesktopForScope({
@@ -207,56 +249,17 @@ export async function resolveBoundDisplay(ctx: ComputerCtx): Promise<DesktopTarg
         };
       }
     } catch {
-      /* fall through to the env path — a missing inventory is not a missing desktop */
+      /* fall through to the no-lease error — a missing inventory is not a desktop */
     }
   }
 
-  // 3. Process-env fallback (direct/SU/dev + frame per-slot marker).
-  const display = (process.env.PAPERCUSP_COMPUTER_DISPLAY ?? process.env.PAPERCUSP_AGENT_DISPLAY ?? '').trim();
-  if (!display) {
-    throw new Error(
-      'capability:computer — no sandbox desktop is leased to this agent. A desktop must be ' +
-        'provisioned (a leased Xvfb/VNC display) for this hive before the agent can operate it. ' +
-        '(Refusing to default to any display — the host :0 is never operable.) ' +
-        'To fix: call computer:provision_desktop { pot: <your hive slug> } first, then retry — ' +
-        'do NOT re-call capability:computer until a desktop is leased (computer:list_desktops shows the leases).',
-    );
-  }
-  assertSandboxDisplay(display); // throws on :0 / malformed
-
-  // D-006 / P-006 — "resolution rides the DesktopSession lease". The frame path
-  // (`PAPERCUSP_AGENT_DISPLAY`, set by orchestrator-runner) exports a display and
-  // NO geometry, so the DEFAULT_W/H below is an ASSUMPTION — and on a frame it is
-  // the wrong one: frame slots run 1920x1080 (deployment config default, mirrored
-  // by display-allocator's registration). Believing 1024x768 there made the model
-  // unable to address the bottom-right ~72% of its own screen.
-  //
-  // The registry already knows the truth for exactly these displays, so ask it
-  // before falling back to a guess. Best-effort by the same reasoning as the scope
-  // lookup above: a missing inventory must not take capability:computer down.
-  try {
-    const byDisplay = await resolveLocalDesktopByDisplay({
-      workspaceId: activeWorkspaceId(),
-      display,
-    });
-    if (byDisplay) {
-      return {
-        display,
-        width: byDisplay.displayGeometry.width,
-        height: byDisplay.displayGeometry.height,
-        capture: {
-          width: byDisplay.captureGeometry.width,
-          height: byDisplay.captureGeometry.height,
-        },
-      };
-    }
-  } catch {
-    /* fall through to the env geometry — a missing inventory is not a missing desktop */
-  }
-
-  const w = Number(process.env.PAPERCUSP_COMPUTER_WIDTH) || DEFAULT_W;
-  const h = Number(process.env.PAPERCUSP_COMPUTER_HEIGHT) || DEFAULT_H;
-  return { display, width: w, height: h, capture: { ...DEFAULT_CAPTURE_GEOMETRY } };
+  throw new Error(
+    'capability:computer — no sandbox desktop is leased to this agent. A desktop must be ' +
+      'provisioned (a leased Xvfb/VNC display) for this hive before the agent can operate it. ' +
+      '(Refusing to default to any display — the host :0 is never operable.) ' +
+      'To fix: call computer:provision_desktop { pot: <your hive slug> } first, then retry — ' +
+      'do NOT re-call capability:computer until a desktop is leased (computer:list_desktops shows the leases).',
+  );
 }
 
 /**

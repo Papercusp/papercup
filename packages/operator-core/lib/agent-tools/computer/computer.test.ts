@@ -4,7 +4,20 @@
  * auto-screenshot-after-action, and the safety refusals (no lease / host :0).
  * No live X server.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Keep registry lookups deterministic so these cases can prove which resolver
+// wins without depending on the shared development database.
+const { resolveDesktopForScope, resolveLocalDesktopByDisplay } = vi.hoisted(() => ({
+  resolveDesktopForScope: vi.fn(),
+  resolveLocalDesktopByDisplay: vi.fn(),
+}));
+
+vi.mock('../../desktop/desktop-session-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../desktop/desktop-session-registry')>()),
+  resolveDesktopForScope,
+  resolveLocalDesktopByDisplay,
+}));
 import {
   runComputerAction,
   __setComputerExecForTests,
@@ -75,6 +88,8 @@ describe('runComputerAction — capability:computer handler', () => {
     __resetComputerExec();
     await releaseAllHiveDesktops();
     __resetProvisioner();
+    resolveDesktopForScope.mockReset();
+    resolveLocalDesktopByDisplay.mockReset();
     delete process.env.PAPERCUSP_COMPUTER_DISPLAY;
     delete process.env.PAPERCUSP_COMPUTER_WIDTH;
     delete process.env.PAPERCUSP_COMPUTER_HEIGHT;
@@ -220,5 +235,54 @@ describe('runComputerAction — capability:computer handler', () => {
 
     const xd = calls.find((c) => c.bin === 'xdotool');
     expect(xd?.env).toEqual({ DISPLAY: ':99' }); // env fallback, NOT the '*' lease (:152)
+  });
+
+  it('prefers the explicit current display marker over a stale scope registry row', async () => {
+    process.env.PAPERCUSP_COMPUTER_DISPLAY = ':116';
+    resolveDesktopForScope.mockResolvedValue({
+      display: ':111',
+      displayGeometry: { width: 1920, height: 1080 },
+      captureGeometry: { width: 1024, height: 768 },
+    });
+    resolveLocalDesktopByDisplay.mockResolvedValue({
+      display: ':116',
+      displayGeometry: { width: 1280, height: 720 },
+      captureGeometry: { width: 1024, height: 768 },
+    });
+
+    const { exec, calls } = recordingExec();
+    __setComputerExecForTests(exec);
+    await runComputerAction({ action: 'mouse_move', coordinate: [1279, 719] }, { harnessSlug: 'stale-hive' });
+
+    const xd = calls.find((c) => c.bin === 'xdotool');
+    expect(xd?.env).toEqual({ DISPLAY: ':116' });
+    expect(resolveDesktopForScope).not.toHaveBeenCalled();
+    expect(resolveLocalDesktopByDisplay).toHaveBeenCalledWith({
+      workspaceId: expect.any(String),
+      display: ':116',
+    });
+  });
+
+  it('uses the scope registry when no explicit display marker exists', async () => {
+    delete process.env.PAPERCUSP_COMPUTER_DISPLAY;
+    delete process.env.PAPERCUSP_AGENT_DISPLAY;
+    resolveDesktopForScope.mockResolvedValue({
+      display: ':111',
+      displayGeometry: { width: 1920, height: 1080 },
+      captureGeometry: { width: 1024, height: 768 },
+    });
+
+    const { exec, calls } = recordingExec();
+    __setComputerExecForTests(exec);
+    await runComputerAction({ action: 'mouse_move', coordinate: [1919, 1079] }, { harnessSlug: 'registry-hive' });
+
+    const xd = calls.find((c) => c.bin === 'xdotool');
+    expect(xd?.env).toEqual({ DISPLAY: ':111' });
+    expect(resolveDesktopForScope).toHaveBeenCalledWith({
+      workspaceId: expect.any(String),
+      scope: 'pot',
+      scopeRef: 'registry-hive',
+    });
+    expect(resolveLocalDesktopByDisplay).not.toHaveBeenCalled();
   });
 });
