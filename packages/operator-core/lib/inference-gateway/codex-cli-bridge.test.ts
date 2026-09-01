@@ -10,6 +10,7 @@ import {
   CODEX_CLI_REF_PREFIX,
   codexCliFailureDetail,
   isCodexAuthFailure,
+  isCodexRateLimitFailure,
   codexCliResponsesCompletionSse,
   codexCliResponsesBody,
   extractResponsesInputText,
@@ -416,5 +417,25 @@ describe('isCodexAuthFailure (EI-21618978789879488)', () => {
   // A 429 that merely MENTIONS authorization must stay a quota wall — quota wording wins.
   it('lets quota wording win when a message carries both', () => {
     expect(isCodexAuthFailure('429 too many requests on the authorization endpoint')).toBe(false);
+  });
+});
+
+describe('isCodexRateLimitFailure (codex recovery P-009)', () => {
+  it('recognizes the terminal quota/rate text emitted by codex exec', () => {
+    for (const detail of [
+      "You've hit your usage limit · resets 3am",
+      'rate limited, retry after 30s',
+      'rate_limit_error: exceeded retry limit, last status: 429',
+      'HTTP 429 Too Many Requests',
+      'quota exceeded for this account',
+    ]) {
+      expect(isCodexRateLimitFailure(detail), detail).toBe(true);
+    }
+  });
+
+  it('does not relabel credential death or unrelated subprocess failures as throttles', () => {
+    for (const detail of ['401 unauthorized', 'invalid_api_key', 'spawn failed: ENOENT', 'request aborted', '']) {
+      expect(isCodexRateLimitFailure(detail), JSON.stringify(detail)).toBe(false);
+    }
   });
 });

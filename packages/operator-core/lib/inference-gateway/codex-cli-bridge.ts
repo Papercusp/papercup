@@ -246,6 +246,16 @@ export function isCodexAuthFailure(detail: string): boolean {
   );
 }
 
+/** A nested codex run failed because provider capacity/quota was exhausted. */
+export function isCodexRateLimitFailure(detail: string): boolean {
+  const text = detail.toLowerCase().trim();
+  if (!text) return false;
+  return (
+    /usage limit|session limit|rate.?limit|rate_limit|quota/.test(text) ||
+    /too many requests|\b429\b|exceeded retry limit/.test(text)
+  );
+}
+
 /**
  * One completion through the codex CLI on the subscription credential.
  * Flags mirror the PROVEN subprocess-agent invocation (harness-invoke-once /
