@@ -60,12 +60,26 @@ import { holderContextReader, resolveHolderAdvisory } from '../coordination/hold
 // of D-094's subtraction structurally unable to disagree — see the call sites below.
 import { planItemRef } from '../../agent-goal-ref';
 import { softText } from '../limits';
+import {
+  CompletionVerificationEvidenceSchema,
+  type CompletionVerificationEvidence,
+} from '../../coord-lifecycle/records';
+import { typeEvidenceGapInCompletion } from '../type-evidence-gap';
 
 // Most-permissive (owner directive 2026-06-25): open to every role; the capability envelope is the
 // real backstop. Was [...SU_ROLES, 'bee'].
 const SU_BEE_ROLES = [...AGENT_ROLES] as const;
 
 const STATUS = z.enum([...ITEM_STATUSES] as [string, ...string[]]);
+const TYPE_EVIDENCE = CompletionVerificationEvidenceSchema.pick({
+  filesChanged: true,
+  testsRun: true,
+  testResult: true,
+  verifiedHow: true,
+  addedTests: true,
+}).describe(
+  'Verification evidence for a `done` flip. Supply filesChanged + verifiedHow + testsRun/testResult so the response can challenge a unit-only TypeScript close; advisory only.',
+);
 
 const NOTE = softText(8000)
   .describe(
@@ -89,6 +103,7 @@ const itemSpec = z.object({
   onlyIfNotCompleted: z.boolean().optional(),
   onlyIfBlockAttributedTo: z.string().min(1).optional(),
   expectedStatus: STATUS.optional(),
+  verification: TYPE_EVIDENCE.optional(),
 });
 
 const argsSchema = z
@@ -156,6 +171,7 @@ const argsSchema = z
     expectedStatus: STATUS.optional().describe(
       'Compare-and-set: FAIL (`ok:false, code:"expected_status_mismatch"`) if the item is not on this status when the lock is taken. For applying a RECORDED observation whose `from` may have gone stale; unlike the `onlyIf*` guards this is an error, not a skip.',
     ),
+    verification: TYPE_EVIDENCE.optional(),
   })
   .refine(
     (a) =>
@@ -218,6 +234,8 @@ interface StatusItem {
    *  there now. Without the precondition the write silently overwrites whatever
    *  the item became in between. */
   expectedStatus?: string;
+  /** Structured proof accompanying a direct →done flip. Advisory only. */
+  verification?: CompletionVerificationEvidence;
 }
 
 /** Result payload — explicit so `withPlanLock`'s `T` is fixed by the
@@ -297,6 +315,37 @@ export function shouldPushNeedsHuman(
     newStatus === 'needs-human' &&
     oldStatus !== 'needs-human' &&
     (importance === 'urgent' || importance === 'high')
+  );
+}
+
+/**
+ * EI-20204821380371591 — a direct plan-item close must not be the evidence-free
+ * bypass around work_items:complete's TypeScript advisory. The flip stays
+ * warn-only, but a real →done edge either challenges the supplied evidence with
+ * the shared guard or makes the missing evidence explicit.
+ */
+export function typeEvidenceWarningForPlanItem(args: {
+  ref: string;
+  oldStatus: string | null;
+  newStatus: string;
+  verification?: CompletionVerificationEvidence;
+}): string | undefined {
+  if (args.newStatus !== 'done' || args.oldStatus === 'done') return undefined;
+  if (!args.verification) {
+    return (
+      `plan item ${args.ref} was closed without structured verification evidence, so this terminal path cannot ` +
+      'tell whether a green unit suite silently missed TypeScript errors. Pass `verification:{ verifiedHow, ' +
+      'testsRun, testResult, filesChanged }` on the done flip; Vitest transforms via esbuild and NEVER typechecks.'
+    );
+  }
+  const gap = typeEvidenceGapInCompletion(args.verification);
+  if (!gap) return undefined;
+  return (
+    `plan item ${args.ref} rests on a TEST RUN (` +
+    `\`verifiedHow: '${args.verification.verifiedHow}'\`) and changed ${gap.tsFiles.length} TypeScript file(s), ` +
+    'but cites no typecheck. Vitest transforms via esbuild and NEVER typechecks — a green suite is SILENT about ' +
+    `types. If this close asserts the code COMPILES, run the owning repository typecheck for: ${gap.tsFiles.join(', ')}. ` +
+    'If it only asserts BEHAVIOUR, ignore this.'
   );
 }
 
@@ -1681,6 +1730,13 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       .catch(() => null);
   }
 
+  const typeEvidenceWarning = typeEvidenceWarningForPlanItem({
+    ref: `${it.slug}#${it.itemId}`,
+    oldStatus: result.value.oldStatus,
+    newStatus: it.status,
+    verification: it.verification,
+  });
+
   return {
     slug: it.slug,
     ...result.value,
@@ -1692,6 +1748,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     ...(workItemSynced ? { workItemSynced } : {}),
     ...(memory ? { memory } : {}),
     ...(residualWarning ? { residualWarning } : {}),
+    ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
     ...(noteTruncated
       ? {
           noteTruncated: true,
@@ -1705,7 +1762,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
 export default defineTool({
   name: 'plans:set-status',
   description:
-    "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. A `dropped` flip REQUIRES a nonblank note or rationale so intentional departures stay recorded. Flipping to `wip` AUTO-CLAIMS the item for you; flipping to done/dropped releases your claim AND clears the item's assignment. Both reject with per-item claim_conflict if a LIVE peer holds the item; coordinate or let the holder close it. Single: { slug, item, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, item, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
+    "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. A `dropped` flip REQUIRES a nonblank note or rationale so intentional departures stay recorded. A `done` flip accepts structured `verification`; missing evidence or unit-only evidence over changed TypeScript returns advisory `typeEvidenceWarning` without blocking the flip. Flipping to `wip` AUTO-CLAIMS the item for you; flipping to done/dropped releases your claim AND clears the item's assignment. Both reject with per-item claim_conflict if a LIVE peer holds the item; coordinate or let the holder close it. Single: { slug, item, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, item, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
   guidance: {
     when: "An item's status changes — picking up (todo→wip, which also claims it), completing (wip→done), intentionally departing (→dropped with `note` preferred or `rationale` required), gating on a human (→needs-human), or recording external blockage (→blocked). Flip several at once via itemIds:[…] (one plan) or items:[…].",
     notWhen:
@@ -1745,6 +1802,7 @@ export default defineTool({
           onlyIfNoOtherInFlightCoverage: it.onlyIfNoOtherInFlightCoverage ?? args.onlyIfNoOtherInFlightCoverage,
           onlyIfNotCompleted: it.onlyIfNotCompleted ?? args.onlyIfNotCompleted,
           expectedStatus: it.expectedStatus ?? args.expectedStatus,
+          verification: it.verification ?? args.verification,
         }))
       : args.itemIds?.length
         ? args.itemIds.map((itemId) => ({
@@ -1760,6 +1818,7 @@ export default defineTool({
             onlyIfNoOtherInFlightCoverage: args.onlyIfNoOtherInFlightCoverage,
             onlyIfNotCompleted: args.onlyIfNotCompleted,
             expectedStatus: args.expectedStatus,
+            verification: args.verification,
           }))
         : [
             {
@@ -1775,6 +1834,7 @@ export default defineTool({
               onlyIfNoOtherInFlightCoverage: args.onlyIfNoOtherInFlightCoverage,
               onlyIfNotCompleted: args.onlyIfNotCompleted,
               expectedStatus: args.expectedStatus,
+              verification: args.verification,
             },
           ];
     const env = await runBulk(list, (it) => setStatusOne(it, ctx), {
