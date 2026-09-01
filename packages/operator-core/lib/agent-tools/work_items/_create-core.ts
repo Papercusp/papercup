@@ -202,7 +202,7 @@ export type CreateOneWorkItemResult =
       error: string;
       message?: string;
       existing?: { id: string; state: string };
-      /** duplicate_semantic only: the OPEN items the new title cosine-matched. */
+      /** dedup refusals: the OPEN items the new title cosine-matched. */
       similarOpen?: SemanticDupeCandidate[];
       admissionIdentity?: AdmissionIdentity;
       dedupCoverage?: WorkItemDedupCoverage;
@@ -555,29 +555,20 @@ export async function createOneWorkItem(
     }
     // P-008 semantic dupe prescreen (shared-embedding-sidecar-and-enrichment-2026-07-10):
     // cosine-rank the new title+summary against OPEN items' migration-548 embeddings —
-    // the guard the 2026-07-10 30-dupe storm needed (differently-worded titles the
-    // EI-316 lexical mirror-guard above cannot see). Hard match refuses (force:true
-    // overrides, same contract as the mirror guard); soft match creates WITH an
-    // advisory `similarOpen`. STRICTLY fail-open: null = "no verdict" = proceed.
-    // P-004: a goal-mode create keeps the probes running even under force — force
-    // bypasses the MATCH refusal below, but the caller always gets the coverage
-    // verdict + candidates instead of a blind pass.
-    //
-    // WI-39824: DRAIN used to override force here too, which made the refusal's own
-    // advice ("or pass force:true if this is genuinely distinct") FALSE for the whole
-    // drain-mode bug-filing population — the primary filers. A genuinely distinct bug
-    // within cosine 0.93 was then unfileable through the only remedy the message
-    // names, and the finding got buried as a comment on whichever item happened to be
-    // semantically nearest. Two things make force the right winner on a MATCH: the
-    // guard's own calibration block records that cosine alone cannot separate
-    // duplicates from distinct filings in this corpus AT ANY CUT (0.93 is "the only
-    // defensible pure-cosine refusal", not a reliable verdict), and force is an
-    // explicit, attributable caller assertion rather than the blind pass the dupe
-    // storm was made of. DRAIN's actual contract — that the probe RAN and was not
-    // degraded — is untouched and still fails closed under force (see the
-    // requireCompleteDedupCoverage rail below, pinned by its own test): `shouldScreen`
-    // deliberately still forces the screen under DRAIN, so force suppresses the VETO,
-    // never the MEASUREMENT, and the coverage verdict is still recorded on the item.
+    // the detector the 2026-07-10 30-dupe storm needed (differently-worded titles the
+    // EI-316 lexical mirror-guard above cannot see). STRICTLY fail-open: null =
+    // "no verdict" = proceed.
+    // P-002 (silent-intake-central-resolution-2026-09-01, D-001): both bands are now
+    // advisory — hard matches stamp 'semantic-hard' and merge into the same
+    // `similarOpen` set as soft matches; no create is refused on a match (the
+    // duplicate_semantic veto, and WI-39824's force-override carve-out of it, are
+    // retired — the guard's own calibration block records that cosine alone cannot
+    // separate duplicates from distinct filings in this corpus at any cut, so the
+    // verdict belongs to the central resolver, not a filer gate). `shouldScreen`
+    // survives the veto's retirement: force (the caller asserting distinctness) may
+    // skip the probes for speed, but DRAIN (requireCompleteDedupCoverage) and the
+    // P-004 goal gate still force the MEASUREMENT so the coverage verdict +
+    // candidates are recorded on the item either way.
     const shouldScreen =
       !args.force || Boolean(args.requireCompleteDedupCoverage) || Boolean(args.goalDedupGate);
     let semanticLeg: WorkItemDedupCoverage['semantic'] = issueAdmission ? 'skipped' : 'skipped';
@@ -597,47 +588,18 @@ export async function createOneWorkItem(
       // P-004: under the goal gate the semantic leg's health matters for EVERY kind
       // (the gate's whole point is "the probe actually ran"), not only issue-family.
       if (issueAdmission || args.goalDedupGate) semanticLeg = dupes ? 'ok' : 'unavailable';
-      if (dupes && dupes.hard.length > 0 && !args.force) {
-        const canonical = selectCanonicalIssue(
-          identity,
-          dupes.hard.map((candidate) => ({ ...candidate, eligible: true })),
-        );
-        const top = dupes.hard.find((candidate) => candidate.id === canonical?.id) ?? dupes.hard[0];
-        if (issueAdmission) {
-          await appendWorkItemOccurrence(
-            args,
-            ctx,
-            identity,
-            'duplicate',
-            top.id,
-            top.harness,
-            dupes.hard,
-            { lexical: 'skipped', semantic: 'ok', degraded: false },
-          );
-        }
-        return {
-          ok: false,
-          error: 'duplicate_semantic',
-          message:
-            `semantically duplicates OPEN work-item ${top.id} "${top.title}" ` +
-            `(cosine similarity ${top.similarity.toFixed(3)} ≥ ${dupes.thresholds.hard}) — ` +
-            `work that item instead (work_items:claim ${top.id}), or pass force:true if this is genuinely distinct.`,
-          existing: { id: top.id, state: top.state },
-          similarOpen: dupes.hard,
-        };
-      }
       if (dupes && dupes.soft.length > 0) {
         burstCandidates = dupes.soft;
         similarOpen = dupes.soft;
       }
-      // P-001 (silent-intake-central-resolution-2026-09-01): under force the hard
-      // band's REFUSAL above is bypassed, but the detection still happened — these are
-      // the strongest twins this filing has, and dropping them here was the one branch
-      // where file-time detection evaporated entirely (no payload stamp, no
-      // dedup_edges). Merge them into the advisory set so they ride the same
-      // persistence rails (payload.dedupCandidates + persistDedupEdges + occurrence
+      // P-001/P-002 (silent-intake-central-resolution-2026-09-01, D-001): the hard
+      // band's duplicate_semantic REFUSAL is retired — every filing is accepted and
+      // the central resolver merges twins. The detection still happened and these
+      // are the strongest twins this filing has: merge them into the advisory set
+      // UNCONDITIONALLY so they ride the same persistence rails
+      // (payload.dedupCandidates 'semantic-hard' + persistDedupEdges + occurrence
       // evidence); the burst circuit deliberately still reads dupes.soft only.
-      if (dupes && dupes.hard.length > 0 && args.force) {
+      if (dupes && dupes.hard.length > 0) {
         hardSemanticIds = new Set(dupes.hard.map((c) => c.id));
         const seen = new Set((similarOpen ?? []).map((c) => c.id));
         const fresh = dupes.hard.filter((c) => !seen.has(c.id));
@@ -689,16 +651,11 @@ export async function createOneWorkItem(
       : args.goalDedupGate
         ? { lexical: 'skipped', semantic: semanticLeg, degraded: semanticLeg !== 'ok' }
         : undefined;
-    if (args.requireCompleteDedupCoverage && dedupCoverage?.degraded) {
-      return {
-        ok: false,
-        error: 'dedup_unavailable',
-        message:
-          `DRAIN bug admission requires complete dedup coverage; lexical=${dedupCoverage.lexical}, ` +
-          `semantic=${dedupCoverage.semantic}. No work-item was created — retry when every leg is available.`,
-        ...(similarOpen ? { similarOpen } : {}),
-      };
-    }
+    // P-002 (silent-intake-central-resolution-2026-09-01, D-001): the DRAIN
+    // degraded-coverage refusal is retired — a degraded probe files anyway, with
+    // the degradation stamped on the row (payload.dedupCoverage below). The
+    // requireCompleteDedupCoverage arg still forces the MEASUREMENT (shouldScreen
+    // above); only the veto is gone.
     // P-004 (goal-mode-design-intent-hardening-2026-08-16): a GOAL-mode create whose
     // dedup probe could not actually run fails CLOSED instead of open. The WI-39373
     // relapse this hardens against: the probes RAN but semantic coverage was

@@ -21,7 +21,6 @@ import { notifyAgents } from '../coordination/notify-agents';
 import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import {
   captureImprovement,
-  DedupCoverageUnavailableError,
   recordCaptureReviewFailure,
   setCaptureReviewState,
   type AgentReviewFailure,
@@ -1383,22 +1382,6 @@ export default defineTool({
       // as a clean tool error instead of an opaque throw (D-002 evidence gate).
       if (err instanceof ObservationEvidenceError) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: err.message }) }] };
-      }
-      if (err instanceof DedupCoverageUnavailableError) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                created: false,
-                error: err.code,
-                message: err.message,
-                dedupCoverage: err.coverage,
-              }),
-            },
-          ],
-        };
       }
       throw err;
     }

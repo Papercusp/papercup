@@ -125,11 +125,14 @@ export interface CaptureImprovementInput {
    *  system floor emitters (pulse/backstop/watchdogs) leave it unset so the
    *  monitoring floor can never be broken by the gate. */
   enforcePoorRatingDisposition?: boolean;
-  /** File even if a likely duplicate exists (default false → search-first declines). */
+  /** Caller asserts distinctness: suppresses the payload.dedupVerdict annotation
+   *  and the burst-admission coalesce (P-002 — the search-first DECLINE this flag
+   *  used to override is retired; every filing is accepted either way). */
   force?: boolean;
   /**
-   * DRAIN admission rail. A bug may be created only after every dedup leg returned
-   * a real verdict; skipped/unavailable coverage rejects before persistence. The
+   * DRAIN admission rail — measurement-only since P-002 (D-001): the degraded-
+   * coverage VETO is retired, so this no longer rejects anything; the coverage
+   * verdict is stamped on the row (payload.dedupCoverage) either way. The
    * agent-facing wrapper derives this from the caller's live mode registry — it is
    * deliberately not a public caller override.
    */
@@ -466,18 +469,6 @@ export interface CaptureImprovementResult {
   /** A committed capture whose review lifecycle could not complete. */
   agentReviewFailure?: AgentReviewFailure;
   hint?: string;
-}
-
-/** Raised only by the DRAIN bug-admission rail; tool wrappers render it cleanly. */
-export class DedupCoverageUnavailableError extends Error {
-  readonly code = 'dedup_unavailable';
-  constructor(readonly coverage: DedupCoverage) {
-    super(
-      `DRAIN bug admission requires complete dedup coverage; lexical=${coverage.lexical}, ` +
-        `semantic=${coverage.semantic}. No bug was created — retry when every leg is available.`,
-    );
-    this.name = 'DedupCoverageUnavailableError';
-  }
 }
 
 /** Injectable dependency seam (unit tests run without PG). */
@@ -1582,16 +1573,16 @@ export async function captureImprovement(
 
   let blockingDuplicates: PossibleDuplicate[];
   let declineReason: 'likely-duplicate' | 'stale-evidence' = 'likely-duplicate';
-  let declineHint =
-    'This looks already filed — comment on / claim the existing item, or re-run with force:true if it is genuinely distinct.';
   if (input.dedupScope === 'open') {
     blockingDuplicates = compatible.filter((d) => d.state === 'open');
     if (blockingDuplicates.length === 0 && input.evidenceAt) {
-      // P-005 / D-002: a RESOLVED dup re-files only on evidence NEWER than the
-      // resolution. Collector lookback windows still contain pre-fix rows; when
-      // the newest evidence pre-dates the dup's resolution, decline — that is
-      // stale evidence, not a regression. Unparseable timestamps fail open
-      // (re-file): a phantom re-file beats a suppressed real regression.
+      // P-005 / D-002 (verdict retained under P-002): a RESOLVED dup's re-file is
+      // a real regression only on evidence NEWER than the resolution. Collector
+      // lookback windows still contain pre-fix rows; when the newest evidence
+      // pre-dates the dup's resolution that is stale lookback evidence — since
+      // P-002 it files anyway (D-001) and the verdict rides payload.dedupVerdict
+      // so the central resolver can tell a regression-refile from stale junk.
+      // Unparseable timestamps fail open (no stale verdict).
       const evidenceMs = Date.parse(input.evidenceAt);
       const staleResolved = compatible.filter((d) => {
         if (d.state === 'open') return false;
@@ -1601,46 +1592,20 @@ export async function captureImprovement(
       if (staleResolved.length > 0) {
         blockingDuplicates = staleResolved;
         declineReason = 'stale-evidence';
-        declineHint =
-          'A resolved duplicate exists and the newest evidence pre-dates its resolution — stale lookback-window evidence, not a regression. Re-file with force:true only if the problem genuinely recurred.';
       }
     }
   } else {
     blockingDuplicates = compatible;
   }
-  if (blockingDuplicates.length > 0 && !input.force) {
-    const canonical = selectCanonicalIssue(
-      identity,
-      blockingDuplicates.map((candidate) => ({
-        id: candidate.id,
-        title: candidate.title,
-        similarity: candidate.similarity,
-        eligible: true,
-      })),
-    );
-    if (canonical) {
-      await appendCaptureOccurrence(
-        deps,
-        input,
-        identity,
-        'duplicate',
-        canonical.id,
-        possibleDuplicates,
-        dedupCoverage,
-        harnessFromScope(candidateById.get(canonical.id)?.scope),
-      );
-    }
-    return {
-      ok: true,
-      created: false,
-      reason: declineReason,
-      possibleDuplicates,
-      dedupCoverage,
-      admissionIdentity: identity,
-      ...(alreadyDecided.length ? { alreadyDecided } : {}),
-      hint: declineHint,
-    };
-  }
+  // P-002 (silent-intake-central-resolution-2026-09-01, D-001): every filing is
+  // accepted — the search-first decline that used to return created:false here is
+  // retired, and its 'duplicate' occurrence append with it (the created row IS the
+  // record). The classification above still runs so the file-time verdict survives
+  // on the created row (payload.dedupVerdict at the mint below): the central
+  // resolver ranks and merges; the filer carries no dup-investigation burden.
+  // force still short-circuits the verdict: the caller asserted distinctness.
+  const dedupVerdict: 'likely-duplicate' | 'stale-evidence' | undefined =
+    blockingDuplicates.length > 0 && !input.force ? declineReason : undefined;
 
   // P-005: during a concentrated low-diversity burst, an advisory SOFT semantic
   // sibling becomes a safe occurrence home instead of allowing another canonical
@@ -1717,13 +1682,12 @@ export async function captureImprovement(
     }
   }
 
-  // D-001 / WI-38403: DRAIN is the deliberate exception to the global
-  // availability-first filing rule. It suppresses incidental bug creation, and
-  // the remaining direct blocker may not enter the queue on an unmeasured dedup
-  // path. `force` cannot override missing evidence; it only overrides a known hit.
-  if (input.kind === 'bug' && input.requireCompleteDedupCoverage && dedupCoverage.degraded) {
-    throw new DedupCoverageUnavailableError(dedupCoverage);
-  }
+  // P-002 (silent-intake-central-resolution-2026-09-01, D-001): the DRAIN
+  // degraded-coverage veto (WI-38403's DedupCoverageUnavailableError throw) is
+  // retired — a bug filed on an unmeasured dedup path files anyway. The
+  // degradation is already stamped unconditionally on the row
+  // (payload.dedupCoverage below, EI-20275452450016416), which is where the
+  // central resolver reads it.
 
   // Per-Hive topic lens (P-010): add sourceRole to topics when it differs from default.
   // Observations file the DISTINCT OBSERVATION_TOPIC lane (D-005) so they stay out of
@@ -2017,6 +1981,12 @@ export async function captureImprovement(
         }),
       );
     }
+    // P-002 (D-001): the verdict the retired search-first decline would have
+    // returned — 'likely-duplicate' (an open twin existed at file time) or
+    // 'stale-evidence' (a resolved twin exists and the newest evidence pre-dates
+    // its resolution). Annotation only, never a gate; candidate state is NOT
+    // duplicated here — the resolver joins by id via dedupCandidates above.
+    if (dedupVerdict) payload.dedupVerdict = dedupVerdict;
   }
   // P-010 source-tag: track who filed this for per-Hive analytics
   if (sourceRole !== 'human') payload.sourceRole = sourceRole;
