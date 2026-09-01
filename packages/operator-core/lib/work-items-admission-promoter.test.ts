@@ -3,7 +3,9 @@ import {
   admissionPairKey,
   buildPromoterPrompt,
   decideWorkItemAdmissionProducerPressure,
+  deriveAdmissionRunOutcome,
   evaluatePromoterLiveness,
+  normalizeAdmissionRunState,
   parsePromoterJudgements,
   planPromoterDispositions,
   responsePayload,
@@ -196,6 +198,80 @@ describe('evaluatePromoterLiveness', () => {
         nowMs: now,
       }).stale,
     ).toBe(true);
+  });
+});
+
+describe('admission run reporting semantics', () => {
+  it('does not infer success from a finish timestamp when an explicit status is unknown', () => {
+    expect(normalizeAdmissionRunState('mystery', '2026-08-26T15:00:00Z')).toBe('failed');
+    expect(normalizeAdmissionRunState(null, '2026-08-26T15:00:00Z')).toBe('complete');
+    expect(normalizeAdmissionRunState(null, null)).toBe('running');
+  });
+
+  it('keeps failed and blocked counters unknown/zero instead of inventing work', () => {
+    expect(
+      deriveAdmissionRunOutcome({
+        state: 'failed',
+        runKind: 'bulk-stage',
+        detail: { status: 'failed', error: 'transport failed' },
+        batchSize: 1500,
+        promoted: null,
+        merged: null,
+        held: null,
+        autoPromotedUnreviewed: null,
+      }),
+    ).toMatchObject({ unit: 'pairs', attempted: null, successful: null, failureReason: 'transport failed' });
+    expect(
+      deriveAdmissionRunOutcome({
+        state: 'blocked',
+        runKind: 'daily-digest',
+        detail: { status: 'blocked', blockedReason: 'awaiting-bulk' },
+        batchSize: 0,
+        promoted: 0,
+        merged: 0,
+        held: 0,
+        autoPromotedUnreviewed: 0,
+      }),
+    ).toMatchObject({ unit: 'unknown', attempted: 0, successful: 0, blockedReason: 'awaiting-bulk' });
+  });
+
+  it('derives promoter item outcomes and preserves explicit writer outcomes', () => {
+    expect(
+      deriveAdmissionRunOutcome({
+        state: 'complete',
+        runKind: 'promoter-tick',
+        detail: { status: 'complete', mode: 'promoter' },
+        batchSize: 4,
+        promoted: 2,
+        merged: 1,
+        held: 1,
+        autoPromotedUnreviewed: 0,
+      }),
+    ).toMatchObject({ unit: 'items', attempted: 4, successful: 3, unchanged: 1, uniqueRowsChanged: 3 });
+    expect(
+      deriveAdmissionRunOutcome({
+        state: 'complete',
+        runKind: 'promoter-tick',
+        detail: {
+          status: 'complete',
+          outcome: {
+            unit: 'items',
+            attempted: 9,
+            successful: 7,
+            rolledBack: 1,
+            unchanged: 1,
+            uniqueRowsChanged: 6,
+            failureReason: null,
+            blockedReason: null,
+          },
+        },
+        batchSize: 2,
+        promoted: 2,
+        merged: 0,
+        held: 0,
+        autoPromotedUnreviewed: 0,
+      }),
+    ).toMatchObject({ attempted: 9, successful: 7, rolledBack: 1, uniqueRowsChanged: 6 });
   });
 });
 

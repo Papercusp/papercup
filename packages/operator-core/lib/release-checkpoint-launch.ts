@@ -45,6 +45,7 @@ import {
   gateVerdictEnv,
   type GateVerdictTarget,
 } from './release/gate-verdict-target';
+import { recordGateFire } from './release/gate-fire-ledger';
 import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import { admitCheckpointMemory, type CheckpointMemoryAdmission } from './release/checkpoint-memory-admission';
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
@@ -2721,15 +2722,18 @@ export async function launchDetachedCheckpoint(
   const current = currentCheckpointCandidate(root, execFn);
   const tipSha = current.current_head;
   const candidateSha = opts.candidate ?? current.current_candidate;
+  // WI-4494: this run records its own verdict. Explicit opt-out (`target: null`) is honoured;
+  // omitted ⇒ the operator-home gate, which is this launcher's documented scope. Hoisted so
+  // the P-001 fire ANCHOR (in the close handler below) and the argv env stamps can never
+  // disagree about which gate the run records into.
+  const verdictTarget = opts.target === undefined ? resolveHomeGateTarget() : opts.target;
   const argv = buildCheckpointSystemdArgv(
     root,
     logPath,
     process.env.PATH ?? '',
     process.env.PAPERCUSP_PARTIAL_GREEN_GATE === '1',
     runLogPath,
-    // WI-4494: this run records its own verdict. Explicit opt-out (`target: null`) is honoured;
-    // omitted ⇒ the operator-home gate, which is this launcher's documented scope.
-    opts.target === undefined ? resolveHomeGateTarget() : opts.target,
+    verdictTarget,
     // WI-39472: forward the launcher's capacity contract, so a manual run uses the same fork
     // budget as the scheduled gate instead of silently falling back to `shared`.
     capacityMode,
@@ -2783,6 +2787,16 @@ export async function launchDetachedCheckpoint(
     });
     child.on('close', (code: number | null) => {
       if (code === 0) {
+        // P-001 (gate-verdict-liveness-and-repair-reliability-2026-08-31): anchor the FIRE —
+        // one kind='green_checkpoint_fire' ledger row per accepted detached launch, so a unit
+        // that dies before its first write is still countable from SQL. Fire-and-forget on
+        // purpose: recordGateFire is best-effort by contract, and this handler must resolve
+        // the caller without waiting on a ledger write. A `target: null` (explicitly
+        // NON-recording) run writes no outcome row, so it gets no anchor either — anchoring
+        // it would inflate `unaccounted` by construction.
+        if (verdictTarget) {
+          void recordGateFire(verdictTarget, { route: 'detached', root, unit });
+        }
         resolve({ ...base, launched: true });
         return;
       }

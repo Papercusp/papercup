@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
-import AdvShell, { ADV_TABS, useAdvScope, type AdvScope, type AdvTabId } from '../../components/adv/AdvShell';
+import AdvShell, { ADV_TABS, portalEmbedAdvTab, useAdvScope, type AdvScope, type AdvTabId } from '../../components/adv/AdvShell';
+import { isPortalEmbedLocation } from '@papercusp/operator-core/lib/portal-embed';
 import AdvPotBar from '../../components/adv/AdvPotBar';
 import { potBarModeForTab } from '../../components/adv/adv-pot-bar-tabs';
 import AdvTabErrorBoundary from '../../components/adv/AdvTabErrorBoundary';
@@ -29,15 +30,18 @@ export const Route = createFileRoute('/adv/')({
 });
 
 function AdvIndexPage() {
+  const portalEmbed = typeof window !== 'undefined'
+    && isPortalEmbedLocation(window.location.pathname, window.location.search);
   const [activeTab] = useQueryState(
     'tab',
     // Overview is the default landing surface (Brief 23 /
     // overview-dashboard-2026-06-05 D-001). Keep in sync with AdvShell.
     parseAsStringEnum<AdvTabId>(ADV_TAB_IDS).withDefault('overview'),
   );
+  const renderedActiveTab = portalEmbedAdvTab(activeTab, portalEmbed);
   return (
     <AdvShell>
-      <AdvScopedTabBody activeTab={activeTab} />
+      <AdvScopedTabBody activeTab={renderedActiveTab} />
     </AdvShell>
   );
 }

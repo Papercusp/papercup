@@ -43,6 +43,9 @@ vi.mock('../../components/adv/AdvShell', () => ({
     'evals', 'calendar', 'plans', 'prs', 'insights', 'settings', 'history',
     'docs', 'git', 'stats', 'testing',
   ].map((id) => ({ id })),
+  portalEmbedAdvTab: (tab: string, embedded: boolean) => (
+    embedded && !['overview', 'hud', 'learning', 'harnesses', 'workflows', 'brainstorm'].includes(tab) ? 'overview' : tab
+  ),
   useAdvScope: () => advScopeBoundary.entered
     ? {
         allMode: false,
@@ -101,9 +104,24 @@ function renderAdv(searchParams = '') {
 /** The pot bar marker, or null when this tab does not carry one. */
 const potBar = () => screen.queryByTestId('pot-bar');
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.history.replaceState({}, '', '/adv');
+});
 
 describe('/adv tab router', () => {
+  it('keeps a dedicated Workflow Editor embed renderable without restoring its Papercusp tab', () => {
+    window.history.replaceState({}, '', '/adv?tab=workflows&portalEmbed=1');
+    renderAdv('?tab=workflows&portalEmbed=1');
+    expect(screen.getByTestId('tab-workflows')).toBeTruthy();
+  });
+
+  it('routes a stale non-portal tab deep link to Overview inside the cloud Papercusp embed', () => {
+    window.history.replaceState({}, '', '/adv?tab=docs&portalEmbed=1');
+    renderAdv('?tab=docs&portalEmbed=1');
+    expect(screen.getByTestId('tab-overview')).toBeTruthy();
+  });
+
   const FIRST_CLASS = [
     { tab: 'overview', child: 'tab-overview', bar: true, pills: false },
     // HUD is a first-class tab (owner ask 2026-07-25) — /adv/HUD redirects here.

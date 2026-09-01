@@ -139,12 +139,21 @@ vi.mock('../../../events/await/store', () => ({
 // It presents as "the mock silently doesn't work", with NO error surfaced — and
 // the reason is worth knowing, because it is NOT that warns are unreliable here.
 // setup-fail-on-console.ts sets shouldFailOnWarn:true, so a warn normally FAILS
-// the test loudly; only allowlisted texts are silenced, and console-noise-filter.ts:75
-// silences exactly "A UNIT test tried to open a REAL Postgres connection". The
-// catch at inbox-wake.ts:431 interpolates ${e.message} into its own warn, so it
-// INHERITS that silence by substring match — a fail-soft handler silencing its own
-// wrapper log. If you debug this path, use process._rawDebug(): vitest cannot
-// intercept it. (WI-7411)
+// the test loudly; only allowlisted texts are silenced, and console-noise-filter.ts
+// silences exactly "A UNIT test tried to open a REAL Postgres connection" — grep that
+// string, not a line number: this comment used to cite :75 and inbox-wake.ts:431, and
+// the latter had already moved to :629. The fail-soft roster catch in
+// reportIdleRecipients (inbox-wake.ts, grep "idle-probe roster read failed")
+// interpolates ${e.message} into its own warn, so it INHERITS that silence by
+// substring match — a fail-soft handler silencing its own wrapper log. (WI-7411)
+//
+// TO DEBUG THIS PATH, grep the run's stdout for "[silenced-console-census]"
+// (EI-19417655142979569). The census counts every suppressed rail message per file
+// AND quotes up to 3 DISTINCT wrapper texts, so the very line that named this catch
+// is now printed rather than swallowed — the count alone would tell you the rail
+// fired but not which of several fail-soft paths degraded. process._rawDebug()
+// remains the fallback for a message the allowlist does not bucket: vitest cannot
+// intercept it.
 vi.mock('../presence', async () => ({
   // Consumed by presence-wakeability.ts via fleet-roster. Re-sourced from the
   // DEFINING package rather than hand-copied, so it cannot drift from the real
