@@ -55,6 +55,13 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'plans:read',
     'search:read',
   ],
+  // The git-sync content-fixer is a launch-blueprint role with no provisioned
+  // system_principals row. Its runbook must orient, hold/checkpoint/complete
+  // its repair item, and escalate when a content error is not mechanically
+  // repairable. Grant only the two workflow capability pairs; the independent
+  // COORD_ROLES/tool allowlists remain the other dispatch gate. In particular,
+  // do not grant filesystem, shell, docs, locks, release, or operator caps.
+  'content-fixer': ['coord:read', 'coord:write', 'work_items:read', 'work_items:write'],
   // Dedicated plan-acceptance judges are evidence-only: they may read the rubric,
   // prior scorecards, test-run ledger, and work-item completion evidence; emit the
   // verdict; run the rubric's named checks; read the files those checks cite; and
