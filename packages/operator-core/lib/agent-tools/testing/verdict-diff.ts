@@ -113,7 +113,7 @@ export default defineTool({
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused an earlier routines:list edit).
     returns: [
-      'Buckets: newlyFailing / newlyPassing / stillFailing (present on BOTH sides with a real outcome on each), onlyInCandidate / onlyInBaseline (test selection differs per run — these are NOT verdict changes), notMeasured (present on both, but a skip/cancelled/running on one side, so nothing was measured). Each is { count, files:[{ filePath, baselineStatus, candidateStatus, signature? }], truncatedByLimit, omitted }.',
+      '{ ok, source, includeDirty, limit, baseline, candidate, newlyFailing, newlyPassing, stillFailing, onlyInCandidate, onlyInBaseline, notMeasured, unchangedPassing, totals, signatureClusters, warnings } — each bucket is { count, files:[{ filePath, baselineStatus, candidateStatus, signature? }], truncatedByLimit, omitted }.',
       '`count` on every bucket is the CENSUS count, computed independently of `limit`; only `files` is capped, and `truncatedByLimit`/`omitted` sit beside the number they bound. unchangedPassing is a count only — it holds ~6,600 files on a real gate pair.',
       'Each side reports { runGroupId, commitSha, commitShaCount, commitShaAmbiguous, files, rows, firstStart, lastFinish }. commitSha is NULL whenever the group spans several shas: a run group commonly spans ~15, so no single member is "the sha this judged".',
       'A file going pass→skip is notMeasured, never a verdict change: skip/cancelled/running are not outcomes, and an unrecognised status is treated as not-measured rather than as a pass.',
@@ -155,6 +155,31 @@ export default defineTool({
       .optional()
       .describe(`Max files listed PER BUCKET (default ${DEFAULT_LIMIT}). Bucket counts are unaffected.`),
   }),
+  result: z
+    .object({
+      ok: z.boolean(),
+      source: z.enum(['ci', 'local', 'admin-ui']),
+      includeDirty: z.boolean(),
+      limit: z.number().int().nonnegative(),
+      baseline: z.unknown().optional(),
+      candidate: z.unknown().optional(),
+      newlyFailing: z.unknown().optional(),
+      newlyPassing: z.unknown().optional(),
+      stillFailing: z.unknown().optional(),
+      onlyInCandidate: z.unknown().optional(),
+      onlyInBaseline: z.unknown().optional(),
+      notMeasured: z.unknown().optional(),
+      unchangedPassing: z.number().int().nonnegative().optional(),
+      totals: z.unknown().optional(),
+      signatureClusters: z.unknown().optional(),
+      warnings: z.array(z.string()).optional(),
+      error: z.string().optional(),
+      role: z.string().optional(),
+      runGroupId: z.string().optional(),
+      found: z.number().int().nonnegative().optional(),
+      message: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args: {
     baseline?: string;
     candidate?: string;
