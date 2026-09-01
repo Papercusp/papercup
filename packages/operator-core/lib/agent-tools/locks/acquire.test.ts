@@ -643,3 +643,43 @@ describe('locks:acquire — WI-1550 P-015 lock-event emission on a LOCALLY-decid
     expect(recordEventM.mock.calls.map((c) => (c[0] as { path: string }).path).sort()).toEqual(['a.ts', 'b.ts']);
   });
 });
+
+describe('structuredContent twin (EI-22077619752041149)', () => {
+  // The tool declares an object-rooted `result` schema, which tool-projection
+  // advertises to MCP clients as `outputSchema`; the MCP spec then requires
+  // `structuredContent` on every response, and strict clients (codex-rs) fail
+  // the whole envelope when it is missing — even though the acquire already
+  // executed server-side. Every response path must therefore carry a
+  // structured twin that is WIRE-EQUAL to the JSON text (Date instances
+  // serialize to the same ISO strings on the transport, so equality is
+  // asserted after a JSON round-trip).
+  const structured = (o: Out) => (o as { structuredContent?: unknown }).structuredContent;
+  const expectWireEqual = (o: Out) => {
+    expect(structured(o)).toBeDefined();
+    expect(JSON.parse(JSON.stringify(structured(o)))).toEqual(body(o));
+  };
+
+  it('fast-path success (multi-path) carries a wire-equal structuredContent', async () => {
+    routeM.mockResolvedValue({
+      value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts', 'b.ts'] },
+      via: 'local-authority',
+    });
+    expectWireEqual(await call({ paths: ['a.ts', 'b.ts'] }));
+  });
+
+  it('fast-path busy carries a wire-equal structuredContent', async () => {
+    routeM.mockResolvedValue({
+      value: {
+        ok: false,
+        busy: [{ path: 'a.ts', owner: 'other', owner_label: 'Other', intent: 'edit', expires_ts: new Date('2026-02-01T00:00:00Z') }],
+      },
+      via: 'local-authority',
+    });
+    expectWireEqual(await call({}));
+  });
+
+  it('malformed-path error carries a wire-equal structuredContent', async () => {
+    normM.mockImplementation(() => { throw new Error('absolute path not allowed'); });
+    expectWireEqual(await call({ paths: ['/etc/x'] }));
+  });
+});
