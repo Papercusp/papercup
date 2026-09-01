@@ -168,4 +168,40 @@ describe('fleet:headcount-target canonical launch profile', () => {
       config: { ...savedProfile.config, productiveCapacityFloor: 2 },
     });
   });
+
+  // R5 (interrupted-member-recovery-hardening-2026-09-01): the supervise grant is a
+  // governance knob, not a boot setting — it never trips the saved-spec conflict gate
+  // (no replaceExisting needed), omission preserves the stored value, and false revokes.
+  it('grants, preserves, and revokes the supervise flag without replaceExisting', async () => {
+    const granted = await tool.handler(
+      { fleet: 'byoc', target: 1, supervise: true, harness: 'papercusp', plan: 'byoc-plan' } as never,
+      {} as never,
+    );
+    expect(parse(granted)).toMatchObject({ ok: true, config: { ...savedProfile.config, supervise: true } });
+    expect(mocks.setFleetHeadcountTarget).toHaveBeenLastCalledWith({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      target: 1,
+      config: { ...savedProfile.config, supervise: true },
+    });
+
+    mocks.getFleetHeadcountTarget.mockResolvedValue({
+      ...savedProfile,
+      config: { ...savedProfile.config, supervise: true },
+    });
+    const preserved = await tool.handler(
+      { fleet: 'byoc', target: 2, harness: 'papercusp', plan: 'byoc-plan' } as never,
+      {} as never,
+    );
+    expect(parse(preserved)).toMatchObject({ ok: true, target: 2, config: { ...savedProfile.config, supervise: true } });
+
+    const revoked = await tool.handler(
+      { fleet: 'byoc', target: 2, supervise: false, harness: 'papercusp', plan: 'byoc-plan' } as never,
+      {} as never,
+    );
+    expect(parse(revoked)).toMatchObject({ ok: true, config: { ...savedProfile.config, supervise: false } });
+    expect(mocks.setFleetHeadcountTarget).toHaveBeenLastCalledWith(
+      expect.objectContaining({ config: { ...savedProfile.config, supervise: false } }),
+    );
+  });
 });

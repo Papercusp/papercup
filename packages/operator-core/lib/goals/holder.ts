@@ -126,6 +126,14 @@ export interface ResolvedGoalHolder extends GoalHolderRow {
   sessionState: SessionState | null;
   selfWake: SelfWakeSource | null;
   /**
+   * RAW process-keepalive freshness from the oracle (heartbeat within
+   * PRESENCE_STALE_MS), or null when no verdict was returned. NOT a liveness
+   * verdict — `live` is — but it is the one signal that separates a dead
+   * PROCESS from a live process whose SESSION is idle, which is what
+   * `holderIsRekickable` needs (WI-2140573).
+   */
+  heartbeatFresh: boolean | null;
+  /**
    * Positively alive (true), positively gone (false), or UNRESOLVABLE (null).
    * `null` is never coerced to `false` — see the module docblock.
    */
@@ -133,6 +141,30 @@ export interface ResolvedGoalHolder extends GoalHolderRow {
 }
 
 export type GoalHolderLiveness = 'held' | 'unheld' | 'lost' | 'unknown';
+
+/**
+ * PURE: a LOST holder whose PROCESS is demonstrably still up — the psu wrapper
+ * is heartbeating, the session is `parked` (so a live inbox-wake await exists
+ * to deliver a turn to), but nothing is armed to wake it (`selfWake: 'none'`).
+ *
+ * This is NOT a dead process; it is a live session whose last turn produced no
+ * output. Measured 2026-09-01 (WI-2140573): seven consecutive codex goal
+ * holders whose kickoff turn died at the model layer ("We're currently
+ * experiencing high demand", 5/5 retries, no output) sat EXACTLY here for
+ * hours with live processes, and the respawner paid a full launch + a
+ * rate-cap slot for each one — into the same outage — until the hourly cap
+ * tripped. The same shape also covers an agent that settled without arming
+ * its loop. Both are recovered by a WAKE, not a launch; see the goal-holder
+ * respawner's re-kick path.
+ */
+export function holderIsRekickable(h: ResolvedGoalHolder): boolean {
+  return (
+    h.live === false &&
+    h.sessionState === 'parked' &&
+    h.selfWake === 'none' &&
+    h.heartbeatFresh === true
+  );
+}
 
 export type GoalHolderOverlapStatus = 'none' | 'handoff' | 'violation';
 
@@ -193,6 +225,7 @@ export function resolveGoalHoldersFromRows(
       ...r,
       sessionState: v?.sessionState ?? null,
       selfWake: v?.selfWake ?? null,
+      heartbeatFresh: v ? v.heartbeatFresh : null,
       live: v ? holderCountsAsAlive(v) : null,
     };
   });

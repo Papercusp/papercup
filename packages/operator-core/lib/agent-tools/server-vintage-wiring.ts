@@ -20,7 +20,8 @@
 import { setServerVintageResolver, type ServerVintage } from '@papercusp/agent-mcp';
 import { getBuildInfo } from '../build-info';
 
-const STAGING_RECOVERY_ENDPOINT = 'the Papercusp staging operator at :3170 (retry with --port 3170)';
+const STAGING_RECOVERY_ENDPOINT =
+  'the Papercusp staging operator at :3170 (with ptool, pass --url=http://127.0.0.1:3170 explicitly)';
 
 setServerVintageResolver((): ServerVintage => ({
   buildId: getBuildInfo().sha,

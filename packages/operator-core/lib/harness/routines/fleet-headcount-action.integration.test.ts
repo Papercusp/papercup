@@ -141,14 +141,30 @@ const baseConfig = {
   headless: true,
   carry: 'warm' as const,
   productiveCapacityFloor: 1,
+  // R5: the per-fleet GRANT. Every fixture below models a fleet that opted in;
+  // the R5 describe at the bottom covers the ungranted shapes.
+  supervise: true,
 };
+
+/** The enabled governor row shape `listFleetHeadcountTargets` returns for a granting fleet.
+ * `null` (NOT undefined — that would take the default) models a legacy row with no config. */
+const grantedTarget = (config: Record<string, unknown> | null = baseConfig) => ({
+  workspaceId: 'ws',
+  fleetSlug: 'fleet-a',
+  enabled: true,
+  target: 1,
+  ...(config ? { config } : {}),
+  nextAttemptAt: null,
+  backoffMs: 0,
+  lastError: null,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.events.length = 0;
   mocks.headcountEvents.length = 0;
   mocks.getFlag.mockResolvedValue(true);
-  mocks.listTargets.mockResolvedValue([{ workspaceId: 'ws', fleetSlug: 'fleet-a' }]);
+  mocks.listTargets.mockResolvedValue([grantedTarget()]);
   mocks.claimAttempt.mockResolvedValue({
     workspaceId: 'ws',
     fleetSlug: 'fleet-a',
@@ -269,9 +285,12 @@ describe('headcount governor disarms a fleet whose plan is finished (WI-1457060)
     expect(mocks.claimAttempt).toHaveBeenCalled();
   });
 
-  it('does not consult plan status at all when the config names no plan', async () => {
-    // The pre-existing target shape, which carries no config. Must behave exactly as before.
-    mocks.listTargets.mockResolvedValue([{ workspaceId: 'ws', fleetSlug: 'fleet-a' }]);
+  it('does not consult plan status at all when the granted config names no plan', async () => {
+    // A planless (legacy) recipe that DID grant supervision: still topped up, never
+    // status-checked. (Before R5 this fixture was a config-less row; a config-less
+    // row can no longer be granted at all — see the R5 describe below.)
+    const { plan: _plan, ...planless } = baseConfig;
+    mocks.listTargets.mockResolvedValue([grantedTarget(planless)]);
     mocks.orgSql.mockResolvedValue([{ status: 'shipped' }]);
 
     await run();
@@ -279,6 +298,60 @@ describe('headcount governor disarms a fleet whose plan is finished (WI-1457060)
     expect(mocks.orgSql).not.toHaveBeenCalled();
     expect(mocks.setHeadcountTarget).not.toHaveBeenCalled();
     expect(mocks.claimAttempt).toHaveBeenCalled();
+  });
+});
+
+// R5 (interrupted-member-recovery-hardening-2026-09-01): FLEET_HEADCOUNT_GOVERNOR is the
+// MASTER gate; a per-fleet `supervise: true` on the persisted recipe is the GRANT. A
+// recipe persisted for reuse/respawn alone (D-008/WI-41145 — every fresh homogeneous
+// plan fleet gets one) is not consent, so with the flag ON the governor still touches
+// only granting fleets — and "touches" includes the terminal-plan disarm above: an
+// ungranted armed row is inert by construction, because this sweep is topUpOneFleet's
+// only caller.
+describe('headcount governor acts only on granting fleets (R5 per-fleet supervise grant)', () => {
+  const run = () => runFleetHeadcountGovernor({
+    installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+  });
+  const { supervise: _granted, ...recipeWithoutGrant } = baseConfig;
+
+  it.each([
+    ['a legacy row with no config at all', null],
+    ['a recipe that never mentions supervise', recipeWithoutGrant],
+    ['a recipe with supervise:false (revoked)', { ...recipeWithoutGrant, supervise: false }],
+  ])('opens nothing and consults nothing for %s, even with the flag ON', async (_label, config) => {
+    mocks.listTargets.mockResolvedValue([grantedTarget(config)]);
+    mocks.orgSql.mockResolvedValue([{ status: 'shipped' }]);
+
+    await run();
+
+    expect(mocks.claimAttempt).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    // Not even the terminal-plan disarm: the grant filter runs before any action.
+    expect(mocks.orgSql).not.toHaveBeenCalled();
+    expect(mocks.setHeadcountTarget).not.toHaveBeenCalled();
+  });
+
+  // CALIBRATION. The identical recipe WITH the grant is acted on, so the assertions
+  // above cannot pass by the governor simply doing nothing at all.
+  it('still tops up the identical recipe once it carries supervise:true', async () => {
+    mocks.listTargets.mockResolvedValue([grantedTarget({ ...recipeWithoutGrant, supervise: true })]);
+    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+
+    await run();
+
+    expect(mocks.claimAttempt).toHaveBeenCalled();
+  });
+
+  it('is a no-op everywhere while the master flag is OFF — a grant cannot override it', async () => {
+    mocks.getFlag.mockResolvedValue(false);
+    mocks.listTargets.mockResolvedValue([grantedTarget({ ...recipeWithoutGrant, supervise: true })]);
+
+    await run();
+
+    expect(mocks.listTargets).not.toHaveBeenCalled();
+    expect(mocks.claimAttempt).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
   });
 });
 

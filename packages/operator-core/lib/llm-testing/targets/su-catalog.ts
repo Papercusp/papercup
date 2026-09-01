@@ -244,6 +244,20 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     description: 'List active coordination agents and their declared intent.',
     input: obj({ workspace: { type: 'string' } }),
   },
+  // --- modes (standing session posture; SU-S32 registers AUDIT through this) ---
+  {
+    name: 'mode:set',
+    description:
+      'Enter/exit an official session mode (auto | drain | audit | grade | goal | …) for yourself or a peer. Same-axis modes auto-switch; overlay modes such as AUDIT stack and grant NO autonomy. `reason` is why; `instructions` is the SCOPE the mode is about and is asserted as a standing fact that survives compaction. Pass ownerDirected:true ONLY when the human owner explicitly asked for the mode.',
+    input: obj({
+      mode: { type: 'string' },
+      reason: { type: 'string' },
+      instructions: { type: 'string' },
+      enabled: { type: 'boolean' },
+      agent: { type: 'string' },
+      ownerDirected: { type: 'boolean' },
+    }, ['mode', 'reason']),
+  },
   {
     name: 'coord:inbox',
     description: 'Read your coordination inbox (messages/handoffs/escalations).',

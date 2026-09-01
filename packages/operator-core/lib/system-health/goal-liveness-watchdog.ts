@@ -115,6 +115,7 @@ import {
   type FlapDampingState,
 } from '../supervision/flap-damping';
 import {
+  holderIsRekickable,
   readGoalHolderRows,
   readGoalHolderAuthority,
   resolveGoalHoldersFromRows,
@@ -122,6 +123,8 @@ import {
   type GoalHolderAuthority,
   type GoalHolderRow,
 } from '../goals/holder';
+import { sendMessage } from '../agent-tools/coordination/messages';
+import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 
 /**
  * P-001: `holderCountsAsAlive` moved to `../goals/holder`, which is now the ONE
@@ -138,6 +141,19 @@ export const GOAL_HOLDER_RESPAWN_INTERVAL_MS = 60_000;
 /** P-003: durable, per-goal ceiling on unattended holder launches. */
 export const GOAL_HOLDER_RESPAWN_RATE_LIMIT = 6;
 export const GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS = 60 * 60_000;
+/**
+ * WI-2140573 (measured 2026-09-01): a `lost` holder whose PROCESS is still up
+ * (`holderIsRekickable`) is WOKEN with a retry brief before any launch is paid.
+ * Re-kicks to one holder are spaced by the interval and capped at the max;
+ * only a holder that stays lost past that budget reaches the launch path.
+ * Sized against the measured failure: codex gives up a dead sampling stream
+ * in ~16s, and the upstream "high demand" outage that killed seven kickoffs
+ * in a row lasted ~95 minutes — three re-kicks over ten minutes recover the
+ * short blips for free and turn the long outage from one launch per ~11 min
+ * into one per ~25 min without touching the hourly launch cap.
+ */
+export const GOAL_HOLDER_REKICK_INTERVAL_MS = 5 * 60_000;
+export const GOAL_HOLDER_REKICK_MAX = 3;
 
 /**
  * How long a goal may show no live holder before it is called abandoned.
@@ -1328,7 +1344,15 @@ export interface GoalHolderRespawnSummary {
   attachUnresolved: number;
   neutralizeFailed: number;
   gaveUp: number;
+  /** WI-2140573: live-but-idle holders woken with a retry brief instead of relaunched. */
+  rekicked: number;
   skipped: boolean;
+}
+
+/** Process-local re-kick ledger for ONE goal: attempts against the CURRENT elected holder. */
+export interface GoalHolderRekickState {
+  ownerId: string;
+  attemptsAtMs: number[];
 }
 
 export type GoalHolderRespawnRateDecision =
@@ -1357,6 +1381,18 @@ export interface GoalHolderRespawnDeps {
   /** Move a capped goal onto the canonical non-terminal human-attention hold. */
   pauseNeedsHuman?: (goal: GoalRowLike, attemptsInWindow: number, nowMs: number) => Promise<void>;
   escalateGiveUp: (goal: GoalRowLike, restartsInWindow: number) => Promise<void>;
+  /**
+   * WI-2140573: wake a live-but-idle elected holder with a retry brief. Default
+   * persists a directed message and fires the holder's always-armed inbox-wake,
+   * the same delivery seam the stand-down handoff uses. Never launches.
+   */
+  rekick?: (
+    goal: GoalRowLike,
+    ownerId: string,
+    attempt: number,
+  ) => Promise<{ woken: number; staged: number }>;
+  /** Re-kick ledger, keyed like `states`; a new elected holder starts a fresh budget. */
+  rekickStates?: Map<string, GoalHolderRekickState>;
   now: () => number;
   states: Map<string, FlapDampingState>;
 }
@@ -1607,6 +1643,52 @@ async function defaultEscalateHolderRespawnGiveUp(
 }
 
 const goalHolderRespawnStates = new Map<string, FlapDampingState>();
+const goalHolderRekickStates = new Map<string, GoalHolderRekickState>();
+
+/**
+ * WI-2140573 default re-kick: the retry brief a live-but-idle holder needs.
+ * Delivered exactly like the stand-down handoff (`notifyGoalHolderHandoff`):
+ * a durable directed message the agent can re-read, plus the inbox-wake that
+ * turns it into a turn. If the model upstream is still down the wake's turn
+ * dies the same way the kickoff did — that is fine, it cost no launch, and the
+ * next spaced attempt lands once the upstream is back.
+ */
+async function defaultRekickGoalHolder(
+  goal: GoalRowLike,
+  ownerId: string,
+  attempt: number,
+): Promise<{ woken: number; staged: number }> {
+  const summary =
+    `GOAL holder re-kick ${attempt}/${GOAL_HOLDER_REKICK_MAX}: '${goal.goalId}' — you are the ` +
+    `elected holder, but this session produced no output and nothing is armed to wake it`;
+  const body =
+    `You hold GOAL '${goal.goalId}' ("${goal.title}", workspace ${goal.workspaceId}) as its ` +
+    `elected holder, but the goal-holder respawner sees a LIVE session that never completed a ` +
+    `productive turn: no loop armed, no standing event await, no recent activity. The measured ` +
+    `cause (2026-09-01) is a kickoff turn that died at the model layer ("We're currently ` +
+    `experiencing high demand") — the agent gave up after retries and the goal brief was never ` +
+    `acted on; the other is settling a turn without arming a loop.\n\n` +
+    `Do now: (1) re-read the GOAL kickoff brief at the top of this session, or fetch it with ` +
+    `goals:get { id: '${goal.goalId}', detail: 'full' }; (2) coord:orient; (3) loop:arm ` +
+    `{ intervalSec: 60, goal: '<one line>' } so a cadence re-wakes you; (4) continue the ` +
+    `goal-mode duties (create, place, arbitrate, kill — never implement). If this reaches you ` +
+    `mid-work, only make sure your loop is armed.\n\n` +
+    `This is re-kick ${attempt} of ${GOAL_HOLDER_REKICK_MAX}; when that budget is spent with the ` +
+    `session still idle, the respawner replaces it with a fresh launch.`;
+  await sendMessage(HOLDER_RESPAWNER_IDENTITY, { to: [ownerId], summary, body });
+  const result = await wakeRecipients([ownerId], {
+    summary,
+    payload: {
+      action: 'rekick',
+      goalId: goal.goalId,
+      attempt,
+      max: GOAL_HOLDER_REKICK_MAX,
+    },
+    source: HOLDER_RESPAWNER_IDENTITY.ownerId,
+    workspaceId: goal.workspaceId,
+  });
+  return { woken: result.woken, staged: result.staged };
+}
 
 function holderRespawnDeps(
   sql: Sql,
@@ -1659,6 +1741,8 @@ function holderRespawnDeps(
     pauseNeedsHuman: async (goal, attemptsInWindow, nowMs) =>
       await pauseGoalForHolderRespawnRateCap(sql, goal, attemptsInWindow, nowMs),
     escalateGiveUp: defaultEscalateHolderRespawnGiveUp,
+    rekick: defaultRekickGoalHolder,
+    rekickStates: goalHolderRekickStates,
     now: Date.now,
     states: goalHolderRespawnStates,
     ...overrides,
@@ -1685,9 +1769,11 @@ export async function runGoalHolderRespawnOnce(
     attachUnresolved: 0,
     neutralizeFailed: 0,
     gaveUp: 0,
+    rekicked: 0,
     skipped: false,
   };
   if (!(await deps.flagEnabled())) return { ...summary, skipped: true };
+  const rekickStates = deps.rekickStates ?? new Map<string, GoalHolderRekickState>();
 
   const { goals, holders } = await deps.readGoals();
   summary.scanned = goals.length;
@@ -1699,6 +1785,9 @@ export async function runGoalHolderRespawnOnce(
   // recovery again. This also bounds the process-local map to currently eligible rows.
   for (const key of deps.states.keys()) {
     if (!eligibleKeys.has(key)) deps.states.delete(key);
+  }
+  for (const key of rekickStates.keys()) {
+    if (!eligibleKeys.has(key)) rekickStates.delete(key);
   }
   if (eligible.length === 0) return summary;
 
@@ -1735,6 +1824,9 @@ export async function runGoalHolderRespawnOnce(
 
     const previous = deps.states.get(key);
     if (fold.liveness === 'held') {
+      // A holder that is alive again has spent nothing: a later idle spell
+      // earns a fresh re-kick budget (a re-kick that WORKED is the whole point).
+      rekickStates.delete(key);
       // Do not allocate state for a goal that has never flapped. Once recovery
       // happened, five continuous healthy minutes clear attempts and give-up.
       if (previous) {
@@ -1742,6 +1834,56 @@ export async function runGoalHolderRespawnOnce(
         deps.states.set(key, decision.nextState);
       }
       continue;
+    }
+
+    // WI-2140573 (measured 2026-09-01): a `lost` holder whose PROCESS is still
+    // up — heartbeating, parked, wakeable, with nothing armed to wake it — is
+    // not a dead process. It is a live session whose last turn produced no
+    // output: a kickoff that died at the model layer under upstream "high
+    // demand", or an agent that settled without arming its loop. Relaunching
+    // it pays a full launch AND a rate-cap slot per attempt, and during an
+    // upstream outage every replacement dies the same way — eight elections in
+    // eighty minutes, with every predecessor process alive, until the hourly
+    // cap paused the goal. So RE-KICK first: wake the live session with a retry
+    // brief, spaced by GOAL_HOLDER_REKICK_INTERVAL_MS and capped at
+    // GOAL_HOLDER_REKICK_MAX per elected holder. Only a holder that stays lost
+    // past that budget — or one whose process is actually gone, which never
+    // enters this branch — reaches the damped launch path below. Re-kicks never
+    // touch the flap-damping state, so they cannot consume the give-up budget.
+    if (fold.liveness === 'lost' && fold.elected && holderIsRekickable(fold.elected) && deps.rekick) {
+      const electedOwnerId = fold.elected.ownerId;
+      const carried = rekickStates.get(key);
+      const ledger: GoalHolderRekickState =
+        carried && carried.ownerId === electedOwnerId
+          ? carried
+          : { ownerId: electedOwnerId, attemptsAtMs: [] };
+      if (ledger.attemptsAtMs.length < GOAL_HOLDER_REKICK_MAX) {
+        const nowMs = deps.now();
+        const lastAtMs = ledger.attemptsAtMs[ledger.attemptsAtMs.length - 1] ?? null;
+        rekickStates.set(key, ledger);
+        if (lastAtMs != null && nowMs - lastAtMs < GOAL_HOLDER_REKICK_INTERVAL_MS) {
+          continue; // the previous re-kick has not had its interval to take yet
+        }
+        const attempt = ledger.attemptsAtMs.length + 1;
+        ledger.attemptsAtMs.push(nowMs);
+        try {
+          const delivery = await deps.rekick(goal, electedOwnerId, attempt);
+          summary.rekicked += 1;
+          console.warn(
+            `[goal-holder-respawner] re-kicked live-but-idle holder ${electedOwnerId} for ${goal.goalId} ` +
+              `(attempt ${attempt}/${GOAL_HOLDER_REKICK_MAX}; woken=${delivery.woken} staged=${delivery.staged}); ` +
+              `no launch paid`,
+          );
+        } catch (error) {
+          console.warn(
+            `[goal-holder-respawner] re-kick ${attempt}/${GOAL_HOLDER_REKICK_MAX} failed for ${goal.goalId} ` +
+              `owner ${electedOwnerId} (non-fatal; the launch path takes over once the re-kick budget is spent): ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        continue;
+      }
+      // Budget spent on this holder while it stayed idle: fall through to launch.
     }
 
     const decision = decideFlapDamping({

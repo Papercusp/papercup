@@ -338,6 +338,10 @@ describe('published launch args schema', () => {
     expect(launchAgent.args.safeParse({ successor: { agentId: 'su-a1a71' } }).success).toBe(true);
   });
 
+  it('accepts the explicit independent fresh-launch mode', () => {
+    expect(launchAgent.args.safeParse({ brief: 'independent work', independent: true }).success).toBe(true);
+  });
+
   it('does not impose a local agent-count ceiling before governed admission', () => {
     expect(launchAgent.args.safeParse({ brief: 'wide governed fan-out', count: 64 }).success).toBe(true);
     expect(
@@ -622,6 +626,29 @@ describe('fleet composition (D-003: fleet is an ARG, not a separate tool)', () =
     );
     await launchAgent.handler({ brief: 'help out' }, ctx);
     expect(spawnedCommand()).toContain('--fleet=alpha-fleet');
+  });
+
+  it('keeps an independent fresh launch out of the caller presence fleet', async () => {
+    fetchPresenceFleetMock.mockResolvedValue(
+      new Map([['su-caller', { fleetSlug: 'alpha-fleet', fleetRole: 'leader' }]]),
+    );
+
+    const res = await launchAgent.handler({ brief: 'grade independently', independent: true }, ctx);
+
+    expect(fetchPresenceFleetMock).not.toHaveBeenCalled();
+    expect(spawnedCommand()).not.toContain('--fleet=alpha-fleet');
+    expect(dataOf(res)?.launch).toMatchObject({ fleet: null, independent: true });
+    expect(textOf(res)).toContain('(no fleet)');
+  });
+
+  it('lets an explicit fleet win over independent fresh-launch mode', async () => {
+    const res = await launchAgent.handler(
+      { brief: 'independent work in the named fleet', independent: true, fleet: 'alpha fleet' },
+      ctx,
+    );
+
+    expect(spawnedCommand()).toContain('--fleet=alpha-fleet');
+    expect(dataOf(res)?.launch).toMatchObject({ fleet: 'alpha-fleet', independent: true });
   });
 
   it('launches unfleeted when the caller has no fleet (a non-leader can still launch)', async () => {
@@ -965,6 +992,25 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--fleet=target-fleet');
     expect(spawnedCommand()).not.toContain('--fleet=caller-fleet');
     expect(dataOf(res)?.launch).toMatchObject({ fleet: 'target-fleet', resumedOwnerId: 'su-a1a71' });
+  });
+
+  it('preserves resumed target membership when independent is supplied', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    fetchPresenceFleetMock.mockResolvedValue(
+      new Map([['su-caller', { fleetSlug: 'caller-fleet', fleetRole: 'leader' }]]),
+    );
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, independent: true, brief: 'continue independently' },
+      ctx,
+    );
+
+    expect(latestFleetMembershipMock).toHaveBeenCalledWith('ws-test', 'su-a1a71');
+    expect(fetchPresenceFleetMock).not.toHaveBeenCalled();
+    expect(spawnedCommand()).toContain('--fleet=target-fleet');
+    expect(spawnedCommand()).not.toContain('--fleet=caller-fleet');
+    expect(dataOf(res)?.launch).toMatchObject({ fleet: 'target-fleet', independent: true, mode: 'resume' });
   });
 
   it('reuses the canonical fleet profile on resume and corrects an ended visible member back to saved headless placement', async () => {

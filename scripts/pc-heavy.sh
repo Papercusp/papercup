@@ -1521,7 +1521,7 @@ _caller_cgroup_headroom_mib() {
 _guard_typecheck_cgroup_headroom() {
   _is_full_typecheck_command "$@" || return 0
 
-  local _headroom _heap _overhead _needed _runner _reexec_rc
+  local _headroom _heap _overhead _needed _runner _reexec_rc _sentinel _child_rc
   _headroom="$(_caller_cgroup_headroom_mib)"
   [ -n "$_headroom" ] || return 0  # unlimited / unreadable / cgroup-v1 → fail open
 
@@ -1553,9 +1553,51 @@ _guard_typecheck_cgroup_headroom() {
       if [ -n "${PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE:-}" ] || [ -n "${PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE:-}" ]; then
         _scope_cmd+=(env -u PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE -u PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE)
       fi
-      _scope_cmd+=("$@")
+      # EI-22078599999230726 — the runner's exit status alone is NOT evidence that
+      # the typecheck finished. A runner that returns once the SCOPE has STARTED
+      # (rather than once the CHILD has EXITED) hands back 0 while the compiler is
+      # still running, and the gate's terminal LINT_TSC_RESULT line — which only
+      # ever prints on a clean `process.on('exit')` (tsc-baseline-gate.mjs) — never
+      # appears. That combination is a false green: exit 0 with NO verdict is
+      # indistinguishable from exit 0 with a clean one, which is the whole failure
+      # this wrapper exists to prevent. Measured 2026-09-01 against a runner that
+      # backgrounds its child: this branch returned 0 in 202ms with zero
+      # LINT_TSC_RESULT lines while the compile ran on for seconds afterwards.
+      #
+      # So require POSITIVE evidence of completion rather than trusting the exit
+      # code: the child records its OWN real status, and a missing record is
+      # reported as undetermined (75, the established EX_TEMPFAIL class used by the
+      # child-start-timeout / invalid-child-process-group paths above) — never as
+      # success. Falling back to the unverified form when mktemp fails keeps a
+      # broken TMPDIR from making the typecheck unrunnable.
+      _sentinel=""
+      if _sentinel="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-reexec-rc.XXXXXX" 2>/dev/null)"; then
+        : > "$_sentinel" 2>/dev/null || _sentinel=""
+      else
+        _sentinel=""
+      fi
+      if [ -n "$_sentinel" ]; then
+        _scope_cmd+=(bash -c 'rc=0; "${@:2}" || rc=$?; printf "%s" "$rc" > "$1"; exit "$rc"' pc-heavy-reexec "$_sentinel" "$@")
+      else
+        _scope_cmd+=("$@")
+      fi
       PC_HEAVY_CGROUP_REEXEC=1 "${_scope_cmd[@]}"
       _reexec_rc=$?
+      if [ -n "$_sentinel" ]; then
+        _child_rc="$(head -1 "$_sentinel" 2>/dev/null || true)"
+        rm -f "$_sentinel" 2>/dev/null || true
+        case "$_child_rc" in
+          ''|*[!0-9]*)
+            echo "[pc-heavy] UNDETERMINED typecheck: the detached scope runner exited ${_reexec_rc}, but the child left no completion record — it had not finished when the runner returned. Reporting undetermined rather than success, because a verdict-less run must never read as a clean one. Re-run, or run the check via tools:invoke { name: \"capability:inspect\", args: { check: \"typecheck\", package: \"packages/<workspace>\", onlyPaths: [\"<changed file>\"], run_in_background: true } }." >&2
+            echo "PC_HEAVY_RESULT status=undetermined reason=detached-scope-child-incomplete exit=75" >&2
+            exit 75
+            ;;
+        esac
+        # This guard runs at the script's top level. Once the detached child has
+        # executed the requested command, the outer wrapper must terminate rather
+        # than fall through and execute the same command a second time.
+        exit "$_child_rc"
+      fi
       # This guard runs at the script's top level. Once the detached child has
       # executed the requested command, the outer wrapper must terminate rather
       # than fall through and execute the same command a second time.

@@ -354,6 +354,12 @@ export default defineTool({
         .describe(
           "Fleet name or slug to JOIN (membership + the fleet's bound window colour). Optional: omit it and a FRESH launch falls back to YOUR OWN presence-fleet (WI-4234); a RESUME/FORK preserves the target session's latest durable fleet membership instead of inheriting the caller's fleet.",
         ),
+      independent: z
+        .boolean()
+        .optional()
+        .describe(
+          "Keep a FRESH launch out of the caller's presence fleet. This only suppresses fresh caller-fleet inheritance; an explicit `fleet` still wins, and RESUME/FORK preserve the target session's durable membership.",
+        ),
       headless: z
         .boolean()
         .optional()
@@ -883,7 +889,7 @@ export default defineTool({
           );
         }
       }
-    } else if (callerOwnerId) {
+    } else if (!args.independent && callerOwnerId) {
       try {
         const membership = (await fetchPresenceFleet([callerOwnerId])).get(callerOwnerId);
         if (membership?.fleetSlug) {
@@ -1633,6 +1639,7 @@ export default defineTool({
       failed: failed.length,
       command,
       fleet: fleetSlug,
+      independent: args.independent === true,
       headcountProfile: persistedHeadcountProfile
         ? {
             applied: true,

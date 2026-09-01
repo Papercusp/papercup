@@ -145,28 +145,28 @@ say "2. installing probes"
   // one-line form is measured on its own, then return to All.  The helpers are
   // idempotent because VERIFY_TAURI_POLL may retry the same assertion.
   P.focusSettled = () => {
-    const group = document.querySelector('[aria-label="Filter plans by column"]');
+    const group = document.querySelector(`[aria-label="Filter plans by column"]`);
     if (!group) return false;
-    const buttons = [...group.querySelectorAll('button')];
-    if (buttons.some(b => b.getAttribute('aria-pressed') === 'true' && /^(Done|Ready)\s/.test(b.textContent.trim()))) return true;
+    const buttons = [...group.querySelectorAll("button")];
+    if (buttons.some(b => b.getAttribute("aria-pressed") === "true" && /^(Done|Ready)\s/.test(b.textContent.trim()))) return true;
     const count = b => Number((b.textContent.match(/(\d+)\s*$/) || [])[1] || 0);
     const pick = buttons.find(b => /^Done\s/.test(b.textContent.trim()) && count(b) > 0)
       || buttons.find(b => /^Ready\s/.test(b.textContent.trim()) && count(b) > 0);
     if (!pick) return false;
-    P._settledLabel = pick.textContent.trim().replace(/\s+\d+\s*$/, '');
+    P._settledLabel = pick.textContent.trim().replace(/\s+\d+\s*$/, "");
     pick.click();
     return true;
   };
   P.focusAll = () => {
-    const group = document.querySelector('[aria-label="Filter plans by column"]');
+    const group = document.querySelector(`[aria-label="Filter plans by column"]`);
     if (!group) return false;
-    const all = [...group.querySelectorAll('button')].find(b => /^All\s/.test(b.textContent.trim()));
+    const all = [...group.querySelectorAll("button")].find(b => /^All\s/.test(b.textContent.trim()));
     if (!all) return false;
-    if (all.getAttribute('aria-pressed') !== 'true') all.click();
+    if (all.getAttribute("aria-pressed") !== "true") all.click();
     return true;
   };
   P.allSettled = () => P.cards().length >= 1 && P.cards().every(c =>
-    [...c.classList].some(x => x === 'hud__card--ready' || x === 'hud__card--done'));
+    [...c.classList].some(x => x === "hud__card--ready" || x === "hud__card--done"));
 
   // HEIGHT. Measured against a baseline captured at natural width.
   //
@@ -589,8 +589,8 @@ DISPLAY="$X_DISPLAY" xdotool windowsize --sync "$NARROW_WID" 800 600 \
 "$POLL" --require '.hud__cardtitle' --eval 'window.innerWidth <= 820 && window.innerHeight <= 620' \
   || fatal "the Tauri webview did not report the requested narrow viewport after resize"
 settle
-"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hasBothForms()' \
-  || fatal "the narrow viewport did not render both ordinary and settled plan-card forms"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.groupHeights().twoLine.length >= 1' \
+  || fatal "the narrow viewport did not render an ordinary two-line plan-card population"
 "$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tpl("floor") && window.__hudprobe.tracksAre("floor")' \
   || fatal "could not apply the weighted grid floor in the narrow viewport"
 "$TAT" eval --pid "$PID" '
@@ -608,8 +608,31 @@ settle
   || fatal "narrow viewport MODE (ii) RED: an ancestor above the grid scrolls horizontally"
 "$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hclip() === 0' \
   || fatal "narrow viewport MODE (iv) RED: card content overflows horizontally"
+# The settled one-line form at the SAME narrow viewport: the All view keeps
+# ready/done behind count rails (see 3c), so it is focused and measured
+# separately here too — the narrow proof covers both forms, not just twoLine.
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.focusSettled()' \
+  || fatal "narrow viewport: neither the Done nor Ready filter contains a populated settled column"
+"$POLL" --require '.hud__cardtitle' --require-min 1 \
+  --eval 'window.__hudprobe.allSettled()' \
+  || fatal "narrow viewport: the focused settled column did not render settled plan cards"
+settle
+"$TAT" eval --pid "$PID" '
+(() => ({ MEASURE: "narrow-viewport-settled",
+  viewport: window.innerWidth + "x" + window.innerHeight,
+  populations: window.__hudprobe.groupSummary(),
+  maxHeight: window.__hudprobe.maxHeight(),
+}))()'
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.maxHeight() <= 52' \
+  || fatal "narrow viewport: the settled plan-card form exceeds the 52px density target"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.railOut() === 0 && window.__hudprobe.hclip() === 0' \
+  || fatal "narrow viewport settled form: rail clipped or card content overflows"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.focusAll()' \
+  || fatal "narrow viewport: could not restore the All plans view"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.groupHeights().twoLine.length >= 1' \
+  || fatal "narrow viewport: the All plans view did not return after settled-form measurement"
 "$TAT" eval --pid "$PID" 'window.__hudprobe.tpl(null)' >/dev/null || true
-echo "  narrow viewport floor proof: GREEN (viewport ${NARROW_ORIG_W}x${NARROW_ORIG_H} → 800x600; all four modes clean)"
+echo "  narrow viewport floor proof: GREEN (viewport ${NARROW_ORIG_W}x${NARROW_ORIG_H} → 800x600; all four modes clean, both forms measured)"
 
 # ── 6. SCOPED TO PLAN CARDS — the live half ────────────────────────────────
 # The unit half of this criterion is asserted at HudEntityColumns.test.tsx:918

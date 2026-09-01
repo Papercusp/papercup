@@ -6,6 +6,8 @@ import type { SessionState } from '../agent-tools/coordination/presence-wakeabil
 import { GOAL_HOLDER_PRODUCTIVITY_GRACE_MS } from '../goals/activity';
 import type { GoalPortfolioThroughputRead } from '../goals/portfolio-throughput';
 import {
+  GOAL_HOLDER_REKICK_INTERVAL_MS,
+  GOAL_HOLDER_REKICK_MAX,
   GOAL_LIVENESS_GRACE_MS,
   classifyGoalLiveness,
   classifyGoalPortfolioIdle,

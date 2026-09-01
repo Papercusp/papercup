@@ -2806,6 +2806,71 @@ PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
     expect(r.stderr).not.toContain('REFUSED typecheck');
   });
 
+  // EI-22078599999230726 — the guard above is only as strong as its stub, and the stub
+  // is SYNCHRONOUS by construction: it ends in `"$@"`, so it always waits, always
+  // propagates the child's status, and can only ever exercise the happy path. A runner
+  // that returns once the SCOPE has STARTED (rather than once the CHILD has EXITED) was
+  // reported in the field and reproduced here: pc-heavy returned 0 in ~200ms with no
+  // LINT_TSC_RESULT line while the compile ran on for seconds afterwards — a false green,
+  // because exit 0 with no verdict is indistinguishable from exit 0 with a clean one.
+  //
+  // This is the stub that violates the assumption, and it is the reason the fix is
+  // falsifiable: it fails against a pc-heavy that trusts the runner's exit code.
+  it('reports undetermined, not success, when the scope runner returns before its child finishes', () => {
+    const done = join(dir, 'early-return-child-completed');
+    const marker = join(dir, 'lint-tsc-slow-fixture.mjs');
+    writeFileSync(
+      marker,
+      `import { writeFileSync } from 'node:fs';\n` +
+        `setTimeout(() => { writeFileSync(${JSON.stringify(done)}, 'done'); process.stdout.write('typecheck-ran'); }, 3000);\n`,
+    );
+    const runner = join(dir, 'systemd-run-early-return-stub');
+    writeFileSync(runner, `#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --user|--scope|--collect) shift ;;
+    *) break ;;
+  esac
+done
+if [ "\${1:-}" = "env" ]; then
+  shift
+  while [ "\${1:-}" = "-u" ]; do shift 2; done
+fi
+PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE=12288 \\
+PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
+"$@" &
+exit 0
+`);
+    chmodSync(runner, 0o755);
+
+    const r = runSync(['node', marker], {
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '6144',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '768',
+      PAPERCUSP_TSC_HEAP_MB: '8192',
+      PC_HEAVY_SYSTEMD_RUN_BIN: runner,
+    });
+
+    // It still took the detached-scope branch — this is not the REFUSED path.
+    expect(r.stderr).toContain('detached user scope');
+    expect(r.stderr).not.toContain('REFUSED typecheck');
+    // ...but the child had not finished, so there is no verdict, and a verdict-less run
+    // must never read as a clean one. 75 is the established EX_TEMPFAIL/undetermined class.
+    expect(r.status).toBe(75);
+    expect(r.stderr).toContain('UNDETERMINED typecheck');
+    expect(r.stderr).toContain(
+      'PC_HEAVY_RESULT status=undetermined reason=detached-scope-child-incomplete exit=75',
+    );
+    // Deliberately NOT asserted here: that the child is still unfinished when pc-heavy
+    // returns. It is true of pc-heavy (measured: it returns in ~200ms while the child needs
+    // 3000ms) but it is NOT observable through this harness — runSync is spawnSync, which
+    // waits for the inherited stdout pipe to close, and the backgrounded grandchild holds
+    // that pipe for its whole lifetime. So `done` DOES exist and 'typecheck-ran' DOES reach
+    // r.stdout by the time these assertions run, ~3s after pc-heavy already exited 75.
+    // Asserting otherwise fails for a reason that has nothing to do with the behaviour under
+    // test. The contract is the verdict above — pc-heavy must not report success when it
+    // cannot prove the child finished — and that is fully covered without timing luck.
+  });
+
   it('recognizes tsc-baseline-gate\'s stable lint:tsc sentinel inside sh -c argv', () => {
     const marker = typecheckFixture();
     const runner = join(dir, 'systemd-run-sentinel-stub');
