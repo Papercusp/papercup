@@ -31,6 +31,7 @@ import {
   type EngineerIssue,
 } from '../../issues-engineer';
 import { watchdogSourceOf } from './policy';
+import { WATCHDOG_AUTO_CLOSE_OWNER } from './capture-core';
 import { effectiveOrigin, DEFAULT_SIGNAL_ORIGIN } from './provenance';
 import {
   decideRedTestGreenResolve,
@@ -324,14 +325,17 @@ export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
     close: async (id, watchdogKey, reason) => {
       await commentIssue(
         id,
-        `🟢 Auto-resolved by the watchdog: ${reason}. Signal \`${watchdogKey}\` stopped firing — no fix was dispatched; the underlying condition cleared on its own. Re-files automatically if it recurs (search-first dedup). (P-009)`,
-        'watchdog-auto-close',
+        `🟢 Auto-resolved by the watchdog: ${reason}. Signal \`${watchdogKey}\` stopped firing — no fix was dispatched; the underlying condition cleared on its own. If the exact signal recurs, the recurrence REOPENS this row (P-004 exact-key recurrence reopen) rather than filing a sibling. (P-009)`,
+        WATCHDOG_AUTO_CLOSE_OWNER,
       );
       // skipCompletionGate (WI-1403/WI-1404, contract C-1): the watchdog auto-close is a
       // DEDUP marker, not a genuine completion — "no fix was dispatched; the underlying
       // condition cleared on its own" is explicitly NOT evidence of completed work, so
       // this flip must never satisfy C-1's genuine-completion criteria.
-      await setIssueState(id, 'resolved', 'watchdog-auto-close', undefined, { skipCompletionGate: true });
+      // P-004: the `by` identity below lands in terminalOwner — capture-core's
+      // exact-key recurrence reopen matches on exactly this value, so the promise
+      // in the comment above is mechanically kept.
+      await setIssueState(id, 'resolved', WATCHDOG_AUTO_CLOSE_OWNER, undefined, { skipCompletionGate: true });
     },
     // P-007: recent test_runs for red-test paths, LATEST-FIRST, keyed by the SAME
     // normalized repo-relative path the red-test collector keys its signal on

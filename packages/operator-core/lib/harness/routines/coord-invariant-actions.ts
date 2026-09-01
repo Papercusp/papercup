@@ -516,6 +516,17 @@ registerSystemAction('coord-probe-canary', async (ctx: SystemActionCtx) => {
       kind: 'bug',
       severity: verdict.failedStep ? 'major' : 'minor',
       dedupScope: 'open',
+      // P-004 (silent-intake, EI-22068807981214694): a stable recurrence identity —
+      // cross-tick dedup becomes an exact indexed payload.watchdogKey lookup, so a
+      // repeat breach COALESCES onto one open canonical row (and REOPENS a
+      // watchdog-auto-resolved one) instead of minting a sibling per breach
+      // (measured: 10 open twins of the SLO title, filed over several days).
+      watchdogKey: verdict.failedStep
+        ? `coord-probe-canary:step:${verdict.failedStep}`
+        : 'coord-probe-canary:cycle-slo',
+      // Live detection, evidenced NOW — lets the stale-lookback rail distinguish a
+      // genuine recurrence from collector lookback junk.
+      evidenceAt: new Date().toISOString(),
       foundDuring: 'system:coord-probe-canary',
       subTopic: 'coordination',
       body:

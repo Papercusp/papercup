@@ -379,14 +379,21 @@ export interface CoalesceEffect {
   /** True when `priorAuthor` is a DIFFERENT agent than this caller — i.e. this
    *  write landed on a peer's row. Undecidable (false) when either side is null. */
   crossAuthor: boolean;
-  /** P-015 (D-042): HOW this fold's identity was established, because the two
+  /** P-015 (D-042): HOW this fold's identity was established, because the
    *  routes carry different confidence and a reader must not conflate them.
    *  `condition-key` — the caller supplied a stable `watchdogKey`; the match is
    *  an exact indexed lookup, not a guess (P-001/P-002, machine emitters).
    *  `derived` — no key was supplied; identity was DERIVED from content
    *  similarity plus the D-036 subject discriminator (P-013, agent filings).
-   *  A derived fold is a judgement and can be wrong; a keyed one cannot. */
-  identity: 'condition-key' | 'derived';
+   *  `title-key` — P-004 (silent-intake): a keyless `system:*` filer matched an
+   *  open twin by exact normalized titleKey. Deterministic like a key match
+   *  (same normalization both sides), narrower than a derived guess.
+   *  A derived fold is a judgement and can be wrong; the other two cannot. */
+  identity: 'condition-key' | 'derived' | 'title-key';
+  /** P-004: present when the survivor row had been watchdog-AUTO-RESOLVED and
+   *  this exact-key recurrence REOPENED it (resolved → open) before coalescing.
+   *  The auto-close was a dedup marker, not a completion — recurrence voids it. */
+  reopened?: true;
   /** Derived folds only: which classifier rule fired. Absent on a keyed fold —
    *  there is no rule to name, the key matched. */
   foldRule?: FoldClassification['rule'];
@@ -883,6 +890,15 @@ async function promoteToolFailureProbation(
 }
 
 /**
+ * P-004: the writer identity the watchdog auto-close stamps into `terminalOwner`
+ * via `setIssueState(id, 'resolved', WATCHDOG_AUTO_CLOSE_OWNER, …)` — the single
+ * source auto-close.ts imports, and the recognizer the exact-key recurrence
+ * reopen matches on. `terminalOwner` is never cleared on reopen, so historical
+ * auto-closed rows are recognizable too.
+ */
+export const WATCHDOG_AUTO_CLOSE_OWNER = 'watchdog-auto-close';
+
+/**
  * P-006/D-004: the coalesce report — what the write actually DID. Shared by the
  * observation-lane coalesce (EI-15448) and the non-observation detector coalesce
  * (WI-39594) so the two paths cannot drift in what they disclose: whether the
@@ -903,6 +919,13 @@ function buildCoalesceEffect(args: {
    *  it the note below rendered a literal "conditionKey `undefined`" on every
    *  derived fold — a false claim that a key existed. */
   fold?: FoldClassification;
+  /** P-004: overrides the fold-derived identity — the `title-key` route (a
+   *  keyless system filer matched by exact normalized titleKey) has no fold
+   *  classification AND no conditionKey, so neither default clause is true. */
+  identityRoute?: CoalesceEffect['identity'];
+  /** P-004: the survivor had been watchdog-auto-resolved; THIS recurrence
+   *  reopened it (resolved → open) before the coalesce below. */
+  reopened?: boolean;
 }): CoalesceEffect {
   const { finalIssue, prior, input, repeatCount, bodyPersisted, fold } = args;
   const textDisposition = args.textDisposition ?? (bodyPersisted ? 'refreshed' : 'lost');
@@ -911,13 +934,17 @@ function buildCoalesceEffect(args: {
   // reported as a peer's (it would manufacture a cross-author claim), nor as
   // your own. False = "not established", never "verified same author".
   const crossAuthor = Boolean(priorAuthor && input.createdBy && priorAuthor !== input.createdBy);
+  const identity: CoalesceEffect['identity'] = args.identityRoute ?? (fold ? 'derived' : 'condition-key');
   // The identity clause must state WHICH route matched. A derived fold has no
   // key, so interpolating `input.watchdogKey` there renders "conditionKey
   // `undefined`" — a claim that a key existed when none did.
-  const identityClause = fold
-    ? `derived identity — ${fold.rule}` +
-      (typeof fold.candidate?.similarity === 'number' ? `, cosine ${fold.candidate.similarity.toFixed(3)}` : '')
-    : `conditionKey \`${input.watchdogKey}\``;
+  const identityClause =
+    identity === 'title-key'
+      ? `exact titleKey match — system filer \`${input.foundDuring ?? 'system:?'}\`, no conditionKey supplied`
+      : fold
+        ? `derived identity — ${fold.rule}` +
+          (typeof fold.candidate?.similarity === 'number' ? `, cosine ${fold.candidate.similarity.toFixed(3)}` : '')
+        : `conditionKey \`${input.watchdogKey}\``;
   return {
     id: finalIssue.id,
     repeatCount,
@@ -926,7 +953,8 @@ function buildCoalesceEffect(args: {
     textDisposition,
     priorAuthor,
     crossAuthor,
-    identity: fold ? 'derived' : 'condition-key',
+    identity,
+    ...(args.reopened ? { reopened: true as const } : {}),
     ...(fold
       ? {
           foldRule: fold.rule,
@@ -935,7 +963,7 @@ function buildCoalesceEffect(args: {
         }
       : {}),
     note:
-      `No new row was created: this reading COALESCED onto still-live ${finalIssue.id} ` +
+      `No new row was created: this reading COALESCED onto ${args.reopened ? `${finalIssue.id} — which had been AUTO-RESOLVED by the watchdog and was REOPENED by this exact-key recurrence (the auto-close is a dedup marker, not a completion)` : `still-live ${finalIssue.id}`} ` +
       `(${identityClause}), now at repeatCount ${repeatCount}. ` +
       (textDisposition === 'refreshed'
         ? `Your title/body REPLACED the text that row previously carried`
@@ -1355,6 +1383,112 @@ export async function captureImprovement(
         dedupCoverage: skippedDedupCoverage,
       };
     }
+    // ─── P-004 (silent-intake-central-resolution-2026-09-01): exact-key recurrence
+    // of a watchdog-AUTO-RESOLVED condition REOPENS the canonical row instead of
+    // minting a sibling. The auto-close is a dedup marker, not a completion ("no
+    // fix was dispatched; re-files automatically if it recurs" — auto-close.ts),
+    // but the promised re-file used to mint a NEW row, stranding the occurrence
+    // history and repeatCount on the resolved one — or, pre-P-002, decline outright
+    // (EI-22065259669472144: capture found the exact resolved item and neither
+    // reopened nor appended). Recognizer: terminalOwner === WATCHDOG_AUTO_CLOSE_OWNER,
+    // stamped by setIssueState on the auto-close path and never cleared on reopen,
+    // so historical auto-closed rows match too. An AGENT-resolved row deliberately
+    // does NOT reopen — that close may be a genuine fix, and regression semantics
+    // (re-file with dedupVerdict) remain correct for it.
+    const autoResolvedPrior = exactKeyIssues.find(
+      (i) => i.state === 'resolved' && i.terminalOwner === WATCHDOG_AUTO_CLOSE_OWNER,
+    );
+    if (autoResolvedPrior) {
+      // Stale-lookback rail (same shape as the D-002 stale-evidence verdict): a
+      // recurrence whose newest evidence pre-dates the row's resolution is
+      // collector lookback junk — resurrecting a resolved row on it would be a
+      // false reopen. Absent/unparseable timestamps fail open (fresh), mirroring
+      // the verdict rail's own fail-open.
+      const evidenceMs = input.evidenceAt ? Date.parse(input.evidenceAt) : Number.NaN;
+      const resolvedMs = Date.parse(autoResolvedPrior.updatedAt ?? '');
+      const staleLookback =
+        Number.isFinite(evidenceMs) && Number.isFinite(resolvedMs) && resolvedMs >= evidenceMs;
+      if (!staleLookback) {
+        const reopened = await (deps.setWorkItemStateWithAliasInfo ?? defaultSetWorkItemStateWithAliasInfo)(
+          autoResolvedPrior.id,
+          'open',
+          {
+            harness: harnessFromScope(autoResolvedPrior.scope) ?? undefined,
+            by: input.createdBy ?? 'capture-recurrence-reopen',
+            reason: `exact-key recurrence of \`${input.watchdogKey}\` after watchdog auto-resolve (P-004)`,
+          },
+        ).catch(() => null);
+        // A failed reopen falls through to the ordinary nets (mint-with-verdict):
+        // losing the filing to protect the fold would be the silencing D-001/D-003 forbid.
+        if (reopened?.workItem && (reopened.appliedState ?? reopened.workItem.state) === 'open') {
+          const priorPayload = (autoResolvedPrior.payload as Record<string, unknown> | null) ?? {};
+          const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
+          const nowIso = new Date().toISOString();
+          const mergePatch: Record<string, unknown> = {
+            watchdogKey: input.watchdogKey,
+            repeatCount,
+            lastSeenAt: nowIso,
+            // Resolver-facing marker (D-003: persist what detection finds): this row
+            // was reopened by an exact-key recurrence after a watchdog auto-resolve.
+            recurrenceReopen: {
+              at: nowIso,
+              key: input.watchdogKey,
+              priorResolvedAt: autoResolvedPrior.closedAt ?? autoResolvedPrior.updatedAt ?? null,
+            },
+          };
+          if (input.paths?.length) mergePatch.paths = input.paths;
+          if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
+          if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
+          if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
+          const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(autoResolvedPrior.id, mergePatch).catch(
+            () => null,
+          );
+          const refreshed = await (deps.updateIssuePatch ?? updateIssue)(autoResolvedPrior.id, {
+            title: input.title,
+            body: input.body,
+            silent: true,
+            confirmShrink: true,
+          }).catch(() => null);
+          const finalIssue = (refreshed && 'id' in refreshed ? refreshed : merged) ?? autoResolvedPrior;
+          await appendCaptureOccurrence(
+            deps,
+            input,
+            identity,
+            'coalesced',
+            finalIssue.id,
+            [],
+            skippedDedupCoverage,
+            harnessFromScope(finalIssue.scope),
+          );
+          const bodyPersisted = refreshed !== null && 'id' in (refreshed as object);
+          return {
+            ok: true,
+            created: false,
+            reason: 'coalesced',
+            coalescedOnto: buildCoalesceEffect({
+              finalIssue,
+              prior: autoResolvedPrior,
+              input,
+              repeatCount,
+              bodyPersisted,
+              reopened: true,
+            }),
+            kind: finalIssue.kind as 'bug' | 'change',
+            improvementKind: input.kind,
+            // The lifecycle writer above flipped the state; the payload/text reads
+            // may carry a pre-flip snapshot, so state the post-reopen truth.
+            issue: { ...finalIssue, state: 'open' },
+            topics: [
+              IMPROVEMENT_TOPIC,
+              ...(input.subTopic ? [input.subTopic] : []),
+              ...(sourceRole !== 'human' ? [`improvement-source:${sourceRole}`] : []),
+            ],
+            possibleDuplicates: [],
+            dedupCoverage: skippedDedupCoverage,
+          };
+        }
+      }
+    }
   }
   // Observations skip search-first dedup entirely (D-005): recurrence IS the signal
   // Scout clusters downstream, and the reflecting agent is told not to dedup — so a
@@ -1547,6 +1681,105 @@ export async function captureImprovement(
     const k = p && typeof p === 'object' ? (p as Record<string, unknown>).watchdogKey : undefined;
     return typeof k === 'string' ? k : null;
   };
+
+  // ─── P-004: keyless SYSTEM-filer titleKey fold ────────────────────────────────
+  // A recurring system detector that supplies no watchdogKey has NO recurrence
+  // identity: the keyed tiers above cannot see it, and the derived fold (D-042)
+  // is observation-lane-only — so every re-detection minted an open sibling
+  // (EI-22068807981214694: 10 open rows sharing one canary title, filed over
+  // days). An exact normalized-titleKey match from a `system:*` filer is not a
+  // guess (the WI-39594 reasoning: exact identity needs no carve-outs), so fold
+  // the re-detection onto the open canonical row — occurrence appended,
+  // repeatCount bumped, text refreshed to the newest reading. Scoped narrowly:
+  // non-observation, `foundDuring` starting `system:`, no key supplied, not
+  // forced — agent filings keep the P-002 mint-with-verdict path untouched.
+  const isSystemFiler = typeof input.foundDuring === 'string' && input.foundDuring.startsWith('system:');
+  if (!isObservation && isSystemFiler && !input.watchdogKey && !input.force) {
+    const titleTwins = candidates.filter(
+      (i) =>
+        i.state === 'open' &&
+        issueWatchdogLane(i) !== 'observation' &&
+        issueScopeMatchesCapture(i, input.scope) &&
+        admissionIdentity(i.title).titleKey === identity.titleKey,
+    );
+    if (titleTwins.length > 0) {
+      const canonical = selectCanonicalIssue(
+        identity,
+        titleTwins.map((i) => ({
+          id: i.id,
+          title: i.title,
+          canonicalHarness: harnessFromScope(i.scope),
+          eligible: true,
+          similarity: 1,
+        })),
+      );
+      const prior = canonical ? candidateById.get(canonical.id) : undefined;
+      if (prior) {
+        // A failed fold mints instead (D-003: the filing always lands) — same
+        // tolerance as the derived fold's merge failure, unlike the keyed path
+        // whose identity is caller-asserted.
+        const folded = await (async () => {
+          const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
+          const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
+          const mergePatch: Record<string, unknown> = {
+            repeatCount,
+            lastSeenAt: new Date().toISOString(),
+          };
+          if (input.paths?.length) mergePatch.paths = input.paths;
+          if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
+          if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
+          if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
+          const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);
+          const refreshed = await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
+            title: input.title,
+            body: input.body,
+            silent: true,
+            confirmShrink: true,
+          }).catch(() => null);
+          return { merged, refreshed, repeatCount };
+        })().catch(() => null);
+        if (folded?.merged) {
+          const { merged, refreshed, repeatCount } = folded;
+          const finalIssue = (refreshed && 'id' in refreshed ? refreshed : merged) ?? prior;
+          await appendCaptureOccurrence(
+            deps,
+            input,
+            identity,
+            'coalesced',
+            finalIssue.id,
+            possibleDuplicates,
+            dedupCoverage,
+            harnessFromScope(finalIssue.scope),
+          );
+          const bodyPersisted = refreshed !== null && 'id' in (refreshed as object);
+          return {
+            ok: true,
+            created: false,
+            reason: 'coalesced',
+            coalescedOnto: buildCoalesceEffect({
+              finalIssue,
+              prior,
+              input,
+              repeatCount,
+              bodyPersisted,
+              identityRoute: 'title-key',
+            }),
+            kind: finalIssue.kind as 'bug' | 'change',
+            improvementKind: input.kind,
+            issue: finalIssue,
+            topics: [
+              IMPROVEMENT_TOPIC,
+              ...(input.subTopic ? [input.subTopic] : []),
+              ...(sourceRole !== 'human' ? [`improvement-source:${sourceRole}`] : []),
+            ],
+            possibleDuplicates,
+            dedupCoverage,
+            ...(alreadyDecided.length ? { alreadyDecided } : {}),
+          };
+        }
+      }
+    }
+  }
   // P-011: a soft semantic hit is advisory-only — visible in possibleDuplicates,
   // never eligible to carry the dedup verdict (mirrors the create-time work-item
   // guard's soft band → similarOpen contract).
