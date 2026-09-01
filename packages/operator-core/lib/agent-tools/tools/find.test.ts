@@ -536,8 +536,10 @@ describe('handler — graceful degrade + result shape', () => {
     const out = await callHandler({ query: 'tools:find' });
     const self = out.hits.find((h) => h.tool === 'tools:find');
     expect(self?.argSchema).toContain('query');
-    expect(self?.returns).toContain('hits: [{ tool, description, argSchema, returns');
-    expect(self?.returnsSource).toBe('authored-tool-guidance');
+    // tools:find now declares a result schema, so discovery must expose the
+    // registered structural projection rather than its authored prose clause.
+    expect(self?.returns).toContain('hits?');
+    expect(self?.returnsSource).toBe('registered-output-schema');
   });
 
   it('returns null when a matched tool has no declared response shape', async () => {
