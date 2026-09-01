@@ -599,11 +599,13 @@ async function readUnadjudicatedCensus(
 /**
  * Canonical `a\0b` keys of every adjudicated pair inside the corpus, so
  * in-memory lexical edges honour the same "no adjudication" census rule the
- * cosine leg gets from its `dedup_adjudications` anti-join.
+ * cosine leg gets from its `dedup_adjudications` anti-join. Exported for the
+ * bulk pair generator, which applies the identical exclusion to the lexical
+ * pairs it materializes over the pinned member set.
  */
-async function readAdjudicatedPairKeys(
+export async function readAdjudicatedPairKeys(
   sql: OrgSql,
-  opts: AdmissionCensusRunOptions,
+  opts: Pick<AdmissionCensusRunOptions, 'workspaceId' | 'harnessSlug'>,
   corpusIds: readonly string[],
 ): Promise<Set<string>> {
   const rows = await sql<Array<{ a: string; b: string }>>`

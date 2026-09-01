@@ -16,6 +16,8 @@ import { isTransientNetworkError } from './harness/routines/hetzner-orphan-frame
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import {
   ADMISSION_COMPONENT_FLOOR,
+  lexicalHardEdges,
+  readAdjudicatedPairKeys,
   runWorkItemAdmissionCensus,
   type AdmissionCensusRunOptions,
   type AdmissionCensusRunResult,
@@ -116,6 +118,7 @@ interface BulkMapRow {
   item_kind: string | null;
   admission: string | null;
   condition_key: string | null;
+  title_key: string | null;
   created_ts: string | number | null;
 }
 
@@ -386,7 +389,8 @@ async function readBulkInput(
   const mapRows = await sql<BulkMapRow[]>`
     SELECT sm.shard_id, sm.item_id, sm.role,
            wi.title, wi.summary, wi.status, wi.item_kind, wi.admission,
-           wi.condition_key, wi.created_ts
+           wi.condition_key, wi.payload #>> '{admissionIdentity,titleKey}' AS title_key,
+           wi.created_ts
       FROM harness_shared.dedup_shard_map sm
       JOIN harness_shared.work_items wi
         ON wi.workspace_id = sm.workspace_id
@@ -447,6 +451,52 @@ async function readBulkInput(
       cosine: Number(row.cos),
     });
     pairShard.set(pairKey, Math.min(Number(row.a_shard), Number(row.b_shard)));
+  }
+
+  // WI-2140406 F2 (EI-22068819110487948): the cosine edge query above can only
+  // surface pairs that HAVE an embedding-cosine edge >= 0.90. The measured
+  // zero-delivery shape is 1,800+ identical-title twins with NO edge at all
+  // (embeddings lagging, or landed with divergent summaries), and 1,821/1,822
+  // of them carry NULL condition_key — so the targeted-scope filter above would
+  // have dropped them even with an edge. Materialize identity pairs (persisted
+  // titleKey / normalized title / condition_key) over the pinned member set,
+  // with the same adjudication exclusion the cosine query gets from its
+  // anti-join. Identity IS the machine signal, so lexical pairs are admitted in
+  // every scope; `cosine: null` keeps the judge prompt honest ('n/a').
+  const lexicalEdges = lexicalHardEdges(
+    memberRows.map((row) => ({
+      id: row.item_id,
+      title: row.title ?? '',
+      titleKey: row.title_key,
+      conditionKey: row.condition_key,
+    })),
+  );
+  if (lexicalEdges.length > 0) {
+    const adjudicated = await readAdjudicatedPairKeys(sql, input, [...memberIds]);
+    const memberShard = new Map(memberRows.map((row) => [row.item_id, row.shard_id]));
+    const titleKeyByItem = new Map(memberRows.map((row) => [row.item_id, row.title_key]));
+    const existingPairKeys = new Set(pairs.map((pair) => pair.pairKey));
+    for (const edge of lexicalEdges) {
+      if (adjudicated.has(`${edge.a}\0${edge.b}`)) continue;
+      const pairKey = admissionPairKey(edge.a, edge.b);
+      if (existingPairKeys.has(pairKey)) continue;
+      const a = items.get(edge.a);
+      const b = items.get(edge.b);
+      if (!a || !b) throw new Error(`bulk lexical pair endpoint missing from pinned map: ${edge.a}::${edge.b}`);
+      const signals: PromoterPair['signals'] = [];
+      if (a.conditionKey && a.conditionKey === b.conditionKey) signals.push('condition-key');
+      const keyA = titleKeyByItem.get(edge.a);
+      const keyB = titleKeyByItem.get(edge.b);
+      if (
+        (keyA != null && keyA === keyB) ||
+        admissionIdentity(a.title).titleKey === admissionIdentity(b.title).titleKey
+      ) {
+        signals.push('title-key');
+      }
+      pairs.push({ pairKey, a, b, pendingIds: [a.id, b.id].sort(), signals, cosine: null });
+      pairShard.set(pairKey, Math.min(memberShard.get(edge.a)!, memberShard.get(edge.b)!));
+      existingPairKeys.add(pairKey);
+    }
   }
 
   const ghostIdsByShard = new Map<number, string[]>();
@@ -1491,6 +1541,40 @@ async function judgeBulkPairs(
   };
 }
 
+/**
+ * WI-2140406 F4: `admission_runs` rows are stranded in status 'running' forever
+ * when the process dies mid-run (measured: `d035-1-stage-1` and
+ * `d035-3-census-0` stuck 'running' since 2026-08-30). A stranded row misleads
+ * every ledger reader — it looks like live work and hides that the run
+ * delivered nothing. Reap at the next run start: any same-scope row still
+ * 'running' past the stage lease with no finish is marked failed. The current
+ * root's own rows are excluded because stage resumption legitimately takes over
+ * an expired lease (`acquireBulkStageLease`), and a reap must never race it.
+ */
+async function reapStaleRunningAdmissionRuns(
+  sql: OrgSql,
+  input: { workspaceId: string; harnessSlug: string; rootRunId: string; leaseMs: number; nowMs: number },
+): Promise<string[]> {
+  const cutoff = new Date(input.nowMs - input.leaseMs).toISOString();
+  const rows = await sql<Array<{ id: string }>>`
+    UPDATE harness_shared.admission_runs
+       SET finished_at = clock_timestamp(),
+           detail = COALESCE(detail, '{}'::jsonb) || ${JSON.stringify({
+             status: 'failed',
+             error: 'reaped: still running past the stage lease with no finish (process died mid-run)',
+             reapedBy: input.rootRunId,
+             reapedAt: new Date(input.nowMs).toISOString(),
+           })}::text::jsonb
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND finished_at IS NULL
+       AND detail->>'status' = 'running'
+       AND started_at < ${cutoff}::timestamptz
+       AND id NOT LIKE ${`${input.rootRunId}%`}
+     RETURNING id`;
+  return rows.map((row) => row.id).sort();
+}
+
 export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): Promise<BulkDedupRunResult> {
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
@@ -1541,6 +1625,13 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
   };
+  await reapStaleRunningAdmissionRuns(sql, {
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+    rootRunId,
+    leaseMs,
+    nowMs: now(),
+  });
 
   // A terminal stage is the durable idempotency answer for a repeated root
   // runId. Return its recorded result without issuing another census/model call.

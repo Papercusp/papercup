@@ -356,6 +356,118 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     ]);
   }, 60_000);
 
+  /**
+   * WI-2140406 F2 — the measured zero-delivery shape: embedded twins whose
+   * vectors diverged (cos = 0, so NO dedup_edges row exists) with NULL
+   * condition_key on both sides (1,821/1,822 open twin pairs measured
+   * 2026-09-01). Before lexical pairs, readBulkInput produced zero pairs here
+   * and the run converged 'global-zero' having merged nothing.
+   */
+  it('judges and merges NULL-condition identical-title twins that have no cosine edge', async () => {
+    const rows = [
+      { id: 't1', title: 'Identical twin title', vec: '[1,0,0]', created: 1 },
+      { id: 't2', title: 'Identical twin title', vec: '[0,1,0]', created: 2 },
+      { id: 'z', title: 'Unrelated bystander', vec: '[0,0,1]', created: 3 },
+    ];
+    for (const row of rows) {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+           item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+           admitted_at, admitted_by)
+        VALUES (${WS}, ${HARNESS}, ${row.id}, ${row.title}, ${`${row.title} summary`}, 'open', NULL, '{}'::jsonb,
+                'change', NULL, ${row.created}, ${row.created}, ${row.vec}::vector, 'gemma',
+                'admitted', now(), 'test')`;
+    }
+
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-lexical',
+      sql: db.sql,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => ({
+        text: '',
+        json: {
+          judgements: [{ pairKey: 't1::t2', verdict: 'r-finding-merge', reason: 'identical twin filings' }],
+        },
+        inputTokens: 100,
+        outputTokens: 20,
+        servedAccount: 'pool-account-lex',
+      }),
+    });
+
+    // One agent-filed pair stays under the D-002 threshold => targeted scope;
+    // the twin pair must be judged there anyway (identity IS the machine signal).
+    expect(result.scope).toBe('machine-emitter-targeted');
+    expect(result.converged).toBe(true);
+    expect(result.stages[0]).toMatchObject({ pairs: 1, merged: 1 });
+
+    const items = await db.sql<Array<{ feature_id: string; status: string; canonical: string | null }>>`
+      SELECT feature_id, status, payload #>> '{admissionMerge,canonicalId}' AS canonical
+        FROM harness_shared.work_items ORDER BY feature_id`;
+    expect(items).toEqual([
+      { feature_id: 't1', status: 'open', canonical: null },
+      { feature_id: 't2', status: 'dropped', canonical: 't1' },
+      { feature_id: 'z', status: 'open', canonical: null },
+    ]);
+
+    // The pair got a durable adjudication => it can never re-feed the queue.
+    const adjudications = await db.sql<Array<{ a: string; b: string; verdict: string }>>`
+      SELECT a, b, verdict FROM harness_shared.dedup_adjudications ORDER BY a, b`;
+    expect(adjudications).toEqual([{ a: 't1', b: 't2', verdict: 'r-finding-merge' }]);
+  }, 60_000);
+
+  /**
+   * WI-2140406 F4 — a process death mid-run strands admission_runs rows in
+   * status 'running' forever (d035-1-stage-1 + d035-3-census-0, stuck since
+   * 2026-08-30). The next run start must mark stale foreign rows failed while
+   * leaving genuinely-live rows alone.
+   */
+  it('reaps foreign admission runs stuck running past the stage lease at run start', async () => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.admission_runs
+        (id, workspace_id, harness_slug, run_kind, started_at, detail)
+      VALUES ('d035-old-stage-1', ${WS}, ${HARNESS}, 'bulk-stage', now() - interval '3 hours',
+              '{"status":"running"}'::jsonb),
+             ('fresh-census-0', ${WS}, ${HARNESS}, 'census', now(),
+              '{"status":"running"}'::jsonb)`;
+
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-reaper',
+      sql: db.sql,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => ({
+        text: '',
+        json: {
+          judgements: [{ pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure and remedy' }],
+        },
+        inputTokens: 100,
+        outputTokens: 20,
+        servedAccount: 'pool-account-a',
+      }),
+    });
+    expect(result.converged).toBe(true);
+
+    const rows = await db.sql<Array<{ id: string; finished: boolean; status: string; error: string | null }>>`
+      SELECT id, (finished_at IS NOT NULL) AS finished, detail->>'status' AS status, detail->>'error' AS error
+        FROM harness_shared.admission_runs
+       WHERE id IN ('d035-old-stage-1', 'fresh-census-0')
+       ORDER BY id`;
+    expect(rows).toEqual([
+      {
+        id: 'd035-old-stage-1',
+        finished: true,
+        status: 'failed',
+        error: expect.stringContaining('reaped') as unknown as string,
+      },
+      { id: 'fresh-census-0', finished: false, status: 'running', error: null },
+    ]);
+  }, 60_000);
+
   it('fails closed before production persistence when one preservation case is falsely merged', async () => {
     const negative = ADMISSION_MERGE_QUALITY_GOLD_CORPUS.find((entry) => entry.expectedVerdict === 'distinct')!;
     const judgements = admissionMergeQualityGoldJudgements().map((judgement) =>
