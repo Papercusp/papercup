@@ -1139,13 +1139,6 @@ export const FLAGS = {
   // kill-switch. OFF = today's behavior (existing root-only/source/confirm gates
   // only); SOLO/unbound hives are never gated (the owner keeps owner tier).
   POT_ROLE_TIERS: "papercusp-hive-role-tiers",
-  // worker-chunk-loop-operator-hosted-2026-06-14 (P-142 / P-004): route the coding
-  // director's worker dispatch to the operator-hosted `worker:chunk-loop` op instead
-  // of the subprocess chunk loop. DEFAULT ON, but it is the FIRST of a TWO-gate guard —
-  // routing ALSO requires the per-harness `workerChunkLoop` config knob (default false),
-  // which is the real cohort/ramp lever (dark-launch → ramp → retire). Flag-ON alone is
-  // behavior-neutral: every coding worker stays on the subprocess path until a harness opts in.
-  WORKER_CHUNK_LOOP_BLUEPRINT: "papercusp-worker-chunk-loop-blueprint",
   // generic-column-filters-2026-06-14 (Phase 2): gates the generic per-column
   // FILTER BAR on the /adv dock panels (RichGrid + non-grid) — the +Add-filter
   // Select → per-type Popover editor → removable chip row built on

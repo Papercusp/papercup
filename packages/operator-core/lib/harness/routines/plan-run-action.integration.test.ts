@@ -683,7 +683,8 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     warn.mockRestore();
   });
 
-  it('mints schedule.executorKind (D-006: a non-default feature-family executor kind, e.g. chunk)', async () => {
+  it('does not recreate chunks from a stale schedule.executorKind', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await sql`
       UPDATE harness_shared.harness_plans
          SET schedule = ${JSON.stringify({ kind: 'rrule', rrule: 'FREQ=DAILY', dtstart: '2026-01-01T09:00:00.000Z', executorKind: 'chunk' })}::text::jsonb
@@ -695,7 +696,9 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       SELECT DISTINCT item_kind FROM harness_shared.harness_features_consolidated
        WHERE harness_slug = ${HARNESS} AND source_plan_slug = ${TEMPLATE}`;
     expect(kinds).toHaveLength(1);
-    expect(kinds[0].item_kind).toBe('chunk');
+    expect(kinds[0].item_kind).toBe('feature');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("executorKind='chunk' is deprecated"));
+    warn.mockRestore();
   });
 
   it('defaults to feature item_kind when no executorKind is authored', async () => {

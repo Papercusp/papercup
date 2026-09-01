@@ -228,9 +228,9 @@ export default defineTool({
   name: 'work_items:create',
   profile: 'engineer',
   description:
-    'Create ONE or MANY work-items. bug/change/task file tracked issues; feature/chunk enter the harness queue. If creation atomically assigns to a fleet MEMBER, the synthetic new item must match that member\'s claim spec or creation is refused before mutation; unassigned creation is unchanged. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.',
+    "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue. New chunk creation is deprecated and rejected; historical chunk rows remain readable. If creation atomically assigns to a fleet MEMBER, the synthetic new item must match that member's claim spec or creation is refused before mutation; unassigned creation is unchanged. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
   guidance: {
-    when: 'Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for most coding work-items), feature (a pipeline-sized coding work-unit that plans into chunks), chunk (a sub-unit of a feature, pass `parent`), or task (NON-CODE work only — research a library, make a decision, an ops step). A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several at once via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.',
+    when: 'Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for most coding work-items), feature (a pipeline-sized coding work-unit), or task (NON-CODE work only — research a library, make a decision, an ops step). The retired chunk kind is read-only history, not a creation option. A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several at once via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.',
     notWhen: 'NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.',
     chaining: 'work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run.',
     seeAlso: [
@@ -286,10 +286,10 @@ export default defineTool({
       title: hardText(LIMITS.SHORT_TITLE).optional(),
       summary: hardText(8000).optional().describe('body / summary text'),
       body: hardText(8000).optional().describe('alias for `summary` — the item body text (work_items:update names it `body`). Pass either; both-with-different-values is rejected (WI-4492).'),
-      harness: z.string().max(80).optional().describe('harness slug — required for feature/chunk; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
+      harness: z.string().max(80).optional().describe('harness slug — required for feature; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
       pot: hiveArg,
       severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
-      parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
+      parent: z.string().max(80).optional().describe('parent work-item id (historical feature-family compatibility)'),
       topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
       payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
       routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('explicit papercusp-way routing intent. Body/summary prose is never classified. schedule-recurrence also requires cadence.'),

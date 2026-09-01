@@ -41,6 +41,7 @@ import {
   WORK_ITEM_DEPS_DDL,
 } from '../../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import { createWorkItem } from '../../work-items';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -184,6 +185,8 @@ beforeAll(async () => {
   // durable per-key fire latch. Apply the production migrations so missing
   // relations cannot mask the handler contracts under test.
   await db.sql.unsafe(readMigration('500-agent-modes.sql')).simple();
+  await db.sql.unsafe(readMigration('767-agent-modes-subject.sql')).simple();
+  await db.sql.unsafe(readMigration('1032-agent-mode-goal-holder-election.sql')).simple();
   await db.sql.unsafe(readMigration('632-event-key-fire-latch.sql')).simple();
   // The handlers also exercise the shared event-await/watch machinery during
   // lifecycle operations. Apply its canonical migrations so the integration
@@ -245,6 +248,12 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect((change.workItem as Record<string, unknown>).kind).toBe('change');
   });
 
+  it('rejects public chunk creation with a clear deprecation envelope', async () => {
+    const chunk = await createOne({ kind: 'chunk', title: 'retired sub-unit', harness: 'papercup' });
+    expect(chunk).toMatchObject({ ok: false, error: 'deprecated_kind' });
+    expect(String(chunk.message)).toMatch(/chunk.*deprecated.*cannot be created/i);
+  });
+
   it('mirror-guard (EI-316): refuses a title embedding an OPEN WI id; force:true overrides; terminal id is fine', async () => {
     const feat = await createOne({ kind: 'feature', title: 'API server', harness: 'papercup' });
     const openId = (feat.workItem as Record<string, unknown>).id as string; // WI-1, state todo (open)
@@ -294,12 +303,19 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(missRes.error).toMatch(/not found/);
   });
 
-  it('list merges across kinds, hides chunks, and a parent filter lists the chunk', async () => {
+  it('list hides historical chunks by default and exposes them through compatibility filters', async () => {
     const feat = await createOne({ kind: 'feature', title: 'parent', harness: 'papercup' });
     const parentId = (feat.workItem as Record<string, unknown>).id as string;
     await createOne({ kind: 'bug', title: 'a bug', harness: 'papercup' });
-    const chunk = await createOne({ kind: 'chunk', title: 'sub-unit', harness: 'papercup', parent: parentId });
-    const chunkId = (chunk.workItem as Record<string, unknown>).id as string;
+    const chunk = await createWorkItem({
+      kind: 'chunk',
+      title: 'historical sub-unit',
+      harness: 'papercup',
+      parent: parentId,
+      createdBy: 'historical-fixture',
+      allowDeprecatedChunk: true,
+    });
+    const chunkId = chunk.id;
 
     // work_items:list now returns the WorkItem array directly as `{ data }`
     // (token-efficient-tool-result-formats P-011 — the `{ ok, count, items }`
@@ -311,6 +327,9 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
 
     const children = await listData({ harness: 'papercup', parent: parentId });
     expect(children.map((w) => w.id)).toEqual([chunkId]);
+
+    const historical = await listData({ harness: 'papercup', kind: 'chunk', includeChildren: true });
+    expect(historical.map((w) => w.id)).toEqual([chunkId]);
 
     const onlyBugs = await listData({ harness: 'papercup', kind: 'bug' });
     expect(onlyBugs.every((w) => w.kind === 'bug')).toBe(true);

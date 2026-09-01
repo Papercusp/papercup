@@ -26,7 +26,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
-import { FEATURE_FAMILY_KINDS, type FeatureFamilyKind } from '../../work-items';
+import { ACTIVE_FEATURE_FAMILY_KINDS, type ActiveFeatureFamilyKind } from '../../work-items';
 import { evaluatePlanStartReadiness, type PlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
 import { routineStorageSlug } from '../../pot-membership';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
@@ -128,10 +128,18 @@ interface PreparedPlanRun {
   runSeq: number;
   replayed: boolean;
   skippedForConcurrency?: boolean;
-  itemKind: (typeof FEATURE_FAMILY_KINDS)[number];
+  itemKind: ActiveFeatureFamilyKind;
   runInputs: unknown;
   appHarnessSlug: string;
   execution: AgenticPlanExecutionTarget | null;
+}
+
+/** Resolve stale schedule config onto the forward-active work-item kind set. */
+export function resolvePlanRunItemKind(rawKind: unknown): ActiveFeatureFamilyKind {
+  return typeof rawKind === 'string' &&
+    (ACTIVE_FEATURE_FAMILY_KINDS as readonly string[]).includes(rawKind)
+    ? (rawKind as ActiveFeatureFamilyKind)
+    : 'feature';
 }
 
 type PreparedPlanRunOutcome = PreparedPlanRun | ScheduledPlanFireRefusal;
@@ -269,14 +277,14 @@ async function runScheduledPlanFireTx(
       ...(execution ? { execution } : {}),
     };
   }
-  // Executor kind (D-006/P-009): authored on schedule.executorKind; validated against
-  // the feature-family kinds (feature|chunk). An invalid or removed kind (e.g. the
-  // retired research-task) falls back to the coding-spine 'feature' default.
+  // Executor kind (D-006/P-009): only forward-active feature-family kinds may
+  // mint work. Historical `chunk` config is read-compatible but falls back to
+  // `feature`, so a stale schedule cannot recreate retired rows.
   const rawKind = template.schedule?.executorKind;
-  const itemKind: FeatureFamilyKind =
-    rawKind && (FEATURE_FAMILY_KINDS as readonly string[]).includes(rawKind)
-      ? (rawKind as FeatureFamilyKind)
-      : 'feature';
+  const itemKind = resolvePlanRunItemKind(rawKind);
+  if (rawKind === 'chunk') {
+    console.warn(`[plan-run] schedule.executorKind='chunk' is deprecated; using 'feature' for ${templateSlug}`);
+  }
 
   // 2. Run token → instance slug. A SCHEDULED/event fire uses the routine's last_fired_at
   //    (stamped at claim, stable across a DBOS step replay) so a re-executed step is a no-op,

@@ -26,7 +26,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolvePlanScope } from '../plans/source';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
 import { convertPlanItem, type ConvertPlanItemResult } from '../../plan-items/convert';
-import { WORK_ITEM_KINDS, type WorkItemKind } from '../../work-items';
+import { WORK_ITEM_KINDS, isDeprecatedWorkItemKind, type WorkItemKind } from '../../work-items';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -70,7 +70,8 @@ interface ConvertSpecItem {
   ttl_sec?: number;
 }
 
-const KIND = z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]);
+const CREATABLE_WORK_ITEM_KINDS = WORK_ITEM_KINDS.filter((kind) => !isDeprecatedWorkItemKind(kind));
+const KIND = z.enum([...CREATABLE_WORK_ITEM_KINDS] as [string, ...string[]]);
 
 const itemSpec = z.object({
   plan: z.string().min(1).describe('plan slug'),

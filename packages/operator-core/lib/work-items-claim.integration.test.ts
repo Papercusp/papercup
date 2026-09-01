@@ -556,6 +556,12 @@ describe('work_items claim_next — associative `in` + work-stealing (D-004/D-00
     await seedFeature('F-feat', { kind: 'feature', createdTs: 200 });
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1', kind: 'feature' }))?.id).toBe('F-feat');
   });
+
+  it('never self-selects a historical chunk, even when it is the only open row', async () => {
+    await seedFeature('F-historical-chunk', { kind: 'chunk', createdTs: 100 });
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1', kind: 'chunk' })).toBeNull();
+  });
 });
 
 describe('work_items observe — `rd` (D-004, real PG)', () => {

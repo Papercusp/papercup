@@ -58,6 +58,7 @@ import { runWithWorkspace } from '../workspace-als';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveWorkItemPot } from '../pot-membership';
+import { isDeprecatedWorkItemKind } from '../work-items';
 
 const operatorBase = operatorApiBase;
 
@@ -269,6 +270,12 @@ async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void
   const { installSlug, workspaceId, payloadTemplate } = ctx;
   const wi = (payloadTemplate?.workItem ?? {}) as Record<string, unknown>;
   const itemKind = bp.workItem.kind; // 'feature' | 'chunk' | 'task' | …
+  if (isDeprecatedWorkItemKind(itemKind)) {
+    console.warn(
+      `[blueprint-run] ${installSlug}: workItem.kind='chunk' is deprecated; scheduled creation refused`,
+    );
+    return;
+  }
   const idPrefix = bp.workItem.idPrefix || 'W';
   const explicitId = typeof wi.id === 'string' && wi.id.trim() ? wi.id.trim() : null;
   const featureId =

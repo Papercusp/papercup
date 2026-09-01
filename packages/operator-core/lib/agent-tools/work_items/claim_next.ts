@@ -67,7 +67,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().min(1),
-    kind: z.enum(['feature', 'chunk']).optional(),
+    kind: z.enum(['feature']).optional().describe("active feature-family narrowing; retired 'chunk' rows are never self-selected"),
     assignee: z.string().max(120).optional().describe('default: you (also resolves the literal "self" to you)'),
     ignoreContextPressure: z
       .boolean()

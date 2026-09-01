@@ -994,15 +994,7 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, featureId, id
   return result;
 };
 
-/**
- * Pure routing guard (Brief 15, worker-chunk-loop-operator-hosted-2026-06-14
- * P-010 / D-006), mirroring `debuggerGateDecision`'s pure-guard pattern: route a
- * coding WORKER dispatch to the operator-hosted `worker:chunk-loop` op iff BOTH the
- * workspace master flag is on AND this harness opted in. Two gates because the
- * flag's stored override is workspace-scoped — without the per-harness opt-in one
- * flip would route EVERY coding harness (incl. critical ones) through the op, the
- * blind cutover the staged rollout forbids. Exported for unit testing.
- */
+/** Deprecated compatibility guard. DBOS always uses ordinary invoke now. */
 export function useWorkerChunkLoopOp(input: {
   role: string;
   flagEnabled: boolean;
@@ -1012,30 +1004,6 @@ export function useWorkerChunkLoopOp(input: {
 }): boolean {
   void input;
   return false;
-}
-
-/**
- * Clamp rollout config into a percentage. Omitted preserves the legacy
- * workerChunkLoop:true behavior: an opted-in harness routes 100% of worker turns.
- */
-export function workerChunkLoopCohortPercent(raw: number | string | null | undefined): number {
-  if (raw == null || raw === '') return 100;
-  const n = typeof raw === 'number' ? raw : Number(raw);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(100, Math.floor(n)));
-}
-
-/**
- * Stable 0..99 bucket for feature-level cohorting. FNV-1a keeps this dependency-free
- * and deterministic across processes/retries.
- */
-export function workerChunkLoopCohortBucket(key: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < key.length; i++) {
-    hash ^= key.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0) % 100;
 }
 
 /**

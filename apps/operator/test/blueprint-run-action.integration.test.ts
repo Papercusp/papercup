@@ -12,7 +12,7 @@
  * is pointed at this DB via HARNESS_ADMIN_DATABASE_URL + _resetForTests (the list-workspaces
  * integration pattern).
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
@@ -501,7 +501,8 @@ describe("system:blueprint-run fires through the routine dispatch path", () => {
     expect(rows[0].feature_id.startsWith('F-SCHED-')).toBe(true);
   });
 
-  it("mode='work-item' honors a non-feature kind + payload (item_kind + payload)", async () => {
+  it("mode='work-item' refuses a blueprint that still declares the retired chunk kind", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     setBlueprintResolver(async () => research()); // kind='chunk', idPrefix='R'
     await dispatch({
       installSlug: 'demo',
@@ -512,10 +513,9 @@ describe("system:blueprint-run fires through the routine dispatch path", () => {
     const rows = await sql<{ feature_id: string; item_kind: string; payload: { topic: string } | null }[]>`
       SELECT feature_id, item_kind, payload
         FROM harness_shared.harness_features_consolidated WHERE harness_slug='demo'`;
-    expect(rows).toHaveLength(1);
-    expect(rows[0].feature_id).toBe('R-001'); // explicit id honored
-    expect(rows[0].item_kind).toBe('chunk');
-    expect(rows[0].payload).toEqual({ topic: 'X' });
+    expect(rows).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("workItem.kind='chunk' is deprecated"));
+    warn.mockRestore();
   });
 
   it("mode='work-item' is replay-safe for an explicit id (ON CONFLICT DO NOTHING)", async () => {

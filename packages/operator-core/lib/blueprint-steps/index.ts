@@ -54,12 +54,6 @@ import './ops/memory-precision-bench.js';
 // deployment-watching complement to memory-precision (which watches the code path in an
 // isolated bench schema). Flag-only (no governor); always-on monitoring.
 import './ops/memory-live-recall-canary.js';
-// worker-chunk-loop-operator-hosted-2026-06-14 (P-002/P-003, = deterministic-blueprints
-// P-142): the coding WORKER's chunk loop as an operator-hosted deterministic step — a
-// near-PORT of runWorkerChunkLoop() (the heavy ctx-construction runner is dynamic-imported
-// by the op, so registering it here stays light). DARK behind the DEFAULT-OFF
-// papercusp-worker-chunk-loop-blueprint flag (the coding HOT PATH staged-rollout gate, D-003).
-import './ops/worker-chunk-loop.js';
 // oddsmith:prospect is no longer compiled in here. As of harness-provided-cadence-ops-
 // 2026-06-26 (P-007 / D-001) it is a HARNESS-PROVIDED dispatched op: the oddsmith-prospector
 // blueprint declares it in its `ops:` manifest, the operator registers a PROXY CoordOp on

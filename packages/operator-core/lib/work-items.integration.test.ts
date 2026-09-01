@@ -5,7 +5,7 @@
  * stores + migration 142, with getOrgPg pointed at a throwaway DB.
  *
  * Proves the unification contract:
- *  • create dispatches by kind: bug/change → engineer_issues; feature/chunk → hfc.
+ *  • create dispatches active kinds, while public chunk creation is rejected.
  *  • WI-NNN ids are kind-INDEPENDENT (one global sequence across both kind-tables, D-008).
  *  • get/list MERGE across the two kind-tables; default list hides chunks (D-004).
  *  • set_state / claim / release dispatch to the right kind-table.
@@ -1936,6 +1936,32 @@ describe('unified work_items surface (real PG)', () => {
     await expect(wi.createWorkItem({ kind: 'feature', title: 'x' })).rejects.toThrow(/requires a non-empty harness/);
   });
 
+  it('rejects new chunk creation but keeps explicitly reconstructed historical rows readable', async () => {
+    await expect(
+      wi.createWorkItem({ kind: 'chunk', title: 'new public chunk', harness: 'papercup' }),
+    ).rejects.toThrow(/kind 'chunk' is deprecated.*cannot be created/i);
+
+    const historical = await wi.createWorkItem({
+      kind: 'chunk',
+      title: 'historical chunk',
+      harness: 'papercup',
+      createdBy: 'migration-fixture',
+      allowDeprecatedChunk: true,
+    });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET status = 'done'
+       WHERE workspace_id = 'default' AND feature_id = ${historical.id}`;
+
+    expect(await wi.getWorkItem(historical.id, 'papercup')).toMatchObject({
+      id: historical.id,
+      kind: 'chunk',
+      state: 'done',
+    });
+    expect((await wi.listWorkItems({ harness: 'papercup' })).map((item) => item.id)).not.toContain(historical.id);
+    expect((await wi.listWorkItems({ harness: 'papercup', kind: 'chunk' })).map((item) => item.id)).toContain(historical.id);
+  });
+
   it('get resolves across both kind-tables', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
@@ -1947,7 +1973,14 @@ describe('unified work_items surface (real PG)', () => {
   it('list MERGES across kinds; default hides chunks; parent lists chunks (D-004)', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'parent feat', harness: 'papercup', createdBy: 'agA' });
     await wi.createWorkItem({ kind: 'bug', title: 'a bug', harness: 'papercup', createdBy: 'agA' });
-    const chunk = await wi.createWorkItem({ kind: 'chunk', title: 'sub-unit', harness: 'papercup', parent: feat.id, createdBy: 'agA' });
+    const chunk = await wi.createWorkItem({
+      kind: 'chunk',
+      title: 'sub-unit',
+      harness: 'papercup',
+      parent: feat.id,
+      createdBy: 'historical-fixture',
+      allowDeprecatedChunk: true,
+    });
 
     const top = await wi.listWorkItems({ harness: 'papercup' });
     const ids = top.map((w) => w.id).sort();
@@ -2181,26 +2214,30 @@ describe('unified work_items surface (real PG)', () => {
     expect(onlyFeatures.items.every((w) => w.family === 'feature')).toBe(true);
   });
 
-  // P-018: `family` selects a WHOLE family without pinning an exact kind — the
-  // predicate `harness_features_consolidated` applies, and the thing /api/harness/search
-  // needs in order to delegate here without changing which rows it can see.
-  it('search `family` selects the whole family — including a kind `kind:feature` would EXCLUDE', async () => {
+  it('search excludes retired chunks by default but an explicit chunk read remains available', async () => {
     const parent = await wi.createWorkItem({ kind: 'feature', title: 'grimbex parent', harness: 'papercup', createdBy: 'agA' });
-    await wi.createWorkItem({ kind: 'chunk', title: 'grimbex chunk', harness: 'papercup', createdBy: 'agA', parent: parent.id });
+    await wi.createWorkItem({
+      kind: 'chunk',
+      title: 'grimbex chunk',
+      harness: 'papercup',
+      createdBy: 'historical-fixture',
+      parent: parent.id,
+      allowDeprecatedChunk: true,
+    });
     await wi.createWorkItem({ kind: 'bug', title: 'grimbex bug', harness: 'papercup', createdBy: 'agA' });
 
     const family = await wi.searchWorkItems('grimbex', { family: 'feature', semantic: false });
     const titles = family.items.map((w) => w.title);
     expect(family.items.every((w) => w.family === 'feature')).toBe(true);
     expect(titles).toContain('grimbex parent');
-    // THE CALIBRATION: `chunk` is feature-FAMILY but not `kind:'feature'`, so this
-    // is the row that proves `family` is genuinely wider than the kind filter
-    // rather than a slower spelling of it.
-    expect(titles).toContain('grimbex chunk');
+    expect(titles).not.toContain('grimbex chunk');
     expect(titles).not.toContain('grimbex bug');
 
     const byKind = await wi.searchWorkItems('grimbex', { kind: 'feature', semantic: false });
     expect(byKind.items.map((w) => w.title)).not.toContain('grimbex chunk');
+
+    const historical = await wi.searchWorkItems('grimbex', { kind: 'chunk', semantic: false });
+    expect(historical.items.map((w) => w.title)).toEqual(['grimbex chunk']);
 
     const issues = await wi.searchWorkItems('grimbex', { family: 'issue', semantic: false });
     expect(issues.items.map((w) => w.title)).toEqual(['grimbex bug']);

@@ -203,6 +203,7 @@ const WORK_ITEM_EMBED_TIMEOUT_MS = 4000;
 export { markIssueProgress };
 
 // ── Kinds ───────────────────────────────────────────────────────────────────────
+/** Storage/read union. `chunk` is retained only for historical compatibility. */
 export type FeatureFamilyKind = 'feature' | 'chunk';
 export type WorkItemKind = FeatureFamilyKind | IssueStoreKind;
 export type WorkItemFamily = 'feature' | 'issue';
@@ -210,6 +211,7 @@ export type WorkItemFamily = 'feature' | 'issue';
 export const FEATURE_FAMILY_KINDS: readonly FeatureFamilyKind[] = ['feature', 'chunk'];
 /** Forward-active feature kind; `chunk` remains in the read union for history. */
 export const ACTIVE_FEATURE_FAMILY_KINDS: readonly ['feature'] = ['feature'];
+export type ActiveFeatureFamilyKind = (typeof ACTIVE_FEATURE_FAMILY_KINDS)[number];
 /** Public work-item kinds whose forward write path is retired. */
 export const DEPRECATED_WORK_ITEM_KINDS: readonly ['chunk'] = ['chunk'];
 
@@ -5069,8 +5071,9 @@ export interface ClaimNextFilter {
  * (and the blocking subquery references the table by its full name), so it is only
  * valid composed into an inner SELECT over `harness_shared.harness_features_consolidated`.
  *
- * The `kind` floor is intentionally NOT here: it is a caller-supplied NARROWING (an
- * optional restriction to one feature-family kind), not a floor the spec can't touch.
+ * The active built-in kind floor lives in `frontierPlacementKindClause`: `feature`
+ * plus explicitly opted-in generic datatypes. Historical `chunk` rows are never in
+ * this self-selection frontier, regardless of a caller-supplied narrowing.
  */
 export interface ClaimFloorsOpts {
   harness: string;
@@ -6808,8 +6811,8 @@ export { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
  *
  *   1. the caller's exact request — `filter.kind` if narrowed, else the whole feature family.
  *   2. (only when tier 1 narrowed by kind) the REST of the feature family — the other
- *      placeable kinds `claimFloorsWhereSql` already admits (feature/research-task/chunk,
- *      or an opted-in generic kind). A `kind` is a caller NARROWING, never a floor, so
+ *      placeable kinds `claimFloorsWhereSql` already admits (`feature` or an opted-in
+ *      generic kind). A `kind` is a caller NARROWING, never a floor, so
  *      draining it must widen back out before giving up.
  *   3. the ISSUE family (bug/change/task) — unconditional on `filter.kind` now (it never
  *      applied there anyway: `claimNextIssueWorkItem` doesn't read `filter.kind`), still
@@ -6871,8 +6874,8 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
   let claimed = await claimFeatureRow(filter.kind);
 
   // Tier 2: the caller narrowed to one kind and it's dry — widen to the rest of the
-  // feature family before giving up (a member asking only for 'feature' work must not
-  // exit while a claimable research-task/chunk sits right there).
+  // ACTIVE placement family before giving up. Retired chunk rows remain outside the
+  // floor, even when an old caller still supplies kind:'chunk'.
   if (!claimed && filter.kind) {
     claimed = await claimFeatureRow(undefined);
   }

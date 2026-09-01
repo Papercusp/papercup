@@ -670,7 +670,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-exact');
   });
 
-  it('tier 2: kind="feature" narrowed and DRY widens (widenPastKind) to a chunk item', async () => {
+  it('retired chunks remain outside tier 2 after a feature-narrowed miss', async () => {
     await seedFeature('RT-1', { createdTs: 100, kind: 'chunk' });
     const s = spec({
       specVersion: '1.0',
@@ -679,12 +679,10 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       view: { filter: { field: 'kind', op: '=', value: 'feature' } },
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
     });
-    const r = await getNextWorkItem(s, BEE, { harness: H });
-    expect(r?.workItem.id).toBe('RT-1');
-    expect(r?.claimedUnder).toEqual({ specId: 'kind-feature-widen', revision: 1 }); // still the SAME spec's provenance
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
   });
 
-  it('tier 2: a co-existing tags narrowing SURVIVES the widen (only the kind leaf is dropped)', async () => {
+  it('a co-existing tags narrowing cannot re-admit retired chunks', async () => {
     await seedFeature('RT-sync', { createdTs: 100, kind: 'chunk', tags: ['sync'] });
     await seedFeature('RT-docs', { createdTs: 10, kind: 'chunk', tags: ['docs'] }); // older, wrong tag
     const s = spec({
@@ -701,10 +699,10 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       },
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
     });
-    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('RT-sync');
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
   });
 
-  it('tier 2: widening still honors the readiness floor (D-002) — a blocked widened item is skipped', async () => {
+  it('retired chunks stay excluded after a historical blocker settles', async () => {
     await seedFeature('CH-blocker', { createdTs: 1, kind: 'chunk', status: 'wip' });
     await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk' });
     await blockByFeature('CH-blocked', 'CH-blocker');
@@ -717,7 +715,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     });
     expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
     await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='passed' WHERE feature_id='CH-blocker'`;
-    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('CH-blocked');
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
   });
 
   it('tier 3: kind="feature" narrowed and the WHOLE feature family dry falls through to an open issue when SCHEDULER_ISSUES_CLAIMABLE is ON', async () => {

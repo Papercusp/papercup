@@ -334,18 +334,18 @@ describe('claimNextWorkItem fallback ladder — a kind-narrowed caller still wid
     expect(await claimOneKind('w-t1', 'feature')).toBe('F-exact');
   });
 
-  it('tier 2: kind="feature" narrowed and DRY widens to a chunk item within the feature family', async () => {
+  it('retired chunks remain outside tier 2 after a feature-narrowed miss', async () => {
     await seedFeature('RT-1', { createdTs: 100, kind: 'chunk' });
-    expect(await claimOneKind('w-t2', 'feature')).toBe('RT-1');
+    expect(await claimOneKind('w-t2', 'feature')).toBeNull();
   });
 
-  it('tier 2: widening still honors the readiness floor — a blocked widened item is skipped', async () => {
+  it('retired chunks remain excluded even after their historical blocker settles', async () => {
     await seedFeature('CH-blocker', { createdTs: 1, kind: 'chunk', status: 'wip' });
     await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk' });
     await blockEdge(`${H}#CH-blocked`, `${H}#CH-blocker`, 'feature', 'feature');
     expect(await claimOneKind('w-t2b', 'feature')).toBeNull();
     await db.sql`UPDATE harness_shared.work_items SET status='passed' WHERE feature_id='CH-blocker'`;
-    expect(await claimOneKind('w-t2c', 'feature')).toBe('CH-blocked');
+    expect(await claimOneKind('w-t2c', 'feature')).toBeNull();
   });
 
   it('tier 3: kind="feature" narrowed and the WHOLE feature family dry falls through to an OPEN issue when the flag is ON', async () => {
