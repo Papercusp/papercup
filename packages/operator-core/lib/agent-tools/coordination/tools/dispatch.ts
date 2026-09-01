@@ -198,7 +198,7 @@ function findPresenceRow(
   if (!fuzzy) return null;
   return {
     ownerId: idOf(fuzzy),
-    sessionState: (fuzzy.sessionState as string | null | undefined) ?? null,
+    sessionState: ((fuzzy.sessionState ?? fuzzy.state) as string | null | undefined) ?? null,
     wakeable: (fuzzy.wakeable as boolean | null | undefined) ?? null,
   };
 }
