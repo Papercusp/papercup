@@ -220,6 +220,90 @@ export function findOverdueReports(
   return out;
 }
 
+/**
+ * WI-2140700: how close to the floor a wake counts as "due now". The holder's
+ * contract says report at the 55-minute mark of a standing goal's 60-minute
+ * floor; this margin is that 5 minutes, expressed against whichever floor
+ * applies so an outcome goal gets the same last-wake warning.
+ */
+export const GOAL_OWNER_REPORT_DUE_SOON_MARGIN_MS = 5 * 60_000;
+
+/** The per-wake verdict a goal holder reads from `modes.ownerReport` (orient). */
+export interface GoalOwnerReportObligation {
+  /** Newest owner-facing event on any measured rail, ISO — null when none since the baseline. */
+  lastReportAt: string | null;
+  /** Minutes since the reference point (last report, floored at the baseline). */
+  ageMin: number;
+  /** The floor this owner is judged against, in minutes (standing vs outcome). */
+  floorMin: number;
+  /** Minutes until the floor is crossed; negative once overdue. */
+  dueInMin: number;
+  standing: boolean;
+  obligation: 'overdue' | 'due-now' | 'not-due';
+  /** One imperative line the contract tells the holder to obey before any other work. */
+  instruction: string;
+}
+
+/**
+ * PURE: the same arithmetic `findOverdueReports` applies, projected for ONE row
+ * and rendered as the holder's own obligation instead of a watchdog alert. Kept
+ * beside the sweep so the two can never disagree about the floor or the
+ * reference point: a holder that reads `not-due` here is exactly a holder the
+ * sweep would not nudge.
+ */
+export function describeGoalOwnerReportObligation(
+  row: GoalOwnerReportRowLike,
+  nowMs: number,
+  maxSilenceMs: number = GOAL_OWNER_REPORT_MAX_SILENCE_MS,
+  standingMaxSilenceMs: number = GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS,
+  dueSoonMarginMs: number = GOAL_OWNER_REPORT_DUE_SOON_MARGIN_MS,
+): GoalOwnerReportObligation {
+  const floorMs = row.standing ? standingMaxSilenceMs : maxSilenceMs;
+  const referenceTsMs = Math.max(row.baselineTsMs, row.lastReportTsMs ?? row.baselineTsMs);
+  const silentMs = nowMs - referenceTsMs;
+  const dueInMs = floorMs - silentMs;
+  const obligation: GoalOwnerReportObligation['obligation'] =
+    silentMs > floorMs ? 'overdue' : dueInMs <= dueSoonMarginMs ? 'due-now' : 'not-due';
+  const toMin = (ms: number): number => Math.round(ms / 60_000);
+  const lastReportAt =
+    row.lastReportTsMs !== null && row.lastReportTsMs >= row.baselineTsMs
+      ? new Date(row.lastReportTsMs).toISOString()
+      : null;
+  const report =
+    "send the four-element owner report NOW — coord:send { to:['human'] } with MOVED / COST / OWNER-WALLED / KILLED — before any other work";
+  const instruction =
+    obligation === 'overdue'
+      ? `OVERDUE by ${toMin(-dueInMs)} min (floor ${toMin(floorMs)} min, last owner-facing report ${lastReportAt ?? 'none since you took this goal'}): ${report}.`
+      : obligation === 'due-now'
+        ? `DUE NOW (${toMin(dueInMs)} min to the ${toMin(floorMs)}-min floor): ${report}.`
+        : `not due: ${toMin(dueInMs)} min until the ${toMin(floorMs)}-min floor (last owner-facing report ${lastReportAt ?? 'none yet — the baseline is your goal/mode start'}).`;
+  return {
+    lastReportAt,
+    ageMin: toMin(silentMs),
+    floorMin: toMin(floorMs),
+    dueInMin: toMin(dueInMs),
+    standing: row.standing,
+    obligation,
+    instruction,
+  };
+}
+
+/**
+ * WI-2140700: the holder's own every-wake read — ONE goal-mode registration on
+ * an active goal, through the exact population query the sweep uses, projected
+ * with `describeGoalOwnerReportObligation`. Null when the caller holds no
+ * active goal-mode row for that goal (the sweep would not measure it either).
+ */
+export async function readGoalOwnerReportObligation(
+  sql: Sql,
+  filter: GoalOwnerReportOwnerFilter,
+  nowMs: number = Date.now(),
+): Promise<GoalOwnerReportObligation | null> {
+  const rows = await makeReadGoalModeOwners(sql, filter)();
+  const row = rows[0];
+  return row ? describeGoalOwnerReportObligation(row, nowMs) : null;
+}
+
 /** The contract's report shape, handed to the owner as a fill-in skeleton rather
  *  than a bare scold — the four fields are the GOAL contract's own list. */
 export function buildReportSkeleton(alert: GoalOwnerReportAlert): Record<string, string> {
@@ -259,7 +343,18 @@ async function defaultFlagEnabled(): Promise<boolean> {
   }
 }
 
-function makeReadGoalModeOwners(sql: Sql): GoalOwnerReportSweepDeps['readGoalModeOwners'] {
+/** WI-2140700: narrow the population read to ONE goal-mode registration — the
+ *  orient-time self-read a holder performs every wake. Same query, one filter. */
+export interface GoalOwnerReportOwnerFilter {
+  workspaceId: string;
+  ownerId: string;
+  goalId: string;
+}
+
+function makeReadGoalModeOwners(
+  sql: Sql,
+  filter?: GoalOwnerReportOwnerFilter,
+): GoalOwnerReportSweepDeps['readGoalModeOwners'] {
   return async () => {
     // Population first (goal-mode rows on ACTIVE goals — measured base rate is
     // single-digit owners), then one LATERAL per rail per row. The escalations
@@ -311,7 +406,12 @@ function makeReadGoalModeOwners(sql: Sql): GoalOwnerReportSweepDeps['readGoalMod
              AND h.body->>'from' = m.owner_id
              AND h.body->'to' @> '["human"]'::jsonb
         ) hm ON true
-       WHERE m.mode = 'goal' AND m.subject IS NOT NULL`;
+       WHERE m.mode = 'goal' AND m.subject IS NOT NULL
+         ${
+           filter
+             ? sql`AND m.workspace_id = ${filter.workspaceId} AND m.owner_id = ${filter.ownerId} AND m.subject = ${filter.goalId}`
+             : sql``
+         }`;
     return rows.map((r) => ({
       workspaceId: r.workspace_id,
       goalId: r.goal_id,

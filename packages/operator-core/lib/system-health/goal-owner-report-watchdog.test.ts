@@ -11,9 +11,12 @@ import {
   GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS,
   GOAL_OWNER_REPORT_STANDING_MEASURED_FAILURE_SILENCE_MS,
   GOAL_OWNER_REPORT_STANDING_MEASURED_HEALTHY_CADENCE_MS,
+  GOAL_OWNER_REPORT_DUE_SOON_MARGIN_MS,
   buildReportSkeleton,
+  describeGoalOwnerReportObligation,
   findOverdueReports,
   isPastReportFloorReview,
+  readGoalOwnerReportObligation,
   runGoalOwnerReportSweepOnce,
   type GoalOwnerReportAlert,
   type GoalOwnerReportRowLike,
@@ -74,6 +77,99 @@ function makeDeps(over: Partial<GoalOwnerReportSweepDeps> = {}): GoalOwnerReport
     ...over,
   };
 }
+
+describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-side verdict agrees with the sweep', () => {
+  const MIN = 60_000;
+
+  it('a standing goal silent past the 60-min floor reads overdue, with the same reference the sweep uses', () => {
+    const row = makeRow({ standing: true, baselineTsMs: NOW - 5 * HOUR, lastReportTsMs: NOW - 90 * MIN });
+    const v = describeGoalOwnerReportObligation(row, NOW);
+    expect(v.obligation).toBe('overdue');
+    expect(v.floorMin).toBe(60);
+    expect(v.ageMin).toBe(90);
+    expect(v.dueInMin).toBe(-30);
+    expect(v.lastReportAt).toBe(new Date(NOW - 90 * MIN).toISOString());
+    expect(v.instruction).toMatch(/^OVERDUE by 30 min/);
+    expect(v.instruction).toContain("coord:send { to:['human'] }");
+    // Agreement with the sweep: the sweep would nudge exactly this row.
+    expect(findOverdueReports([row], NOW)).toHaveLength(1);
+  });
+
+  it('inside the last 5 minutes before the floor reads due-now (the contract\'s 55-minute mark)', () => {
+    const row = makeRow({ standing: true, baselineTsMs: NOW - 5 * HOUR, lastReportTsMs: NOW - 56 * MIN });
+    const v = describeGoalOwnerReportObligation(row, NOW);
+    expect(v.obligation).toBe('due-now');
+    expect(v.dueInMin).toBe(4);
+    expect(v.instruction).toMatch(/^DUE NOW \(4 min to the 60-min floor\)/);
+    // Not yet overdue for the sweep — the holder is told first, the human second.
+    expect(findOverdueReports([row], NOW)).toHaveLength(0);
+    expect(GOAL_OWNER_REPORT_DUE_SOON_MARGIN_MS).toBe(5 * MIN);
+  });
+
+  it('a fresh report reads not-due and names the remaining minutes', () => {
+    const row = makeRow({ standing: true, baselineTsMs: NOW - 5 * HOUR, lastReportTsMs: NOW - 10 * MIN });
+    const v = describeGoalOwnerReportObligation(row, NOW);
+    expect(v.obligation).toBe('not-due');
+    expect(v.dueInMin).toBe(50);
+    expect(v.instruction).toMatch(/^not due: 50 min until the 60-min floor/);
+  });
+
+  it('an outcome goal is judged against the 4-hour floor', () => {
+    const row = makeRow({ standing: false, baselineTsMs: NOW - 10 * HOUR, lastReportTsMs: NOW - 90 * MIN });
+    const v = describeGoalOwnerReportObligation(row, NOW);
+    expect(v.standing).toBe(false);
+    expect(v.floorMin).toBe(240);
+    expect(v.obligation).toBe('not-due');
+    expect(v.dueInMin).toBe(150);
+  });
+
+  it('no report since the baseline: lastReportAt is null and age is measured from the baseline', () => {
+    const fresh = makeRow({ standing: true, baselineTsMs: NOW - 20 * MIN, lastReportTsMs: null });
+    const v = describeGoalOwnerReportObligation(fresh, NOW);
+    expect(v.lastReportAt).toBeNull();
+    expect(v.ageMin).toBe(20);
+    expect(v.obligation).toBe('not-due');
+    expect(v.instruction).toContain('none yet');
+    // A report that PREDATES the baseline is ignored exactly as the sweep ignores it.
+    const stale = makeRow({ standing: true, baselineTsMs: NOW - 20 * MIN, lastReportTsMs: NOW - 3 * HOUR });
+    const w = describeGoalOwnerReportObligation(stale, NOW);
+    expect(w.lastReportAt).toBeNull();
+    expect(w.ageMin).toBe(20);
+  });
+
+  it('readGoalOwnerReportObligation projects the single row the filtered population query returns, null when absent', async () => {
+    const calls: unknown[][] = [];
+    const sqlFn = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      // The filter fragment is itself a sql`` call; only the outer query returns rows.
+      if (strings.join('').includes('FROM harness_shared.agent_modes')) {
+        return values.length && calls.length > 1
+          ? [
+              {
+                workspace_id: 'ws',
+                goal_id: 'goal-1',
+                owner_id: 'su-holder',
+                standing: true,
+                baseline_ts_ms: String(NOW - 5 * HOUR),
+                last_report_ts_ms: String(NOW - 90 * MIN),
+              },
+            ]
+          : [];
+      }
+      return { fragment: values };
+    }) as unknown as Sql;
+    const v = await readGoalOwnerReportObligation(sqlFn, { workspaceId: 'ws', ownerId: 'su-holder', goalId: 'goal-1' }, NOW);
+    expect(v?.obligation).toBe('overdue');
+    expect(v?.ageMin).toBe(90);
+    // The filter values reached the query (fragment call carries them in order).
+    expect(calls[0]).toEqual(['ws', 'su-holder', 'goal-1']);
+
+    const none = (async () => []) as unknown as Sql;
+    await expect(
+      readGoalOwnerReportObligation(none, { workspaceId: 'ws', ownerId: 'su-holder', goalId: 'goal-1' }, NOW),
+    ).resolves.toBeNull();
+  });
+});
 
 describe('findOverdueReports (pure)', () => {
   it('a long-silent owner with no report ever is overdue, measured from the baseline', () => {
