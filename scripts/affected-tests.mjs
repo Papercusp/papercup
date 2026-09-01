@@ -15,7 +15,7 @@
 //
 // Diagnostics:
 //   --print-affected                  print `AFFECTED_WS\t<name>` and matching
-//                                      `AFFECTED_GUARD\t<workspace>\t<script>` lines, then exit
+//                                      `AFFECTED_GUARD\t<workspace>\t<script>\t<command>` lines, then exit
 //   --changed-paths a/b.ts,c/d.mjs    derive the affected set from these paths instead of a git diff
 //   --changed-paths=a/b.ts,c/d.mjs    equivalent `--flag=value` spelling
 //
@@ -826,7 +826,7 @@ const dry = has("--dry") || has("--dry-run");
 // green-checkpoint's longest-green-PREFIX salvage. With --range-from/--range-to, the
 // changed-file set is the two-dot diff of that commit range (NOT the working tree), and
 // --print-affected emits one `AFFECTED_WS\t<name>` line per affected workspace plus one
-// `AFFECTED_GUARD\t<workspace>\t<script>` line per attached repo-wide guard, then exits
+// `AFFECTED_GUARD\t<workspace>\t<script>\t<command>` line per attached repo-wide guard, then exits
 // WITHOUT running any tests — a cheap git+graph affected-set probe per candidate prefix.
 const rangeFrom = arg("--range-from", null);
 const rangeTo = arg("--range-to", null);
@@ -1275,6 +1275,40 @@ function authoredDocGuardArgs() {
 
 function formatGuardArgs(args) {
   return args?.length ? ` (guard args: ${args.join(" ")})` : "";
+}
+
+/**
+ * Quote one shell argument for the machine-readable --print-affected command field.
+ * Keep the common npm/workspace/script spellings readable; quote forwarded paths and
+ * other unusual values so copying the command cannot change its argument boundaries.
+ */
+function shellQuote(value) {
+  const text = String(value);
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(text)
+    ? text
+    : `'${text.replace(/'/g, "'\"'\"'")}'`;
+}
+
+/**
+ * The fourth AFFECTED_GUARD field is the exact workspace-aware invocation a consumer
+ * can run. The first three fields remain unchanged for older parsers; the command is
+ * additive and carries every forwarded guard argument (including --base/--files).
+ */
+function formatGuardCommand(guard) {
+  const forwardedArgs = [
+    ...(guard.guardArgs ?? []),
+    ...(guard.guardBase ? ["--base", guard.guardBase] : []),
+  ];
+  const argv = [
+    "npm",
+    "run",
+    "--silent",
+    "--workspace",
+    guard.workspace,
+    guard.script,
+    ...(forwardedArgs.length ? ["--", ...forwardedArgs] : []),
+  ];
+  return argv.map(shellQuote).join(" ");
 }
 
 /**
@@ -3835,7 +3869,12 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
             ),
           )
         : [];
-  selectedInvariantGuards.push({ workspace: ws.name, script: guard.script });
+  selectedInvariantGuards.push({
+    workspace: ws.name,
+    script: guard.script,
+    guardArgs,
+    ...(guard.forwardBase ? { guardBase: repoWideGuardBase } : {}),
+  });
   if (!printAffected)
     outSync(
       `(repo-wide invariant guard: ${ws.name} :: ${guard.script})${formatGuardArgs(guardArgs)}`,
@@ -4118,7 +4157,9 @@ for (const line of derivationBannerLines(derivationSummary, {
 if (printAffected) {
   for (const ws of affected) outSync(`AFFECTED_WS\t${ws.name}`);
   for (const guard of selectedInvariantGuards) {
-    outSync(`AFFECTED_GUARD\t${guard.workspace}\t${guard.script}`);
+    outSync(
+      `AFFECTED_GUARD\t${guard.workspace}\t${guard.script}\t${formatGuardCommand(guard)}`,
+    );
   }
   if (relatedOnly) {
     if (checkpointMaterializationSelection) {
