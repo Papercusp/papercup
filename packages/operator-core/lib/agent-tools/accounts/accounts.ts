@@ -180,7 +180,13 @@ export const accountsStatusTool = defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({ workspace: wsArg }),
-  result: z.object({ accounts: z.unknown().optional(), poolVerdict: z.unknown().optional() }).passthrough(),
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      accounts: z.unknown().optional(),
+      poolVerdict: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args) {
     const { accountStatus, poolVerdictByProvider } = await import('../../deployment/account-pool-store');
     const ws = args.workspace ?? activeWorkspaceId();
