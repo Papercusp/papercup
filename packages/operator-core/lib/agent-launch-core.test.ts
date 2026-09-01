@@ -579,6 +579,77 @@ describe('probeFreshLaunchSessions', () => {
     const query = String(launchCoreSql.mock.calls.at(-1)?.[0]?.join(' '));
     expect(query).toContain('s.session_id');
   });
+
+  it('treats the Claude [1m] context marker as equivalent during attestation', async () => {
+    const row = (model: string) => ({
+      id: 124,
+      session_id: 'native-session-124',
+      coord_owner_id: 'su-probed',
+      successful_calls: 1,
+      scheduler_calls: 1,
+      successful_scheduler_calls: 1,
+      ms_since_last_signal: 25,
+      has_presence: true,
+      wake_source: 'loop',
+      scheduler_disposition: { kind: 'claimed', workItemId: 'WI-42407' },
+      claimed_work_item_id: 'WI-42407',
+      launch_spec: {
+        agent: 'claude',
+        workspaceId: 'ws-probe',
+        harnessSlug: 'papercusp',
+        planSlug: null,
+        model,
+        fleet: { slug: 'fleet-probe', role: 'member' },
+      },
+      launch_argv: [
+        'psu',
+        `--model=${model}`,
+        '--account=default',
+        '--carry=warm',
+        '--headless',
+      ],
+    });
+    const expected = {
+      ownerId: 'su-probed',
+      agent: 'claude',
+      workspaceId: 'ws-probe',
+      harnessSlug: 'papercusp',
+      planSlug: null,
+      model: 'claude-sonnet-5:xhigh',
+      effort: 'xhigh',
+      account: 'default',
+      carry: 'warm' as const,
+      visibility: 'headless' as const,
+      fleetSlug: 'fleet-probe',
+      fleetRole: 'member',
+    };
+
+    launchCoreSql.mockResolvedValueOnce([row('claude-sonnet-5[1m]:xhigh')]);
+    const normalized = await probeFreshLaunchSessions({
+      workspaceId: 'ws-probe',
+      launcherOwnerId: 'su-launcher',
+      since: 1_000,
+      expectedOwnerIds: ['su-probed'],
+      expectedAttestations: [expected],
+    });
+    expect(normalized[0]?.attestationDiffs).toEqual([]);
+
+    launchCoreSql.mockResolvedValueOnce([row('claude-sonnet-4-6:xhigh')]);
+    const genuinelyDifferent = await probeFreshLaunchSessions({
+      workspaceId: 'ws-probe',
+      launcherOwnerId: 'su-launcher',
+      since: 1_000,
+      expectedOwnerIds: ['su-probed'],
+      expectedAttestations: [expected],
+    });
+    expect(genuinelyDifferent[0]?.attestationDiffs).toEqual([
+      {
+        field: 'model',
+        requested: 'claude-sonnet-5:xhigh',
+        actual: 'claude-sonnet-4-6:xhigh',
+      },
+    ]);
+  });
 });
 
 describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a resumed session)', () => {

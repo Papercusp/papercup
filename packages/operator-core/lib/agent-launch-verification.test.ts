@@ -24,6 +24,7 @@ import {
   classifyAgentLaunchCommand,
   deriveFreshLaunchWorkerAttestation,
   launchAttestationFromLedger,
+  normalizeLaunchAttestationModelSpec,
   verifyFreshLaunchStarted,
   type FreshLaunchSessionProbe,
 } from './agent-launch-core';
@@ -99,6 +100,20 @@ describe('verifyFreshLaunchStarted — the ACCEPTANCE CASE (adv_session 14842)',
 });
 
 describe('verifyFreshLaunchStarted — must NOT cry wolf on a healthy launch (D-004)', () => {
+  it('canonicalizes the Claude [1m] context marker for requested-vs-actual attestation', () => {
+    expect(normalizeLaunchAttestationModelSpec('claude-sonnet-5:xhigh', 'claude')).toBe(
+      'claude-sonnet-5[1m]:xhigh',
+    );
+    expect(normalizeLaunchAttestationModelSpec('claude-sonnet-5[1m]:xhigh', 'claude')).toBe(
+      'claude-sonnet-5[1m]:xhigh',
+    );
+    expect(normalizeLaunchAttestationModelSpec('claude-sonnet-4-6:xhigh', 'claude')).toBe(
+      'claude-sonnet-4-6:xhigh',
+    );
+    expect(normalizeLaunchAttestationModelSpec('opus', 'omp')).toBe('opus');
+    expect(normalizeLaunchAttestationModelSpec(null, 'claude')).toBeNull();
+  });
+
   it('derives effort/account/carry/visibility from the durable launch argv', () => {
     expect(launchAttestationFromLedger(
       {
