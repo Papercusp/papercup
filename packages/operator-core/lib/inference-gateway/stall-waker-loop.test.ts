@@ -43,6 +43,10 @@ const row = (id: string, over: Partial<AccountStatusRow> = {}): AccountStatusRow
     projectedExhaustionAt: null,
     exhaustsBeforeReset: false,
     action: 'none',
+    // P-001: `disposition` states what the action rests on. These rows carry a measured
+    // usageWalled elsewhere, but the BURN governor asserts nothing here — 'no-verdict'.
+    utilization7d: null,
+    disposition: 'no-verdict',
     reason: 'test fixture — no burn history',
   },
   ...over,

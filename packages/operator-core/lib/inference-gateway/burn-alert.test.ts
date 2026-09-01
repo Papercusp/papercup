@@ -112,6 +112,41 @@ describe('recordAccountWindowWithBurnAlert (leg c)', () => {
     }
   });
 
+  // ── P-001: every stated surface carries the DISPOSITION ────────────────────
+
+  it('pacing projection: the fact and the broadcast both state it is NOT a measured wall', async () => {
+    await recordAccountWindowWithBurnAlert('a1', { utilization7d: 0.4, ...RESET }, T0);
+    await recordAccountWindowWithBurnAlert('a1', { utilization7d: 0.7 }, T0 + HR);
+
+    // The FACT is folded into every agent's orient — it is the highest-leverage string here.
+    const factBody = String((h.assertFact.mock.calls[0]![0] as { body: string }).body);
+    expect(factBody).toContain('pacing projection, not a measured wall');
+    expect(factBody).toContain('util7d 0.70');
+    expect(factBody).toContain('NOT A PROVIDER WALL');
+    expect(factBody).toContain('do not remedy it by throttling the fleet');
+    expect(factBody).not.toContain("provider's own 7d meter is exhausted");
+
+    const ev = h.broadcastSevereEvent.mock.calls[0]![0] as { summary: string; body: string };
+    expect(ev.summary).toContain('pacing projection, not a measured wall');
+    expect(ev.summary).toContain('(was none)');
+    expect(ev.body).toContain('PACING POLICY, NOT A MEASURED WALL');
+    expect(ev.body).not.toContain("provider's own rolling 7-day meter reads exhausted");
+  });
+
+  it('measured wall: the fact and the broadcast state a MEASUREMENT, never a projection', async () => {
+    await recordAccountWindowWithBurnAlert('a1', { utilization7d: 1.0, ...RESET }, T0);
+
+    const factBody = String((h.assertFact.mock.calls[0]![0] as { body: string }).body);
+    expect(factBody).toContain('USAGE-WALLED (measured; util7d 1.00)');
+    expect(factBody).toContain("provider's own 7d meter is exhausted");
+    expect(factBody).not.toContain('pacing projection');
+
+    const ev = h.broadcastSevereEvent.mock.calls[0]![0] as { summary: string; body: string };
+    expect(ev.summary).toContain('USAGE-WALLED (measured; util7d 1.00)');
+    expect(ev.body).toContain("provider's own rolling 7-day meter reads exhausted");
+    expect(ev.body).not.toContain('PACING POLICY');
+  });
+
   it('unknown account id: no-op write, nothing stated', async () => {
     const { transition } = await recordAccountWindowWithBurnAlert('ghost', { utilization7d: 0.9 }, T0);
     expect(transition).toBeNull();

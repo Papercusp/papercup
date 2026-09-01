@@ -23,6 +23,7 @@ import {
   estimateBurnRatePerHr,
   evaluateAccountBurn,
   evaluateBurn,
+  renderBurnVerdictLabel,
   type BurnSample,
 } from './burn-governor';
 
@@ -427,6 +428,113 @@ describe('accountBurnVerdict stale gate', () => {
     expect(v.reason).toMatch(/stale/);
     // ...while the SAME row with a fresh stamp sheds:
     expect(accountBurnVerdict({ ...rate, utilizationAt: T0 }, T0).action).toBe('shed');
+  });
+});
+
+// ── P-001: the DISPOSITION — a pacing projection is not a measured wall ──────
+
+describe('burn verdict disposition (P-001)', () => {
+  const now = T0;
+
+  it('a wall the provider METERED is disposition measured-wall, with the reading echoed', () => {
+    const v = evaluateBurn({ utilization7d: 1.0, windowResetAt7d: now + 24 * HR, burnRatePerHr: null, now });
+    expect(v.action).toBe('shed');
+    expect(v.disposition).toBe('measured-wall');
+    expect(v.utilization7d).toBe(1.0);
+    expect(renderBurnVerdictLabel(v)).toBe('USAGE-WALLED (measured; util7d 1.00)');
+  });
+
+  it('a shed derived from the PROJECTION is disposition pacing-projection, and says so', () => {
+    const v = evaluateBurn({ utilization7d: 0.99, windowResetAt7d: now + 24 * HR, burnRatePerHr: 0.5, now });
+    expect(v.action).toBe('shed');
+    expect(v.disposition).toBe('pacing-projection');
+    const label = renderBurnVerdictLabel(v);
+    expect(label).toContain('pacing projection, not a measured wall');
+    expect(label).toContain('util7d 0.99');
+    expect(label).toContain('projected exhaustion before reset');
+    expect(label).not.toContain('USAGE-WALLED');
+  });
+
+  it('a throttle beyond the imminent horizon is also a pacing projection', () => {
+    const v = evaluateBurn({ utilization7d: 0.58, windowResetAt7d: now + 24 * HR, burnRatePerHr: 0.1, now });
+    expect(v.action).toBe('throttle');
+    expect(v.disposition).toBe('pacing-projection');
+    expect(renderBurnVerdictLabel(v)).toContain('THROTTLE (pacing projection, not a measured wall; util7d 0.58');
+  });
+
+  it('a throttle with no usable reset names THAT basis instead of the reset', () => {
+    const v = evaluateBurn({ utilization7d: 0.9, burnRatePerHr: 0.5, now });
+    expect(v.action).toBe('throttle');
+    expect(v.disposition).toBe('pacing-projection');
+    expect(renderBurnVerdictLabel(v)).toContain('no usable window reset');
+  });
+
+  it('no action asserted → no-verdict, and the label says no wall was asserted', () => {
+    const noReading = evaluateBurn({ utilization7d: undefined, burnRatePerHr: 0.1, now });
+    expect(noReading.disposition).toBe('no-verdict');
+    expect(noReading.utilization7d).toBeNull();
+    expect(renderBurnVerdictLabel(noReading)).toBe('NONE (no wall asserted; util7d unknown)');
+
+    const decaying = evaluateBurn({ utilization7d: 0.5, burnRatePerHr: -0.1, now });
+    expect(decaying.disposition).toBe('no-verdict');
+    expect(decaying.utilization7d).toBe(0.5); // the reading is still echoed
+  });
+
+  it('every verdict on the ladder carries a disposition (the class cannot silently return)', () => {
+    const cases = [
+      { utilization7d: undefined, burnRatePerHr: null, now },
+      { utilization7d: 1.2, burnRatePerHr: null, now },
+      { utilization7d: 0.5, burnRatePerHr: null, now },
+      { utilization7d: 0.5, burnRatePerHr: -0.1, now },
+      { utilization7d: 0.5, windowResetAt7d: now + 24 * HR, burnRatePerHr: 0.1, now },
+      { utilization7d: 0.99, windowResetAt7d: now + 24 * HR, burnRatePerHr: 0.5, now },
+      { utilization7d: 0.9, burnRatePerHr: 0.5, now },
+      { utilization7d: 0.5, windowResetAt7d: now + 10 * MIN, burnRatePerHr: 0.01, now },
+    ];
+    for (const c of cases) {
+      const v = evaluateBurn(c);
+      expect(['measured-wall', 'pacing-projection', 'no-verdict']).toContain(v.disposition);
+      // A verdict that ACTS always states which of the two it rests on.
+      if (v.action !== 'none') expect(v.disposition).not.toBe('no-verdict');
+      expect(renderBurnVerdictLabel(v).length).toBeGreaterThan(10);
+    }
+  });
+
+  it('THE FALSIFIER: a STALE reading at/over the wall is no-verdict, NOT measured-wall', () => {
+    // This is why `disposition` is stamped at the deciding branch and never re-derived by a
+    // reader from `utilization7d >= 1`: the stale gate stands the governor DOWN while still
+    // carrying a reading of 1.00. A derived predicate would report a measured wall here — the
+    // exact confident-but-wrong capacity claim P-001 exists to stop.
+    const walled = {
+      pausedUntil: 0,
+      lastPenaltyAt: 0,
+      penaltyCount: 0,
+      windowStartedAt: 0,
+      utilization7d: 1.0,
+      utilizationAt: T0 - HR, // ≫ DRAIN_UTIL_STALE_MS
+      windowResetAt7d: T0 + 24 * HR,
+    };
+    const stale = accountBurnVerdict(walled, T0);
+    expect(stale.action).toBe('none');
+    expect(stale.utilization7d).toBe(1.0); // the reading IS carried…
+    expect(stale.disposition).toBe('no-verdict'); // …but no wall is asserted from it
+    expect(renderBurnVerdictLabel(stale)).not.toContain('USAGE-WALLED');
+
+    // The SAME row, freshly stamped, is a measured wall.
+    const fresh = accountBurnVerdict({ ...walled, utilizationAt: T0 }, T0);
+    expect(fresh.disposition).toBe('measured-wall');
+    expect(renderBurnVerdictLabel(fresh)).toBe('USAGE-WALLED (measured; util7d 1.00)');
+  });
+
+  it('a transition carries the disposition + label of the verdict it transitioned TO', () => {
+    const before = registerAccount({ accounts: [] }, { id: 'a1', credentialRef: 'c1' }, T0 - HR);
+    const seeded = recordAccountWindow(before, 'a1', { utilization7d: 0.4, windowResetAt7d: T0 + 24 * HR }, T0);
+    const after = recordAccountWindow(seeded, 'a1', { utilization7d: 0.7 }, T0 + HR);
+    const t = accountBurnTransition(seeded, after, 'a1', T0 + HR);
+    expect(t).not.toBeNull();
+    expect(t!.disposition).toBe('pacing-projection');
+    expect(t!.label).toContain('pacing projection, not a measured wall');
+    expect(t!.label).toContain('util7d 0.70');
   });
 });
 

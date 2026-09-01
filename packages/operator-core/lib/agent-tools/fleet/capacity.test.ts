@@ -236,6 +236,10 @@ const acctRow = (id: string, over: Partial<AccountStatusRow> = {}): AccountStatu
     projectedExhaustionAt: null,
     exhaustsBeforeReset: false,
     action: 'none',
+    // P-001: `disposition` states what the action rests on. A fixture asserting no action
+    // asserts no wall either — 'no-verdict' is the only coherent value here.
+    utilization7d: null,
+    disposition: 'no-verdict',
     reason: 'test fixture — no burn history',
   },
   ...over,
