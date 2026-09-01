@@ -15,6 +15,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   reclaimOrphanedSpawns,
+  RECLAIM_STALE_MS,
+  RELEASE_FIXER_RECLAIM_STALE_MS,
   reclaimWedgedSpawns,
   type WedgedSpawnCandidate,
   reclaimFirstOutputStalledSpawns,
@@ -261,6 +263,47 @@ describe('reclaimOrphanedSpawns liveness gate (EI-85: host-died vs child-died)',
     expect(r.reclaimed).toBe(2);
     expect(r.spawnIds.sort()).toEqual(['dead', 'legacy']);
     expect(await statusOf('alive')).toBe('running');
+  });
+});
+
+describe('reclaimOrphanedSpawns: role-scoped release-fixer budget (P-005, RELEASE_FIXER_RECLAIM_STALE_MS)', () => {
+  // WI-2140490 (gate-verdict-liveness acceptance grading remediation): the
+  // 2026-08-31 streak reclaimed 31 LIVE release-fixers at ~301s — the launcher's
+  // 60s heartbeat setInterval starves under multi-task load, so a healthy fixer
+  // drifts past the generic 5-minute RECLAIM_STALE_MS and is reclaimed
+  // mid-repair. P-005 gives `child_role = 'release-fixer'` rows a 15-minute
+  // budget IN THE CANDIDATES SQL — but only on the default path
+  // (`opts.staleMs == null`); an explicit staleMs override applies uniformly by
+  // design. Ages are DERIVED from the two exported constants so the test
+  // discriminates by construction and breaks if either constant is renamed or
+  // its wiring dropped.
+  const BETWEEN_BUDGETS_SEC = Math.round((RECLAIM_STALE_MS + RELEASE_FIXER_RECLAIM_STALE_MS) / 2 / 1000); // 10 min
+  const PAST_FIXER_BUDGET_SEC = Math.round(RELEASE_FIXER_RECLAIM_STALE_MS / 1000) + 60; // 16 min
+
+  it('discriminates by role: at the same staleness between the two budgets, only the worker is reclaimed', async () => {
+    await insertSpawn('fixer', 'running', BETWEEN_BUDGETS_SEC, { childRole: 'release-fixer' });
+    await insertSpawn('worker', 'running', BETWEEN_BUDGETS_SEC, { childRole: 'worker' });
+    const r = await reclaimOrphanedSpawns(db.sql); // NO staleMs — the role branch exists only on the default path
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['worker']);
+    expect(await statusOf('worker')).toBe('failed');
+    expect(await statusOf('fixer')).toBe('running'); // inside its 15-minute role budget
+  });
+
+  it('the budget is a delay, not an exemption: past RELEASE_FIXER_RECLAIM_STALE_MS the fixer reclaims too', async () => {
+    await insertSpawn('fixer-old', 'running', PAST_FIXER_BUDGET_SEC, { childRole: 'release-fixer' });
+    const r = await reclaimOrphanedSpawns(db.sql);
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['fixer-old']);
+    expect(await statusOf('fixer-old')).toBe('failed');
+  });
+
+  it('an explicit staleMs override applies uniformly — the role budget governs only the default path', async () => {
+    await insertSpawn('fixer-override', 'running', BETWEEN_BUDGETS_SEC, { childRole: 'release-fixer' });
+    const r = await reclaimOrphanedSpawns(db.sql, STALE); // explicit 5-minute override, as tests/targeted sweeps pass
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['fixer-override']);
+    expect(await statusOf('fixer-override')).toBe('failed');
   });
 });
 
