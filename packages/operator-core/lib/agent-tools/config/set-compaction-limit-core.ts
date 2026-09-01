@@ -18,8 +18,8 @@ import { classifyAgentPane } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
 import { setCompactionLimit, getPresence } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
-import { resolveModelSpecForOwner } from '../../compaction-usage';
-import { clampCompactionLimit, selfSetCeilingForSpec } from '../../agent-config-constants';
+import { estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
+import { clampCompactionLimit, selfSetCeilingForSpec, selfSetCeilingForWindow } from '../../agent-config-constants';
 import { classifyFleetControlInvoker } from '../fleet_registry/fleet-auth';
 import { resolveFleetCaller } from '../fleet_registry/_shared';
 import { ADMIN_COORD_UI_OWNER, type ResolveIdentityCtx } from '../coordination/identity';
@@ -118,13 +118,21 @@ export async function setCompactionLimitForOwner(
 
   // 3. Validate against the TARGET's model-spec + role ceiling (a member's leaner
   //    [1m] cap when the target is a non-leader fleet member) before persisting.
-  const spec = await resolveModelSpecForOwner(targetOwnerId).catch(() => null);
   const fleetMember = targetRole != null && targetRole !== 'leader';
+  // Prefer the target's measured effective window when available. A Codex
+  // rollout can expose a smaller window than its launch spec implies; accepting
+  // the spec-derived ceiling would report success and leave the watchdog to
+  // rewrite the target later.
+  const measuredWindow = await estimateContextWindowForOwner(targetOwnerId).catch(() => null);
+  const spec = measuredWindow == null ? await resolveModelSpecForOwner(targetOwnerId).catch(() => null) : null;
   // This verb IS the deliberate self-set path, so it validates against the self-set ceiling
   // (825k on a [1m] window) rather than the SEEDED default (400k) — the two were one
   // number until 2026-08-08, which made "raise it for wide-context work" impossible to
   // actually do. Seeding is untouched; a fleet member still gets its role cap.
-  const cap = selfSetCeilingForSpec(spec, { fleetMember });
+  const cap =
+    measuredWindow != null
+      ? selfSetCeilingForWindow(measuredWindow, { fleetMember })
+      : selfSetCeilingForSpec(spec, { fleetMember });
   if (limit > cap) {
     return {
       ok: false,
@@ -139,7 +147,12 @@ export async function setCompactionLimitForOwner(
       note: 'The requested limit was not written because it exceeds the target session\'s current model-derived ceiling.',
     };
   }
-  const applied = clampCompactionLimit(limit, spec, { fleetMember, selfSet: true });
+  // The measured-cap check above already proves this exact value is safe; do
+  // not run it back through the potentially wider/narrower spec-derived clamp.
+  const applied =
+    measuredWindow != null
+      ? limit
+      : clampCompactionLimit(limit, spec, { fleetMember, selfSet: true });
   if (applied !== limit) {
     return {
       ok: false,
