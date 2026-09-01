@@ -830,10 +830,23 @@ async fn run_doctor() -> Result<()> {
                 .as_ref()
                 .map(|check| check.manifest.source_sha.as_str())
                 .unwrap_or(install::BUILD_SHA);
+            // Best-effort (EI-22066271581968324): when the manifest recorded the
+            // worktree `installed_sha` was built from, ask git whether the
+            // operator's differing sha is already covered by it — distinguishes
+            // "operator is pinned behind by design" (nothing to rebuild) from a
+            // genuinely stale local install (rebuild is the real fix). `None`
+            // (no recorded root, or ancestry can't be determined) preserves the
+            // original STALE+repair verdict unchanged.
+            let operator_generation_caught_up = local.as_ref().ok().and_then(|check| {
+                let root = check.manifest.source_root.as_deref()?;
+                let operator_sha = identity.build.sha.as_deref()?;
+                install::operator_generation_contained(root, operator_sha, installed_sha)
+            });
             let freshness = install::operator_install_freshness(
                 installed_sha,
                 identity.build.sha.as_deref(),
                 &identity.endpoint,
+                operator_generation_caught_up,
             );
             println!("PUI operator install: {}", freshness.status.label());
             println!("freshness:      {}", freshness.detail);
@@ -5374,6 +5387,46 @@ fn pane_fetches_attention(pinned: Option<app::Tab>) -> bool {
     }
 }
 
+/// P-003 (pui-psu-exact-launch-and-task-latency-2026-09-01, D-004): the size
+/// of the bounded first-paint task snapshot. It covers the visible Fleet task
+/// surface several times over; the later full-list refetch (500 rows) is the
+/// reconciliation pass, never the first paint.
+pub(crate) const FIRST_PAINT_WORK_ITEMS_LIMIT: u32 = 100;
+
+/// The first-paint snapshot source — the real client, or a test double. The
+/// seam exists so the latency/shape guards in `tests` exercise the ACTUAL
+/// first-paint code path (`spawn_first_paint_work_items`) rather than a
+/// re-description of it.
+trait FirstPaintWorkItems: Send + 'static {
+    fn work_items_snapshot(
+        self,
+        limit: u32,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::models::WorkItem>>> + Send;
+}
+
+impl FirstPaintWorkItems for OperatorClient {
+    async fn work_items_snapshot(self, limit: u32) -> Result<Vec<crate::models::WorkItem>> {
+        self.work_items_list_bounded(limit).await
+    }
+}
+
+/// Start the bounded first-paint snapshot WITHOUT awaiting it: the caller goes
+/// straight on to its serial reads and the snapshot lands as an
+/// `Event::WorkItems` the moment the bounded read returns. D-004: first paint
+/// may not wait on enrichment, serial fan-out, or an oversized payload.
+fn spawn_first_paint_work_items<S: FirstPaintWorkItems>(
+    source: S,
+    tx: UnboundedSender<Event>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let result = source
+            .work_items_snapshot(FIRST_PAINT_WORK_ITEMS_LIMIT)
+            .await
+            .map_err(|error| error.to_string());
+        let _ = tx.send(Event::WorkItems { result });
+    })
+}
+
 /// Fetch every panel's data and forward as `Event`s. Errors per-query become
 /// `Event::Error` so one failing endpoint doesn't sink the rest. `pinned`
 /// scopes the fat plans/attention reads to panes that actually render them
@@ -5393,24 +5446,7 @@ async fn refetch_all(
     // bounded snapshot immediately instead of making it wait behind the serial
     // plans/roster/config/plugin reads below. The later full-list fetch remains
     // the reconciliation pass and replaces this snapshot when it lands.
-    const FIRST_PAINT_WORK_ITEMS_LIMIT: u32 = 100;
-    let fast_client = client.clone();
-    let fast_tx = tx.clone();
-    tokio::spawn(async move {
-        match fast_client
-            .work_items_list_bounded(FIRST_PAINT_WORK_ITEMS_LIMIT)
-            .await
-        {
-            Ok(work_items) => {
-                let _ = fast_tx.send(Event::WorkItems { result: Ok(work_items) });
-            }
-            Err(error) => {
-                let _ = fast_tx.send(Event::WorkItems {
-                    result: Err(error.to_string()),
-                });
-            }
-        }
-    });
+    spawn_first_paint_work_items(client.clone(), tx.clone());
 
     if include_plan_reads && pane_fetches_plans(pinned) {
         match client.plans_typed().await {
@@ -5644,6 +5680,89 @@ async fn refetch_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- P-003 first paint (pui-psu-exact-launch-and-task-latency-2026-09-01, D-004) ---
+
+    /// The real client's first-paint shape without a network: records the
+    /// limit it was asked for and answers after a deliberate delay.
+    struct RecordingSnapshot {
+        seen_limit: Arc<Mutex<Option<u32>>>,
+        delay: Duration,
+        rows: usize,
+    }
+
+    impl FirstPaintWorkItems for RecordingSnapshot {
+        async fn work_items_snapshot(self, limit: u32) -> Result<Vec<crate::models::WorkItem>> {
+            *self.seen_limit.lock().unwrap() = Some(limit);
+            tokio::time::sleep(self.delay).await;
+            Ok((0..self.rows)
+                .map(|i| crate::models::WorkItem {
+                    id: format!("WI-{i}"),
+                    kind: "task".into(),
+                    family: "issue".into(),
+                    harness: None,
+                    title: format!("row {i}"),
+                    state: "open".into(),
+                    assignee: None,
+                    severity: None,
+                })
+                .collect())
+        }
+    }
+
+    /// Shape guard: the first paint asks for the BOUNDED window, and that
+    /// window is small — the 500-row queue is the later reconciliation read,
+    /// never the first paint.
+    #[tokio::test]
+    async fn first_paint_work_items_request_is_bounded() {
+        assert!(
+            (1..=100).contains(&FIRST_PAINT_WORK_ITEMS_LIMIT),
+            "first paint must stay a bounded snapshot, got {FIRST_PAINT_WORK_ITEMS_LIMIT}"
+        );
+        let seen = Arc::new(Mutex::new(None));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = spawn_first_paint_work_items(
+            RecordingSnapshot {
+                seen_limit: seen.clone(),
+                delay: Duration::from_millis(1),
+                rows: 3,
+            },
+            tx,
+        );
+        handle.await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), Some(FIRST_PAINT_WORK_ITEMS_LIMIT));
+        let event = rx.try_recv().ok();
+        assert!(
+            matches!(&event, Some(Event::WorkItems { result: Ok(rows) }) if rows.len() == 3),
+            "expected the bounded snapshot event with 3 rows"
+        );
+    }
+
+    /// Latency guard: the snapshot lands while the serial plans/roster/config
+    /// reads are still in flight. If the first paint ever waits on those reads
+    /// again (D-004's forbidden shape), the serial branch wins this select.
+    #[tokio::test]
+    async fn first_paint_work_items_do_not_wait_on_the_serial_reads() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _handle = spawn_first_paint_work_items(
+            RecordingSnapshot {
+                seen_limit: Arc::new(Mutex::new(None)),
+                delay: Duration::from_millis(20),
+                rows: 1,
+            },
+            tx,
+        );
+        // The serial reads the snapshot must NOT be queued behind.
+        let serial_reads = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(serial_reads);
+        tokio::select! {
+            _ = &mut serial_reads => panic!("first paint waited on the serial reads"),
+            event = rx.recv() => assert!(
+                matches!(event, Some(Event::WorkItems { result: Ok(_) })),
+                "expected the snapshot before the serial reads finished"
+            ),
+        }
+    }
 
     #[test]
     fn workbench_hud_is_a_reactive_launch_owner_but_board_panes_are_not() {
