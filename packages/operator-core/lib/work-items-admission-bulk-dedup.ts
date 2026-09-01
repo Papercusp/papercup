@@ -33,6 +33,15 @@ import {
   type PromoterLlmCall,
   type PromoterPair,
 } from './work-items-admission-promoter';
+import {
+  failedAdmissionMergeQualityReport,
+  admissionMergeQualityHash,
+  isCurrentAdmissionMergeQualityPass,
+  prepareAdmissionMergeQualityGate,
+  scoreAdmissionMergeQualityGate,
+  type AdmissionMergeQualityPreparedGate,
+  type AdmissionMergeQualityReport,
+} from './work-items-admission-merge-quality';
 import type { OrgSql } from './work-items';
 
 export const WORK_ITEM_ADMISSION_BULK_DEDUP = 'work-item-admission-bulk-dedup';
@@ -167,13 +176,25 @@ interface BulkStageEnvelope {
   lease?: BulkStageLease;
   preflight?: BulkDedupPreflightResult;
   canary?: { status: 'pending' | 'passed' | 'failed'; batchKey?: string; reason?: string; servedAccount?: string };
+  /** D-007 frozen independent-label replay. Kept in the existing stage
+   * envelope so no second run ledger or label table can retire production
+   * pairs from the census. */
+  mergeQuality?: AdmissionMergeQualityReport;
+  mergeQualityHistory?: Array<{
+    gateKey?: string;
+    status?: string;
+    datasetHash?: string;
+    promptHash?: string;
+    thresholdHash?: string;
+    recordedAt: string;
+  }>;
   checkpoints?: { batches?: Record<string, BulkBatchCheckpoint> };
   failure?: { class: string; message: string; retryable: boolean };
   [key: string]: unknown;
 }
 
 export interface BulkModelFailureClassification {
-  kind: 'transport' | 'protocol' | 'capacity' | 'lease' | 'unknown';
+  kind: 'transport' | 'protocol' | 'capacity' | 'quality' | 'lease' | 'unknown';
   class: string;
   retryable: boolean;
   message: string;
@@ -222,6 +243,8 @@ export interface BulkDedupStageResult {
   servedAccounts: string[];
   /** Model batches recovered from the durable stage envelope rather than called again. */
   reusedBatches: number;
+  /** D-007 report for the frozen independent-label replay (non-empty stages). */
+  mergeQuality?: AdmissionMergeQualityReport;
 }
 
 export interface BulkDedupRunResult {
@@ -958,7 +981,8 @@ async function failBulkStage(
   const message = error instanceof Error ? error.message : String(error);
   const cause = error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined;
   const failure = classifyBulkModelFailure(error);
-  const status = failure.kind === 'capacity' ? 'blocked' : 'failed';
+  const status = failure.kind === 'capacity' || failure.kind === 'quality' ? 'blocked' : 'failed';
+  const allowCompletedQualityDisposition = failure.kind === 'quality';
   await sql`
     UPDATE harness_shared.admission_runs
        SET finished_at = now(),
@@ -986,9 +1010,11 @@ async function failBulkStage(
                       ...(cause !== undefined ? { errorCause: serializeBulkErrorCause(cause) } : {}),
                     })}::text::jsonb
      WHERE id = ${runId}
-       AND (${ownerId ?? null}::text IS NULL OR detail->'lease'->>'ownerId' = ${ownerId ?? null})`.catch(
-    () => undefined,
-  );
+       AND (
+         ${ownerId ?? null}::text IS NULL
+         OR detail->'lease'->>'ownerId' = ${ownerId ?? null}
+         OR (${allowCompletedQualityDisposition} AND detail->>'status' = 'complete')
+       )`.catch(() => undefined);
 }
 
 type BulkModelResponse = Awaited<ReturnType<PromoterLlmCall>>;
@@ -1088,6 +1114,98 @@ async function callBulkModelBatchWithRetry<T>(
       retries += 1;
     }
   }
+}
+
+/** Run the D-007 gold replay through the same model, bulk prompt, response
+ * parser, retry policy, and canonical planner as production.  This function
+ * never throws a model/protocol error: it converts one into a structured
+ * blocked report so the stage can persist the evidence before failing closed. */
+async function runAdmissionMergeQualityReplay(
+  prepared: AdmissionMergeQualityPreparedGate,
+  opts: {
+    llmCall: PromoterLlmCall;
+    ownerId?: string;
+    batchRetryBackoffsMs: readonly number[];
+    batchRetryDelay: (ms: number) => Promise<void>;
+    now: () => number;
+  },
+): Promise<AdmissionMergeQualityReport> {
+  const startedAtMs = opts.now();
+  const startedAt = new Date(startedAtMs).toISOString();
+  let replayAttempts = 0;
+  let replayTokensIn = 0;
+  let replayTokensOut = 0;
+  let replayServedAccount: string | null = null;
+  const replayServedAccounts = new Set<string>();
+  const callReplayModel = () =>
+    opts.llmCall({
+      model: prepared.model,
+      system: prepared.prompt.system,
+      messages: [{ role: 'user', content: prepared.prompt.user }],
+      responseFormat: 'json',
+      maxTokens: bulkJudgeMaxTokens(prepared.pairs.length),
+      ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
+    });
+  try {
+    const attempted = await callBulkModelBatchWithRetry(
+      async () => {
+        replayAttempts += 1;
+        const response = await callReplayModel();
+        replayTokensIn += response.inputTokens;
+        replayTokensOut += response.outputTokens;
+        if (response.servedAccount?.trim()) {
+          replayServedAccount = response.servedAccount.trim();
+          replayServedAccounts.add(replayServedAccount);
+        }
+        return response;
+      },
+      (response) => parsePromoterJudgements(responsePayload(response)),
+      { backoffsMs: opts.batchRetryBackoffsMs, delay: opts.batchRetryDelay },
+    );
+    return scoreAdmissionMergeQualityGate({
+      prepared,
+      judgements: attempted.value ?? [],
+      servedAccount: attempted.response.servedAccount,
+      servedAccounts: [...replayServedAccounts],
+      modelAttempts: attempted.retries + 1,
+      modelRetries: attempted.retries,
+      modelProtocolFailures: attempted.protocolFailures,
+      tokensIn: attempted.tokensIn,
+      tokensOut: attempted.tokensOut,
+      startedAt,
+      completedAt: new Date(opts.now()).toISOString(),
+      ...(attempted.value === null
+        ? {
+            additionalFailures: [
+              `model replay exhausted protocol retries: ${attempted.protocolError ?? 'no schema-valid reply'}`,
+            ],
+          }
+        : {}),
+    });
+  } catch (error) {
+    return failedAdmissionMergeQualityReport({
+      prepared,
+      error,
+      servedAccount: replayServedAccount,
+      servedAccounts: [...replayServedAccounts],
+      modelAttempts: replayAttempts,
+      modelRetries: Math.max(0, replayAttempts - 1),
+      tokensIn: replayTokensIn,
+      tokensOut: replayTokensOut,
+      startedAt,
+      completedAt: new Date(opts.now()).toISOString(),
+    });
+  }
+}
+
+function mergeQualityBlockedError(report: AdmissionMergeQualityReport): BulkAdmissionBlockedError {
+  const reason = report.failureReasons.join('; ') || 'merge-quality report did not pass';
+  return new BulkAdmissionBlockedError(`bulk admission merge-quality gate blocked: ${reason}`, {
+    kind: 'quality',
+    class: 'merge_quality_gate_failed',
+    retryable: false,
+    message: reason,
+  });
 }
 
 async function judgeBulkPairs(
@@ -1404,6 +1522,11 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   // Resolved ONCE and used for both the model calls and the ledger write, so
   // `admission_runs.model_id` can never disagree with the model that ran.
   const model = opts.model?.trim() || LEARNING_MODEL_SPEC;
+  const mergeQualityPrepared = prepareAdmissionMergeQualityGate({
+    model,
+    buildPrompt: buildBulkDedupPrompt,
+  });
+  const mergeQualityStepName = `bulk:${rootRunId}:merge-quality`;
   const preflight: BulkDedupPreflight =
     opts.preflight ??
     (async (input) => ({
@@ -1423,11 +1546,93 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   // runId. Return its recorded result without issuing another census/model call.
   const priorFirstStage = await readBulkStage(sql, `${rootRunId}-stage-1`);
   const priorEnvelope = parseStageEnvelope(priorFirstStage?.detail);
+  let rootMergeQualityReport = isCurrentAdmissionMergeQualityPass(priorEnvelope.mergeQuality, mergeQualityPrepared)
+    ? priorEnvelope.mergeQuality
+    : null;
+  let mergeQualityStepSeen = false;
+
+  /**
+   * One independent-label replay gates the whole non-empty root.  Every
+   * non-empty stage receives the same report in its own existing envelope, so
+   * a stage remains self-describing without spending another model call.
+   */
+  const ensureMergeQuality = async (
+    stageRunId: string,
+    stageEnvelope: BulkStageEnvelope,
+  ): Promise<AdmissionMergeQualityReport> => {
+    const stagePass = isCurrentAdmissionMergeQualityPass(stageEnvelope.mergeQuality, mergeQualityPrepared)
+      ? stageEnvelope.mergeQuality
+      : null;
+    let report = rootMergeQualityReport ?? stagePass;
+    if (!mergeQualityStepSeen) {
+      report = await step(mergeQualityStepName, () =>
+        report
+          ? Promise.resolve(report)
+          : runAdmissionMergeQualityReplay(mergeQualityPrepared, {
+              llmCall: opts.llmCall,
+              ownerId: opts.ownerId,
+              batchRetryBackoffsMs,
+              batchRetryDelay,
+              now,
+            }),
+      );
+      mergeQualityStepSeen = true;
+    }
+    if (!report || report.gateKey !== mergeQualityPrepared.gateKey) {
+      report = failedAdmissionMergeQualityReport({
+        prepared: mergeQualityPrepared,
+        error: new Error(
+          `stale or malformed merge-quality checkpoint: expected ${mergeQualityPrepared.gateKey}, ` +
+            `received ${report?.gateKey ?? 'absent'}`,
+        ),
+        completedAt: new Date(now()).toISOString(),
+      });
+    }
+    if (isCurrentAdmissionMergeQualityPass(report, mergeQualityPrepared)) rootMergeQualityReport = report;
+
+    const prior = stageEnvelope.mergeQuality;
+    const history =
+      prior && prior.gateKey !== report.gateKey
+        ? [
+            ...(stageEnvelope.mergeQualityHistory ?? []),
+            {
+              gateKey: prior.gateKey,
+              status: prior.status,
+              datasetHash: prior.datasetHash,
+              promptHash: prior.promptHash,
+              thresholdHash: prior.thresholdHash,
+              recordedAt: new Date(now()).toISOString(),
+            },
+          ].slice(-8)
+        : stageEnvelope.mergeQualityHistory;
+    if (
+      prior?.gateKey !== report.gateKey ||
+      prior?.status !== report.status ||
+      prior?.completedAt !== report.completedAt
+    ) {
+      await writeBulkStageEnvelope(
+        sql,
+        stageRunId,
+        {
+          schemaVersion: BULK_STAGE_SCHEMA_VERSION,
+          mergeQuality: report,
+          ...(history ? { mergeQualityHistory: history } : {}),
+        },
+        // A completed legacy stage may predate leases. Refreshing only its
+        // quality evidence is safe; running stages remain fenced by the
+        // current execution lease.
+        stageStatus(stageEnvelope) === 'complete' ? undefined : executionId,
+      );
+    }
+    if (!isCurrentAdmissionMergeQualityPass(report, mergeQualityPrepared)) throw mergeQualityBlockedError(report);
+    return report;
+  };
   const priorResult = priorEnvelope.stageResult as BulkDedupStageResult | undefined;
   if (
     stageStatus(priorEnvelope) === 'complete' &&
     priorResult &&
-    (priorEnvelope.convergence === 'global-zero' || priorEnvelope.convergence === 'scope-zero')
+    (priorEnvelope.convergence === 'global-zero' || priorEnvelope.convergence === 'scope-zero') &&
+    (priorResult.pairs === 0 || rootMergeQualityReport !== null)
   ) {
     const savedRun = priorEnvelope.runResult as BulkDedupRunResult | undefined;
     const replayResult: BulkDedupRunResult = savedRun ?? {
@@ -1446,6 +1651,9 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
     // outputs, which are deliberately ignored because the terminal envelope is
     // the authoritative result.
     await step(`bulk:${rootRunId}:census:0`, async () => undefined);
+    if (replayResult.stages.some((stage) => stage.pairs > 0)) {
+      await step(mergeQualityStepName, async () => priorEnvelope.mergeQuality);
+    }
     for (const stage of replayResult.stages) {
       if (stage.pairs > 0) await step(`bulk:${stage.runId}:canary`, async () => undefined);
     }
@@ -1468,6 +1676,14 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       expectedMembers: census.corpusSize,
       scope,
     });
+    // Pair checkpoints are valid only for the exact quality identity that
+    // admitted them. Including the gate key here prevents a model/prompt/
+    // threshold/dataset drift from replaying old production judgements under a
+    // new ledger model id.
+    const stageInputFingerprint = admissionMergeQualityHash({
+      corpusFingerprint: input.fingerprint,
+      mergeQualityGateKey: mergeQualityPrepared.gateKey,
+    });
     const stageRunId = `${rootRunId}-stage-${stageIndex}`;
     const leaseState = await acquireBulkStageLease(sql, {
       id: stageRunId,
@@ -1476,18 +1692,22 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       scope,
       sourceCensusRunId: census.runId,
       pairs: input.pairs.length,
-      inputFingerprint: input.fingerprint,
+      inputFingerprint: stageInputFingerprint,
       ownerId: executionId,
       nowMs: now(),
       leaseMs,
     });
     let stageEnvelope = leaseState.envelope;
     const savedCheckpoints =
-      stageEnvelope.inputFingerprint === input.fingerprint ? (stageEnvelope.checkpoints?.batches ?? {}) : {};
+      stageEnvelope.inputFingerprint === stageInputFingerprint ? (stageEnvelope.checkpoints?.batches ?? {}) : {};
 
     if (stageStatus(stageEnvelope) === 'complete' && stageEnvelope.stageResult) {
-      const savedStage = stageEnvelope.stageResult as BulkDedupStageResult;
-      if (savedStage.pairs > 0) await step(`bulk:${savedStage.runId}:canary`, async () => undefined);
+      let savedStage = stageEnvelope.stageResult as BulkDedupStageResult;
+      if (savedStage.pairs > 0) {
+        const quality = await ensureMergeQuality(stageRunId, stageEnvelope);
+        savedStage = { ...savedStage, mergeQuality: quality };
+        await step(`bulk:${savedStage.runId}:canary`, async () => undefined);
+      }
       stages.push(savedStage);
       if (stageEnvelope.convergence === 'global-zero' || stageEnvelope.convergence === 'scope-zero') {
         return {
@@ -1619,6 +1839,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
 
     const startedAt = now();
     try {
+      const mergeQuality = await ensureMergeQuality(stageRunId, stageEnvelope);
       const judged = await judgeBulkPairs(input, {
         llmCall: opts.llmCall,
         model,
@@ -1694,6 +1915,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           scopedPairsAfter: nextInput.pairs.length,
           servedAccounts: judged.servedAccounts,
           reusedBatches: judged.reusedBatches,
+          mergeQuality,
         };
         const verdicts = plan.adjudications.reduce<Record<string, number>>((acc, row) => {
           acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;

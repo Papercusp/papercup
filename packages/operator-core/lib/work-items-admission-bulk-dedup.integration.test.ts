@@ -8,8 +8,35 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { runWorkItemAdmissionBulkDedup } = await import('./work-items-admission-bulk-dedup');
+const { runWorkItemAdmissionBulkDedup: runBulkImpl } = await import('./work-items-admission-bulk-dedup');
+const { ADMISSION_MERGE_QUALITY_GOLD_CORPUS, admissionMergeQualityGoldJudgements } =
+  await import('./work-items-admission-merge-quality');
 const { LEARNING_MODEL_SPEC } = await import('./learning/model-policy');
+
+type BulkOptions = Parameters<typeof runBulkImpl>[0];
+const MERGE_QUALITY_SENTINEL = ADMISSION_MERGE_QUALITY_GOLD_CORPUS[0]!.pair.pairKey;
+
+/** Existing integration cases exercise the production-pair half of the bulk
+ * runner.  Give them a perfect independent-label replay first so their own
+ * model doubles remain focused.  Gate-failure cases call runBulkImpl directly. */
+async function runBulk(opts: BulkOptions) {
+  const judgeProductionPairs = opts.llmCall;
+  return runBulkImpl({
+    ...opts,
+    llmCall: async (input) => {
+      if (input.messages[0]?.content.includes(MERGE_QUALITY_SENTINEL)) {
+        return {
+          text: '',
+          json: { judgements: admissionMergeQualityGoldJudgements() },
+          inputTokens: 220,
+          outputTokens: 88,
+          servedAccount: 'merge-quality-account',
+        };
+      }
+      return judgeProductionPairs(input);
+    },
+  });
+}
 
 const WS = 'default';
 const HARNESS = 'h1';
@@ -157,10 +184,71 @@ async function seed(): Promise<void> {
   }
 }
 
+async function runBlockedMergeQualityGate(
+  runId: string,
+  judgements: ReturnType<typeof admissionMergeQualityGoldJudgements>,
+) {
+  await seed();
+  let modelCalls = 0;
+  await expect(
+    runBulkImpl({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId,
+      sql: db.sql,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async (input) => {
+        modelCalls += 1;
+        expect(input.messages[0]?.content).toContain(MERGE_QUALITY_SENTINEL);
+        return {
+          text: '',
+          json: { judgements },
+          inputTokens: 220,
+          outputTokens: 88,
+          servedAccount: 'quality-block-account',
+        };
+      },
+    }),
+  ).rejects.toThrow('bulk admission merge-quality gate blocked');
+
+  const ledger = await db.sql<
+    Array<{
+      state: string;
+      failure_kind: string;
+      failure_class: string;
+      quality_status: string;
+      quality_account: string;
+      quality_coverage: number;
+      quality_precision: number;
+      quality_preservation: number;
+      quality_recall: number;
+      quality_canonical: number;
+      model_id: string | null;
+    }>
+  >`
+    SELECT detail->>'status' AS state,
+           detail #>> '{failure,kind}' AS failure_kind,
+           detail #>> '{failure,class}' AS failure_class,
+           detail #>> '{mergeQuality,status}' AS quality_status,
+           detail #>> '{mergeQuality,servedAccount}' AS quality_account,
+           (detail #>> '{mergeQuality,metrics,coverage,value}')::float8 AS quality_coverage,
+           (detail #>> '{mergeQuality,metrics,duplicatePrecision,value}')::float8 AS quality_precision,
+           (detail #>> '{mergeQuality,metrics,nonDuplicatePreservation,value}')::float8 AS quality_preservation,
+           (detail #>> '{mergeQuality,metrics,duplicateRecall,value}')::float8 AS quality_recall,
+           (detail #>> '{mergeQuality,metrics,canonicalSelection,value}')::float8 AS quality_canonical,
+           model_id
+      FROM harness_shared.admission_runs
+     WHERE id = ${`${runId}-stage-1`}`;
+  const writes = await db.sql<Array<{ adjudications: number; dropped: number }>>`
+    SELECT (SELECT count(*)::int FROM harness_shared.dedup_adjudications) AS adjudications,
+           (SELECT count(*)::int FROM harness_shared.work_items WHERE status = 'dropped') AS dropped`;
+  return { modelCalls, ledger: ledger[0]!, writes: writes[0]! };
+}
+
 describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
   it('judges the pinned targeted shard, merges the clone, and records converged stage evidence', async () => {
     await seed();
-    const result = await runWorkItemAdmissionBulkDedup({
+    const result = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-success',
@@ -214,6 +302,15 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         rows_changed: number;
         served_accounts: string[];
         canary_account: string;
+        quality_status: string;
+        quality_model: string;
+        quality_account: string;
+        quality_cases: number;
+        quality_coverage: number;
+        quality_precision: number;
+        quality_preservation: number;
+        quality_recall: number;
+        quality_canonical: number;
       }>
     >`
       SELECT detail->>'status' AS state, census_before AS before, census_after AS after,
@@ -223,7 +320,16 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
              (detail #>> '{outcome,unchanged}')::int AS unchanged,
              (detail #>> '{outcome,uniqueRowsChanged}')::int AS rows_changed,
              ARRAY(SELECT jsonb_array_elements_text(detail->'servedAccounts')) AS served_accounts,
-             detail #>> '{canary,servedAccount}' AS canary_account
+             detail #>> '{canary,servedAccount}' AS canary_account,
+             detail #>> '{mergeQuality,status}' AS quality_status,
+             detail #>> '{mergeQuality,model}' AS quality_model,
+             detail #>> '{mergeQuality,servedAccount}' AS quality_account,
+             (detail #>> '{mergeQuality,counts,cases}')::int AS quality_cases,
+             (detail #>> '{mergeQuality,metrics,coverage,value}')::float8 AS quality_coverage,
+             (detail #>> '{mergeQuality,metrics,duplicatePrecision,value}')::float8 AS quality_precision,
+             (detail #>> '{mergeQuality,metrics,nonDuplicatePreservation,value}')::float8 AS quality_preservation,
+             (detail #>> '{mergeQuality,metrics,duplicateRecall,value}')::float8 AS quality_recall,
+             (detail #>> '{mergeQuality,metrics,canonicalSelection,value}')::float8 AS quality_canonical
         FROM harness_shared.admission_runs WHERE id = 'bulk-success-stage-1'`;
     expect(ledger).toEqual([
       {
@@ -237,8 +343,114 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         rows_changed: 1,
         served_accounts: ['pool-account-a'],
         canary_account: 'pool-account-a',
+        quality_status: 'passed',
+        quality_model: LEARNING_MODEL_SPEC,
+        quality_account: 'merge-quality-account',
+        quality_cases: 22,
+        quality_coverage: 1,
+        quality_precision: 1,
+        quality_preservation: 1,
+        quality_recall: 1,
+        quality_canonical: 1,
       },
     ]);
+  }, 60_000);
+
+  it('fails closed before production persistence when one preservation case is falsely merged', async () => {
+    const negative = ADMISSION_MERGE_QUALITY_GOLD_CORPUS.find((entry) => entry.expectedVerdict === 'distinct')!;
+    const judgements = admissionMergeQualityGoldJudgements().map((judgement) =>
+      judgement.pairKey === negative.pair.pairKey
+        ? { ...judgement, verdict: 'r-finding-merge' as const, reason: 'incorrect destructive prediction' }
+        : judgement,
+    );
+    const blocked = await runBlockedMergeQualityGate('bulk-quality-false-merge', judgements);
+
+    expect(blocked.modelCalls).toBe(1);
+    expect(blocked.writes).toEqual({ adjudications: 0, dropped: 0 });
+    expect(blocked.ledger).toMatchObject({
+      state: 'blocked',
+      failure_kind: 'quality',
+      failure_class: 'merge_quality_gate_failed',
+      quality_status: 'blocked',
+      quality_account: 'quality-block-account',
+      quality_coverage: 1,
+      quality_recall: 1,
+      quality_canonical: 1,
+      model_id: null,
+    });
+    expect(blocked.ledger.quality_precision).toBeCloseTo(10 / 11);
+    expect(blocked.ledger.quality_preservation).toBeCloseTo(11 / 12);
+  }, 60_000);
+
+  it('fails closed when the model avoids every merge, so all-nonmerge cannot pass vacuously', async () => {
+    const judgements = admissionMergeQualityGoldJudgements().map((judgement) => ({
+      ...judgement,
+      verdict: 'distinct' as const,
+      reason: 'incorrectly avoids every merge',
+    }));
+    const blocked = await runBlockedMergeQualityGate('bulk-quality-no-merges', judgements);
+
+    expect(blocked.modelCalls).toBe(1);
+    expect(blocked.writes).toEqual({ adjudications: 0, dropped: 0 });
+    expect(blocked.ledger).toMatchObject({
+      state: 'blocked',
+      failure_kind: 'quality',
+      quality_status: 'blocked',
+      quality_coverage: 1,
+      quality_precision: 0,
+      quality_preservation: 1,
+      quality_recall: 0,
+      quality_canonical: 0,
+      model_id: null,
+    });
+  }, 60_000);
+
+  it('fails closed on an omitted gold judgement instead of accepting partial coverage', async () => {
+    const blocked = await runBlockedMergeQualityGate(
+      'bulk-quality-omitted',
+      admissionMergeQualityGoldJudgements().slice(1),
+    );
+
+    expect(blocked.modelCalls).toBe(1);
+    expect(blocked.writes).toEqual({ adjudications: 0, dropped: 0 });
+    expect(blocked.ledger).toMatchObject({
+      state: 'blocked',
+      failure_kind: 'quality',
+      quality_status: 'blocked',
+      quality_precision: 1,
+      quality_preservation: 1,
+      quality_recall: 0.9,
+      quality_canonical: 1,
+      model_id: null,
+    });
+    expect(blocked.ledger.quality_coverage).toBeCloseTo(21 / 22);
+  }, 60_000);
+
+  it('bypasses the gold replay on an empty root because no destructive write is reachable', async () => {
+    let modelCalls = 0;
+    const stepNames: string[] = [];
+    const result = await runBulkImpl({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-quality-empty',
+      sql: db.sql,
+      step: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        stepNames.push(name);
+        return fn();
+      },
+      llmCall: async () => {
+        modelCalls += 1;
+        throw new Error('empty root must not spend model capacity');
+      },
+    });
+
+    expect(modelCalls).toBe(0);
+    expect(stepNames).toEqual(['bulk:bulk-quality-empty:census:0']);
+    expect(result.stages[0]).toMatchObject({ pairs: 0, modelCalls: 0, merged: 0 });
+    const ledger = await db.sql<Array<{ has_quality: boolean; model_id: string | null }>>`
+      SELECT detail ? 'mergeQuality' AS has_quality, model_id
+        FROM harness_shared.admission_runs WHERE id = 'bulk-quality-empty-stage-1'`;
+    expect(ledger).toEqual([{ has_quality: false, model_id: null }]);
   }, 60_000);
 
   /**
@@ -268,7 +480,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
    */
   it('converges identically on a judged-but-UNMERGED pair, so census fall attributes nothing to merging', async () => {
     await seed();
-    const result = await runWorkItemAdmissionBulkDedup({
+    const result = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-adjudicated-only',
@@ -323,7 +535,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
   it('defaults to the canonical learning model and records THAT model in the ledger', async () => {
     await seed();
     const seen: string[] = [];
-    await runWorkItemAdmissionBulkDedup({
+    await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-model-default',
@@ -353,7 +565,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     // assertions below pass for the wrong reason.
     expect(override).not.toBe(LEARNING_MODEL_SPEC);
     const seen: string[] = [];
-    await runWorkItemAdmissionBulkDedup({
+    await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-model-override',
@@ -404,7 +616,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
               'open', NULL, ${JSON.stringify(distinctPark)}::text::jsonb, 'change', 'watch:other', 4, 4,
               '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
 
-    const result = await runWorkItemAdmissionBulkDedup({
+    const result = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-parks',
@@ -499,7 +711,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
   it('rolls back the complete stage and marks it failed when an injected post-judgement census rises', async () => {
     await seed();
     await expect(
-      runWorkItemAdmissionBulkDedup({
+      runBulk({
         workspaceId: WS,
         harnessSlug: HARNESS,
         runId: 'bulk-rise',
@@ -544,7 +756,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       }),
     });
     await expect(
-      runWorkItemAdmissionBulkDedup({
+      runBulk({
         workspaceId: WS,
         harnessSlug: HARNESS,
         runId: 'bulk-cause',
@@ -572,7 +784,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
 
     await expect(
-      runWorkItemAdmissionBulkDedup({
+      runBulk({
         workspaceId: WS,
         harnessSlug: HARNESS,
         runId: 'bulk-cause',
@@ -613,7 +825,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
 
     const seenBatches: string[][] = [];
-    const result = await runWorkItemAdmissionBulkDedup({
+    const result = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-cross-pair',
@@ -664,6 +876,15 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       ignoredUnknownJudgements: 1,
       omittedExpectedJudgements: 1,
     });
+    const qualityByStage = await db.sql<Array<{ id: string; gate_key: string; state: string }>>`
+      SELECT id, detail #>> '{mergeQuality,gateKey}' AS gate_key,
+             detail #>> '{mergeQuality,status}' AS state
+        FROM harness_shared.admission_runs
+       WHERE id IN ('bulk-cross-pair-stage-1', 'bulk-cross-pair-stage-2')
+       ORDER BY id`;
+    expect(qualityByStage).toHaveLength(2);
+    expect(qualityByStage.map((row) => row.state)).toEqual(['passed', 'passed']);
+    expect(new Set(qualityByStage.map((row) => row.gate_key)).size).toBe(1);
   }, 60_000);
 
   it('retries a later transient socket failure without replaying an earlier judged batch', async () => {
@@ -679,7 +900,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
 
     let calls = 0;
     const seenPairs: string[] = [];
-    const result = await runWorkItemAdmissionBulkDedup({
+    const result = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-transient-retry',
@@ -753,7 +974,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       stepNames.push(name);
       return fn();
     };
-    const first = await runWorkItemAdmissionBulkDedup({
+    const first = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-root-replay',
@@ -776,7 +997,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
 
     const callsBeforeReplay = modelCalls;
     const preflightCallsBeforeReplay = preflight.mock.calls.length;
-    const replay = await runWorkItemAdmissionBulkDedup({
+    const replay = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-root-replay',
@@ -798,8 +1019,10 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(preflight.mock.calls.length).toBe(preflightCallsBeforeReplay);
     expect(stepNames).toEqual([
       'bulk:bulk-root-replay:census:0',
+      'bulk:bulk-root-replay:merge-quality',
       'bulk:bulk-root-replay-stage-1:canary',
       'bulk:bulk-root-replay:census:0',
+      'bulk:bulk-root-replay:merge-quality',
       'bulk:bulk-root-replay-stage-1:canary',
     ]);
     expect(
@@ -839,7 +1062,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       return fn();
     };
     await expect(
-      runWorkItemAdmissionBulkDedup({
+      runBulk({
         workspaceId: WS,
         harnessSlug: HARNESS,
         runId: 'bulk-stale-takeover',
@@ -892,7 +1115,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
        WHERE id = 'bulk-stale-takeover-stage-1'`;
 
     const resumedStepNames: string[] = [];
-    const resumed = await runWorkItemAdmissionBulkDedup({
+    const resumed = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-stale-takeover',
@@ -970,7 +1193,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
 
     let active = 0;
     let maxActive = 0;
-    const result = await runWorkItemAdmissionBulkDedup({
+    const result = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'bulk-concurrent-shards',
