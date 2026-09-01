@@ -798,6 +798,16 @@ interface GateTestRunRow {
   finished_at?: string | Date | null;
 }
 
+/** Parse the immutable reporter evidence timestamp used both for retry ordering
+ * and for the signed fact's timestamp. Invalid/absent evidence stays invalid;
+ * callers must fail closed rather than falling back to the wall clock. */
+function gateTestRunFinishedAtMs(value: GateTestRunRow['finished_at']): number {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : Number.NaN;
+  if (typeof value !== 'string' || !value.trim()) return Number.NaN;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
 /**
  * Collapse retry rows to the writer's authoritative final attempt.
  *
@@ -814,12 +824,6 @@ interface GateTestRunRow {
  */
 export function collapseFinalTestRunRows(rows: readonly GateTestRunRow[]): GateTestRunRow[] {
   const byFile = new Map<string, { row: GateTestRunRow; index: number }>();
-  const timestamp = (value: string | Date | null | undefined): number => {
-    if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : Number.NEGATIVE_INFINITY;
-    if (typeof value !== 'string' || !value.trim()) return Number.NEGATIVE_INFINITY;
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
-  };
   const idValue = (value: number | string | null | undefined): number => {
     if (typeof value === 'number') return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
     if (typeof value === 'string' && value.trim()) {
@@ -829,8 +833,10 @@ export function collapseFinalTestRunRows(rows: readonly GateTestRunRow[]): GateT
     return Number.NEGATIVE_INFINITY;
   };
   const isLater = (candidate: GateTestRunRow, incumbent: GateTestRunRow): boolean => {
-    const candidateTs = timestamp(candidate.finished_at);
-    const incumbentTs = timestamp(incumbent.finished_at);
+    const parsedCandidateTs = gateTestRunFinishedAtMs(candidate.finished_at);
+    const parsedIncumbentTs = gateTestRunFinishedAtMs(incumbent.finished_at);
+    const candidateTs = Number.isFinite(parsedCandidateTs) ? parsedCandidateTs : Number.NEGATIVE_INFINITY;
+    const incumbentTs = Number.isFinite(parsedIncumbentTs) ? parsedIncumbentTs : Number.NEGATIVE_INFINITY;
     if (candidateTs !== incumbentTs) return candidateTs > incumbentTs;
     const candidateId = idValue(candidate.id);
     const incumbentId = idValue(incumbent.id);
@@ -889,6 +895,8 @@ interface SignedGateShard {
   inputsHash: string;
   verdict: 'pass' | 'fail';
   durationMs: number;
+  /** Latest immutable final-attempt evidence included in this shard verdict. */
+  evidenceTsMs: number;
 }
 
 /**
@@ -1007,6 +1015,7 @@ export async function publishSignedGateVerdicts(
       file: normalize(String(row.file_path ?? '')),
       status: String(row.status ?? '').toLowerCase(),
       durationMs: Math.max(0, Number(row.duration_ms ?? 0) || 0),
+      finishedAtMs: gateTestRunFinishedAtMs(row.finished_at),
     }));
     const repoKey = canonicalRepoKey(entry);
     const hiveHomeSlug =
@@ -1024,6 +1033,12 @@ export async function publishSignedGateVerdicts(
           layerForFile(row.file.slice(prefix.length)) === shard.layer,
       );
       if (!matching.length) continue;
+      // `GateVerdict.ts` participates in both the signature and verdict_id. A
+      // wall-clock signing timestamp made a retry produce a second immutable
+      // fact for identical evidence. Bind it to the latest final-attempt row
+      // included in this shard instead. Missing timestamp evidence cannot be
+      // replaced with Date.now(): that would recreate the non-idempotency.
+      if (matching.some((row) => !Number.isFinite(row.finishedAtMs))) continue;
       // A skipped/cancelled/error module did not establish a passing shard
       // verdict.  Preserve a measured failure for explicit fail/error rows,
       // but never turn an absence of execution into a pass.
@@ -1038,6 +1053,7 @@ export async function publishSignedGateVerdicts(
         inputsHash,
         verdict: failed ? 'fail' : 'pass',
         durationMs: Math.round(matching.reduce((sum, row) => sum + row.durationMs, 0)),
+        evidenceTsMs: Math.max(...matching.map((row) => row.finishedAtMs)),
       });
     }
     if (!shards.length) return { published: 0, skipped: rows.length, reason: 'no-test-rows' };
@@ -1053,7 +1069,7 @@ export async function publishSignedGateVerdicts(
           verdict: shard.verdict,
           durationMs: shard.durationMs,
           devicePubkeyBase64: keypair.pubkeyBase64,
-          nowMs: Date.now(),
+          nowMs: shard.evidenceTsMs,
         },
         (bytes) => signWithDeviceKey(keychainId, bytes),
       );
