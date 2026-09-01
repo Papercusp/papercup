@@ -157,6 +157,9 @@ function sweepHarness(
   const sendWakeMessage =
     opts.sendWakeMessage ?? vi.fn(async (_owner: string, _summary: string, _body: string) => {});
   const fireWake = opts.fireWake ?? vi.fn(async (_owner: string, _summary: string, _ws: string) => {});
+  const markers = opts.markers;
+  const readWakeMarkers: SilentHaltSweepDeps['readWakeMarkers'] =
+    typeof markers === 'function' ? markers : async () => markers ?? [];
   return {
     notify,
     sendWakeMessage,
@@ -172,8 +175,7 @@ function sweepHarness(
           readLoopStatuses: (async () => new Map(Object.entries(statuses))) as never,
           notify: notify as unknown as SilentHaltSweepDeps['notify'],
           wakeFirstEnabled: opts.wakeFirstEnabled ?? false,
-          readWakeMarkers:
-            typeof opts.markers === 'function' ? opts.markers : async () => opts.markers ?? [],
+          readWakeMarkers,
           sendWakeMessage: sendWakeMessage as unknown as SilentHaltSweepDeps['sendWakeMessage'],
           fireWake: fireWake as unknown as SilentHaltSweepDeps['fireWake'],
           readEngineLoopRows: (async () => ({})) as never,
