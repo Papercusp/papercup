@@ -1,6 +1,6 @@
 /**
- * Shared static tool/unit catalog builder — pure filesystem scan, no operator
- * process, no network, no PG.
+ * Shared static tool/unit catalog builder — pure source-graph derivation, no
+ * operator process, no network, no PG.
  *
  * Originally inlined in `__tests__/blueprint-deps-catalog.test.ts` (which
  * itself mirrors `__tests__/tools-md-sync.test.ts`'s catalog builder).
@@ -9,54 +9,295 @@
  * `__tests__/prompt-blueprint-verb-catalog.test.ts` — both tests now import
  * the same scan instead of each maintaining their own copy that can drift.
  *
- * - built-in tools = defineTool `name:` scans of packages/agent-mcp/src/tools,
- *   packages/operator-core/lib/agent-tools, packages/operator-core/lib/coord-ops,
- *   and packages/operator-core/lib/endpoint-route/routes (the same source dirs
- *   the live catalog registers from);
+ * - built-in tools = literal MCP identities from actual `defineTool` /
+ *   `defineUITool` calls reachable from the production MCP registry entrypoint;
  * - distribution units = libs/papercusp/plugins/<x>/papercusp.json manifests
  *   (manifest kind=pack → pack, else plugin), tool names from `tools[]`
  *   (`expose.mcp.name` ?? `<short>.<tool.name>`) + dynamic `tools:<g>:<v>`
  *   capabilities.
  */
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, globSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import ts from 'typescript';
 
-// Every dir that holds `defineTool({ name: '<group>:<verb>' })` projections.
-// Wider than the classic two dirs: coord-ops/agent-tools.ts (the dual-surface
-// coord:vote/deliberate/ask-owner projections) and agent-mcp's define-ui-tool
-// live outside them. If a dep/reference fails for a tool that exists live,
-// the fix is extending this list.
-export const TOOL_SOURCE_DIRS = [
-  'packages/agent-mcp/src',
-  'packages/operator-core/lib/agent-tools',
-  'packages/operator-core/lib/coord-ops',
-  'packages/operator-core/lib/endpoint-route/routes',
-];
+/** The same side-effect entrypoint imported by the live catalog generator. */
+export const PRODUCTION_TOOL_REGISTRY_ENTRYPOINT = 'packages/operator-core/lib/agent-tools/index.ts';
 
-function walkTsFiles(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out;
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) walkTsFiles(full, out);
-    else if (entry.endsWith('.ts') && !entry.includes('.test.')) out.push(full);
-  }
-  return out;
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'] as const;
+const SOURCE_EXTENSION_SET = new Set<string>(SOURCE_EXTENSIONS);
+
+interface WorkspacePackage {
+  readonly root: string;
+  readonly manifest: Record<string, unknown>;
 }
 
-/** Every `defineTool({ name: '...' })` string found under TOOL_SOURCE_DIRS, repo-root-relative. */
-export function buildBuiltinToolCatalog(repoRoot: string): Set<string> {
-  const tools = new Set<string>();
-  for (const dir of TOOL_SOURCE_DIRS) {
-    for (const file of walkTsFiles(join(repoRoot, dir))) {
-      const src = readFileSync(file, 'utf8');
-      if (!src.includes('defineTool(')) continue;
-      // matchAll — a file may define more than one tool.
-      for (const m of src.matchAll(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-]+)['"]/g)) {
-        tools.add(m[1]);
-      }
+interface ToolSourceSnapshot {
+  readonly graphFiles: readonly string[];
+  readonly fileIndex: ReadonlyMap<string, readonly string[]>;
+}
+
+const snapshotCache = new Map<string, ToolSourceSnapshot>();
+
+function readJsonObject(path: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function workspacePackages(repoRoot: string): ReadonlyMap<string, WorkspacePackage> {
+  const rootManifest = readJsonObject(join(repoRoot, 'package.json'));
+  const patterns = Array.isArray(rootManifest?.workspaces)
+    ? rootManifest.workspaces.filter((value): value is string => typeof value === 'string')
+    : [];
+  const packages = new Map<string, WorkspacePackage>();
+  for (const pattern of patterns) {
+    for (const manifestRel of globSync(`${pattern}/package.json`, { cwd: repoRoot })) {
+      const manifestPath = join(repoRoot, manifestRel);
+      const manifest = readJsonObject(manifestPath);
+      if (typeof manifest?.name !== 'string') continue;
+      packages.set(manifest.name, { root: dirname(manifestPath), manifest });
     }
   }
-  return tools;
+  return packages;
+}
+
+function exportTarget(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      const target = exportTarget(candidate);
+      if (target) return target;
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  for (const condition of ['source', 'import', 'node', 'default', 'types']) {
+    const target = exportTarget(record[condition]);
+    if (target) return target;
+  }
+  for (const candidate of Object.values(record)) {
+    const target = exportTarget(candidate);
+    if (target) return target;
+  }
+  return undefined;
+}
+
+function packageExportTarget(pkg: WorkspacePackage, subpath: string): string | undefined {
+  const exportsField = pkg.manifest.exports;
+  const key = subpath ? `./${subpath}` : '.';
+  if (typeof exportsField === 'string' || Array.isArray(exportsField)) {
+    return subpath ? undefined : exportTarget(exportsField);
+  }
+  if (exportsField && typeof exportsField === 'object') {
+    const exportsMap = exportsField as Record<string, unknown>;
+    const exact = exportTarget(exportsMap[key]);
+    if (exact) return exact;
+    for (const [pattern, value] of Object.entries(exportsMap)) {
+      const star = pattern.indexOf('*');
+      if (star < 0) continue;
+      const prefix = pattern.slice(0, star);
+      const suffix = pattern.slice(star + 1);
+      if (!key.startsWith(prefix) || !key.endsWith(suffix)) continue;
+      const wildcard = key.slice(prefix.length, key.length - suffix.length);
+      const target = exportTarget(value);
+      if (target) return target.replaceAll('*', wildcard);
+    }
+    if (!subpath && !Object.keys(exportsMap).some((candidate) => candidate.startsWith('.'))) {
+      return exportTarget(exportsMap);
+    }
+  }
+  if (subpath) return subpath;
+  return typeof pkg.manifest.main === 'string' ? pkg.manifest.main : 'src/index.ts';
+}
+
+function sourceFileCandidate(base: string): string | undefined {
+  const candidates: string[] = [];
+  const extension = extname(base);
+  if (extension) {
+    candidates.push(base);
+    if (['.js', '.jsx', '.mjs', '.cjs'].includes(extension)) {
+      const stem = base.slice(0, -extension.length);
+      candidates.push(`${stem}.ts`, `${stem}.tsx`, `${stem}.mts`, `${stem}.cts`);
+    }
+  } else {
+    candidates.push(...SOURCE_EXTENSIONS.map((candidate) => `${base}${candidate}`));
+  }
+  candidates.push(...SOURCE_EXTENSIONS.map((candidate) => join(base, `index${candidate}`)));
+  for (const candidate of candidates) {
+    if (existsSync(candidate) && SOURCE_EXTENSION_SET.has(extname(candidate))) return resolve(candidate);
+  }
+  return undefined;
+}
+
+function packageNameAndSubpath(specifier: string): { name: string; subpath: string } | undefined {
+  const parts = specifier.split('/');
+  if (!specifier.startsWith('@') || parts.length < 2) return undefined;
+  return { name: `${parts[0]}/${parts[1]}`, subpath: parts.slice(2).join('/') };
+}
+
+function resolveGraphImport(
+  specifier: string,
+  containingFile: string,
+  repoRoot: string,
+  packages: ReadonlyMap<string, WorkspacePackage>,
+): string | undefined {
+  let candidate: string | undefined;
+  if (specifier.startsWith('.') || isAbsolute(specifier)) {
+    if (/\.(?:json|css|scss|sass|less|svg)$/i.test(specifier)) return undefined;
+    candidate = sourceFileCandidate(resolve(dirname(containingFile), specifier));
+    if (!candidate) {
+      throw new Error(`Static tool catalog could not resolve ${specifier} from ${relative(repoRoot, containingFile)}`);
+    }
+  } else {
+    const parsed = packageNameAndSubpath(specifier);
+    const pkg = parsed ? packages.get(parsed.name) : undefined;
+    if (!parsed || !pkg) return undefined; // external dependency: not part of this workspace graph
+    const target = packageExportTarget(pkg, parsed.subpath);
+    candidate = target ? sourceFileCandidate(resolve(pkg.root, target)) : undefined;
+    if (!candidate) {
+      throw new Error(`Static tool catalog could not resolve workspace import ${specifier}`);
+    }
+  }
+  const rel = relative(repoRoot, candidate);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`Static tool catalog import escaped the repository: ${candidate}`);
+  }
+  return candidate;
+}
+
+function runtimeModuleSpecifiers(sourceFile: ts.SourceFile): string[] {
+  const specifiers: string[] = [];
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      const clause = statement.importClause;
+      const named = clause?.namedBindings;
+      const onlyNamedTypes =
+        named && ts.isNamedImports(named) && named.elements.length > 0 && named.elements.every((e) => e.isTypeOnly);
+      if (clause?.isTypeOnly || onlyNamedTypes) continue;
+      if (ts.isStringLiteralLike(statement.moduleSpecifier)) specifiers.push(statement.moduleSpecifier.text);
+    } else if (ts.isExportDeclaration(statement)) {
+      if (statement.isTypeOnly) continue;
+      if (statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)) {
+        specifiers.push(statement.moduleSpecifier.text);
+      }
+    } else if (
+      ts.isImportEqualsDeclaration(statement) &&
+      !statement.isTypeOnly &&
+      ts.isExternalModuleReference(statement.moduleReference) &&
+      statement.moduleReference.expression &&
+      ts.isStringLiteralLike(statement.moduleReference.expression)
+    ) {
+      specifiers.push(statement.moduleReference.expression.text);
+    }
+  }
+  return specifiers;
+}
+
+function propertyValue(object: ts.ObjectLiteralExpression, key: string): ts.Expression | undefined {
+  for (const property of object.properties) {
+    if (!ts.isPropertyAssignment(property)) continue;
+    const name = property.name;
+    const text = ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined;
+    if (text === key) return property.initializer;
+  }
+  return undefined;
+}
+
+function literalString(expression: ts.Expression | undefined): string | undefined {
+  return expression && (ts.isStringLiteralLike(expression) || ts.isNoSubstitutionTemplateLiteral(expression))
+    ? expression.text
+    : undefined;
+}
+
+function toolNamesIn(sourceFile: ts.SourceFile): string[] {
+  const names: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      (node.expression.text === 'defineTool' || node.expression.text === 'defineUITool')
+    ) {
+      const input = node.arguments[0];
+      if (input && ts.isObjectLiteralExpression(input)) {
+        const expose = propertyValue(input, 'expose');
+        const mcp = expose && ts.isObjectLiteralExpression(expose) ? propertyValue(expose, 'mcp') : undefined;
+        const projected =
+          mcp && ts.isObjectLiteralExpression(mcp) ? literalString(propertyValue(mcp, 'name')) : undefined;
+        const name = projected ?? literalString(propertyValue(input, 'name'));
+        if (name) names.push(name);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return names;
+}
+
+function scriptKind(path: string): ts.ScriptKind {
+  if (/\.[cm]?tsx$/i.test(path)) return ts.ScriptKind.TSX;
+  if (/\.jsx$/i.test(path)) return ts.ScriptKind.JSX;
+  if (/\.[cm]?js$/i.test(path)) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
+  const repoRoot = resolve(repoRootInput);
+  const cached = snapshotCache.get(repoRoot);
+  if (cached) return cached;
+  const entrypoint = sourceFileCandidate(join(repoRoot, PRODUCTION_TOOL_REGISTRY_ENTRYPOINT));
+  if (!entrypoint) throw new Error(`Static tool catalog entrypoint is missing: ${PRODUCTION_TOOL_REGISTRY_ENTRYPOINT}`);
+  const packages = workspacePackages(repoRoot);
+  const pending = [entrypoint];
+  const visited = new Set<string>();
+  const fileIndex = new Map<string, string[]>();
+  while (pending.length > 0) {
+    const file = pending.pop()!;
+    if (visited.has(file)) continue;
+    visited.add(file);
+    const sourceFile = ts.createSourceFile(
+      file,
+      readFileSync(file, 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKind(file),
+    );
+    for (const name of toolNamesIn(sourceFile)) {
+      const existing = fileIndex.get(name);
+      if (existing) existing.push(file);
+      else fileIndex.set(name, [file]);
+    }
+    for (const specifier of runtimeModuleSpecifiers(sourceFile)) {
+      const dependency = resolveGraphImport(specifier, file, repoRoot, packages);
+      if (dependency && !visited.has(dependency)) pending.push(dependency);
+    }
+  }
+  const snapshot: ToolSourceSnapshot = {
+    graphFiles: [...visited].sort(),
+    fileIndex: new Map([...fileIndex].map(([name, files]) => [name, [...new Set(files)].sort()] as const)),
+  };
+  snapshotCache.set(repoRoot, snapshot);
+  return snapshot;
+}
+
+/** Every source module in the production tool registry's static import graph. */
+export function buildProductionToolSourceFiles(repoRoot: string): string[] {
+  return [...buildToolSourceSnapshot(repoRoot).graphFiles];
+}
+
+/** Reachable production modules that contain at least one literal tool declaration. */
+export function buildBuiltinToolSourceFiles(repoRoot: string): string[] {
+  return [...new Set([...buildToolSourceSnapshot(repoRoot).fileIndex.values()].flatMap((files) => [...files]))].sort();
+}
+
+/** Every literal MCP identity declared by a reachable production tool call. */
+export function buildBuiltinToolCatalog(repoRoot: string): Set<string> {
+  return new Set(buildToolSourceSnapshot(repoRoot).fileIndex.keys());
 }
 
 /**
@@ -71,19 +312,7 @@ export function buildBuiltinToolCatalog(repoRoot: string): Set<string> {
  * caller should see rather than a silently-dropped entry.
  */
 export function buildBuiltinToolFileIndex(repoRoot: string): Map<string, string[]> {
-  const index = new Map<string, string[]>();
-  for (const dir of TOOL_SOURCE_DIRS) {
-    for (const file of walkTsFiles(join(repoRoot, dir))) {
-      const src = readFileSync(file, 'utf8');
-      if (!src.includes('defineTool(')) continue;
-      for (const m of src.matchAll(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-]+)['"]/g)) {
-        const existing = index.get(m[1]);
-        if (existing) existing.push(file);
-        else index.set(m[1], [file]);
-      }
-    }
-  }
-  return index;
+  return new Map([...buildToolSourceSnapshot(repoRoot).fileIndex].map(([name, files]) => [name, [...files]]));
 }
 
 export interface DistributionUnitInfo {
