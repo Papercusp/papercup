@@ -183,6 +183,8 @@
     "scripts/lint-tsc-workspaces.mjs",
     "scripts/check-no-unenrolled-detached-spawn.mjs",
     "scripts/next-migration.mjs",
+    // Workspace-global advisory-lock key shared by the CLI and MCP allocator.
+    "scripts/lib/migration-allocation.mjs",
     // WI-38353 — the migration-slug redundancy detector shared by BOTH reservation
     // doors. Registered for both reasons this list exists: it is imported directly by
     // migration-slug-dedup.test.ts AND by next_migration.ts (the MCP tool), which would
