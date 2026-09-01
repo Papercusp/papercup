@@ -253,6 +253,25 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the submodule candidate-containment recipe post-load (new CLAUDE.md section)',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-08-31',
+      plan: 'none — rule/evidence pair authored directly into harness_doc_parts (EI-19435288508184075)',
+      // Commit 3c0b9151c8 moved corpus-parts 298 -> 300 and corpus-blocks 259 -> 260
+      // while the frozen manifest remained at 253. The two new rows are the rule and
+      // evidence halves of the `head`-truncated-search warning; composeCorpus deliberately
+      // folds an `#evidence` row into its parent, so they add two parts but exactly one block.
+      why: 'added the `head`-truncated negative-search warning post-load (new rule/evidence block)',
+      blocksRemoved: -1,
+    },
+    {
+      when: '2026-08-31',
+      plan: 'none — part authored directly into harness_doc_parts, projected in commit 1b8a60a252',
+      // Commit 1b8a60a252 moved corpus-parts 300 -> 301 and corpus-blocks 260 -> 261
+      // while the frozen manifest remained at 253. The added standalone block warns that
+      // raw work-item population queries include the observation lane unless they exclude it.
+      why: 'added the raw work-item population/observation-lane warning post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {
