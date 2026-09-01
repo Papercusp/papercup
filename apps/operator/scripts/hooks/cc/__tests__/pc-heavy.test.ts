@@ -1025,6 +1025,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
 
       const err = readFileSync(holderErr, 'utf8');
       expect(err).toContain('original caller exited — reaping its orphaned heavy workload');
+      expect(err).toContain("use the harness's run_in_background rather than nohup/&; pc-heavy kills orphans by design");
       expect(err).toContain('PC_HEAVY_RESULT status=undetermined reason=caller-exited exit=143');
       expect(readdirSync(readyDir)).toEqual([]);
       expect(heldSlotCount(dir, 1)).toBe(0);
