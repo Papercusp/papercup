@@ -79,6 +79,14 @@ export interface FleetHeadcountGovernorAssessment {
   unreadyMemberIds: string[];
   unverifiedMemberIds: string[];
   pendingOpenedMemberIds: string[];
+  /**
+   * WI-2034601: opened members that never became live within
+   * FLEET_HEADCOUNT_LAUNCH_WINDOW_MS and are therefore classified LAUNCH-FAILED
+   * rather than waited on. Surfaced so the transition out of `wait` is
+   * observable: without it the governor's move to `spawn` reads as an
+   * unexplained replacement instead of a deadline being enforced.
+   */
+  launchDeadlineExceededMemberIds: string[];
   pruneCandidateIds: string[];
   productiveMemberCount: number | null;
   headcountBasis: FleetHeadcountBasis;
