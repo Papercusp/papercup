@@ -791,9 +791,9 @@ describe('runGitSync (real git, no submodule)', () => {
     });
 
     expect(first.status).toBe('synced');
-    expect(git(originDir, 'show', `main:${sourcePath}`)).toBe('export const value = 1;\n');
+    expect(git(originDir, 'show', `main:${sourcePath}`)).toBe('export const value = 1;');
     expect(git(originDir, 'show', `main:${testPath}`)).toContain('observed = value;');
-    expect(git(originDir, 'show', `main:${normalPath}`)).toBe('unrelated work\n');
+    expect(git(originDir, 'show', `main:${normalPath}`)).toBe('unrelated work');
     expect(git(repo, 'status', '--porcelain', '--', sourcePath, testPath)).toMatch(/source(?:\.test)?\.ts/);
     expect(logs.join('\n')).toContain('keeping 1 live edit cohort(s) atomic');
 
@@ -807,7 +807,7 @@ describe('runGitSync (real git, no submodule)', () => {
     });
 
     expect(second.status).toBe('synced');
-    expect(git(originDir, 'show', `main:${sourcePath}`)).toBe('export const value = 2;\n');
+    expect(git(originDir, 'show', `main:${sourcePath}`)).toBe('export const value = 2;');
     expect(git(originDir, 'show', `main:${testPath}`)).toContain('observed = value + 1;');
     expect(git(repo, 'status', '--porcelain', '--', sourcePath, testPath)).toBe('');
     expect(git(originDir, 'log', '--format=%B', 'main')).toContain(`Papercusp-Work-Item: ${workItem}`);
