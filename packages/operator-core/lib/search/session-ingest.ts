@@ -43,6 +43,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { open, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
@@ -129,6 +130,9 @@ export interface ParsedTurn {
   text: string;
   cwd?: string | null;
   sessionId?: string | null;
+  /** SHA-256 of the raw, normalized prompt before cap/redaction. Claude only;
+   *  used to correlate the hook-authenticated OWNER stamp at insert time. */
+  promptHash?: string | null;
 }
 
 /** The faithful-render part kinds stored in session_turn_parts. Mirrors the
@@ -283,6 +287,11 @@ function parseTs(v: unknown): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** Lockstep with UserPromptSubmit's Python normalize/sha256_hex helpers. */
+export function promptOriginHash(raw: string): string {
+  return createHash('sha256').update(raw.replace(/\r\n?/g, '\n').trim(), 'utf8').digest('hex');
+}
+
 /**
  * Claude Code records a prompt sent while a turn is running as a top-level
  * `attachment` line rather than a normal `user` message. Only the
@@ -320,6 +329,7 @@ function parseClaudeQueuedCommand(obj: Record<string, unknown>): ParsedTurn | nu
         : typeof obj.session_id === 'string'
           ? obj.session_id
           : null,
+    promptHash: promptOriginHash(attachment.prompt),
   };
 }
 
@@ -368,6 +378,7 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
     text,
     cwd: typeof obj.cwd === 'string' ? obj.cwd : null,
     sessionId: typeof obj.sessionId === 'string' ? obj.sessionId : null,
+    promptHash: speaker === 'user' ? promptOriginHash(rawText) : null,
   };
 }
 
@@ -1079,6 +1090,8 @@ interface TurnRow {
   turn_origin?: string | null;
   turn_origin_verdict?: string | null;
   turn_origin_classifier_version?: number | null;
+  /** Insert-only correlation material; never persisted on session_turns. */
+  prompt_hash?: string | null;
 }
 
 /**
@@ -1108,6 +1121,57 @@ export const UNENROLLED_ORIGIN_VERDICT = 'unenrolled-origin';
  * rule that causes it.
  */
 export const FILE_BACKED_SOURCE_KINDS = new Set<SourceKind>(['claude', 'omp', 'codex']);
+
+/** Tight enough to distinguish repeated prompts, wide enough for a delayed
+ * ingest tick. The durable stamp itself expires after ten minutes. */
+export const PROMPT_ORIGIN_MATCH_WINDOW_MS = 2 * 60 * 1000;
+
+export interface PromptOriginStamp {
+  source_kind: string;
+  session_id: string;
+  prompt_hash: string;
+  submitted_at: Date | string;
+}
+
+/** Upgrade only the exact v5 uncertainty state. An authenticated stamp can
+ * never override an envelope or catalogue machine verdict. */
+export function correlatePromptOriginStamps(rows: TurnRow[], stamps: PromptOriginStamp[]): number {
+  const used = new Set<number>();
+  let matched = 0;
+  for (const row of rows) {
+    if (
+      row.turn_origin_classifier_version !== MACHINE_SURFACE_CATALOGUE_VERSION ||
+      row.turn_origin_verdict !== UNENROLLED_ORIGIN_VERDICT ||
+      !row.prompt_hash ||
+      !row.ts
+    ) continue;
+    const rowMs = Date.parse(row.ts);
+    if (!Number.isFinite(rowMs)) continue;
+    let best = -1;
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < stamps.length; i += 1) {
+      if (used.has(i)) continue;
+      const stamp = stamps[i];
+      if (
+        stamp.source_kind !== row.source_kind ||
+        stamp.session_id !== row.session_id ||
+        stamp.prompt_hash !== row.prompt_hash
+      ) continue;
+      const submittedMs = new Date(stamp.submitted_at).getTime();
+      const delta = Math.abs(rowMs - submittedMs);
+      if (Number.isFinite(delta) && delta <= PROMPT_ORIGIN_MATCH_WINDOW_MS && delta < bestDelta) {
+        best = i;
+        bestDelta = delta;
+      }
+    }
+    if (best < 0) continue;
+    used.add(best);
+    row.turn_origin = null;
+    row.turn_origin_verdict = 'owner-typed';
+    matched += 1;
+  }
+  return matched;
+}
 
 function isUnenrolledFileRow(row: Pick<TurnRow, 'source_kind' | 'speaker'>): boolean {
   return row.speaker === 'user' && FILE_BACKED_SOURCE_KINDS.has(row.source_kind as SourceKind);
@@ -1390,6 +1454,27 @@ export function stampTurnProvenance(row: TurnRow): void {
 async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
   if (!rows.length) return 0;
   for (const row of rows) stampTurnProvenance(row);
+  const candidates = rows.filter((row) => row.prompt_hash && row.ts && row.turn_origin_verdict === UNENROLLED_ORIGIN_VERDICT);
+  if (candidates.length) {
+    const sessionIds = [...new Set(candidates.map((row) => row.session_id))];
+    const promptHashes = [...new Set(candidates.map((row) => row.prompt_hash!))];
+    const times = candidates.map((row) => Date.parse(row.ts!)).filter(Number.isFinite);
+    if (times.length) {
+      const from = new Date(Math.min(...times) - PROMPT_ORIGIN_MATCH_WINDOW_MS);
+      const to = new Date(Math.max(...times) + PROMPT_ORIGIN_MATCH_WINDOW_MS);
+      const stamps = await sql<PromptOriginStamp[]>`
+        SELECT source_kind, session_id, prompt_hash, submitted_at
+          FROM harness_shared.session_prompt_origin_stamps
+         WHERE workspace_id = ${activeWorkspaceId()}
+           AND source_kind = 'claude'
+           AND session_id = ANY(${sql.array(sessionIds)}::text[])
+           AND prompt_hash = ANY(${sql.array(promptHashes)}::text[])
+           AND submitted_at BETWEEN ${from} AND ${to}
+           AND expires_at > now()
+      `;
+      correlatePromptOriginStamps(rows, stamps);
+    }
+  }
   // ON CONFLICT DO NOTHING: idempotent re-ingest (e.g. a reset offset) can
   // never duplicate — the PK is (workspace_id, source_kind, session_id, turn_idx).
   const r = await sql`
@@ -2240,6 +2325,7 @@ export async function ingestFileNow(
       cwd: t.cwd ?? null,
       speaker: t.speaker,
       text: t.text,
+      prompt_hash: t.promptHash ?? null,
     }));
     inserted += await insertTurns(sql, rows);
     // Best-effort by contract (see insertParts): the render store must never
@@ -2600,6 +2686,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             cwd: t.cwd ?? null,
             speaker: t.speaker,
             text: t.text,
+            prompt_hash: t.promptHash ?? null,
           }));
           stats.turnsInserted += await insertTurns(sql, rows);
           // P-001 faithful parts — best-effort by contract (see insertParts):
