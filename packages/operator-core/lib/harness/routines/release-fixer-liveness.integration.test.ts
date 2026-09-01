@@ -7,12 +7,27 @@
  * 2026-06-21 incident: a DEAD fixer → fixerAlive=false → re-dispatch; a LIVE fixer
  * → fixerAlive=true → skip.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostname } from 'node:os';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { launcherBootId } from '../../fleet/spawn-reclaim';
-import { releaseFixerSpawnAlive, decideReleaseFixerDispatch } from './release-actions';
+
+// The retirement helper resolves getOrgPg lazily. Point it at this file's throwaway database so
+// the concurrent retire regression exercises the real transaction and metadata SQL, not a fake.
+const orgDb = vi.hoisted(() => ({ sql: null as unknown }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: orgDb.sql }),
+}));
+vi.mock('../../release/frozen-repair-edit-marker', () => ({ projectFrozenRepairMarker: vi.fn() }));
+
+import {
+  releaseFixerSpawnAlive,
+  decideReleaseFixerDispatch,
+  retireFrozenCandidateRepairQueue,
+} from './release-actions';
+import { parseFrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
 
 const SPAWNED_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
@@ -51,16 +66,28 @@ const TASK_LEDGER_DDL = `
     detail jsonb NOT NULL DEFAULT '{}'::jsonb
   )`;
 
+const ROUTINES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.routines (
+    id text PRIMARY KEY,
+    workspace_id text NOT NULL,
+    install_slug text NOT NULL,
+    target_role text NOT NULL,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`;
+
 let db: FreshPgDb;
 let sql: postgres.Sql;
 
 beforeAll(async () => {
   db = await createFreshPgDb();
   sql = db.sql;
+  orgDb.sql = sql;
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(TASK_LEDGER_DDL);
   await sql.unsafe(TOOL_INVOCATIONS_DDL);
+  await sql.unsafe(ROUTINES_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -68,7 +95,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.spawned_agents, harness_shared.task_ledger, harness_shared.tool_invocations`;
+  await sql`TRUNCATE harness_shared.spawned_agents, harness_shared.task_ledger, harness_shared.tool_invocations, harness_shared.routines`;
 });
 
 async function seedSpawn(
@@ -239,6 +266,78 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
     await seedTaskScope('s-fixer-scope-ended', 'exited');
 
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-scope-ended')).toBe(false);
+  });
+
+  it('EI-22026318885195355: terminal spawn plus exact exited task scope stays false across repeated reads', async () => {
+    await seedSpawn('s-fixer-terminal-pair', 'failed', 0, { startedAgoMin: 30 });
+    await seedTaskScope('s-fixer-terminal-pair', 'exited');
+
+    const reads = await Promise.all(
+      Array.from({ length: 5 }, () => releaseFixerSpawnAlive(sql, 's-fixer-terminal-pair')),
+    );
+    expect(reads).toEqual([false, false, false, false, false]);
+  });
+
+  it('EI-22026318885195355: a transient broad-read failure falls back to terminal durable evidence', async () => {
+    await seedSpawn('s-fixer-terminal-fallback', 'failed', 0, { startedAgoMin: 30 });
+    await seedTaskScope('s-fixer-terminal-fallback', 'exited');
+
+    const unsafe = vi.fn()
+      .mockRejectedValueOnce(new Error('transient liveness read failure'))
+      .mockImplementation((query: string, params?: unknown[]) => sql.unsafe(query, params as never[]));
+    const flakySql = { ...sql, unsafe } as unknown as postgres.Sql;
+
+    expect(await releaseFixerSpawnAlive(flakySql, 's-fixer-terminal-fallback')).toBe(false);
+    expect(unsafe).toHaveBeenCalledTimes(2);
+  });
+
+  it('EI-22026318885195355: concurrent retire calls serialize around terminal fixer evidence', async () => {
+    const target = { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' };
+    const queue = {
+      schemaVersion: 3 as const,
+      phase: 'awaiting-fixer' as const,
+      candidate: 'a'.repeat(40),
+      base: null,
+      repairHead: 'b'.repeat(40),
+      worktreePath: '/tmp/frozen-repair',
+      attempts: 1,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      fixerSpawnId: 's-fixer-concurrent-retire',
+      failingTests: ['packages/operator-core/lib/red.test.ts'],
+    };
+    await seedSpawn(queue.fixerSpawnId, 'failed', 30, { startedAgoMin: 30 });
+    await seedTaskScope(queue.fixerSpawnId, 'exited');
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, workspace_id, install_slug, target_role, metadata)
+      VALUES
+        ('routine-concurrent-retire', ${target.workspaceId}, ${target.installSlug},
+         'system:green-checkpoint', ${JSON.stringify({ repair_queue: queue })}::jsonb)`;
+    const [before] = await sql<{ metadata: { repair_queue?: unknown } }[]>`
+      SELECT metadata FROM harness_shared.routines
+       WHERE id = 'routine-concurrent-retire'`;
+    expect(before, `concurrent-retire seed row: ${JSON.stringify(before)}`).toBeDefined();
+    expect(
+      parseFrozenCandidateRepairQueue(before?.metadata.repair_queue),
+      `concurrent-retire seed row: ${JSON.stringify(before)}`,
+    ).not.toBeNull();
+
+    const results = await Promise.all([
+      retireFrozenCandidateRepairQueue(target, queue),
+      retireFrozenCandidateRepairQueue(target, queue),
+    ]);
+
+    expect(results.filter((result) => result.retired), JSON.stringify(results)).toHaveLength(1);
+    expect(results.filter((result) => !result.retired), JSON.stringify(results)).toHaveLength(1);
+    expect(results.find((result) => !result.retired)).toMatchObject({
+      current: null,
+      refusal: 'identity-mismatch',
+    });
+    const [stored] = await sql<{ metadata: { repair_queue?: unknown } }[]>`
+      SELECT metadata FROM harness_shared.routines
+       WHERE id = 'routine-concurrent-retire'`;
+    expect(stored?.metadata.repair_queue).toBeUndefined();
   });
 
   it('EI-21019097008328015: a settled task scope overrides a fresh-heartbeat spawn row whose recorded pid was reused by an unrelated invoke-once process', async () => {

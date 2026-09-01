@@ -658,6 +658,13 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       green: null,
       reason: "repair-in-progress",
       candidate: frozen,
+      frozenCandidate: frozen,
+      repairHead: frozen,
+      verdictProvenance: {
+        currentStatus: "no-suite",
+        frozenCandidateVerdict: "full-gate-red",
+        repairHeadVerdict: "same-as-frozen-full-gate-red",
+      },
       repairQueue: {
         candidate: frozen,
         repairHead: frozen,
@@ -1099,7 +1106,14 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(held).toMatchObject({
       green: null,
       reason: "repair-staging-mismatch",
-      candidate: repaired,
+      candidate: frozen,
+      frozenCandidate: frozen,
+      repairHead: repaired,
+      verdictProvenance: {
+        currentStatus: "no-suite",
+        frozenCandidateVerdict: "full-gate-red",
+        repairHeadVerdict: "not-judged",
+      },
       repairQueue: {
         candidate: frozen,
         repairHead: repaired,
@@ -1121,7 +1135,13 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(retry).toMatchObject({
       green: null,
       reason: "repair-in-progress",
-      candidate: repaired,
+      candidate: frozen,
+      frozenCandidate: frozen,
+      repairHead: repaired,
+      verdictProvenance: {
+        currentStatus: "no-suite",
+        repairHeadVerdict: "not-judged",
+      },
       repairQueue: {
         phase: "awaiting-fixer",
         repairHead: repaired,
@@ -1413,7 +1433,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       advanced: false,
       green: null,
       reason: "repair-staging-mismatch",
-      candidate: repaired,
+      candidate: frozen,
+      frozenCandidate: frozen,
+      repairHead: repaired,
+      verdictProvenance: { currentStatus: "no-suite" },
       repairQueue: {
         phase: "awaiting-fixer",
         repairHead: repaired,
@@ -1515,7 +1538,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       advanced: false,
       green: null,
       reason: "repair-in-progress",
-      candidate: repaired,
+      candidate: frozen,
+      frozenCandidate: frozen,
+      repairHead: repaired,
+      verdictProvenance: { currentStatus: "isolated-suite-result" },
       from: ready,
       repairQueue: { phase: "ready-to-promote", repairHead: repaired },
     });
@@ -1838,6 +1864,136 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     });
     expect(writes).toHaveLength(2);
     expect(calls).not.toContain("runGreen");
+  });
+
+  /** P-008 (WI-1961441): the shared exhausted-pin fixture for the escape-hatch tests below. */
+  const exhaustedPinFixture = async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const movingTip = await commit("c", "3", "newer staging tip");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      affectedTestProofGroup: "initial-proof-run",
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 3,
+      openedAtMs: now - 60_000,
+      updatedAtMs: now - 30_000,
+      fixerSpawnId: "dead-fixer",
+      failingTests: ["lib/still-broken.test.ts"],
+    };
+    const { deps, calls } = stubDeps(true);
+    const writes: Array<FrozenCandidateRepairQueue | null> = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      writes.push(next);
+      calls.push(next === null ? "write:null" : `write:${next.phase}`);
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    return { ready, frozen, movingTip, deps, calls, writes, queue: () => queue };
+  };
+
+  it("P-008: an exhausted pin with budget takes ONE recorded recut at tip — record BEFORE abandon — escalates, and re-enters the gate", async () => {
+    const { frozen, movingTip, deps, calls, writes } = await exhaustedPinFixture();
+    const recorded: Array<{ abandonedCandidate: string; reason: string; ordinal: number }> = [];
+    deps.readRecentFrozenCandidateEscapes = async () => 0;
+    deps.recordFrozenCandidateEscape = async (entry) => {
+      recorded.push(entry);
+      calls.push("recordEscape");
+    };
+    deps.cleanupFrozenRepairWorktree = async () => {
+      calls.push("cleanupWorktree");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      abandonedCandidate: frozen,
+      reason: "attempts-exhausted",
+      ordinal: 1,
+    });
+    // Budget accounting is crash-safe only if the record lands BEFORE the pin is abandoned:
+    // a crash between the two burns budget but keeps the queue, so the next tick can only
+    // hold, never double-recut. Reversing this order makes an unrecorded recut possible.
+    expect(calls.indexOf("recordEscape")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("recordEscape")).toBeLessThan(calls.indexOf("write:null"));
+    expect(writes[writes.length - 1]).toBeNull();
+    expect(calls).toContain("escalate");
+    expect(calls).toContain("cleanupWorktree");
+    // The gate re-entered on the CURRENT staging tip, not the abandoned pin.
+    expect(calls).toContain("runGreen");
+    expect(result).toMatchObject({ advanced: true, candidate: movingTip });
+  });
+
+  it("P-008: a failed escape-ledger READ fails CLOSED into the terminal hold (never an unbounded recut)", async () => {
+    const { frozen, deps, calls } = await exhaustedPinFixture();
+    deps.readRecentFrozenCandidateEscapes = async () => {
+      throw new Error("ledger unreadable");
+    };
+    deps.recordFrozenCandidateEscape = async () => {
+      throw new Error("a recut must not be attempted when the budget cannot be read");
+    };
+    deps.cleanupFrozenRepairWorktree = async () => {
+      throw new Error("an exhausted queue must remain durable");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate: frozen,
+      reason: "repair-in-progress",
+      repairQueue: { phase: "blocked", blockedReason: "attempts-exhausted" },
+    });
+    expect(calls).not.toContain("runGreen");
+  });
+
+  it("P-008: a failed escape RECORD fails CLOSED into the terminal hold — budget accounting is never skippable", async () => {
+    const { frozen, deps, calls } = await exhaustedPinFixture();
+    deps.readRecentFrozenCandidateEscapes = async () => 0;
+    deps.recordFrozenCandidateEscape = async () => {
+      throw new Error("ledger write refused");
+    };
+    deps.cleanupFrozenRepairWorktree = async () => {
+      throw new Error("an unrecorded escape must not abandon the queue");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate: frozen,
+      reason: "repair-in-progress",
+      repairQueue: { phase: "blocked", blockedReason: "attempts-exhausted" },
+    });
+    expect(calls).not.toContain("write:null");
+    expect(calls).not.toContain("runGreen");
+  });
+
+  it("P-008: a spent budget holds AND auto-escalates exactly once, on the open→blocked transition", async () => {
+    const { deps, calls } = await exhaustedPinFixture();
+    deps.readRecentFrozenCandidateEscapes = async () => 5; // spent under any sane max
+    deps.recordFrozenCandidateEscape = async () => {
+      throw new Error("a spent budget must not record another escape");
+    };
+    deps.cleanupFrozenRepairWorktree = async () => {
+      throw new Error("an exhausted queue must remain durable");
+    };
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const escalationsAfterFirst = calls.filter((c) => c === "escalate").length;
+    expect(escalationsAfterFirst).toBe(1);
+
+    // The resumed tick re-reads the already-blocked queue: no second page for the same hold.
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(calls.filter((c) => c === "escalate").length).toBe(escalationsAfterFirst);
   });
 });
 

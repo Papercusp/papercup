@@ -514,7 +514,7 @@ export function assertAdmissionMergeQualityCorpus(
 ): void {
   const caseIds = new Set<string>();
   const pairKeys = new Set<string>();
-  const endpointIds = new Set<string>();
+  const allEndpointIds = new Set<string>();
   const counts: Record<GoldVerdict, number> = {
     distinct: 0,
     'r-finding-merge': 0,
@@ -530,16 +530,16 @@ export function assertAdmissionMergeQualityCorpus(
       throw new Error(`merge-quality case ${entry.caseId} has a non-canonical pair key`);
     }
     for (const endpoint of [entry.pair.a.id, entry.pair.b.id]) {
-      if (endpointIds.has(endpoint)) {
+      if (allEndpointIds.has(endpoint)) {
         throw new Error(`merge-quality endpoint ${endpoint} appears in more than one case`);
       }
-      endpointIds.add(endpoint);
+      allEndpointIds.add(endpoint);
     }
     if (!entry.labelRationale.trim()) throw new Error(`merge-quality case ${entry.caseId} has no label rationale`);
     counts[entry.expectedVerdict] += 1;
-    const endpointIds = new Set([entry.pair.a.id, entry.pair.b.id]);
+    const pairEndpointIds = new Set([entry.pair.a.id, entry.pair.b.id]);
     if (entry.expectedVerdict === 'r-finding-merge') {
-      if (!entry.expectedCanonical || !endpointIds.has(entry.expectedCanonical)) {
+      if (!entry.expectedCanonical || !pairEndpointIds.has(entry.expectedCanonical)) {
         throw new Error(`merge-quality case ${entry.caseId} has no valid expected canonical endpoint`);
       }
     } else if (entry.expectedCanonical !== null) {
