@@ -67,6 +67,12 @@ export const COORD_ROLES = [
   // file/shell tools (so it deliberately stays out of SU_ROLES); the matching
   // synthesized principal grants live in role-principal-caps.ts.
   'release-fixer',
+  // The CONTENT-FIXER — another launch-blueprint role whose repair protocol is
+  // coordinated work: orient, hold/checkpoint/complete its repair item, and
+  // escalate when the quarantined content cannot be fixed safely. Its
+  // synthesized principal carries only coord/work_items read-write caps (see
+  // role-principal-caps.ts); it has no broader operator or filesystem surface.
+  'content-fixer',
   // pot-rename SLICE-2 CONTRACT: the old ids (bee/queen/sentinel/overwatch) are
   // gone — cup/mug/papercup/kettle above are the canonical coord roles. (scout was
   // never a coord role, so blender is intentionally absent.) ⚠ AUTH INVARIANT: the

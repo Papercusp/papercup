@@ -220,6 +220,17 @@ const BOILERPLATE_PREFIXES = [
   'Caveat: The messages below',
 ];
 
+/**
+ * Claude Code has emitted two owner-dialog result lead-ins in live JSONL:
+ * the older single-question form and the current batched-question form.
+ * Keep the allow-list narrow — general tool results remain out of the recall
+ * corpus — but recognize both verified AskUserQuestion carriers.
+ */
+export const CLAUDE_OWNER_DIALOG_RESULT_PREFIXES = [
+  'The user answered:',
+  'Your questions have been answered:',
+] as const;
+
 /** Exported for the archive fall-through reader (session-archive-read.ts,
  *  P-009): archived bytes are VERBATIM, so anything surfaced to agents must
  *  pass the SAME cap+redaction the index applies at ingest. */
@@ -344,7 +355,7 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
       const part = block as { type?: string; content?: unknown };
       if (part.type !== 'tool_result') continue;
       const payload = partPayloadText(part.content).trim();
-      if (!payload.startsWith('The user answered:')) continue;
+      if (!CLAUDE_OWNER_DIALOG_RESULT_PREFIXES.some((prefix) => payload.startsWith(prefix))) continue;
       rawText = `${OWNER_DIALOG_TURN_MARKER}\n${payload}`;
       break;
     }

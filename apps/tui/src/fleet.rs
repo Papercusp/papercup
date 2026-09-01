@@ -2610,38 +2610,40 @@ mod tests {
 
     #[test]
     fn fleet_metric_lines_show_scope_and_quality_before_counts() {
-        let mut brief = crate::models::FleetLeaderBrief::default();
-        brief.fleet_metrics = Some(crate::models::FleetMetricsResult {
-            ok: true,
-            schema_version: "fleet-metrics-v1".into(),
-            snapshot: Some(crate::models::FleetMetricsSnapshot {
-                scope: crate::models::FleetMetricsScope {
-                    window: crate::models::FleetMetricsWindow {
-                        kind: "fleet-lifetime".into(),
+        let brief = crate::models::FleetLeaderBrief {
+            fleet_metrics: Some(crate::models::FleetMetricsResult {
+                ok: true,
+                schema_version: "fleet-metrics-v1".into(),
+                snapshot: Some(crate::models::FleetMetricsSnapshot {
+                    scope: crate::models::FleetMetricsScope {
+                        window: crate::models::FleetMetricsWindow {
+                            kind: "fleet-lifetime".into(),
+                        },
+                        stock: crate::models::FleetMetricsStockScope {
+                            spec_id: "spec-42".into(),
+                            revision: 7,
+                        },
+                        population: crate::models::FleetMetricsPopulation {
+                            stock: "current-spec-work-items".into(),
+                        },
                     },
-                    stock: crate::models::FleetMetricsStockScope {
-                        spec_id: "spec-42".into(),
-                        revision: 7,
+                    quality: crate::models::FleetMetricsQuality {
+                        exactness: crate::models::FleetMetricsQualityStatus {
+                            status: "exact".into(),
+                        },
+                        freshness: crate::models::FleetMetricsQualityStatus {
+                            status: "fresh".into(),
+                        },
                     },
-                    population: crate::models::FleetMetricsPopulation {
-                        stock: "current-spec-work-items".into(),
+                    remaining: crate::models::FleetMetricsRemaining {
+                        total: 12,
+                        unit: "distinct canonical issue-family work-item ids".into(),
                     },
-                },
-                quality: crate::models::FleetMetricsQuality {
-                    exactness: crate::models::FleetMetricsQualityStatus {
-                        status: "exact".into(),
-                    },
-                    freshness: crate::models::FleetMetricsQualityStatus {
-                        status: "fresh".into(),
-                    },
-                },
-                remaining: crate::models::FleetMetricsRemaining {
-                    total: 12,
-                    unit: "distinct canonical issue-family work-item ids".into(),
-                },
+                }),
+                ..Default::default()
             }),
             ..Default::default()
-        });
+        };
 
         let lines = fleet_metric_lines(&brief, Some(99));
         assert_eq!(
@@ -2655,14 +2657,16 @@ mod tests {
 
     #[test]
     fn fleet_metric_lines_explain_unavailable_snapshot_and_recovery() {
-        let mut brief = crate::models::FleetLeaderBrief::default();
-        brief.fleet_metrics = Some(crate::models::FleetMetricsResult {
-            ok: false,
-            schema_version: "fleet-metrics-v1".into(),
-            reason: Some("historical revision missing".into()),
-            recover_via: Some("work_items:burn_down { window: fleet-lifetime }".into()),
+        let brief = crate::models::FleetLeaderBrief {
+            fleet_metrics: Some(crate::models::FleetMetricsResult {
+                ok: false,
+                schema_version: "fleet-metrics-v1".into(),
+                reason: Some("historical revision missing".into()),
+                recover_via: Some("work_items:burn_down { window: fleet-lifetime }".into()),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
 
         let lines = fleet_metric_lines(&brief, None);
         assert_eq!(
@@ -2676,10 +2680,12 @@ mod tests {
 
     #[test]
     fn fleet_metric_lines_label_legacy_aliases_when_metrics_are_absent() {
-        let mut brief = crate::models::FleetLeaderBrief::default();
-        brief.spec_matched = Some(5);
-        brief.harness_wide_pool = Some(20);
-        brief.spec_revision = Some(3);
+        let brief = crate::models::FleetLeaderBrief {
+            spec_matched: Some(5),
+            harness_wide_pool: Some(20),
+            spec_revision: Some(3),
+            ..Default::default()
+        };
 
         let lines = fleet_metric_lines(&brief, Some(2));
         assert!(lines[0].starts_with("legacy queue aliases (scope unavailable):"));

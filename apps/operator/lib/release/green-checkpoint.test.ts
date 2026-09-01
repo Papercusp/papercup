@@ -1682,6 +1682,74 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(queue).toMatchObject({ candidate: frozen, repairHead: repaired });
   });
 
+  // P-006 (gate-verdict-liveness-and-repair-reliability-2026-08-31): the progress
+  // snapshot must run BEFORE convergeRepairHeadWithStaging. Converge only moves
+  // repairHead while "no repair-fixer commits have diverged yet"; a killed fixer's
+  // UNCOMMITTED edits are invisible to that ancestry read, so converging first moves
+  // repairHead past unpushed work and strands the dirty tree on a stale head. The
+  // snapshot turns the dirty state into a commit converge can SEE. This pins both the
+  // order and — load-bearing — that the snapshot receives the PRE-converge queue.
+  it("snapshots repair-worktree progress BEFORE converging repairHead, and a throwing snapshot never fails the dispatch", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const repaired = await commit("b", "3", "staging already fixed this");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 1,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["lib/first.test.ts"],
+    };
+    const order: string[] = [];
+    const { deps } = stubDeps(false, ["lib/still-broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => true;
+    deps.commitRepairWorktreeProgress = async (next, label) => {
+      order.push(`progress:${next.repairHead}:${label}`);
+      // Fail-soft contract: even a throwing snapshot must not fail the dispatch.
+      throw new Error("index.lock exists");
+    };
+    deps.convergeRepairHeadWithStaging = async (next) => {
+      order.push("converge");
+      return { ...next, repairHead: repaired };
+    };
+    deps.prepareFrozenRepairWorktree = async (next) => {
+      order.push(`worktree:${next.repairHead}`);
+    };
+    deps.dispatchFrozenRepairFixer = async (next) => {
+      order.push(`dispatch:${next.repairHead}`);
+      return { spawnId: "fixer-2", runId: "run-2" };
+    };
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    // The snapshot sees the PRE-converge queue (repairHead still the frozen sha) and
+    // runs first; the throw is absorbed and every later step still fires in order.
+    expect(order).toEqual([
+      `progress:${frozen}:pre-dispatch`,
+      "converge",
+      `worktree:${repaired}`,
+      `dispatch:${repaired}`,
+    ]);
+    expect(queue).toMatchObject({
+      candidate: frozen,
+      repairHead: repaired,
+      fixerSpawnId: "fixer-2",
+    });
+  });
+
   it("persists automation exhaustion as blocked and never selects a newer staging tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);

@@ -49,6 +49,21 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
+// EI-19418245218824265. The claim-time enrichment legs are PG-backed and fail-soft to
+// null here, so a fixture row that is empty silences them for free. The `sourceCitation`
+// leg does NOT: it reads the TREE, which no fixture controls, via a real `git grep` for
+// the claimed id. `WI-2` is a SUBSTRING of every real `WI-2648`/`WI-2839` in the repo, so
+// unmocked it attaches two fields to the fresh-claim result below and the exact-shape
+// `toEqual` fails — on repo content, not on anything this suite is about.
+//
+// Mocked rather than loosening that `toEqual` to `toMatchObject`: the exact shape is the
+// point of that test ("omits checkpoint fields ENTIRELY"), and it is what caught this in
+// the first place. Weakening it would retire the guard to accommodate the very class of
+// change it exists to detect.
+vi.mock('../../source-citation-claim-port', () => ({
+  getClaimTimeSourceCitation: vi.fn(async () => null),
+  sourceCitationWarning: vi.fn(() => null),
+}));
 
 const getClaimTimeCheckpointHint = vi.fn();
 vi.mock('../../work-item-checkpoint', () => ({

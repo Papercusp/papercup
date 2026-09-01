@@ -1663,7 +1663,12 @@ describe('affected-tests: --print-affected includes repo-wide guards (EI-2009918
     const lines = out.split('\n').filter(Boolean);
 
     expect(lines.filter((line) => line.startsWith('AFFECTED_WS\t'))).toEqual(['AFFECTED_WS\t@papercusp/web']);
-    expect(lines).toContain('AFFECTED_GUARD\t@papercusp/operator-core\tlint:chunk-safe');
+    expect(lines.some((line) => line.startsWith('AFFECTED_GUARD\t@papercusp/operator-core\tlint:chunk-safe\t'))).toBe(true);
+    const guardLine = lines.find((line) => line.startsWith('AFFECTED_GUARD\t@papercusp/operator-core\tlint:chunk-safe\t'));
+    expect(guardLine).toBe(
+      'AFFECTED_GUARD\t@papercusp/operator-core\tlint:chunk-safe\t' +
+        'npm run --silent --workspace @papercusp/operator-core lint:chunk-safe',
+    );
     expect(out).not.toContain('AFFECTED_TESTS_RESULT');
     expect(out).not.toContain('(repo-wide invariant guard:');
   });
@@ -1673,7 +1678,12 @@ describe('affected-tests: --print-affected includes repo-wide guards (EI-2009918
     const lines = out.split('\n').filter(Boolean);
 
     expect(lines.filter((line) => line.startsWith('AFFECTED_WS\t'))).toEqual([]);
-    expect(lines).toContain('AFFECTED_GUARD\t@papercusp/operator-core\tlint:guard-reachability');
+    expect(lines.some((line) => line.startsWith('AFFECTED_GUARD\t@papercusp/operator-core\tlint:guard-reachability\t'))).toBe(true);
+    const guardLine = lines.find((line) => line.startsWith('AFFECTED_GUARD\t@papercusp/operator-core\tlint:guard-reachability\t'));
+    expect(guardLine).toBe(
+      'AFFECTED_GUARD\t@papercusp/operator-core\tlint:guard-reachability\t' +
+        'npm run --silent --workspace @papercusp/operator-core lint:guard-reachability',
+    );
     expect(out).not.toContain('AFFECTED_TESTS_RESULT');
   });
 });

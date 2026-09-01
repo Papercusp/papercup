@@ -85,6 +85,66 @@ describe('work_items:set_blocker', () => {
     );
   });
 
+  it('rejects a main/green-checkpoint blocker for ordinary implementation work', async () => {
+    const item = {
+      id: 'WI-1',
+      family: 'issue',
+      kind: 'change',
+      state: 'open',
+      harness: 'papercup',
+      title: 'Implement the fact-plane fairness policy',
+      summary: 'Run focused tests on staging and continue implementation.',
+      payload: {},
+    };
+    getWorkItem.mockResolvedValue(item);
+
+    const out = await one({
+      id: 'WI-1',
+      kind: 'gate',
+      capability: 'live-dependency',
+      ref: 'gate.greenCheckpoint.ownership',
+      summary: 'Wait for main to turn green before continuing implementation.',
+      nextVerb: 'release:checkpoint-run',
+    });
+
+    expect(out).toMatchObject({ ok: false, id: 'WI-1', code: 'non_final_deployed_main_blocker' });
+    expect(out.error).toMatch(/Continue implementation.*staging\/current-build/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('allows the actual green-checkpoint repair item to record its gate blocker', async () => {
+    const item = {
+      id: 'WI-212675',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercup',
+      title: '[gate-red-streak] Re-green current green-checkpoint and restore tested/deployed parity',
+      summary: 'Run the scheduled checkpoint and restore release parity.',
+      payload: {},
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
+
+    const out = await one({
+      id: 'WI-212675',
+      kind: 'gate',
+      capability: 'live-dependency',
+      ref: 'gate.greenCheckpoint.ownership',
+      summary: 'Wait for the scheduled checkpoint verdict.',
+      nextVerb: 'release:trace',
+    });
+
+    expect(out.ok).toBe(true);
+    expect(out.activeBlockers).toHaveLength(1);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'WI-212675',
+      'blocked',
+      expect.objectContaining({ by: 'su-a' }),
+    );
+  });
+
   it('a strict human capability records the ask before entering needs-human', async () => {
     const item = { id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', harness: 'papercup', payload: {} };
     getWorkItem.mockResolvedValue(item);
@@ -193,7 +253,11 @@ describe('work_items:set_blocker', () => {
 
   it('rejects a plan contradiction before writing any blocker payload', async () => {
     const item = {
-      id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', harness: 'papercup',
+      id: 'WI-1',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercup',
       payload: { plan_item: { plan_slug: 'agent-plan', item_id: 'P-001' } },
     };
     getWorkItem.mockResolvedValue(item);
@@ -204,8 +268,12 @@ describe('work_items:set_blocker', () => {
     });
 
     const out = await one({
-      id: 'WI-1', kind: 'human', capability: 'credential', ref: 'credential:prod-db',
-      summary: 'Provide the production DB credential.', nextVerb: 'setup:save_key',
+      id: 'WI-1',
+      kind: 'human',
+      capability: 'credential',
+      ref: 'credential:prod-db',
+      summary: 'Provide the production DB credential.',
+      nextVerb: 'setup:save_key',
     });
 
     expect(out).toMatchObject({ ok: false, id: 'WI-1' });
@@ -301,11 +369,7 @@ describe('work_items:set_blocker', () => {
     });
     expect(out.ok).toBe(true);
     expect(out.activeBlockers).toEqual([]);
-    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
-      'WI-1',
-      'open',
-      expect.objectContaining({ by: 'su-a' }),
-    );
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-1', 'open', expect.objectContaining({ by: 'su-a' }));
     // Defect 2 regression: the returned workItem must be the POST-write ('open')
     // snapshot, not the stale pre-write ('blocked') one merge returned.
     expect(out.workItem.state).toBe('open');

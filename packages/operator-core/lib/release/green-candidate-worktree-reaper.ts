@@ -242,6 +242,17 @@ export interface CandidateWorktreeReapDeps {
    * Omitted ⇒ no re-check (correct for a caller that has already frozen the directory).
    */
   confirmStillAbandoned?(worktreePath: string): Promise<boolean>;
+  /**
+   * P-006 (gate-verdict-liveness-and-repair-reliability-2026-08-31): last-chance salvage
+   * of UNCOMMITTED work immediately before a tree is destroyed. The production wiring
+   * commits dirty state and pins it to a survivor ref (`refs/papercusp/repair-progress/*`)
+   * so a dead run's fixer edits outlive the deletion — the measured loss this exists for
+   * is 23 uncommitted files stranded in green-candidate-papercusp-5738f8817eb6. Runs only
+   * after `confirmStillAbandoned` clears and only when the tree still has a `.git`
+   * (an admin-orphaned directory has no repo to commit into). MUST be treated as
+   * fail-soft by the executor: a salvage failure never blocks the reap — freeing disk wins.
+   */
+  salvageDirtyTree?(worktreePath: string): Promise<void>;
 }
 
 export interface CandidateWorktreeReapResult {
@@ -280,6 +291,19 @@ export async function executeCandidateWorktreeReap(
       }
       let removed = false;
       if (hasGitDir(entry.path)) {
+        // P-006: the deletion below is the last moment any uncommitted work in this
+        // tree exists — salvage it first. Fail-soft: the reap itself must still run.
+        if (deps.salvageDirtyTree) {
+          try {
+            await deps.salvageDirtyTree(entry.path);
+          } catch (error) {
+            deps.log(
+              `warn: dirty-tree salvage failed for ${entry.name} (reap proceeds): ${
+                error instanceof Error ? error.message : error
+              }`,
+            );
+          }
+        }
         const outcome = await deps.gitWorktreeRemove(entry.path);
         removed = outcome.ok;
         if (!outcome.ok && outcome.detail) {
@@ -312,6 +336,45 @@ export async function executeCandidateWorktreeReap(
     }
   }
   return result;
+}
+
+/**
+ * P-006: how long a dirty tree's NEWEST dirty file must sit unmodified before the dirt
+ * counts as STRANDED (a dead run's work, salvageable+reapable) rather than LIVE (a peer
+ * editing right now — EI-21714994180505750 measured 0→14 dirty files in four minutes, so
+ * fresh dirt must always preserve the tree untouched). Fixer budgets top out well under
+ * an hour; a live agent touches files continuously. One hour is deliberately generous.
+ */
+export const REAPER_DIRTY_STALE_MS = 60 * 60_000;
+
+/**
+ * Newest mtime among a worktree's dirty paths, from `git status --porcelain` v1 output.
+ * Rename lines ("R  old -> new") resolve to the NEW path; deleted files (unstattable)
+ * are skipped. Returns null when NO dirty path could be statted — callers must fail
+ * CLOSED on null (treat the tree as possibly-live), because "we cannot read the dirt"
+ * is not evidence of abandonment.
+ */
+export function newestDirtyPathMtimeMs(
+  worktreePath: string,
+  porcelainStdout: string,
+  statFn: (p: string) => { mtimeMs: number } = statSync,
+): number | null {
+  let newest: number | null = null;
+  const lines = porcelainStdout.split('\n').filter((l) => l.trim().length > 0);
+  // Bound the stat storm on a pathological tree; 200 samples is ample to find recency.
+  for (const line of lines.slice(0, 200)) {
+    // Porcelain v1: `XY <path>` (rename: `XY <old> -> <new>`). Take the post-rename path.
+    const raw = line.slice(3);
+    const dirtyPath = raw.includes(' -> ') ? raw.split(' -> ').pop()! : raw;
+    if (!dirtyPath) continue;
+    try {
+      const st = statFn(path.join(worktreePath, dirtyPath.trim()));
+      if (newest === null || st.mtimeMs > newest) newest = st.mtimeMs;
+    } catch {
+      // Deleted / unreadable — carries no recency signal either way.
+    }
+  }
+  return newest;
 }
 
 /** Render an age floor compactly for a log line: 21600000 -> "6h", 1200000 -> "20m". */

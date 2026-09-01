@@ -50,6 +50,11 @@ Environment=PHONE_REQUIRE_VENDORS=stt:deepgram,tts:deepgram
 # latency on this path has never been measured. So the shipping vendor stays
 # pinned until someone measures the alternative and decides on evidence.
 Environment=PHONE_TTS_VENDOR=deepgram
+# Portal voice currently has a stored ElevenLabs credential without the
+# text_to_speech permission. Keep Portal on the measured Deepgram Aura path
+# until that credential is replaced and re-verified; this avoids a silent
+# transcript-only call when the Portal profile resolves by capability.
+Environment=PORTAL_TTS_VENDOR=deepgram
 
 ExecStart=${PHONE_NODE_BIN} --import tsx src/agent.ts start
 Restart=on-failure

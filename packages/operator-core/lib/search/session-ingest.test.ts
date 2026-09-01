@@ -15,6 +15,7 @@ import {
   classifyOmpLine,
   classifyCodexLine,
   textFromContent,
+  CLAUDE_OWNER_DIALOG_RESULT_PREFIXES,
 } from './session-ingest';
 import { OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
 
@@ -89,6 +90,44 @@ describe('parseClaudeLine', () => {
         message: {
           role: 'user',
           content: [{ type: 'tool_result', tool_use_id: 'toolu_bash', content: 'command output' }],
+        },
+      }),
+    );
+    expect(ordinary).toBeNull();
+  });
+
+  it('promotes the batched AskUserQuestion result shape emitted by current Claude Code', () => {
+    const answer =
+      'Your questions have been answered: "How far?"="All three, T3 landed last (Recommended)", ' +
+      '"Which route?"="I implement it here (Recommended)". You can now continue with these answers in mind.';
+    const promoted = parseClaudeLine(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_batched_ask', content: answer }],
+        },
+      }),
+    );
+
+    expect(CLAUDE_OWNER_DIALOG_RESULT_PREFIXES).toContain('Your questions have been answered:');
+    expect(promoted).toMatchObject({ speaker: 'user' });
+    expect(promoted?.text).toBe(`${OWNER_DIALOG_TURN_MARKER}\n${answer}`);
+    expect(promoted?.text).toContain('All three, T3 landed last');
+    expect(promoted?.text).toContain('I implement it here');
+  });
+
+  it('does not promote a non-dialog tool result that merely contains answer-like prose later', () => {
+    const ordinary = parseClaudeLine(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_bash',
+            content: 'command output\nYour questions have been answered: not actually a dialog result',
+          }],
         },
       }),
     );

@@ -313,6 +313,106 @@ function preservedAs(
  * floor and nothing else. It must not widen which trees are eligible in kind, and it must
  * not be able to lengthen the floor either.
  */
+describe('P-006 dirty-tree salvage (gate-verdict-liveness-and-repair-reliability-2026-08-31)', () => {
+  it('salvages BEFORE the removal — the deletion is the last moment the dirt exists', async () => {
+    const order: string[] = [];
+    const d = deps({
+      salvageDirtyTree: vi.fn(async () => {
+        order.push('salvage');
+      }),
+      gitWorktreeRemove: vi.fn(async () => {
+        order.push('remove');
+        return { ok: true };
+      }),
+    });
+    const result = await executeCandidateWorktreeReap(
+      plan([entry('green-candidate-papercusp-5738f8817eb6')]),
+      d,
+    );
+    expect(order).toEqual(['salvage', 'remove']);
+    expect(result.removed).toHaveLength(1);
+  });
+
+  it('a throwing salvage never blocks the reap — freeing disk wins', async () => {
+    const d = deps({
+      salvageDirtyTree: vi.fn(async () => {
+        throw new Error('index.lock exists');
+      }),
+    });
+    const result = await executeCandidateWorktreeReap(
+      plan([entry('green-candidate-papercusp-5738f8817eb6')]),
+      d,
+    );
+    expect(result.removed).toHaveLength(1);
+    expect(result.failed).toEqual([]);
+    expect(d.log).toHaveBeenCalledWith(expect.stringContaining('dirty-tree salvage failed'));
+  });
+
+  it('never salvages an admin-orphaned tree — there is no repo to commit into', async () => {
+    const d = deps({
+      hasGitDir: () => false,
+      salvageDirtyTree: vi.fn(async () => {}),
+    });
+    await executeCandidateWorktreeReap(
+      plan([entry('green-candidate-papercusp-228840fcdc13')]),
+      d,
+    );
+    expect(d.salvageDirtyTree).not.toHaveBeenCalled();
+  });
+
+  it('a tree the re-check spares is never salvaged either — live peers stay untouched', async () => {
+    const d = deps({
+      confirmStillAbandoned: vi.fn(async () => false),
+      salvageDirtyTree: vi.fn(async () => {}),
+    });
+    const result = await executeCandidateWorktreeReap(
+      plan([entry('green-candidate-papercusp-5738f8817eb6')]),
+      d,
+    );
+    expect(d.salvageDirtyTree).not.toHaveBeenCalled();
+    expect(result.removed).toEqual([]);
+  });
+});
+
+describe('newestDirtyPathMtimeMs', () => {
+  const WT = '/repo/.papercusp/worktrees/green-candidate-papercusp-5738f8817eb6';
+  it('returns the newest mtime across dirty paths, resolving rename lines to the NEW path', () => {
+    const seen: string[] = [];
+    const result = newestDirtyPathMtimeMs(
+      WT,
+      ' M lib/a.ts\n?? lib/b.ts\nR  lib/old.ts -> lib/new.ts\n',
+      (p) => {
+        seen.push(p);
+        if (p.endsWith('lib/b.ts')) return { mtimeMs: 500 };
+        if (p.endsWith('lib/new.ts')) return { mtimeMs: 900 };
+        return { mtimeMs: 100 };
+      },
+    );
+    expect(result).toBe(900);
+    expect(seen.some((p) => p.endsWith('lib/old.ts'))).toBe(false);
+    expect(seen.some((p) => p.endsWith('lib/new.ts'))).toBe(true);
+  });
+
+  it('skips unstattable (deleted) paths and still reports the rest', () => {
+    const result = newestDirtyPathMtimeMs(WT, ' D lib/gone.ts\n M lib/a.ts\n', (p) => {
+      if (p.endsWith('lib/gone.ts')) throw new Error('ENOENT');
+      return { mtimeMs: 777 };
+    });
+    expect(result).toBe(777);
+  });
+
+  it('returns null when NO dirty path can be statted — callers must fail closed on null', () => {
+    const result = newestDirtyPathMtimeMs(WT, ' D lib/gone.ts\n D lib/also-gone.ts\n', () => {
+      throw new Error('ENOENT');
+    });
+    expect(result).toBeNull();
+  });
+
+  it('returns null for empty porcelain output', () => {
+    expect(newestDirtyPathMtimeMs(WT, '', () => ({ mtimeMs: 1 }))).toBeNull();
+  });
+});
+
 describe('effectiveCandidateWorktreeMinAgeMs', () => {
   it('CALIBRATION: no pressure means the ordinary 6h floor', () => {
     expect(effectiveCandidateWorktreeMinAgeMs({})).toBe(DEFAULT_CANDIDATE_WORKTREE_MIN_AGE_MS);

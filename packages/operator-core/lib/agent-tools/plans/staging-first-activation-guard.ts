@@ -7,24 +7,52 @@ export interface StagingFirstActivationProblem {
   detail: string;
 }
 
+export interface StagingFirstBlockerInput {
+  itemId: string;
+  /** Work-item title + summary, used to classify final shipment/gate work. */
+  itemText: string;
+  /** The typed blocker ref plus its human evidence/next action. */
+  blockerText: string;
+  kind: string;
+}
+
+export interface StagingFirstBlockerProblem {
+  itemId: string;
+  code: 'non_final_deployed_main_blocker';
+  detail: string;
+}
+
 const DEPLOYED_ENV_RE = /(?:\bmain\b|:3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|ing)?\b)/i;
-const STRONG_GATE_RE = /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b|\bprerequisite\b|\bonly\s+after\b|\buntil\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
-const NEGATED_OR_META_GATE_RE = /(?:\b(?:reject|refus|forbid|prevent|detect|flag)\w*\b|\bguard(?:s|ed|ing)?\s+against\b|\bnot\s+(?:an?\s+)?prerequisite\b|\b(?:does|do|must|should|is|are)\s+not\b.{0,80}\b(?:block|wait|required?|prerequisite)\w*\b|\bnever\s+(?:block|wait|require)\w*\b|\bwithout\s+wait(?:ing)?\s+(?:for|on)\b)/i;
-const FINAL_LIFECYCLE_RE = /(?:\bfinal\s+(?:shipment|promotion|deploy(?:ment)?|release|rollout|verification|acceptance)\b|\bship(?:ment)?\s+verification\b|\brelease\s+packag(?:e|ing)\b|\brollback\b|\bmigration\s+order(?:ing)?\b)/i;
+const STRONG_GATE_RE =
+  /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b|\bprerequisite\b|\bonly\s+after\b|\buntil\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
+const NEGATED_OR_META_GATE_RE =
+  /(?:\b(?:reject|refus|forbid|prevent|detect|flag)\w*\b|\bguard(?:s|ed|ing)?\s+against\b|\bnot\s+(?:an?\s+)?prerequisite\b|\b(?:does|do|must|should|is|are)\s+not\b.{0,80}\b(?:block|wait|required?|prerequisite)\w*\b|\bnever\s+(?:block|wait|require)\w*\b|\bwithout\s+wait(?:ing)?\s+(?:for|on)\b)/i;
+const FINAL_LIFECYCLE_RE =
+  /(?:\bfinal\s+(?:shipment|promotion|deploy(?:ment)?|release|rollout|verification|acceptance)\b|\bship(?:ment)?\s+verification\b|\brelease\s+packag(?:e|ing)\b|\brollback\b|\bmigration\s+order(?:ing)?\b)/i;
 const FINAL_PHASE_RE = /(?:\brelease\b|\bshipment\b|\brollout\b|\bclosure\b|\bship\b)/i;
 const EXPLICIT_DEPLOYED_ONLY_RE = /\bdeployed[- ]only\b/i;
-const STAGING_LIMIT_RE = /(?:\b(?:staging|current[- ]build)\b.{0,140}\b(?:cannot|can't|unable|does not|doesn't|is not|isn't|unavailable)\b|\b(?:cannot|can't|unable)\b.{0,140}\b(?:staging|current[- ]build)\b)/i;
-const CONCRETE_REASON_RE = /(?:\bbecause\b|\bdue to\b|\bsince\b|\breason\b|\brollback\b|\brelease\s+packag(?:e|ing)\b|\bmigration\s+order(?:ing)?\b|\bproduction[- ]only\b|\bdeployed[- ]host\b)/i;
+const STAGING_LIMIT_RE =
+  /(?:\b(?:staging|current[- ]build)\b.{0,140}\b(?:cannot|can't|unable|does not|doesn't|is not|isn't|unavailable)\b|\b(?:cannot|can't|unable)\b.{0,140}\b(?:staging|current[- ]build)\b)/i;
+const CONCRETE_REASON_RE =
+  /(?:\bbecause\b|\bdue to\b|\bsince\b|\breason\b|\brollback\b|\brelease\s+packag(?:e|ing)\b|\bmigration\s+order(?:ing)?\b|\bproduction[- ]only\b|\bdeployed[- ]host\b)/i;
 const ACCEPTANCE_SECTION_RE = /^(?:acceptance|requirements?|validation|verification)\b/i;
+const MAIN_RELEASE_BLOCKER_RE =
+  /(?:\bmain\b|:3070\b|green[- ]checkpoint|greenCheckpoint|\bgreen[- ]pin\b|\bproduction\b)/i;
+const GENERIC_DEPLOY_BLOCKER_RE = /(?:\brelease\b|\bdeploy(?:ed|ment|ing)?\b)/i;
+const EXPLICIT_STAGING_ENV_RE = /(?:\bstaging\b|\bcurrent[- ]build\b)/i;
+const LIVE_GATE_OPERATION_RE =
+  /(?:green[- ]checkpoint|greenCheckpoint|gate[- ]red|re-?green|tested[/ -]deployed\s+parity|restore(?:d)?\s+(?:the\s+)?(?:tested[/ -]deployed|release)\s+parity)/i;
 
 function itemRefPattern(itemId: string): RegExp {
   return new RegExp(`\\b${itemId.replace('-', '\\-')}\\b`);
 }
 
 function decisionAppliesToItem(decision: PlanDecision, item: PlanItem): boolean {
-  return item.decisionRefs.includes(decision.id)
-    || decision.itemRefs.includes(item.id)
-    || itemRefPattern(item.id).test(`${decision.title}\n${decision.body}`);
+  return (
+    item.decisionRefs.includes(decision.id) ||
+    decision.itemRefs.includes(item.id) ||
+    itemRefPattern(item.id).test(`${decision.title}\n${decision.body}`)
+  );
 }
 
 function applicableDecisions(item: PlanItem, decisions: PlanDecision[]): PlanDecision[] {
@@ -32,7 +60,8 @@ function applicableDecisions(item: PlanItem, decisions: PlanDecision[]): PlanDec
 }
 
 const ANY_ITEM_REF_RE = /\bP-\d{3,}\b/i;
-const ANAPHORIC_ITEM_RE = /\b(?:it|this item|that item|the item|this work|that work|the work|this lane|that lane|the lane)\b/i;
+const ANAPHORIC_ITEM_RE =
+  /\b(?:it|this item|that item|the item|this work|that work|the work|this lane|that lane|the lane)\b/i;
 
 /**
  * Keep prose that actually speaks about this item instead of admitting an entire
@@ -58,11 +87,9 @@ function itemScopedText(text: string, itemId: string): string {
 
 function decisionTextForItem(decision: PlanDecision, item: PlanItem): string {
   const text = `${decision.title}\n${decision.body}`;
-  const relatedLine = decision.body
-    .split('\n')
-    .find((line) => /^\s*Related:/i.test(line));
-  const explicitlyLinked = item.decisionRefs.includes(decision.id)
-    || Boolean(relatedLine && itemRefPattern(item.id).test(relatedLine));
+  const relatedLine = decision.body.split('\n').find((line) => /^\s*Related:/i.test(line));
+  const explicitlyLinked =
+    item.decisionRefs.includes(decision.id) || Boolean(relatedLine && itemRefPattern(item.id).test(relatedLine));
   return explicitlyLinked ? text : itemScopedText(text, item.id);
 }
 
@@ -73,18 +100,15 @@ function hasNarrowDeployedMainException(text: string): boolean {
 function relatedExceptionText(item: PlanItem, decisions: PlanDecision[]): string {
   return [
     item.text,
-    ...applicableDecisions(item, decisions)
-      .map((decision) => decisionTextForItem(decision, item)),
+    ...applicableDecisions(item, decisions).map((decision) => decisionTextForItem(decision, item)),
   ].join('\n');
 }
 
 function hasStrongDeployedGate(text: string): boolean {
   return text
     .split(/\n+|(?<=[.!?])\s+/)
-    .some((clause) =>
-      DEPLOYED_ENV_RE.test(clause)
-      && STRONG_GATE_RE.test(clause)
-      && !NEGATED_OR_META_GATE_RE.test(clause),
+    .some(
+      (clause) => DEPLOYED_ENV_RE.test(clause) && STRONG_GATE_RE.test(clause) && !NEGATED_OR_META_GATE_RE.test(clause),
     );
 }
 
@@ -96,8 +120,7 @@ function relatedGateText(plan: ParsedPlan, item: PlanItem): string {
     .map((section) => `${section.heading}\n${itemScopedText(section.body, item.id)}`);
   return [
     item.text,
-    ...applicableDecisions(item, plan.decisions)
-      .map((decision) => decisionTextForItem(decision, item)),
+    ...applicableDecisions(item, plan.decisions).map((decision) => decisionTextForItem(decision, item)),
     ...now,
     ...acceptanceClauses,
   ].join('\n');
@@ -105,6 +128,45 @@ function relatedGateText(plan: ParsedPlan, item: PlanItem): string {
 
 function isFinalLifecycleItem(item: PlanItem): boolean {
   return FINAL_LIFECYCLE_RE.test(item.text) || FINAL_PHASE_RE.test(item.phase ?? '');
+}
+
+/**
+ * Admission guard for the direct blocker writer. Plan activation is not the only
+ * way an agent can serialize work behind the release plane: `set_blocker` can park
+ * an item without a plan. Keep the same narrow exception as the plan guard and
+ * allow the actual gate-repair item itself to use a release blocker.
+ */
+export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): StagingFirstBlockerProblem | null {
+  const blockerText = input.blockerText.trim();
+  if (!blockerText) return null;
+  const stagingOnly = EXPLICIT_STAGING_ENV_RE.test(blockerText) && !MAIN_RELEASE_BLOCKER_RE.test(blockerText);
+  if (stagingOnly) return null;
+  const releaseRef =
+    MAIN_RELEASE_BLOCKER_RE.test(blockerText) ||
+    (GENERIC_DEPLOY_BLOCKER_RE.test(blockerText) && !EXPLICIT_STAGING_ENV_RE.test(blockerText));
+  const strongGate = hasStrongDeployedGate(blockerText) || (input.kind === 'gate' && releaseRef);
+  if (!strongGate) return null;
+
+  const itemText = input.itemText.trim();
+  // A gate-repair item is itself operating the release plane, so it is not
+  // ordinary implementation being serialized behind that plane.
+  if (LIVE_GATE_OPERATION_RE.test(itemText)) return null;
+  if (isFinalLifecycleText(itemText)) return null;
+  if (hasNarrowDeployedMainException(`${itemText}\n${blockerText}`)) return null;
+
+  return {
+    itemId: input.itemId,
+    code: 'non_final_deployed_main_blocker',
+    detail:
+      `${input.itemId} is being blocked on main/:3070/green-checkpoint/deployment for non-final work. ` +
+      `Continue implementation and non-final verification on staging/current-build. ` +
+      `Only use this blocker for a narrow deployed-only property: name that property, explain concretely ` +
+      `why staging/current-build cannot exercise it, and retain the deployed wait only for that property.`,
+  };
+}
+
+function isFinalLifecycleText(text: string): boolean {
+  return FINAL_LIFECYCLE_RE.test(text) || LIVE_GATE_OPERATION_RE.test(text);
 }
 
 /**

@@ -902,6 +902,18 @@ npm run test:affected:integration      # also runs *.integration.test.ts
 npm run lint:tsc -- --files=<the files you edited>   # TYPES — vitest does not typecheck
 ```
 
+⚠ **ORDER MATTERS: typecheck LAST, after your FINAL edit — including the edit you made
+to fix a failing test.** The ordinary loop invalidates its own verdict: typecheck → run
+suites → a test fails → edit the TEST file → suites green → done. The clean verdict was
+banked BEFORE that last edit and never covered it, and the green suite cannot stand in for
+it, because vitest transforms via esbuild and never typechecks — a green run carries ZERO
+type information. So the loop ends holding a fresh green signal that is silent on types
+beside a stale clean one that is not, and they read as agreement. The resulting regression
+is type-only, invisible to `test:affected` by construction, and first surfaces at the fleet
+green-checkpoint hours later. Re-run `lint:tsc --files=` over the FULL changed set — source
+and test files — as the last thing you do.
+
+
 ⚠ **`test:affected` runs the suites of the WORKSPACES your changed paths map into —
 so "green" can mean "nothing ran". To see what your change actually selects, ask:**
 

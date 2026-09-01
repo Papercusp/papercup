@@ -1125,6 +1125,38 @@ export function formatLintTscRunStamp({ label, runStartIso, headSha, scope, file
     scope: string;
     files: string[] | null;
 }): string;
+/**
+ * Persist the same run stamp to disk (EI-19421388108187854).
+ *
+ * The stamp above is printed to STDOUT, which means it exists only in whatever
+ * terminal scrollback the run happened to land in. Nothing downstream can ask
+ * "is the standing tsc verdict still current?", because the answer — when the
+ * last run started and which files it covered — was never recorded anywhere a
+ * later process can read.
+ *
+ * That gap is what makes the typecheck→test→fix-the-test loop bank a stale
+ * verdict: the last edit in that loop is almost always a TEST file, edited
+ * AFTER the typecheck ran, and the green suite that follows carries zero type
+ * information (vitest transforms via esbuild and never typechecks). The agent
+ * ends holding a fresh green signal that is silent on types beside a stale
+ * clean one that is not, and reads the pair as agreement.
+ *
+ * Written at run START (like the stamp), so a killed or hung run still leaves a
+ * marker — a verdict that never finished is exactly the kind that must not be
+ * quoted as clean. Best-effort by construction: a marker is an advisory input
+ * to a nudge, so failing to write one must never fail the typecheck itself.
+ *
+ * @param {{ root: string, label: string, runStartIso: string, headSha: string|null, scope: string, files: string[]|null }} input
+ * @returns {boolean} true iff the marker was written
+ */
+export function writeLintTscRunMarker({ root, label, runStartIso, headSha, scope, files }: {
+    root: string;
+    label: string;
+    runStartIso: string;
+    headSha: string | null;
+    scope: string;
+    files: string[] | null;
+}): boolean;
 /** Short HEAD sha at call time, or null when git cannot answer (never a fabricated value). */
 export function gitHeadShaForLintTsc(root: any): string | null;
 export function runTscBaselineGate({ root, tscCommand, preTscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
@@ -1217,6 +1249,8 @@ export const LANDING_RACE_WINDOW_SEC: number;
  * @type {number}
  */
 export const TSC_HEAP_MB: number;
+/** Where the standing-verdict marker lives, relative to the repo root. */
+export const LINT_TSC_RUN_MARKER_REL: ".papercusp/scratch/lint-tsc-last-run.json";
 /**
  * One diagnostic parsed out of tsc's output.
  */

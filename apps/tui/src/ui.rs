@@ -2630,30 +2630,6 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
 /// the bottom-anchored scroll offset is exact; `chat_scroll` counts lines UP from
 /// the latest (0 = pinned to the newest). The in-flight assistant bubble shows a
 /// live `<say>` preview via `chat_tags::live_preview`.
-fn chat_step_label(app: &App) -> String {
-    let Some(step) = app.chat_step.as_ref() else {
-        return "starting".to_string();
-    };
-    if step.running {
-        return format!("step {} running", step.step);
-    }
-    let mut label = format!(
-        "step {} finished · {} tool{}",
-        step.step,
-        step.tool_call_count,
-        if step.tool_call_count == 1 { "" } else { "s" }
-    );
-    if let Some(reason) = step
-        .stop_reason
-        .as_deref()
-        .filter(|reason| !reason.is_empty())
-    {
-        label.push_str(" · ");
-        label.push_str(reason);
-    }
-    label
-}
-
 fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // Inline card (sentinel-tui-shared-backend-and-cards Phase 2a): when the
     // operator brain has an open `chat:ask_choice` card, reserve a bottom strip
@@ -2876,7 +2852,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
     let streaming_title = if app.chat_streaming {
-        format!(" · {} · Ctrl+X cancel", chat_step_label(app))
+        " · Running · Ctrl+X cancel".to_string()
     } else {
         String::new()
     };
@@ -2937,7 +2913,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     } else if app.chat_streaming {
         (
             " Running — input locked ",
-            format!("{} · Ctrl+X cancel", chat_step_label(app)),
+            "Running · Ctrl+X cancel".to_string(),
             Theme::notify(),
         )
     } else if app.chat_composing {
@@ -7289,13 +7265,12 @@ mod tests {
                 account_route: "auto".into(),
             },
         ));
-        app.update(crate::event::Event::ChatStepStarted { step_index: 1 });
         let text = render(&app, 100, 16);
         assert!(text.contains("typing in pro"));
         assert!(!text.contains("<say>")); // tags stripped from the preview
         assert!(text.contains("claude-sonnet-4-6:high"));
         assert!(text.contains("account auto"));
-        assert!(text.contains("step 2 running"));
+        assert!(text.contains("Running"));
         assert!(text.contains("input locked"));
     }
 

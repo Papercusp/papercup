@@ -782,6 +782,14 @@ export function planWorkspaceHostInitialization(
     initStep(request, "verify", "verify-initialization", bindingStepIds, {
       sourceKind: request.source.kind,
       requiredChannels: credentialBindings.map((binding) => binding.channel),
+      ...(request.source.kind === "git"
+        ? {
+            repository: {
+              destination: request.source.destination,
+              visibility: request.source.visibility,
+            },
+          }
+        : {}),
     }),
   );
 

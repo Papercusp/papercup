@@ -30,7 +30,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -67,7 +68,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -103,7 +105,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -139,7 +142,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -176,7 +180,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -212,7 +217,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Seeing which accounts the gateway can draw from and what each is bound to.",
@@ -247,7 +253,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Dynamically routing an agent (yourself or another) to a specific pool account without respawning it.",
@@ -283,7 +290,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Refresh stale budget readings before `fleet:capacity`; use `provider:'codex'` for Codex, and `model:'gpt-reserve'` when checking Luna reserve capacity.",
@@ -319,7 +327,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Adding a Claude Max subscription the inference gateway can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.",
@@ -355,7 +364,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Retiring account(s) from the pool (e.g. subscriptions you no longer use). Retiring several at once? Pass them all via `ids`.",
@@ -390,7 +400,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Clearing a pool account's projected pause/penalty after a confirmed reset — the Accounts tab's per-account Reset button, or unsticking an account the drain selector is avoiding on a stale projection.",
@@ -425,7 +436,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "An account is rate-limited and you want to move its work onto a fresh account NOW (the same action the auto-scale-out takes; this is the manual lever).",
@@ -491,7 +503,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -528,7 +541,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Inspecting one account’s rate-limit penalty/pause projection, or why an account auto-scaled out.",
@@ -563,7 +577,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Deciding whether an account's egress IP is safe to pin (accounts:register/accounts:pin egress) — before AND after applying a pin, to prove it actually routes through the new IP and doesn't collide with another pooled account's egress.",
@@ -599,7 +614,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Reverting an accounts:pin so the agent routes normally again.",
@@ -1397,7 +1413,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -1503,7 +1520,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -1794,7 +1812,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Understanding what behaviour:run grades before running it, or which check a failing run tripped.",
@@ -1829,7 +1848,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Use when you need to grade how a desktop agent behaved on a plan run: routing, gating, scope, execution, launch discipline, and completion evidence. score grades an existing run; launch runs and grades a fresh fixture.",
@@ -2104,7 +2124,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Deciding WHICH blueprint shape fits a piece of work before creating a harness — the Pot operator's first stop (decomposable features → coding, investigation → research, parallel codemod → migration, a decision → vote/deliberate). Also the discovery surface for what launch blueprints exist.",
@@ -2140,7 +2161,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Authoring a brand-new blueprint shape from scratch (rare — usually you extend `coding`/`base`/`research`). Returns validated canonical YAML.",
@@ -2176,7 +2198,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "The usual way to make a new blueprint: inherit shared structure from any resolvable parent (a built-in, or a Cupboard-installed blueprint) and override only what differs (knobs, a few roles, a spine tweak). Cheap to author.",
@@ -2230,7 +2253,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Before persisting a blueprint you authored (with blueprint:create/extend) or to inspect a built-in. Always validate before writing .papercusp/blueprint.yaml or calling harness:create.",
@@ -2423,7 +2447,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3682,7 +3707,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Checking what's already certified before running cert:run again (avoid a redundant re-cert), or reading a specific entry's certification evidence (verdict/ranAt/manglingRate/summary).",
@@ -3718,7 +3744,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Certifying a NEW (model, quant, num_ctx, parallel, backend) combo before adding it to CERTIFIED_CATALOG, or re-certifying an existing one after a config/prompt change. Pass `backendId` when the backend is already registered (gateway:local_backend_list); otherwise pass `baseUrl` + `backend` directly.",
@@ -3754,7 +3781,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3791,7 +3819,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4351,7 +4380,8 @@
         "curator",
         "mug",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4458,7 +4488,8 @@
         "curator",
         "mug",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4566,7 +4597,8 @@
         "curator",
         "mug",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5008,7 +5040,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "The consult is settled (answered) — or engaged-but-stuck: you validated relevance yet cannot help (cant_help, with the reason) — or the QUESTION is void (duplicate, inadmissible, already settled elsewhere): cant_help + reason is the TERMINAL, NON-ADVANCING exit, the only one that does not spend the next reviewer — or cap-hit while STILL deliberating: graduate it into shared live work.",
@@ -5043,7 +5076,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You validated the consult (read the cited evidence) and your context genuinely does not cover it. Declining fast is the helpful move — never answer from guesswork.",
@@ -5079,7 +5113,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A peer may already know the answer from their transcripts, code, or prior debugging, and you do not know who. Use this before re-deriving it.",
@@ -5115,7 +5150,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You were routed a consult (a 🧭 wake naming a conversation) and are answering/clarifying from your own transcript — or you are the requester following up.",
@@ -5269,7 +5305,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve. Answer several at once via items:[…] (each item supplies its own body).",
@@ -5305,7 +5342,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You have one or more conversation_ids (from coord:ask, conversations:list, or an inbox notice) and want the full thread. Pass every id you need at once via `ids` instead of calling per id.",
@@ -5341,7 +5379,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A specific conversation is one you want to track or contribute to. Posting/answering auto-joins you; call this to follow without posting, or to change your delivery mode. Follow several at once via ids:[…] or items:[…].",
@@ -5377,7 +5416,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Browsing for open questions you could answer, or finding a conversation by topic/harness. `{ kind:\"question\", state:\"open\", unansweredOnly:true }` is the set still waiting on someone — nobody is pushed these (topic subscriptions reach almost nobody), so pulling them here is how they get answered.",
@@ -5413,7 +5453,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Open-ended coordination with no single answer (\"how should we approach X?\"), or contributing to an existing thread. For a question that wants an answer, use coord:ask instead.",
@@ -5449,7 +5490,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A conversation has concluded that there is a concrete, trackable problem — turn it into an issue so it can be claimed, prioritized, and promoted to a feature. Promote several at once via ids:[…] or items:[…].",
@@ -5485,7 +5527,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A question conversation has been answered satisfactorily. Accept the best answer here — this both closes it and feeds the answer back so nobody has to ask again. Resolve several at once via items:[…] (each item supplies its own accepted answer).",
@@ -5521,7 +5564,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "An open question was framed on a premise that is now false, stale, or otherwise not answerable; use this to replace the gate durably so the correction is visible in conversations and the old gate cannot continue to block work.",
@@ -5557,7 +5601,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "After acting on (or deliberately not acting on) coord message(s) — closes the loop for the sender. Ack several at once via msg_ids:[…].",
@@ -5592,7 +5637,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You need a SPECIFIC named agent to answer something only they know (resolve ids via coord:presence). Normally reached from the owner's Ask-an-agent UI, not from agent code.",
@@ -5628,7 +5674,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You need the owner's (human's) input on a decision. Default call (no timeout_s) opens the question and returns at once with a conversation_id — safe to call from anywhere, including code:run; check back later via conversations:get or events:await { event: 'conversation:answered:<conversation_id>' }.",
@@ -5663,7 +5710,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Optional, at end-of-turn when idle — to record WHY you are idle (the note rides the wake turn), tune your wake floor, and verify/repair the standing inbox-wake watch. Read the returned before/after reachability verdict and advice, then END YOUR TURN.",
@@ -5699,7 +5747,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You just joined a fleet/topic, or woke after being paused/offline, and want what was said to that audience while you were away. The pull counterpart to an @fleet:/@topic: broadcast.",
@@ -5734,7 +5783,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Orienting on current system health — \"is anything wrong right now?\" — before claiming a stall/red-gate broadcast, or when an old severe-event alarm in your inbox needs a live open/resolved verdict.",
@@ -5769,7 +5819,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You know you are working alongside a peer (same file, same deliverable, one of you blocks the other) and want their goal + state surfaced to you without waiting for a derivation to infer it — or you can see TWO OTHER agents heading for the same work and want each to see the other.",
@@ -5805,7 +5856,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Starting distinct work so peers see it. For a plan lane, pass P-NNN ids as `items` to claim it structurally. For multi-goal coverage, pass resolvable refs as `declared_goal_refs`. scheduler:get_next already declares claimed WI-/EI- intent; do not pass that work-item id as `items`. For broad \"take everything remaining\" work, enumerate items to expose overlap (EI-5873).",
@@ -5841,7 +5893,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "The shared work ended, or you no longer want a peer's state riding your reads. Decoupling is the cost control: each coupled peer adds their goal + state to every read that renders coupling, so a coupling you have stopped using is pure token spend on both sides. Decouple when you stop needing to watch each other.",
@@ -5877,7 +5930,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A consequential decision where the owner might already have an answer, but you want an automatic fallback to a vote and a curated escalation rather than blocking.",
@@ -5912,7 +5966,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You are a fleet leader / coordinator handing a specific lane to ANOTHER agent and want it picked up NOW — \"su-7a2a, take fleet-dispatch P-001..P-004\". One call assigns + delivers + queues a wake; verify pickup separately. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.",
@@ -5948,7 +6003,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Almost never directly — the event-reaction rules fire coord:emit automatically when a work_item completes/claims, a coordination-window opens/closes, etc. Call it by hand ONLY to emit a recognized-shape lifecycle event the rules do not yet cover.",
@@ -5985,6 +6041,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "merge-resolver",
         "release-fixer",
         "content-fixer"
@@ -6022,7 +6079,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Showing the human inbox; diagnostics; checking your own past escalations.",
@@ -6057,7 +6115,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.",
@@ -6092,7 +6151,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A status surface (statusline, TUI bar, dashboard widget) needs the fleet's headline state in one round-trip, or you want the current contextual tips for an audience.",
@@ -6157,7 +6217,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Wrapping up your piece of a plan and naming who picks up next — or accepting a handoff someone made to you.",
@@ -6223,7 +6284,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Diagnostics — \"who handed what to whom?\", \"what handoffs to me are still open?\", or \"which lapsed unaccepted?\" (status: \"expired\").",
@@ -6258,7 +6320,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "At turn start; whenever you suspect another agent contacted you.",
@@ -6293,7 +6356,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A human asks 'where is / bring up / focus agent X's terminal' and window-manager-level focus is unavailable (e.g. GNOME Wayland). Also useful to visually distinguish one agent's window among many open panes.",
@@ -6328,7 +6392,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You (or the human via the inbox) want to message the agent that owns a specific work-item — start a durable, scoped thread with them about that item.",
@@ -6364,7 +6429,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds while keeping assignments, inbox, and declaration. Inspect the ⟦post-compaction-recovery⟧ marker already delivered in the carry context. If it is complete and its controlGeneration matches the latest ⟦CTRL:…⟧ generation, recovery already arrived: do not call coord:orient; declare your actual lane with coord:declare-intent { intent, current_plan_slug, items }. Call coord:orient { afterCompaction: true } exactly once only when the marker is absent, incomplete, generation-mismatched, or you deliberately need live data excluded from the injected block.",
@@ -6400,7 +6466,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Turn start — the OMP coordination extension calls this to show which plans changed since the agent last read. Also ad-hoc, to review recent plan activity.",
@@ -6435,7 +6502,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, send a required coord:send wake and inspect its result; ended rows need relaunch. Use owner:<id> (or the ownerId compatibility alias for older callers) for one agent, owners:[...] for a bounded dependency set, and coord:roster { view:'live', project:'ids' } for a broad census.",
@@ -6471,7 +6539,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A coord:inbox / coord:feed entry rendered with `body_truncated:true` (or you were told \"see coord msg <id>\") and you need its exact full text — one cheap lookup by msg_id instead of a since_ts poll; a fresh coord:inbox call with payloadTier:\"full\" also restores raw entry content, but reads a window.",
@@ -6506,7 +6575,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6543,7 +6613,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "The human (or an authorised agent acting on their behalf) has decided how to proceed on open escalation(s). Resolve several at once via msg_ids:[…]+choice or items:[…].",
@@ -6578,7 +6649,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A sent message is wrong/dangerous and recipients must disregard it — a mistaken directive, a leaked-scope broadcast (the EI-9501 cleanup), superseded instructions.",
@@ -6613,7 +6685,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Before dispatch/handoff/routing: who can take work (view=live)? Who joined what fleet (view=members)? Who's on plan P (view=claims)? Historical who-was-ever-here (view=history). Just need live ownerIds? { view:\"live\", project:\"liveness\", states:[\"live\"] } — ~99% smaller than the default read, and the only form that reliably fits one result.",
@@ -6649,7 +6722,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Share context or ask. The `summary` is the required inbox headline; include `to` and `expects`; `body` is for detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, none exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. Waiting on something? `blockedOn: { kind, ref }` on the section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.",
@@ -6715,7 +6789,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You broadcast or sent something that turned out to be wrong, and the people who received it are still carrying it. Especially after a measurement you relayed does not survive re-checking.",
@@ -6751,7 +6826,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You want the full conversation around a coord message (replies, acks, resolutions). Use the exact `msg_id` from coord:inbox or coord:read as the `root_msg_id` argument.",
@@ -6787,6 +6863,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "voter",
         "advocate"
       ],
@@ -6823,7 +6900,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You face a genuinely uncertain, consequential choice between named options and want a diverse, anti-correlated read before committing — instead of deciding alone or escalating raw.",
@@ -6858,7 +6936,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "The work is ALREADY assigned to the target (plan_items:assign or a prior dispatch) and you just need it to start a turn and pick it up — a re-orient nudge. Pick a `parked` target (coord:presence → sessionState:parked).",
@@ -6894,7 +6973,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Switching an agent (or the default) between auto and manual wake delivery — e.g. pausing a cup's auto-injected turns to review them first, or switching back. Include `reason` when the control action needs a durable rationale.",
@@ -6929,7 +7009,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Reviewing a manual-mode agent's staged wakes from its pane — releasing the ones to deliver (optionally edited) and skipping the rest. Draining a backlog → release_all (one consolidated turn) or skip_all, never N individual releases.",
@@ -6964,7 +7045,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "The owner asks \"what needs me / what is waiting on me / am I blocking anything\", at the top of an owner session, and in any fleet-leader or monitor sweep. Also before you report \"all green\" — a fleet with a 5h-old owner wall is NOT green, it is stalled on the owner and nobody has told them.",
@@ -7000,7 +7082,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Turn start — the OMP coordination extension calls this to scope the inbox to new entries. To check if a PEER has seen a message you sent (READ-RECEIPT, EI-2042): coord:watermark { agent: <their ownerId from coord:presence>, sent_ts: <your message ts> } → seen:true means it was injected into their context.",
@@ -7035,7 +7118,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Debugging identity — \"what ownerId am I?\" before relying on lock or message behaviour.",
@@ -8428,7 +8512,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8465,7 +8550,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8532,7 +8618,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Moving a cloud-configured harness onto a real frame so its agents run remotely (distinct IP, own Claude sub) while state federates to the local view.",
@@ -8568,7 +8655,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.",
@@ -8604,7 +8692,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Checking where a harness runs (local vs which cloud frame) and the frame's reachable host."
@@ -8638,7 +8727,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Done with a cloud harness (or to stop its billing). Teardown destroys the machine so it stops costing money.",
@@ -8673,7 +8763,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Done with a deployed pot (or to stop all its billing). Frames are cattle — destroy + redeploy is the model."
@@ -10008,7 +10099,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Confirming a provisioned egress IP is actually reachable — before/after egress:provision, or investigating a suspected dead proxy.",
@@ -10043,7 +10135,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Seeing what IPs a provider has available/assigned before provisioning or releasing one.",
@@ -10078,7 +10171,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Programmatically provisioning a NEW egress IP for a pooled account instead of hand-registering one you already have — rotating in a fresh Rayobyte IP, or drawing the next entry from a pre-provisioned static list.",
@@ -10114,7 +10208,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Decommissioning a provisioned egress IP — a flagged/dead proxy, or freeing capacity before re-provisioning.",
@@ -10413,7 +10508,8 @@
         "curator",
         "mug",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Choosing which test to run against a knob change — list the catalog to see what kinds exist, which tier each runs at (offline replay is the cheap default screen), and which knobs each can vary. Filter by kind/tier.",
@@ -10445,7 +10541,8 @@
         "curator",
         "mug",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Reviewing how past experiments performed — which arms won, at what cost, and whether they were applied. Filter by testId to a single test kind.",
@@ -10477,7 +10574,8 @@
         "curator",
         "mug",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Testing how a knob change performs before adopting it — screen a policy/prompt overlay against a battery on the cheap offline replay tier; the result ranks arms vs the baseline.",
@@ -10898,7 +10996,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -10934,7 +11033,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -10971,7 +11071,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11038,7 +11139,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11075,7 +11177,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11112,7 +11215,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Before a placement round, to size how many FRESH members to spawn: select the provider/model/account scope, then place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.",
@@ -11179,7 +11283,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11216,7 +11321,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A fleet you are in is broadcasting more than you need live — set digest (terse) or muted (silent; pull on demand). You remain a member.",
@@ -11252,7 +11358,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You (the fleet leader) want to reclaim member slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.",
@@ -11288,7 +11395,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11354,7 +11462,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11422,7 +11531,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11490,7 +11600,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11646,7 +11757,8 @@
         "curator",
         "mug",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11774,7 +11886,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11897,7 +12010,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11965,7 +12079,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -12033,7 +12148,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -12159,7 +12275,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Egress proxies are flapping — agents get 'upstream stream stalled (aborted)' / 'paced/paused' on QUIET accounts (transport failures, not usage). Flip proxy:'off' to route direct through the box IP; flip back on once the proxies recover.",
@@ -12195,7 +12312,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Checking what's registered before register/remove, or confirming a register/remove landed.",
@@ -12231,7 +12349,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Standing up (or re-pointing / re-tuning) a local llama-server/vllm/ollama backend so the gateway can route to it (local-concurrent-inference-2026-07-02 D-002).",
@@ -12267,7 +12386,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Decommissioning a local backend that no longer exists / should never be routed to again.",
@@ -12303,7 +12423,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Also fleet-wide triage (no args) after an error storm. Also: confirming an accounts:pin actually took effect / reading a session's current routing before deciding whether to re-pin it.",
@@ -12339,7 +12460,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Right after accounts:register / accounts:remove / an egress change, to apply it live without a gateway restart.",
@@ -12375,7 +12497,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Agents/turns are SLOW, QUEUED, or stalling — or you are about to conclude 'the pool is capacity-crunched'. Also: confirming what pool + concurrency the running gateway uses, or verifying a hot-reload took effect (version bump).",
@@ -13126,7 +13249,8 @@
         "curator",
         "mug",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Scoring a completed gym run for the optimizer — the subjective reward the proposer optimizes. Use the TARGET blueprint's gym.rubric so a coding vs research target is judged on its own dimensions.",
@@ -13189,7 +13313,8 @@
         "curator",
         "mug",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Scoring a gym run's deterministic guardrails — the optimizer can't game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's gym.signals by name; set loadDrillOutcomes to pull the live red-queen sandbox corpus for the drill signals.",
@@ -13225,7 +13350,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -13262,7 +13388,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Spinning up a new managed harness (coding from a repo, or a repo-less research harness) configured by a blueprint. The agent-authorable path to a new harness.",
@@ -13332,7 +13459,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Onboarding an existing code repository as a managed coding harness — you want the blueprint inferred from the repo (test command, stack, monorepo/frontend) rather than authored by hand.",
@@ -13521,7 +13649,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Once per workspace after the config.json→PG cutover, to lift any pre-existing harness config.json instance content into the registry. Safe to re-run (idempotent).",
@@ -13556,7 +13685,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14087,7 +14217,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14125,6 +14256,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "scanner",
         "judge"
       ],
@@ -14163,7 +14295,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14200,7 +14333,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14237,7 +14371,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14274,7 +14409,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14373,7 +14509,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14410,7 +14547,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14447,7 +14585,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You have direct evidence for one item and will take a terminal action on the owner's behalf. Call once per action; use inbox:bulk-run-report only for recommended/skipped/failed records.",
@@ -14482,7 +14621,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "FIRST call when you are woken as a bulk-resolve resolver — it tells you what you are working on and what each item can actually do. Re-read it after a consult reply lands to pick up any item whose options changed.",
@@ -14517,7 +14657,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "After deciding each item in a bulk-resolve run. Batch several via `items:[…]` rather than one call per item.",
@@ -14552,7 +14693,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Once every item in the manifest has been reported — the last call of a bulk-resolve pass, before you end your turn.",
@@ -14587,7 +14729,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Operator inbox PASS — run FIRST each wake over the Decisions tier: re-tier attention items after reading them (downgrade noise, escalate something a worker under-flagged, confirm/resolve a real decision), always recording the why in `note`. Triaging several at once? Pass them all via `items:[{ itemId, action, note? }]`. Leave the inbox clean before sleeping.",
@@ -14622,7 +14765,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14659,7 +14803,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14696,7 +14841,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14843,7 +14989,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14880,7 +15027,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -15263,7 +15411,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -16285,7 +16434,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -16322,7 +16472,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -16359,7 +16510,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -16396,7 +16548,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -16433,7 +16586,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -16470,7 +16624,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -16507,7 +16662,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -16884,7 +17040,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -17069,7 +17226,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -17106,7 +17264,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -17143,7 +17302,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -17180,7 +17340,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -18240,7 +18401,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -18277,7 +18439,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -18313,7 +18476,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -18349,7 +18513,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -18386,7 +18551,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -18527,7 +18693,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -18565,6 +18732,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "judge"
       ],
       "profile": "engineer",
@@ -18632,7 +18800,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "At the start of a session that should act as a named agent — e.g. you were told \"you are builder-1, go to your items\". Adopt the name, then plan_items:my_items.",
@@ -18668,7 +18837,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You are dividing your own plan work across your named agents — \"builder-1 takes P-001..P-003\". Assign several at once via itemIds:[…] or items:[…].",
@@ -18704,7 +18874,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You are about to begin work on item(s) (yours via assignment, or pulled from the pool). Claim several at once via itemIds:[…] or items:[…].",
@@ -18740,7 +18911,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You are picking up plan item(s) to work them — this replaces a bare plan_items:claim: every worked item gets a tracked work_item (no untracked self-item). Pick up several at once via itemIds:[…] or items:[…].",
@@ -18776,7 +18948,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Periodically while holding a claim — ideally once per completed turn (kind=\"activity\"), or kind=\"extend\" before a long uninterrupted op. Pulse several held items at once via itemIds:[…] or items:[…].",
@@ -18812,7 +18985,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You want to help on a shared plan owned by another user — join, then pull unassigned items.",
@@ -18848,7 +19022,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You are done helping on a shared plan.",
@@ -18884,7 +19059,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You were told to work on your assigned items — read them here, then claim the next idle one.",
@@ -18920,7 +19096,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You finished (or are pausing) work on item(s) you claimed and want to free the live grip. Release several at once via itemIds:[…] or items:[…].",
@@ -18956,7 +19133,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Deciding what to pick up, or auditing who holds what on a plan.",
@@ -18992,7 +19170,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "An assignment is no longer wanted — reassigning to nobody, or freeing item(s) back to the pool. Unassign several at once via itemIds:[…] or items:[…].",
@@ -19596,7 +19775,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "The cleanup manifest marks one pending finding autoApply:true and you have a concise evidence-based rationale.",
@@ -19631,7 +19811,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "First call as a plan-cleanup resolver, and again before each batch of actions.",
@@ -19666,7 +19847,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Batch the non-action outcomes after reviewing a cleanup manifest.",
@@ -19701,7 +19883,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Last call after every cleanup finding was acted or reported.",
@@ -20593,6 +20776,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "promote"
       ],
       "profile": "engineer",
@@ -22858,7 +23042,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -22895,7 +23080,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -22932,7 +23118,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -22969,7 +23156,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23110,7 +23298,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23147,7 +23336,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23184,7 +23374,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23245,7 +23436,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23313,7 +23505,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23350,7 +23543,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23387,7 +23581,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23424,7 +23619,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23461,7 +23657,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23498,7 +23695,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23535,7 +23733,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23571,7 +23770,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23608,7 +23808,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23669,7 +23870,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23706,7 +23908,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23767,7 +23970,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23804,7 +24008,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23841,7 +24046,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23878,7 +24084,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23915,7 +24122,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23952,7 +24160,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -23989,7 +24198,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -24026,7 +24236,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -24086,7 +24297,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -24123,7 +24335,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -24502,7 +24715,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "First-run provisioning, or re-checking hardware after a driver/GPU change.",
@@ -24538,7 +24752,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Actually provisioning a local inference backend after reviewing provisioner:plan_install's output.",
@@ -24574,7 +24789,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Previewing exactly what provisioner:install would write, before committing.",
@@ -24610,7 +24826,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Deciding what to install before committing to a plan/apply.",
@@ -24677,7 +24894,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "Before working in a subsystem (e.g. `coordination-substrate`), to load the rationale behind it — why it is the way it is — without searching everything.",
@@ -24713,7 +24931,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "To backfill the rationale index (kind:\"all\") on a fresh DB, or force-resync one source after an out-of-band change. Routine maintenance is automatic.",
@@ -25468,7 +25687,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -25751,7 +25971,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -25789,6 +26010,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "judge"
       ],
       "profile": "engineer",
@@ -25826,7 +26048,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -25863,7 +26086,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -25900,7 +26124,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -25937,7 +26162,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -25974,7 +26200,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26011,7 +26238,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26101,7 +26329,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26138,7 +26367,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26175,7 +26405,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26212,7 +26443,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26249,7 +26481,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26287,6 +26520,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "judge"
       ],
       "profile": "engineer",
@@ -26325,6 +26559,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "judge"
       ],
       "profile": "engineer",
@@ -26362,7 +26597,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26400,6 +26636,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "judge"
       ],
       "profile": "engineer",
@@ -26438,6 +26675,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "judge"
       ],
       "profile": "engineer",
@@ -27267,7 +27505,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to another agent, a UI 'run this on that agent' action, or a leader placing a precise command (not prose) onto a fleet member.",
@@ -27962,7 +28201,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You have a template ref (from templates:list, or the user named one like \"papercusp-app\") and need to read HOW to build from it — the GUIDE.md is the composition prompt.",
@@ -27998,7 +28238,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A user asks to build/scaffold an app (or \"use the papercusp-app template\") and you need to discover which official templates exist before building. The entry point to the app-template flow.",
@@ -28034,7 +28275,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "The user picked a template (from templates:list, or named one) and wants to START building the app — this scaffolds the harness AND hands the GUIDE to a builder in one call.",
@@ -28811,7 +29053,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "No existing topic fits a relevance area you (and likely others) will want to follow. Keep the slug to a word or two; the description to one sentence.",
@@ -28846,7 +29089,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "To understand all current work in a relevance area before you start in it, or to see what is happening with e.g. `zero-cache` across every object kind. Read several areas at once via topics:[…]. Use { coupled: true } when you do NOT yet know which topics matter to you: it derives them at read-time from your coupled peers' held work (each result carries `because`), writes nothing, and narrows by itself as coupling decays.",
@@ -28882,7 +29126,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "At the start of work, to see the shared topic taxonomy before tagging/subscribing — and to prefer an existing topic over creating a near-duplicate (D-004).",
@@ -28918,7 +29163,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "topics:list shows two topics that mean the same thing — fold the lesser-used into the better one.",
@@ -28953,7 +29199,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "You want a feature/plan/issue/conversation to be visible to everyone following a relevance area — tag it with the topic. Tag several at once via items:[…].",
@@ -28989,7 +29236,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A topic you followed is no longer relevant and its updates are noise. Drop several at once via topics:[…].",
@@ -29361,7 +29609,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A peer is doing the wrong thing / working on something now-obsolete / looping, and you need its current turn to STOP. Prefer cooperative (it wraps up cleanly + saves); use force only when it must stop mid-thinking and cooperative was ignored or there's no time.",
@@ -29701,7 +29950,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -29799,7 +30049,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -29836,7 +30087,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -29873,7 +30125,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -29910,7 +30163,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -29947,7 +30201,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -29984,7 +30239,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30021,7 +30277,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30058,7 +30315,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30095,7 +30353,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30132,7 +30391,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30169,7 +30429,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30206,7 +30467,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30242,7 +30504,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30279,7 +30542,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30316,7 +30580,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30353,7 +30618,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30391,6 +30657,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "judge"
       ],
       "profile": "engineer",
@@ -30428,7 +30695,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30464,7 +30732,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30501,7 +30770,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30537,7 +30807,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30575,6 +30846,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
+        "content-fixer",
         "judge"
       ],
       "profile": "engineer",
@@ -30612,7 +30884,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30648,7 +30921,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30685,7 +30959,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30722,7 +30997,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30790,7 +31066,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30827,7 +31104,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30864,7 +31142,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30901,7 +31180,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30938,7 +31218,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30975,7 +31256,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30991,7 +31273,7 @@
           "POST"
         ]
       },
-      "description": "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is history-cleared instead of parking the item; authority cannot fabricate the others. Internal deps stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history.",
+      "description": "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is history-cleared instead of parking the item; authority cannot fabricate the others. Internal deps stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history. Main/:3070/green-checkpoint blockers are refused for ordinary implementation items: use staging/current-build unless a concrete deployed-only property is named with a staging limitation; final shipment and gate-repair items remain allowed.",
       "capabilities": [
         "work_items:write"
       ],
@@ -31011,12 +31293,13 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.",
-        "notWhen": "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker.",
+        "notWhen": "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker. Do not use a main/:3070/green-checkpoint blocker to pause ordinary implementation; staging/current-build is the acceptance plane. Only final shipment or a named deployed-only property may wait on the release plane.",
         "chaining": "work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind from a ref naming one active blocker; pass kind when the ref is reused. Clearing the last blocker returns a feature blocked→todo or drops the issue-family claim hold."
       }
     },
@@ -31048,7 +31331,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31085,7 +31369,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31122,7 +31407,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31159,7 +31445,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31195,7 +31482,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31232,7 +31520,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31269,7 +31558,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31305,7 +31595,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31342,7 +31633,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {

@@ -86,10 +86,10 @@ describe('deriveAuthorization', () => {
     expect(deriveAuthorization(item, true)).toEqual({ whyGated: null, authorizer: null });
   });
 
-  it('a null category is the fail-safe → owner-only / you (never auto an unmapped decision)', () => {
-    // smoke-fail has category null; null ?? attentionCategory(smoke-fail) === null
+  it('a never-auto kind is protected even when its category is null', () => {
+    // smoke-fail has category null and a permanent never-auto authority rung.
     const item = { kind: 'smoke-fail' as AttentionKind, category: null, needsHuman: true };
-    expect(deriveAuthorization(item, true)).toEqual({ whyGated: 'owner-only', authorizer: 'you' });
+    expect(deriveAuthorization(item, true)).toEqual({ whyGated: 'protected', authorizer: 'you' });
   });
 
   it('a PROTECTED category → protected / you, and protected wins over the armed branch', () => {

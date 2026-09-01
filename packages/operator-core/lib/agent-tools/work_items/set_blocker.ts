@@ -28,6 +28,7 @@ import {
   type ExternalBlockerKind,
 } from '../../external-blockers';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
+import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
 
 const BLOCKER_KIND = z.enum(['event', 'gate', 'runtime', 'human']);
 const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
@@ -49,7 +50,7 @@ export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
   description:
-    "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is history-cleared instead of parking the item; authority cannot fabricate the others. Internal deps stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history.",
+    "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is history-cleared instead of parking the item; authority cannot fabricate the others. Internal deps stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history. Main/:3070/green-checkpoint blockers are refused for ordinary implementation items: use staging/current-build unless a concrete deployed-only property is named with a staging limitation; final shipment and gate-repair items remain allowed.",
   guidance: {
     // P-011: response documentation lives here, not in `description` — `returns` is not
     // counted against the 1500-char prompt-weight budget and is demand-loaded via
@@ -58,7 +59,7 @@ export default defineTool({
       'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), and lifecycle.',
     when: 'Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.',
     notWhen:
-      "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker.",
+      "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker. Do not use a main/:3070/green-checkpoint blocker to pause ordinary implementation; staging/current-build is the acceptance plane. Only final shipment or a named deployed-only property may wait on the release plane.",
     chaining:
       'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind from a ref naming one active blocker; pass kind when the ref is reused. Clearing the last blocker returns a feature blocked→todo or drops the issue-family claim hold.',
   },
@@ -140,6 +141,22 @@ export default defineTool({
             id: input.id,
             error: `work_item '${input.id}' is already terminal ('${workItem.state}') — reopen it explicitly before adding an active blocker`,
           };
+        }
+        if (!input.clear) {
+          const stagingFirst = stagingFirstBlockerProblem({
+            itemId: input.id,
+            itemText: `${workItem.title ?? ''}\n${workItem.summary ?? ''}`,
+            blockerText: [input.ref, input.summary, input.evidence, input.nextVerb].filter(Boolean).join('\n'),
+            kind: input.kind ?? '',
+          });
+          if (stagingFirst) {
+            return {
+              ok: false as const,
+              id: input.id,
+              error: `${stagingFirst.detail} Blocker was not written; use staging/current-build for this work item.`,
+              code: stagingFirst.code,
+            };
+          }
         }
         const strictHumanAsk =
           !input.clear && input.kind === 'human' && isStrictOwnerActionCapability(input.capability);

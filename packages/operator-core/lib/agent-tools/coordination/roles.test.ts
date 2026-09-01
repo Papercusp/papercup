@@ -51,6 +51,10 @@ describe('COORD_ROLES', () => {
     expect(COORD_ROLES).not.toContain('blender');
   });
 
+  test('content-fixer is a coord role (launch-fixer workflow requires orient and work-item coordination)', () => {
+    expect(COORD_ROLES).toContain('content-fixer');
+  });
+
   test('AUTH INVARIANT (pot-rename P2): COORD_ROLES + the read-mostly exclusion admit mug but exclude cup/papercup/kettle', () => {
     // Every Queen-only write tool (fleet/place_batch, gym/*, experiment/*,
     // computer/*-desktop) imports QUEEN_PLACEMENT_ROLES (EI-145 part 2 —
