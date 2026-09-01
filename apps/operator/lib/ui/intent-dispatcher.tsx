@@ -21,14 +21,12 @@ import { reportSyncReachable, reportSyncUnreachable } from '@papercusp/sync';
 import { getOrCreateClientId } from '@papercusp/operator-core/lib/ui/client-id';
 import { lookupIntent } from '@papercusp/operator-core/lib/ui/intent-registry';
 import { registerBuiltInIntents } from '@papercusp/operator-core/lib/ui/built-in-intents';
+import {
+  parseUiIntentMessage,
+  type UiIntentMessage,
+} from '@papercusp/operator-core/lib/cross-boundary-event-contracts';
 
-interface IntentMessage {
-  id: number;
-  intent: string;
-  args: Record<string, unknown>;
-}
-
-async function executeIntent(msg: IntentMessage): Promise<void> {
+async function executeIntent(msg: UiIntentMessage): Promise<void> {
   let result: unknown = null;
   let error: string | null = null;
   try {
@@ -72,9 +70,8 @@ export function UiIntentDispatcher(): null {
       handlers: {
         message: (data) => {
           try {
-            const msg = JSON.parse(data) as IntentMessage;
-            if (!msg?.id || !msg.intent) return;
-            void executeIntent(msg);
+            const msg = parseUiIntentMessage(JSON.parse(data));
+            if (msg) void executeIntent(msg);
           } catch (e) {
             // eslint-disable-next-line no-console
             console.warn('[ui-intent] bad message', e);

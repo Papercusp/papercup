@@ -45,13 +45,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSyncConnectivity } from '@papercusp/sync';
 import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
-
-/** Mirrors the Rust `OperatorDeadPayload` (main.rs). */
-interface OperatorDeadPayload {
-  reason: string;
-  respawns: number;
-  window_secs: number;
-}
+import {
+  parseOperatorDeadPayload,
+  type OperatorDeadPayload,
+} from '@papercusp/operator-core/lib/cross-boundary-event-contracts';
 
 export function DesktopSupervisorBanner() {
   const [dead, setDead] = useState<OperatorDeadPayload | null>(null);
@@ -79,21 +76,25 @@ export function DesktopSupervisorBanner() {
       else unlisteners.push(fn);
     };
 
-    void import('@tauri-apps/api/event')
-      .then(async ({ listen }) => {
+    void Promise.all([
+      import('@papercusp/operator-core/lib/tauri-bindings'),
+      import('@tauri-apps/api/event'),
+    ])
+      .then(async ([{ events }, { listen }]) => {
         // Registered together so neither event can land in the gap between two
         // separate awaits — both fire exactly once per episode, so a missed
         // one is missed for good.
-        track(
-          await listen<OperatorDeadPayload>('operator-dead', (e) => {
-            setDead(e.payload);
+        const [operatorDeadUnlisten, installBrokenUnlisten] = await Promise.all([
+          events.operatorDead.listen((e) => {
+            const payload = parseOperatorDeadPayload(e.payload);
+            if (payload) setDead(payload);
           }),
-        );
-        track(
-          await listen<string>('install-broken', (e) => {
+          listen<string>('install-broken', (e) => {
             setInstallBroken(e.payload || 'Papercusp is missing part of its installation.');
           }),
-        );
+        ]);
+        track(operatorDeadUnlisten);
+        track(installBrokenUnlisten);
       })
       .catch(() => {
         /* no event API (very old webview) — the OS notification remains the

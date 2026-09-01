@@ -28,6 +28,16 @@ vi.mock('@tauri-apps/api/event', () => ({
     return unlistenSpy;
   }),
 }));
+vi.mock('@papercusp/operator-core/lib/tauri-bindings', () => ({
+  events: {
+    operatorDead: {
+      listen: vi.fn(async (cb: Listener) => {
+        listeners.set('operator-dead', cb);
+        return unlistenSpy;
+      }),
+    },
+  },
+}));
 
 let offlineState = true; // start offline: a live operator would clear `dead`
 vi.mock('@papercusp/sync', () => ({
@@ -79,6 +89,20 @@ describe('DesktopSupervisorBanner', () => {
     expect(alert.textContent).toContain('serve.mjs child');
     // Waiting is the right advice here — retries genuinely continue.
     expect(alert.textContent).toContain('Retries continue in the background');
+  });
+
+  it('drops a malformed operator-dead payload and reports shape-only drift', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await mount();
+    await fire('operator-dead', { reason: 'secret', respawns: 'five', window_secs: 300 });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      '[cross-boundary-contract-drift]',
+      'operator-dead',
+      'respawns has an invalid type',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('secret');
+    warn.mockRestore();
   });
 
   it('renders the reinstall banner on install-broken and never says "retrying"', async () => {

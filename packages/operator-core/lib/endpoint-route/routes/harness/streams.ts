@@ -32,6 +32,7 @@ import {
   TRUNCATION_MARKER_POSIX_RE,
   capWithMarker,
 } from '../../../transcript-text-caps';
+import type { AgentTimelineEntry } from '../../../cross-boundary-event-contracts';
 
 function remoteIpFrom(req: Request): string {
   return (
@@ -42,24 +43,7 @@ function remoteIpFrom(req: Request): string {
   );
 }
 
-export type AgentTimelineEntry = {
-  // 'prompt' = a real user/wake message (the input that STARTS a turn) — the
-  // frontend groups the timeline into turns on these boundaries.
-  kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result' | 'prompt';
-  text?: string;
-  toolName?: string;
-  toolInput?: unknown;
-  toolId?: string;
-  costUsd?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  durationMs?: number;
-  /** ISO timestamp of the source record (when it carries one — transcript
-   *  records do; some live stream deltas don't). Rendered as the per-entry
-   *  header time in the thinking pane. For accumulated text/thinking it's the
-   *  START of that span (the first delta's time). */
-  ts?: string;
-};
+export type { AgentTimelineEntry } from '../../../cross-boundary-event-contracts';
 
 /** Per-entry text cap for UI-bound thinking entries. A single tool_result can
  *  carry a whole file (hundreds of KB); the pane renders it in a ~120px scroll

@@ -16,9 +16,10 @@ import { getOrgPg } from '@papercusp/db-org';
 import { isLoopbackRequest } from '../../../superuser-token';
 import { onUiIntent } from '../../../ui-intents-bus';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { UiIntentMessage } from '../../../cross-boundary-event-contracts';
 
 type Events = {
-  message: { id: number; intent: string; args: Record<string, unknown> };
+  message: UiIntentMessage;
 }
 
 const DRAIN_LIMIT = 50;

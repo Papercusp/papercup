@@ -19,6 +19,12 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-leader', ownerLabel: 'l', source: 'static-client', workspaceId: 'ws-x', userId: null }),
   deriveFleetMembership: vi.fn(() => ({ fleetSlug: 'p2p-git' })),
 }));
+vi.mock('../../agent-fleets-store', () => ({
+  listFleetsLedBy: vi.fn(async () => []),
+}));
+vi.mock('../coordination/presence-fleet', () => ({
+  resolvePresenceFleet: vi.fn(async (_ownerId: string | undefined, launchFallback: { fleetSlug: string | null; fleetRole: string | null }) => launchFallback),
+}));
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => 'ws-x',
   resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) => {
@@ -79,6 +85,8 @@ import { registerAwait, listParkedAwaitsForSubscribers } from '../../events/awai
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { listFleetAssignments, groupByAgent } from '../../fleet/assignments';
 import { deriveFleetMembership } from '../coordination/identity';
+import { listFleetsLedBy } from '../../agent-fleets-store';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -136,6 +144,68 @@ describe('projectBenchRows (pure)', () => {
 
   it('empty input → empty output', () => {
     expect(projectBenchRows([])).toEqual([]);
+  });
+});
+
+describe('resolveBenchFleetTarget — durable leadership and presence fallback', () => {
+  it('uses the sole durable led fleet before the latest presence label', async () => {
+    vi.mocked(listFleetsLedBy).mockResolvedValueOnce([{ fleetSlug: 'actually-led' }] as never);
+    vi.mocked(resolvePresenceFleet).mockResolvedValueOnce({
+      fleetSlug: 'latest-joined',
+      fleetRole: 'member',
+    });
+
+    const out = await call({ list: true });
+
+    expect(out).toMatchObject({ ok: true, fleet: 'actually-led' });
+    expect(listFleetsLedBy).toHaveBeenCalledWith('ws-x', 'su-leader');
+    expect(resolvePresenceFleet).toHaveBeenCalledWith('su-leader', { fleetSlug: 'p2p-git' });
+  });
+
+  it('refuses an omitted target when the caller leads multiple fleets', async () => {
+    vi.mocked(listFleetsLedBy).mockResolvedValueOnce([
+      { fleetSlug: 'fleet-a' },
+      { fleetSlug: 'fleet-b' },
+    ] as never);
+    vi.mocked(resolvePresenceFleet).mockResolvedValueOnce({
+      fleetSlug: 'fleet-b',
+      fleetRole: 'leader',
+    });
+
+    const out = await call({ list: true });
+
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'ambiguous_fleet',
+      fleets: ['fleet-a', 'fleet-b'],
+    });
+    expect(listFleetAssignments).not.toHaveBeenCalled();
+  });
+
+  it('falls back to current presence when the caller leads no fleet', async () => {
+    vi.mocked(listFleetsLedBy).mockResolvedValueOnce([]);
+    vi.mocked(resolvePresenceFleet).mockResolvedValueOnce({
+      fleetSlug: 'presence-fleet',
+      fleetRole: 'member',
+    });
+    vi.mocked(groupByAgent).mockReturnValueOnce([]);
+
+    const out = await call({ list: true });
+
+    expect(out).toMatchObject({ ok: true, fleet: 'presence-fleet', benched_count: 0 });
+    expect(listFleetAssignments).toHaveBeenCalledWith({
+      workspaceId: 'ws-x',
+      fleet: 'presence-fleet',
+      activeOnly: true,
+    });
+  });
+
+  it('keeps an explicit fleet independent of ambient leadership and presence reads', async () => {
+    const out = await call({ list: true, fleet: 'explicit-fleet' });
+
+    expect(out).toMatchObject({ ok: true, fleet: 'explicit-fleet' });
+    expect(listFleetsLedBy).not.toHaveBeenCalled();
+    expect(resolvePresenceFleet).not.toHaveBeenCalled();
   });
 });
 
@@ -450,6 +520,8 @@ describe('fleet:bench — list mode', () => {
 
   it('errors clearly when no fleet is resolvable and none was passed', async () => {
     vi.mocked(deriveFleetMembership).mockReturnValueOnce({ fleetSlug: null } as never);
+    vi.mocked(listFleetsLedBy).mockResolvedValueOnce([]);
+    vi.mocked(resolvePresenceFleet).mockResolvedValueOnce({ fleetSlug: null, fleetRole: null });
     const out = await call({ list: true });
     expect(out).toMatchObject({ ok: false, error: 'no_fleet' });
     expect(listFleetAssignments).not.toHaveBeenCalled();

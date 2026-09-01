@@ -29,9 +29,15 @@
  *
  * PURE: the filesystem is injected, so this never touches a real tree.
  */
+import { readFileSync } from 'node:fs';
+import * as nodePath from 'node:path';
 import { describe, it, expect } from 'vitest';
 
-import { completionRepoRootsFromRegistry, unresolvedPathsInCompletion } from './complete';
+import {
+  completionRepoRootsFromRegistry,
+  unresolvedPathsInCompletion,
+  workspaceQualifiedCompletionPathHint,
+} from './complete';
 import type { CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 
 const ROOT = '/repo';
@@ -227,6 +233,71 @@ describe('unresolvedPathsInCompletion — multiple checkout integrity', () => {
       repoRoots: [ROOT, '/another-repo'],
     });
     expect(got?.missing.map((entry) => entry.path)).toEqual(['only-there.ts']);
+  });
+});
+
+describe('workspaceQualifiedCompletionPathHint', () => {
+  const WORKSPACES_ROOT = '/workspaces';
+  const WORKSPACE_ID = 'papercusp-workspace';
+  const CHECKOUT_ROOT = `${WORKSPACES_ROOT}/${WORKSPACE_ID}/.papercusp/apps/phone-app`;
+  const FILE = `${CHECKOUT_ROOT}/src/fix.ts`;
+  const probe = {
+    workspacesRoot: WORKSPACES_ROOT,
+    exists: (abs: string) => abs === FILE,
+    isCheckoutRoot: (abs: string) => abs === CHECKOUT_ROOT,
+  };
+
+  it('returns the exact absolute app-checkout path for a workspace-qualified citation', () => {
+    expect(workspaceQualifiedCompletionPathHint('.papercusp/apps/phone-app/src/fix.ts', WORKSPACE_ID, probe)).toBe(
+      FILE,
+    );
+  });
+
+  it('normalizes a leading ./ and Windows separators without changing the absolute repair', () => {
+    expect(workspaceQualifiedCompletionPathHint('.\\.papercusp\\apps\\phone-app\\src\\fix.ts', WORKSPACE_ID, probe)).toBe(
+      FILE,
+    );
+  });
+
+  it('stays silent when the exact candidate is absent or has no valid checkout ancestor', () => {
+    expect(
+      workspaceQualifiedCompletionPathHint('.papercusp/apps/phone-app/src/missing.ts', WORKSPACE_ID, probe),
+    ).toBeUndefined();
+    expect(
+      workspaceQualifiedCompletionPathHint('.papercusp/apps/phone-app/src/fix.ts', WORKSPACE_ID, {
+        ...probe,
+        isCheckoutRoot: () => false,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('fails open for malformed workspace/path input and filesystem errors', () => {
+    expect(workspaceQualifiedCompletionPathHint('../.papercusp/apps/phone-app/src/fix.ts', WORKSPACE_ID, probe)).toBeUndefined();
+    expect(workspaceQualifiedCompletionPathHint('.papercusp/apps/phone-app/src/../secret.ts', WORKSPACE_ID, probe)).toBeUndefined();
+    expect(
+      workspaceQualifiedCompletionPathHint('.papercusp/apps/phone-app/src/fix.ts', WORKSPACE_ID, {
+        ...probe,
+        exists: () => {
+          throw new Error('EIO');
+        },
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe('complete.ts workspace-qualified warning wiring', () => {
+  const source = readFileSync(nodePath.join(__dirname, 'complete.ts'), 'utf8');
+
+  it('computes the repair hint from each unresolved path and the active completion workspace', () => {
+    expect(source).toMatch(
+      /workspaceQualifiedCompletionPathHint\(\s*m\.path,\s*completionWorkspaceId\s*\)/,
+    );
+  });
+
+  it('returns the absolute repair in the warning and tells callers how to re-call', () => {
+    expect(source).toContain('use absolute path \\`${workspaceQualifiedPath}\\` when re-calling');
+    expect(source).toContain('workspace-qualified \\`.papercusp/apps/<app>/...\\` entry with an absolute repair');
+    expect(source).toContain('absolute filesChanged path');
   });
 });
 

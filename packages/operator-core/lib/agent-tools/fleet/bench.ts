@@ -40,6 +40,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
+import { listFleetsLedBy } from '../../agent-fleets-store';
 import { groupByAgent, listFleetAssignments } from '../../fleet/assignments';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import {
@@ -54,6 +55,7 @@ import { getClaimSpecRecord, resolveClaimSpecWorkspace } from '../../scheduler/c
 import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
 
 /** Tags a bench-staged await's `note` so `list` can pick it out from every
  *  OTHER reason an agent might hold an active await (a plain events:await, a
@@ -108,6 +110,70 @@ const BENCH_NOTE_PREFIX = FLEET_BENCH_NOTE_PREFIX;
  */
 const BENCH_ROSTER_READ_BUDGET_MS = 5_000;
 const BENCH_LANE_READ_BUDGET_MS = 6_000;
+const BENCH_FLEET_RESOLUTION_BUDGET_MS = 1_500;
+
+export type BenchFleetTarget =
+  | { kind: 'explicit' | 'led' | 'presence'; fleet: string }
+  | { kind: 'ambiguous'; fleets: string[] }
+  | { kind: 'none' };
+
+/**
+ * Resolve the omitted-fleet target with the same precedence as fleet:leader-brief:
+ * explicit input wins, then one durable leadership relation, then current
+ * presence. Multiple durable led fleets are never guessed from the single
+ * presence label. The launch environment is supplied to resolvePresenceFleet as
+ * its failure-only fallback, so a successful presence read that returns no row
+ * does not resurrect stale launch-time membership.
+ */
+export function resolveBenchFleetTarget(input: {
+  explicitFleet?: string;
+  presenceFleet: string | null;
+  ledFleets: readonly string[];
+}): BenchFleetTarget {
+  if (input.explicitFleet !== undefined) {
+    return input.explicitFleet ? { kind: 'explicit', fleet: input.explicitFleet } : { kind: 'none' };
+  }
+
+  const ledFleets = [...new Set(input.ledFleets.map((fleet) => fleet.trim()).filter(Boolean))];
+  if (ledFleets.length === 1) return { kind: 'led', fleet: ledFleets[0] };
+  if (ledFleets.length > 1) return { kind: 'ambiguous', fleets: ledFleets };
+  return input.presenceFleet ? { kind: 'presence', fleet: input.presenceFleet } : { kind: 'none' };
+}
+
+async function resolveBenchFleet(input: {
+  explicitFleet?: string;
+  ownerId?: string;
+  workspaceId: string;
+}): Promise<BenchFleetTarget> {
+  if (input.explicitFleet !== undefined) {
+    return resolveBenchFleetTarget({
+      explicitFleet: input.explicitFleet,
+      presenceFleet: null,
+      ledFleets: [],
+    });
+  }
+
+  const launchFallback = deriveFleetMembership();
+  const [presenceRead, ledRead] = await Promise.all([
+    withBoundedTimeout(resolvePresenceFleet(input.ownerId, launchFallback), {
+      fallback: { fleetSlug: null, fleetRole: null },
+      timeoutMs: BENCH_FLEET_RESOLUTION_BUDGET_MS,
+      label: 'fleet-bench:presenceFleet',
+    }),
+    input.ownerId
+      ? withBoundedTimeout(listFleetsLedBy(input.workspaceId, input.ownerId), {
+          fallback: [],
+          timeoutMs: BENCH_FLEET_RESOLUTION_BUDGET_MS,
+          label: 'fleet-bench:ledFleets',
+        })
+      : Promise.resolve({ value: [], degraded: false, reason: null }),
+  ]);
+
+  return resolveBenchFleetTarget({
+    presenceFleet: presenceRead.value.fleetSlug,
+    ledFleets: ledRead.value.map((record) => record.fleetSlug),
+  });
+}
 
 /**
  * WI-5938 — PARK/PULL IS DERIVED STATE, NOT PROSE.
@@ -400,7 +466,25 @@ export default defineTool({
     }
 
     if (args.list) {
-      const fleet = args.fleet ?? deriveFleetMembership().fleetSlug;
+      const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
+      const target = await resolveBenchFleet({
+        explicitFleet: args.fleet,
+        ownerId,
+        workspaceId,
+      });
+      if (target.kind === 'ambiguous') {
+        return {
+          data: {
+            ok: false,
+            error: 'ambiguous_fleet',
+            fleets: target.fleets,
+            hint:
+              'Multiple fleets are led by this agent, so the omitted fleet is ambiguous. ' +
+              'Pass { fleet: "<slug>" } explicitly to query one bench roster.',
+          },
+        };
+      }
+      const fleet = target.kind === 'none' ? null : target.fleet;
       if (!fleet) {
         return {
           data: {
@@ -410,11 +494,6 @@ export default defineTool({
           },
         };
       }
-      // EI-13820: ctx.workspaceId is the literal '*' sentinel for an unscoped su
-      // session (EI-9013) — normalize through resolveConcreteWorkspaceId so '*'
-      // never leaks into the workspace filter as if it were a real workspace id
-      // (see fleet:assignments' handler for the full incident writeup).
-      const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
       // Fleet membership is carried by presence rows, which are intentionally
       // harness-agnostic (`harness_slug IS NULL`).  A harness-wide filter here
       // drops a benched member who has no active claim—the exact row needed to
@@ -451,8 +530,27 @@ export default defineTool({
       };
     }
 
-    const benchFleet = args.fleet ?? deriveFleetMembership().fleetSlug;
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
+
+    const fleetTarget = await resolveBenchFleet({
+      explicitFleet: args.fleet,
+      ownerId,
+      workspaceId,
+    });
+    if (fleetTarget.kind === 'ambiguous') {
+      return {
+        data: {
+          ok: false,
+          error: 'ambiguous_fleet',
+          member: args.member,
+          fleets: fleetTarget.fleets,
+          hint:
+            'Multiple fleets are led by this agent, so the omitted fleet is ambiguous. ' +
+            'Pass { fleet: "<slug>" } explicitly before staging a bench.',
+        },
+      };
+    }
+    const benchFleet = fleetTarget.kind === 'none' ? null : fleetTarget.fleet;
 
     // EI-21277320983534020: resolve the target against the authoritative fleet roster
     // before doing any staging work. An unknown ownerId must refuse loudly instead of

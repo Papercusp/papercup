@@ -2,6 +2,11 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
+import {
+  parseAgentTimelineEntries,
+  parseAgentTimelineEntry,
+  type AgentTimelineEntry,
+} from '@papercusp/operator-core/lib/cross-boundary-event-contracts';
 import { STREAM_SILENCE_STALE_MS, type TransportStatus } from '../_components/chat/stream-freshness';
 import { TONE } from './theme';
 
@@ -29,19 +34,7 @@ import { TONE } from './theme';
  * AgentInspectorModal) remain.
  */
 
-export interface TimelineEntry {
-  kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result' | 'prompt';
-  text?: string;
-  toolName?: string;
-  toolInput?: unknown;
-  toolId?: string;
-  costUsd?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  durationMs?: number;
-  /** ISO timestamp of the source record — rendered as the per-entry header time. */
-  ts?: string;
-}
+export type TimelineEntry = AgentTimelineEntry;
 
 /** How long a run may produce ZERO output before the card flags it as likely
  *  stalled (an upstream gateway stall / rate-limit is the common cause). */
@@ -257,7 +250,9 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
             // replaying stale entries on top of the fresh snapshot.
             cancelFlush();
             pendingEntries = [];
-            setEvents(JSON.parse(data) as TimelineEntry[]);
+            const parsed = parseAgentTimelineEntries(JSON.parse(data));
+            if (!parsed) throw new Error('invalid timeline backfill');
+            setEvents(parsed);
             setStatus('live');
             backfillRetries = 0;
           } catch {
@@ -267,8 +262,11 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
         },
         event: (data) => {
           try {
-            pendingEntries.push(JSON.parse(data) as TimelineEntry);
-            scheduleFlush();
+            const parsed = parseAgentTimelineEntry(JSON.parse(data));
+            if (parsed) {
+              pendingEntries.push(parsed);
+              scheduleFlush();
+            }
           } catch { /* ignore */ }
         },
         // Session live-follow: the agent started/stopped writing the current turn.

@@ -75,6 +75,27 @@ describe('useAgentThinkingStream (shared live thinking-stream hook)', () => {
     expect(result.current.status).toBe('error');
   });
 
+  it('keeps valid backfill records while dropping schema-drifted records fail-soft', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { result } = renderHook(() => useAgentThinkingStream('my-harness', 'production', 'run-1'));
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([
+        { kind: 'text', text: 'kept' },
+        { kind: 'future-kind', text: 'secret' },
+      ]));
+    });
+    expect(result.current.status).toBe('live');
+    expect(result.current.events).toEqual([{ kind: 'text', text: 'kept' }]);
+    expect(reconnectSpy).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      '[cross-boundary-contract-drift]',
+      'agent-timeline-entry',
+      'kind is unknown',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('secret');
+    warn.mockRestore();
+  });
+
   it('appends a single streamed event onto the existing timeline', async () => {
     const { result } = renderHook(() => useAgentThinkingStream('my-harness', 'production', 'run-1'));
     act(() => { captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'a' }])); });
