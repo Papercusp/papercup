@@ -24,15 +24,6 @@ export function shapeLocksList(data: unknown, tier: LocksTier): unknown {
   if (!d || !Array.isArray(d.resources) || !Array.isArray(d.holders)) return data;
   const c = LOCKS_LIST_TIER_CAPS[tier];
 
-  const projectResource = (row: unknown): Record<string, unknown> => {
-    const r = (row ?? {}) as Record<string, unknown>;
-    return {
-      resource: r.resource ?? null,
-      enforcement: r.enforcement ?? null,
-      rule: clip(r.rule_text, c.rule),
-      ...(c.description > 0 ? { description: clip(r.description, c.description) } : {}),
-    };
-  };
   const projectHolder = (row: unknown): Record<string, unknown> => {
     const r = (row ?? {}) as Record<string, unknown>;
     return {
@@ -48,6 +39,25 @@ export function shapeLocksList(data: unknown, tier: LocksTier): unknown {
       // that from exactly the sessions (su) that read this tool most.
       coordination_domain: r.coordination_domain ?? null,
       ...(c.reason > 0 ? { reason: clip(r.reason, c.reason) } : {}),
+    };
+  };
+  const projectResource = (row: unknown): Record<string, unknown> => {
+    const r = (row ?? {}) as Record<string, unknown>;
+    return {
+      resource: r.resource ?? null,
+      enforcement: r.enforcement ?? null,
+      rule: clip(r.rule_text, c.rule),
+      ...(c.description > 0 ? { description: clip(r.description, c.description) } : {}),
+      // EI-22073686775053989: this ALLOWLIST used to drop the whole reason a
+      // resource row could ever be trusted about its own holders — `holders`
+      // and `held` are the fix for the "resources[] carries no owner/holders"
+      // bug, so an allowlist that stripped them at the trimmed/standard tiers
+      // (the DEFAULT for most sessions) would silently reintroduce the exact
+      // false-'free' failure the fix exists to kill. Project every nested
+      // holder through the SAME projectHolder used for the flat array, so the
+      // two views can never diverge in shape.
+      holders: Array.isArray(r.holders) ? r.holders.map(projectHolder) : [],
+      held: r.held ?? null,
     };
   };
 

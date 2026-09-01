@@ -344,6 +344,24 @@ body.has-left-sidebar .pc-header {
   /* Flat drag-affordance tint (WI-4789 — no gradient). */
   background: color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 84%);
 }
+/* Docked pane document (/portal-panes/steering, framed by the cloud portal as
+   one of ITS sidebars — owner ask 2026-09-01): the rail IS the page, so it
+   flows in the document instead of pinning to the viewport, fills the frame,
+   and drops the controls the portal now owns (collapse/expand, drag-resize).
+   Kept as overrides on the same rules rather than a second stylesheet so the
+   tab bodies render pixel-identical in both hosts. */
+.pclsb.pclsb--docked {
+  position: static;
+  width: 100% !important;
+  height: 100%;
+  min-height: 100dvh;
+  z-index: auto;
+}
+.pclsb.pclsb--docked .pclsb__collapse-row,
+.pclsb.pclsb--docked .pclsb__expand-rail,
+.pclsb.pclsb--docked .pclsb__resize-handle {
+  display: none;
+}
 .pclsb[data-collapsed="true"] .pclsb__resize-handle {
   display: none;
 }

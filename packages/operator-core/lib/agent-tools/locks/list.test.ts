@@ -67,6 +67,13 @@ const holder = (owner: string, resource = 'dev-server') => ({
 
 beforeEach(() => vi.clearAllMocks());
 
+/** Resolve the queue mock per-domain: holders only from `heldBy`. Module-scoped
+ * so both describe blocks below can share it. */
+const heldOnlyIn = (heldBy: string, rows: ReturnType<typeof holder>[], draining = false) =>
+  mockImplementationTyped(queueM, async (_pool, params) =>
+    params.coordinationDomain === heldBy ? { holders: rows, draining } : { holders: [], draining: false },
+  );
+
 describe('locks:list — host-global domain resolution (EI-18674647773291145)', () => {
   it('makes the workspace-global scope and resource-only filter explicit', () => {
     expect(tool.name).toBe('locks:list');
@@ -88,12 +95,6 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
   // supplies the holder from ONLY the domain that genuinely holds it — which
   // proves the merge attributes it correctly rather than just counting calls.
   const ALL_DOMAINS = ['/caller/tree', 'papercusp-host-global', 'ws-scoped-domain'];
-
-  /** Resolve the queue mock per-domain: holders only from `heldBy`. */
-  const heldOnlyIn = (heldBy: string, rows: ReturnType<typeof holder>[], draining = false) =>
-    mockImplementationTyped(queueM, async (_pool, params) =>
-      params.coordinationDomain === heldBy ? { holders: rows, draining } : { holders: [], draining: false },
-    );
 
   const domainsQueried = () =>
     queueM.mock.calls.map((c) => (c[1] as { coordinationDomain: string }).coordinationDomain);
@@ -206,5 +207,63 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
     expect(b.data.plane).toBe('resource');
     expect(b.data.fileLockHint).toContain('locks:queue { paths: [...] }');
     expect(b.data.fileLockHint).not.toContain('locks:list { paths');
+  });
+});
+
+// EI-22073686775053989: `resources[]` used to carry no `owner`/`holders` field
+// at all — `holders` was ONLY a top-level sibling array — so both natural-
+// looking reads (`r.owner`, `r.holders ?? []`) silently produced a confident,
+// well-formed "free" for a resource that was actually held. These assert the
+// fix: each resources[] row is denormalized with its OWN `holders` array
+// (in sync with the flat top-level one) and a `held` boolean.
+describe('locks:list — resources[] denormalized with holders (EI-22073686775053989)', () => {
+  const registryRow = (resource: string) =>
+    ({ resource, description: '', rule_text: 'rule text', enforcement: 'enforced' as const });
+
+  it('a HELD registered resource carries its holder nested under resources[].holders, and held:true', async () => {
+    listResourcesM.mockResolvedValue([registryRow('git-sync:portal') as never]);
+    mockImplementationTyped(queueM, async (_pool, params) =>
+      params.coordinationDomain === '/caller/tree'
+        ? { holders: [holder('su-202a8f71', 'git-sync:portal')], draining: false }
+        : { holders: [], draining: false },
+    );
+
+    const b = await call({});
+
+    const [resourceRow] = b.data.resources as Array<{ resource: string; holders: unknown[]; held: boolean }>;
+    expect(resourceRow.resource).toBe('git-sync:portal');
+    expect(resourceRow.held).toBe(true);
+    expect(resourceRow.holders).toHaveLength(1);
+    expect(resourceRow.holders[0]).toMatchObject({ resource: 'git-sync:portal', owner: 'su-202a8f71' });
+    // The nested view and the flat top-level view must never disagree.
+    expect(b.data.holders).toHaveLength(1);
+    expect(b.data.holders[0]).toMatchObject({ resource: 'git-sync:portal', owner: 'su-202a8f71' });
+  });
+
+  it('a FREE registered resource reports a MEASURED empty: holders:[] and held:false (never a missing key)', async () => {
+    listResourcesM.mockResolvedValue([registryRow('dev-server') as never]);
+    queueM.mockResolvedValue({ holders: [], draining: false });
+
+    const b = await call({});
+
+    const [resourceRow] = b.data.resources as Array<{ resource: string; holders: unknown[]; held: boolean }>;
+    expect(resourceRow.resource).toBe('dev-server');
+    expect(resourceRow.held).toBe(false);
+    expect(resourceRow.holders).toEqual([]);
+  });
+
+  it('two registered resources, one held one free: each gets ONLY its own holders, not the other’s', async () => {
+    listResourcesM.mockResolvedValue([registryRow('dev-server') as never, registryRow('release-deploy') as never]);
+    heldOnlyIn('papercusp-host-global', [holder('release-deploy:1:uuid', 'release-deploy')]);
+
+    const b = await call({});
+
+    const rows = b.data.resources as Array<{ resource: string; holders: unknown[]; held: boolean }>;
+    const devServer = rows.find((r) => r.resource === 'dev-server')!;
+    const releaseDeploy = rows.find((r) => r.resource === 'release-deploy')!;
+    expect(devServer.held).toBe(false);
+    expect(devServer.holders).toEqual([]);
+    expect(releaseDeploy.held).toBe(true);
+    expect(releaseDeploy.holders).toHaveLength(1);
   });
 });

@@ -350,7 +350,20 @@ export default defineTool({
   skipWorkspaceTx: true,
   events: { output: z.string().describe('text/plain') },
   args: z.object({
-    command: z.string().min(1).describe('The bash command to run (passed to `bash -c`).'),
+    command: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('The bash command to run (passed to `bash -c`). Required, unless `cmd` is given.'),
+    cmd: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Alias for `command`. Accepted because the Codex CLI\'s own native `shell` tool call uses "cmd" as its ' +
+          'argument key (EI-22073622160284651: a Codex-backed agent reaching for this tool by habit typed `cmd` ' +
+          'and was rejected), so an agent used to that convention can reach for it here too. Prefer `command`.',
+      ),
     description: z
       .string()
       .optional()
@@ -387,6 +400,15 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    // command/cmd: `cmd` is accepted as an alias (see its schema description) — normalize to
+    // one local binding so every downstream use is unambiguous and `command` stays required
+    // in effect even though the schema field itself is optional to make room for the alias.
+    const command = args.command ?? args.cmd;
+    if (!command) {
+      throw new Error(
+        'command is required (the bash command to run, passed to `bash -c`); `cmd` is also accepted as an alias',
+      );
+    }
     const baseDir = resolveCapabilityBaseDir(ctx);
     const cwd = args.cwd
       ? isAbsolute(args.cwd)
@@ -399,7 +421,7 @@ export default defineTool({
     const cwdError = missingBashCwdError(cwd, Boolean(args.cwd));
     if (cwdError) throw new Error(cwdError);
     if (args.run_in_background) {
-      const untrackedBackgrounding = detectUntrackedShellBackgrounding(args.command);
+      const untrackedBackgrounding = detectUntrackedShellBackgrounding(command);
       if (untrackedBackgrounding) {
         return {
           content: [
@@ -506,7 +528,7 @@ export default defineTool({
       const provenance = await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null);
       const job = startBackground(
         {
-          command: args.command,
+          command: command,
           cwd,
           stateDir: ctx.stateDir,
           sandboxEnabled,
@@ -522,14 +544,14 @@ export default defineTool({
       // 0 bytes for the entire run, then fills all at once at exit. Say so NOW,
       // at launch, rather than leaving the reader to discover it from a string of
       // empty bash_output polls that look identical to "never started".
-      const bufferingStage = detectBufferingLastStage(args.command);
+      const bufferingStage = detectBufferingLastStage(command);
       const bufferingNote = bufferingStage ? formatBufferingPipelineAdvice(bufferingStage, 'launch') : '';
       // EI-21301075566136325: same say-it-NOW rationale as the buffering note — a
       // command that redirects its own stdout keeps the capability log empty for
       // its whole run, and a string of empty bash_output polls looks identical to
       // "never started". Name the redirect target at launch so the reader judges
       // progress by THAT file, not by the capability tail.
-      const selfRedirectAtLaunch = detectSelfOutputRedirect(args.command);
+      const selfRedirectAtLaunch = detectSelfOutputRedirect(command);
       const selfRedirectLaunchNote = selfRedirectAtLaunch
         ? ` ${formatSelfRedirectAdvice(selfRedirectAtLaunch, null)}`
         : '';
@@ -538,7 +560,7 @@ export default defineTool({
       // and rewriting NODE_OPTIONS underneath it would be the more surprising
       // behavior. So say it instead of fixing it — the caller keeps sovereignty
       // over the command, and stops needing to know the heap requirement by heart.
-      const heapNote = typecheckHeapLaunchWarning(args.command) ?? '';
+      const heapNote = typecheckHeapLaunchWarning(command) ?? '';
       return {
         content: [
           {
@@ -576,7 +598,7 @@ export default defineTool({
 
     const r = await runForeground(
       {
-        command: args.command,
+        command: command,
         cwd,
         stateDir: ctx.stateDir,
         onChunk: (chunk) => ctx.emit('output', chunk),

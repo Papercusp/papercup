@@ -28,7 +28,7 @@ import {
   type ResourceHolder,
   type FenceCheck,
 } from './su-lock-store';
-import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
+import { acquireResourceExclusiveWithWait, type StaleHolderReclaimedInfo } from './resource-acquire-wait';
 import { broadcastResourceDrainStart, broadcastResourceBackUp } from './resource-broadcast';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC } from './lock-config';
@@ -53,8 +53,13 @@ export interface GuardSpec {
    * actually crashed, instead of blocking for the resource's full TTL.
    */
   hostLocalOwnerPid?: (owner: string) => number | null;
-  /** Fired once per stale holder reclaimed via `hostLocalOwnerPid` — log it loudly. */
-  onStaleHolderReclaimed?: (info: { holder: ResourceHolder; pid: number }) => void | Promise<void>;
+  /** EI-22078335832051825: the session-liveness half of the dead-holder test —
+   *  see `ExclusiveWaitParams.deadOwnerOracle`. Either field alone enables the
+   *  reclaim pass. */
+  deadOwnerOracle?: (owners: readonly string[]) => Promise<ReadonlySet<string>>;
+  /** Fired once per stale holder reclaimed via `hostLocalOwnerPid` /
+   *  `deadOwnerOracle` — log it loudly; `info.verdict` names the instrument. */
+  onStaleHolderReclaimed?: (info: StaleHolderReclaimedInfo) => void | Promise<void>;
   /**
    * EI-18769559897594065: exclusive-only, drain-wait progress callback — fired
    * roughly every {@link WAIT_CEILING_MS} (resource-acquire-wait.ts) while still
@@ -134,6 +139,7 @@ export async function guardResource<T>(
       onDrainStart: (holders) =>
         broadcastResourceDrainStart({ source: coordIdentity, resource, holders, reason }),
       hostLocalOwnerPid: spec.hostLocalOwnerPid,
+      deadOwnerOracle: spec.deadOwnerOracle,
       onStaleHolderReclaimed: spec.onStaleHolderReclaimed,
       onTick: spec.onTick,
     });

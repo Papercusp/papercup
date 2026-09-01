@@ -271,7 +271,15 @@ function readStoredWidth(): number {
   }
 }
 
-export default function LeftSidebar() {
+/**
+ * @param docked Render as the ONLY content of a pane-sized document instead of
+ *   the app's far-left fixed dock (the cloud portal frames `/portal-panes/steering`
+ *   as one of its own sidebars — owner ask 2026-09-01). Docked = always open,
+ *   fills its frame, no collapse/expand rail, no drag handle, and no
+ *   `body.has-left-sidebar` layout reservation (there is no app beside it to
+ *   shift). The `?lst=` tab param keeps working so the portal can deep-link a tab.
+ */
+export default function LeftSidebar({ docked = false }: { docked?: boolean } = {}) {
   const t = useLexicon();
   // ONE useQueryStates group (not two useQueryState hooks): the collapsed
   // rail's icon buttons set open+tab together, and two same-tick writes race
@@ -356,13 +364,17 @@ export default function LeftSidebar() {
   // Compact view is presentation-only: keep ?lsb=true intact so leaving compact
   // restores the requested layout. Crossing INTO compact collapses once; an
   // explicit expand clears the local auto-collapse for that compact interval.
-  const presentedOpen = open && !compactAutoCollapsed;
+  // A docked pane is never collapsed — the portal that frames it owns
+  // open/closed, so a collapsed rail inside an already-narrow frame would be
+  // a 48px strip of icons the viewer cannot widen.
+  const presentedOpen = docked || (open && !compactAutoCollapsed);
 
-  // Reserve left-side layout space (released on chromeless routes) so the app
-  // docks beside the rail rather than under it.
+  // Reserve left-side layout space (released on chromeless routes, and never
+  // in a docked pane — nothing shares that document) so the app docks beside
+  // the rail rather than under it.
   useEffect(() => {
     if (!hydrated) return;
-    if (chromeless) {
+    if (chromeless || docked) {
       document.body.classList.remove('has-left-sidebar');
       document.documentElement.style.removeProperty('--left-sidebar-w');
       return;
@@ -375,7 +387,7 @@ export default function LeftSidebar() {
     } catch {
       /* sandbox / quota */
     }
-  }, [presentedOpen, width, hydrated, chromeless]);
+  }, [presentedOpen, width, hydrated, chromeless, docked]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -425,9 +437,14 @@ export default function LeftSidebar() {
     document.body.style.cursor = '';
   }, []);
 
-  if (chromeless) return null;
+  // A chromeless route is a bare embedded document — unless THIS render is the
+  // docked pane document itself (/portal-panes/steering is chromeless so that
+  // no other chrome mounts around the rail).
+  if (chromeless && !docked) return null;
 
-  const renderedWidth = presentedOpen ? (hydrated ? width : DEFAULT_WIDTH) : COLLAPSED_WIDTH;
+  const renderedWidth = docked
+    ? '100%'
+    : presentedOpen ? (hydrated ? width : DEFAULT_WIDTH) : COLLAPSED_WIDTH;
   const active = visibleTabs.find((x) => x.id === tab) ?? visibleTabs[0];
 
   return (
@@ -435,9 +452,10 @@ export default function LeftSidebar() {
       <style>{LEFT_SIDEBAR_CSS}</style>
       <TooltipPrimitive.Provider delayDuration={250}>
         <aside
-          className="pclsb"
+          className={`pclsb${docked ? ' pclsb--docked' : ''}`}
           data-testid="left-sidebar"
           data-collapsed={presentedOpen ? 'false' : 'true'}
+          data-docked={docked ? 'true' : undefined}
           data-tab={active.id}
           style={{ width: renderedWidth }}
           // Was "<Fleet> sidebar" — stale once the Fleet tab moved out

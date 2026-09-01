@@ -56,7 +56,7 @@ import { resourceLockDomain, workspaceScopedLockDomain } from '../../agent-tools
 
 // --- mocks (factories only close over these; nothing dereferenced at hoist time) --
 const tryAcquireResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; reason?: string; holders?: unknown[] }> => ({ ok: true }));
-const tryReleaseResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean }> => ({ ok: true }));
+const tryReleaseResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; released?: number }> => ({ ok: true }));
 const releaseAllResourcesForOwnerMock = vi.fn(
   async (_tx: unknown, _coordinationDomain: string, _owner: string) => ({
     released: 3,
@@ -141,6 +141,13 @@ const recordingTx: FakeTx = (strings, ...values) => {
 let fakeTxImpl: FakeTx = recordingTx;
 const fakeTx: FakeTx = (strings, ...values) => fakeTxImpl(strings, ...values);
 const workspaceTxnCalls: Array<{ coordinationDomain: string; owner: string }> = [];
+// EI-22078335832051825: the session half of the dead-holder reclaim. Mocked so
+// no test here reaches the presence store / liveness oracle; the adapter's own
+// rails are pinned in locks/ended-session-owners.test.ts. Default: nobody is
+// dead — every existing held_exclusive expectation keeps its pre-fix meaning.
+vi.mock('../../agent-tools/locks/ended-session-owners', () => ({
+  endedSessionOwners: vi.fn(async (_owners: readonly string[]): Promise<ReadonlySet<string>> => new Set<string>()),
+}));
 vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
   inWorkspaceTxn: (coordinationDomain: string, owner: string, fn: (tx: unknown) => unknown) => {
     workspaceTxnCalls.push({ coordinationDomain, owner });
@@ -384,7 +391,10 @@ import {
   mergeAttributionRosters,
   isGenericLockIntent,
 } from './git-sync-action';
+import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
+
+const endedSessionOwnersMock = vi.mocked(endedSessionOwners);
 import type { OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
 
 describe('isIntegratorActorAdmitted — canonical signer membership gate (WI-38968)', () => {
@@ -595,6 +605,8 @@ beforeEach(() => {
   runGitSyncMock.mockReset();
   runDependencyGenerationPrebuildMock.mockReset();
   runDependencyGenerationPrebuildMock.mockResolvedValue('ready');
+  endedSessionOwnersMock.mockReset();
+  endedSessionOwnersMock.mockResolvedValue(new Set<string>());
   enqueueDependencyPrebuildMock.mockReset();
   enqueueDependencyPrebuildMock.mockResolvedValue(true);
   recoverQueuedDependencyPrebuildMock.mockReset();
@@ -1468,7 +1480,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       }
       return { ok: true };
     });
-    tryReleaseResourceMock.mockImplementation(async () => ({ ok: true, released: 1 } as never));
+    tryReleaseResourceMock.mockImplementation(async () => ({ ok: true, released: 1 }));
     runGitSyncMock.mockResolvedValue(syncedOutcome);
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -1488,6 +1500,87 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     });
     expect(runGitSyncMock).toHaveBeenCalledOnce();
     expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'git-sync:papercup', 'libs-papercusp-submodule']);
+  });
+
+  /** The filed shape (EI-22078335832051825): an AGENT session's `su-…` lease —
+   *  no pid in the owner string, so `parseGitSyncOwnerPid` has nothing to say —
+   *  whose session the shared liveness oracle calls `ended`. Pre-fix this sat
+   *  until TTL while every tick skipped `held_exclusive`. */
+  const endedAgentHolder = {
+    owner: 'su-0542551f-ended-agent-session',
+    owner_label: 'su · su-05425',
+    mode: 'exclusive' as const,
+    status: 'held' as const,
+    lock_id: 'lock-ended-agent',
+    reason: 'mutation probe',
+    acquired_ts: new Date('2026-09-01T16:59:00.000Z'),
+    expires_ts: new Date('2026-09-01T17:09:25.839Z'),
+    fence_seq: 11,
+  };
+
+  it('EI-22078335832051825: reclaims an exclusive held by an ENDED agent session (no pid to judge) and retries once', async () => {
+    let firstAttempt = true;
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) => {
+      const resource = (opts as { resource: string }).resource;
+      if (resource === 'git-sync:papercup' && firstAttempt) {
+        firstAttempt = false;
+        return { ok: false, reason: 'held_exclusive', holders: [endedAgentHolder] };
+      }
+      return { ok: true };
+    });
+    tryReleaseResourceMock.mockImplementation(async () => ({ ok: true, released: 1 }));
+    endedSessionOwnersMock.mockImplementation(async (owners) => new Set(owners.filter((o) => o === endedAgentHolder.owner)));
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await action(ctx);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining(`STALE LOCK RECLAIMED — papercup git-sync:papercup holder ${endedAgentHolder.owner} (session ended per the shared liveness oracle)`),
+      );
+    } finally {
+      error.mockRestore();
+    }
+
+    expect(parseGitSyncOwnerPid(endedAgentHolder.owner)).toBeNull();
+    expect(endedSessionOwnersMock).toHaveBeenCalledTimes(1);
+    expect(endedSessionOwnersMock).toHaveBeenCalledWith([endedAgentHolder.owner]);
+    // Released by the holder's OWN lock_id — never a bare owner/resource match.
+    expect(tryReleaseResourceMock.mock.calls[0]?.[1]).toMatchObject({
+      coordinationDomain: 'ws-42',
+      owner: endedAgentHolder.owner,
+      lockId: endedAgentHolder.lock_id,
+    });
+    expect(runGitSyncMock).toHaveBeenCalledOnce();
+    expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'git-sync:papercup', 'libs-papercusp-submodule']);
+  });
+
+  it('EI-22078335832051825 control: a LIVE agent session keeps its exclusive — the tick skips, nothing is released', async () => {
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) => {
+      const resource = (opts as { resource: string }).resource;
+      if (resource === 'git-sync:papercup') {
+        return { ok: false, reason: 'held_exclusive', holders: [endedAgentHolder] };
+      }
+      return { ok: true };
+    });
+    const releasedLockIds: string[] = [];
+    tryReleaseResourceMock.mockImplementation(async (_tx, opts) => {
+      const lockId = (opts as { lockId?: string }).lockId;
+      if (lockId) releasedLockIds.push(lockId);
+      return { ok: true };
+    });
+    // The oracle was ASKED about the holder and did not condemn it.
+    endedSessionOwnersMock.mockResolvedValue(new Set<string>());
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await action(ctx);
+      expect(error).not.toHaveBeenCalledWith(expect.stringContaining('STALE LOCK RECLAIMED'));
+    } finally {
+      error.mockRestore();
+    }
+
+    expect(endedSessionOwnersMock).toHaveBeenCalledWith([endedAgentHolder.owner]);
+    expect(releasedLockIds).not.toContain(endedAgentHolder.lock_id);
+    expect(runGitSyncMock).not.toHaveBeenCalled();
   });
 
   it('EI-20224276977835463: refreshes every held lease during a long run and stops refreshing before release', async () => {

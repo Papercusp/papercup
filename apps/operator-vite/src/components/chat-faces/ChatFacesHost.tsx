@@ -71,6 +71,18 @@ const CHAT_FACE_PANE_CSS = `
  * ChromeShell + the two faces. Drop-in replacement for a bare <ChromeShell/>.
  */
 export default function ChromeShellWithChatFaces() {
+  const faces = useOpChatFaces();
+  return <ChromeShell chatFaces={faces} />;
+}
+
+/**
+ * The extra Papercup-chat faces (Learning / Fleet / Peers), composed from this
+ * side of the layering seam — see the module comment. A hook rather than a
+ * constant because the labels come from the lexicon. Shared by the in-app
+ * ChromeShell mount above and the portal's docked chat pane document
+ * (/portal-panes/chat), so the two hosts never drift in what the header offers.
+ */
+export function useOpChatFaces(): OpChatFace[] {
   const t = useLexicon();
 
   // Rebuilt per render (cheap: two object literals) but memo-stable enough —
@@ -119,5 +131,5 @@ export default function ChromeShellWithChatFaces() {
     },
   ];
 
-  return <ChromeShell chatFaces={faces} />;
+  return faces;
 }

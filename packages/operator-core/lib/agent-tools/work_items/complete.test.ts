@@ -117,7 +117,7 @@ import {
   COMPLETION_STRING_REJECTION,
   coerceCompletionShape,
   gatherFlatCompletion,
-  hoistMisplacedAssumptions,
+  hoistMisplacedCompletionFields,
 } from './completion-coerce';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
@@ -1430,16 +1430,35 @@ describe('work_items:complete (keyed-array)', () => {
       ).toBe(false);
     });
 
-    it('documents specAdequacy as a top-level sibling and rejects nesting under completion (EI-21709695952126373)', () => {
-      expect(complete.guidance?.when).toContain('top-level sibling of `completion`');
-      expect(complete.guidance?.when).toContain('never `completion.specAdequacy`');
+    it('documents specAdequacy/outputPayload as top-level siblings and auto-hoists a nested specAdequacy (EI-22073105984724419, was EI-21709695952126373)', () => {
+      expect(complete.guidance?.when).toContain('top-level siblings of `completion`');
+      expect(complete.guidance?.when).toContain('auto-hoisted');
+      const parsed = (
+        complete.args as { safeParse: (x: unknown) => { success: boolean; data?: { specAdequacy?: unknown; completion?: { specAdequacy?: unknown } } } }
+      ).safeParse({
+        id: 'WI-101',
+        state: 'resolved',
+        assumptions: 'none',
+        completion: { summary: 'fixed', specAdequacy },
+      });
+      expect(parsed.success).toBe(true);
+      expect(parsed.data?.specAdequacy).toEqual(specAdequacy);
+      expect(parsed.data?.completion?.specAdequacy).toBeUndefined();
+    });
+
+    it('a top-level specAdequacy always wins over a nested one — a real conflict is preserved, not silently resolved', () => {
       expect(
         (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
           id: 'WI-101',
           state: 'resolved',
           assumptions: 'none',
           completion: { summary: 'fixed', specAdequacy },
+          specAdequacy: { ...specAdequacy, classRef: 'invented-parallel-rubric' },
         }).success,
+        // the nested specAdequacy is left in `completion` (untouched by the hoist,
+        // since the top-level sibling already had a value) and CompletionRecordSchema
+        // rejects it as an unrecognized key — the same "genuine disagreement" outcome
+        // hoistMisplacedCompletionFields already gives a caller who sets both.
       ).toBe(false);
     });
 
@@ -3157,10 +3176,10 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
   });
 
-  describe('hoistMisplacedAssumptions (unit, EI-21868028531788587)', () => {
+  describe('hoistMisplacedCompletionFields (unit, EI-21868028531788587 / EI-22073105984724419)', () => {
     it('hoists `assumptions` nested inside `completion` up to the top level (single-complete shorthand)', () => {
       expect(
-        hoistMisplacedAssumptions({
+        hoistMisplacedCompletionFields({
           id: 'WI-1',
           state: 'done',
           completion: { summary: 's', assumptions: ['my-fact-key'] },
@@ -3175,52 +3194,67 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
     it('hoists the "none" sentinel too', () => {
       expect(
-        hoistMisplacedAssumptions({ id: 'WI-1', completion: { summary: 's', assumptions: 'none' } }),
+        hoistMisplacedCompletionFields({ id: 'WI-1', completion: { summary: 's', assumptions: 'none' } }),
       ).toEqual({ id: 'WI-1', completion: { summary: 's' }, assumptions: 'none' });
+    });
+
+    it('hoists `specAdequacy` and `outputPayload` nested inside `completion`, together, up to the top level', () => {
+      const specAdequacy = { classRef: 'plan-class-bugfix' };
+      expect(
+        hoistMisplacedCompletionFields({
+          id: 'WI-1',
+          completion: { summary: 's', specAdequacy, outputPayload: { signal: 'ok' } },
+        }),
+      ).toEqual({
+        id: 'WI-1',
+        completion: { summary: 's' },
+        specAdequacy,
+        outputPayload: { signal: 'ok' },
+      });
     });
 
     it('hoists per-item in the bulk items:[…] form', () => {
       expect(
-        hoistMisplacedAssumptions({
+        hoistMisplacedCompletionFields({
           items: [
-            { id: 'WI-1', completion: { summary: 'a', assumptions: ['k1'] } },
+            { id: 'WI-1', completion: { summary: 'a', assumptions: ['k1'], outputPayload: { x: 1 } } },
             { id: 'WI-2', completion: { summary: 'b' } },
           ],
         }),
       ).toEqual({
         items: [
-          { id: 'WI-1', completion: { summary: 'a' }, assumptions: ['k1'] },
+          { id: 'WI-1', completion: { summary: 'a' }, assumptions: ['k1'], outputPayload: { x: 1 } },
           { id: 'WI-2', completion: { summary: 'b' } },
         ],
       });
     });
 
-    it('never overwrites an explicit top-level `assumptions` (leaves both — a real conflict, not a shape fumble)', () => {
+    it('never overwrites an explicit top-level field (leaves both — a real conflict, not a shape fumble)', () => {
       const call = {
         id: 'WI-1',
         assumptions: 'none',
         completion: { summary: 's', assumptions: ['other-key'] },
       };
-      expect(hoistMisplacedAssumptions(call)).toEqual({
+      expect(hoistMisplacedCompletionFields(call)).toEqual({
         id: 'WI-1',
         assumptions: 'none',
         completion: { summary: 's', assumptions: ['other-key'] },
       });
     });
 
-    it('leaves a call with no misplaced `assumptions` unchanged (same reference)', () => {
+    it('leaves a call with no misplaced sibling fields unchanged (same reference)', () => {
       const call = { id: 'WI-1', completion: { summary: 's' } };
-      expect(hoistMisplacedAssumptions(call)).toBe(call);
+      expect(hoistMisplacedCompletionFields(call)).toBe(call);
     });
 
     it('leaves a bare-string `completion` unchanged (nothing to hoist from a string)', () => {
       const call = { id: 'WI-1', completion: 'prose completion' };
-      expect(hoistMisplacedAssumptions(call)).toBe(call);
+      expect(hoistMisplacedCompletionFields(call)).toBe(call);
     });
 
-    it('leaves a bulk call with no misplaced assumptions unchanged (same reference)', () => {
+    it('leaves a bulk call with no misplaced sibling fields unchanged (same reference)', () => {
       const call = { items: [{ id: 'WI-1', completion: { summary: 's' } }] };
-      expect(hoistMisplacedAssumptions(call)).toBe(call);
+      expect(hoistMisplacedCompletionFields(call)).toBe(call);
     });
   });
 

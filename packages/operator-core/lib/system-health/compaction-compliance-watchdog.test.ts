@@ -25,6 +25,8 @@ const {
   resolveSessionRefReconciledMock,
   resolveLaunchLimitMock,
   openEscalationMock,
+  listEscalationsMock,
+  resolveEscalationMock,
   getFlagMock,
   findLiveHostMock,
   hostSupportsMock,
@@ -72,6 +74,13 @@ const {
   // seeding test's spawn-record/resolver precedence expectations unaffected.
   resolveLaunchLimitMock: vi.fn(async (_owner: string) => null as number | null),
   openEscalationMock: vi.fn(async () => ({ msg_id: 'esc-1' })),
+  // WI-2140608: recoverBootConfig looks up + resolves the open dark-telemetry row.
+  listEscalationsMock: vi.fn(
+    async (_opts?: { status?: 'open' | 'resolved' }) => [] as Array<Record<string, unknown>>,
+  ),
+  resolveEscalationMock: vi.fn(
+    async (_input: { msg_id: string; choice: string; resolver?: string; note?: string }) => ({ msg_id: 'esc-1' }),
+  ),
   // P-012 force-compact deps. Defaults keep the EXISTING over-limit tests unaffected:
   // flag ON but NO live host ⇒ maybeForceCompact no-ops (out.forceCompacted stays []).
   getFlagMock: vi.fn(async (_key: string, _scope?: string) => true),
@@ -111,6 +120,8 @@ vi.mock('../agent-tools/coordination/presence', () => ({
 }));
 vi.mock('../agent-tools/coordination/escalations', () => ({
   openEscalation: openEscalationMock,
+  listEscalations: listEscalationsMock,
+  resolveEscalation: resolveEscalationMock,
 }));
 // P-012/P-018: force-compact + deterministic carry-respawn rollout deps.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagMock }));
@@ -252,6 +263,8 @@ beforeEach(() => {
   resetFrozenCodexReadingsForTests();
   resolveLaunchLimitMock.mockResolvedValue(null);
   openEscalationMock.mockResolvedValue({ msg_id: 'esc-1' });
+  listEscalationsMock.mockResolvedValue([]);
+  resolveEscalationMock.mockResolvedValue({ msg_id: 'esc-1' });
   // Keep the existing gauge + force rung ON, but the shared P-017/P-018 cutover
   // OFF by default. Individual carry tests opt in explicitly.
   getFlagMock.mockImplementation(
@@ -1525,7 +1538,24 @@ describe('gauge cache + flag mirror wiring (agent-managed-compaction P-013)', ()
 });
 
 describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', () => {
-  const seeded = [{ owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000 }];
+  // WI-2140608: the streak only advances on ACTIVE null sweeps (last_active_at inside
+  // DARK_TELEMETRY_ACTIVE_WINDOW_MS), so the blind session under test is one that keeps
+  // taking turns. `idle()` is the parked / provider-stalled shape the old rule misread.
+  const active = () => [
+    { owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_active_at: new Date().toISOString() },
+  ];
+  const idle = () => [
+    {
+      owner_id: 'blind',
+      owner_label: 'su · blind',
+      compaction_limit: 300_000,
+      last_active_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+    },
+  ];
+  let seeded: ReturnType<typeof active> = [];
+  beforeEach(() => {
+    seeded = active();
+  });
 
   // The genuinely-blind session this detector targets is a REAL launched session: it has an
   // adv_sessions row, so resolveSessionRef resolves to a non-null ref (agent 'claude'/unknown) —

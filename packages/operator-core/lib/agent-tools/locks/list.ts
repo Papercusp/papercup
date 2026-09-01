@@ -6,6 +6,17 @@
  * (resource, rule_text, enforcement) and the live holders for the caller's
  * coordination domain, with a draining flag per resource. Pass `resource`
  * to scope to one.
+ *
+ * EI-22073686775053989: each `resources[]` row is DENORMALIZED with its own
+ * `holders` array (and a `held` boolean) — never rely on `holders` existing
+ * ONLY as the top-level flat array. Before this fix, `resources[]` rows
+ * carried no `owner`/`holders` field at all, so both natural-looking reads
+ * (`r.owner`, `r.holders ?? []`) silently produced a confident, well-formed
+ * "free" for a resource that was actually held — neither raised, neither
+ * looked empty. `holders` is ALSO still returned flat at the top level
+ * (unchanged shape, useful when scanning across resources or for ad hoc /
+ * unregistered names that never appear as a `resources[]` row) — the two are
+ * kept in sync from one merge, never two independent computations.
  */
 
 import { z } from 'zod';
@@ -126,11 +137,27 @@ export default defineTool({
     );
     const draining = queues.some(({ queue }) => queue.draining);
 
+    // EI-22073686775053989: denormalize `holders` onto each registry row —
+    // built from the SAME `holders` array above (one merge, not a second
+    // independent computation), so the nested and flat views can never
+    // disagree. A resource that appears in `resources[]` but never had a
+    // matching holder gets `holders: []` here, which is now a MEASURED empty
+    // (this resource has zero live holders across every domain queried),
+    // never the structurally-guaranteed default `[]` the bug report caught.
+    const resourcesWithHolders = registry.map((r) => {
+      const resourceHolders = holders.filter((h) => h.resource === r.resource);
+      return {
+        ...registryJson(r),
+        holders: resourceHolders,
+        held: resourceHolders.length > 0,
+      };
+    });
+
     // {data} envelope so the payload-tier shapers apply.
     return {
       data: {
         ok: true,
-        resources: registry.map(registryJson),
+        resources: resourcesWithHolders,
         holders,
         draining,
         // EI-19400582907190258: this result enumerates the NAMED-RESOURCE lock

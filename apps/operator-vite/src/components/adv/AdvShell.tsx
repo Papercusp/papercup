@@ -70,26 +70,28 @@ const ADV_TAB_IDS = ['overview', 'hud', 'brainstorm', 'harnesses', 'health', 'pr
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
- * Tabs that remain inside the cloud portal's embedded Papercusp destination.
- * Plans, Inbox, Workflows, and Brainstorm have dedicated portal rail entries;
- * the owner explicitly retained only Overview, HUD, Learning, and Work here.
- * Canonical IDs stay in ADV_TAB_IDS so ordinary operator URLs and the dedicated
- * embedded destinations keep rendering their existing content.
+ * Tabs that render a Papercusp tab STRIP inside a cloud-portal embed: none.
+ * Every remaining tab has a dedicated portal rail entry now — Plans, Inbox,
+ * Workflows and Brainstorm first, then Overview, HUD, Work and Learning (owner
+ * ask 2026-09-01: "pull out the HUD, WORK and Learning tab like we did for the
+ * other tabs"). The set stays as the single switch the strip reads, so a
+ * future retained tab is one id here, not a second code path.
  */
-export const PORTAL_EMBED_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
-  'overview',
-  'hud',
-  'learning',
-  'harnesses',
-]);
+export const PORTAL_EMBED_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([]);
 
 /**
- * Content-only destinations that the outer portal rail owns. They stay
- * renderable when their dedicated iframe URL is active, but never reappear as
- * Papercusp tabs inside that frame.
+ * Content-only destinations that the outer portal rail owns. Each is framed
+ * by the portal as `/adv?tab=<id>&portalEmbed=1` and renders ONLY its body —
+ * no strip, no steering rail, no chat dock (those are the portal's own
+ * sidebars). Canonical IDs stay in ADV_TAB_IDS so ordinary operator URLs keep
+ * rendering their existing content.
  */
 export const PORTAL_EMBED_ADV_CONTENT_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   ...PORTAL_EMBED_ADV_TAB_IDS,
+  'overview',
+  'hud',
+  'harnesses',
+  'learning',
   'workflows',
   'brainstorm',
 ]);
@@ -802,10 +804,10 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
       ? [...baseVisibleTabs, activeTabDef]
       : baseVisibleTabs;
   const embedVisibleTabs = portalEmbedAdvTabs(visibleTabs, portalEmbed);
-  // Dedicated Workflow Editor and Brainstorm portal destinations still render
-  // their canonical body, but must not grow a second Papercusp tab strip around
-  // that extracted surface. The four retained tabs get the strip; extracted
-  // bodies are reached from the outer portal rail instead.
+  // A portal destination renders its canonical body and must not grow a
+  // Papercusp tab strip around it: every tab the portal frames is reached from
+  // the outer portal rail instead (owner ask 2026-09-01). The set is empty
+  // today; a tab listed there would get the strip back.
   const showTabChrome = !portalEmbed || PORTAL_EMBED_ADV_TAB_IDS.has(renderedActiveTab);
 
   // D-001 (owner decision, option C): only Overview + HUD render as real strip

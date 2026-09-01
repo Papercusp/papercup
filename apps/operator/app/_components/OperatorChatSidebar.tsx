@@ -175,7 +175,14 @@ function readStoredWidth(): number {
  *   route composes them and passes them down (op-chat-faces.ts; same shape as
  *   quick-panel's headerSlot, D-001). Omitted ⇒ the three built-in faces only.
  */
-export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFace[] } = {}) {
+/**
+ * @param docked Render as the ONLY content of a pane-sized document instead of
+ *   the app's middle fixed dock (the cloud portal frames `/portal-panes/chat`
+ *   as one of its own sidebars — owner ask 2026-09-01). Docked = always open,
+ *   fills its frame, no collapse/expand controls, no drag handle, and no
+ *   `body.has-op-chat` layout reservation (nothing shares that document).
+ */
+export function OperatorChatSidebar({ faces = [], docked = false }: { faces?: readonly OpChatFace[]; docked?: boolean } = {}) {
   // WI-4478 D-001: OperatorWordmarkLockup's classic-pack default now reads
   // "Papercusp" (product identity, matching the Tauri window title). This
   // toggle is the ASSISTANT identity ("Papercup chat" tooltip/aria-label,
@@ -221,11 +228,16 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   // restores the requested layout. Crossing INTO compact collapses once; an
   // explicit expand clears the local auto-collapse for the rest of that compact
   // interval instead of being undone by the next resize event.
-  const presentedOpen = chatOpen && !compactAutoCollapsed;
+  // A docked pane is never collapsed — the portal that frames it owns
+  // open/closed, so a collapsed dock inside its own frame would be a strip
+  // the viewer could not widen.
+  const presentedOpen = docked || (chatOpen && !compactAutoCollapsed);
 
-  // Mirror the active offset width to a CSS var so app content shifts.
+  // Mirror the active offset width to a CSS var so app content shifts. Never
+  // in a docked pane: nothing shares that document, and the class would
+  // pad the pane away from its own frame edge.
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || docked) return;
     const offsetWidth = presentedOpen ? width : OPERATOR_CHAT_COLLAPSED_WIDTH;
     document.documentElement.style.setProperty('--op-chat-w', `${offsetWidth}px`);
     document.body.classList.add('has-op-chat');
@@ -234,7 +246,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
       window.localStorage.setItem(wsLocalKey(STORAGE_KEY), String(width));
     } catch { /* sandbox / quota */ }
     return () => { /* leave the classes in place across re-renders */ };
-  }, [presentedOpen, hydrated, width]);
+  }, [presentedOpen, hydrated, width, docked]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -322,9 +334,11 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
 
   // Pre-hydration: render the sidebar at its expanded default width so
   // the lazy mount lines up with the bootstrap script in layout.tsx.
-  const renderedWidth = hydrated
-    ? (presentedOpen ? width : OPERATOR_CHAT_COLLAPSED_WIDTH)
-    : OPERATOR_CHAT_DEFAULT_WIDTH;
+  const renderedWidth: number | string = docked
+    ? '100%'
+    : hydrated
+      ? (presentedOpen ? width : OPERATOR_CHAT_COLLAPSED_WIDTH)
+      : OPERATOR_CHAT_DEFAULT_WIDTH;
 
   const sidebarStyle = useMemo<React.CSSProperties>(() => ({
     width: renderedWidth,
@@ -586,10 +600,11 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
 
   return (
     <aside
-      className="op-chat-sidebar"
+      className={`op-chat-sidebar${docked ? ' op-chat-sidebar--docked' : ''}`}
       style={sidebarStyle}
       aria-label="Papercup chat"
       data-collapsed={presentedOpen ? 'false' : 'true'}
+      data-docked={docked ? 'true' : undefined}
     >
       <style>{OP_CHAT_SIDEBAR_CSS}</style>
       <Tooltip label="Expand Papercup chat"><button
@@ -1057,6 +1072,24 @@ const OP_CHAT_SIDEBAR_CSS = `
 }
 
 .op-chat-sidebar[data-collapsed="true"] .op-chat-resize-handle {
+  display: none;
+}
+
+/* Docked pane document (/portal-panes/chat, framed by the cloud portal as one
+   of ITS sidebars — owner ask 2026-09-01): the chat IS the page, so it flows
+   in the document instead of pinning to the viewport, fills the frame, and
+   drops the controls the portal now owns (collapse/expand, drag-resize). */
+.op-chat-sidebar.op-chat-sidebar--docked {
+  position: static;
+  width: 100% !important;
+  height: 100%;
+  min-height: 100dvh;
+  z-index: auto;
+  box-shadow: none;
+}
+.op-chat-sidebar.op-chat-sidebar--docked .op-chat-expand-rail,
+.op-chat-sidebar.op-chat-sidebar--docked .op-chat-toggle,
+.op-chat-sidebar.op-chat-sidebar--docked .op-chat-resize-handle {
   display: none;
 }
 

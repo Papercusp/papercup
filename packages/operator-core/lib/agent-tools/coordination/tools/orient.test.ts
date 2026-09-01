@@ -507,6 +507,15 @@ describe('coord:orient args', () => {
     expect(modesStart).toBeGreaterThanOrEqual(0);
     expect(portfolioStart).toBeGreaterThan(modesStart);
     expect(source.slice(portfolioStart, composeStart)).toContain('readGoalPortfolioBrief');
+    // WI-2140700: the holder's owner-report obligation starts in the same early
+    // window (overlapping the sequential folds) and is folded into
+    // `modes.ownerReport`, the field the GOAL contract tells a holder to read
+    // FIRST every wake.
+    const ownerReportStart = source.indexOf('const goalOwnerReportPromise =');
+    expect(ownerReportStart).toBeGreaterThan(portfolioStart);
+    expect(ownerReportStart).toBeLessThan(composeStart);
+    expect(source.slice(ownerReportStart, composeStart)).toContain('readGoalOwnerReportObligation');
+    expect(source).toContain('modes.ownerReport = await goalOwnerReportPromise');
     expect(composeStart).toBeGreaterThan(portfolioStart);
   });
 

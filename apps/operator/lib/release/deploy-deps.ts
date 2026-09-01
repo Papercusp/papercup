@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { guardResource } from '@papercusp/operator-core/lib/agent-tools/locks/resource-lock-guard';
+import { describeStaleHolderVerdict } from '@papercusp/operator-core/lib/agent-tools/locks/resource-acquire-wait';
 import { hostGlobalLockDomain } from '@papercusp/operator-core/lib/agent-tools/locks/coordination-domain';
 import { sendMessage } from '@papercusp/operator-core/lib/agent-tools/coordination/messages';
 import type { AgentIdentity } from '@papercusp/operator-core/lib/agent-tools/coordination/identity';
@@ -113,9 +114,13 @@ export function parseDeployOwnerPid(owner: string): number | null {
  * that acquires under DEPLOY_OWNER must pass this plus `parseDeployOwnerPid`.
  */
 function onStaleDeployHolderReclaimed(resource: string) {
-  return async ({ holder, pid }: { holder: { owner: string }; pid: number }): Promise<void> => {
+  return async (info: {
+    holder: { owner: string };
+    pid: number | null;
+    verdict: 'pid-dead' | 'session-ended';
+  }): Promise<void> => {
     const detail =
-      `reclaimed dead ${resource} holder ${holder.owner} (pid ${pid} not running on this host); ` +
+      `reclaimed dead ${resource} holder ${info.holder.owner} (${describeStaleHolderVerdict(info)}); ` +
       `this deploy is retrying the acquire`;
     // Loud: this must never look like a normal quiet coalesce (Defect 1's "a
     // leaked lock currently looks identical to healthy single-flighting").

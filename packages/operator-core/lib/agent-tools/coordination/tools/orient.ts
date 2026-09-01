@@ -62,6 +62,7 @@ import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../../workspac
 import { getModes } from '../../../modes/store';
 import { modeById } from '../../../modes/registry';
 import { goalIdFromModes } from '../../../modes/goal-session';
+import type { GoalOwnerReportObligation } from '../../../system-health/goal-owner-report-watchdog';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { fixedCohortIds } from '../../../scheduler/claim-spec';
@@ -3218,6 +3219,29 @@ export default defineTool({
           }
         })()
       : undefined;
+    // WI-2140700: the holder's own every-wake owner-report obligation — computed
+    // from the same three rails the goal-owner-report watchdog measures and folded
+    // into `modes.ownerReport`, which the GOAL contract tells the holder to read
+    // FIRST each wake. A cold wake has no memory of having reported; this is it.
+    // Fail-open: null on any read error; undefined for a non-GOAL caller.
+    const goalOwnerReportPromise =
+      goalSubject && ownerId
+        ? (async () => {
+            try {
+              const [{ readGoalOwnerReportObligation }, { getOrgPg }] = await Promise.all([
+                import('../../../system-health/goal-owner-report-watchdog'),
+                import('@papercusp/db-org'),
+              ]);
+              return await readGoalOwnerReportObligation(getOrgPg().sql, {
+                workspaceId: orientWorkspaceId,
+                ownerId,
+                goalId: goalSubject,
+              });
+            } catch {
+              return null;
+            }
+          })()
+        : undefined;
     // WI-4533 (P-006): START the pipeline-health read HERE — before composeOrient's sequential
     // legs — and hand composeOrient a closure over the in-flight promise. Its latency therefore
     // overlaps reads that were happening anyway (orient p50 1.75s; this leg is cached and usually
@@ -3451,7 +3475,15 @@ export default defineTool({
     // activation-scoped carry surface, same pattern as checkpoint re-injection.
     // A peer-set mode thus takes effect at the target's next turn boundary.
     // Best-effort: a mode-read failure never breaks orientation.
-    let modes: { active: Array<Record<string, unknown>>; contracts: string } | undefined;
+    let modes:
+      | {
+          active: Array<Record<string, unknown>>;
+          contracts: string;
+          /** WI-2140700: GOAL holders only — the every-wake owner-report verdict
+           *  (null = read failed / no active goal-mode row; absent = not a GOAL caller). */
+          ownerReport?: GoalOwnerReportObligation | null;
+        }
+      | undefined;
     let runtimeModeIds: string[] | null = null;
     if (runtimeModeRows) {
       runtimeModeIds = runtimeModeRows.map((row) => row.mode);
@@ -3469,6 +3501,7 @@ export default defineTool({
             .filter(Boolean)
             .join('\n\n'),
         };
+        if (goalOwnerReportPromise) modes.ownerReport = await goalOwnerReportPromise;
       }
     }
     // P-022: the structured counterpart of the prose mode contracts. Resolve

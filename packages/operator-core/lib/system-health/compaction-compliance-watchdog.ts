@@ -253,6 +253,28 @@ export function resetImplausibleReadingsForTests(): void {
 const DARK_TELEMETRY_MAX_NULL_SWEEPS = 3;
 
 /**
+ * WI-2140608 — a null sweep advances the dark-telemetry streak ONLY when the session was
+ * ACTIVE inside this window (its `last_active_at`, which the 60s keepalive beat never bumps —
+ * see CODEX_FROZEN_READING_MAX_LAG_MS). The P-018 hazard is a session CONSUMING context while
+ * blind; a blind session that takes no turns cannot overflow anything. Measured 2026-09-01
+ * (292 open dark-telemetry rows = ~146 distinct owners/day, 70% codex, one row per owner —
+ * the PG dedup was never the problem): the flag fired a median 2–3h after the owner's first
+ * session, never "since boot", and 38 of the 54 still-present owners had a RESOLVED estimate
+ * again — the null was a transient idle stretch (a carry-respawn successor parked until its
+ * wake, a codex rollout stalled at a walled account before its first token_count) that the
+ * old "3 consecutive null sweeps" rule read as blindness. 5min = 2.5 sweeps: an idle session
+ * falls out of the window inside one sweep; a session mid-turn (every tool dispatch bumps
+ * last_active_at) never does.
+ */
+const DARK_TELEMETRY_ACTIVE_WINDOW_MS = 5 * 60_000;
+
+function activeWithin(lastActiveAt: string | null | undefined, windowMs: number, nowMs = Date.now()): boolean {
+  if (!lastActiveAt) return false;
+  const t = Date.parse(lastActiveAt);
+  return Number.isFinite(t) && nowMs - t <= windowMs;
+}
+
+/**
  * EI-21595542328480968 — how far a codex rollout's mtime may lag the session's OWN
  * `last_active_at` before the reading taken from it is treated as FROZEN (belonging
  * to a dead predecessor) rather than as this session's usage.
@@ -467,6 +489,49 @@ async function escalateBootConfig(
     bootConfigEscalated.delete(key);
     console.warn(
       `[compaction-watchdog] boot-config escalation failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/**
+ * WI-2140608 — the other half of escalateBootConfig: when the condition CLEARS (the owner's
+ * estimate resolves again) resolve the open advisory row and re-arm the guard. Without this
+ * every transient dark stretch left its row open until the 48h operational reaper — measured
+ * 2026-09-01: 38 of the 54 still-present flagged owners had a resolved estimate while their
+ * escalation sat open. Guard-keyed per process like escalateBootConfig, so a row raised by a
+ * PREVIOUS bg-host process is not looked up here (the reaper still owns that tail) and a
+ * steady-state resolved session never touches the escalation store. Best-effort: a failed
+ * lookup/resolve keeps the key so the next pass retries.
+ */
+async function recoverBootConfig(
+  ownerId: string,
+  kind: 'dark-telemetry',
+  out: CompactionComplianceResult,
+): Promise<void> {
+  const key = `${ownerId}:${kind}`;
+  if (!bootConfigEscalated.has(key)) return;
+  const subjectSignature = `compaction-watchdog:boot-config:${key}`;
+  try {
+    const { listEscalations, resolveEscalation } = await import('../agent-tools/coordination/escalations');
+    // openEscalation spreads `meta` FLAT onto the record, so the key sits at the top level.
+    const open = (await listEscalations({ status: 'open' })).find(
+      (rec) =>
+        rec.from === 'compaction-watchdog' &&
+        (rec as Record<string, unknown>).subjectSignature === subjectSignature,
+    );
+    if (open) {
+      await resolveEscalation({
+        msg_id: open.msg_id,
+        choice: 'recovered',
+        resolver: 'compaction-watchdog',
+        note: `${kind} recovered: the session's context estimate resolves again, so the gauge, the per-turn reminder and the force-compact backstop can see it (WI-2140608).`,
+      });
+    }
+    bootConfigEscalated.delete(key);
+    out.bootConfigRecovered.push({ owner: ownerId, kind });
+  } catch (e) {
+    console.warn(
+      `[compaction-watchdog] boot-config recovery failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 }
@@ -1805,6 +1870,9 @@ export interface CompactionComplianceResult {
    *  blind to the session), so it can silently overflow. One entry per owner; escalated once per
    *  owner via escalateBootConfig. */
   bootConfigAlerts: Array<{ owner: string; kind: 'dark-telemetry' | 'dark-presence'; detail: string }>;
+  /** WI-2140608: dark-telemetry escalations RESOLVED this pass because the owner's estimate
+   *  resolves again; the per-process guard is re-armed so a later re-darkening re-escalates. */
+  bootConfigRecovered: Array<{ owner: string; kind: 'dark-telemetry' }>;
   /** EI-10434: readings DISCARDED this pass for exceeding the plausibility ceiling —
    *  never cached, never counted toward overLimit/forceCompacted. One entry per owner. */
   implausibleReadings: Array<{ owner: string; est: number; ceiling: number }>;
@@ -1853,6 +1921,7 @@ export async function checkCompactionCompliance(
     contextDeaths: [],
     unflushedClaims: [],
     bootConfigAlerts: [],
+    bootConfigRecovered: [],
     implausibleReadings: [],
     frozenCodexReadings: [],
     presenceGapsHealed: [],
@@ -2092,6 +2161,13 @@ export async function checkCompactionCompliance(
         // (the 836k incident class). Grace a few sweeps (a normal boot reads null briefly before
         // its transcript lands), then escalate once. A context-DEAD session (P-019 above) already
         // `continue`d, so this is a live-but-blind session, not a corpse.
+        //
+        // WI-2140608: only an ACTIVE null sweep advances the streak — a blind session that is
+        // taking no turns (a carry-respawn successor parked until its wake, a codex rollout
+        // stalled before its first token_count) is not consuming context and cannot overflow.
+        // Idle sweeps neither advance nor reset the streak: the hazard is turns-while-blind,
+        // and three of those over ANY span is the signal, however much idle time sits between.
+        if (!activeWithin(r.last_active_at, DARK_TELEMETRY_ACTIVE_WINDOW_MS)) continue;
         const streak = (nullEstimateStreak.get(r.owner_id) ?? 0) + 1;
         nullEstimateStreak.set(r.owner_id, streak);
         if (streak >= DARK_TELEMETRY_MAX_NULL_SWEEPS) {
@@ -2119,13 +2195,14 @@ export async function checkCompactionCompliance(
             r.owner_id,
             r.owner_label,
             'dark-telemetry',
-            `${r.owner_label} has DARK context telemetry — its estimate has not resolved for ${streak} watchdog sweeps (~${streak * 2}min) since boot`,
+            `${r.owner_label} has DARK context telemetry — its estimate stayed null across ${streak} ACTIVE watchdog sweeps (turns taken while blind; ~${streak * 2}min of activity)`,
             `estimateContextTokensForOwner returns null, so the context gauge, the per-turn usage reminder, and the force-compact backstop are ALL blind to this session — it can silently overflow its model window (the 2026-07-04 836k class). Usually a missing/unreadable transcript or an unresolved model spec. Check the session's transcript path + model resolution; relaunch if wedged. (agent-managed-compaction-2026-07-01 P-018)`,
           );
         }
         continue;
       }
       nullEstimateStreak.delete(r.owner_id); // estimate resolved — clear the dark-telemetry streak
+      await recoverBootConfig(r.owner_id, 'dark-telemetry', out); // WI-2140608: close the row we raised
       // D-011: Codex reports its EFFECTIVE window in every token_count event
       // (258400 for a 272k model at 95%). A stale/unknown-spec seed can be 400k,
       // which means the warning and carry cut would literally be scheduled after

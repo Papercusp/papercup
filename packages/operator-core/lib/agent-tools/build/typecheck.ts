@@ -65,6 +65,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   errorsOnly,
+  filterToDirs,
   filterToFiles,
   noInputDiagnostic,
   parseFoundSummary,
@@ -730,6 +731,8 @@ export default defineTool({
       .describe('tsconfig path, or a directory containing one — repo-root-relative or absolute (e.g. "packages/operator-core" or "apps/operator/tsconfig.json"). REQUIRED and deliberately un-defaulted: this repo has no root tsconfig.json, so any default would be the exact silent no-op this tool exists to refuse.'),
     files: z.array(z.string().min(1)).max(50).optional()
       .describe('Return only diagnostics in these files (matched by path suffix). The server-side form of `| grep -E "myfile"` — the whole project is still checked, so counts stay honest; `errorCount` is the filtered count and `totalErrorCount` the project-wide one.'),
+    dirs: z.array(z.string().min(1)).max(20).optional()
+      .describe('Return only diagnostics whose file falls under one of these directories — a repo-relative PREFIX match anchored at a path-segment boundary ("apps/operator" cannot match "apps/operator-vite"). The server-side form of `grep -E "^dir/"`, for a directory-ATTRIBUTION question `files` (suffix match) cannot express, e.g. "does ANY error fall under apps/operator-vite/?" (EI-22050606808498557). Combines with `files` as an OR: a diagnostic matching either is kept. `errorCount` is the filtered count; `totalErrorCount` the project-wide one.'),
     maxErrors: z.number().int().min(1).max(500).optional()
       .describe(`Cap the returned errors list (default ${DEFAULT_MAX_ERRORS}). Counts stay complete; errorsTruncated and byFileTruncated flag bounded arrays.`),
     timeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional()
@@ -901,12 +904,20 @@ export default defineTool({
 
     const errors = errorsOnly(diagnostics);
     const byFile = summariseByFile(errors);
-    // In scoped mode `files` defined the PROGRAM, so it must not also narrow the OUTPUT:
-    // the scoped program deliberately includes the import graph, and an error your change
-    // caused in a file you import is exactly what you need to see. Re-applying the suffix
+    // In scoped mode `files`/`dirs` defined the PROGRAM, so they must not also narrow the
+    // OUTPUT: the scoped program deliberately includes the import graph, and an error your
+    // change caused in a file you import is exactly what you need to see. Re-applying either
     // filter here would hide it and hand back a clean-looking zero — the same false-green
     // this mode exists to eliminate.
-    const shown = args.files && !args.scopeToFiles ? filterToFiles(errors, args.files) : errors;
+    const hasFilter = (args.files || args.dirs) && !args.scopeToFiles;
+    const shown = hasFilter
+      ? [
+          ...new Set([
+            ...(args.files ? filterToFiles(errors, args.files) : []),
+            ...(args.dirs ? filterToDirs(errors, args.dirs) : []),
+          ]),
+        ]
+      : errors;
     const maxErrors = args.maxErrors ?? DEFAULT_MAX_ERRORS;
     const bounded = boundDiagnostics(shown, byFile, maxErrors);
     const reported = parseFoundSummary(outcome.output);
@@ -934,7 +945,13 @@ export default defineTool({
                 'SCOPED RUN — only these files and their import graph were compiled. Errors your change caused in files that do not import these are NOT covered (e.g. adding a required field to a shared interface breaks distant fixtures). This is not the gate verdict.',
             }
           : {}),
-        ...(args.files && !args.scopeToFiles ? { totalErrorCount: errors.length, filteredTo: args.files } : {}),
+        ...(hasFilter
+          ? {
+              totalErrorCount: errors.length,
+              ...(args.files ? { filteredTo: args.files } : {}),
+              ...(args.dirs ? { filteredToDirs: args.dirs } : {}),
+            }
+          : {}),
         errors: bounded.errors,
         errorsTruncated: bounded.errorsTruncated,
         byFile: bounded.byFile,

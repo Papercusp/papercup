@@ -93,7 +93,7 @@ describe('registration', () => {
 
   it('declares the argument surface the substitution audit models', () => {
     expect(Object.keys((buildTypecheck as unknown as { args: { shape: Record<string, unknown> } }).args.shape).sort())
-      .toEqual(['files', 'incremental', 'maxErrors', 'project', 'scopeToFiles', 'timeoutMs']);
+      .toEqual(['dirs', 'files', 'incremental', 'maxErrors', 'project', 'scopeToFiles', 'timeoutMs']);
   });
 });
 
@@ -269,6 +269,90 @@ describe('selectTypecheckRoot — phantom-root fallback', () => {
     } finally {
       if (priorIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
       else process.env.PAPERCUSP_INTEGRATION_ROOT = priorIntegrationRoot;
+    }
+  });
+});
+
+describe('dirs — the directory-attribution question `files` (suffix match) cannot express (EI-22050606808498557)', () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'p024-dirs-'));
+    mkdirSync(join(root, 'apps', 'operator-vite', 'lib'), { recursive: true });
+    mkdirSync(join(root, 'apps', 'operator', 'lib'), { recursive: true });
+    writeFileSync(join(root, 'tsconfig.json'), '{}');
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  const emitDiagnosticsAndClose = (child: ReturnType<typeof fakeChild>['child']) => {
+    queueMicrotask(() => {
+      child.stdout?.emit('data', Buffer.from(
+        [
+          'apps/operator/lib/a.ts(1,1): error TS1: x',
+          'apps/operator-vite/lib/b.ts(1,1): error TS1: y',
+        ].join('\n') + '\n',
+      ));
+      child.emit('close', 2);
+    });
+  };
+
+  it('filters to diagnostics under the requested directory and reports the project-wide total separately', async () => {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockImplementationOnce(() => { emitDiagnosticsAndClose(child); return child; });
+    try {
+      const raw = await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler({ project: '.', dirs: ['apps/operator-vite'] }, { projectDir: root });
+
+      expect(raw.data).toMatchObject({ errorCount: 1, totalErrorCount: 2, filteredToDirs: ['apps/operator-vite'] });
+      expect((raw.data.errors as { file: string }[]).map((e) => e.file)).toEqual(['apps/operator-vite/lib/b.ts']);
+    } finally {
+      spawnMock.mockReset();
+    }
+  });
+
+  it('never matches a sibling directory sharing a name prefix (apps/operator vs apps/operator-vite)', async () => {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockImplementationOnce(() => { emitDiagnosticsAndClose(child); return child; });
+    try {
+      const raw = await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler({ project: '.', dirs: ['apps/operator'] }, { projectDir: root });
+
+      expect((raw.data.errors as { file: string }[]).map((e) => e.file)).toEqual(['apps/operator/lib/a.ts']);
+    } finally {
+      spawnMock.mockReset();
+    }
+  });
+
+  it('combines with `files` as an OR, deduped, when both are given', async () => {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockImplementationOnce(() => { emitDiagnosticsAndClose(child); return child; });
+    try {
+      const raw = await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler(
+        { project: '.', dirs: ['apps/operator-vite'], files: ['apps/operator/lib/a.ts'] },
+        { projectDir: root },
+      );
+
+      expect((raw.data.errors as { file: string }[]).map((e) => e.file).sort()).toEqual([
+        'apps/operator-vite/lib/b.ts',
+        'apps/operator/lib/a.ts',
+      ].sort());
+      expect(raw.data.errorCount).toBe(2);
+    } finally {
+      spawnMock.mockReset();
     }
   });
 });

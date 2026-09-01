@@ -48,7 +48,8 @@ import {
   tryReleaseResource,
   type ResourceAcquireResult,
 } from '../../agent-tools/locks/su-lock-store';
-import { reclaimDeadExclusiveHolders } from '../../agent-tools/locks/resource-acquire-wait';
+import { describeStaleHolderVerdict, reclaimDeadExclusiveHolders } from '../../agent-tools/locks/resource-acquire-wait';
+import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { liveLockHoldingsStrict } from '../../agent-tools/locks/live-lock-paths';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
@@ -471,13 +472,15 @@ export function parseGitSyncOwnerPid(owner: string): number | null {
 /**
  * The lock owners of the fires CURRENTLY in flight in THIS host process.
  *
- * `reclaimDeadExclusiveHolders` can only reclaim a lease whose owner PID is
- * definitively dead, which leaves one orphan class permanently unreclaimable:
- * a fire that acquired the lock and then stopped existing while its HOST
- * process kept running (a cancelled/reaped DBOS workflow — WI-1416's reaper
- * does exactly this — or any abort between the acquire and the `finally` that
- * releases). The row's PID is alive, so the dead-holder test declines; the fire
- * that would have released it is gone; so nothing frees it until the 600s TTL.
+ * `reclaimDeadExclusiveHolders` reclaims a lease whose owner PID is
+ * definitively dead, or (EI-22078335832051825) whose owner is an agent SESSION
+ * the shared liveness oracle calls `ended`. Neither instrument can see one
+ * orphan class: a fire that acquired the lock and then stopped existing while
+ * its HOST process kept running (a cancelled/reaped DBOS workflow — WI-1416's
+ * reaper does exactly this — or any abort between the acquire and the `finally`
+ * that releases). The row's PID is alive and its owner is not a session, so
+ * both dead-holder tests decline; the fire that would have released it is
+ * gone; so nothing frees it until the 600s TTL.
  * Worse, it is self-sustaining: every later tick reads it as a live peer and
  * skips, and when it finally expires the next tick can orphan a fresh one.
  * Measured 2026-08-27: 3h40m with ZERO commits fleet-wide, `git_sync_activity`
@@ -988,18 +991,26 @@ async function acquireLocks(
       if (!r.ok && r.reason === 'held_exclusive') {
         // A killed bg-host leaves a fresh-looking exclusive row behind. Give
         // this fire one proof-safe reclaim attempt before treating it as a live
-        // peer; the helper scopes release by lock_id and only accepts ESRCH.
+        // peer; the helper scopes release by lock_id and accepts exactly two
+        // verdicts: ESRCH on the pid the owner string embeds, or — for a holder
+        // that names no pid, or whose pid is alive while its SESSION is gone —
+        // an `ended` verdict from the shared liveness oracle
+        // (EI-22078335832051825: an agent's `su-…` lease on git-sync:portal
+        // outlived its session for the full TTL while coord:presence already
+        // said `ended`). The oracle is presence-gated, so a peer host's own
+        // fire owner is never mistaken for a dead session.
         let reclaimed = await reclaimDeadExclusiveHolders(
           cd,
           owner,
           r.holders ?? [],
           parseGitSyncOwnerPid,
-          ({ holder, pid }) => {
+          (info) => {
             console.error(
-              `[git-sync] STALE LOCK RECLAIMED — ${slug} ${resource} holder ${holder.owner} ` +
-              `(pid ${pid} not running on this host); retrying the acquire`,
+              `[git-sync] STALE LOCK RECLAIMED — ${slug} ${resource} holder ${info.holder.owner} ` +
+              `(${describeStaleHolderVerdict(info)}); retrying the acquire`,
             );
           },
+          endedSessionOwners,
         );
         // The orphan class the dead-PID test above structurally cannot see: a
         // lease taken by a fire of OURS that no longer exists while this process

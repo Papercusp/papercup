@@ -56,25 +56,60 @@ function isPidDefinitivelyDead(pid: number): boolean {
 }
 
 /**
+ * How a reclaimed holder was proven dead. Two instruments, two orphan classes:
+ *  - `pid-dead`: the owner string embedded a host-local pid and `kill(pid, 0)`
+ *    returned ESRCH (EI-18674647773291145) — a crashed deploy-cli / killed
+ *    bg-host.
+ *  - `session-ended`: the owner is an agent session the shared liveness oracle
+ *    calls `ended` (EI-22078335832051825) — a lock left behind by a session that
+ *    exited (or is warm-dead) without releasing. Its pid, if any, may be ALIVE.
+ */
+export type StaleHolderVerdict = 'pid-dead' | 'session-ended';
+
+export interface StaleHolderReclaimedInfo {
+  holder: ResourceHolder;
+  /** The dead pid for `pid-dead`; null for `session-ended` (no pid was judged). */
+  pid: number | null;
+  verdict: StaleHolderVerdict;
+}
+
+/** The parenthetical every reclaim log line carries — one wording source, so a
+ *  reader can tell WHICH instrument condemned the holder. */
+export function describeStaleHolderVerdict(info: Pick<StaleHolderReclaimedInfo, 'pid' | 'verdict'>): string {
+  return info.verdict === 'pid-dead'
+    ? `pid ${info.pid} not running on this host`
+    : 'session ended per the shared liveness oracle';
+}
+
+/**
  * EI-18674647773291145: reclaim (force-release) any EXCLUSIVE holder among
  * `holders` whose owner string resolves, via `hostLocalOwnerPid`, to a PID that is
  * verifiably dead on this host. Scoped by the holder's own `lock_id` (never a bare
  * owner-match delete), so this can never race-delete a FRESH lease the same owner
  * string re-acquired between the read and this delete. Returns true iff at least
  * one stale holder was actually reclaimed (the caller's cue to retry the acquire).
+ *
+ * EI-22078335832051825: the PID test is structurally blind to a holder whose
+ * owner string names no pid, or whose pid is alive while its SESSION is gone —
+ * an agent's `su-…` lease left behind by an ended (or warm-dead) session. Those
+ * sat until TTL while coord:presence already reported the holder `ended`. When
+ * a `deadOwnerOracle` is supplied (see ended-session-owners.ts — presence-gated,
+ * `ended`-only, fail-safe), every exclusive holder the PID test did NOT condemn
+ * is put to the oracle in ONE batched call, and an owner it returns is reclaimed
+ * exactly like a dead pid — by its own `lock_id`, logged through the same hook.
+ * The oracle is consulted only for the residue, so the cheap syscall verdict
+ * still short-circuits the common crashed-process case.
  */
 export async function reclaimDeadExclusiveHolders(
   coordinationDomain: string,
   owner: string,
   holders: ResourceHolder[],
   hostLocalOwnerPid: (owner: string) => number | null,
-  onStaleHolderReclaimed?: (info: { holder: ResourceHolder; pid: number }) => void | Promise<void>,
+  onStaleHolderReclaimed?: (info: StaleHolderReclaimedInfo) => void | Promise<void>,
+  deadOwnerOracle?: (owners: readonly string[]) => Promise<ReadonlySet<string>>,
 ): Promise<boolean> {
   let reclaimedAny = false;
-  for (const holder of holders) {
-    if (holder.mode !== 'exclusive') continue;
-    const pid = hostLocalOwnerPid(holder.owner);
-    if (pid == null || !isPidDefinitivelyDead(pid)) continue;
+  const reclaimOne = async (holder: ResourceHolder, info: Omit<StaleHolderReclaimedInfo, 'holder'>) => {
     const released = await inWorkspaceTxn(coordinationDomain, owner, (tx) =>
       tryReleaseResource(tx, { coordinationDomain, owner: holder.owner, lockId: holder.lock_id }),
     ).catch(() => null);
@@ -82,11 +117,37 @@ export async function reclaimDeadExclusiveHolders(
       reclaimedAny = true;
       if (onStaleHolderReclaimed) {
         try {
-          await onStaleHolderReclaimed({ holder, pid });
+          await onStaleHolderReclaimed({ holder, ...info });
         } catch {
           /* best-effort — a logging failure must never break the reclaim */
         }
       }
+    }
+  };
+
+  // Instrument 1: a host-local pid the owner string embeds, verifiably gone.
+  const notPidDead: ResourceHolder[] = [];
+  for (const holder of holders) {
+    if (holder.mode !== 'exclusive') continue;
+    const pid = hostLocalOwnerPid(holder.owner);
+    if (pid != null && isPidDefinitivelyDead(pid)) {
+      await reclaimOne(holder, { pid, verdict: 'pid-dead' });
+    } else {
+      notPidDead.push(holder);
+    }
+  }
+
+  // Instrument 2: the shared session-liveness oracle, for the residue only.
+  if (deadOwnerOracle && notPidDead.length > 0) {
+    let ended: ReadonlySet<string>;
+    try {
+      ended = await deadOwnerOracle(notPidDead.map((h) => h.owner));
+    } catch {
+      ended = new Set<string>(); // an oracle failure condemns nobody
+    }
+    for (const holder of notPidDead) {
+      if (!ended.has(holder.owner)) continue;
+      await reclaimOne(holder, { pid: null, verdict: 'session-ended' });
     }
   }
   return reclaimedAny;
@@ -132,10 +193,20 @@ export interface ExclusiveWaitParams {
    * than a no-wait one, not more.
    */
   hostLocalOwnerPid?: (owner: string) => number | null;
-  /** Fired once per stale holder actually reclaimed via `hostLocalOwnerPid` — the
-   *  caller's hook to log/record it LOUDLY. A leaked lock silently self-healing is
-   *  still a defect worth surfacing, never just a quiet internal retry. */
-  onStaleHolderReclaimed?: (info: { holder: ResourceHolder; pid: number }) => void | Promise<void>;
+  /**
+   * EI-22078335832051825: the SESSION half of the dead-holder test — given the
+   * blocking exclusive owners the pid test did not condemn, return those that
+   * are definitively dead sessions (`endedSessionOwners` in
+   * ended-session-owners.ts is the production adapter: presence-gated,
+   * `ended`-only, fail-safe). Same reclaim + single retry as `hostLocalOwnerPid`;
+   * either field alone enables the reclaim pass.
+   */
+  deadOwnerOracle?: (owners: readonly string[]) => Promise<ReadonlySet<string>>;
+  /** Fired once per stale holder actually reclaimed via `hostLocalOwnerPid` or
+   *  `deadOwnerOracle` — the caller's hook to log/record it LOUDLY. A leaked lock
+   *  silently self-healing is still a defect worth surfacing, never just a quiet
+   *  internal retry. `info.verdict` names the instrument that condemned it. */
+  onStaleHolderReclaimed?: (info: StaleHolderReclaimedInfo) => void | Promise<void>;
 }
 
 export type ExclusiveWaitResult =
@@ -168,6 +239,7 @@ export async function acquireResourceExclusiveWithWait(
     onTick,
     onDrainStart,
     hostLocalOwnerPid,
+    deadOwnerOracle,
     onStaleHolderReclaimed,
   } = params;
   const startedAt = Date.now();
@@ -205,8 +277,15 @@ export async function acquireResourceExclusiveWithWait(
    */
   const acquireReclaimingDeadHolders = async () => {
     let r = await doAcquire();
-    if (!r.ok && r.reason === 'held_exclusive' && hostLocalOwnerPid) {
-      const reclaimed = await reclaimDeadExclusiveHolders(cd, owner, r.holders, hostLocalOwnerPid, onStaleHolderReclaimed);
+    if (!r.ok && r.reason === 'held_exclusive' && (hostLocalOwnerPid || deadOwnerOracle)) {
+      const reclaimed = await reclaimDeadExclusiveHolders(
+        cd,
+        owner,
+        r.holders,
+        hostLocalOwnerPid ?? (() => null),
+        onStaleHolderReclaimed,
+        deadOwnerOracle,
+      );
       if (reclaimed) r = await doAcquire();
     }
     return r;

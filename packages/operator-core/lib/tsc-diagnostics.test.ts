@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import {
   NO_INPUT_CODES,
   errorsOnly,
+  filterToDirs,
   filterToFiles,
   noInputDiagnostic,
   parseFoundSummary,
@@ -172,6 +173,52 @@ describe('filterToFiles — the server-side form of `| grep myfile`', () => {
   it('normalises windows separators and a leading ./', () => {
     expect(filterToFiles(diagnostics, ['./packages/operator-core/lib/run.ts'])).toHaveLength(1);
     expect(filterToFiles(diagnostics, ['packages\\operator-core\\lib\\run.ts'])).toHaveLength(1);
+  });
+});
+
+describe('filterToDirs — the directory-attribution question filterToFiles cannot express (EI-22050606808498557)', () => {
+  const diagnostics = parseTscDiagnostics([
+    'apps/operator/lib/run.ts(1,1): error TS1: a',
+    'apps/operator-vite/lib/entry.ts(1,1): error TS1: b',
+    'apps/operator-vite/lib/nested/deep.ts(1,1): error TS1: c',
+    'packages/operator-core/lib/run.ts(1,1): error TS1: d',
+  ].join('\n'));
+
+  it('keeps every diagnostic under the requested directory, at any depth', () => {
+    const kept = filterToDirs(diagnostics, ['apps/operator-vite']).map((d) => d.file);
+    expect(kept.sort()).toEqual([
+      'apps/operator-vite/lib/entry.ts',
+      'apps/operator-vite/lib/nested/deep.ts',
+    ]);
+  });
+
+  it('anchors at a path-segment boundary, so "apps/operator" cannot match "apps/operator-vite"', () => {
+    // The exact bug this exists to fix: a name-prefix match would silently fold the
+    // sibling operator-vite tree into an operator/-scoped attribution question.
+    const kept = filterToDirs(diagnostics, ['apps/operator']).map((d) => d.file);
+    expect(kept).toEqual(['apps/operator/lib/run.ts']);
+    expect(kept).not.toContain('apps/operator-vite/lib/entry.ts');
+  });
+
+  it('matches a diagnostic whose file IS exactly the requested directory path', () => {
+    const only = parseTscDiagnostics('apps/operator(1,1): error TS1: weird');
+    expect(filterToDirs(only, ['apps/operator'])).toHaveLength(1);
+  });
+
+  it('drops unattributed diagnostics (they belong to no file, so no directory)', () => {
+    expect(filterToDirs(parseTscDiagnostics('error TS5057: nope.'), ['apps'])).toEqual([]);
+  });
+
+  it('normalises windows separators, a leading ./, and a trailing slash', () => {
+    expect(filterToDirs(diagnostics, ['./apps/operator-vite/']).map((d) => d.file).sort()).toEqual([
+      'apps/operator-vite/lib/entry.ts',
+      'apps/operator-vite/lib/nested/deep.ts',
+    ]);
+    expect(filterToDirs(diagnostics, ['apps\\operator-vite'])).toHaveLength(2);
+  });
+
+  it('returns nothing when no diagnostic falls under the requested directory', () => {
+    expect(filterToDirs(diagnostics, ['libs/nothing-here'])).toEqual([]);
   });
 });
 
