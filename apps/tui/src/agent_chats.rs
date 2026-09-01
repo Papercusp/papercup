@@ -1,15 +1,11 @@
 //! Typed wire contract for the operator's native `agent-chats` session API.
 //!
-//! The operator owns the transport and the agent loop. The TUI is a client of
-//! that existing surface: lifecycle calls use REST and a turn uses the
-//! `engine:"loop"` streaming POST. This module deliberately contains no ACP or
-//! external-engine compatibility layer.
+//! The operator owns the transport and conversation store. The TUI uses the
+//! lifecycle, transcript, task, and approval REST surfaces; writable owner turns
+//! use the separate typed SU-session host.
 
-use crate::sse::SseFrame;
-use anyhow::{anyhow, bail, Context, Result};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentChatListOptions {
@@ -25,15 +21,6 @@ pub struct NewAgentChat {
     pub feature_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentChatTurnRequest {
-    pub content: String,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub account: Option<String>,
-    pub retry_after_cancel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -246,322 +233,6 @@ pub struct AgentChatApprovalsResponse {
     pub approvals: Vec<PendingAgentChatApproval>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentChatUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    #[serde(default)]
-    pub cache_read_tokens: Option<u64>,
-    #[serde(default)]
-    pub cache_creation_tokens: Option<u64>,
-    #[serde(default)]
-    pub cost_usd: Option<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct AgentChatToolCall {
-    pub id: String,
-    pub name: String,
-    pub input: Value,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum AgentChatEvent {
-    /// Transport keepalive emitted by the shared SSE response helper.
-    Heartbeat {
-        ts_ms: Option<u64>,
-    },
-    Provenance {
-        engine: String,
-        model: String,
-        account_route: String,
-    },
-    StepStart {
-        step_index: u32,
-    },
-    TextDelta {
-        step_index: u32,
-        text: String,
-    },
-    ReasoningDelta {
-        step_index: u32,
-        text: String,
-    },
-    ToolCall {
-        step_index: u32,
-        call: AgentChatToolCall,
-        needs_approval: bool,
-    },
-    ApprovalResolved {
-        step_index: u32,
-        call_id: String,
-        approved: bool,
-        reason: Option<String>,
-    },
-    ToolResult {
-        step_index: u32,
-        call_id: String,
-        name: String,
-        result: Option<Value>,
-        error: Option<String>,
-        denied: bool,
-    },
-    StepEnd {
-        step_index: u32,
-        usage: Option<AgentChatUsage>,
-        stop_reason: Option<String>,
-        tool_call_count: u32,
-    },
-    Done {
-        stop_reason: String,
-        final_text: String,
-        usage: AgentChatUsage,
-        step_count: u32,
-    },
-    Error {
-        message: String,
-    },
-}
-
-pub type AgentChatEventStream = mpsc::UnboundedReceiver<Result<AgentChatEvent>>;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct HeartbeatPayload {
-    #[serde(default)]
-    ts_ms: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProvenancePayload {
-    engine: String,
-    model: String,
-    account_route: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StepStartPayload {
-    step_index: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeltaPayload {
-    step_index: u32,
-    text: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolCallPayload {
-    step_index: u32,
-    call: AgentChatToolCall,
-    needs_approval: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ApprovalResolvedPayload {
-    step_index: u32,
-    call_id: String,
-    approved: bool,
-    #[serde(default)]
-    reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolResultPayload {
-    step_index: u32,
-    call_id: String,
-    name: String,
-    #[serde(default)]
-    result: Option<Value>,
-    #[serde(default)]
-    error: Option<String>,
-    #[serde(default)]
-    denied: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StepEndPayload {
-    step_index: u32,
-    #[serde(default)]
-    usage: Option<AgentChatUsage>,
-    #[serde(default)]
-    stop_reason: Option<String>,
-    #[serde(default)]
-    tool_call_count: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DonePayload {
-    stop_reason: String,
-    final_text: String,
-    usage: AgentChatUsage,
-    step_count: u32,
-}
-
-#[derive(Deserialize)]
-struct ErrorPayload {
-    message: String,
-}
-
-fn parse_payload<T: DeserializeOwned>(value: Value, event: &str) -> Result<T> {
-    serde_json::from_value(value).with_context(|| format!("decode agent-chat `{event}` payload"))
-}
-
-fn validate_payload_type(value: &Value, event: &str, allow_missing: bool) -> Result<()> {
-    match value.get("type") {
-        Some(Value::String(payload_type)) if payload_type == event => Ok(()),
-        Some(Value::String(payload_type)) => bail!(
-            "agent-chat SSE event name `{event}` does not match payload type `{payload_type}`"
-        ),
-        Some(_) => bail!("agent-chat SSE `{event}` payload has a non-string `type`"),
-        None if allow_missing => Ok(()),
-        None => bail!("agent-chat SSE `{event}` payload is missing `type`"),
-    }
-}
-
-/// Decode one frame from the owned-loop session protocol. Unknown event names
-/// and name/type disagreement are errors instead of silent drops; otherwise
-/// serde remains forward-compatible with additive payload fields.
-pub fn decode_agent_chat_event(frame: &SseFrame) -> Result<AgentChatEvent> {
-    let value: Value = serde_json::from_str(&frame.data)
-        .with_context(|| format!("parse agent-chat SSE `{}` JSON", frame.event))?;
-
-    match frame.event.as_str() {
-        "heartbeat" => {
-            let payload: HeartbeatPayload = parse_payload(value, "heartbeat")?;
-            Ok(AgentChatEvent::Heartbeat {
-                ts_ms: payload.ts_ms,
-            })
-        }
-        "provenance" => {
-            validate_payload_type(&value, "provenance", false)?;
-            let payload: ProvenancePayload = parse_payload(value, "provenance")?;
-            Ok(AgentChatEvent::Provenance {
-                engine: payload.engine,
-                model: payload.model,
-                account_route: payload.account_route,
-            })
-        }
-        "step_start" => {
-            validate_payload_type(&value, "step_start", false)?;
-            let payload: StepStartPayload = parse_payload(value, "step_start")?;
-            Ok(AgentChatEvent::StepStart {
-                step_index: payload.step_index,
-            })
-        }
-        "text_delta" | "reasoning_delta" => {
-            validate_payload_type(&value, &frame.event, false)?;
-            let payload: DeltaPayload = parse_payload(value, &frame.event)?;
-            if frame.event == "text_delta" {
-                Ok(AgentChatEvent::TextDelta {
-                    step_index: payload.step_index,
-                    text: payload.text,
-                })
-            } else {
-                Ok(AgentChatEvent::ReasoningDelta {
-                    step_index: payload.step_index,
-                    text: payload.text,
-                })
-            }
-        }
-        "tool_call" => {
-            validate_payload_type(&value, "tool_call", false)?;
-            let payload: ToolCallPayload = parse_payload(value, "tool_call")?;
-            Ok(AgentChatEvent::ToolCall {
-                step_index: payload.step_index,
-                call: payload.call,
-                needs_approval: payload.needs_approval,
-            })
-        }
-        "approval_resolved" => {
-            validate_payload_type(&value, "approval_resolved", false)?;
-            let payload: ApprovalResolvedPayload = parse_payload(value, "approval_resolved")?;
-            Ok(AgentChatEvent::ApprovalResolved {
-                step_index: payload.step_index,
-                call_id: payload.call_id,
-                approved: payload.approved,
-                reason: payload.reason,
-            })
-        }
-        "tool_result" => {
-            validate_payload_type(&value, "tool_result", false)?;
-            let payload: ToolResultPayload = parse_payload(value, "tool_result")?;
-            Ok(AgentChatEvent::ToolResult {
-                step_index: payload.step_index,
-                call_id: payload.call_id,
-                name: payload.name,
-                result: payload.result,
-                error: payload.error,
-                denied: payload.denied,
-            })
-        }
-        "step_end" => {
-            validate_payload_type(&value, "step_end", false)?;
-            let payload: StepEndPayload = parse_payload(value, "step_end")?;
-            Ok(AgentChatEvent::StepEnd {
-                step_index: payload.step_index,
-                usage: payload.usage,
-                stop_reason: payload.stop_reason,
-                tool_call_count: payload.tool_call_count,
-            })
-        }
-        "done" => {
-            validate_payload_type(&value, "done", false)?;
-            let payload: DonePayload = parse_payload(value, "done")?;
-            Ok(AgentChatEvent::Done {
-                stop_reason: payload.stop_reason,
-                final_text: payload.final_text,
-                usage: payload.usage,
-                step_count: payload.step_count,
-            })
-        }
-        "error" => {
-            // The loop wire carries type:"error"; the shared SSE wrapper's
-            // setup-failure fallback predates that vocabulary and omits it.
-            validate_payload_type(&value, "error", true)?;
-            let payload: ErrorPayload = parse_payload(value, "error")?;
-            Ok(AgentChatEvent::Error {
-                message: payload.message,
-            })
-        }
-        other => Err(anyhow!("unsupported agent-chat SSE event `{other}`")),
-    }
-}
-
-pub(crate) fn decode_agent_chat_stream(
-    mut frames: mpsc::UnboundedReceiver<SseFrame>,
-) -> AgentChatEventStream {
-    let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        while let Some(frame) = frames.recv().await {
-            let decoded = decode_agent_chat_event(&frame);
-            let done = matches!(decoded, Ok(AgentChatEvent::Done { .. }));
-            if tx.send(decoded).is_err() {
-                return;
-            }
-            if done {
-                // The terminal event is authoritative; do not wait for the
-                // transport to close before handing it to the caller.
-                return;
-            }
-        }
-        // A closed SSE channel without `done` is a failed turn, not a
-        // successful empty response. The stream task surfaces this as the
-        // same typed error path as a decoder failure.
-        let _ = tx.send(Err(anyhow!("agent-chat SSE stream closed before done")));
-    });
-    rx
-}
-
 pub(crate) fn agent_chats_list_path(harness: &str, options: &AgentChatListOptions) -> String {
     let mut path = format!("/api/harness/{}/agent-chats", encode_segment(harness));
     let mut query = Vec::new();
@@ -589,10 +260,6 @@ pub(crate) fn agent_chat_path(harness: &str, chat_id: &str) -> String {
     )
 }
 
-pub(crate) fn agent_chat_messages_path(harness: &str, chat_id: &str) -> String {
-    format!("{}/messages", agent_chat_path(harness, chat_id))
-}
-
 pub(crate) fn agent_chat_tasks_path(harness: &str, chat_id: &str) -> String {
     format!("{}/tasks", agent_chat_path(harness, chat_id))
 }
@@ -607,26 +274,6 @@ pub(crate) fn agent_chat_approval_path(harness: &str, chat_id: &str, call_id: &s
         agent_chat_approvals_path(harness, chat_id),
         encode_segment(call_id)
     )
-}
-
-pub(crate) fn loop_message_body(request: &AgentChatTurnRequest) -> Value {
-    let mut body = serde_json::json!({
-        "content": request.content,
-        "engine": "loop",
-    });
-    if let Some(model) = &request.model {
-        body["model"] = Value::String(model.clone());
-    }
-    if let Some(effort) = &request.effort {
-        body["effort"] = Value::String(effort.clone());
-    }
-    if let Some(account) = &request.account {
-        body["account"] = Value::String(account.clone());
-    }
-    if request.retry_after_cancel {
-        body["retryAfterCancel"] = Value::Bool(true);
-    }
-    body
 }
 
 fn encode_segment(value: &str) -> String {
@@ -646,13 +293,6 @@ fn encode_segment(value: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    fn frame(event: &str, data: Value) -> SseFrame {
-        SseFrame {
-            event: event.to_string(),
-            data: data.to_string(),
-        }
-    }
 
     #[test]
     fn decodes_lifecycle_payloads() {
@@ -721,177 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_every_owned_loop_event_variant() {
-        let cases = vec![
-            frame("heartbeat", json!({"tsMs": 7})),
-            frame(
-                "provenance",
-                json!({
-                    "type": "provenance", "engine": "loop",
-                    "model": "claude-sonnet-4-6:high", "accountRoute": "acct-7"
-                }),
-            ),
-            frame("step_start", json!({"type": "step_start", "stepIndex": 0})),
-            frame(
-                "text_delta",
-                json!({"type": "text_delta", "stepIndex": 0, "text": "hi"}),
-            ),
-            frame(
-                "reasoning_delta",
-                json!({"type": "reasoning_delta", "stepIndex": 0, "text": "hmm"}),
-            ),
-            frame(
-                "tool_call",
-                json!({
-                    "type": "tool_call", "stepIndex": 0,
-                    "call": {"id": "c1", "name": "capability:read", "input": {"path": "x"}},
-                    "needsApproval": true
-                }),
-            ),
-            frame(
-                "approval_resolved",
-                json!({
-                    "type": "approval_resolved", "stepIndex": 0, "callId": "c1",
-                    "approved": false, "reason": "not now"
-                }),
-            ),
-            frame(
-                "tool_result",
-                json!({
-                    "type": "tool_result", "stepIndex": 0, "callId": "c1",
-                    "name": "capability:read", "error": "denied", "denied": true
-                }),
-            ),
-            frame(
-                "step_end",
-                json!({
-                    "type": "step_end", "stepIndex": 0,
-                    "usage": {"inputTokens": 3, "outputTokens": 2, "costUsd": 0.01},
-                    "stopReason": "tool_use", "toolCallCount": 1
-                }),
-            ),
-            frame(
-                "done",
-                json!({
-                    "type": "done", "stopReason": "complete", "finalText": "hi",
-                    "usage": {"inputTokens": 3, "outputTokens": 2}, "stepCount": 1
-                }),
-            ),
-            frame(
-                "error",
-                json!({"type": "error", "message": "provider unavailable"}),
-            ),
-        ];
-
-        let decoded = cases
-            .iter()
-            .map(decode_agent_chat_event)
-            .collect::<Result<Vec<_>>>()
-            .expect("all variants decode");
-        assert!(matches!(
-            decoded[0],
-            AgentChatEvent::Heartbeat { ts_ms: Some(7) }
-        ));
-        assert!(matches!(
-            decoded[1],
-            AgentChatEvent::Provenance {
-                ref engine,
-                ref model,
-                ref account_route,
-            } if engine == "loop" && model == "claude-sonnet-4-6:high" && account_route == "acct-7"
-        ));
-        assert!(matches!(
-            decoded[2],
-            AgentChatEvent::StepStart { step_index: 0 }
-        ));
-        assert!(matches!(decoded[3], AgentChatEvent::TextDelta { ref text, .. } if text == "hi"));
-        assert!(
-            matches!(decoded[4], AgentChatEvent::ReasoningDelta { ref text, .. } if text == "hmm")
-        );
-        assert!(matches!(
-            decoded[5],
-            AgentChatEvent::ToolCall {
-                needs_approval: true,
-                ..
-            }
-        ));
-        assert!(matches!(
-            decoded[6],
-            AgentChatEvent::ApprovalResolved {
-                approved: false,
-                ..
-            }
-        ));
-        assert!(matches!(
-            decoded[7],
-            AgentChatEvent::ToolResult { denied: true, .. }
-        ));
-        assert!(matches!(
-            decoded[8],
-            AgentChatEvent::StepEnd {
-                tool_call_count: 1,
-                ..
-            }
-        ));
-        assert!(
-            matches!(decoded[9], AgentChatEvent::Done { ref final_text, .. } if final_text == "hi")
-        );
-        assert!(
-            matches!(decoded[10], AgentChatEvent::Error { ref message } if message == "provider unavailable")
-        );
-    }
-
-    #[test]
-    fn rejects_event_name_type_mismatch_and_unknown_events() {
-        let mismatch = decode_agent_chat_event(&frame(
-            "text_delta",
-            json!({"type": "reasoning_delta", "stepIndex": 0, "text": "hmm"}),
-        ))
-        .unwrap_err()
-        .to_string();
-        assert!(mismatch.contains("does not match"), "{mismatch}");
-
-        let unknown =
-            decode_agent_chat_event(&frame("mystery", json!({"type": "mystery", "value": 1})))
-                .unwrap_err()
-                .to_string();
-        assert!(unknown.contains("unsupported"), "{unknown}");
-
-        let infrastructure_error = decode_agent_chat_event(&frame(
-            "error",
-            json!({"phase": "setup", "message": "setup exploded"}),
-        ))
-        .expect("shared SSE wrapper error remains readable");
-        assert!(
-            matches!(infrastructure_error, AgentChatEvent::Error { ref message } if message == "setup exploded")
-        );
-    }
-
-    #[tokio::test]
-    async fn stream_reports_early_eof_without_done() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let mut events = decode_agent_chat_stream(rx);
-        tx.send(frame(
-            "text_delta",
-            json!({"type": "text_delta", "stepIndex": 0, "text": "partial"}),
-        ))
-        .expect("send frame");
-        drop(tx);
-
-        assert!(matches!(
-            events.recv().await.expect("text event").expect("decode text"),
-            AgentChatEvent::TextDelta { ref text, .. } if text == "partial"
-        ));
-        let error = events
-            .recv()
-            .await
-            .expect("early EOF error")
-            .expect_err("EOF must not decode as success");
-        assert!(error.to_string().contains("closed before done"));
-    }
-
-    #[test]
-    fn builds_loop_and_approval_wire_exactly() {
+    fn builds_lifecycle_and_approval_wire_exactly() {
         assert_eq!(
             agent_chats_list_path(
                 "hive one",
@@ -904,46 +374,12 @@ mod tests {
             "/api/harness/hive%20one/agent-chats?include=archived&limit=25&offset=50"
         );
         assert_eq!(
-            agent_chat_messages_path("hive/one", "chat/a"),
-            "/api/harness/hive%2Fone/agent-chats/chat%2Fa/messages"
-        );
-        assert_eq!(
             agent_chat_tasks_path("hive/one", "chat/a"),
             "/api/harness/hive%2Fone/agent-chats/chat%2Fa/tasks"
         );
         assert_eq!(
             agent_chat_approval_path("hive", "chat-1", "call/1"),
             "/api/harness/hive/agent-chats/chat-1/approvals/call%2F1"
-        );
-
-        let body = loop_message_body(&AgentChatTurnRequest {
-            content: "do the work".to_string(),
-            model: Some("claude-sonnet-4-6".to_string()),
-            effort: Some("high".to_string()),
-            account: Some("pool-a".to_string()),
-            retry_after_cancel: true,
-        });
-        assert_eq!(
-            body,
-            json!({
-                "content": "do the work",
-                "engine": "loop",
-                "model": "claude-sonnet-4-6",
-                "effort": "high",
-                "account": "pool-a",
-                "retryAfterCancel": true
-            })
-        );
-        let without_model = loop_message_body(&AgentChatTurnRequest {
-            content: "continue".to_string(),
-            model: None,
-            effort: None,
-            account: None,
-            retry_after_cancel: false,
-        });
-        assert_eq!(
-            without_model,
-            json!({"content": "continue", "engine": "loop"})
         );
 
         let decision = serde_json::to_value(AgentChatApprovalDecision {

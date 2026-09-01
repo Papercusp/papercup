@@ -7,9 +7,9 @@
 #![allow(dead_code)] // some typed methods are consumed as the panels grow.
 
 use crate::agent_chats::{
-    self, AgentChat, AgentChatApprovalDecision, AgentChatApprovalsResponse, AgentChatEventStream,
-    AgentChatListOptions, AgentChatListResponse, AgentChatTaskMutation,
-    AgentChatTaskMutationResponse, AgentChatTurnRequest, NewAgentChat, PendingAgentChatApproval,
+    self, AgentChat, AgentChatApprovalDecision, AgentChatApprovalsResponse, AgentChatListOptions,
+    AgentChatListResponse, AgentChatTaskMutation, AgentChatTaskMutationResponse, NewAgentChat,
+    PendingAgentChatApproval,
 };
 use crate::event::MemoryLoadState;
 use crate::http::{HttpClient, HttpStatusError};
@@ -772,27 +772,7 @@ impl OperatorClient {
         Ok(())
     }
 
-    /// Start one turn on the operator-owned loop and return typed SSE events.
-    /// The request helper pins `engine:"loop"`; no ACP/external-engine lane is
-    /// exposed through this method.
-    pub async fn start_agent_chat_turn(
-        &self,
-        harness: &str,
-        chat_id: &str,
-        request: &AgentChatTurnRequest,
-    ) -> Result<AgentChatEventStream> {
-        let body = agent_chats::loop_message_body(request);
-        let frames = self
-            .transport
-            .subscribe_sse_post(
-                &agent_chats::agent_chat_messages_path(harness, chat_id),
-                body.to_string(),
-            )
-            .await?;
-        Ok(agent_chats::decode_agent_chat_stream(frames))
-    }
-
-    /// Apply one user-side task action to the selected owned-loop chat. The
+    /// Apply one user-side task action to the selected SU-session chat. The
     /// response includes the canonical shared projection; the PG write also
     /// invalidates conversations.contextProjection for sibling renderers.
     pub async fn mutate_agent_chat_task(

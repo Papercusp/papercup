@@ -537,7 +537,6 @@ mod tests {
             id: Some("call-1".into()),
             needs_approval: false,
             input: Some(input),
-            diff: None,
             result,
             outcome: ToolOutcome::Ok,
         }

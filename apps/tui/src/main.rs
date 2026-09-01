@@ -18,7 +18,6 @@ mod card_view;
 mod chat_tags;
 mod client;
 mod companion;
-mod diff;
 mod event;
 mod fleet;
 mod framing;
@@ -1082,7 +1081,6 @@ async fn run<B: Backend>(
     // Open-mic (P-010): auto-start the mic once per channel join when
     // input_mode=open-mic, so it isn't restarted after a manual MicOff.
     let mut open_mic_started = false;
-    let mut native_chat_turn: Option<tokio::task::JoinHandle<()>> = None;
 
     terminal.draw(|f| ui::draw(f, &app))?;
 
@@ -1095,7 +1093,6 @@ async fn run<B: Backend>(
     'event_loop: while let Some(ev) = rx.recv().await {
         let prior_harness = app.harness.clone();
         let prior_context_target = app.context_projection_target.clone();
-        let chat_terminal = matches!(&ev, Event::ChatDone | Event::ChatError(_));
         let is_key = matches!(ev, Event::Key(_));
         let is_tick = matches!(ev, Event::Tick);
         // The operator voice socket dropped (P-013 reconnect-on-drop): detect it
@@ -1108,13 +1105,7 @@ async fn run<B: Backend>(
             ))
         );
         let action = app.update(ev);
-        if chat_terminal {
-            native_chat_turn = None;
-        }
         if app.harness != prior_harness {
-            if let Some(turn) = native_chat_turn.take() {
-                turn.abort();
-            }
             app.reset_agent_chat_binding();
             app.agent_chat_role = "operator".to_string();
             app.agent_chat_summaries.clear();
@@ -1682,31 +1673,6 @@ async fn run<B: Backend>(
                     }
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                Action::SendChat(text) => {
-                    // Native chat turn on the operator-owned loop (P-005 / D-011).
-                    // The reducer already appended the user message + a streaming
-                    // bubble; spawn the native turn against the active harness's
-                    // agent-chat. No transcript snapshot is sent — the loop owns the
-                    // history in PG, keyed by `agent_chat_id`.
-                    let retry_after_cancel = std::mem::take(&mut app.chat_retry_after_cancel);
-                    native_chat_turn = Some(tokio::spawn(stream_agent_chat_turn(
-                        text,
-                        app.harness.clone(),
-                        app.agent_chat_id.clone(),
-                        app.agent_chat_role.clone(),
-                        // The model picker's choice (P-005 final lane, WI-41189).
-                        // `None` still means "send no model", so the server applies
-                        // its own default (PAPERCUSP_LOOP_CHAT_MODEL) exactly as
-                        // before — the picker adds an override, it does not move
-                        // the default into the client.
-                        app.chat_model.clone(),
-                        app.chat_effort.clone(),
-                        app.chat_account.clone(),
-                        retry_after_cancel,
-                        tx.clone(),
-                    )));
-                    terminal.draw(|f| ui::draw(f, &app))?;
-                }
                 Action::OpenSuSession {
                     harness,
                     role,
@@ -1787,11 +1753,8 @@ async fn run<B: Backend>(
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::CancelChat => {
-                    if let Some(turn) = native_chat_turn.take() {
-                        turn.abort();
-                    }
                     app.update(Event::ChatError(
-                        "agent chat cancelled — ready to retry".into(),
+                        "chat cancellation is unavailable without an attached SU session".into(),
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
@@ -4045,11 +4008,6 @@ fn surface_agent_chat_approval_hydration_failure(
     )));
 }
 
-fn finish_native_agent_chat_turn(tx: &UnboundedSender<Event>, final_text: String) {
-    let _ = tx.send(Event::ChatFinal(final_text));
-    let _ = tx.send(Event::ChatDone);
-}
-
 async fn agent_chat_load(
     harness: String,
     selected_chat_id: Option<String>,
@@ -4151,7 +4109,7 @@ async fn agent_chat_load(
             });
             // Existing chat rows may already be bound to a durable SU session.
             // Probe the canonical host by chat id; a 404 simply means this is
-            // an older owned-loop chat and must not be treated as a fallback
+            // an older legacy chat and must not be treated as a fallback
             // success for the corrected path.
             if let Ok(snapshot) = client.su_session_snapshot(&harness, &chat.id).await {
                 let identity = snapshot.descriptor.identity.clone();
@@ -4547,254 +4505,6 @@ impl SuSessionIdentitySequenceToken for crate::su_session::SuSessionIdentity {
 /// the finalized reply is also synthesized via the operator TTS proxy and played
 /// through `player`, and the turn's voice phase transitions (Speaking → Finished)
 /// ride `Event::Voice`.
-/// One chat turn on the operator-owned loop — the native session seam (P-005,
-/// contract D-011). This is the replacement for the legacy `converse_send`
-/// brain lane: `start_agent_chat_turn` pins `engine:"loop"`, so the turn runs
-/// in-process against the PG-backed transcript with the shared streaming lock,
-/// cost caps and HITL approvals, and no CLI is spawned.
-///
-/// The loop's `LoopEvent` vocabulary is mapped onto the pane's existing
-/// streaming-bubble events, so the reducer and renderer are untouched.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "chat-turn boundary mirrors the explicit launch request fields"
-)]
-async fn stream_agent_chat_turn(
-    text: String,
-    harness: String,
-    chat_id: Option<String>,
-    role: String,
-    model: Option<String>,
-    effort: Option<String>,
-    account: Option<String>,
-    retry_after_cancel: bool,
-    tx: UnboundedSender<Event>,
-) {
-    use crate::agent_chats::{AgentChatEvent, AgentChatTurnRequest, NewAgentChat};
-
-    let client = match OperatorClient::from_discovery().await {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = tx.send(Event::ChatError(format!("{e}")));
-            return;
-        }
-    };
-
-    // The seam is per-chat, so a first turn opens one and announces it; every
-    // later turn reuses that id via `Event::AgentChatBound` rather than opening
-    // a fresh chat per message.
-    let chat_id = match chat_id {
-        Some(id) => id,
-        None => {
-            let request = NewAgentChat {
-                role,
-                feature_id: None,
-                title: None,
-            };
-            match client.create_agent_chat(&harness, &request).await {
-                Ok(chat) => {
-                    let _ = tx.send(Event::AgentChatBound(chat.id.clone()));
-                    chat.id
-                }
-                Err(e) => {
-                    let _ = tx.send(Event::ChatError(format!("open agent chat: {e}")));
-                    return;
-                }
-            }
-        }
-    };
-
-    // Re-hydrate anything still parked on this chat BEFORE the new turn opens.
-    // A call parked by an earlier turn — or before this pane ever attached — is
-    // otherwise invisible here, so the pane would render no way to answer it and
-    // the loop would stay blocked forever. Best-effort: a failure to read the
-    // pending set must not abort the turn the user just sent, but the failure is
-    // still surfaced — otherwise a parked reconnect state looks confidently empty.
-    match client.list_agent_chat_approvals(&harness, &chat_id).await {
-        Ok(pending) => {
-            let _ = tx.send(Event::AgentChatApprovalsHydrated(
-                pending
-                    .into_iter()
-                    .map(|p| models::PendingApproval {
-                        call_id: p.call_id,
-                        tool_name: p.tool_name,
-                    })
-                    .collect(),
-            ));
-        }
-        Err(error) => {
-            surface_agent_chat_approval_hydration_failure(&tx, &chat_id, &error);
-        }
-    }
-
-    let request = AgentChatTurnRequest {
-        content: text,
-        model,
-        effort,
-        account,
-        retry_after_cancel,
-    };
-    let mut stream = match client
-        .start_agent_chat_turn(&harness, &chat_id, &request)
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = tx.send(Event::ChatError(format!("{e}")));
-            return;
-        }
-    };
-
-    let mut saw_visible_progress = false;
-    let empty_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
-    loop {
-        let next = if saw_visible_progress {
-            stream.recv().await
-        } else {
-            match tokio::time::timeout_at(empty_deadline, stream.recv()).await {
-                Ok(next) => next,
-                Err(_) => {
-                    let _ = tx.send(Event::ChatError(
-                        "agent chat produced no visible content, reasoning, tool call, or terminal state within 180s — cancelled and ready to retry".into(),
-                    ));
-                    return;
-                }
-            }
-        };
-        let Some(decoded) = next else { break };
-        let ev = match decoded {
-            Ok(ev) => ev,
-            Err(e) => {
-                let _ = tx.send(Event::ChatError(format!("agent chat stream: {e}")));
-                return;
-            }
-        };
-        match ev {
-            AgentChatEvent::TextDelta { text, .. } => {
-                saw_visible_progress |= !text.is_empty();
-                let _ = tx.send(Event::ChatDelta(text));
-            }
-            AgentChatEvent::ReasoningDelta { text, .. } => {
-                saw_visible_progress |= !text.is_empty();
-                let _ = tx.send(Event::ChatReasoning(text));
-            }
-            AgentChatEvent::Provenance {
-                engine,
-                model,
-                account_route,
-            } => {
-                let _ = tx.send(Event::ChatProvenance(models::ChatProvenance {
-                    engine,
-                    model,
-                    account_route,
-                }));
-            }
-            AgentChatEvent::StepStart { step_index } => {
-                let _ = tx.send(Event::ChatStepStarted { step_index });
-            }
-            AgentChatEvent::StepEnd {
-                step_index,
-                stop_reason,
-                tool_call_count,
-                ..
-            } => {
-                let _ = tx.send(Event::ChatStepEnded {
-                    step_index,
-                    tool_call_count,
-                    stop_reason,
-                });
-            }
-            AgentChatEvent::ToolCall {
-                call,
-                needs_approval,
-                ..
-            } => {
-                saw_visible_progress = true;
-                // Carry the call id through (P-005 slice 2): it IS the `callId`
-                // the approvals route is keyed by, so dropping it would leave a
-                // parked call unanswerable from this pane. The "awaiting
-                // approval" label is applied at RENDER time from
-                // `needs_approval` — baking it into the name would corrupt both
-                // the prompt text and the resolve POST.
-                // D-018 #4's bounding policy, applied ON ARRIVAL. The diff is
-                // extracted from the RAW arguments and the arguments are then
-                // bounded for retention — one call because that order is
-                // load-bearing and must not be splittable at the call site.
-                // Note this runs for a call that is still awaiting approval, so
-                // the operator sees WHAT they are approving, not just its name.
-                let (diff, input) = diff::ingest_tool_input(call.input);
-                let _ = tx.send(Event::ChatToolCall(models::ChatToolCall {
-                    name: call.name,
-                    id: Some(call.id),
-                    needs_approval,
-                    // Carried for the card lane per D-017 #2 — an identifier or
-                    // payload the seam hands us goes through the mapping even
-                    // when the current lane has no use for it.
-                    input,
-                    diff,
-                    result: None,
-                    outcome: models::ToolOutcome::Pending,
-                }));
-            }
-            AgentChatEvent::ApprovalResolved {
-                call_id, approved, ..
-            } => {
-                // A decision taken on ANOTHER surface (the desktop operator, or
-                // a second pui on the same chat) arrives here. Without this the
-                // pane keeps offering a decision the loop has already moved past.
-                let _ = tx.send(Event::AgentChatApprovalResolved { call_id, approved });
-            }
-            AgentChatEvent::ToolResult {
-                call_id,
-                result,
-                error,
-                denied,
-                ..
-            } => {
-                // Until this arm existed the seam reported every outcome and the
-                // pane dropped it, so a finished turn still rendered each tool as
-                // though it were in flight. Denial is NOT an error: the tool never
-                // ran and nothing went wrong, so it carries its own outcome rather
-                // than a failure glyph that reads as "your decision broke it".
-                let outcome = if denied {
-                    models::ToolOutcome::Denied
-                } else if let Some(message) = error {
-                    models::ToolOutcome::Failed(message)
-                } else {
-                    models::ToolOutcome::Ok
-                };
-                // Bound result payloads at ingest exactly like arguments. Semantic
-                // cards retain useful evidence without retaining an unbounded MCP
-                // envelope for the life of the session.
-                let result = result.and_then(|value| diff::ingest_tool_input(value).1);
-                let _ = tx.send(Event::ChatToolResult {
-                    call_id,
-                    result,
-                    outcome,
-                });
-            }
-            AgentChatEvent::Error { message } => {
-                let _ = tx.send(Event::ChatError(message));
-                return;
-            }
-            // finalText is authoritative and may be the provider's only text;
-            // apply it before finalizing instead of trusting deltas existed. End
-            // the task HERE so there is exactly one ChatDone emission site for a
-            // successful native turn.
-            AgentChatEvent::Done { final_text, .. } => {
-                finish_native_agent_chat_turn(&tx, final_text);
-                return;
-            }
-            // Heartbeats carry no pane state.
-            _ => {}
-        }
-    }
-
-    let _ = tx.send(Event::ChatError(
-        "agent chat stream closed before done".to_string(),
-    ));
-}
-
 /// POST one HITL decision for the native agent-chat seam (P-005 slice 2). The
 /// route is PG-backed, so the decision lands even when it reaches a different
 /// operator worker than the one streaming the turn. On success the loop resumes
@@ -6024,18 +5734,6 @@ mod tests {
         assert_eq!(n.message, "coord: coord-escalation");
         assert_eq!(n.level, "coord-escalation");
         assert_eq!(n.harness, None);
-    }
-
-    #[test]
-    fn native_chat_terminal_helper_emits_final_then_exactly_one_done() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        finish_native_agent_chat_turn(&tx, "authoritative".into());
-        assert!(matches!(rx.try_recv(), Ok(Event::ChatFinal(ref text)) if text == "authoritative"));
-        assert!(matches!(rx.try_recv(), Ok(Event::ChatDone)));
-        assert!(
-            rx.try_recv().is_err(),
-            "terminal helper emitted a duplicate event"
-        );
     }
 
     #[test]

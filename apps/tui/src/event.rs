@@ -118,10 +118,7 @@ pub enum Event {
     Harnesses(Vec<HarnessRef>),
     /// Project docs (file list + active doc content) for a harness. The slug
     /// guards against a stale response after switching pots.
-    Docs {
-        harness: String,
-        docs: DocsResponse,
-    },
+    Docs { harness: String, docs: DocsResponse },
     /// Testing domains for a harness. The slug guards against a stale response
     /// after switching pots.
     Testing {
@@ -314,10 +311,7 @@ pub enum Event {
     /// One conversation's full detail (thread + topics + accepted answer + linked
     /// work-item) loaded on selection. Carries the id so a stale fetch never
     /// paints another conversation's detail (the TestingFiles/PluginConfig guard).
-    ConversationDetail {
-        id: String,
-        detail: ConvDetail,
-    },
+    ConversationDetail { id: String, detail: ConvDetail },
     /// A live `attention.notify` event (P8) — raise a toast + OS notification.
     Notify(Notif),
     /// Backfilled notification history from `/api/toast-log` (P8).
@@ -366,28 +360,14 @@ pub enum Event {
     /// A streamed `delta` chunk of the in-flight operator turn — appended to the
     /// streaming assistant bubble's raw buffer.
     ChatDelta(String),
-    ChatReasoning(String),
-    ChatFinal(String),
-    /// Exact engine/model/account route for the in-flight native assistant turn.
-    ChatProvenance(crate::models::ChatProvenance),
-    ChatStepStarted {
-        step_index: u32,
-    },
-    ChatStepEnded {
-        step_index: u32,
-        tool_call_count: u32,
-        stop_reason: Option<String>,
-    },
     /// A `tool_call` the operator made mid-turn — a chip on the streaming bubble.
     ChatToolCall(ChatToolCall),
     /// The in-flight operator turn finished (`done`) — finalize the bubble.
     ChatDone,
     /// The operator converse stream errored (`error`, or transport failure).
     ChatError(String),
-    /// The native agent-chat this pane sends through resolved (P-005 / D-011).
-    /// Emitted by the native turn task once it has opened (or reused) the chat,
-    /// so every later turn lands on the same PG-backed transcript instead of
-    /// opening a fresh chat per message.
+    /// The transcript row backing the attached SU session resolved. Emitted by
+    /// SU-session create/attach so later control commands keep one durable chat.
     AgentChatBound(String),
     AgentChatLoaded {
         harness: String,
@@ -398,19 +378,8 @@ pub enum Event {
         messages: Vec<crate::models::ChatMessage>,
         approvals: Vec<crate::models::PendingApproval>,
     },
-    /// A parked HITL request was decided — by US (the resolve POST succeeded) or
-    /// by ANOTHER surface (the desktop operator), which reaches us as the loop's
-    /// own `approval_resolved` frame. Both converge here, and the reducer arm is
-    /// idempotent, so a decision made elsewhere still clears this pane's prompt.
-    AgentChatApprovalResolved {
-        call_id: String,
-        approved: bool,
-    },
-    /// The full set of still-unresolved HITL requests for the bound chat, read
-    /// back from `list_agent_chat_approvals`. REPLACES the pending set: a call
-    /// parked before this pane attached (or during a disconnect) is otherwise
-    /// invisible here, leaving the turn stalled with no way to answer it.
-    AgentChatApprovalsHydrated(Vec<crate::models::PendingApproval>),
+    /// A parked historical HITL request was decided through the resolve POST.
+    AgentChatApprovalResolved { call_id: String, approved: bool },
     /// A PUI SU-session create/attach completed through launch-su.  The
     /// binding carries the stable advSessionId and backend identity used by
     /// every subsequent snapshot/stream/control call.
@@ -423,14 +392,11 @@ pub enum Event {
     SuSessionEvent(crate::su_session::SuSessionEvent),
     /// A failed snapshot/stream/open operation.  The existing chat pane stays
     /// usable, but the error remains explicit instead of silently falling back
-    /// to the owned-loop-only path.
+    /// to an untyped provider path.
     SuSessionError(String),
     /// A stream-scoped failure.  The chat id lets the reducer discard a late
     /// EOF/error from a session that the owner has already switched away from.
-    SuSessionStreamError {
-        chat_id: String,
-        message: String,
-    },
+    SuSessionStreamError { chat_id: String, message: String },
     /// Immediate acknowledgement from a SU-session control POST. Terminal
     /// completion/refusal still arrives on the ordered session stream.
     SuSessionCommandResult(String),
@@ -447,15 +413,6 @@ pub enum Event {
     ConversationContextProjectionLoaded {
         target: crate::models::ConversationContextProjectionTarget,
         projection: Option<crate::models::ConversationContextProjection>,
-    },
-    /// A tool call reached a terminal outcome (the seam's `tool_result` frame).
-    /// Correlated back to its card by `call_id` — the same id the approvals
-    /// route is keyed by. Without this the card never leaves its running state,
-    /// so a finished turn still renders every tool as though it were in flight.
-    ChatToolResult {
-        call_id: String,
-        result: Option<serde_json::Value>,
-        outcome: crate::models::ToolOutcome,
     },
     // --- Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a) ---
     /// One per-run state-channel snapshot from `/api/operator/state-snapshot` —
@@ -477,9 +434,7 @@ pub enum Event {
         exit_code: Option<i32>,
     },
     /// A pane was fully closed in the live session.
-    PaneClosed {
-        pane_id: u32,
-    },
+    PaneClosed { pane_id: u32 },
     // --- Voice mode (voice-mode-tui-port-2026-06-05) ---
     /// A terminal key RELEASE. Only delivered when the kitty keyboard protocol
     /// is active (most terminals never emit it); drives hold-to-talk PTT. Press

@@ -51,7 +51,6 @@ pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 /// patches, which isn't `Eq`. `PartialEq` is all the run loop needs.)
 #[derive(Debug, PartialEq)]
 #[expect(
-    clippy::large_enum_variant,
     clippy::enum_variant_names,
     reason = "Action is the stable reducer protocol; boxing or renaming variants is cross-cutting API churn"
 )]
@@ -178,12 +177,6 @@ pub enum Action {
     /// `Workbench` because these need the live companion handle + topology, which
     /// live in the run loop, not the workbench-command task.
     Dock(DockCmd),
-    /// Send a user message to the operator (tui-operator-surface P1) — the run
-    /// loop persists the user turn, opens the converse SSE stream, and feeds
-    /// `ChatDelta`/`ChatToolCall`/`ChatDone`/`ChatError` events back. The string
-    /// is the message text (the reducer has already appended it + a streaming
-    /// assistant bubble before returning this).
-    SendChat(String),
     /// Open the canonical shared SU-session for a newly selected backend. The
     /// run loop creates the existing agent-chat row, calls launch-su once, then
     /// attaches the typed session stream; no provider terminal is embedded.
@@ -2012,17 +2005,9 @@ pub struct App {
     pub chat_draft: String,
     pub chat_scroll: u16,
     pub chat_streaming: bool,
-    /// The next native turn follows a locally cancelled one and may wait
-    /// boundedly for that turn's server-side chat lock to finish releasing.
-    /// Consumed exactly once by the run loop when the retry is sent.
-    pub chat_retry_after_cancel: bool,
-    /// Latest owned-loop step boundary for the in-flight turn. The wire uses
-    /// zero-based indices; this read model stores a one-based display number.
-    pub chat_step: Option<crate::models::ChatStepProgress>,
     pub conversation_id: Option<String>,
-    /// The native agent-chat id this pane's turns run on (P-005 / D-011).
-    /// Distinct from `conversation_id`, which is the legacy operator-converse
-    /// lane — kept alongside until native parity is proven.
+    /// The agent-chat id backing this pane's SU-session transcript. Distinct
+    /// from `conversation_id`, the legacy operator-converse lane used by voice.
     pub agent_chat_id: Option<String>,
     /// The concrete role/persona and selectable sessions under the active pot.
     pub agent_chat_role: String,
@@ -2040,16 +2025,16 @@ pub struct App {
     /// `su_dispatch_decision` resolves it.
     pub su_backend: Option<crate::su_session::SuSessionBackend>,
     /// The dispatch policy of the conversation currently loaded, read off its
-    /// persisted `su_runtime_class` stamp. `None` means NO conversation is loaded
-    /// (the only case the cutover kill-switch governs); `Some(Unclassified)` means
+    /// persisted `su_runtime_class` stamp. `None` means NO conversation is loaded;
+    /// `Some(Unclassified)` means
     /// one IS loaded but its home was never recorded — a different answer, and the
     /// distinction is what stops a flag flip from re-homing an existing chat.
     /// See `crate::su_session::decide_su_dispatch`.
     pub pui_runtime_class: Option<crate::su_session::PuiRuntimeClass>,
     /// The runtime decision the last owner send actually took, kept for the status
     /// line and as this surface's telemetry record. P-011 forbids a silent
-    /// fallback to the owned loop / ModelPort, so the PUI keeps and states the
-    /// reason rather than leaving a rollback to be inferred from behaviour.
+    /// fallback to an untyped provider path, so the PUI keeps and states the
+    /// reason rather than leaving a runtime choice to be inferred from behaviour.
     pub su_last_dispatch: Option<crate::su_session::SuDispatchDecision>,
     /// Durable SU-session binding + canonical lifecycle/sequence read-model.
     pub su_session: Option<crate::su_session::SuSessionState>,
@@ -2370,8 +2355,6 @@ impl App {
             chat_draft: String::new(),
             chat_scroll: 0,
             chat_streaming: false,
-            chat_retry_after_cancel: false,
-            chat_step: None,
             conversation_id: None,
             agent_chat_id: None,
             agent_chat_role: "operator".to_string(),
@@ -2472,7 +2455,6 @@ impl App {
         self.chat_messages.push(ChatMessage::user(text));
         self.chat_messages.push(ChatMessage::streaming_assistant());
         self.chat_streaming = true;
-        self.chat_step = None;
         self.chat_scroll = 0;
     }
 
@@ -2503,21 +2485,6 @@ impl App {
         self.chat_scroll = 0;
     }
 
-    fn set_chat_provenance(&mut self, provenance: crate::models::ChatProvenance) {
-        if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
-            m.provenance = Some(provenance);
-        }
-        self.chat_scroll = 0;
-    }
-
-    fn set_chat_final(&mut self, text: String) {
-        if !text.trim().is_empty() {
-            if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
-                m.content = text;
-            }
-        }
-    }
-
     pub fn reset_agent_chat_binding(&mut self) {
         self.chat_load_token = self.chat_load_token.saturating_add(1);
         self.agent_chat_id = None;
@@ -2529,8 +2496,6 @@ impl App {
         self.chat_messages.clear();
         self.pending_approvals.clear();
         self.chat_streaming = false;
-        self.chat_retry_after_cancel = false;
-        self.chat_step = None;
         self.chat_scroll = 0;
     }
 
@@ -2806,7 +2771,6 @@ impl App {
                         id: Some(call_id),
                         needs_approval: false,
                         input,
-                        diff: None,
                         result: None,
                         outcome: ToolOutcome::Pending,
                     });
@@ -3089,7 +3053,6 @@ impl App {
             m.streaming = false;
         }
         self.chat_streaming = false;
-        self.chat_step = None;
         self.chat_scroll = 0;
     }
 
@@ -3106,7 +3069,6 @@ impl App {
             m.streaming = false;
         }
         self.chat_streaming = false;
-        self.chat_step = None;
         self.last_error = Some(format!("operator: {err}"));
         self.chat_scroll = 0;
     }
@@ -4182,22 +4144,6 @@ impl App {
         }
     }
 
-    /// Is the P-011 SU-session cutover in force?
-    ///
-    /// UNKNOWN resolves to ON, and that direction is deliberate: `self.flags` is
-    /// empty until `/api/flags/bootstrap` answers, so reading an absent key as OFF
-    /// would put every turn sent in the first seconds after launch — or in a whole
-    /// session whose bootstrap failed — on the pre-cutover path, silently, which is
-    /// precisely the outcome P-011 forbids. The flag is a kill-switch, so only an
-    /// explicit `false` may disable the corrected path.
-    pub fn su_session_cutover_enabled(&self) -> bool {
-        self.flags
-            .iter()
-            .find(|(key, _)| key == crate::su_session::PUI_SU_SESSION_HOST_FLAG)
-            .map(|(_, on)| *on)
-            .unwrap_or(true)
-    }
-
     /// Where the next owner turn goes, and why. Pure over the app's current state
     /// so the policy can be exercised directly; the key handler applies it.
     pub fn su_dispatch_decision(&self) -> crate::su_session::SuDispatchDecision {
@@ -4205,7 +4151,6 @@ impl App {
             attached: self.su_session.is_some(),
             picked_backend: self.su_backend,
             loaded_class: self.pui_runtime_class,
-            cutover_enabled: self.su_session_cutover_enabled(),
         })
     }
 
@@ -7662,40 +7607,6 @@ impl App {
                 self.push_chat_delta(&t);
                 Action::Render
             }
-            Event::ChatReasoning(t) => {
-                self.push_chat_reasoning(&t);
-                Action::Render
-            }
-            Event::ChatFinal(text) => {
-                self.set_chat_final(text);
-                Action::Render
-            }
-            Event::ChatProvenance(provenance) => {
-                self.set_chat_provenance(provenance);
-                Action::Render
-            }
-            Event::ChatStepStarted { step_index } => {
-                self.chat_step = Some(crate::models::ChatStepProgress {
-                    step: step_index.saturating_add(1),
-                    running: true,
-                    tool_call_count: 0,
-                    stop_reason: None,
-                });
-                Action::Render
-            }
-            Event::ChatStepEnded {
-                step_index,
-                tool_call_count,
-                stop_reason,
-            } => {
-                self.chat_step = Some(crate::models::ChatStepProgress {
-                    step: step_index.saturating_add(1),
-                    running: false,
-                    tool_call_count,
-                    stop_reason,
-                });
-                Action::Render
-            }
             Event::ChatToolCall(tc) => {
                 // Record the parked request BEFORE the chip renders. A call with
                 // needs_approval set has already stopped the loop server-side, so
@@ -7717,46 +7628,6 @@ impl App {
             Event::AgentChatApprovalResolved { call_id, approved } => {
                 let _ = approved;
                 self.resolve_approval(&call_id);
-                Action::Render
-            }
-            Event::ChatToolResult {
-                call_id,
-                result,
-                outcome,
-            } => {
-                // A result is proof the call is no longer parked — whatever the
-                // outcome: approved-and-ran, failed, or refused. `resolve_approval`
-                // is idempotent (D-017 #3), so clearing a prompt some other route
-                // already cleared is a no-op, not a double decision.
-                self.resolve_approval(&call_id);
-                // Correlate by call id, NEVER by name: one turn can call the same
-                // tool several times, so names collide immediately and a
-                // name-matched result would land on the wrong card.
-                for m in self.chat_messages.iter_mut() {
-                    for tc in m.tools.iter_mut() {
-                        if tc.id.as_deref() == Some(call_id.as_str()) {
-                            tc.needs_approval = false;
-                            tc.result = result.clone();
-                            tc.outcome = outcome.clone();
-                        }
-                    }
-                }
-                Action::Render
-            }
-            Event::AgentChatApprovalsHydrated(pending) => {
-                // Authoritative REPLACEMENT, not a merge: the server is the only
-                // thing that knows what is still parked, and a call decided while
-                // this pane was away must not survive as a stale prompt.
-                self.pending_approvals = pending;
-                for p in self.pending_approvals.clone() {
-                    for m in self.chat_messages.iter_mut() {
-                        for tc in m.tools.iter_mut() {
-                            if tc.id.as_deref() == Some(p.call_id.as_str()) {
-                                tc.needs_approval = true;
-                            }
-                        }
-                    }
-                }
                 Action::Render
             }
             Event::SuSessionOpened(binding) => {
@@ -7921,7 +7792,7 @@ impl App {
                     //
                     // A chat absent from the summary list (an archived row reached
                     // by id) resolves to `Unclassified`, which the dispatch policy
-                    // holds on the owned loop and says so — the answer that cannot
+                    // remains read-only and says so — the answer that cannot
                     // change an existing conversation's identity.
                     self.pui_runtime_class = chat_id.as_deref().map(|id| {
                         crate::su_session::PuiRuntimeClass::parse(
@@ -8686,7 +8557,6 @@ impl App {
                     reason: Some("owner interrupt".into()),
                 });
             }
-            self.chat_retry_after_cancel = true;
             return Action::CancelChat;
         }
         // Operator chat composer captures all input while focused (like the
@@ -8712,15 +8582,9 @@ impl App {
                     if text.is_empty() {
                         return Action::Render;
                     }
-                    self.chat_input.clear();
-                    self.chat_history_push(&text);
-                    self.begin_user_send(&text);
-                    // P-011 cutover. The routing decision is no longer inline
-                    // `if let` chains: it is one policy function whose ordering is
-                    // the safety argument (an existing conversation's runtime
-                    // outranks the kill-switch, in both directions), and it returns
-                    // the REASON alongside the target so the owner is told which
-                    // runtime took the turn instead of inferring it.
+                    // P-013: every writable PUI conversation now uses the typed
+                    // SU-session host. Legacy/unclassified rows remain readable
+                    // history and refuse dispatch instead of silently re-homing.
                     let decision = self.su_dispatch_decision();
                     self.su_last_dispatch = Some(decision);
                     // Name the runtime AND, when a conversation is loaded, the
@@ -8735,6 +8599,12 @@ impl App {
                         ),
                         None => format!("this turn → {}", decision.reason.note()),
                     });
+                    if decision.target == crate::su_session::SuDispatchTarget::ReadOnly {
+                        return Action::Render;
+                    }
+                    self.chat_input.clear();
+                    self.chat_history_push(&text);
+                    self.begin_user_send(&text);
                     match decision.target {
                         crate::su_session::SuDispatchTarget::AttachedSuSession => {
                             Action::SendSuSessionTurn(text)
@@ -8749,7 +8619,7 @@ impl App {
                                 initial_turn: Some(text),
                             }
                         }
-                        crate::su_session::SuDispatchTarget::OwnedLoop => Action::SendChat(text),
+                        crate::su_session::SuDispatchTarget::ReadOnly => Action::Render,
                     }
                 }
                 // Up/Down recall submitted lines. They were previously inert here
@@ -15074,34 +14944,6 @@ mod tests {
     }
 
     #[test]
-    fn the_cutover_is_on_before_the_flag_bootstrap_answers() {
-        // `flags` is empty until /api/flags/bootstrap replies. Reading that as OFF
-        // would put every turn sent in the first seconds after launch on the
-        // pre-cutover path, silently — the outcome P-011 forbids.
-        let a = App::new();
-        assert!(a.flags.is_empty());
-        assert!(a.su_session_cutover_enabled());
-    }
-
-    #[test]
-    fn only_an_explicit_false_disables_the_cutover() {
-        let mut a = App::new();
-        a.set_flags(flags(&[(
-            crate::su_session::PUI_SU_SESSION_HOST_FLAG,
-            false,
-        )]));
-        assert!(!a.su_session_cutover_enabled());
-        a.set_flags(flags(&[(
-            crate::su_session::PUI_SU_SESSION_HOST_FLAG,
-            true,
-        )]));
-        assert!(a.su_session_cutover_enabled());
-        // An unrelated flag must not be mistaken for this one.
-        a.set_flags(flags(&[("papercusp-something-else", false)]));
-        assert!(a.su_session_cutover_enabled());
-    }
-
-    #[test]
     fn enter_on_a_new_conversation_opens_an_su_session_by_default() {
         let mut a = composing("hello");
         let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
@@ -15195,40 +15037,22 @@ mod tests {
     }
 
     #[test]
-    fn enter_with_the_kill_switch_off_returns_to_the_owned_loop_and_says_so() {
-        let mut a = composing("hello");
-        a.set_flags(flags(&[(
-            crate::su_session::PUI_SU_SESSION_HOST_FLAG,
-            false,
-        )]));
-        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(
-            matches!(action, Action::SendChat(_)),
-            "the kill-switch must roll back to the owned loop, got {action:?}"
-        );
-        // P-011 forbids a SILENT fallback: the owner is told which runtime took
-        // the turn and which switch sent it there.
-        let note = a.session_note.clone().expect("a rollback must be stated");
-        assert!(note.contains("owned loop"), "note {note:?}");
-        assert!(
-            note.contains(crate::su_session::PUI_SU_SESSION_HOST_FLAG),
-            "note {note:?} must name the switch"
-        );
-    }
-
-    #[test]
-    fn enter_on_a_pre_cutover_conversation_never_opens_a_new_su_session() {
+    fn enter_on_a_pre_cutover_conversation_keeps_read_only_history_intact() {
         let mut a = composing("hello");
         a.agent_chat_id = Some("chat-legacy".into());
         a.pui_runtime_class = Some(crate::su_session::PuiRuntimeClass::LegacyOwnedLoop);
         let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(
-            matches!(action, Action::SendChat(_)),
-            "a pre-cutover conversation must keep its runtime, got {action:?}"
-        );
+        assert_eq!(action, Action::Render);
+        assert_eq!(a.chat_input, "hello", "a refused turn remains editable");
+        assert!(!a.chat_streaming);
+        assert!(a
+            .session_note
+            .as_deref()
+            .unwrap()
+            .contains("read-only history"));
         assert_eq!(
             a.su_last_dispatch.map(|d| d.reason),
-            Some(crate::su_session::SuDispatchReason::LegacyConversationPreserved)
+            Some(crate::su_session::SuDispatchReason::LegacyConversationReadOnly)
         );
     }
 
@@ -15253,9 +15077,47 @@ mod tests {
         b.chat_composing = true;
         b.chat_input = "typed while the load was in flight".into();
         let action = b.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(action, Action::Render);
+        assert_eq!(b.chat_input, "typed while the load was in flight");
+        assert!(!b.chat_streaming);
+        assert!(b
+            .session_note
+            .as_deref()
+            .unwrap()
+            .contains("read-only history"));
+    }
+
+    /// P-013 recurrence guard: the PUI must not grow a second owner-loop turn
+    /// seam after the typed SU-session host cutover. This scans the actual
+    /// dispatch/stream sources and pairs every negative assertion with a
+    /// positive control on the surviving SU-session adapter, so a moved or
+    /// unread source cannot make the guard pass vacuously.
+    #[test]
+    fn pui_runtime_divorce_does_not_reintroduce_owned_loop_dispatch() {
+        let app_src = include_str!("app.rs");
+        let main_src = include_str!("main.rs");
+        let retired = [
+            ["Action", "SendChat"].join("::"),
+            ["SuDispatchTarget", "OwnedLoop"].join("::"),
+            ["PUI", "SU_SESSION_HOST"].join("_"),
+            ["stream", "agent_chat_turn"].join("_"),
+            ["start", "agent_chat_turn"].join("_"),
+        ];
+        for symbol in retired {
+            assert!(
+                !app_src.contains(&symbol) && !main_src.contains(&symbol),
+                "retired PUI owned-loop symbol returned: {symbol}"
+            );
+        }
+
+        // Positive controls: these are the canonical seams that must remain
+        // reachable after the divorce. If either source moved or the include
+        // path is wrong, the negative checks above would otherwise be vacuous.
+        let read_only = ["SuDispatchTarget", "ReadOnly"].join("::");
+        assert!(app_src.contains(&read_only), "dispatch source not measured");
         assert!(
-            matches!(action, Action::SendChat(_)),
-            "an in-flight selection must not open an SU session, got {action:?}"
+            main_src.contains("stream_su_session_events"),
+            "SU-session stream adapter not measured"
         );
     }
 
@@ -16974,7 +16836,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Operator);
         // Enter sends: appends the user msg + a streaming bubble, and carries the
         // typed text into the dispatch. Since P-011 an UNBOUND conversation's
-        // first turn opens an SU session rather than going to the owned loop;
+        // first turn opens an SU session rather than an untyped provider path;
         // what this test is about is that the composed text is what gets sent.
         match a.update(ev(KeyCode::Enter)) {
             Action::OpenSuSession { initial_turn, .. } => {
@@ -17018,160 +16880,6 @@ mod tests {
         assert_eq!(c.update(key('q', KeyModifiers::NONE)), Action::Render);
         assert!(!c.should_quit);
         assert_eq!(c.chat_input, "q");
-    }
-
-    /// The HITL round-trip (P-005 slice 2). An approval-gated tool call parks the
-    /// loop SERVER-side, so if the pane fails to record it — or fails to carry the
-    /// call id — the turn hangs with no error, no timeout, and nothing on screen
-    /// that can restart it. Pins: the pending row appears, the raw tool name
-    /// survives, Ctrl+Y answers the OLDEST call by its real id, a bare `y` is
-    /// still text, and resolution is idempotent across the two paths that both
-    /// report it (our POST's echo and the loop's own frame).
-    #[test]
-    fn hitl_approval_parks_then_resolves_from_the_pane() {
-        let mut a = App::new();
-        a.tab = Tab::Operator;
-        a.update(key('i', KeyModifiers::NONE)); // enter compose
-        a.agent_chat_id = Some("chat-1".into());
-        a.begin_user_send("do it");
-
-        // An approval-gated call parks, and still renders its chip.
-        a.update(Event::ChatToolCall(ChatToolCall {
-            name: "capability:bash".into(),
-            id: Some("call-a".into()),
-            needs_approval: true,
-            input: None,
-            diff: None,
-            result: None,
-            outcome: crate::models::ToolOutcome::Pending,
-        }));
-        assert_eq!(a.pending_approvals.len(), 1);
-        assert_eq!(a.pending_approvals[0].call_id, "call-a");
-        // The stored name is the RAW tool — the "awaiting approval" suffix is a
-        // render concern, and baking it in would corrupt the prompt and the POST.
-        assert_eq!(a.pending_approvals[0].tool_name, "capability:bash");
-        assert_eq!(a.chat_messages[1].tools.len(), 1);
-
-        // A call needing no approval never parks.
-        a.update(Event::ChatToolCall(ChatToolCall::plain(
-            "plans:list".into(),
-        )));
-        assert_eq!(a.pending_approvals.len(), 1);
-
-        // Ctrl+Y answers the oldest pending call, carrying its real id.
-        assert_eq!(
-            a.update(key('y', KeyModifiers::CONTROL)),
-            Action::ResolveAgentChatApproval {
-                call_id: "call-a".into(),
-                approved: true,
-            }
-        );
-        // A bare `y` must still reach the message box, not decide anything.
-        assert_eq!(a.update(key('y', KeyModifiers::NONE)), Action::Render);
-        assert_eq!(a.chat_input, "y");
-
-        // Resolution clears the row and stops the chip rendering as awaiting.
-        a.update(Event::AgentChatApprovalResolved {
-            call_id: "call-a".into(),
-            approved: true,
-        });
-        assert!(a.pending_approvals.is_empty());
-        assert!(!a.chat_messages[1].tools[0].needs_approval);
-        // Idempotent: the loop's own frame reports the same decision again.
-        a.update(Event::AgentChatApprovalResolved {
-            call_id: "call-a".into(),
-            approved: true,
-        });
-        assert!(a.pending_approvals.is_empty());
-
-        // Hydration REPLACES: a call parked while the pane was away surfaces.
-        a.update(Event::AgentChatApprovalsHydrated(vec![
-            crate::models::PendingApproval {
-                call_id: "call-b".into(),
-                tool_name: "db:migrate".into(),
-            },
-        ]));
-        assert_eq!(a.pending_approvals.len(), 1);
-        assert_eq!(a.pending_approvals[0].call_id, "call-b");
-        // …and an empty hydration clears a prompt decided elsewhere, rather than
-        // leaving a decision on screen the loop has already moved past.
-        a.update(Event::AgentChatApprovalsHydrated(Vec::new()));
-        assert!(a.pending_approvals.is_empty());
-    }
-
-    #[test]
-    fn tool_result_lands_on_its_own_card_and_clears_the_park() {
-        use crate::models::ToolOutcome;
-
-        let mut a = App::new();
-        a.agent_chat_id = Some("chat-1".into());
-        a.begin_user_send("run them");
-
-        // The SAME tool called twice in one turn — the case that makes
-        // correlation-by-name silently wrong.
-        a.update(Event::ChatToolCall(ChatToolCall {
-            name: "capability:bash".into(),
-            id: Some("call-1".into()),
-            needs_approval: false,
-            input: Some(serde_json::json!({ "command": "ls" })),
-            diff: None,
-            result: None,
-            outcome: ToolOutcome::Pending,
-        }));
-        a.update(Event::ChatToolCall(ChatToolCall {
-            name: "capability:bash".into(),
-            id: Some("call-2".into()),
-            needs_approval: true,
-            input: Some(serde_json::json!({ "command": "rm -rf /" })),
-            diff: None,
-            result: None,
-            outcome: ToolOutcome::Pending,
-        }));
-        assert_eq!(a.pending_approvals.len(), 1);
-
-        // A result for call-1 must move call-1 ONLY.
-        a.update(Event::ChatToolResult {
-            call_id: "call-1".into(),
-            result: Some(serde_json::json!({ "ok": true })),
-            outcome: ToolOutcome::Ok,
-        });
-        let tools = &a.chat_messages[1].tools;
-        assert_eq!(tools[0].outcome, ToolOutcome::Ok);
-        assert_eq!(tools[0].result, Some(serde_json::json!({ "ok": true })));
-        assert_eq!(tools[1].outcome, ToolOutcome::Pending);
-        // The second call is still parked — a sibling's result is not a decision.
-        assert_eq!(a.pending_approvals.len(), 1);
-        assert!(tools[1].needs_approval);
-
-        // Denying call-2 clears its park AND stops it rendering as in-flight.
-        a.update(Event::ChatToolResult {
-            call_id: "call-2".into(),
-            result: None,
-            outcome: ToolOutcome::Denied,
-        });
-        let tools = &a.chat_messages[1].tools;
-        assert_eq!(tools[1].outcome, ToolOutcome::Denied);
-        assert!(!tools[1].needs_approval);
-        assert!(a.pending_approvals.is_empty());
-
-        // Idempotent (D-017 #3): the same result arriving again — our POST echo
-        // and the loop's own frame both land here — changes nothing.
-        a.update(Event::ChatToolResult {
-            call_id: "call-2".into(),
-            result: None,
-            outcome: ToolOutcome::Denied,
-        });
-        assert!(a.pending_approvals.is_empty());
-        assert_eq!(a.chat_messages[1].tools.len(), 2);
-
-        // A result for an unknown call is ignored, not panicked on: a late frame
-        // from a previous chat must never take down the pane.
-        a.update(Event::ChatToolResult {
-            call_id: "call-nope".into(),
-            result: None,
-            outcome: ToolOutcome::Failed("boom".into()),
-        });
-        assert_eq!(a.chat_messages[1].tools.len(), 2);
     }
 
     #[test]
@@ -17285,58 +16993,6 @@ mod tests {
     }
 
     #[test]
-    fn native_agent_chat_binds_once_and_plain_deltas_survive_finalization() {
-        // P-005 / D-011: the native loop streams PLAIN text (no <say> tag
-        // document), and `done` carries no transcript snapshot — the bubble
-        // finalizes from the deltas already rendered. `finalize` must therefore
-        // pass untagged text through untouched; if it ever stops doing so,
-        // every native turn renders EMPTY, which is why this is pinned here.
-        let mut a = App::new();
-        assert_eq!(a.agent_chat_id, None);
-
-        // The turn task announces the chat it opened; later turns reuse the id
-        // instead of opening a fresh transcript per message.
-        a.update(Event::AgentChatBound("chat_42".into()));
-        assert_eq!(a.agent_chat_id.as_deref(), Some("chat_42"));
-
-        a.begin_user_send("hi");
-        a.update(Event::ChatProvenance(crate::models::ChatProvenance {
-            engine: "loop".into(),
-            model: "claude-sonnet-4-6:high".into(),
-            account_route: "auto".into(),
-        }));
-        a.update(Event::ChatStepStarted { step_index: 0 });
-        assert_eq!(a.chat_step.as_ref().unwrap().step, 1);
-        assert!(a.chat_step.as_ref().unwrap().running);
-        a.update(Event::ChatDelta("plain ".into()));
-        a.update(Event::ChatDelta("native text".into()));
-        a.update(Event::ChatReasoning("checked the store".into()));
-        a.update(Event::ChatStepEnded {
-            step_index: 0,
-            tool_call_count: 2,
-            stop_reason: Some("complete".into()),
-        });
-        assert!(!a.chat_step.as_ref().unwrap().running);
-        // done.finalText is authoritative and may be the provider's ONLY text.
-        a.update(Event::ChatFinal("authoritative native text".into()));
-        a.update(Event::ChatDone);
-        assert!(!a.chat_streaming);
-        assert!(!a.chat_messages[1].streaming);
-        assert_eq!(a.chat_messages[1].content, "authoritative native text");
-        assert_eq!(a.chat_messages[1].reasoning, "checked the store");
-        assert_eq!(
-            a.chat_messages[1].provenance.as_ref().unwrap().model,
-            "claude-sonnet-4-6:high"
-        );
-        assert!(a.chat_step.is_none());
-
-        // Re-announcing just moves the pane to the new chat — it never opens a
-        // parallel transcript alongside the old one.
-        a.update(Event::AgentChatBound("chat_43".into()));
-        assert_eq!(a.agent_chat_id.as_deref(), Some("chat_43"));
-    }
-
-    #[test]
     fn native_chat_resume_is_harness_guarded_and_ctrl_x_cancels() {
         let mut a = App::new();
         a.harness = "pot-a".into();
@@ -17369,9 +17025,7 @@ mod tests {
             a.update(key('x', KeyModifiers::CONTROL)),
             Action::CancelChat
         );
-        assert!(a.chat_retry_after_cancel);
         a.reset_agent_chat_binding();
-        assert!(!a.chat_retry_after_cancel);
     }
 
     #[test]

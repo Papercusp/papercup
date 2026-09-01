@@ -50,12 +50,6 @@ impl std::fmt::Display for SuSessionBackend {
     }
 }
 
-/// The kill-switch for the P-011 new-session cutover
-/// (pui-su-session-runtime-correction-2026-08-27).  Default ON — this names the
-/// switch that can turn the corrected path OFF, never a gate the cutover waits
-/// behind.
-pub const PUI_SU_SESSION_HOST_FLAG: &str = "papercusp-pui-su-session-host";
-
 /// The backend an UNBOUND conversation opens on when the owner has not picked one.
 ///
 /// Claude is the default because it is already the fallback every other unpicked
@@ -110,12 +104,13 @@ pub enum SuDispatchTarget {
     AttachedSuSession,
     /// Open an SU session on the named backend and send the turn into it.
     OpenSuSession(SuSessionBackend),
-    /// Dispatch through the PUI-owned agent loop (the pre-cutover path).
-    OwnedLoop,
+    /// A legacy or unclassified conversation remains readable history but is no
+    /// longer dispatchable now that the PUI-owned loop path is retired.
+    ReadOnly,
 }
 
 /// WHY a turn went where it went.  P-011 requires the compatibility switch to be
-/// OBSERVABLE and forbids a silent fallback to ModelPort/provider chat, so every
+/// OBSERVABLE and forbids a silent fallback to an untyped provider chat, so every
 /// dispatch carries its reason and the PUI states it — a rollback is a disclosed
 /// decision, not a quiet degradation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,15 +126,12 @@ pub enum SuDispatchReason {
     /// its identity, so the kill-switch does not reach this case either — OFF is a
     /// rollback for NEW conversations, not a licence to move existing ones.
     HomedSuSession,
-    /// Unbound conversation, kill-switch OFF: the owned loop, on purpose.
-    KillSwitchOff,
-    /// A conversation created before the cutover keeps its own runtime, whichever
-    /// way the switch is set.  Never re-homed.
-    LegacyConversationPreserved,
-    /// The conversation's policy stamp is missing, so its home is genuinely
-    /// unknown.  Held on the owned loop — the choice that cannot change an
-    /// existing conversation's identity — and said out loud.
-    UnclassifiedConversationHeld,
+    /// A conversation created before the cutover is preserved as read-only
+    /// history; it is never silently re-homed onto a new SU session.
+    LegacyConversationReadOnly,
+    /// The conversation's policy stamp is missing, so it remains explicitly
+    /// unclassified and read-only rather than being guessed at.
+    UnclassifiedConversationReadOnly,
 }
 
 impl SuDispatchReason {
@@ -152,14 +144,11 @@ impl SuDispatchReason {
             Self::OwnerPickedBackend => "SU session (backend you picked)",
             Self::CutoverDefault => "SU session (default for a new conversation)",
             Self::HomedSuSession => "SU session (this conversation's recorded runtime)",
-            Self::KillSwitchOff => {
-                "owned loop — the SU-session default is OFF (papercusp-pui-su-session-host)"
+            Self::LegacyConversationReadOnly => {
+                "read-only history — this conversation predates the SU-session default"
             }
-            Self::LegacyConversationPreserved => {
-                "owned loop — this conversation predates the SU-session default and keeps its runtime"
-            }
-            Self::UnclassifiedConversationHeld => {
-                "owned loop — this conversation has no recorded runtime, so it is not re-homed"
+            Self::UnclassifiedConversationReadOnly => {
+                "read-only history — this conversation has no recorded runtime"
             }
         }
     }
@@ -183,19 +172,14 @@ pub struct SuDispatchInputs {
     /// The persisted policy of the conversation currently loaded, if any is
     /// loaded at all.  `None` means no conversation is bound yet.
     pub loaded_class: Option<PuiRuntimeClass>,
-    /// `papercusp-pui-su-session-host`.
-    pub cutover_enabled: bool,
 }
 
 /// Decide where one owner turn goes.
 ///
-/// The ordering is the safety argument, and it is deliberately NOT "flag first".
-/// An attached session (1), an owner's explicit pick (2), and a conversation's own
-/// recorded policy (3) all outrank the switch.  The flag governs exactly one case:
-/// step 4, where NO conversation is loaded and there is therefore no identity to
-/// preserve.  That is what makes both positions of the switch safe in both
-/// directions — OFF cannot strand a live SU session or move an SU-homed
-/// conversation, and ON cannot re-home an existing owned-loop one.
+/// The ordering preserves identity while making the PUI's runtime explicit.  An
+/// attached session (1), an owner's explicit pick (2), and a conversation's own
+/// recorded policy (3) decide every dispatch. Legacy/unclassified conversations
+/// are intentionally read-only after the owned-loop path is retired.
 pub fn decide_su_dispatch(inputs: SuDispatchInputs) -> SuDispatchDecision {
     // 1. A live attached session always wins. Redirecting a turn away from the
     //    runtime that is holding the conversation would lose it.
@@ -226,29 +210,23 @@ pub fn decide_su_dispatch(inputs: SuDispatchInputs) -> SuDispatchDecision {
         }
         Some(PuiRuntimeClass::LegacyOwnedLoop) => {
             return SuDispatchDecision {
-                target: SuDispatchTarget::OwnedLoop,
-                reason: SuDispatchReason::LegacyConversationPreserved,
+                target: SuDispatchTarget::ReadOnly,
+                reason: SuDispatchReason::LegacyConversationReadOnly,
             };
         }
         Some(PuiRuntimeClass::Unclassified) => {
             return SuDispatchDecision {
-                target: SuDispatchTarget::OwnedLoop,
-                reason: SuDispatchReason::UnclassifiedConversationHeld,
+                target: SuDispatchTarget::ReadOnly,
+                reason: SuDispatchReason::UnclassifiedConversationReadOnly,
             };
         }
         None => {}
     }
-    // 4. No conversation is loaded at all — the ONLY case the kill-switch governs.
-    if inputs.cutover_enabled {
-        SuDispatchDecision {
-            target: SuDispatchTarget::OpenSuSession(PUI_DEFAULT_SU_BACKEND),
-            reason: SuDispatchReason::CutoverDefault,
-        }
-    } else {
-        SuDispatchDecision {
-            target: SuDispatchTarget::OwnedLoop,
-            reason: SuDispatchReason::KillSwitchOff,
-        }
+    // 4. No conversation is loaded at all: the corrected SU-session host is the
+    //    unconditional default.
+    SuDispatchDecision {
+        target: SuDispatchTarget::OpenSuSession(PUI_DEFAULT_SU_BACKEND),
+        reason: SuDispatchReason::CutoverDefault,
     }
 }
 
@@ -539,6 +517,10 @@ pub struct SuSessionAttachRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Create carries the stable SU-session launch request; boxing it would churn the wire-adjacent client API"
+)]
 pub enum SuSessionOpenRequest {
     Create(SuSessionCreateRequest),
     Attach(SuSessionAttachRequest),
@@ -1095,22 +1077,18 @@ mod tests {
 
 /// P-011 cutover policy (pui-su-session-runtime-correction-2026-08-27).
 ///
-/// These cover the four evidence families the plan item names — the CONFIG
-/// DEFAULT, the ROLLBACK position of the kill-switch, the TELEMETRY every
-/// dispatch carries, and the MIGRATION's stamp as this side reads it — plus the
-/// invariant that ties them together: neither position of the switch may change
-/// the runtime of a conversation that already has one.
+/// These cover the corrected SU-session default, explicit read-only treatment of
+/// legacy history, dispatch telemetry, and the persisted migration stamp.
 #[cfg(test)]
 mod cutover_policy_tests {
     use super::*;
 
-    /// No conversation loaded, nothing picked, cutover in force.
-    fn unbound(cutover_enabled: bool) -> SuDispatchInputs {
+    /// No conversation loaded and no backend picked.
+    fn unbound() -> SuDispatchInputs {
         SuDispatchInputs {
             attached: false,
             picked_backend: None,
             loaded_class: None,
-            cutover_enabled,
         }
     }
 
@@ -1118,7 +1096,7 @@ mod cutover_policy_tests {
 
     #[test]
     fn a_new_conversation_defaults_to_the_su_session_host() {
-        let d = decide_su_dispatch(unbound(true));
+        let d = decide_su_dispatch(unbound());
         assert_eq!(
             d.target,
             SuDispatchTarget::OpenSuSession(PUI_DEFAULT_SU_BACKEND)
@@ -1135,34 +1113,21 @@ mod cutover_policy_tests {
         assert_eq!(PUI_DEFAULT_SU_BACKEND, SuSessionBackend::Claude);
     }
 
-    // ── rollback (kill-switch OFF) ──────────────────────────────────────────
-
     #[test]
-    fn the_kill_switch_off_returns_a_new_conversation_to_the_owned_loop() {
-        let d = decide_su_dispatch(unbound(false));
-        assert_eq!(d.target, SuDispatchTarget::OwnedLoop);
-        assert_eq!(d.reason, SuDispatchReason::KillSwitchOff);
-    }
-
-    #[test]
-    fn the_kill_switch_cannot_strand_an_attached_session() {
-        // Rollback is for NEW conversations. A turn typed into a live SU session
-        // must still reach it, or flipping the switch loses the conversation.
+    fn an_attached_session_always_wins() {
         let d = decide_su_dispatch(SuDispatchInputs {
             attached: true,
-            cutover_enabled: false,
-            ..unbound(false)
+            ..unbound()
         });
         assert_eq!(d.target, SuDispatchTarget::AttachedSuSession);
         assert_eq!(d.reason, SuDispatchReason::AttachedSession);
     }
 
     #[test]
-    fn the_kill_switch_cannot_move_an_su_homed_conversation_to_the_owned_loop() {
+    fn an_su_homed_conversation_reopens_on_the_su_host() {
         let d = decide_su_dispatch(SuDispatchInputs {
             loaded_class: Some(PuiRuntimeClass::SuSession),
-            cutover_enabled: false,
-            ..unbound(false)
+            ..unbound()
         });
         assert_eq!(
             d.target,
@@ -1172,11 +1137,10 @@ mod cutover_policy_tests {
     }
 
     #[test]
-    fn an_explicit_owner_pick_outranks_the_kill_switch() {
+    fn an_explicit_owner_pick_selects_that_su_backend() {
         let d = decide_su_dispatch(SuDispatchInputs {
             picked_backend: Some(SuSessionBackend::Codex),
-            cutover_enabled: false,
-            ..unbound(false)
+            ..unbound()
         });
         assert_eq!(
             d.target,
@@ -1236,63 +1200,20 @@ mod cutover_policy_tests {
     fn a_pre_cutover_conversation_is_never_re_homed_even_with_the_cutover_on() {
         let d = decide_su_dispatch(SuDispatchInputs {
             loaded_class: Some(PuiRuntimeClass::LegacyOwnedLoop),
-            cutover_enabled: true,
-            ..unbound(true)
+            ..unbound()
         });
-        assert_eq!(d.target, SuDispatchTarget::OwnedLoop);
-        assert_eq!(d.reason, SuDispatchReason::LegacyConversationPreserved);
+        assert_eq!(d.target, SuDispatchTarget::ReadOnly);
+        assert_eq!(d.reason, SuDispatchReason::LegacyConversationReadOnly);
     }
 
     #[test]
     fn an_unclassified_conversation_is_held_not_guessed_at() {
         let d = decide_su_dispatch(SuDispatchInputs {
             loaded_class: Some(PuiRuntimeClass::Unclassified),
-            cutover_enabled: true,
-            ..unbound(true)
+            ..unbound()
         });
-        assert_eq!(d.target, SuDispatchTarget::OwnedLoop);
-        assert_eq!(d.reason, SuDispatchReason::UnclassifiedConversationHeld);
-    }
-
-    /// The invariant the whole ordering exists to hold, asserted over the WHOLE
-    /// cross-product rather than the handful of cases above: for a conversation
-    /// that already has a runtime, flipping the kill-switch changes nothing.
-    #[test]
-    fn flipping_the_kill_switch_never_moves_a_conversation_that_has_a_runtime() {
-        for attached in [true, false] {
-            for picked in [None, Some(SuSessionBackend::Codex)] {
-                for class in [
-                    Some(PuiRuntimeClass::SuSession),
-                    Some(PuiRuntimeClass::LegacyOwnedLoop),
-                    Some(PuiRuntimeClass::Unclassified),
-                ] {
-                    let on = decide_su_dispatch(SuDispatchInputs {
-                        attached,
-                        picked_backend: picked,
-                        loaded_class: class,
-                        cutover_enabled: true,
-                    });
-                    let off = decide_su_dispatch(SuDispatchInputs {
-                        attached,
-                        picked_backend: picked,
-                        loaded_class: class,
-                        cutover_enabled: false,
-                    });
-                    assert_eq!(
-                        on, off,
-                        "attached={attached} picked={picked:?} class={class:?}: the \
-                         kill-switch moved a conversation that already had a runtime"
-                    );
-                }
-            }
-        }
-        // Calibration: the switch is not simply inert. The ONE case it governs —
-        // no conversation loaded, nothing picked — must differ.
-        assert_ne!(
-            decide_su_dispatch(unbound(true)),
-            decide_su_dispatch(unbound(false)),
-            "the kill-switch governs nothing at all — the previous assertion is vacuous"
-        );
+        assert_eq!(d.target, SuDispatchTarget::ReadOnly);
+        assert_eq!(d.reason, SuDispatchReason::UnclassifiedConversationReadOnly);
     }
 
     // ── telemetry: no silent fallback ───────────────────────────────────────
@@ -1305,9 +1226,8 @@ mod cutover_policy_tests {
             (R::OwnerPickedBackend, "SU session"),
             (R::CutoverDefault, "SU session"),
             (R::HomedSuSession, "SU session"),
-            (R::KillSwitchOff, "owned loop"),
-            (R::LegacyConversationPreserved, "owned loop"),
-            (R::UnclassifiedConversationHeld, "owned loop"),
+            (R::LegacyConversationReadOnly, "read-only history"),
+            (R::UnclassifiedConversationReadOnly, "read-only history"),
         ] {
             let note = reason.note();
             assert!(
@@ -1315,15 +1235,5 @@ mod cutover_policy_tests {
                 "{reason:?} note {note:?} must lead with the runtime it chose"
             );
         }
-    }
-
-    #[test]
-    fn a_rollback_to_the_owned_loop_names_the_switch_that_caused_it() {
-        // P-011 forbids a SILENT fallback to the owned loop / ModelPort. The
-        // owner must be able to tell a rollback from a malfunction, which means
-        // the note has to name the flag, not just the runtime.
-        assert!(SuDispatchReason::KillSwitchOff
-            .note()
-            .contains(PUI_SU_SESSION_HOST_FLAG));
     }
 }

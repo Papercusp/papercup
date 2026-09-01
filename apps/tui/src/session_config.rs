@@ -2,9 +2,9 @@
 //!
 //! Two axes the operator can change about the session a chat runs on:
 //!
-//!   • MODEL   — which model/tier the next turn runs at. The transport already
-//!     exists (`AgentChatTurnRequest.model`, `agent_chats.rs`), so this lane is
-//!     the MENU and the pick, never the wire.
+//!   • MODEL   — which model/tier the next SU-session launch runs at. The
+//!     transport already exists in `su_session.rs`, so this lane is the MENU
+//!     and the pick, never the wire.
 //!   • ACCOUNT — which inference-gateway pool account the agent routes through.
 //!
 //! ── THE MODEL MENU IS SERVER-OWNED (do not hardcode it here) ──
@@ -166,8 +166,8 @@ pub fn model_options(tiers: &[ModelTier], surface_default: Option<&str>) -> Vec<
     out
 }
 
-/// What a model pick puts on the wire: `None` ⇒ omit `model` from the turn
-/// request entirely (the server's default), matching `loop_message_body`.
+/// What a model pick puts on the SU-session launch: `None` ⇒ omit `model`
+/// entirely (the server's default).
 pub fn model_pick(id: &str) -> Option<String> {
     if id == MODEL_INHERIT || id.is_empty() {
         None
