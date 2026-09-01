@@ -278,6 +278,22 @@ export default defineTool({
       .optional()
       .describe('the human owner explicitly instructed this mode (self-set only) — arms the owner-sticky guard'),
   }),
+  result: z
+    .object({
+      ok: z.unknown().optional(),
+      mode: z.unknown().optional(),
+      axis: z.unknown().optional(),
+      target: z.unknown().optional(),
+      enabled: z.unknown().optional(),
+      noop: z.unknown().optional(),
+      switchedFrom: z.unknown().optional(),
+      stickyConflict: z.unknown().optional(),
+      contract: z.unknown().optional(),
+      implied: z.unknown().optional(),
+      impliedNote: z.unknown().optional(),
+      impliedContracts: z.unknown().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const target = args.agent?.trim() || ident.ownerId;
