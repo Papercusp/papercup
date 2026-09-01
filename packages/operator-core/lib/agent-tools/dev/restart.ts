@@ -78,6 +78,7 @@ import { guardResource } from '../locks/resource-lock-guard';
 import { resourceLockDomain } from '../locks/coordination-domain';
 import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../locks/su-lock-store';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
+import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { probeServiceStart } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
@@ -911,7 +912,9 @@ export default defineTool({
     try {
       gitSyncBarrier =
         isGitSyncSensitiveTarget(target) && args.override_git_sync_collision !== true
-          ? await acquireGitSyncRestartBarrier(ownerLabel, undefined, { maxDrainSec: gitSyncDrainSec })
+          ? await acquireWithContentionRetry(() =>
+              acquireGitSyncRestartBarrier(ownerLabel, undefined, { maxDrainSec: gitSyncDrainSec }),
+            )
           : null;
     } catch (error) {
       await releaseCooldownOnAbort();

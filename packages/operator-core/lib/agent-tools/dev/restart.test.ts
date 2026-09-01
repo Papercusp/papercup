@@ -838,6 +838,32 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
     expect(auditUnsafeM).not.toHaveBeenCalled();
   });
 
+  it('retries transient workspace contention while acquiring the barrier', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(18)) as never);
+    const contention = Object.assign(new Error('workspace lock timed out'), {
+      name: 'WorkspaceContendedError',
+      pgCode: '57014',
+    });
+    gitSyncBarrierM
+      .mockRejectedValueOnce(contention)
+      .mockResolvedValueOnce({
+        acquired: true,
+        resource: 'git-sync',
+        lockId: 'barrier-retry',
+        owner: 'system:dev-restart:git-sync-barrier:42:retry',
+        coordinationDomain: 'workspace-domain',
+        expiresAt: '2026-08-27T19:00:00.000Z',
+        release: gitSyncBarrierReleaseM,
+      });
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
+
+    expect(b).toMatchObject({ ok: true, target: 'dev', restarted: true, drained: true });
+    expect(gitSyncBarrierM).toHaveBeenCalledTimes(2);
+    expect(guardM).toHaveBeenCalledTimes(1);
+    expect(spawnM).toHaveBeenCalledTimes(1);
+  });
+
   it('releases an acquired barrier when the target drain never grants', async () => {
     guardM.mockResolvedValue({ acquired: false, reason: 'drain_timeout', holders: [] } as never);
 
