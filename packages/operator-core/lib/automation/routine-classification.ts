@@ -407,6 +407,14 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     // pausing it stops only the checks themselves.
     why: 'Runs bounded per-sync-batch affected-tests/typecheck legs and files deduped work-items — no agent spawn or wake',
   },
+  'system:gate-fire-drill': {
+    spend: 'none',
+    // Verified against gate-fire-drill-action.ts before classifying: it launches ONE
+    // detached checkpoint run (a subprocess suite, killed seconds later by design),
+    // reads the pipeline_events ledger, and writes one outcome row + at most one
+    // severe-event broadcast — no agent spawn, no session wake, no model call.
+    why: 'Weekly kill-a-run fire drill asserting the verdict-liveness alarm chain — subprocess launch/kill + ledger reads, no agent spawn or wake',
+  },
   'system:gate-watcher-tick': { spend: 'none', why: 'Reads gate state' },
   'system:fleet-transition-sweep': {
     spend: 'none',
