@@ -250,14 +250,11 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
   }, [portalEmbed]);
 
   if (chromeless) return null;
-  if (portalEmbed) {
-    return (
-      <>
-        <AriaLiveRegions />
-        <OperatorChatSidebar faces={chatFaces} />
-      </>
-    );
-  }
+  // A portal-embedded /adv is a CONTENT-ONLY document (owner ask 2026-09-01):
+  // the cloud portal hosts the Papercup chat as its own outer sidebar (framed
+  // from /portal-panes/chat), so mounting it here again would put two chats
+  // side by side. Only the a11y live regions the tab bodies announce into.
+  if (portalEmbed) return <AriaLiveRegions />;
 
   return (
     <>
