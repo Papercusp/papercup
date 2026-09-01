@@ -173,6 +173,13 @@ export const PRESENCE_IDENTITY_FIELDS = [
   'potSlug',
   'fleetSlug',
   'fleetRole',
+  // EI-22072194984361823: grouped with fleetSlug/fleetRole (same lane, same
+  // present-only-for-fleet-members convention) — see the field doc comments
+  // on RosterRow above for why a control-state flip belongs beside the
+  // membership fields it qualifies rather than in LIVENESS (it is a discrete,
+  // rare transition a router acts on, not a continuous signal).
+  'fleetControlState',
+  'canAcquireWork',
   'model',
   'userId',
   'federated',
