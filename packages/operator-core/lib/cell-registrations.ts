@@ -751,7 +751,9 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
   owner: 'su-bea36045-b4c2-4717-b267-0fb6757c2d96',
   headline: 'gate.ownerBrief.answer',
   assessment: {
-    path: 'gate.ownerBrief.assessment',
+    // The resolver emits `{ assessment: { code, meaning, safeAction } }`; the
+    // registry path must select the branchable code leaf, not the whole object.
+    path: 'gate.ownerBrief.assessment.code',
     // Mirrors the closed `GateOwnerBriefAnswer` union — the composer embeds the same
     // meaning/safeAction in the payload so a reader without registry access still gets
     // the branchable reading (see ASSESSMENTS in gate-owner-brief.ts).
