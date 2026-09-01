@@ -1498,7 +1498,7 @@ export default defineTool({
          */
         const appendBodyPreservationGuard: CheckpointGuard | null =
           !wantsConfirmShrink && didAttemptJoin && joinAddendum
-            ? (priorNote) => {
+            ? (priorNote, priorLen) => {
                 const candidate = checksTransform?.(priorNote, checkpointToStore);
                 const candidateBody = candidate
                   ? splitCarryNoteWalls(splitCarryNoteChecks(candidate).body).body.trim()
@@ -1506,10 +1506,27 @@ export default defineTool({
                 const submitted = joinAddendum.trim();
                 return candidateBody.endsWith(submitted)
                   ? null
-                  : `append_body_overflow — preserving the carried check rows would trim the submitted append ` +
-                      `body from the ${CHECKPOINT_CAP}-character checkpoint. Refusing the write rather than ` +
-                      'reporting success with the new progress note missing; retire stale legacy checks or shorten ' +
-                      'the carried note before retrying, or pass { confirmShrink: true } only if that loss is intentional.';
+                  : // EI-22072152340717849: the original wording ("retire stale legacy checks
+                    // or shorten the carried note ... or pass { confirmShrink: true } only if
+                    // that loss is intentional") reused the same "that loss" phrasing this
+                    // file uses elsewhere for CHECK-row eviction, so a caller who needed to
+                    // preserve every carried row read confirmShrink as risking the evidence
+                    // itself and stalled — both remedies were already correct, the message
+                    // just did not say what each one actually costs. Spell it out: this guard
+                    // never evicts a check row either way, retiring rows is a SAFE separate
+                    // write, and confirmShrink's real cost here is the NEW note, not the
+                    // carried checks.
+                    `append_body_overflow — carried check rows alone occupy ${priorLen} of the ` +
+                      `${CHECKPOINT_CAP}-character checkpoint cap, leaving no room to preserve the submitted append ` +
+                      'body. Refusing the write rather than reporting success with the new progress note silently ' +
+                      'dropped. No carried check row is evicted by this refusal, or would be by proceeding past ' +
+                      'it — this guard concerns the append body only. Two ways forward, with different costs: ' +
+                      '(1) SAFE — first retire specific stale rows in a separate, non-append write ' +
+                      '({ rowsMode: "replace", retireIds: [...] } naming exactly what to drop, or ' +
+                      '`confirmRetire: true`), which frees cap room without touching this note, then retry this ' +
+                      'append; or (2) pass { confirmShrink: true } to THIS append — it keeps every carried check ' +
+                      'row intact but silently trims or entirely drops the append body you are submitting now, so ' +
+                      'use it only when losing this new note (never the checks) is acceptable.';
               }
             : null;
         /**
