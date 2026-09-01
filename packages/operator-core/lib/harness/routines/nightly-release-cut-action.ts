@@ -224,7 +224,7 @@ export async function runNightlyCut(
     now?: Date;
     lockPath?: string;
     spawnFn?: typeof managedSpawn;
-    readVersion?: (root: string) => string;
+    readVersion?: (sourceRoot: string, sourceSha: string) => string;
     sourceSha?: string;
   } = {},
 ): Promise<NightlyCutRunResult> {
@@ -240,9 +240,8 @@ export async function runNightlyCut(
   if (!root) return { status: 'skipped', reason: 'PAPERCUSP_NIGHTLY_RELEASE_ROOT is missing or not a dedicated release checkout' };
   const sourceSha = opts.sourceSha ?? execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'main^{commit}'], { encoding: 'utf8' }).trim();
   if (!/^[0-9a-f]{40}$/.test(sourceSha)) return { status: 'skipped', reason: 'could not resolve an exact 40-character source SHA' };
-  const desktopRoot = path.join(root, 'papercusp-desktop');
   const baseVersion = opts.readVersion
-    ? opts.readVersion(desktopRoot)
+    ? opts.readVersion(sourceRoot, sourceSha)
     : readDesktopVersionAtSource(sourceRoot, sourceSha);
   const version = nextNightlyVersion(baseVersion, opts.now);
   const invocation = buildNightlyCutInvocation(root, sourceRoot, version, sourceSha, ownerName, env);

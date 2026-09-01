@@ -110,17 +110,23 @@ describe('nightly cut runtime guards', () => {
     writeFileSync(path.join(root, 'papercusp-desktop', 'bin', 'release-local.sh'), '#!/bin/bash\n');
     const lock = path.join(root, 'cut.lock');
     const child = Object.assign(new EventEmitter(), { pid: 4321 });
+    const readVersion = vi.fn(() => '0.0.18');
+    const sourceRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../..');
     taskManager.managedSpawn.mockResolvedValue({ taskId: 'task-nightly', child });
     const result = await runNightlyCut(
       { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
       {
-        env: { PAPERCUSP_NIGHTLY_RELEASE_ROOT: root, PAPERCUSP_RELEASE_OWNER_NAME: 'Avi' },
+        env: {
+          PAPERCUSP_NIGHTLY_RELEASE_ROOT: root,
+          PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
+        },
         lockPath: lock,
         sourceSha: 'b'.repeat(40),
-        readVersion: () => '0.0.18',
+        readVersion,
       },
     );
     expect(result.status).toBe('launched');
+    expect(readVersion).toHaveBeenCalledWith(sourceRoot, 'b'.repeat(40));
     const [command, args, spec, opts] = taskManager.managedSpawn.mock.calls[0];
     expect(command).toBe('bash');
     expect(args.join(' ')).toContain('nightly');
