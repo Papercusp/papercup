@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
+import type { WorkspaceHostAgentVerificationKind } from "./workspace-host-agent-authentication";
 import type {
   AgentCredentialRef,
   CloudCredentialRef,
@@ -1261,7 +1262,11 @@ export interface WorkspaceHostInitializationCanaryEvidence {
       }
     >
   >;
-  agents: Readonly<Record<"claude" | "codex" | "omp", { authenticated: true }>>;
+  agents: Readonly<{
+    claude: { ready: true; verificationKind: "authenticated-account" };
+    codex: { ready: true; verificationKind: "authenticated-account" };
+    omp: { ready: true; verificationKind: WorkspaceHostAgentVerificationKind };
+  }>;
   backupRestore: {
     authorizationMaterial: "excluded";
     credentialReferences: "excluded";
@@ -1323,8 +1328,13 @@ export function validateWorkspaceHostInitializationCanary(
     }
   }
   for (const agent of ["claude", "codex", "omp"] as const) {
-    if (!evidence.agents?.[agent]?.authenticated) {
-      errors.push(`${agent} live authentication did not pass`);
+    const result = evidence.agents?.[agent];
+    if (!result?.ready) errors.push(`${agent} live readiness did not pass`);
+    if (
+      result?.verificationKind !== "authenticated-account" &&
+      !(agent === "omp" && result?.verificationKind === "local-inference")
+    ) {
+      errors.push(`${agent} verification kind is not allowed`);
     }
   }
   if (

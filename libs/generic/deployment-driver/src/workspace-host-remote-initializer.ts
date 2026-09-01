@@ -33,17 +33,17 @@ import {
   type WorkspaceHostInitializationCanaryEvidence,
   type WorkspaceHostInitializationStep,
   type WorkspaceHostInitializationStepKind,
-} from './workspace-host-initialization';
+} from "./workspace-host-initialization";
 import {
   WORKSPACE_HOST_CANARY_AGENTS,
-  type WorkspaceHostAgentAuthenticationReport,
-} from './workspace-host-agent-authentication';
+  type WorkspaceHostAgentVerificationReport,
+} from "./workspace-host-agent-authentication";
 import {
   WorkspaceHostCredentialResolver,
   type WorkspaceHostCredentialEvidence,
   type WorkspaceHostCredentialOperation,
-} from './workspace-host-credential-namespace';
-import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
+} from "./workspace-host-credential-namespace";
+import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
 
 /**
  * The wire protocol version. This is the single source of truth; the controller-side command
@@ -51,7 +51,7 @@ import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harnes
  * shows up against a real host.
  */
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION =
-  'papercusp-gcp-iap-initialization-v2';
+  "papercusp-gcp-iap-initialization-v2";
 
 /**
  * Every step kind this initializer can execute: the six INITIALIZATION kinds plus the four
@@ -82,9 +82,9 @@ export type WorkspaceHostRemoteInitializerStepKind =
 
 /** Fixed argv the controller passes; the CLI refuses anything else. */
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV = [
-  '--protocol-version',
+  "--protocol-version",
   WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
-  '--json-stdin',
+  "--json-stdin",
 ] as const;
 
 /**
@@ -138,7 +138,7 @@ export function encodeWorkspaceHostCredentialLifecycleStep(
 export interface WorkspaceHostRemoteInitializerResponse {
   protocolVersion: typeof WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION;
   stepId: string;
-  status: 'succeeded';
+  status: "succeeded";
   observedAt: string;
   publicEvidence?: Readonly<Record<string, unknown>>;
 }
@@ -146,7 +146,7 @@ export interface WorkspaceHostRemoteInitializerResponse {
 export class WorkspaceHostRemoteInitializerProtocolError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'WorkspaceHostRemoteInitializerProtocolError';
+    this.name = "WorkspaceHostRemoteInitializerProtocolError";
   }
 }
 
@@ -156,9 +156,9 @@ export class UnsupportedWorkspaceHostInitializationStepKindError extends Error {
   constructor(kind: string) {
     super(
       `Remote initializer has no handler for step kind '${kind}'. Supported: ` +
-        `${WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS.join(', ')}.`,
+        `${WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS.join(", ")}.`,
     );
-    this.name = 'UnsupportedWorkspaceHostInitializationStepKindError';
+    this.name = "UnsupportedWorkspaceHostInitializationStepKindError";
     this.kind = kind;
   }
 }
@@ -173,7 +173,7 @@ export interface WorkspaceHostCreateWorkspaceInput {
 
 export interface WorkspaceHostCloneRepositoryInput {
   readonly repositoryUrl: string;
-  readonly visibility: 'public' | 'private';
+  readonly visibility: "public" | "private";
   readonly destination: string;
   readonly revision?: string;
   /** Present exactly when the clone must authenticate; the planner hoists the git bind first. */
@@ -182,7 +182,7 @@ export interface WorkspaceHostCloneRepositoryInput {
 
 export interface WorkspaceHostPairWorkspaceInput {
   readonly sourceWorkspaceId: string;
-  readonly pairingReference: { readonly kind: 'pairing'; readonly ref: string };
+  readonly pairingReference: { readonly kind: "pairing"; readonly ref: string };
   readonly include: readonly string[];
 }
 
@@ -221,7 +221,7 @@ export interface WorkspaceHostRemoteInitializerHost {
     input: WorkspaceHostImportWorkspaceInput,
   ): Promise<WorkspaceHostRemoteStepEvidence>;
   /** Probe the three agents. Called by the verify step; must be non-interactive. */
-  probeAgentAuthentication(): Promise<WorkspaceHostAgentAuthenticationReport>;
+  probeAgentVerification(): Promise<WorkspaceHostAgentVerificationReport>;
   /** Confirm the private clone landed, for the verify step's repository evidence. */
   describeClonedRepository(input?: {
     readonly destination: string;
@@ -238,16 +238,23 @@ export interface WorkspaceHostRemoteInitializerDeps {
   readonly now?: () => Date;
 }
 
-function requireObject(value: unknown, label: string): Readonly<Record<string, unknown>> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new WorkspaceHostRemoteInitializerProtocolError(`${label} must be an object`);
+function requireObject(
+  value: unknown,
+  label: string,
+): Readonly<Record<string, unknown>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new WorkspaceHostRemoteInitializerProtocolError(
+      `${label} must be an object`,
+    );
   }
   return value as Readonly<Record<string, unknown>>;
 }
 
 function requireString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new WorkspaceHostRemoteInitializerProtocolError(`${label} must be a non-empty string`);
+  if (typeof value !== "string" || value.length === 0) {
+    throw new WorkspaceHostRemoteInitializerProtocolError(
+      `${label} must be a non-empty string`,
+    );
   }
   return value;
 }
@@ -262,27 +269,36 @@ function requireString(value: unknown, label: string): string {
 export function parseWorkspaceHostRemoteInitializerRequest(
   raw: unknown,
 ): WorkspaceHostRemoteInitializerRequest {
-  const body = requireObject(raw, 'request');
-  if (body.protocolVersion !== WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION) {
+  const body = requireObject(raw, "request");
+  if (
+    body.protocolVersion !== WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION
+  ) {
     throw new WorkspaceHostRemoteInitializerProtocolError(
       `unsupported protocol version '${String(body.protocolVersion)}'; this initializer speaks ` +
         `'${WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION}'`,
     );
   }
-  const step = requireObject(body.step, 'request.step');
-  const id = requireString(step.id, 'request.step.id');
-  const kind = requireString(step.kind, 'request.step.kind');
+  const step = requireObject(body.step, "request.step");
+  const id = requireString(step.id, "request.step.id");
+  const kind = requireString(step.kind, "request.step.kind");
   if (
-    !(WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS as readonly string[]).includes(kind)
+    !(
+      WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS as readonly string[]
+    ).includes(kind)
   ) {
     throw new UnsupportedWorkspaceHostInitializationStepKindError(kind);
   }
-  requireString(step.idempotencyKey, 'request.step.idempotencyKey');
+  requireString(step.idempotencyKey, "request.step.idempotencyKey");
   if (!Array.isArray(step.dependsOn)) {
-    throw new WorkspaceHostRemoteInitializerProtocolError('request.step.dependsOn must be an array');
+    throw new WorkspaceHostRemoteInitializerProtocolError(
+      "request.step.dependsOn must be an array",
+    );
   }
-  requireObject(step.input, 'request.step.input');
-  assertWorkspaceHostSecretIsolation(step, `workspaceHost.remoteInitializer.request.${id}`);
+  requireObject(step.input, "request.step.input");
+  assertWorkspaceHostSecretIsolation(
+    step,
+    `workspaceHost.remoteInitializer.request.${id}`,
+  );
 
   return {
     protocolVersion: WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
@@ -297,8 +313,13 @@ export function parseWorkspaceHostRemoteInitializerRequest(
 }
 
 function readInclude(value: unknown, label: string): readonly string[] {
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
-    throw new WorkspaceHostRemoteInitializerProtocolError(`${label} must be an array of strings`);
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== "string")
+  ) {
+    throw new WorkspaceHostRemoteInitializerProtocolError(
+      `${label} must be an array of strings`,
+    );
   }
   return value as readonly string[];
 }
@@ -318,27 +339,40 @@ async function runCredentialOperation(
   deps: WorkspaceHostRemoteInitializerDeps,
   now: () => Date,
 ): Promise<WorkspaceHostRemoteStepEvidence> {
-  const channel = requireString(input.channel, 'step.input.channel');
-  if (!WORKSPACE_HOST_CREDENTIAL_CHANNELS.includes(channel as WorkspaceHostCredentialChannel)) {
+  const channel = requireString(input.channel, "step.input.channel");
+  if (
+    !WORKSPACE_HOST_CREDENTIAL_CHANNELS.includes(
+      channel as WorkspaceHostCredentialChannel,
+    )
+  ) {
     throw new WorkspaceHostRemoteInitializerProtocolError(
       `step.input.channel '${channel}' is not a credential channel`,
     );
   }
-  const credentialRef = requireObject(input.credentialRef, 'step.input.credentialRef');
-  const delivery = requireObject(input.delivery, 'step.input.delivery');
+  const credentialRef = requireObject(
+    input.credentialRef,
+    "step.input.credentialRef",
+  );
+  const delivery = requireObject(input.delivery, "step.input.delivery");
   // `requestedAt` is not carried on the step, so the binding's expiry is judged against the
   // delivery's own window rather than against a clock the controller never saw. Using the
   // host clock here would let a host accept a delegation the controller had already refused.
   const requestedAt = new Date(now().getTime() - 1).toISOString();
-  const evidence: WorkspaceHostCredentialEvidence = await deps.credentials.run(operation, {
-    channel: channel as WorkspaceHostCredentialChannel,
-    credentialRef: {
-      kind: requireString(credentialRef.kind, 'step.input.credentialRef.kind'),
-      ref: requireString(credentialRef.ref, 'step.input.credentialRef.ref'),
+  const evidence: WorkspaceHostCredentialEvidence = await deps.credentials.run(
+    operation,
+    {
+      channel: channel as WorkspaceHostCredentialChannel,
+      credentialRef: {
+        kind: requireString(
+          credentialRef.kind,
+          "step.input.credentialRef.kind",
+        ),
+        ref: requireString(credentialRef.ref, "step.input.credentialRef.ref"),
+      },
+      delivery: delivery as never,
+      requestedAt,
     },
-    delivery: delivery as never,
-    requestedAt,
-  });
+  );
   return {
     channel: evidence.channel,
     family: evidence.family,
@@ -369,16 +403,19 @@ export async function executeWorkspaceHostRemoteInitializerStep(
 
   let publicEvidence: WorkspaceHostRemoteStepEvidence;
   switch (step.kind) {
-    case 'create-workspace': {
+    case "create-workspace": {
       publicEvidence = await deps.host.createWorkspace({
-        workspaceId: requireString(input.workspaceId, 'step.input.workspaceId'),
-        hostId: requireString(input.hostId, 'step.input.hostId'),
+        workspaceId: requireString(input.workspaceId, "step.input.workspaceId"),
+        hostId: requireString(input.hostId, "step.input.hostId"),
       });
       break;
     }
-    case 'clone-repository': {
-      const visibility = requireString(input.visibility, 'step.input.visibility');
-      if (visibility !== 'public' && visibility !== 'private') {
+    case "clone-repository": {
+      const visibility = requireString(
+        input.visibility,
+        "step.input.visibility",
+      );
+      if (visibility !== "public" && visibility !== "private") {
         throw new WorkspaceHostRemoteInitializerProtocolError(
           "step.input.visibility must be 'public' or 'private'",
         );
@@ -396,25 +433,36 @@ export async function executeWorkspaceHostRemoteInitializerStep(
       }
       // A private clone with no channel would silently attempt an unauthenticated fetch and fail
       // as "repository not found", which reads like a wrong URL rather than a missing binding.
-      if (visibility === 'private' && credentialChannel === undefined) {
+      if (visibility === "private" && credentialChannel === undefined) {
         throw new WorkspaceHostRemoteInitializerProtocolError(
-          'a private clone step must name the credential channel it authenticates with',
+          "a private clone step must name the credential channel it authenticates with",
         );
       }
       publicEvidence = await deps.host.cloneRepository({
-        repositoryUrl: requireString(input.repositoryUrl, 'step.input.repositoryUrl'),
+        repositoryUrl: requireString(
+          input.repositoryUrl,
+          "step.input.repositoryUrl",
+        ),
         visibility,
-        destination: requireString(input.destination, 'step.input.destination'),
-        ...(typeof input.revision === 'string' ? { revision: input.revision } : {}),
+        destination: requireString(input.destination, "step.input.destination"),
+        ...(typeof input.revision === "string"
+          ? { revision: input.revision }
+          : {}),
         ...(credentialChannel
-          ? { credentialChannel: credentialChannel as WorkspaceHostCredentialChannel }
+          ? {
+              credentialChannel:
+                credentialChannel as WorkspaceHostCredentialChannel,
+            }
           : {}),
       });
       break;
     }
-    case 'pair-workspace': {
-      const pairing = requireObject(input.pairingReference, 'step.input.pairingReference');
-      if (pairing.kind !== 'pairing') {
+    case "pair-workspace": {
+      const pairing = requireObject(
+        input.pairingReference,
+        "step.input.pairingReference",
+      );
+      if (pairing.kind !== "pairing") {
         throw new WorkspaceHostRemoteInitializerProtocolError(
           "step.input.pairingReference.kind must be 'pairing'",
         );
@@ -422,32 +470,32 @@ export async function executeWorkspaceHostRemoteInitializerStep(
       publicEvidence = await deps.host.pairWorkspace({
         sourceWorkspaceId: requireString(
           input.sourceWorkspaceId,
-          'step.input.sourceWorkspaceId',
+          "step.input.sourceWorkspaceId",
         ),
         pairingReference: {
-          kind: 'pairing',
-          ref: requireString(pairing.ref, 'step.input.pairingReference.ref'),
+          kind: "pairing",
+          ref: requireString(pairing.ref, "step.input.pairingReference.ref"),
         },
-        include: readInclude(input.include, 'step.input.include'),
+        include: readInclude(input.include, "step.input.include"),
       });
       break;
     }
-    case 'import-workspace': {
+    case "import-workspace": {
       publicEvidence = await deps.host.importWorkspace({
         sourceWorkspaceId: requireString(
           input.sourceWorkspaceId,
-          'step.input.sourceWorkspaceId',
+          "step.input.sourceWorkspaceId",
         ),
         sourceSnapshotRef: requireString(
           input.sourceSnapshotRef,
-          'step.input.sourceSnapshotRef',
+          "step.input.sourceSnapshotRef",
         ),
-        include: readInclude(input.include, 'step.input.include'),
+        include: readInclude(input.include, "step.input.include"),
       });
       break;
     }
-    case 'bind-credential': {
-      publicEvidence = await runCredentialOperation('bind', input, deps, now);
+    case "bind-credential": {
+      publicEvidence = await runCredentialOperation("bind", input, deps, now);
       break;
     }
     // The four CREDENTIAL-LIFECYCLE kinds (D-114). A lifecycle step is exactly a request to run
@@ -460,21 +508,26 @@ export async function executeWorkspaceHostRemoteInitializerStep(
     // initial binding planned by `planWorkspaceHostInitialization`, the second is a binding
     // planned by `planWorkspaceHostCredentialLifecycle` (a rotation's new generation, or a
     // restore's rebind). They execute identically and deliberately share one implementation.
-    case 'bind':
-    case 'verify-bound':
-    case 'revoke':
-    case 'verify-revoked': {
-      publicEvidence = await runCredentialOperation(step.kind, input, deps, now);
+    case "bind":
+    case "verify-bound":
+    case "revoke":
+    case "verify-revoked": {
+      publicEvidence = await runCredentialOperation(
+        step.kind,
+        input,
+        deps,
+        now,
+      );
       break;
     }
-    case 'verify-initialization': {
+    case "verify-initialization": {
       const sourceKind = requireString(
         input.sourceKind,
         "step.input.sourceKind",
       );
       const requiredChannels = readInclude(
         input.requiredChannels,
-        'step.input.requiredChannels',
+        "step.input.requiredChannels",
       ) as readonly WorkspaceHostCredentialChannel[];
       let repositoryInput:
         | {
@@ -508,19 +561,19 @@ export async function executeWorkspaceHostRemoteInitializerStep(
           "step.input.repository is allowed only for a git source",
         );
       }
-      const report = await deps.host.probeAgentAuthentication();
+      const report = await deps.host.probeAgentVerification();
       const repository =
         await deps.host.describeClonedRepository(repositoryInput);
       const failed = WORKSPACE_HOST_CANARY_AGENTS.filter(
-        (agent) => !report.agents[agent]?.authenticated,
+        (agent) => !report.agents[agent]?.ready,
       );
       // The verify step is the last gate before the controller records a successful
-      // initialization, so an unauthenticated agent has to stop it here. Succeeding and merely
+      // initialization, so an unready agent has to stop it here. Succeeding and merely
       // reporting the failure in evidence would reproduce the exact defect this work exists to
       // remove: a green verdict backed by a boolean nobody checked.
       if (failed.length > 0) {
         throw new Error(
-          `agent authentication did not pass for: ${failed.join(', ')}`,
+          `agent readiness did not pass for: ${failed.join(", ")}`,
         );
       }
       publicEvidence = {
@@ -541,9 +594,11 @@ export async function executeWorkspaceHostRemoteInitializerStep(
   const response: WorkspaceHostRemoteInitializerResponse = {
     protocolVersion: WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
     stepId: step.id,
-    status: 'succeeded',
+    status: "succeeded",
     observedAt,
-    ...(publicEvidence && Object.keys(publicEvidence).length > 0 ? { publicEvidence } : {}),
+    ...(publicEvidence && Object.keys(publicEvidence).length > 0
+      ? { publicEvidence }
+      : {}),
   };
   assertWorkspaceHostSecretIsolation(
     response,
@@ -566,21 +621,29 @@ export async function handleWorkspaceHostRemoteInitializerPayload(
   try {
     parsed = JSON.parse(payload);
   } catch {
-    throw new WorkspaceHostRemoteInitializerProtocolError('request body is not valid JSON');
+    throw new WorkspaceHostRemoteInitializerProtocolError(
+      "request body is not valid JSON",
+    );
   }
   const request = parseWorkspaceHostRemoteInitializerRequest(parsed);
-  const response = await executeWorkspaceHostRemoteInitializerStep(request, deps);
+  const response = await executeWorkspaceHostRemoteInitializerStep(
+    request,
+    deps,
+  );
   return `${JSON.stringify(response)}\n`;
 }
 
 /** Reject argv that is not exactly what the controller's command builder emits. */
-export function assertWorkspaceHostRemoteInitializerArgv(argv: readonly string[]): void {
+export function assertWorkspaceHostRemoteInitializerArgv(
+  argv: readonly string[],
+): void {
   const expected = WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV;
   const matches =
-    argv.length === expected.length && expected.every((value, index) => argv[index] === value);
+    argv.length === expected.length &&
+    expected.every((value, index) => argv[index] === value);
   if (!matches) {
     throw new WorkspaceHostRemoteInitializerProtocolError(
-      `remote initializer expects argv ${expected.join(' ')}, got ${argv.join(' ') || '(none)'}`,
+      `remote initializer expects argv ${expected.join(" ")}, got ${argv.join(" ") || "(none)"}`,
     );
   }
 }
@@ -594,8 +657,11 @@ export interface BuildWorkspaceHostInitializationCanaryEvidenceInput {
   readonly workspaceId: string;
   readonly hostId: string;
   readonly observedAt: string;
-  readonly repository: { readonly visibility: 'public' | 'private'; readonly cloned: boolean };
-  readonly agents: WorkspaceHostAgentAuthenticationReport;
+  readonly repository: {
+    readonly visibility: "public" | "private";
+    readonly cloned: boolean;
+  };
+  readonly agents: WorkspaceHostAgentVerificationReport;
   /**
    * Per-channel lifecycle evidence gathered from a real rotate/revoke/reconnect run, keyed by
    * channel. Each channel must show all four transitions.
@@ -622,8 +688,8 @@ export class WorkspaceHostInitializationCanaryEvidenceError extends Error {
   readonly problems: readonly string[];
 
   constructor(problems: readonly string[]) {
-    super(`Canary evidence cannot be constructed: ${problems.join('; ')}`);
-    this.name = 'WorkspaceHostInitializationCanaryEvidenceError';
+    super(`Canary evidence cannot be constructed: ${problems.join("; ")}`);
+    this.name = "WorkspaceHostInitializationCanaryEvidenceError";
     this.problems = problems;
   }
 }
@@ -632,7 +698,7 @@ export class WorkspaceHostInitializationCanaryEvidenceError extends Error {
  * Construct `WorkspaceHostInitializationCanaryEvidence` from observations.
  *
  * WHY A BUILDER AND NOT AN OBJECT LITERAL. The evidence type declares every field as a literal
- * (`cloned: true`, `authenticated: true`, `bound: true`, …), so TypeScript makes a FAILING canary
+ * (`cloned: true`, `ready: true`, `bound: true`, …), so TypeScript makes a FAILING canary
  * literally unrepresentable. That is a good property for the validator's contract and a terrible
  * one for honesty: the only way to obtain a value of that type is to assert the success you were
  * supposed to be proving. This builder is the seam where observed booleans meet that type — it
@@ -645,10 +711,11 @@ export function buildWorkspaceHostInitializationCanaryEvidence(
 ): WorkspaceHostInitializationCanaryEvidence {
   const problems: string[] = [];
 
-  if (input.repository.visibility !== 'private') {
-    problems.push('canary repository must be private');
+  if (input.repository.visibility !== "private") {
+    problems.push("canary repository must be private");
   }
-  if (!input.repository.cloned) problems.push('private-repository clone was not observed');
+  if (!input.repository.cloned)
+    problems.push("private-repository clone was not observed");
 
   for (const channel of WORKSPACE_HOST_CREDENTIAL_CHANNELS) {
     const observed = input.channelLifecycle?.[channel];
@@ -657,32 +724,42 @@ export function buildWorkspaceHostInitializationCanaryEvidence(
       continue;
     }
     for (const [flag, value] of Object.entries(observed)) {
-      if (value !== true) problems.push(`${channel} channel did not observe '${flag}'`);
+      if (value !== true)
+        problems.push(`${channel} channel did not observe '${flag}'`);
     }
   }
 
   for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
     const evidence = input.agents?.agents?.[agent];
     if (!evidence) {
-      problems.push(`no authentication probe was run for '${agent}'`);
+      problems.push(`no readiness probe was run for '${agent}'`);
       continue;
     }
-    if (!evidence.authenticated) {
+    if (!evidence.ready) {
       problems.push(
-        `${agent} live authentication did not pass (${evidence.failure ?? 'unknown'}, exit ${evidence.exitStatus})`,
+        `${agent} live readiness did not pass (${evidence.failure ?? "unknown"}, exit ${evidence.exitStatus})`,
+      );
+    }
+    if (
+      evidence.verificationKind !== "authenticated-account" &&
+      !(agent === "omp" && evidence.verificationKind === "local-inference")
+    ) {
+      problems.push(
+        `${agent} verification kind '${evidence.verificationKind}' is not allowed`,
       );
     }
   }
 
   if (!input.backupRestore.authorizationMaterialExcluded) {
-    problems.push('backup retained authorization material');
+    problems.push("backup retained authorization material");
   }
   if (!input.backupRestore.credentialReferencesExcluded) {
-    problems.push('backup retained credential references');
+    problems.push("backup retained credential references");
   }
   const rebound = new Set(input.backupRestore.reboundChannels);
   for (const channel of WORKSPACE_HOST_CREDENTIAL_CHANNELS) {
-    if (!rebound.has(channel)) problems.push(`restore did not rebind the '${channel}' channel`);
+    if (!rebound.has(channel))
+      problems.push(`restore did not rebind the '${channel}' channel`);
   }
   for (const channel of rebound) {
     if (!WORKSPACE_HOST_CREDENTIAL_CHANNELS.includes(channel)) {
@@ -691,38 +768,53 @@ export function buildWorkspaceHostInitializationCanaryEvidence(
   }
 
   if (!Number.isFinite(Date.parse(input.observedAt))) {
-    problems.push('canary observedAt must be an ISO timestamp');
+    problems.push("canary observedAt must be an ISO timestamp");
   }
 
-  if (problems.length > 0) throw new WorkspaceHostInitializationCanaryEvidenceError(problems);
+  if (problems.length > 0)
+    throw new WorkspaceHostInitializationCanaryEvidenceError(problems);
 
   const channels = Object.fromEntries(
     WORKSPACE_HOST_CREDENTIAL_CHANNELS.map((channel) => [
       channel,
-      { bound: true, rotated: true, previousBindingRevoked: true, reconnected: true } as const,
+      {
+        bound: true,
+        rotated: true,
+        previousBindingRevoked: true,
+        reconnected: true,
+      } as const,
     ]),
-  ) as WorkspaceHostInitializationCanaryEvidence['channels'];
+  ) as WorkspaceHostInitializationCanaryEvidence["channels"];
 
   const agents = Object.fromEntries(
-    WORKSPACE_HOST_CANARY_AGENTS.map((agent) => [agent, { authenticated: true } as const]),
-  ) as WorkspaceHostInitializationCanaryEvidence['agents'];
+    WORKSPACE_HOST_CANARY_AGENTS.map((agent) => [
+      agent,
+      {
+        ready: true,
+        verificationKind: input.agents.agents[agent].verificationKind,
+      } as const,
+    ]),
+  ) as WorkspaceHostInitializationCanaryEvidence["agents"];
 
   const evidence: WorkspaceHostInitializationCanaryEvidence = {
     contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
-    kind: 'live',
+    kind: "live",
     runId: input.runId,
     workspaceId: input.workspaceId,
     hostId: input.hostId,
     observedAt: input.observedAt,
-    repository: { visibility: 'private', cloned: true },
+    repository: { visibility: "private", cloned: true },
     channels,
     agents,
     backupRestore: {
-      authorizationMaterial: 'excluded',
-      credentialReferences: 'excluded',
+      authorizationMaterial: "excluded",
+      credentialReferences: "excluded",
       reboundChannels: [...WORKSPACE_HOST_CREDENTIAL_CHANNELS],
     },
   };
-  assertWorkspaceHostSecretIsolation(evidence, 'workspaceHost.initialization.canary');
+  assertWorkspaceHostSecretIsolation(
+    evidence,
+    "workspaceHost.initialization.canary",
+  );
   return evidence;
 }

@@ -603,9 +603,9 @@ describe("validateWorkspaceHostInitializationCanary", () => {
         },
       },
       agents: {
-        claude: { authenticated: true },
-        codex: { authenticated: true },
-        omp: { authenticated: true },
+        claude: { ready: true, verificationKind: "authenticated-account" },
+        codex: { ready: true, verificationKind: "authenticated-account" },
+        omp: { ready: true, verificationKind: "local-inference" },
       },
       backupRestore: {
         authorizationMaterial: "excluded",
@@ -624,13 +624,13 @@ describe("validateWorkspaceHostInitializationCanary", () => {
 
   it("reports a missing agent and incomplete restore rebinding without raw logs", () => {
     const incomplete = evidence();
-    incomplete.agents.omp.authenticated = false as true;
+    incomplete.agents.omp.ready = false as true;
     incomplete.backupRestore.reboundChannels = ["cloud", "git"];
     const result = validateWorkspaceHostInitializationCanary(incomplete);
     expect(result.ok).toBe(false);
     expect(result.errors).toEqual(
       expect.arrayContaining([
-        "omp live authentication did not pass",
+        "omp live readiness did not pass",
         "restore did not rebind all credential channels",
       ]),
     );
@@ -676,11 +676,15 @@ describe("credential delivery capability gate", () => {
     }
     // A DISTINCT error type, not a generic validation message: an API edge must be able to tell
     // "this provider structurally cannot do this" from "your request body is malformed".
-    expect(thrown).toBeInstanceOf(WorkspaceHostCredentialDeliveryCapabilityError);
-    expect((thrown as WorkspaceHostCredentialDeliveryCapabilityError).channel).toBe("git");
-    expect((thrown as WorkspaceHostCredentialDeliveryCapabilityError).capability).toBe(
-      "fileTransfer",
+    expect(thrown).toBeInstanceOf(
+      WorkspaceHostCredentialDeliveryCapabilityError,
     );
+    expect(
+      (thrown as WorkspaceHostCredentialDeliveryCapabilityError).channel,
+    ).toBe("git");
+    expect(
+      (thrown as WorkspaceHostCredentialDeliveryCapabilityError).capability,
+    ).toBe("fileTransfer");
   });
 
   it("refuses an agent channel on a provider that cannot transfer files", () => {
@@ -692,7 +696,10 @@ describe("credential delivery capability gate", () => {
             cloudCredentialRef: refs().cloudCredentialRef,
             agentCredentialRef: refs().agentCredentialRef,
           },
-          credentialDelivery: { cloud: delivery().cloud, agent: delivery().agent },
+          credentialDelivery: {
+            cloud: delivery().cloud,
+            agent: delivery().agent,
+          },
         }),
       ),
     ).toThrow(WorkspaceHostCredentialDeliveryCapabilityError);
@@ -711,7 +718,9 @@ describe("credential delivery capability gate", () => {
 
   it("plans every channel when the provider declares file transfer", () => {
     // Positive control: the gate is off the path entirely for a capable provider.
-    const plan = planWorkspaceHostInitialization(request({ deliveryCapabilities: CAPABLE }));
+    const plan = planWorkspaceHostInitialization(
+      request({ deliveryCapabilities: CAPABLE }),
+    );
     expect(plan.steps.map((step) => step.id)).toEqual(
       expect.arrayContaining(["bind-cloud", "bind-git", "bind-agent"]),
     );
