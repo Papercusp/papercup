@@ -11,7 +11,9 @@
  * losing continuity: the transcript will NOT carry; the checkpoint is the continuity.
  *
  * setHiveCarryNote semantics (D-003): replace-on-write; omitted/null ⇒ CLEARED
- * (the next invocation re-derives from the dossier alone — graceful degradation).
+ * at the store layer (the next invocation re-derives from the dossier alone —
+ * graceful degradation). The tool layer requires an explicit clear so a metadata-
+ * only/read-like call cannot erase a live checkpoint by omission.
  * EI-21020695928840897: a blank string is rejected unless `confirmClear:true`
  * because shell/result extraction mistakes commonly produce `""`; callers can use
  * `checkpoint:null` or `clear:true` for an unambiguous clear.
@@ -131,8 +133,9 @@
  * PATCH (`dependsOn` supplied while `checkpoint` is omitted) uses the same
  * body-preserving path, so correcting freshness metadata never requires re-sending
  * — and accidentally shrinking — the narrative checkpoint. An explicit clear stays
- * reachable via `checkpoint: null`/`clear:true`, and a bare `{ id }` still clears —
- * the contract work_items:complete's terminal cleanup depends on.
+ * reachable via `checkpoint: null`/`clear:true`; a bare `{ id }` is rejected because
+ * omission is indistinguishable from a read-like call. The terminal cleanup contract
+ * is unaffected because work_items:complete calls the store directly with `null`.
  */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
@@ -680,12 +683,13 @@ function checksSpec() {
 
 const itemSpec = z.object({
   id: z.string().min(1).describe('the work-item id to checkpoint'),
-  /** The compressed in-flight state. Null / omitted ⇒ CLEAR the checkpoint —
-   *  EXCEPT omitted alongside `checks` or `dependsOn`, which is a metadata-only patch
-   *  that preserves the stored body (EI-19447043119380534, EI-20232161144151845).
-   *  Blank strings require confirmClear:true (EI-21020695928840897). */
+  /** The compressed in-flight state. Null ⇒ CLEAR the checkpoint.
+   *  Omission is allowed only alongside `checks` or `dependsOn`, which are metadata-
+   *  only patches that preserve the stored body (EI-19447043119380534,
+   *  EI-20232161144151845), or alongside `clear:true`. Blank strings require
+   *  confirmClear:true (EI-21020695928840897). */
   checkpoint: checkpointBodySpec().describe(
-    'compressed in-flight state; null ⇒ clear; blank string requires confirmClear:true; omitted clears unless `checks` or `dependsOn` makes it a metadata-only patch; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
+    'compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks` or `dependsOn` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
   ),
   clear: looseBoolean().describe(
     'explicitly clear the checkpoint body. Equivalent to checkpoint:null and rejected with a non-blank checkpoint.',
@@ -776,12 +780,13 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `checkpoint`)'),
-      /** The compressed in-flight state. Null / omitted ⇒ CLEAR the checkpoint —
-       *  EXCEPT omitted alongside `checks` or `dependsOn`, which is a metadata-only patch
-       *  that preserves the stored body (EI-19447043119380534, EI-20232161144151845).
-       *  Blank strings require confirmClear:true (EI-21020695928840897). */
+      /** The compressed in-flight state. Null ⇒ CLEAR the checkpoint.
+       *  Omission is allowed only alongside `checks` or `dependsOn`, which are metadata-
+       *  only patches that preserve the stored body (EI-19447043119380534,
+       *  EI-20232161144151845), or alongside `clear:true`. Blank strings require
+       *  confirmClear:true (EI-21020695928840897). */
       checkpoint: checkpointBodySpec().describe(
-        'single shorthand: compressed in-flight state; null ⇒ clear; blank string requires confirmClear:true; omitted clears unless `checks` or `dependsOn` makes it a metadata-only patch; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
+        'single shorthand: compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks` or `dependsOn` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
       ),
       clear: looseBoolean().describe(
         'single shorthand default for `clear`; explicitly clear the checkpoint body (equivalent to checkpoint:null).',
@@ -856,6 +861,12 @@ export default defineTool({
         const suppliedCheckpoint = it.checkpoint as string | null | undefined;
         const wantsClear = it.clear ?? args.clear ?? false;
         const wantsConfirmClear = it.confirmClear ?? args.confirmClear ?? false;
+        const wantsAppend = it.append ?? args.append ?? false;
+        const rawSuppliedChecks = it.checks ?? args.checks;
+        // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
+        // existing declaration, [] ⇒ clear, list ⇒ re-stamp), so only forward the
+        // key when the caller actually supplied one.
+        const declaredDeps = it.dependsOn ?? args.dependsOn;
         if (wantsClear && typeof suppliedCheckpoint === 'string' && suppliedCheckpoint.trim().length > 0) {
           return {
             ok: false as const,
@@ -886,6 +897,34 @@ export default defineTool({
               confirm: {
                 args: { checkpoint: suppliedCheckpoint, confirmClear: true },
                 description: 'Confirm that this exact blank-string clear is intentional.',
+              },
+            },
+          };
+        }
+        // EI-220412: the underlying checkpoint store treats an omitted body like an
+        // explicit clear. At the tool boundary that is unsafe: a caller sending only
+        // `{ id }` can be a read-like probe or a schema-shape mistake, and must not
+        // erase a live successor note. Preserve the intentional metadata-only PATCH
+        // forms (`checks`/`dependsOn`) and the explicit clear flag; reject every other
+        // body-less call before even reading or touching the item.
+        if (
+          !wantsClear &&
+          suppliedCheckpoint === undefined &&
+          !wantsAppend &&
+          rawSuppliedChecks === undefined &&
+          declaredDeps === undefined
+        ) {
+          return {
+            ok: false as const,
+            id: it.id,
+            error:
+              'checkpoint_required — checkpoint body was omitted. Use checkpoint:null or clear:true to clear intentionally, or supply checks/dependsOn for a metadata-only patch.',
+            errorCode: 'checkpoint_required',
+            retryable: true,
+            recovery: {
+              clear: {
+                args: { checkpoint: null },
+                description: 'Clear the checkpoint explicitly instead of relying on omission.',
               },
             },
           };
@@ -960,16 +999,10 @@ export default defineTool({
         // contradiction (append has nothing to append, and blank normally means
         // CLEAR), except when checks are supplied: that is an additive checks-only
         // patch and must preserve the narrative body.
-        const wantsAppend = it.append ?? args.append ?? false;
         const rowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
         const wantsConfirmRetire = it.confirmRetire ?? args.confirmRetire ?? false;
         const wantsRetireIds = it.retireIds ?? args.retireIds;
-        const rawSuppliedChecks = it.checks ?? args.checks;
         const isChecksOnlyPatch = checkpoint === undefined && rawSuppliedChecks !== undefined;
-        // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
-        // existing declaration, [] ⇒ clear, list ⇒ re-stamp), so only forward the
-        // key when the caller actually supplied one.
-        const declaredDeps = it.dependsOn ?? args.dependsOn;
         if (wantsAppend && !(checkpoint && checkpoint.length > 0) && !isChecksOnlyPatch) {
           return {
             ok: false as const,
@@ -1161,8 +1194,8 @@ export default defineTool({
         //
         // `checkpoint` is `.nullish()`, so undefined (omitted) is distinguishable from an
         // explicit null — a real clear stays reachable via { checkpoint: null } / clear:true,
-        // and a bare { id } with no checks still clears, which is the contract
-        // work_items:complete's terminal cleanup and "blank clears a stale note" rely on.
+        // while a bare { id } is rejected above. work_items:complete's terminal cleanup
+        // calls the store directly, so its explicit null clear contract is unchanged.
         // `append:true` makes this body-less metadata patch additive too: supplied
         // checks are UNIONED rather than replacing the carried set.
         const isBodyPreservingPatch = isChecksOnlyPatch || isDependencyOnlyPatch;

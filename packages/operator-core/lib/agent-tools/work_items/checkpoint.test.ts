@@ -372,15 +372,38 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(out.results[0].length).toBeGreaterThan(0);
   });
 
-  it('clears the checkpoint when omitted (cleared:true)', async () => {
+  it('clears the checkpoint with an explicit null (cleared:true)', async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue(null);
-    const r = await one({ id: 'WI-7' });
+    const r = await one({ id: 'WI-7', checkpoint: null });
     expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
       { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
-      undefined,
+      null,
     );
     expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: true, length: 0, contentHash: null });
+  });
+
+  it('EI-22041231879905297: rejects a body-less omission without metadata before reading or touching the store', async () => {
+    const single = await one({ id: 'WI-7' });
+    const bulk = await env({
+      items: [
+        { id: 'WI-A' },
+        { id: 'WI-B', append: false },
+      ],
+    });
+
+    for (const result of [single, ...bulk.results]) {
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'checkpoint_required',
+        retryable: true,
+        recovery: { clear: { args: { checkpoint: null } } },
+      });
+      expect(result.error).toContain('checkpoint body was omitted');
+    }
+    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
   });
 
   it('EI-21020695928840897: refuses accidental empty-string clears in both single and bulk shapes before touching the store', async () => {
@@ -817,7 +840,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
     it('refuses a CLEAR (blank checkpoint) on an item assigned to someone else too', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-5557', harness: 'papercup', assignee: 'someone-else' });
-      const r = await one({ id: 'WI-5557' }, { ...(baseCtx as Record<string, unknown>), uiClientId: 'not-the-holder' });
+      const r = await one(
+        { id: 'WI-5557', checkpoint: null },
+        { ...(baseCtx as Record<string, unknown>), uiClientId: 'not-the-holder' },
+      );
       expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
       expect(r.ok).toBe(false);
       expect(r.error).toContain('not_holder');
@@ -994,7 +1020,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     it('does NOT warn on a CLEAR — there is no declaration left to enforce', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: null, priorLength: 400 });
-      const r = await one({ id: 'WI-7' });
+      const r = await one({ id: 'WI-7', checkpoint: null });
       expect(r.cleared).toBe(true);
       expect(r.pauseNotEnforcedWarning).toBeUndefined();
     });
@@ -1060,7 +1086,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     it('does NOT warn on a clear (nothing to compare) and never arms the guard', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: null, priorLength: 19348 });
-      const r = await one({ id: 'WI-7' }); // blank checkpoint ⇒ clear
+      const r = await one({ id: 'WI-7', checkpoint: null }); // explicit clear
       expect(r.ok).toBe(true);
       expect(r.cleared).toBe(true);
       expect(r.shrinkWarning).toBeUndefined();
