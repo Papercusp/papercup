@@ -75,7 +75,13 @@ import {
 } from '../coordination/tools/continuation-gate';
 import { CONTEXT_GAUGE_CRITICAL_PCT, contextUsagePct } from '../coordination/tools/inbox-context-usage';
 import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
-import { carryProvenanceFields, retainedProvenanceText } from '../../carry-surface-provenance-stamp';
+import {
+  carryProvenanceFields,
+  markUnverifiedOwnerAttribution,
+  ownerAttributionEnforcement,
+  retainedProvenanceText,
+  stampCarrySurfaceProvenance,
+} from '../../carry-surface-provenance-stamp';
 import { detectAbsencePremises } from '../../premises-claim-port';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -1024,7 +1030,7 @@ export default defineTool({
     // P-014: lint only what this call supplied as current provenance. Rows and
     // narrative inherited by mergeCarryRows remain in the stored note, but are
     // reported separately as retainedProvenance rather than as fresh activity.
-    const currentProvenanceText = (() => {
+    let currentProvenanceText = (() => {
       let text = baseNote ?? '';
       if (effectiveChecks !== undefined) {
         text = withCarryNoteChecks(splitCarryNoteChecks(text).body, effectiveChecks);
@@ -1034,6 +1040,16 @@ export default defineTool({
       }
       return text;
     })();
+    // P-016 / EI-212678: persist owner-attribution caveats in the carry note so
+    // a later cold wake cannot mistake the response-only lint for authority.
+    const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ownerId);
+    const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
+    const enforcedBaseNote = ownerEnforcement.unverified
+      ? markUnverifiedOwnerAttribution(baseNote)
+      : baseNote;
+    if (ownerEnforcement.unverified) {
+      currentProvenanceText = markUnverifiedOwnerAttribution(currentProvenanceText) ?? currentProvenanceText;
+    }
     // P-013: replace stays the DEFAULT — it is the only way to retire a stale row, and
     // silently switching every existing caller to merge would make a clear impossible.
     const rowsMode = args.rowsMode ?? 'merge';
@@ -1058,7 +1074,7 @@ export default defineTool({
     try {
       const writeResult = await setLoopCarryNoteWithPrior(
         { harness, ownerId, workspaceId: workspaceId ?? undefined },
-        baseNote,
+        enforcedBaseNote,
         {
           ...(args.expectedHash !== undefined ? { expectedHash: args.expectedHash } : {}),
           transform: (priorNote) => {
@@ -1068,7 +1084,7 @@ export default defineTool({
             );
             const merged = mergeCarryRows({
               priorNote,
-              baseNote,
+              baseNote: enforcedBaseNote,
               walls: effectiveWalls,
               checks: effectiveChecks,
               hasNoteWrite,
@@ -1299,7 +1315,7 @@ export default defineTool({
       captured.merged ??
       mergeCarryRows({
         priorNote: null,
-        baseNote,
+        baseNote: enforcedBaseNote,
         walls: effectiveWalls,
         checks: effectiveChecks,
         hasNoteWrite,
@@ -1624,8 +1640,9 @@ export default defineTool({
     // only to derive inherited lines; current lint receives submitted bytes.
     const provenanceFields =
       stored !== null
-        ? await carryProvenanceFields(currentProvenanceText, ownerId, {
-            retainedText: retainedProvenanceText(stored, currentProvenanceText),
+            ? await carryProvenanceFields(currentProvenanceText, ownerId, {
+                retainedText: retainedProvenanceText(stored, currentProvenanceText),
+                precomputedStamp: preWriteStamp,
           })
         : {};
     return {
