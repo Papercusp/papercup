@@ -23,6 +23,7 @@ import {
   composeLaunchModelSpec,
   MIN_COMPACTION_LIMIT_TOKENS,
   MODEL_EFFORT_LEVELS,
+  normalizeModelSpec,
 } from './agent-config-constants';
 import { resolveCodexModel } from './model-context-budget.mjs';
 
@@ -1368,6 +1369,21 @@ export function modelEffortFromSpec(spec: string | null): string | null {
   return (MODEL_EFFORT_LEVELS as readonly string[]).includes(suffix) ? suffix : null;
 }
 
+/**
+ * Canonicalize the model value before comparing a requested launch with the
+ * value recorded by psu after bootstrap. Claude appends its private `[1m]`
+ * context-window marker to default 1M families, so
+ * `claude-sonnet-5:xhigh` and `claude-sonnet-5[1m]:xhigh` are the same launch
+ * contract. Keep the raw values in any reported diff, but compare through the
+ * same normalizer the launcher uses.
+ */
+export function normalizeLaunchAttestationModelSpec(
+  spec: string | null,
+  agent: string | null,
+): string | null {
+  return spec == null || agent !== 'claude' ? spec : normalizeModelSpec(spec);
+}
+
 /** Resolve the actual launch attestation from the durable adv_sessions ledger. */
 export function launchAttestationFromLedger(
   launchSpecRaw: unknown,
@@ -1723,7 +1739,15 @@ export async function probeFreshLaunchSessions({
           'agent', 'workspaceId', 'harnessSlug', 'planSlug', 'model', 'effort',
           'account', 'carry', 'visibility', 'fleetSlug', 'fleetRole',
         ] as const) {
-          if (expected[field] !== actual[field]) {
+          const expectedValue =
+            field === 'model'
+              ? normalizeLaunchAttestationModelSpec(expected[field], expected.agent)
+              : expected[field];
+          const actualValue =
+            field === 'model'
+              ? normalizeLaunchAttestationModelSpec(actual[field], actual.agent)
+              : actual[field];
+          if (expectedValue !== actualValue) {
             attestationDiffs.push({ field, requested: expected[field], actual: actual[field] });
           }
         }
