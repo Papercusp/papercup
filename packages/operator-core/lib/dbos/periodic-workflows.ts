@@ -49,7 +49,7 @@ import { reapEndedPresenceRows } from '../agent-tools/coordination/presence-reap
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { gcGovernorReceipts } from '../resource-governor/receipt-gc';
-import { PgWorkItemAdmissionQueueStore } from '../resource-governor/queue';
+import { PgAdmissionCutoverQueueStore } from '../resource-governor/admission-cutover-store';
 import {
   reconcileStaleEscalationsOnce,
   reconcileUnanswerableEscalationsOnce,
@@ -1923,7 +1923,7 @@ async function governorReceiptGcTick(): Promise<void> {
       // an entirely idle namespace has no admission edge to drive that cleanup.
       // Reuse the existing hourly receipt-maintenance tick as the backstop instead
       // of creating another timer/supervisor.
-      const reconciled = await new PgWorkItemAdmissionQueueStore().reconcileExpiredAll();
+      const reconciled = await new PgAdmissionCutoverQueueStore().reconcileExpiredAll();
       if (reconciled.total > 0) {
         console.log(
           `[governor-receipt-gc] reconciled ${reconciled.requeued} expired lease(s), ` +
