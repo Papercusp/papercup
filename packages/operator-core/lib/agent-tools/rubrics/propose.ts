@@ -195,6 +195,15 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: rubricsProposeArgs,
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      rubric: z.unknown().optional(),
+      completeness: z.unknown().optional(),
+      replicationSqlCheck: z.unknown().optional(),
+      statusOverride: z.unknown().nullable().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
     const rubric = await proposeRubric({
