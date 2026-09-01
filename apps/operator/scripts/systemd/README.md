@@ -228,8 +228,11 @@ Verify the live unit resolves to this repo source and that its effective
 `papercusp-cloud-portal.service` supervises the Portal's built Next.js
 standalone production artifact on `127.0.0.1:3801`. Run `npm run build` in the
 Portal checkout first; the build uses a unique private `distDir`, moves the
-completed output into `.portal-runtime/releases/<generation>`, and atomically
-retargets `.portal-runtime/current`. The service launches through
+completed output into the checkout sibling
+`../.portal-runtime/portal/releases/<generation>`, and atomically retargets its
+`current` link. Keeping generated releases outside the checkout prevents a
+standalone trace from recursively copying its own release history into every
+new artifact. The service launches through
 `scripts/start-web.mjs`, which resolves that pointer once and keeps serving the
 immutable selected generation. A later or concurrent build therefore cannot
 delete the running process's JS/CSS/static files while preparing the next
@@ -246,6 +249,8 @@ backend:
 ```bash
 cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
 export PAPERCUSP_CLOUD_PORTAL_ROOT="$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal"
+# Optional: override the default sibling runtime store.
+# export PAPERCUSP_CLOUD_PORTAL_RUNTIME_ROOT="$HOME/.papercusp/runtime/cloud-portal"
 export PAPERCUSP_CLOUD_PORTAL_NODE="$HOME/.local/node25/bin/node"
 bash ./deploy-cloud-portal.sh --install-only
 systemd-analyze verify "$HOME/.config/systemd/user/papercusp-cloud-portal.service"
