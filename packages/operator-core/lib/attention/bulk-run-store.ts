@@ -1049,8 +1049,44 @@ async function deliverPassDigest(run: BulkRunRow | null): Promise<void> {
  * Move a run's phase. `started_at` is stamped on the first transition into
  * `running` and `finished_at` on any terminal phase, so duration is derivable
  * without the caller tracking it.
+ *
+ * `complete` is deliberately NOT settable here. It is the only phase that reads
+ * as SUCCESS, so it has to be EARNED — derived from the run's own item/finding
+ * rows by {@link settleRunPhase} via {@link deriveSettleOutcome}, never asserted
+ * by a caller. Three pre-guard runs settled 'complete' with 100% of their items
+ * still `pending` (WI-2104919, repaired by migration 1064); this type exclusion
+ * is what keeps a future caller from quietly re-minting that shape. Tests that
+ * must fabricate a terminal run use {@link unsafeSetRunPhaseForFixtures}.
  */
 export async function setRunPhase(input: {
+  runId: string;
+  phase: Exclude<BulkRunPhase, 'complete'>;
+  resolverOwner?: string | null;
+  error?: string | null;
+  workspaceId?: string;
+}): Promise<BulkRunRow | null> {
+  return writeRunPhase(input);
+}
+
+/**
+ * TEST FIXTURES ONLY: the raw phase write without the earned-`complete`
+ * exclusion. Production code must never complete a run directly — that is
+ * {@link settleRunPhase}'s job (see {@link setRunPhase}'s doc for why). This
+ * exists because fixtures legitimately need to fabricate historical shapes —
+ * e.g. the watchdog test proves an already-terminal complete-with-pending run
+ * is left alone, a shape production code can no longer produce.
+ */
+export async function unsafeSetRunPhaseForFixtures(input: {
+  runId: string;
+  phase: BulkRunPhase;
+  resolverOwner?: string | null;
+  error?: string | null;
+  workspaceId?: string;
+}): Promise<BulkRunRow | null> {
+  return writeRunPhase(input);
+}
+
+async function writeRunPhase(input: {
   runId: string;
   phase: BulkRunPhase;
   resolverOwner?: string | null;
