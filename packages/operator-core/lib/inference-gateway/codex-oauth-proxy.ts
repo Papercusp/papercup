@@ -209,46 +209,63 @@ export function rewriteCodexRequestModel(bodyBuf: Buffer, upstreamModel: string)
  * The public API defines a string as one user text message, so the expansion is
  * semantics-preserving. ChatGPT subscription requests cannot use API-side response
  * storage, so force that backend contract here instead of making every compatible
- * gateway client know it. Bodies that already use list input and `store:false` are
- * returned byte-identically, as are malformed or non-object bodies. This belongs at
+ * gateway client know it. Omitted model fields are resolved to the managed Codex
+ * default, while bodies that already use a canonical model/list input and
+ * `store:false` are returned byte-identically. Malformed or non-object bodies are
+ * returned unchanged; an explicitly denied model is thrown so callers cannot
+ * silently forward it. This belongs at
  * the ChatGPT OAuth seam (not the bearer OpenAI path): api.openai.com already accepts
  * the shorthand and its own storage semantics, while chatgpt.com rejects incompatible
  * bodies with `400 Input must be a list` / `400 Store must be set to false`.
  */
 export function normalizeCodexChatGptResponsesBody(bodyBuf: Buffer): { body: Buffer; inputNormalized: boolean } {
   if (!bodyBuf.length) return { body: bodyBuf, inputNormalized: false };
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(bodyBuf.toString('utf8')) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { body: bodyBuf, inputNormalized: false };
-    }
-    const body = parsed as Record<string, unknown>;
-    const modelSpec = typeof body.model === 'string' ? body.model : null;
-    const parsedModel = modelSpec ? parseBridgeModel(modelSpec) : null;
-    const modelNormalized = parsedModel !== null && parsedModel.id !== modelSpec;
-    if (modelNormalized && parsedModel) {
-      body.model = parsedModel.id;
-      const reasoning =
-        body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)
-          ? (body.reasoning as Record<string, unknown>)
-          : {};
-      body.reasoning = { ...reasoning, effort: parsedModel.effort };
-    }
-    const maxOutputTokensNormalized = Object.prototype.hasOwnProperty.call(body, 'max_output_tokens');
-    if (maxOutputTokensNormalized) delete body.max_output_tokens;
-    const inputNormalized = typeof body.input === 'string';
-    if (inputNormalized) {
-      body.input = [{ role: 'user', content: [{ type: 'input_text', text: body.input }] }];
-    }
-    const storeNormalized = body.store !== false;
-    if (storeNormalized) body.store = false;
-    if (!modelNormalized && !maxOutputTokensNormalized && !inputNormalized && !storeNormalized) {
-      return { body: bodyBuf, inputNormalized: false };
-    }
-    return { body: Buffer.from(JSON.stringify(body), 'utf8'), inputNormalized };
+    parsed = JSON.parse(bodyBuf.toString('utf8')) as unknown;
   } catch {
     return { body: bodyBuf, inputNormalized: false };
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { body: bodyBuf, inputNormalized: false };
+  }
+  const body = parsed as Record<string, unknown>;
+  const modelSpec = typeof body.model === 'string' ? body.model : null;
+  // The gateway is a managed Codex boundary: an omitted model is resolved to
+  // the same safe default as launch/config writers, while an explicit Spark
+  // spelling throws before any upstream request or account work.
+  const parsedModel = parseBridgeModel(modelSpec ?? undefined);
+  const modelNormalized = modelSpec === null || parsedModel.id !== modelSpec;
+  if (modelNormalized) {
+    body.model = parsedModel.id;
+    const reasoning =
+      body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)
+        ? (body.reasoning as Record<string, unknown>)
+        : {};
+    const existingEffort = typeof reasoning.effort === 'string' ? reasoning.effort.trim() : '';
+    const existingEffortValid = /^(minimal|low|medium|high|xhigh|max)$/i.test(existingEffort);
+    // A model suffix is authoritative (`model:high`), but callers may provide
+    // reasoning.effort independently of the model. Preserve that explicit
+    // value when the model was merely omitted/aliased; otherwise the default
+    // model policy would silently downgrade a requested effort to medium.
+    const modelCarriesEffort = typeof modelSpec === 'string' && /:(minimal|low|medium|high|xhigh|max)$/i.test(modelSpec.trim());
+    body.reasoning = {
+      ...reasoning,
+      effort: modelCarriesEffort || !existingEffortValid ? parsedModel.effort : existingEffort.toLowerCase(),
+    };
+  }
+  const maxOutputTokensNormalized = Object.prototype.hasOwnProperty.call(body, 'max_output_tokens');
+  if (maxOutputTokensNormalized) delete body.max_output_tokens;
+  const inputNormalized = typeof body.input === 'string';
+  if (inputNormalized) {
+    body.input = [{ role: 'user', content: [{ type: 'input_text', text: body.input }] }];
+  }
+  const storeNormalized = body.store !== false;
+  if (storeNormalized) body.store = false;
+  if (!modelNormalized && !maxOutputTokensNormalized && !inputNormalized && !storeNormalized) {
+    return { body: bodyBuf, inputNormalized: false };
+  }
+  return { body: Buffer.from(JSON.stringify(body), 'utf8'), inputNormalized };
 }
 
 /** Add the streaming wire bit used by the ChatGPT backend while keeping the public

@@ -159,16 +159,40 @@ describe('normalizeCodexChatGptResponsesBody', () => {
       expect(result.inputNormalized).toBe(false);
       expect(JSON.parse(result.body.toString('utf8'))).toEqual({
         input: [{ role: 'user', content: [] }],
+        model: 'gpt-5.6-sol',
+        reasoning: { effort: 'medium' },
         store: false,
       });
     }
   });
 
-  it('keeps compatible list input and malformed JSON byte-identical', () => {
+  it('adds the managed default to a model-less compatible list and leaves malformed JSON byte-identical', () => {
     const list = Buffer.from(JSON.stringify({ input: [{ role: 'user', content: [] }], store: false }));
-    expect(normalizeCodexChatGptResponsesBody(list)).toEqual({ body: list, inputNormalized: false });
+    const normalized = normalizeCodexChatGptResponsesBody(list);
+    expect(normalized.inputNormalized).toBe(false);
+    expect(JSON.parse(normalized.body.toString('utf8'))).toMatchObject({
+      model: 'gpt-5.6-sol',
+      reasoning: { effort: 'medium' },
+      input: [{ role: 'user', content: [] }],
+      store: false,
+    });
     const malformed = Buffer.from('{oops');
     expect(normalizeCodexChatGptResponsesBody(malformed)).toEqual({ body: malformed, inputNormalized: false });
+  });
+
+  it('throws on a Spark model instead of swallowing the policy refusal', () => {
+    const body = Buffer.from(JSON.stringify({ model: 'gpt-5.3-codex-spark', input: [] }));
+    expect(() => normalizeCodexChatGptResponsesBody(body)).toThrow(/denied/i);
+  });
+
+  it('preserves an independently requested reasoning effort when only the model is omitted', () => {
+    const body = Buffer.from(JSON.stringify({ input: [{ role: 'user', content: [] }], reasoning: { effort: 'high' }, store: false }));
+    const normalized = normalizeCodexChatGptResponsesBody(body);
+    expect(JSON.parse(normalized.body.toString('utf8'))).toMatchObject({
+      model: 'gpt-5.6-sol',
+      reasoning: { effort: 'high' },
+      store: false,
+    });
   });
 });
 

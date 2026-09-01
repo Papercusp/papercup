@@ -206,6 +206,34 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(JSON.parse(openaiUpstream!.last.body).input).toBe('forward me');
   });
 
+  it('resolves the managed Codex default and preserves an explicit effort before bearer forwarding', async () => {
+    await bootCodex(ok);
+    const suffixed = await postResponses({ model: 'gpt-5.6-sol:xhigh', input: 'normalize me' });
+    expect(suffixed.status).toBe(200);
+    expect(JSON.parse(openaiUpstream!.last.body)).toMatchObject({
+      model: 'gpt-5.6-sol',
+      reasoning: { effort: 'xhigh' },
+      input: 'normalize me',
+    });
+
+    const omitted = await postResponses({ input: 'default me' });
+    expect(omitted.status).toBe(200);
+    expect(JSON.parse(openaiUpstream!.last.body)).toMatchObject({
+      model: 'gpt-5.6-sol',
+      reasoning: { effort: 'medium' },
+      input: 'default me',
+    });
+  });
+
+  it('rejects every Spark spelling before account selection or an upstream request', async () => {
+    await bootCodex(ok);
+    const res = await postResponses({ model: 'chatgpt:5.3-codex-spark:high', input: 'must not run' });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: { message?: string } };
+    expect(body.error?.message).toMatch(/denied/i);
+    expect(openaiUpstream!.last.method).toBeUndefined();
+  });
+
   it('honors an x-papercusp-account pin to a specific codex account (cache affinity)', async () => {
     await bootCodex(ok);
     const res = await postResponses({ model: 'gpt-x', input: 'hi' }, { [ACCOUNT_HEADER]: 'cdx-2' });
