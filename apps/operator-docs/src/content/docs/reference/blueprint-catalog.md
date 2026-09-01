@@ -12,7 +12,7 @@ sidebar:
 
 A **blueprint** is a harness's declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (44 concrete + 4 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (43 concrete + 4 abstract).
 
 ## Built-in blueprints
 
@@ -61,7 +61,6 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (44 con
 | `scout` | base | ideation-cycle (`SCT`) | — | inherited | 0 | Scout autonomous-ideation cadence: idle/friction-gated, budgeted ideation cycles (ideator → critic → route to draft plans / the gym / improvements) on a frequent heartbeat. The op runs the same self-gated tick as the bespoke routine. |
 | `transfer` | base | distillation-run (`TRF`) | — | inherited | 0 | Transfer harness: distill transferable lessons from the day's transcripts (admitted probationary), then student-transfer-test them via a governed replay battery to promote/demote/retire — on a nightly cadence. |
 | `vote` | base | decision (`VOTE`) | — | inherited | 2 | Decide between options via a diverse-lens, confidence-weighted vote: one voter per lens + an advocate arguing against the lead; resolve decisively or escalate a curated split to the human. |
-| `worker` | base | feature (`F`) | — | inherited | 0 | Operator-hosted coding worker: run one feature's chunk loop (plan → per-chunk acquire/implement/typecheck-gate → commit / replan / escalate) as a deterministic program step. The durable-program port of the subprocess chunk-loop worker. |
 
 ### Abstract (not directly runnable)
 
@@ -508,11 +507,3 @@ A generic (non-coding) Hive — the Queen places research / analysis / deliberat
 
 - **Extends:** `coding`
 - **Version:** 0.1.0
-
-### `worker`
-
-Operator-hosted coding worker: run one feature's chunk loop (plan → per-chunk acquire/implement/typecheck-gate → commit / replan / escalate) as a deterministic program step. The durable-program port of the subprocess chunk-loop worker.
-
-- **Extends:** `base`
-- **Version:** 0.1.0
-- **Work item:** `feature` (id prefix `F`)
