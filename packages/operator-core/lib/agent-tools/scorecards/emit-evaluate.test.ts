@@ -633,6 +633,78 @@ describe('emitScorecard', () => {
     });
   });
 
+  it('inherits an omitted sourceHive from the superseded scorecard instead of the caller harness', async () => {
+    getIssueM.mockResolvedValue({
+      payload: {
+        observation: {
+          rubricRef: 'test-rubric',
+          ratings: RATINGS,
+          sourceHive: 'prior-hive',
+        },
+      },
+    } as never);
+
+    const r = await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: RATINGS, supersedes: 'ISS-PRIOR' },
+      { createdBy: 'su-1', ctxHarness: 'caller-hive' },
+    );
+
+    expect(r).toMatchObject({ ok: true, created: true, supersedes: 'ISS-PRIOR' });
+    expect(listM).toHaveBeenCalledWith({ rubricRef: 'test-rubric', sourceHive: 'prior-hive', limit: 1 });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: {
+        observation: {
+          rubricRef: 'test-rubric',
+          sourceHive: 'prior-hive',
+          supersedes: 'ISS-PRIOR',
+        },
+      },
+    });
+  });
+
+  it('preserves a legacy empty sourceHive when a Hive-scoped caller supersedes the card', async () => {
+    getIssueM.mockResolvedValue({
+      payload: { observation: { rubricRef: 'test-rubric', ratings: RATINGS } },
+    } as never);
+
+    const r = await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: RATINGS, supersedes: 'ISS-LEGACY' },
+      { createdBy: 'su-1', ctxHarness: 'papercusp' },
+    );
+
+    expect(r).toMatchObject({ ok: true, created: true, supersedes: 'ISS-LEGACY' });
+    expect(listM).toHaveBeenCalledWith({ rubricRef: 'test-rubric', sourceHive: undefined, limit: 1 });
+    expect(captureM.mock.calls[0][0].payloadExtra?.observation).not.toHaveProperty('sourceHive');
+  });
+
+  it('still refuses an explicit sourceHive that conflicts with the superseded scorecard', async () => {
+    getIssueM.mockResolvedValue({
+      payload: {
+        observation: {
+          rubricRef: 'test-rubric',
+          ratings: RATINGS,
+          sourceHive: 'prior-hive',
+        },
+      },
+    } as never);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        sourceHive: 'different-hive',
+        supersedes: 'ISS-PRIOR',
+      },
+      { createdBy: 'su-1', ctxHarness: 'caller-hive' },
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("belongs to sourceHive 'prior-hive', not 'different-hive'"),
+    });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('refuses to supersede a scorecard from another rubric', async () => {
     getIssueM.mockResolvedValue({
       payload: { observation: { rubricRef: 'other-rubric', ratings: RATINGS } },
