@@ -321,6 +321,12 @@ export interface MaterializeLoopInput {
   /** The wakeup prompt the fire delivers (payload_template.kickoff). */
   kickoff: string;
   /**
+   * The stable work-item anchor this loop drives. Only non-empty anchors are persisted;
+   * an omitted value on a re-arm carries the existing row's anchor forward so a cadence
+   * retune cannot silently detach the loop from its death-resilience work-item claim.
+   */
+  workItem?: string | null;
+  /**
    * Whether `kickoff` came from an explicit loop:arm `wakePrompt`. Only the true
    * marker is persisted so rows created by older callers remain byte-identical.
    * Missing/false is deliberately legacy-safe: an unknown kickoff is rebuilt.
@@ -406,12 +412,14 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
   const workspaceId = input.workspaceId ?? activeWorkspaceId();
   const now = input.now ?? new Date();
   const firstFireSec = input.firstFireInSec ?? input.intervalSec;
+  const workItemText = typeof input.workItem === 'string' ? input.workItem.trim().toUpperCase() : '';
   // Warm loops keep their finite first fire. A cold loop's first wake is different:
   // the arm turn must settle and write its first carry-note before the wake may be
   // staged, otherwise a long loop:arm turn can overlap the nominal first fire.
   const scheduledFirstFireAt = new Date(now.getTime() + firstFireSec * 1000);
 
   const payloadTemplate: Record<string, unknown> = { kickoff: input.kickoff };
+  if (workItemText) payloadTemplate.workItem = workItemText;
   // EI-20256869903801099: preserve the distinction between an explicit custom
   // kickoff and the default template across loop:arm re-arms. Stamp only true
   // so legacy callers and default loops keep their historical payload shape.
@@ -476,6 +484,18 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
       intervalSec: active.reschedule_interval_sec == null ? null : Number(active.reschedule_interval_sec),
       changed: false,
     };
+  }
+  // EI-22079408866636029: a retune that omits workItem must preserve the durable
+  // death-resilience anchor already stored on the loop row. The handler normally
+  // passes the recovered anchor explicitly; this writer-side fallback also protects
+  // auto-arm/recovery callers and older call sites that only re-state cadence/prompt.
+  // A direct null is treated as an explicit clear for this low-level helper; the
+  // public loop:arm path never sends null for an omitted field.
+  if (!workItemText && input.workItem === undefined && existing.length > 0) {
+    const priorWorkItem = existing[0]?.payload_template?.workItem;
+    if (typeof priorWorkItem === 'string' && priorWorkItem.trim()) {
+      payloadTemplate.workItem = priorWorkItem.trim().toUpperCase();
+    }
   }
   // EI-20194544581627100: a retune/reset may intentionally omit the goal while
   // changing cadence or kickoff. Keep the durable mission instead of replacing
@@ -2156,6 +2176,8 @@ export interface PriorLoopFacts {
   intervalSec: number | null;
   /** The concrete harness namespace the existing routine is installed under. */
   harnessSlug: string | null;
+  /** The stable work-item anchor previously bound to this loop, when present. */
+  workItem?: string | null;
   /** The structurally persisted mission, when present on newer loop rows. */
   goal?: string | null;
   /** The current payload_template.kickoff — the arm-time goal comparison substrate. */
@@ -2205,6 +2227,8 @@ export async function readActiveLoopFacts(ownerId: string, opts: { sql?: Sql } =
     active: Boolean(r.active),
     intervalSec: r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec),
     harnessSlug: typeof r.install_slug === 'string' ? r.install_slug : null,
+    workItem:
+      typeof pt.workItem === 'string' && pt.workItem.trim() ? pt.workItem.trim().toUpperCase() : null,
     goal: typeof pt.goal === 'string' && pt.goal.trim() ? pt.goal.trim() : null,
     kickoff: typeof pt.kickoff === 'string' ? pt.kickoff : '',
     customWakePrompt: pt.customWakePrompt === true,
