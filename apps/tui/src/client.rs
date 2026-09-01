@@ -53,6 +53,7 @@ fn decode_optional_native_session(
 /// The wire `OperatorClient` rides. `Ipc` is the local zero-auth Unix socket;
 /// `Http` is remote HTTP+bearer. An enum (not a `dyn` trait) keeps the async
 /// methods simple — no async-trait / object-safety dance.
+#[derive(Clone)]
 enum Transport {
     Ipc(Arc<IpcClient>),
     Http(HttpClient),
@@ -242,6 +243,7 @@ impl BackendIdentity {
     }
 }
 
+#[derive(Clone)]
 pub struct OperatorClient {
     transport: Transport,
     endpoint: String,
@@ -1760,12 +1762,23 @@ impl OperatorClient {
 
     /// Fleet-wide work items via the `work_items:list` agent-tool (unify-work-
     /// items; MCP envelope unwrapped, exactly like `features_for`). No filters →
-    /// the whole fleet (features + issues + chunks).
+    /// the whole fleet (features + issues + chunks). The legacy full-list entry
+    /// point remains for explicit refreshes; startup uses the bounded variant so
+    /// the first paint never waits on the entire queue.
     pub async fn work_items_list(&self) -> Result<Vec<WorkItem>> {
+        self.work_items_list_bounded(500).await
+    }
+
+    /// Read a bounded current work-item snapshot. P-003's first-paint path uses
+    /// this smaller window, then the normal refetch reconciles the full list in
+    /// the background. Keeping the limit at the client seam makes the response
+    /// shape and budget explicit instead of relying on a server default.
+    pub async fn work_items_list_bounded(&self, limit: u32) -> Result<Vec<WorkItem>> {
+        let limit = limit.clamp(1, 500);
         let env = self
             .post_json(
                 "/api/agent-tools/work_items/list",
-                serde_json::json!({ "limit": 500 }),
+                serde_json::json!({ "limit": limit }),
             )
             .await?;
         let text = env

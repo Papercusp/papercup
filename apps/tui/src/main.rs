@@ -5389,6 +5389,29 @@ async fn refetch_all(
     pinned: Option<app::Tab>,
     include_plan_reads: bool,
 ) {
+    // P-003: the Fleet task list is the first useful work surface, so start a
+    // bounded snapshot immediately instead of making it wait behind the serial
+    // plans/roster/config/plugin reads below. The later full-list fetch remains
+    // the reconciliation pass and replaces this snapshot when it lands.
+    const FIRST_PAINT_WORK_ITEMS_LIMIT: u32 = 100;
+    let fast_client = client.clone();
+    let fast_tx = tx.clone();
+    tokio::spawn(async move {
+        match fast_client
+            .work_items_list_bounded(FIRST_PAINT_WORK_ITEMS_LIMIT)
+            .await
+        {
+            Ok(work_items) => {
+                let _ = fast_tx.send(Event::WorkItems { result: Ok(work_items) });
+            }
+            Err(error) => {
+                let _ = fast_tx.send(Event::WorkItems {
+                    result: Err(error.to_string()),
+                });
+            }
+        }
+    });
+
     if include_plan_reads && pane_fetches_plans(pinned) {
         match client.plans_typed().await {
             Ok(p) => {

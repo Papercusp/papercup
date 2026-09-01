@@ -68,21 +68,23 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_tabs(f, app, root[0]);
 
-    // Operator dock (operator-always-visible-2026-06-05, Brief 24): the operator
-    // chat, docked on the RIGHT of every tab EXCEPT the tabs that already host the
-    // operator themselves — the Operator tab (the whole tab IS the chat) and the
-    // Overview tab (its draw_overview renders draw_operator_dock as the always-on
-    // bottom strip, Brief 23; a right-dock there would show the chat twice).
+    // Operator dock (operator-always-visible-2026-06-05, Brief 24; P-004): the
+    // owner-approved cockpit keeps Agent Chat persistently docked on the RIGHT
+    // of every tab EXCEPT the tabs that already host the operator themselves —
+    // the Operator tab (the whole tab IS the chat) and the Overview tab (its
+    // draw_overview renders the same chat as the always-on bottom strip).
     // Reuses `draw_operator_dock`/`draw_chat` and the shared `chat_*` state — one
-    // conversation, multiple render sites — so the operator is usable on any tab
-    // via the `o` summon/focus key. Default-closed; width-gated so narrow
-    // terminals keep the tab full-width (the operator is reached via the Operator
-    // tab there). Carved off root[1] BEFORE the presence and plans-filter splits
-    // so the panes never overlap.
-    let (work, op_dock) = if app.operator_dock_open
-        && app.tab != Tab::Operator
+    // conversation, multiple render sites — so the transcript and composer stay
+    // visible beside Sessions/task content. The old optional hidden toggle is no
+    // longer a layout decision; only the width gate protects narrow terminals.
+    // Carve the pane BEFORE presence and plans-filter splits so the panes never
+    // overlap.
+    let (work, op_dock) = if app.tab != Tab::Operator
         && app.tab != Tab::Overview
-        && root[1].width >= 100
+        // Surface B needs enough room for a readable main pane, presence rail,
+        // and the fixed Agent Chat column. Keep the existing full-width layout
+        // below this threshold rather than collapsing its content to a sliver.
+        && root[1].width >= 260
     {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -7427,19 +7429,19 @@ mod tests {
     // ─── Operator dock (operator-always-visible-2026-06-05, Brief 24) ───
 
     #[test]
-    fn operator_dock_renders_beside_tab_content_when_open() {
+    fn operator_dock_is_persistent_beside_tab_content() {
         let mut app = App::new();
         app.tab = Tab::Plans;
         app.plans = vec![plan("alpha", "todo")];
-        app.operator_dock_open = true;
         app.set_chat_history(
             "c1".into(),
             vec![crate::models::ChatMessage::assistant("docked reply here")],
             false,
             None,
         );
-        // Wide enough (>=100) → the dock is carved on the right alongside Plans.
-        let text = render(&app, 120, 20);
+        // Wide enough (>=260) → the persistent dock is carved on the right
+        // alongside Plans without an opt-in toggle.
+        let text = render(&app, 280, 20);
         assert!(
             text.contains("Title alpha"),
             "the Plans tab content still renders"
@@ -7520,21 +7522,21 @@ mod tests {
         app.tab = Tab::Plans;
         app.operator_dock_open = true;
         // Unfocused → "○ o" hint (press o to focus).
-        let unfocused = render(&app, 120, 20);
+        let unfocused = render(&app, 280, 20);
         assert!(
             unfocused.contains("○ o"),
             "unfocused dock advertises the o key"
         );
         // Focused → "●" marker.
         app.operator_dock_focused = true;
-        let focused = render(&app, 120, 20);
+        let focused = render(&app, 280, 20);
         assert!(focused.contains('●'), "focused dock shows the ● marker");
     }
 
     #[test]
-    fn operator_dock_hint_in_status_bar_when_closed() {
+    fn operator_dock_hint_in_status_bar_remains_available_for_focus() {
         let mut app = App::new();
-        app.tab = Tab::Plans; // not the Operator tab, dock closed by default
+        app.tab = Tab::Plans;
         let text = render(&app, 120, 20);
         assert!(
             text.contains("o:Agent Chat"),
