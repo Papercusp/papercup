@@ -27,6 +27,7 @@ import {
   persistAdmissionPlan,
   planPromoterDispositions,
   responsePayload,
+  type AdmissionRunOutcome,
   type PromoterItem,
   type PromoterJudgement,
   type PromoterLlmCall,
@@ -179,10 +180,26 @@ export interface BulkDedupRunOptions {
    * The default is the owner-directed learning policy and stays that way; this
    * override exists so ONE run can be driven onto a different backend without
    * re-pointing every learning path at it — the case that matters here is the
-   * canonical Sol model being unreachable (codex pool usage-walled, or the
-   * ChatGPT-account rejection `The 'gpt-5.6-sol:xhigh' model is not supported
-   * when using Codex with a ChatGPT account`), which failed three of the four
-   * bulk-stage attempts on 2026-08-27/28.
+   * canonical Sol model being TRANSIENTLY unreachable, which failed three of
+   * the four bulk-stage attempts on 2026-08-27/28.
+   *
+   * ⚠ DO NOT READ THIS AS "gpt-5.6-sol:xhigh is unsupported on ChatGPT accounts."
+   * An earlier revision of this comment quoted `The 'gpt-5.6-sol:xhigh' model is
+   * not supported when using Codex with a ChatGPT account` as ONE OF TWO candidate
+   * causes for that incident (the other being a usage-walled codex pool). It was a
+   * note about one moment, not a statement about the platform — but it read as a
+   * standing capability constraint, and on 2026-08-31 an agent sizing a fleet found
+   * it, treated it as live, and nearly re-planned the launch around avoiding
+   * `:xhigh`. gpt-5.6-sol is the ROUTINE fleet model here and xhigh IS launched on
+   * it regularly (owner, 2026-08-31). The quoted string is kept only so the phrase
+   * stays greppable for the next person who hits it — explicitly labelled NOT
+   * CURRENT.
+   *
+   * The general lesson, which is why this warning is longer than the note it
+   * corrects: a dated incident recorded in a comment is evidence about one moment,
+   * and the next reader will silently promote it to a standing fact about the
+   * system — the more specific the quoted error string, the more authoritative it
+   * reads. Date the incident, and say what it is NOT.
    *
    * Whatever is resolved here is what gets WRITTEN to `admission_runs.model_id`,
    * so the ledger reports the model that actually ran rather than the policy
@@ -380,6 +397,16 @@ async function beginBulkStage(
               mode: 'bulk-dedup',
               scope: input.scope,
               sourceCensusRunId: input.sourceCensusRunId,
+              outcome: {
+                unit: 'pairs',
+                attempted: input.pairs,
+                successful: null,
+                rolledBack: null,
+                unchanged: null,
+                uniqueRowsChanged: null,
+                failureReason: null,
+                blockedReason: null,
+              } satisfies AdmissionRunOutcome,
             })}::text::jsonb)
     ON CONFLICT (id) DO NOTHING`;
 }
@@ -416,7 +443,12 @@ export function serializeBulkErrorCause(error: unknown, depth = 0, seen = new We
   return out;
 }
 
-async function failBulkStage(sql: OrgSql, runId: string, error: unknown): Promise<void> {
+async function failBulkStage(
+  sql: OrgSql,
+  runId: string,
+  error: unknown,
+  attempted: number | null = null,
+): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
   const cause = error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined;
   await sql`
@@ -426,6 +458,19 @@ async function failBulkStage(sql: OrgSql, runId: string, error: unknown): Promis
                     ${JSON.stringify({
                       status: 'failed',
                       error: message,
+                      outcome: {
+                        unit: 'pairs',
+                        attempted,
+                        successful: null,
+                        // A failed stage is transactionally rolled back; the
+                        // exact number of writes is unknowable when the error
+                        // occurs during model/protocol handling.
+                        rolledBack: null,
+                        unchanged: null,
+                        uniqueRowsChanged: null,
+                        failureReason: message,
+                        blockedReason: null,
+                      } satisfies AdmissionRunOutcome,
                       ...(cause !== undefined ? { errorCause: serializeBulkErrorCause(cause) } : {}),
                     })}::text::jsonb
      WHERE id = ${runId}`.catch(() => undefined);
@@ -733,6 +778,16 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                  convergence: convergenceReason,
                  resultCensusRunId: census.runId,
                  scopedPairsAfter: 0,
+                 outcome: {
+                   unit: 'pairs',
+                   attempted: 0,
+                   successful: 0,
+                   rolledBack: 0,
+                   unchanged: 0,
+                   uniqueRowsChanged: 0,
+                   failureReason: null,
+                   blockedReason: null,
+                 } satisfies AdmissionRunOutcome,
                })}::text::jsonb
          WHERE id = ${stageRunId}`;
       stages.push({
@@ -876,6 +931,16 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                    // one (the census did not grow). Any reader wanting the verdict
                    // derives it from the two fields that are actually measured.
                    ratchet: { before: census.censusAfter, after: nextCensus.censusAfter },
+                   outcome: {
+                     unit: 'pairs',
+                     attempted: input.pairs.length,
+                     successful: plan.adjudications.length,
+                     rolledBack: 0,
+                     unchanged: Math.max(0, plan.adjudications.length - merged),
+                     uniqueRowsChanged: merged,
+                     failureReason: null,
+                     blockedReason: null,
+                   } satisfies AdmissionRunOutcome,
                  })}::text::jsonb
            WHERE id = ${stageRunId}`;
         committed = { census: nextCensus, scopedPairsAfter: nextInput.pairs.length, stage };
@@ -903,7 +968,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       }
       census = committed.census;
     } catch (error) {
-      await failBulkStage(sql, stageRunId, error);
+      await failBulkStage(sql, stageRunId, error, input.pairs.length);
       throw error;
     }
   }
