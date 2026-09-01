@@ -173,7 +173,7 @@ export const scorecardEmitArgs = z
       .strict()
       .optional()
       .describe(
-        "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. Independent graders omit it.",
+        "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. The top-level ratings field remains schema-required and must contain the complete rubric ratings; acceptance does not replace it. Independent graders omit it.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     rerunRecipe: specTestAdequacyRerunRecipeSchema.optional(),
@@ -941,7 +941,7 @@ export async function emitScorecard(
         stampedAt: new Date().toISOString(),
       };
     }
-    const sourceHive = args.sourceHive ?? input.ctxHarness;
+    let sourceHive = args.sourceHive ?? input.ctxHarness;
     // P-013: a pending subject card is waiting for a GRADING-INTEGRITY audit,
     // not another ordinary scorecard against the same rubric. Without this
     // boundary a non-author auditor can accidentally file a second peer card
@@ -989,6 +989,14 @@ export async function emitScorecard(
           error: `superseded scorecard '${args.supersedes}' grades '${prior.rubricRef}', not '${args.rubricRef}'`,
         };
       }
+      // EI-21574072776977281: a correction belongs to the scorecard lineage it
+      // replaces, not whichever Hive happens to host the correcting session.
+      // When the caller omits sourceHive, inherit the prior card's canonical
+      // value — including undefined for pre-sourceHive legacy rows. This keeps a
+      // workspace-scoped caller able to correct a Hive-bound card and a
+      // Hive-scoped caller able to finalize a legacy unscoped card without
+      // opening an unscoped transport just to reproduce the old partition.
+      if (args.sourceHive === undefined) sourceHive = prior.sourceHive;
       if ((prior.sourceHive ?? undefined) !== (sourceHive ?? undefined)) {
         return {
           ok: false as const,
@@ -1335,13 +1343,13 @@ export default defineTool({
   name: 'scorecards:emit',
   profile: 'engineer',
   description:
-    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. When complete independent scorecards already exist for the same rubric revision, acknowledgeExisting:true is required to append another; force:true only bypasses unchanged-evidence deduplication. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Stamps the running generation and stores deterministic instrument snapshots.",
+    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. When complete independent scorecards already exist for the same rubric revision, acknowledgeExisting:true is required to append another; force:true only bypasses unchanged-evidence deduplication. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Every emit, including the author acceptance call, still requires schema-complete ratings; acceptance does not replace ratings. Stamps the running generation and stores deterministic instrument snapshots.",
   guidance: {
     when: 'Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.',
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     chaining:
-      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. If emit returns existing_independent_scorecards, inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; do not pass supersedes on the author acceptance.',
+      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. If emit returns existing_independent_scorecards, inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
   },
   capability: 'coord:write',
