@@ -40,6 +40,7 @@ import {
   type CreateIssueInput,
 } from '../../issues-engineer';
 import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
+import type { DedupCandidateStamp } from '../../agent-tools/work_items/dedup-candidates-stamp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import {
@@ -1989,6 +1990,33 @@ export async function captureImprovement(
     // which is the same lost distinction the discard created.
     // Re-dedup work-list: payload->'dedupCoverage'->>'degraded' = 'true'.
     payload.dedupCoverage = dedupCoverage;
+    // P-001 (silent-intake-central-resolution-2026-09-01, D-003): persist the file-time
+    // CANDIDATES themselves, not only the coverage verdict above. possibleDuplicates
+    // was computed, returned to the caller, and discarded (observed live on
+    // EI-22068807981214694: 5 twins listed; the row carried none) — under silent intake
+    // (D-001) the filer is not the consumer, the central resolver is, so the twins go
+    // where the resolver reads. Non-empty only: dedupCoverage above already separates
+    // "checked clean" from "could not check". Reaching this mint with candidates means
+    // they were advisory (soft/containment) or force-overridden — either way they are
+    // exactly the resolver's evidence.
+    if (possibleDuplicates.length > 0) {
+      payload.dedupCandidates = possibleDuplicates.map(
+        (candidate): DedupCandidateStamp => ({
+          id: candidate.id,
+          similarity: candidate.similarity,
+          method:
+            candidate.exactKey === true
+              ? 'exact-key'
+              : candidate.semantic !== undefined
+                ? candidate.semantic === 'hard'
+                  ? 'semantic-hard'
+                  : 'semantic-soft'
+                : candidate.lexical === 'containment'
+                  ? 'containment'
+                  : 'lexical',
+        }),
+      );
+    }
   }
   // P-010 source-tag: track who filed this for per-Hive analytics
   if (sourceRole !== 'human') payload.sourceRole = sourceRole;
