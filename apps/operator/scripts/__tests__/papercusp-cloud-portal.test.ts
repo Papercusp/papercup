@@ -12,6 +12,7 @@ const README = join(ROOT, "apps/operator/scripts/systemd/README.md");
 interface Fixture {
   dir: string;
   portalRoot: string;
+  runtimeRoot: string;
   unitDir: string;
   binDir: string;
   logPath: string;
@@ -22,9 +23,10 @@ interface Fixture {
 function fixture(): Fixture {
   const dir = mkdtempSync(join(tmpdir(), "papercusp-cloud-portal-"));
   const portalRoot = join(dir, "portal app");
+  const runtimeRoot = join(dir, ".portal-runtime", "portal app");
   const nextDir = join(portalRoot, "node_modules", ".bin");
-  const releaseDir = join(portalRoot, ".portal-runtime", "releases", "build-one");
-  const currentDir = join(portalRoot, ".portal-runtime");
+  const releaseDir = join(runtimeRoot, "releases", "build-one");
+  const currentDir = runtimeRoot;
   const unitDir = join(dir, "systemd", "user");
   const tempDir = join(dir, "tmp");
   const binDir = join(dir, "bin");
@@ -53,6 +55,7 @@ function fixture(): Fixture {
   return {
     dir,
     portalRoot,
+    runtimeRoot,
     unitDir,
     binDir,
     logPath: join(dir, "systemctl.log"),
@@ -91,14 +94,18 @@ describe("Cloud Portal systemd deployment contract", () => {
       expect(result.stdout).toContain(`ExecStart=${process.execPath} `);
       expect(result.stdout).toContain("Environment=NODE_ENV=production");
       expect(result.stdout).toContain("Environment=HOSTNAME=127.0.0.1");
+      expect(result.stdout).toContain(
+        `Environment=PORTAL_RUNTIME_ROOT=${files.runtimeRoot.replaceAll(" ", "\\ ")}`,
+      );
       expect(result.stdout).toContain(`EnvironmentFile=-${files.portalRoot.replaceAll(" ", "\\ ")}/.env.local`);
       expect(result.stdout).toContain("scripts/start-web.mjs");
-      expect(result.stdout).toContain(".portal-runtime/current");
+      expect(result.stdout).not.toContain(`${files.portalRoot.replaceAll(" ", "\\ ")}/.portal-runtime`);
       expect(result.stdout).not.toContain("ExecStart=" + process.execPath + " " + files.portalRoot + "/node_modules/.bin/next dev");
       expect(result.stdout).toContain("KillMode=control-group");
 
       const template = readFileSync(TEMPLATE, "utf8");
       expect(template).toContain("@PORTAL_ROOT@");
+      expect(template).toContain("@RUNTIME_ROOT@");
       expect(template).toContain("@NODE@");
       expect(template).not.toMatch(/\/home\/[a-z]/i);
     } finally {
@@ -165,7 +172,7 @@ esac
   it("refuses installation until the standalone production artifact has been built", () => {
     const files = fixture();
     try {
-      rmSync(join(files.portalRoot, ".portal-runtime", "current", "standalone-entry.mjs"));
+      rmSync(join(files.runtimeRoot, "current", "standalone-entry.mjs"));
       const result = run(files, ["--render-only"]);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("portal production artifact is missing");
@@ -180,7 +187,8 @@ esac
     expect(script).toContain("validate_legacy_listener");
     expect(script).toContain("START_WEB");
     expect(script).toContain("CURRENT_RELEASE_LINK");
-    expect(script).toContain(".portal-runtime/current");
+    expect(script).toContain("PORTAL_RUNTIME_ROOT");
+    expect(script).toContain('CURRENT_RELEASE_LINK="$PORTAL_RUNTIME_ROOT/current"');
     expect(script).toContain("process_lineage_is_next_dev");
     expect(script).toContain("restore_legacy_listener");
     expect(script).toContain("managed_unit_runs_current_artifact");

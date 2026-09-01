@@ -13,6 +13,7 @@ TEMPLATE="${PAPERCUSP_CLOUD_PORTAL_TEMPLATE:-$SCRIPT_DIR/papercusp-cloud-portal.
 : "${HOME:?HOME must be set for the user-service deployment}"
 
 PORTAL_ROOT="${PAPERCUSP_CLOUD_PORTAL_ROOT:-$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal}"
+PORTAL_RUNTIME_ROOT="${PAPERCUSP_CLOUD_PORTAL_RUNTIME_ROOT:-$(dirname -- "$PORTAL_ROOT")/.portal-runtime/$(basename -- "$PORTAL_ROOT")}"
 PORTAL_PORT="${PAPERCUSP_CLOUD_PORTAL_PORT:-3801}"
 NODE_BIN="${PAPERCUSP_CLOUD_PORTAL_NODE:-$HOME/.local/node25/bin/node}"
 UNIT_NAME="${PAPERCUSP_CLOUD_PORTAL_UNIT:-papercusp-cloud-portal.service}"
@@ -58,7 +59,8 @@ Usage: deploy-cloud-portal.sh [--render-only|--install-only|--handoff]
                  to systemd with health-checked rollback on failure
 
 Environment overrides:
-  PAPERCUSP_CLOUD_PORTAL_ROOT, PAPERCUSP_CLOUD_PORTAL_PORT,
+  PAPERCUSP_CLOUD_PORTAL_ROOT, PAPERCUSP_CLOUD_PORTAL_RUNTIME_ROOT,
+  PAPERCUSP_CLOUD_PORTAL_PORT,
   PAPERCUSP_CLOUD_PORTAL_NODE, PAPERCUSP_CLOUD_PORTAL_UNIT_DIR,
   PAPERCUSP_CLOUD_PORTAL_TMPDIR,
   PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL, PAPERCUSP_CLOUD_PORTAL_SYSTEMD_ANALYZE,
@@ -91,6 +93,7 @@ require_uint_range() {
 
 validate_inputs() {
   require_absolute PORTAL_ROOT "$PORTAL_ROOT"
+  require_absolute PORTAL_RUNTIME_ROOT "$PORTAL_RUNTIME_ROOT"
   require_absolute NODE_BIN "$NODE_BIN"
   require_absolute UNIT_DIR "$UNIT_DIR"
   require_absolute TEMP_DIR "$TEMP_DIR"
@@ -103,7 +106,7 @@ validate_inputs() {
   NEXT_BIN="$PORTAL_ROOT/node_modules/.bin/next"
   [[ -x "$NEXT_BIN" ]] || die "Next executable is not executable: $NEXT_BIN"
   START_WEB="$PORTAL_ROOT/scripts/start-web.mjs"
-  CURRENT_RELEASE_LINK="$PORTAL_ROOT/.portal-runtime/current"
+  CURRENT_RELEASE_LINK="$PORTAL_RUNTIME_ROOT/current"
   CURRENT_STANDALONE_ENTRY="$CURRENT_RELEASE_LINK/standalone-entry.mjs"
   [[ -f "$START_WEB" ]] || die "portal runtime launcher is missing: $START_WEB"
   [[ -f "$CURRENT_STANDALONE_ENTRY" ]] ||
@@ -121,7 +124,7 @@ validate_inputs() {
 
   # These values become systemd syntax. Reject control bytes and specifier
   # markers rather than allowing a path to alter a unit's meaning.
-  for value in "$PORTAL_ROOT" "$NODE_BIN" "$NEXT_BIN" "$START_WEB" "$CURRENT_RELEASE_LINK" "$NODE_DIR"; do
+  for value in "$PORTAL_ROOT" "$PORTAL_RUNTIME_ROOT" "$NODE_BIN" "$NEXT_BIN" "$START_WEB" "$CURRENT_RELEASE_LINK" "$NODE_DIR"; do
     [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *%* ]] ||
       die "portal paths may not contain newlines or systemd '%' specifiers"
   done
@@ -139,8 +142,9 @@ unit_escape() {
 }
 
 render_unit() {
-  local root node next start_web node_dir
+  local root runtime_root node next start_web node_dir
   root="$(unit_escape "$PORTAL_ROOT")"
+  runtime_root="$(unit_escape "$PORTAL_RUNTIME_ROOT")"
   node="$(unit_escape "$NODE_BIN")"
   next="$(unit_escape "$NEXT_BIN")"
   start_web="$(unit_escape "$START_WEB")"
@@ -150,6 +154,7 @@ render_unit() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     line=${line//@PORT@/$PORTAL_PORT}
     line=${line//@PORTAL_ROOT@/$root}
+    line=${line//@RUNTIME_ROOT@/$runtime_root}
     line=${line//@NODE@/$node}
     line=${line//@NEXT_BIN@/$next}
     line=${line//@START_WEB@/$start_web}
