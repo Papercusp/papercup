@@ -131,7 +131,7 @@ import {
   type SelfReviewJudgement,
   type SelfReviewLedgerRow,
 } from '../../work-item-self-review.js';
-import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { activeWorkspaceId, resolveConcreteWorkspaceId, workspacesRoot } from '../../workspace-registry';
 import { resolveAdoptedName } from '../../plan-items/agent-names';
 import { itemTestGate } from '../../harness-test-gate';
 import { independentSiblingRepos } from '../../plan-audits';
@@ -782,8 +782,91 @@ export interface CompletionPathProbe {
   siblings?: (absDir: string) => string[];
 }
 
+/** Injectable filesystem seams for the workspace-qualified external-app repair hint. */
+export interface WorkspaceQualifiedCompletionPathProbe {
+  /** Absolute parent of per-workspace directories (`<root>/<workspaceId>`). */
+  workspacesRoot?: string | null;
+  exists?: (absPath: string) => boolean;
+  /** Returns true only for a real checkout root, not an arbitrary directory. */
+  isCheckoutRoot?: (absPath: string) => boolean;
+}
+
 /** Bounds the work: a pathological payload must never turn a completion into a tree walk. */
 const MAX_PATHS_PROBED = 60;
+
+/**
+ * Resolve a workspace-qualified app citation to the absolute path that
+ * `work_items:complete` supports for an independent checkout.
+ *
+ * A path such as `.papercusp/apps/phone-app/src/fix.ts` is relative to the
+ * workspace directory, not to the Papercusp repository. Treating it as
+ * repo-relative produces a misleading "use bare repo-relative paths" warning,
+ * even though the completion writer already accepts absolute paths and can
+ * identify the app's own Git checkout. This helper only offers a repair when
+ * the exact candidate exists under the requested workspace and an ancestor is
+ * a valid checkout root; it never turns a guess into evidence.
+ *
+ * PURE via the injected probe and bounded to the declared path's own ancestor
+ * chain. Filesystem failures are deliberately fail-open because this is an
+ * advisory warning on an already-recorded completion.
+ */
+export function workspaceQualifiedCompletionPathHint(
+  declaredPath: string,
+  workspaceId: string | null | undefined,
+  probe: WorkspaceQualifiedCompletionPathProbe = {},
+): string | undefined {
+  const normalized = declaredPath.trim().replaceAll('\\', '/').replace(/^\.\//, '');
+  const match = /^\.papercusp\/apps\/([^/]+)\/(.+)$/.exec(normalized);
+  const workspace = workspaceId?.trim();
+  if (!match || !workspace || workspace === '*' || workspace === '.' || workspace === '..') return undefined;
+
+  // Workspace ids and app slugs are path components. Refuse traversal and
+  // separators before resolving so the hint can never point outside the app.
+  const appSlug = match[1]!;
+  const appRelativePath = match[2]!;
+  if (
+    workspace.includes('/') ||
+    workspace.includes('\\') ||
+    appSlug === '.' ||
+    appSlug === '..' ||
+    appSlug.includes('\\') ||
+    appRelativePath.split('/').some((segment) => segment === '..')
+  ) {
+    return undefined;
+  }
+
+  const rawWorkspacesRoot = 'workspacesRoot' in probe ? probe.workspacesRoot : workspacesRoot();
+  if (typeof rawWorkspacesRoot !== 'string' || !rawWorkspacesRoot.trim()) return undefined;
+
+  try {
+    const root = nodePath.resolve(rawWorkspacesRoot);
+    const workspaceDir = nodePath.resolve(root, workspace);
+    const appsDir = nodePath.resolve(workspaceDir, '.papercusp', 'apps');
+    const appDir = nodePath.resolve(appsDir, appSlug);
+    const candidate = nodePath.resolve(workspaceDir, normalized);
+    if (
+      (workspaceDir !== root && !workspaceDir.startsWith(root + nodePath.sep)) ||
+      (candidate !== appDir && !candidate.startsWith(appDir + nodePath.sep))
+    ) {
+      return undefined;
+    }
+
+    const exists = probe.exists ?? ((absPath: string) => existsSync(absPath));
+    if (!exists(candidate)) return undefined;
+
+    const isCheckoutRoot = probe.isCheckoutRoot ?? hasValidGitEntry;
+    let dir = nodePath.dirname(candidate);
+    for (let depth = 0; depth < 64 && dir !== appsDir; depth += 1) {
+      if (isCheckoutRoot(dir)) return candidate;
+      const parent = nodePath.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    /* fail-open: a repair hint must never make completion fail */
+  }
+  return undefined;
+}
 
 /**
  * EI-20093150500083378: `filesChanged` names paths that DO NOT EXIST, and nothing notices.
