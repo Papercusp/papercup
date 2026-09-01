@@ -3902,7 +3902,15 @@ test('[P-005] a mid-stream SSE body stall ends the stream with an Anthropic-shap
 
 test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async () => {
   resetGovernorRegistry();
-  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); });
+  await boot((_req, res) => {
+    // Keep request start and outcome observably distinct. The stall-waker needs the former:
+    // a late outcome from pre-stall work is not evidence that the owner recovered after the stall.
+    setTimeout(() => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    }, 25);
+  });
+  const before = Date.now();
   const r = await ask('/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-ledger-test' },
@@ -3911,12 +3919,18 @@ test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async (
   assert.equal(r.status, 200);
   await r.text();
   const rep = (await (await ask('/admin/owner-report?owner=su-ledger-test')).json()) as {
-    ok: boolean; ledger: { requests: number; ok: number; lastAccount: string | null } | null;
+    ok: boolean;
+    ledger: { requests: number; ok: number; lastAccount: string | null; lastRequestAt: number; lastAt: number } | null;
   };
   assert.equal(rep.ok, true);
   assert.ok(rep.ledger, 'the owner has a ledger entry');
   assert.ok(rep.ledger!.requests >= 1, 'request counted');
   assert.ok(rep.ledger!.ok >= 1, 'ok outcome counted');
+  assert.ok(rep.ledger!.lastRequestAt >= before, 'request-start time is exposed');
+  assert.ok(
+    rep.ledger!.lastAt > rep.ledger!.lastRequestAt,
+    'the delayed outcome advances lastAt without rewriting request-start activity',
+  );
   const top = (await (await ask('/admin/owner-report')).json()) as { owners: Array<{ owner: string }> };
   assert.ok(top.owners.some((o) => o.owner === 'su-ledger-test'), 'overview lists the owner');
 }, 20_000);

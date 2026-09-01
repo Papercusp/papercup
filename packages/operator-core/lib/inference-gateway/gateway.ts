@@ -2684,6 +2684,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     pinYields: number;
     lastAccount: string | null;
     lastStatus: number | null;
+    /** When the most recent request STARTED. Unlike lastAt, this never moves when a
+     *  pre-existing request later completes/errors, so liveness consumers can tell
+     *  new owner activity from a late outcome on old work. */
+    lastRequestAt: number;
     lastAt: number;
     recent: OwnerOutcomeEvent[];
   }
@@ -2712,6 +2716,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         pinYields: 0,
         lastAccount: null,
         lastStatus: null,
+        lastRequestAt: 0,
         lastAt: 0,
         recent: [],
       };
@@ -2720,8 +2725,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     e.lastAt = Date.now();
     if (opts.account) e.lastAccount = opts.account;
     if (opts.status !== undefined) e.lastStatus = opts.status;
-    if (kind === 'request') e.requests++;
-    else {
+    if (kind === 'request') {
+      e.requests++;
+      e.lastRequestAt = e.lastAt;
+    } else {
       if (kind === 'ok') e.ok++;
       else if (kind === 'upstream_error') e.upstreamErrors++;
       else if (kind === 'upstream_429') e.upstream429++;
