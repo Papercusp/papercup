@@ -1,3 +1,39 @@
+# Shared-host CPU performance policy — installation (WI-37533)
+
+`papercusp-host-performance.service` sets both cpufreq's governor and the
+independent `amd-pstate-epp` preference to `performance` on every CPU policy.
+The shared development host has no battery and runs latency-sensitive PostgreSQL,
+Node, TypeScript and git work continuously; the stock `powersave` governor kept
+all 128 logical CPUs near base clock even though hardware boost was enabled.
+
+Install root-owned copies so a privileged boot unit never executes a script from
+the user-writable shared checkout:
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+sudo install -o root -g root -m 0755 papercusp-host-performance.sh \
+  /etc/systemd/system/papercusp-host-performance.sh
+sudo install -o root -g root -m 0644 papercusp-host-performance.service \
+  /etc/systemd/system/papercusp-host-performance.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now papercusp-host-performance.service
+```
+
+Verify the effective policy, not merely the unit state:
+
+```bash
+systemctl is-enabled papercusp-host-performance.service
+systemctl is-active papercusp-host-performance.service
+for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do cat "$f"; done | sort -u
+for f in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do cat "$f"; done | sort -u
+```
+
+Both populations must contain only `performance`. Roll back with
+`sudo systemctl disable --now papercusp-host-performance.service`, remove the two
+installed files, daemon-reload, and write the prior policy back through sysfs.
+
+---
+
 # Root user-manager watchdog — installation (EI-14906)
 
 `papercusp-user-manager-watchdog.{service,timer}` is the recovery actor for a
