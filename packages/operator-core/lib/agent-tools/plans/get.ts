@@ -48,6 +48,10 @@ import { getLatestPlanAudit } from "../../plan-audits";
 import { splitPlanSections } from "./plan-sections";
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from "../../context-doors";
 import { getDoorConstantsSync } from "../../context-doors-config";
+import {
+  getStalePathRefsForSubjects,
+  stalePathRefsNote,
+} from "../../stale-path-hints-claim-port";
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -239,6 +243,21 @@ interface PlanSection {
   heading: string;
   level: number;
   chars: number;
+}
+
+/** Pure render seam so the plans:get advisory shape is regression-testable. */
+export function decoratePlanItemStalePathRefs<T extends { id: string }>(
+  item: T,
+  stalePathRefsByItem: Readonly<Record<string, readonly string[]>>,
+): T & { stalePathRefs?: readonly string[]; stalePathRefsNote?: string } {
+  const refs = stalePathRefsByItem[item.id];
+  return refs && refs.length > 0
+    ? {
+        ...item,
+        stalePathRefs: refs,
+        stalePathRefsNote: stalePathRefsNote([...refs]) ?? undefined,
+      }
+    : item;
 }
 
 // WI-274: bound decision bodies in plans:get `sections` mode so a decision-heavy
@@ -1161,14 +1180,29 @@ export default defineTool({
                 workspaceId: row.workspaceId,
               }),
             ]);
+            // EI-20049758099997696: plan-item prose is the source of truth for many
+            // promoted work-items, but promotion intentionally keeps those citations in
+            // `summary` rather than `payload.paths`. Decorate the structured read with
+            // the same advisory used at claim time so an agent can spot an unresolvable
+            // repo-relative citation before it starts work. This is report-only: a plan
+            // item may quite legitimately describe a file it intends to create, and a
+            // resolvable path says nothing about semantic freshness.
+            const stalePathRefsByItem = await getStalePathRefsForSubjects(
+              responseItems.map((item) => ({
+                id: item.id,
+                summary: typeof item.text === "string" ? item.text : null,
+              })),
+            ).catch(() => ({}));
+            const decorateStalePathRefs = <T extends { id: string }>(item: T) =>
+              decoratePlanItemStalePathRefs(item, stalePathRefsByItem);
             const structured = {
               ...base,
               ...(acceptanceRubric ? { acceptanceRubric } : {}),
               ...(latestAudit ? { latestAudit } : {}),
               items:
                 mode === "full"
-                  ? responseItems
-                  : responseItems.map(({ rawLine: _rawLine, ...rest }) => rest),
+                  ? responseItems.map(decorateStalePathRefs)
+                  : responseItems.map(({ rawLine: _rawLine, ...rest }) => decorateStalePathRefs(rest)),
               decisions: boundedDecisions,
               ...(decisionBodiesTruncated
                 ? {
