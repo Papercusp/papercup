@@ -559,6 +559,15 @@ import './frozen-candidate-drift-sweep-action';
 // Skips under host load and while a checkpoint suite runs; observer only — no revert, no gate
 // fire, no spawn. Seeded ACTIVE (seed-sync-batch-delta-check-routine.ts).
 import './sync-batch-delta-check-action';
+// gate-verdict-liveness-and-repair-reliability-2026-08-31 P-016: `system:gate-fire-drill`
+// — the weekly fire drill: on a GREEN idle unheld gate, launch a fresh recording checkpoint
+// run, kill it seconds later, and assert the P-003 detection chain saw it (P-001 fire anchor
+// counted, no verdict row leaked, evaluateVerdictRateAlarm fires over the real ledger window,
+// gate_health untouched). A failed drill pages `gate-drill-detector:<harness>` — a detector
+// regression, the exact blindness behind the 74.2h verdict blackout (plan D-001 loss class 2).
+// Skips (recorded) on red gate / in-flight run / placed hold / load. Seeded ACTIVE
+// (seed-gate-fire-drill-routine.ts).
+import './gate-fire-drill-action';
 // acceptance-grading-stall-sweep-2026-08-26 P-002/P-004: `system:acceptance-grading-sweep`
 // — puts a clock on the one leg of plan completion that had none. A plan ships only after an
 // INDEPENDENT grader emits a scorecard, and that grader is recruited lazily by the ship

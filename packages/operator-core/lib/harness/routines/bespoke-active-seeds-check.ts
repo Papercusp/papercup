@@ -151,6 +151,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // spend entry and the seed script — the registry cross-checks red the fleet gate on a
   // half-landed pair, and this registry exists to catch "the seed script nobody ever ran".
   { name: 'sync-batch-delta-check', seedScript: 'seed-sync-batch-delta-check-routine.ts' },
+  // gate-verdict-liveness P-016. Same-change rule as P-012 above: action, import, seed
+  // script and this registry row land together so the cross-check never sees a half pair.
+  { name: 'gate-fire-drill', seedScript: 'seed-gate-fire-drill-routine.ts' },
   { name: 'sync-read-audit', seedScript: 'seed-sync-read-audit-routine.ts' },
   { name: 'task-reconcile', seedScript: 'seed-task-reconcile-routine.ts' },
   { name: 'unguarded-halt-rescue', seedScript: 'seed-unguarded-halt-rescue-routine.ts' },
