@@ -9,8 +9,6 @@
 
 import { randomUUID } from 'node:crypto';
 import { getLegacyClient } from '@papercusp/db-org';
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
 import { getKnownRoles } from './known-roles';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -358,22 +356,10 @@ export async function createChat(
   const title =
     input.title ?? (input.feature_id ? `${input.role} · ${input.feature_id}` : input.role);
 
-  // P-011: stamp the dispatch policy this conversation is BORN under, so its home
-  // is a recorded fact rather than something a later reader has to infer from the
-  // absence of an adv_sessions binding (which is also what a chat created two
-  // seconds ago looks like). A chat created while the kill-switch is OFF really is
-  // an owned-loop conversation and stays one after the switch goes back ON —
-  // flipping a flag must never re-home an existing conversation.
-  //
-  // Fails CLOSED to 'legacy-owned-loop': if the flag backend is unreachable we do
-  // not know the cutover was in force, and claiming the SU-session policy on a
-  // guess is the one error that changes a conversation's identity.
-  const suRuntimeClass: PuiSessionRuntimeClass = (await getFlag(
-    FLAGS.PUI_SU_SESSION_HOST,
-    'system',
-  ).catch(() => false))
-    ? 'su-session'
-    : 'legacy-owned-loop';
+  // P-013: every newly created PUI conversation is homed on the canonical
+  // SU-session host. `legacy-owned-loop` remains a readable historical label for
+  // rows created before the cutover; no runtime flag may create new legacy rows.
+  const suRuntimeClass: PuiSessionRuntimeClass = 'su-session';
 
   try {
     const db = dbForSlug(input.slug);

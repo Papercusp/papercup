@@ -3019,28 +3019,6 @@ export const FLAGS = {
   // machinery alone allows (throttle is a two-pass preference; shed only blocks
   // the pin). OFF is the kill-switch: selection is byte-identical to pre-governor.
   ACCOUNT_BURN_GOVERNOR: "papercusp-account-burn-governor",
-  // pui-su-session-runtime-correction-2026-08-27 P-011 (WI-287136): the PUI
-  // (apps/tui) new-session cutover. ON, an UNBOUND PUI conversation dispatches its
-  // first turn to the canonical SU-session host (Action::OpenSuSession) instead of
-  // the PUI-owned agent loop / ModelPort provider chat (Action::SendChat).
-  //
-  // DEFAULT ON (derived FLAG_DEFAULTS — deliberately not in DARK_FLAGS): the
-  // corrected path IS the default, which is what P-011 requires. This flag is the
-  // emergency kill-switch for the acceptance window, not a gate the cutover waits
-  // behind — OFF restores the pre-cutover owned-loop dispatch byte-for-byte.
-  //
-  // It governs the UNBOUND case ONLY, and that boundary is the whole safety
-  // argument. A conversation already bound to an SU session keeps using it (turning
-  // this OFF must not strand a live runtime), and a conversation classified
-  // `legacy-owned-loop` keeps the owned loop regardless of this flag (turning it ON
-  // must not re-home an existing conversation onto a new identity/backend). So
-  // neither position of this switch can change the runtime of a conversation that
-  // already has one.
-  //
-  // Whichever way it resolves, the PUI states the runtime it chose and why — see
-  // `App::su_dispatch_decision`. There is no silent fallback to ModelPort/provider
-  // chat in either position: OFF is a disclosed rollback, not a quiet degradation.
-  PUI_SU_SESSION_HOST: "papercusp-pui-su-session-host",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

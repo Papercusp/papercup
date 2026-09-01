@@ -26,18 +26,6 @@ vi.mock('./known-roles', () => ({
 const TEST_WS = 'papercusp-workspace';
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => TEST_WS }));
 
-// P-011: createChat stamps the dispatch policy a conversation is born under, so
-// it reads the cutover kill-switch. Mocked here so these tests never depend on a
-// live flag backend — and so `flagState` can drive both switch positions and the
-// backend-unreachable case.
-const flagState = { cutover: true as boolean | 'throw' };
-vi.mock('@papercusp/flags/server', () => ({
-  getFlag: vi.fn(async () => {
-    if (flagState.cutover === 'throw') throw new Error('flag backend unreachable');
-    return flagState.cutover;
-  }),
-}));
-
 // Capture the SQL + bound args that the data layer hands to the legacy client.
 // The same fake client backs listChats (.all), getChat/createChat (.get +
 // .run) and archiveChat (.run) — every prepare() records its SQL + bound
@@ -460,41 +448,12 @@ describe('createChat', () => {
 describe('PUI session runtime class (P-011)', () => {
   const CLASS_ARG = 6; // (id, workspace_id, role, feature_id, title, transcript, su_runtime_class)
 
-  beforeEach(() => {
-    flagState.cutover = true;
-  });
-
-  it('stamps a chat created under the cutover as su-session', async () => {
+  it('always stamps a newly created chat as su-session', async () => {
     getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
     await createChat({ slug: 'foo', role: 'worker' });
     const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
     expect(insert?.sql).toMatch(/su_runtime_class/);
     expect(insert?.args[CLASS_ARG]).toBe('su-session');
-  });
-
-  it('stamps a chat created while the kill-switch is OFF as legacy-owned-loop', async () => {
-    // A chat born during a rollback really IS an owned-loop conversation, and it
-    // must stay one after the switch goes back ON. Stamping it 'su-session'
-    // because the flag later flipped would re-home an existing conversation —
-    // the exact silent identity change P-011 forbids.
-    flagState.cutover = false;
-    getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
-    await createChat({ slug: 'foo', role: 'worker' });
-    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
-    expect(insert?.args[CLASS_ARG]).toBe('legacy-owned-loop');
-  });
-
-  it('fails CLOSED to legacy-owned-loop when the flag backend is unreachable', async () => {
-    // Not knowing whether the cutover was in force is not the same as knowing it
-    // was. Claiming the SU-session policy on a guess is the one error that
-    // changes a conversation's identity, so an unreachable backend takes the
-    // answer that cannot.
-    flagState.cutover = 'throw';
-    getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
-    const r = await createChat({ slug: 'foo', role: 'worker' });
-    expect(r.ok).toBe(true);
-    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
-    expect(insert?.args[CLASS_ARG]).toBe('legacy-owned-loop');
   });
 
   it('reads only the two legal classes; anything else is UNCLASSIFIED, not a guess', () => {
