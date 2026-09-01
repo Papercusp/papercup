@@ -5,7 +5,8 @@
  * audit of that plan, which found this path verified NOWHERE.
  *
  * ── WHY THIS EXISTS ────────────────────────────────────────────────────────
- * `stampGoalProvenance` in _create-core.ts is the WRITE half of P-002: it is what
+ * `stampGoalProvenance` (lib/goals/provenance-stamp.ts — lifted out of _create-core.ts
+ * by WI-2140701 (b) so improvements:capture stamps too) is the WRITE half of P-002: it is what
  * actually puts `work_items.goal_id` on an item so a goal's spend meter and its
  * "what belongs to this goal?" view can see the work its fleet did. At the time
  * this file was written it had:
