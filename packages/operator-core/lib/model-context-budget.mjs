@@ -15,6 +15,28 @@ export const MAX_LAUNCH_CONTEXT_BYTES = 1024 * 1024;
 
 const CODEX_REASONING_EFFORT_RE = /:(low|medium|high|xhigh|max)$/i;
 
+/** Strip provider/decorative selectors before comparing a Codex model to policy.
+ * Codex callers use both `provider/id` and `id:effort` (and a few historical
+ * launch paths append a `[1m]` marker).  The deny decision must not depend on
+ * which of those presentation forms happened to reach the boundary. */
+function codexPolicyBaseId(model) {
+  let value = String(model ?? '').trim();
+  if (!value) return '';
+  const slash = value.indexOf('/');
+  if (slash > 0) value = value.slice(slash + 1);
+  // Effort is an open-ended presentation suffix at this boundary.  Do not
+  // limit the deny guard to today's known effort enum (`ultra` and future
+  // levels must not become a way around a retired model id).
+  value = value.replace(/\[[^\]]+\]$/i, '');
+  // Normalize aliases BEFORE stripping a trailing colon: `chatgpt:<id>` uses
+  // its colon as part of the alias, while native ids use it for an effort (or
+  // an open-ended future suffix).  Doing this in the opposite order lets
+  // `chatgpt:5.3-codex-spark` evade the deny list as the bare `chatgpt` token.
+  value = normalizeCodexCliModel(value);
+  value = value.replace(/:[^:]+$/i, '').replace(/\[[^\]]+\]$/i, '');
+  return value.toLowerCase();
+}
+
 /**
  * Managed Codex model policy.  Keep the default and deny-list in this
  * dependency-free launch-policy module so the bare `psu` launcher, server-side
@@ -27,17 +49,6 @@ export const CODEX_SAFE_DEFAULT_MODEL = 'gpt-5.6-sol';
 export const CODEX_DEFAULT_MODEL = CODEX_SAFE_DEFAULT_MODEL;
 export const CODEX_DENIED_MODEL_IDS = Object.freeze(['gpt-5.3-codex-spark']);
 
-function codexPolicyBaseId(model) {
-  let value = String(model ?? '').trim();
-  if (!value) return '';
-  // Codex-facing provider selectors may be written as `openai-codex/<id>` or
-  // `provider/<id>`.  Policy compares the native id, regardless of that prefix.
-  const slash = value.indexOf('/');
-  if (slash > 0) value = value.slice(slash + 1);
-  value = value.replace(CODEX_REASONING_EFFORT_RE, '').replace(/\[[^\]]+\]$/i, '');
-  return normalizeCodexCliModel(value).toLowerCase();
-}
-
 /** True when a model spec resolves to the retired/forbidden Spark model. */
 export function isCodexModelDenied(model) {
   const id = codexPolicyBaseId(model);
@@ -49,6 +60,8 @@ export function isCodexModelDenied(model) {
  * list.  Empty/omitted input is intentionally resolved here (rather than at a
  * caller's CLI default) so a fresh CODEX_HOME cannot fall through models_cache.
  * Reasoning suffixes are preserved for callers that split them into config.
+ * @param {string | null | undefined} [model] optional model spec; omission uses
+ * the managed safe default.
  */
 export function resolveCodexModel(model) {
   const raw = String(model ?? '').trim();

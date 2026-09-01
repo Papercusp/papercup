@@ -110,6 +110,7 @@ import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION, type Ses
 import { recordSessionPortTelemetry } from '../../../session-port/telemetry';
 import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-config';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
+import { resolveCodexModel } from '../../../model-context-budget.mjs';
 
 // Exported for the sibling launcher-facing routes split out of this file (the
 // persona refresh) — one copy of the CORS/principal boilerplate, not two.
@@ -1226,6 +1227,7 @@ export function normalizeLaunchArgv(v: unknown): string[] | null {
  */
 export function reconstructPsuLaunchArgv(o: {
   agent: string;
+  model?: string | null;
   harnessSlug?: string | null;
   planSlug?: string | null;
   profile?: string | null;
@@ -1245,6 +1247,7 @@ export function reconstructPsuLaunchArgv(o: {
   if (!o.role && o.profile && o.profile !== 'engineer') argv.push(`--profile=${o.profile}`);
   if (o.contextSize) argv.push(`--context-size=${o.contextSize}`);
   if (o.account) argv.push(`--account=${o.account}`);
+  if (o.agent === 'codex') argv.push(`--model=${resolveCodexModel(o.model)}`);
   if (o.fleet) argv.push(`--fleet=${o.fleet}`);
   return argv;
 }
@@ -1656,7 +1659,17 @@ const post = defineTool({
     }
     const personaTier = personaTierRaw as 'full' | 'fleet' | null;
     // weak-model-tool-tier: the launch model drives the tool-tier gate in buildLaunchSpec.
-    const model = body.model?.trim() || null;
+    const requestedModel = body.model?.trim() || null;
+    let model = requestedModel;
+    if (agent === 'codex') {
+      try {
+        // Reject Spark and materialize the approved default before account
+        // routing, session rows, or CODEX_HOME creation.
+        model = resolveCodexModel(requestedModel);
+      } catch (error: any) {
+        return jsonRes({ status: 'error', code: 'codex_model_denied', error: error?.message ?? String(error) }, 400);
+      }
+    }
     if (body.carry != null && body.carry !== 'warm' && body.carry !== 'cold') {
       return jsonRes(
         { status: 'error', error: `carry must be warm|cold (got ${String(body.carry).slice(0, 24)})` },
@@ -2014,6 +2027,7 @@ const post = defineTool({
       normalizeLaunchArgv(body.launch_argv) ??
       reconstructPsuLaunchArgv({
         agent,
+        model,
         harnessSlug,
         planSlug,
         profile,

@@ -20,7 +20,7 @@ import { augmentedSpawnPath, resolveBin } from './plugin-spawn-impl';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 import { DEFAULT_BACKEND_CMDS, normalizeModelSpec, type AgentBackend } from './agent-config-constants';
-import { codexContextConfigArgs, normalizeCodexCliModel } from './model-context-budget.mjs';
+import { codexContextConfigArgs, normalizeCodexCliModel, resolveCodexModel } from './model-context-budget.mjs';
 import type { TurnBackend } from '@papercusp/papercusp-shared/agent';
 
 export { normalizeCodexCliModel } from './model-context-budget.mjs';
@@ -251,15 +251,30 @@ const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
  * resolveTierSpec before they reach here.
  */
 export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: string): string {
-  if (!role && !overrideSpec?.trim()) return baseCmd;
-  // per-spawn override wins, then env, then the committed default floor —
-  // resolveEffectiveRoleModelSpec is the one source of that precedence (the
-  // backend inference in buildInvokeOnce keys off the SAME resolution).
-  const trimmed = resolveEffectiveRoleModelSpec(role, overrideSpec);
-  if (!trimmed) return baseCmd;
   const bin = baseCmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const isCodex = /(?:^|\/)codex$/.test(bin);
   const isClaude = /(?:^|\/)claude$/.test(bin);
+  // Per-spawn override wins, then env, then the committed default floor —
+  // resolveEffectiveRoleModelSpec is the one source of that precedence (the
+  // backend inference in buildInvokeOnce keys off the SAME resolution). A bare
+  // Codex command is different from the other backends: it must carry the
+  // canonical safe model even when no role override exists.
+  const configuredSpec = resolveEffectiveRoleModelSpec(role, overrideSpec);
+  // A role with no configured/committed model must not overwrite an explicit
+  // model already present in AGENT_CMD.  That command is an operator choice
+  // (and is what RB-012 measures); the policy still validates it so a retired
+  // Spark spelling cannot sneak through this otherwise-preserved path.  Only a
+  // genuinely model-less Codex command receives the managed default.
+  if (isCodex && !configuredSpec) {
+    const existing = /(?:--model(?:=|\s+)|(?:^|\s)-m\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(baseCmd);
+    const existingModel = existing?.[1] ?? existing?.[2] ?? existing?.[3] ?? '';
+    if (existingModel.trim()) {
+      resolveCodexModel(existingModel);
+      return baseCmd;
+    }
+  }
+  const trimmed = isCodex ? resolveCodexModel(configuredSpec || undefined) : configuredSpec;
+  if (!trimmed) return baseCmd;
   // Split a trailing `:<effort>` ONLY when the suffix is a known effort level AND
   // the backend has a distinct effort channel to split it INTO (codex's config
   // override, claude's own --effort flag). EI-7138: this used to split

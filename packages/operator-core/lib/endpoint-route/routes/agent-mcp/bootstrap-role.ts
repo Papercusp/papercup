@@ -54,6 +54,7 @@ import {
   stampFleetMembershipAtBoot,
 } from './bootstrap-su';
 import { backendFeatureGuard } from '../../../backend-feature-capabilities';
+import { resolveCodexModel } from '../../../model-context-budget.mjs';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -250,7 +251,18 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: normalizedContextSize.error }, 400);
     }
     const contextSize = normalizedContextSize.contextSize;
-    const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent, undefined, false, body.model);
+    const requestedModel = body.model?.trim() || null;
+    let model = requestedModel;
+    if (agent === 'codex') {
+      try {
+        // Keep role launches on the same pre-materialization policy as su and
+        // fleet launches: omitted resolves to the safe default, Spark refuses.
+        model = resolveCodexModel(requestedModel);
+      } catch (error: any) {
+        return jsonRes({ status: 'error', code: 'codex_model_denied', error: error?.message ?? String(error) }, 400);
+      }
+    }
+    const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent, undefined, false, model);
     if (accountPin.error) {
       return jsonRes({ status: 'error', error: accountPin.error }, 409);
     }
@@ -415,6 +427,7 @@ const post = defineTool({
     // is what a role-scoped `psu --role=<role>` invocation actually carries.
     const launchArgv = reconstructPsuLaunchArgv({
       agent,
+      model,
       role,
       harnessSlug,
       planSlug: planContext ? plan : null,
@@ -453,7 +466,7 @@ const post = defineTool({
           sessionKey,
           mcpUrl: spec.mcpUrl,
           promptText: spec.promptText,
-          model: body.model?.trim() || null,
+          model,
           // The session's coordination identity → the activity-bridge hook reports
           // this worker's tool calls under it (codex bakes it; can't env-expand).
           sid,
@@ -593,7 +606,7 @@ const post = defineTool({
         const { mayKeepOmpNativeLsp } = await import('../../../omp-native-lsp-gate');
         ompNativeLsp = mayKeepOmpNativeLsp({
           agent,
-          model: body.model?.trim() || null,
+          model,
           flagEnabled: await getFlag(FLAGS.OMP_NATIVE_LSP_BUILTIN, workspace),
         });
       }

@@ -31,6 +31,8 @@ describe('managed Codex model policy', () => {
       'GPT-5.3-CODEX-SPARK:high',
       'openai-codex/gpt-5.3-codex-spark:xhigh',
       'papercusp-gateway/gpt-5.3-codex-spark',
+      'chatgpt:5.3-codex-spark',
+      'chatgpt:5.3-codex-spark:turbo',
     ]) {
       expect(isCodexModelDenied(spec), spec).toBe(true);
       expect(() => resolveCodexModel(spec), spec).toThrow(/denied/i);

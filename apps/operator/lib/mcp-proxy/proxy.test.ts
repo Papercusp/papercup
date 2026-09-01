@@ -36,7 +36,6 @@ import {
   DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE,
   DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS,
   DEFAULT_COORD_SEND_QUEUE_WAIT_MS,
-  DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS,
   DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS,
   isMcpSessionHandshakeCall,
   isMcpProxyWatchdogProbePath,
@@ -4930,10 +4929,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect((await first).status).toBe(200);
   });
 
-  it("EI-21657694253110031: expires a queued loop:checkpoint with an explicit not-forwarded result before the client deadline", async () => {
+  it("EI-22052756477768229: does not expire a queued loop:checkpoint behind a finite generic dwell", async () => {
     expect(DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS).toBe(0);
-    expect(DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS).toBe(20_000);
-    expect(DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS).toBeLessThan(60_000);
 
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {
@@ -4944,7 +4941,6 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       noteFirstStarted = resolve;
     });
     const hits: string[] = [];
-    const logs: string[] = [];
     const upstream = track(
       http.createServer((req, res) => {
         const client =
@@ -4970,9 +4966,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         maxInFlight: 10,
         controlPlaneReserve: 1,
         maxCriticalContinuationQueue: 1,
-        loopCheckpointQueueWaitMs: 1_000,
+        maxCriticalContinuationQueueWaitMs: 25,
         criticalContinuationQueueWaitLogMs: 10,
-        log: (line) => logs.push(line),
+        log: () => {},
       }),
     );
     await listen(proxy);
@@ -4991,16 +4987,19 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     await firstStarted;
 
+    let checkpointSettled = false;
     const checkpoint = request(
       port(proxy),
       body(2, "loop:checkpoint"),
       "/api/mcp?client=queued-loop-checkpoint",
-    );
-    await waitFor(() =>
-      logs.some((line) =>
-        line.includes("queued critical-continuation request"),
-      ),
-    );
+    ).then((result) => {
+      checkpointSettled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(checkpointSettled).toBe(false);
+    expect(hits).toEqual(["held-completion"]);
+
     const health = JSON.parse(
       (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
     );
@@ -5008,25 +5007,18 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       waiting: 1,
       max: 1,
       maxWaitMs: 0,
-      loopCheckpointMaxWaitMs: 1_000,
       requests: [
         expect.objectContaining({
           tools: ["loop:checkpoint"],
-          maxWaitMs: 1_000,
+          maxWaitMs: 0,
         }),
       ],
     });
 
-    const expired = await checkpoint;
-    expect(expired.status).toBe(429);
-    expect(JSON.parse(expired.body)).toMatchObject({
-      error: "mcp_proxy_critical_continuation_queue_dwell",
-      forwardingResult: "not_forwarded",
-    });
-    expect(hits).toEqual(["held-completion"]);
-
     releaseFirst();
     expect((await first).status).toBe(200);
+    expect((await checkpoint).status).toBe(200);
+    expect(hits).toEqual(["held-completion", "queued-loop-checkpoint"]);
   });
 
   it("EI-21646782269636565: admits the first improvements:capture beyond a full continuation FIFO", async () => {

@@ -72,9 +72,13 @@ describe('parseBridgeModel', () => {
   it('an unrecognised suffix stays in the id (never silently dropped)', () => {
     expect(parseBridgeModel('gpt-5.4:turbo')).toEqual({ id: 'gpt-5.4:turbo', effort: 'medium' });
   });
-  it('empty/undefined falls back to gpt-5.5 (the wire default)', () => {
-    expect(parseBridgeModel(undefined).id).toBe('gpt-5.5');
-    expect(parseBridgeModel('  ').id).toBe('gpt-5.5');
+  it('empty/undefined falls back to the managed safe Codex default', () => {
+    expect(parseBridgeModel(undefined).id).toBe('gpt-5.6-sol');
+    expect(parseBridgeModel('  ').id).toBe('gpt-5.6-sol');
+  });
+
+  it('rejects the retired Spark model before a bridge process is spawned', () => {
+    expect(() => parseBridgeModel('openai-codex/gpt-5.3-codex-spark:high')).toThrow(/denied/i);
   });
 });
 

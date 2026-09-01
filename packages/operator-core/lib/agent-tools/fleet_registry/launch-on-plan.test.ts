@@ -376,7 +376,13 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
     expect(resolveFleetAgent({ argAgent: 'claude' })).toEqual({ agent: 'claude', model: undefined });
     expect(resolveFleetAgent({ argAgent: 'codex', callerAgent: 'omp', callerModel: 'ollama-cc/x' })).toEqual({
       agent: 'codex',
-      model: undefined,
+      model: 'gpt-5.6-sol',
+    });
+  });
+
+  it('rejects the retired Spark model before fleet materialization', () => {
+    expect(resolveFleetAgent({ argAgent: 'codex', argModel: 'gpt-5.3-codex-spark:high' })).toMatchObject({
+      error: expect.stringMatching(/denied/i),
     });
   });
 

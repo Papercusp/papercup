@@ -909,8 +909,8 @@ export function writeRoleCodexHome(opts: {
   const modelConfig = codexModelConfigToml(resolvedModel);
   const contextConfig = codexContextConfigToml(resolvedModel).trimEnd();
   const toml = [
-    ...modelConfig,
     ...(contextConfig ? contextConfig.split('\n') : []),
+    ...modelConfig,
     `log_dir = "${tomlEscape(logDir)}"`,
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
@@ -1038,8 +1038,8 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const modelConfig = codexModelConfigToml(resolvedModel);
   const contextConfig = codexContextConfigToml(resolvedModel).trimEnd();
   return [
-    ...modelConfig,
     ...(contextConfig ? contextConfig.split('\n') : []),
+    ...modelConfig,
     ...(opts.logDir ? [`log_dir = "${tomlEscape(opts.logDir)}"`] : []),
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
