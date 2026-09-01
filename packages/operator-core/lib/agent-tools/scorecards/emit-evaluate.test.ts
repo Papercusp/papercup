@@ -1335,6 +1335,35 @@ describe('acceptance-grader eligibility is answerable BEFORE the grading work (E
     });
   });
 
+  it('a retired acceptance rubric is a hard pre-flight block with the same refusal emit returns', async () => {
+    getRubricM.mockResolvedValue({ ...ACCEPTANCE_RUBRIC, status: 'retired' } as Rubric);
+
+    const preflight = await evaluateScorecard(
+      { rubricRef: 'acceptance-rubric' },
+      { id: 'su-someone-else', workspaceId: 'ws' },
+    );
+    expect(preflight).toMatchObject({
+      ok: true,
+      graderEligibility: {
+        role: 'disqualified',
+        canEmitGrading: false,
+        blocksEmit: true,
+        refusal: { code: 'retired_acceptance_rubric' },
+      },
+    });
+    expect(readRubricPlanRevisionM).not.toHaveBeenCalled();
+
+    const emitted = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-someone-else' },
+    );
+    expect(emitted).toMatchObject({
+      ok: false,
+      code: 'retired_acceptance_rubric',
+      error: preflight.graderEligibility?.refusal?.error,
+    });
+  });
+
   it('the rubric author is told it records the acceptance verdict, not the grading', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
 

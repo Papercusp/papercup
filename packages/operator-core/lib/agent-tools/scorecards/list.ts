@@ -88,6 +88,19 @@ export default defineTool({
       .optional()
       .describe('Audit view: also include deliberately retracted scorecards and their withdrawal metadata.'),
   }),
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      count: z.number().int().nonnegative().optional(),
+      hasMore: z.boolean().optional(),
+      truncatedByLimit: z.boolean().optional(),
+      scorecards: z.array(z.unknown()).optional(),
+      error: z.string().optional(),
+      retryable: z.boolean().optional(),
+      pgCode: z.string().optional(),
+      message: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
     try {

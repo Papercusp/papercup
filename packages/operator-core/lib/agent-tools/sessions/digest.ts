@@ -122,6 +122,18 @@ export default defineTool({
     wedgedOnly: z.boolean().optional().describe('Only sessions that are STUCK (auth_wall / model_error / context_limit).'),
     limit: z.number().int().min(1).max(100).optional().describe('Default 30.'),
   }),
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      count: z.number().int().nonnegative().optional(),
+      total: z.number().int().nonnegative().optional(),
+      hasMore: z.boolean().optional(),
+      wedged: z.number().int().nonnegative().optional(),
+      alert: z.string().optional(),
+      note: z.string().optional(),
+      digests: z.array(z.unknown()).optional(),
+    })
+    .passthrough(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
     if (!(await sessionSearchEnabled())) return disabledResult();
     // Non-null: `tx` is optional on PapercuspUnifiedToolContext (must match the

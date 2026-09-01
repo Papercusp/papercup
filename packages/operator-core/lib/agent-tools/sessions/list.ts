@@ -342,6 +342,20 @@ export default defineTool({
     limit: z.number().int().min(1).max(100).optional().describe('Default 30.'),
     cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:list call with the same filters.'),
   }),
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      mode: z.enum(['indexed', 'historical']).optional(),
+      count: z.number().int().nonnegative().optional(),
+      total: z.number().int().nonnegative().optional(),
+      hasMore: z.boolean().optional(),
+      nextCursor: z.string().optional(),
+      truncated: z.string().optional(),
+      note: z.string().optional(),
+      window: z.unknown().optional(),
+      sessions: z.array(z.unknown()).optional(),
+    })
+    .passthrough(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
     if (!(await sessionSearchEnabled())) return disabledResult();
     // EI-21386375248907708: normalize relative windows FIRST — the fingerprint,

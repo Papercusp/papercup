@@ -29,8 +29,9 @@ import {
   isAcceptanceAuthorIdentity,
 } from '../../acceptance-author-identity';
 
-/** Refusal codes emitted by the acceptance-grader rails, verbatim from `scorecards:emit`. */
+/** Refusal codes emitted by the acceptance lifecycle/grader rails, verbatim from `scorecards:emit`. */
 export type GraderEligibilityCode =
+  | 'retired_acceptance_rubric'
   | 'grader_in_implementer_lineage'
   | 'grader_is_sole_vetting_critic_revision_unreadable'
   | 'grader_is_sole_vetting_critic';
@@ -62,8 +63,22 @@ export interface GraderEligibilityDeps {
 /** The identity fields the rails read — a structural subset of `Rubric`. */
 export interface GraderEligibilityRubric {
   rubricId: string;
+  status?: string | null;
   proposedBy?: string | null;
   createdBy?: string | null;
+}
+
+/** The lifecycle refusal shared by the terminal writer and its pre-flight. */
+export function retiredAcceptanceRubricRefusal(
+  rubric: Pick<GraderEligibilityRubric, 'rubricId'>,
+): GraderEligibilityRefusal {
+  return {
+    code: 'retired_acceptance_rubric',
+    error:
+      `acceptance rubric '${rubric.rubricId}' is retired with its terminal subject plan — ` +
+      'no new grading or acceptance verdict may be emitted. Read the existing scorecards; ' +
+      're-propose a new active rubric revision if genuinely new review work is required.',
+  };
 }
 
 /**
@@ -112,6 +127,14 @@ export async function resolveAcceptanceGraderEligibility(params: {
   const lineageRelated = deps.lineageRelated ?? areAcceptanceLineageRelated;
 
   const implementer = rubric.proposedBy ?? rubric.createdBy ?? null;
+  if (rubric.status === 'retired') {
+    return {
+      implementer,
+      callerIsImplementer: false,
+      refusal: retiredAcceptanceRubricRefusal(rubric),
+    };
+  }
+
   const callerIsImplementer =
     implementer != null && (await sameAcceptanceAuthor(implementer, callerId, { workspaceId }));
 
