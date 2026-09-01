@@ -1193,6 +1193,15 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
 
     let active = 0;
     let maxActive = 0;
+    // Deterministic concurrency observation (EI-22070644223146755): the old shape slept
+    // 75ms in each call and hoped the scheduler overlapped them — on a loaded box the
+    // second slot starves and this flaked as "expected 1 to be 2" (same-commit fail→pass
+    // in the ledger). Instead, the first two calls rendezvous: the first blocks (bounded)
+    // until the second ENTERS, which is possible only if the runner truly dispatches
+    // shards concurrently. A serialized runner lets the 5s bound expire, the call
+    // proceeds alone, and the maxActive assertion fails cleanly instead of deadlocking.
+    let entries = 0;
+    let releaseFirstEntrant: (() => void) | null = null;
     const result = await runBulk({
       workspaceId: WS,
       harnessSlug: HARNESS,
@@ -1203,7 +1212,18 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       llmCall: async (input) => {
         active += 1;
         maxActive = Math.max(maxActive, active);
-        await new Promise((resolve) => setTimeout(resolve, 75));
+        entries += 1;
+        if (entries === 1) {
+          await new Promise<void>((resolve) => {
+            const bound = setTimeout(resolve, 5_000);
+            releaseFirstEntrant = () => {
+              clearTimeout(bound);
+              resolve();
+            };
+          });
+        } else if (entries === 2) {
+          releaseFirstEntrant?.();
+        }
         active -= 1;
         const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
         return {
