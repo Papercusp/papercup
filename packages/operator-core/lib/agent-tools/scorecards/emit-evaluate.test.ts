@@ -752,6 +752,46 @@ describe('emitScorecard', () => {
     expect(captureM.mock.calls[0][0].payloadExtra?.observation).not.toHaveProperty('acceptance');
   });
 
+  it('keeps acceptance authority with createdBy after a repair re-propose changes proposedBy', async () => {
+    getRubricM.mockResolvedValue({
+      ...ACCEPTANCE_RUBRIC,
+      createdBy: 'su-original-author',
+      proposedBy: 'su-repair-proposer',
+    });
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-independent',
+        createdAt: '2026-08-21T01:00:00Z',
+        createdBy: 'su-grader',
+        rubricRef: 'acceptance-rubric',
+        ratings: RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
+
+    const acceptance = { verdict: 'accept' as const, reasoning: 'The independent evidence meets this plan.' };
+    const authorResult = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS, acceptance },
+      { createdBy: 'su-original-author' },
+    );
+    expect(authorResult).toMatchObject({ ok: true, created: true, acceptance });
+
+    const repairProposerResult = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS, acceptance },
+      { createdBy: 'su-repair-proposer' },
+    );
+    expect(repairProposerResult).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("acceptance must be recorded by the acceptance-rubric author ('su-original-author')"),
+    });
+  });
+
   it('refuses an acceptance grader descended from the implementer even when its owner id differs', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
     lineageRelatedM.mockImplementation(
@@ -1377,6 +1417,38 @@ describe('acceptance-grader eligibility is answerable BEFORE the grading work (E
         canEmitGrading: false,
         blocksEmit: false,
         implementer: 'su-implementer',
+      },
+    });
+  });
+
+  it('preflight also keeps acceptance authority with createdBy after a repair re-propose', async () => {
+    getRubricM.mockResolvedValue({
+      ...ACCEPTANCE_RUBRIC,
+      createdBy: 'su-original-author',
+      proposedBy: 'su-repair-proposer',
+    });
+
+    await expect(
+      evaluateScorecard(
+        { rubricRef: 'acceptance-rubric' },
+        { id: 'su-original-author', workspaceId: 'ws' },
+      ),
+    ).resolves.toMatchObject({
+      graderEligibility: {
+        role: 'acceptance-author',
+        implementer: 'su-original-author',
+      },
+    });
+
+    await expect(
+      evaluateScorecard(
+        { rubricRef: 'acceptance-rubric' },
+        { id: 'su-repair-proposer', workspaceId: 'ws' },
+      ),
+    ).resolves.toMatchObject({
+      graderEligibility: {
+        role: 'independent-grader',
+        implementer: 'su-original-author',
       },
     });
   });

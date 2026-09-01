@@ -126,7 +126,11 @@ export async function resolveAcceptanceGraderEligibility(params: {
   const sameAcceptanceAuthor = deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity;
   const lineageRelated = deps.lineageRelated ?? areAcceptanceLineageRelated;
 
-  const implementer = rubric.proposedBy ?? rubric.createdBy ?? null;
+  // `createdBy` is the acceptance-author of record. `proposedBy` identifies
+  // who authored the latest revision and must not silently transfer the right
+  // to issue the plan verdict; retain it only as a legacy fallback when the
+  // original creator is unavailable.
+  const implementer = rubric.createdBy ?? rubric.proposedBy ?? null;
   if (rubric.status === 'retired') {
     return {
       implementer,
