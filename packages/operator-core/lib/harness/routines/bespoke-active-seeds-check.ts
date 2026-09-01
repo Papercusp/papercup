@@ -114,6 +114,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     name: 'legacy-needs-human-reconcile',
     seedScript: 'seed-legacy-needs-human-reconcile-routine.ts',
   },
+  {
+    name: 'episode-scoped-operational-reconcile',
+    seedScript: 'seed-episode-scoped-operational-reconcile-routine.ts',
+  },
   { name: 'inbox-bulk-resolve', seedScript: 'seed-inbox-bulk-resolve-routine.ts' },
   {
     name: 'frozen-candidate-drift-sweep',
