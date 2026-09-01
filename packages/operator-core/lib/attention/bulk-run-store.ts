@@ -33,6 +33,10 @@ import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { BulkResolverCarryMode, LaunchAgentBackend, ModelEffort } from '../agent-config-constants';
 import {
+  DEFAULT_TRIPWIRE_WINDOW_HOURS,
+  type RevertHandle,
+} from '../autonomy/tripwire/core';
+import {
   bulkAutomationSnapshot,
   canonicalDispositionForRow,
   type BulkAutomationPolicy,
@@ -72,6 +76,13 @@ export const DEFAULT_RUN_KIND: BulkRunKind = 'inbox-resolve';
  *  still carrying it when a run ends was never reached (Requirement 2 makes
  *  that visible rather than silently absent). */
 export type BulkItemOutcome = 'pending' | 'auto_resolved' | 'recommended' | 'skipped' | 'failed' | 'dismissed';
+
+/**
+ * Keep unattended Inbox compensation on the same bounded clock as the autonomy
+ * tripwire plane it extends. One owner-facing concept must not quietly acquire
+ * two different undo windows in two stores.
+ */
+export const BULK_ITEM_REVERSAL_WINDOW_HOURS = DEFAULT_TRIPWIRE_WINDOW_HOURS;
 
 /** Non-terminal phases — a run in one of these is still the pane's current run. */
 export const ACTIVE_PHASES: readonly BulkRunPhase[] = ['pending', 'running', 'review'] as const;
@@ -238,6 +249,13 @@ export interface BulkRunItemRow {
   consultReply: string | null;
   error: string | null;
   decidedAt: string | null;
+  /** Typed handle consumed by the shared autonomy revert-executor registry. */
+  revertHandle: RevertHandle | null;
+  /** Exclusive owner undo deadline. Historical pre-1063 rows legitimately lack one. */
+  reversalWindowUntil: string | null;
+  /** Successful compensation metadata; the original outcome remains immutable. */
+  revertedAt: string | null;
+  revertNote: string | null;
   /** Canonical disposition; legacy `skipped` rows are classified on read. */
   disposition?: BulkDispositionKind;
   /** Raw DB value when it differs from the canonical compatibility projection. */
@@ -270,6 +288,9 @@ export interface BulkOutcomeReport {
   consulted?: boolean;
   consultReply?: string | null;
   error?: string | null;
+  /** REQUIRED at runtime when outcome is auto_resolved. Metadata-only reports
+   *  must never manufacture an irreversible terminal result without an undo. */
+  revertHandle?: RevertHandle | null;
   /** Canonical typed disposition. Required for new non-terminal reports; old
    *  callers may omit it and retain legacy outcome semantics. */
   disposition?: BulkDispositionKind | null;
@@ -287,6 +308,17 @@ function iso(v: Date | string | null | undefined): string | null {
   if (!v) return null;
   const d = v instanceof Date ? v : new Date(v);
   return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+/** Validate before crossing the SQL boundary. Migration 1063 repeats this as a
+ * CHECK constraint so a non-TypeScript writer cannot bypass the guarantee. */
+function serializedRevertHandle(handle: RevertHandle | null | undefined, source: string): string {
+  if (!handle || typeof handle !== 'object' || Array.isArray(handle)) {
+    throw new Error(`${source}: auto_resolved requires an object revertHandle`);
+  }
+  const kind = typeof handle.kind === 'string' ? handle.kind.trim() : '';
+  if (!kind) throw new Error(`${source}: revertHandle.kind must be a non-empty string`);
+  return JSON.stringify({ ...handle, kind });
 }
 
 /** seed_refs normalizer — a jsonb string[] (parsed or still-serialized). */
@@ -396,6 +428,10 @@ interface RawItemRow {
   consult_reply: string | null;
   error: string | null;
   decided_at: Date | string | null;
+  revert_handle: unknown;
+  reversal_window_until: Date | string | null;
+  reverted_at: Date | string | null;
+  revert_note: string | null;
   disposition: string | null;
   recommendation_kind: BulkRecommendationKind | null;
   recommendation_label: string | null;
@@ -432,6 +468,11 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
         targetRef: r.item_id,
       }
     : canonical.recommendation;
+  const rawRevertHandle = asObject(r.revert_handle);
+  const revertHandle =
+    typeof rawRevertHandle.kind === 'string' && rawRevertHandle.kind.trim()
+      ? ({ ...rawRevertHandle, kind: rawRevertHandle.kind.trim() } as RevertHandle)
+      : null;
   return {
     runId: r.run_id,
     itemId: r.item_id,
@@ -449,6 +490,10 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
     consultReply: r.consult_reply,
     error: r.error,
     decidedAt: iso(r.decided_at),
+    revertHandle,
+    reversalWindowUntil: iso(r.reversal_window_until),
+    revertedAt: iso(r.reverted_at),
+    revertNote: r.revert_note,
     disposition: canonical.disposition,
     legacyDisposition: rawDisposition && rawDisposition !== canonical.disposition ? rawDisposition : null,
     recommendation,
@@ -470,7 +515,8 @@ const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_
 
 const ITEM_COLUMNS = `run_id, item_id, position, item_kind, item_title, item_ref, owner_agent_id,
                       outcome, action_id, rationale, draft_answer, confidence, consulted,
-                      consult_reply, error, decided_at, disposition, recommendation_kind,
+                      consult_reply, error, decided_at, revert_handle, reversal_window_until,
+                      reverted_at, revert_note, disposition, recommendation_kind,
                       recommendation_label, recommendation_rationale, evidence_basis,
                       responsibility, confidence_level, retry_condition`;
 
@@ -545,7 +591,12 @@ export async function executeBulkRunAction<T>(input: {
    * replacement, so a late prior resolver cannot act on the new generation. */
   resolverOwner?: string | null;
   workspaceId?: string;
-  execute: () => Promise<T>;
+  /**
+   * The effect and its compensation handle are one result. Making the handle a
+   * required return value prevents a future terminal dispatcher from adding a
+   * source mutation while forgetting the owner undo contract.
+   */
+  execute: () => Promise<{ actionResult: T; revertHandle: RevertHandle }>;
   /**
    * REQUIRED, not optional. The audit write joins this transaction, so a
    * failure rolls the run outcome back instead of reporting a clean, unaudited
@@ -616,7 +667,11 @@ export async function executeBulkRunAction<T>(input: {
       };
     }
 
-    const actionResult = await input.execute();
+    const execution = await input.execute();
+    const revertHandle = serializedRevertHandle(
+      execution.revertHandle,
+      `executeBulkRunAction(${input.runId}/${input.itemId})`,
+    );
     // No `?.` — the audit is part of the success contract (see the type above).
     await input.audit(tx);
     const updatedRows = await tx<RawItemRow[]>`
@@ -638,6 +693,10 @@ export async function executeBulkRunAction<T>(input: {
              retry_condition = ${input.retryCondition ?? null},
              error = NULL,
              decided_at = now(),
+             revert_handle = ${revertHandle}::jsonb,
+             reversal_window_until = now() + make_interval(hours => ${BULK_ITEM_REVERSAL_WINDOW_HOURS}),
+             reverted_at = NULL,
+             revert_note = NULL,
              updated_at = now()
        WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${input.itemId}
       RETURNING ${tx.unsafe(ITEM_COLUMNS)}
@@ -649,7 +708,7 @@ export async function executeBulkRunAction<T>(input: {
        WHERE workspace_id = ${ws} AND run_id = ${input.runId}
     `;
     return {
-      actionResult,
+      actionResult: execution.actionResult,
       item: updatedRows[0] ? mapItem(updatedRows[0]) : null,
       run: afterRows[0] ? mapRun(afterRows[0]) : null,
       refused: null,
@@ -1313,6 +1372,10 @@ export async function reportOutcomes(input: {
     for (const o of input.outcomes ?? []) {
       if (!o?.itemId) continue;
       const disposition = dispositionForReport(o);
+      const revertHandle =
+        o.outcome === 'auto_resolved'
+          ? serializedRevertHandle(o.revertHandle, `reportOutcomes(${input.runId}/${o.itemId})`)
+          : null;
       const rows = await tx<{ item_id: string }[]>`
       UPDATE harness_shared.attention_bulk_run_items
          SET outcome = ${o.outcome},
@@ -1332,6 +1395,17 @@ export async function reportOutcomes(input: {
              retry_condition = ${o.retryCondition ?? null},
              error = ${o.error ?? null},
              decided_at = now(),
+             revert_handle = CASE
+               WHEN ${o.outcome} = 'auto_resolved' THEN ${revertHandle}::jsonb
+               ELSE revert_handle
+             END,
+             reversal_window_until = CASE
+               WHEN ${o.outcome} = 'auto_resolved'
+                 THEN now() + make_interval(hours => ${BULK_ITEM_REVERSAL_WINDOW_HOURS})
+               ELSE reversal_window_until
+             END,
+             reverted_at = CASE WHEN ${o.outcome} = 'auto_resolved' THEN NULL ELSE reverted_at END,
+             revert_note = CASE WHEN ${o.outcome} = 'auto_resolved' THEN NULL ELSE revert_note END,
              updated_at = now()
        WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${o.itemId}
       RETURNING item_id
@@ -1451,11 +1525,18 @@ export async function markItemAccepted(input: {
   runId: string;
   itemId: string;
   actionId: string;
+  /** The UI action already mutated the source; persist its exact undo handle in
+   *  the same transaction that turns the recommendation into auto_resolved. */
+  revertHandle: RevertHandle;
   note?: string | null;
   workspaceId?: string;
 }): Promise<BulkRunItemRow | null> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
+  const revertHandle = serializedRevertHandle(
+    input.revertHandle,
+    `markItemAccepted(${input.runId}/${input.itemId})`,
+  );
   return await sql.begin(async (tx) => {
     // Owner review writes are admitted only while the run is actually awaiting
     // owner work. Without the shared row lock a late/manual reconciliation can
@@ -1476,6 +1557,10 @@ export async function markItemAccepted(input: {
              disposition = 'auto_resolved',
              rationale = COALESCE(${input.note ?? null}, rationale),
              decided_at = now(),
+             revert_handle = ${revertHandle}::jsonb,
+             reversal_window_until = now() + make_interval(hours => ${BULK_ITEM_REVERSAL_WINDOW_HOURS}),
+             reverted_at = NULL,
+             revert_note = NULL,
              updated_at = now()
        WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${input.itemId}
          AND outcome NOT IN ('auto_resolved', 'dismissed')
