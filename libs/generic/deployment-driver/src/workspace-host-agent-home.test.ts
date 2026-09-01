@@ -116,6 +116,44 @@ class PausingAgentHomeFilesystem extends MemoryAgentHomeFilesystem {
   }
 }
 
+/**
+ * Models the workspace user racing a privileged lifecycle operation through its writable home.
+ * A native-home read/remove is safe only while the consumer has pinned the home root-owned.
+ */
+class WorkspaceUserRaceFilesystem extends MemoryAgentHomeFilesystem {
+  private readonly owners = new Map<string, string>();
+  enforcePinnedHome = false;
+
+  override async setOwnership(
+    path: string,
+    owner: string,
+    group: string,
+  ): Promise<void> {
+    this.owners.set(path, `${owner}:${group}`);
+    await super.setOwnership(path, owner, group);
+  }
+
+  private requirePinnedHome(path: string): void {
+    if (
+      this.enforcePinnedHome &&
+      path.startsWith(`${HOME}/`) &&
+      this.owners.get(HOME) !== "root:root"
+    ) {
+      throw new Error("simulated workspace-user home swap");
+    }
+  }
+
+  override async readFileIfPresent(path: string): Promise<Buffer | null> {
+    this.requirePinnedHome(path);
+    return await super.readFileIfPresent(path);
+  }
+
+  override async removePath(path: string): Promise<void> {
+    this.requirePinnedHome(path);
+    await super.removePath(path);
+  }
+}
+
 function consumer(
   filesystem: MemoryAgentHomeFilesystem,
 ): WorkspaceHostAgentHomeConsumer {
@@ -318,6 +356,24 @@ describe("workspace-host sealed agent-home bundle", () => {
         encodeWorkspaceHostAgentHomeBundle(rotated),
       ),
     ).resolves.toMatchObject({ generation: 2, present: true });
+  });
+
+  it("pins the user-controlled home while verifying and revoking native files", async () => {
+    const filesystem = new WorkspaceUserRaceFilesystem();
+    const material = encodeWorkspaceHostAgentHomeBundle(files);
+    await consumer(filesystem).install(
+      "agent-encrypted-reference",
+      1,
+      material,
+    );
+
+    filesystem.enforcePinnedHome = true;
+    await expect(
+      consumer(filesystem).verify("agent-encrypted-reference", 1, material),
+    ).resolves.toMatchObject({ generation: 1, present: true });
+    await expect(
+      consumer(filesystem).revoke("agent-encrypted-reference", 1),
+    ).resolves.toMatchObject({ generation: 1, present: false });
   });
 
   it("refuses a valid-looking active state for a different explicit home before revoke", async () => {

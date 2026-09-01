@@ -147,6 +147,10 @@ import { SU_S29_GRADE_LOW_WAKES_ORIGINATOR } from './su/S29-grade-low-wakes-orig
 // SU-S30: unconditional-bug-filing-prompt-hardening-2026-07-11 — a suspected bug (INCLUDING a
 // false-alarm / self-recovered / "transient" signal) is FILED unconditionally, not a judgment call.
 import { SU_S30_BUG_FILING_UNCONDITIONAL } from './su/S30-bug-filing-unconditional';
+// SU-S32: audit-mode-2026-09-01 P-005 — "go into audit mode on <scope>" must produce a
+// WHOLE-PROGRAM audit (lifecycle census, ledger cross-check, churn, liveness, mechanisms) and
+// route remediation, not an item-by-item status read or a drive-by fix.
+import { SU_S32_AUDIT_MODE_WHOLE_PICTURE } from './su/S32-audit-mode-whole-picture';
 // SU-S31a/b/c: agent-protocol-authority-semantics-2026-07-26 P-011 — the information-asymmetry
 // experiment. THREE matched arms over one identical task, differing only in how a peer's handoff
 // conveys the same three facts: (a) control, status-quo Did/Left/Next; (b) prose-equal, same facts
@@ -308,6 +312,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S29_GRADE_LOW_WAKES_ORIGINATOR,
   // unconditional bug-filing hardening (unconditional-bug-filing-prompt-hardening-2026-07-11)
   SU_S30_BUG_FILING_UNCONDITIONAL,
+  // AUDIT mode behaves as a whole-program audit (audit-mode-2026-09-01)
+  SU_S32_AUDIT_MODE_WHOLE_PICTURE,
   SU_S31A_ASYMMETRY_CONTROL,
   SU_S31B_ASYMMETRY_PROSE,
   SU_S31C_ASYMMETRY_FIELD,

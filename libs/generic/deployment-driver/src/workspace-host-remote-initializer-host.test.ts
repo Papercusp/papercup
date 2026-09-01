@@ -472,3 +472,61 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
     }
   });
 });
+
+describe("ProductionWorkspaceHostRemoteInitializerHost cloned-repository observation", () => {
+  // The packaged initializer builds a fresh dependency graph for every SSH invocation, so the
+  // clone step and the verify-initialization step never share a JS object. These tests instantiate
+  // separate production adapters over ONE filesystem for exactly that reason: a clone descriptor
+  // remembered on the cloning instance would satisfy neither of them.
+  it("reports a clone performed by a separate adapter over the same filesystem", async () => {
+    const system = new RecordingSystem();
+    const cloning = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+    // `run` is a double, so the clone's filesystem effect is modelled rather than executed.
+    system.present.add("/workspaces/repository/.git");
+    await cloning.host.cloneRepository({
+      repositoryUrl: "https://github.com/papercupai/public-canary.git",
+      visibility: "public",
+      destination: "repository",
+    });
+
+    const verifying = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+    // The adapters must be genuinely distinct, or this asserts nothing about a fresh process.
+    expect(verifying.host).not.toBe(cloning.host);
+
+    await expect(
+      verifying.host.describeClonedRepository({
+        destination: "repository",
+        visibility: "public",
+      }),
+    ).resolves.toEqual({ visibility: "public", cloned: true });
+  });
+
+  // Non-vacuity control: without this, an implementation returning a constant `cloned: true` would
+  // pass the test above. The observation has to be able to say NO.
+  it("reports cloned:false when no .git directory is present", async () => {
+    const system = new RecordingSystem();
+    const { host } = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+
+    await expect(
+      host.describeClonedRepository({
+        destination: "repository",
+        visibility: "public",
+      }),
+    ).resolves.toEqual({ visibility: "public", cloned: false });
+  });
+});

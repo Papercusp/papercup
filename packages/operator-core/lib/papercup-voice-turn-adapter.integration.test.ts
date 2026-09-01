@@ -4,8 +4,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  VOICE_PROTOCOL_VERSION,
   parseVoiceTurnEventJson,
   serializeVoiceTurnEvent,
+  type VoiceExecutorRequest,
   type VoiceTurnEvent,
 } from '@papercusp/chat-protocol';
 import {
@@ -25,12 +27,35 @@ function runFixture(transport: PapercupVoiceTransport): VoiceTurnEvent[] {
       events.push(roundTripped);
     },
   });
-  adapter.finalTranscript({
-    text: 'Where are we?',
-    transport,
-    latencyClass: 'interactive',
-    executor: transport,
-  });
+  const request: VoiceExecutorRequest<{ source: 'server-vault' }> = {
+    turn: {
+      version: VOICE_PROTOCOL_VERSION,
+      turnId: 'fixture-turn',
+      sequence: 0,
+      occurredAt: new Date(now).toISOString(),
+      transport,
+      latencyClass: 'deliberative',
+      transcript: 'Where are we?',
+      conversation: {
+        kind: 'operator',
+        id: 'operator-conversation-1',
+        parentOperatorConversationId: null,
+      },
+      principal: {
+        kind: 'owner',
+        subjectId: 'owner-1',
+        authenticated: true,
+        authoritySource: 'owner-session',
+      },
+      capabilities: {
+        read: ['conversation-history', 'personal-memory'],
+        write: ['conversation-turn'],
+        tools: ['personal:search'],
+      },
+    },
+    context: { source: 'server-vault' },
+  };
+  adapter.beginExecutorTurn(request);
   now += 75;
   adapter.assistantSentence('We are ready.');
   now += 25;
@@ -38,8 +63,8 @@ function runFixture(transport: PapercupVoiceTransport): VoiceTurnEvent[] {
   return events;
 }
 
-describe('Papercup local/hosted canonical adapter fixture (VOICE-P003-papercup)', () => {
-  it('normalizes both transports into the shared transcript/sentence/completion contract', () => {
+describe('Papercup local/hosted shared-executor fixture (VOICE-P007-papercup)', () => {
+  it('normalizes both transports through one deep executor lifecycle', () => {
     const local = runFixture('papercup-local');
     const hosted = runFixture('papercup-hosted');
 
@@ -49,10 +74,14 @@ describe('Papercup local/hosted canonical adapter fixture (VOICE-P003-papercup)'
     expect(hosted.map((event) => event.type)).toEqual(local.map((event) => event.type));
     expect(local.slice(0, 2)).toEqual(hosted.slice(0, 2));
     expect(local[2]).toMatchObject({
-      type: 'completed', metrics: { executor: 'papercup-local', firstSentenceMs: 75, totalMs: 100 },
+      type: 'completed',
+      metrics: {
+        executor: 'papercup-deep',
+        latencyClass: 'deliberative',
+        firstSentenceMs: 75,
+        totalMs: 100,
+      },
     });
-    expect(hosted[2]).toMatchObject({
-      type: 'completed', metrics: { executor: 'papercup-hosted', firstSentenceMs: 75, totalMs: 100 },
-    });
+    expect(hosted[2]).toEqual(local[2]);
   });
 });

@@ -36,6 +36,7 @@ import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership }
 import { releaseFixerSpawnAlive } from './release/fixer-liveness';
 import {
   diagnoseFrozenCandidateRepairQueue,
+  buildFrozenRepairStatusIdentity,
   parseFrozenCandidateRepairQueue,
   type FrozenRepairQueueDiagnostic,
 } from './release/frozen-candidate-repair-queue';
@@ -252,6 +253,12 @@ export interface GitPipelineSnapshot {
     inconclusive: {
       status: string;
       candidate: string | null;
+      /** P-003: immutable queue pin, explicit even when `candidate` is a compatibility field. */
+      frozenCandidate?: string | null;
+      /** P-003: mutable repair progress head, never a frozen-pin verdict. */
+      repairHead?: string | null;
+      phase?: string | null;
+      verdictProvenance?: Record<string, unknown> | null;
       detail: string | null;
       observedAtMs: number | null;
     } | null;
@@ -594,9 +601,26 @@ export function currentGateInconclusive(
     return null;
   }
 
+  const parsedRepairQueue = parseFrozenCandidateRepairQueue(repairQueue);
+  const repairIdentity =
+    parsedRepairQueue && (inc.status === 'repair-in-progress' || inc.status === 'repair-staging-mismatch')
+      ? buildFrozenRepairStatusIdentity(parsedRepairQueue)
+      : null;
+
   return {
     status: inc.status,
-    candidate: typeof inc.candidate === 'string' ? inc.candidate : null,
+    // A repair-owned hold ran no suite. Its generic candidate is therefore the
+    // immutable pin; repairHead is projected separately and cannot masquerade as it.
+    candidate: repairIdentity?.frozenCandidate ?? (typeof inc.candidate === 'string' ? inc.candidate : null),
+    frozenCandidate:
+      repairIdentity?.frozenCandidate ?? (typeof inc.frozenCandidate === 'string' ? inc.frozenCandidate : null),
+    repairHead: repairIdentity?.repairHead ?? (typeof inc.repairHead === 'string' ? inc.repairHead : null),
+    phase: repairIdentity?.phase ?? (typeof inc.phase === 'string' ? inc.phase : null),
+    verdictProvenance:
+      repairIdentity?.verdictProvenance ??
+      (inc.verdictProvenance && typeof inc.verdictProvenance === 'object' && !Array.isArray(inc.verdictProvenance)
+        ? (inc.verdictProvenance as Record<string, unknown>)
+        : null),
     detail: typeof inc.detail === 'string' ? inc.detail : null,
     observedAtMs: num(inc.observedAtMs),
   };

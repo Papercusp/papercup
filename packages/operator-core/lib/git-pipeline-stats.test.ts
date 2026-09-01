@@ -79,11 +79,43 @@ describe('currentGateInconclusive', () => {
   });
 
   it('preserves repair holds while any queue payload remains', () => {
-    expect(currentGateInconclusive(mismatch, { phase: 'ready-to-verify' })).toEqual(mismatch);
+    expect(currentGateInconclusive(mismatch, { phase: 'ready-to-verify' })).toMatchObject(mismatch);
+  });
+
+  it('P-003 projects frozenCandidate and repairHead separately for a no-suite repair hold', () => {
+    const queue = {
+      schemaVersion: 3,
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(40),
+      base: 'b'.repeat(40),
+      repairHead: 'c'.repeat(40),
+      worktreePath: '/tmp/repair',
+      attempts: 1,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      fixerSpawnId: 'fixer-1',
+      failingTests: ['lib/broken.test.ts'],
+    };
+    const result = currentGateInconclusive(
+      { status: 'repair-in-progress', candidate: queue.repairHead, detail: 'no suite ran', observedAtMs: 3 },
+      queue,
+    );
+    expect(result).toMatchObject({
+      status: 'repair-in-progress',
+      candidate: queue.candidate,
+      frozenCandidate: queue.candidate,
+      repairHead: queue.repairHead,
+      phase: queue.phase,
+      verdictProvenance: {
+        currentStatus: 'no-suite',
+        frozenCandidateVerdict: 'full-gate-red',
+        repairHeadVerdict: 'not-judged',
+      },
+    });
   });
 
   it('preserves non-repair aborts independently of the repair queue', () => {
-    expect(currentGateInconclusive({ ...mismatch, status: 'migrations-pending' }, null)).toEqual({
+    expect(currentGateInconclusive({ ...mismatch, status: 'migrations-pending' }, null)).toMatchObject({
       ...mismatch,
       status: 'migrations-pending',
     });

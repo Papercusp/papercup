@@ -140,8 +140,8 @@ live = lambda r: now_ms - r['ts'] <= r.get('ttlMs', ttl)
 # grant by the substring "auto mode".
 MODE_EXIT_RE = re.compile(
     r"\b(?:exit|leave|end|turn\s+off|switch\s+off|disable|get\s+out\s+of|out\s+of)\s+"
-    r"(?:the\s+)?(?:auto|ideate|drain)(?:\s*[-\s]?\s*mode)?\b"
-    r"|\b(?:auto|ideate|drain)\s*[-\s]?\s*mode\s+off\b"
+    r"(?:the\s+)?(?:auto|ideate|drain|audit)(?:\s*[-\s]?\s*mode)?\b"
+    r"|\b(?:auto|ideate|drain|audit)\s*[-\s]?\s*mode\s+off\b"
     r"|\b(?:ask|check\s+with)\s+me\s+first\b"
     r"|\bback\s+to\s+confirming\b"
     r"|\bstop\s+(?:being\s+|working\s+)?autonomous(?:ly)?\b",
@@ -207,6 +207,32 @@ MODE_ENTER_RES = (
         r"\bgo\s+ideate\b|\bstart\s+ideating\b|" + _grant_frame(r"ideate\s+mode\b"), re.I)),
     ('drain', re.compile(
         r"\bdrain\s+the\s+(?:queue|backlog)\b|" + _grant_frame(r"drain\s+mode\b"), re.I)),
+    # AUDIT (audit-mode-2026-09-01 P-004). MODE-NOUN FRAMES ONLY — deliberately
+    # NARROWER than the AUDIT contract's spoken vocabulary, which also lists
+    # "audit the <X> program / plans".
+    #
+    # The bare verb is the reason. Unlike "drain"/"ideate", "audit" is ordinary
+    # working vocabulary in this repo — plans:audit, the activation audit, the
+    # code-truth audit, "audit the citations" — so a verb-frame trigger would arm
+    # a whole-program audit on routine requests. That is the exact class the
+    # measured 2026-08-09 drain false-positive belongs to, and this hook's own
+    # asymmetry applies: failing to turn a mode ON is safe, arming one nobody
+    # asked for is not. The playbook section still teaches the agent to register
+    # the flip itself when the owner uses the verb form; the hook only handles
+    # the forms that cannot mean anything else.
+    ('audit', re.compile(_grant_frame(r"audit\s*[-\s]?\s*mode\b"), re.I)),
+)
+
+# AUDIT is ABOUT something — "go into audit mode ON SUCH AND SUCH" — and an audit
+# with no scope is the same silent nothing the GOAL subject guard exists to
+# prevent: the mode registers, every surface looks healthy, and the agent has to
+# guess what it was pointed at. The AUDIT contract puts the scope in `instructions`
+# (it declares no requiresSubject, because nothing downstream JOINS on it), so
+# capture it here and pass it through. Best-effort by design: no scope still
+# registers the mode, it just registers it without one.
+MODE_SCOPE_RE = re.compile(
+    r"\baudit\s*[-\s]?\s*mode\s+(?:on|of|for|over)\s+(.{3,200}?)(?:[.!?;\n]|$)",
+    re.I,
 )
 
 # A REPORT frame sitting BEFORE the phrase means the owner is describing a mode,
@@ -382,13 +408,20 @@ def register_owner_mode(text):
         prev = None
     if isinstance(prev, dict) and prev.get('mode') == mode_id and prev.get('enabled') == enabled:
         return None
-    res = _mcp_call('mode:set', {
+    mode_args = {
         'mode': mode_id,
         'enabled': enabled,
         'ownerDirected': True,
         'reason': 'auto-registered from the owner\'s interactive directive '
                   '(turn-provenance: OWNER). Verbatim: ' + ' '.join(text.split())[:300],
-    })
+    }
+    # Carry AUDIT's scope through as `instructions` (see MODE_SCOPE_RE). Only on
+    # ENTER: `instructions` on a de-registration would describe a mode being left.
+    if mode_id == 'audit' and enabled:
+        scope = MODE_SCOPE_RE.search(_strip_code(text))
+        if scope:
+            mode_args['instructions'] = ' '.join(scope.group(1).split())[:200]
+    res = _mcp_call('mode:set', mode_args)
     if res is None:
         return (
             f"⟦mode⟧ Your owner just {'granted' if enabled else 'revoked'} {mode_id.upper()} mode in "
@@ -411,11 +444,26 @@ def register_owner_mode(text):
     note = (
         f"⟦mode⟧ {mode_id.upper()} mode REGISTERED (ownerDirected) from your owner's directive in this "
         "turn — you did not have to call mode:set. It is now durable state: peers see it in "
-        "coord:presence, and it survives compaction instead of dying with your context. Act on it "
-        "NOW, this turn: the ask-first default is SUSPENDED, so choose the route yourself, act, and "
-        "disclose what you chose — do not ask which option the owner wants, and do not end the turn "
-        "handing the next move back."
+        "coord:presence, and it survives compaction instead of dying with your context. "
     )
+    # Only an AUTONOMY-implying mode suspends the ask-first posture. Read that off
+    # the tool's own `impliesAutonomy` rather than a second list here — this text
+    # used to claim the suspension for EVERY mode, which told an agent entering
+    # IDEATE or AUDIT (both imply nothing) that it had been granted autonomy it
+    # did not have. Absent/None ⇒ the conservative branch: never invent a grant.
+    autonomy = res.get('impliesAutonomy') if isinstance(res, dict) else None
+    if autonomy:
+        note += (
+            "Act on it NOW, this turn: the ask-first default is SUSPENDED, so choose the route "
+            "yourself, act, and disclose what you chose — do not ask which option the owner wants, "
+            "and do not end the turn handing the next move back."
+        )
+    else:
+        note += (
+            f"Act on it NOW, this turn. {mode_id.upper()} implies no autonomy posture, so your "
+            "existing execution-authorization is UNCHANGED — read the binding contract it returned "
+            "and follow it, and do not read this registration as permission to act unasked."
+        )
     warn = res.get('wakeSourceWarning') or (res.get('warnings') or [None])[0] if isinstance(res, dict) else None
     if isinstance(warn, str) and warn.strip():
         note += "\n" + warn.strip()

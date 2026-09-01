@@ -17,10 +17,16 @@ export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch
  * raised above 0 (P-048, green-main-fast-2026-08-25), which permits a BOUNDED number of
  * exhausted pins to be abandoned in favour of a fresh tip cut.
  *
- * `maxCandidateEscapes: 0` is the historical refuse-to-re-cut behaviour and is deliberately
- * the default: raising it changes which commit the gate judges and promotes, for every
- * co-hosted install, with no deploy hop. It is therefore wired only as part of the
- * owner-gated Phase-2 activation batch, exactly like P-005..P-009. */
+ * `maxCandidateEscapes: 1` — the owner-gated lever WAS pulled: P-008 of
+ * gate-verdict-liveness-and-repair-reliability-2026-08-31 (activation-audited, owner-directed)
+ * ratifies "maxCandidateEscapes 0 → 1/day". The limit stays a plain in-window count; the
+ * rolling-DAY window is measured by the caller from the durable escape ledger
+ * (`gate_health.candidateEscapes`, frozen-candidate-escape-ledger.ts), and the engine FAILS
+ * CLOSED to the historical hold-exhausted behaviour whenever that ledger cannot be read or
+ * written — so 0-behaviour remains the floor, never exceeded silently. An escape re-cuts at
+ * tip; a genuinely persistent red reds the fresh candidate too, exhausts again, and the spent
+ * budget then holds permanently — the bound is what stops a real red being laundered into
+ * perpetual re-cutting (see decideExhaustedPin). */
 /* `maxAgeMs` was 4h until 2026-08-27 [owner 2026-08-27, approved in-session].
  * WHY IT MOVED (WI-85288): the 4h budget was calibrated against fixers that never ran.
  * From 2026-08-24 16:57Z to 2026-08-27, EVERY dispatched release-fixer was SIGTERM'd at
@@ -34,12 +40,12 @@ export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch
  * dispatched at 13:23:19Z was already inside a queue reading `hold-exhausted` — its commit
  * would have been discarded unverified at the 14:22:37Z evaluation.
  * 8h covers dispatch + a full fixer run + up to two hourly verification ticks.
- * NOT CHANGED: maxAttempts and maxCandidateEscapes: 0 (still the owner-gated Phase-2 lever
- * described above — raising it changes which commit the gate promotes, for every install). */
+ * NOT CHANGED: maxAttempts. maxCandidateEscapes moved 0 → 1 on 2026-09-01 under the P-008
+ * owner decision documented above. */
 export const DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS = Object.freeze({
   maxAttempts: 3,
   maxAgeMs: 8 * 60 * 60 * 1_000,
-  maxCandidateEscapes: 0,
+  maxCandidateEscapes: 1,
 });
 
 /**
@@ -370,6 +376,12 @@ export interface FrozenRepairSharedTreeCollision {
 }
 
 export interface FrozenRepairQueueDiagnostic {
+  /**
+   * Explicit identity for the immutable pin. `candidate` is retained as the
+   * compatibility spelling used by older consumers, but status surfaces should
+   * prefer this field whenever they need to distinguish it from `repairHead`.
+   */
+  frozenCandidate?: string;
   phase: FrozenCandidateRepairPhase;
   candidate: string;
   repairHead: string;
@@ -397,6 +409,23 @@ export interface FrozenRepairQueueDiagnostic {
     active: boolean;
   } | null;
   decision: FrozenRepairQueueDecision['kind'];
+  /**
+   * Provenance for a no-suite repair status. `suiteRan:false` is the critical
+   * discriminator: the mutable repair head is work in progress, not a judged
+   * candidate. A status surface may still expose `candidate` for compatibility,
+   * but must not imply that `repairHead` advanced the frozen pin.
+   */
+  verdictProvenance?: {
+    frozenCandidate: string;
+    repairHead: string;
+    phase: FrozenCandidateRepairPhase;
+    currentStatus: 'no-suite' | 'isolated-suite-result';
+    frozenCandidateVerdict: 'not-judged' | 'full-gate-red';
+    repairHeadVerdict:
+      | 'not-judged'
+      | 'same-as-frozen-full-gate-red'
+      | 'isolated-repair-green';
+  };
   retireAllowed: boolean;
   retireRefusal: 'live-fixer' | 'liveness-unknown' | 'active-dispatch-reservation' | 'unsafe-phase' | null;
   nextAction: string | null;
@@ -406,6 +435,32 @@ export interface FrozenRepairQueueDiagnostic {
    * signal can be trusted before anything is allowed to block on it.
    */
   sharedTreeCollision: FrozenRepairSharedTreeCollision;
+}
+
+export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueue): {
+  frozenCandidate: string;
+  repairHead: string;
+  phase: FrozenCandidateRepairPhase;
+  verdictProvenance: NonNullable<FrozenRepairQueueDiagnostic['verdictProvenance']>;
+} {
+  return {
+    frozenCandidate: queue.candidate,
+    repairHead: queue.repairHead,
+    phase: queue.phase,
+    verdictProvenance: {
+      frozenCandidate: queue.candidate,
+      repairHead: queue.repairHead,
+      phase: queue.phase,
+      currentStatus: queue.phase === 'ready-to-promote' ? 'isolated-suite-result' : 'no-suite',
+      frozenCandidateVerdict: queue.phase === 'ready-to-test' ? 'not-judged' : 'full-gate-red',
+      repairHeadVerdict:
+        queue.phase === 'ready-to-promote'
+          ? 'isolated-repair-green'
+          : queue.phase !== 'ready-to-test' && queue.repairHead === queue.candidate
+            ? 'same-as-frozen-full-gate-red'
+            : 'not-judged',
+    },
+  };
 }
 
 /**
@@ -1094,15 +1149,15 @@ export function diagnoseFrozenCandidateRepairQueue(
   // verb advertised. `retireAllowed`/`retireRefusal` are deliberately left untouched — the
   // permission and the recommendation are different questions and other callers read the former.
   const retirementIsTheDecision = decision.kind === 'hold-exhausted' || decision.kind === 'recut-at-tip';
+  const identity = buildFrozenRepairStatusIdentity(queue);
   const nextAction = !retireAllowed
     ? null
     : retirementIsTheDecision
       ? `release:repair-queue { op: 'retire', expectedCandidate: '${queue.candidate}', expectedRepairHead: '${queue.repairHead}', expectedUpdatedAtMs: ${queue.updatedAtMs}, reason: '<why this exact non-live queue is terminal>', confirm: true }`
       : `decision '${decision.kind}': this queue is still recoverable — do NOT retire it. Land your fix on the judged lineage with release:repair-queue { op: 'converge', paths: ['<your changed path>'] }.`;
   return {
-    phase: queue.phase,
+    ...identity,
     candidate: queue.candidate,
-    repairHead: queue.repairHead,
     attempts: queue.attempts,
     openedAtMs: queue.openedAtMs,
     updatedAtMs: queue.updatedAtMs,

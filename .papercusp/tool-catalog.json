@@ -17313,7 +17313,7 @@
           "POST"
         ]
       },
-      "description": "Enter/exit an official session mode (auto | cold-auto | ideate | drain | grade | goal | test) for yourself or a peer. { mode, reason, enabled?, instructions?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract; an owner-directed incumbent REFUSES a peer override (stickyConflict:true — downgraded to a request message). Self-set returns the full binding contract — read it. Audited in agent_mode_changes.",
+      "description": "Enter/exit an official session mode (auto | cold-auto | ideate | drain | grade | goal | test | audit) for yourself or a peer. { mode, reason, enabled?, instructions?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract; an owner-directed incumbent REFUSES a peer override (stickyConflict:true — downgraded to a request message). Self-set returns the full binding contract — read it. Audited in agent_mode_changes.",
       "capabilities": [
         "coord:write"
       ],

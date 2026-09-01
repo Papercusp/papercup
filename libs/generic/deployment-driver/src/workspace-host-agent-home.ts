@@ -620,30 +620,35 @@ export class WorkspaceHostAgentHomeConsumer {
             { family, generation },
           );
         }
-        const paths = workspaceHostAgentHomePaths(this.workspaceHome);
-        for (const label of Object.keys(
-          paths,
-        ) as WorkspaceHostAgentHomeFile[]) {
-          if (this.filesystem.pathKind) {
-            const kind = await this.filesystem.pathKind(paths[label]);
-            if (kind !== "file") {
+        const securedDirectories = await this.secureHomeLayout();
+        try {
+          const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+          for (const label of Object.keys(
+            paths,
+          ) as WorkspaceHostAgentHomeFile[]) {
+            if (this.filesystem.pathKind) {
+              const kind = await this.filesystem.pathKind(paths[label]);
+              if (kind !== "file") {
+                throw new WorkspaceHostAgentHomeStateError(
+                  `agent-home file '${label}' is absent, stale, or points outside the explicit home`,
+                  { family, generation },
+                );
+              }
+            }
+            const bytes = await this.filesystem.readFileIfPresent(paths[label]);
+            if (
+              bytes === null ||
+              current.files[label] !== paths[label] ||
+              !compareBytes(bytes, bundle.files[label])
+            ) {
               throw new WorkspaceHostAgentHomeStateError(
                 `agent-home file '${label}' is absent, stale, or points outside the explicit home`,
                 { family, generation },
               );
             }
           }
-          const bytes = await this.filesystem.readFileIfPresent(paths[label]);
-          if (
-            bytes === null ||
-            current.files[label] !== paths[label] ||
-            !compareBytes(bytes, bundle.files[label])
-          ) {
-            throw new WorkspaceHostAgentHomeStateError(
-              `agent-home file '${label}' is absent, stale, or points outside the explicit home`,
-              { family, generation },
-            );
-          }
+        } finally {
+          await this.restoreHomeLayout(securedDirectories);
         }
         return { family, generation, present: true, home: this.workspaceHome };
       },
@@ -681,15 +686,20 @@ export class WorkspaceHostAgentHomeConsumer {
             home: this.workspaceHome,
           };
         }
-        const paths = workspaceHostAgentHomePaths(this.workspaceHome);
-        for (const path of Object.values(paths)) {
-          await this.removeNativeFile(path, family, generation);
+        const securedDirectories = await this.secureHomeLayout();
+        try {
+          const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+          for (const path of Object.values(paths)) {
+            await this.removeNativeFile(path, family, generation);
+          }
+          await this.removeNativeFile(
+            workspaceHostAgentHomeStatePath(this.materialRoot),
+            family,
+            generation,
+          );
+        } finally {
+          await this.restoreHomeLayout(securedDirectories);
         }
-        await this.removeNativeFile(
-          workspaceHostAgentHomeStatePath(this.materialRoot),
-          family,
-          generation,
-        );
         return { family, generation, present: false, home: this.workspaceHome };
       },
       options.lockHeld === true,

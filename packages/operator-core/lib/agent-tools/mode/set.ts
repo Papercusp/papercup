@@ -688,6 +688,20 @@ export default defineTool({
       ...(goalHandoffNotice ? { goalHandoffNotice } : {}),
       ...(goalHandoffNoticeError ? { goalHandoffNoticeError } : {}),
       ...(res.stickyConflict ? { note: 'incumbent is owner-directed; your reason was delivered as a REQUEST — do not retry' } : {}),
+      /* Whether entering this mode changed the AUTONOMY posture — the same
+         reading `wakeSourceWarning` gates on above, published so out-of-process
+         callers stop re-deriving it. The userpromptsubmit provenance hook is the
+         caller that forced this: it announces an auto-registered mode to the
+         agent, and its announcement said "the ask-first default is SUSPENDED"
+         for EVERY mode. That is true of auto and drain and false of ideate and
+         audit, which imply nothing — so the hook was telling agents entering a
+         read-only or ideation posture that they had been granted autonomy.
+         A Python hook cannot import the registry, so the honest options were a
+         second hardcoded list of autonomy-implying ids (the drift generator this
+         repo names explicitly) or this field. `modeImpliesAutonomy` reads the
+         `implies` closure, so a mode that gains or loses autonomy updates this
+         answer with no second edit. */
+      impliesAutonomy: def.axis === 'autonomy' || modeImpliesAutonomy(def.id),
       ...(res.ok && enabled && isSelf ? { contract: def.contract } : {}),
       /* D-003 — the cascade is reported, never inferred. `impliedNote` is the
          line an agent actually reads; `implied` is the machine-readable detail.

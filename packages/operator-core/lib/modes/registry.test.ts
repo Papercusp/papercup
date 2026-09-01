@@ -661,6 +661,200 @@ describe('TEST mode', () => {
 });
 
 /**
+ * AUDIT mode (audit-mode-2026-09-01 P-002).
+ *
+ * Distilled from the p2p program audit and ratified by the owner 2026-09-01:
+ * "how can we turn the kind of work did into a mode so taht I can tell an agent,
+ * 'go into audit mode' on such and such and have them do a thorough look at not
+ * individual items, but look at the whole picture like you just did".
+ *
+ * The assertions below are not a restatement of the prose — each pins a property
+ * whose loss is SILENT. An audit that quietly drops the lifecycle census, or the
+ * read-only rail, or the route-don't-remediate rail still produces a confident
+ * report; it is just a worse one, and nothing errors.
+ */
+describe('AUDIT mode', () => {
+  const audit = modeById('audit');
+
+  it('is registered as a stackable overlay', () => {
+    expect(audit).not.toBeNull();
+    expect(audit!.axis).toBe('overlay');
+  });
+
+  /**
+   * Deliberate, and the direction of the mistake matters: AUDIT is the one mode
+   * whose whole discipline is to OBSERVE rather than act, and it is routinely run
+   * with the owner watching. An edit that "helpfully" added implies:['auto'] would
+   * turn "come look at this program" into a standing act-don't-ask grant on
+   * exactly the posture that must not have one.
+   */
+  it('implies nothing — being asked to look at something is not a grant to act on it', () => {
+    expect(audit!.implies).toBeUndefined();
+    expect(resolveImpliedModes('audit')).toEqual([]);
+    expect(modeImpliesAutonomy('audit')).toBe(false);
+    expect(autonomousModeIds()).not.toContain('audit');
+  });
+
+  /**
+   * Same reasoning as TEST's: `requiresSubject` exists for modes something
+   * downstream JOINS on, and both consumers are goal-scoped — goal provenance
+   * reads `agent_modes.subject WHERE mode='goal'`, and the edit guard fires on
+   * `agent_modes.mode='goal'`. Setting it here would also route audit users into
+   * mode:set's hardcoded goal-flavoured "use goals:start / subject:'<goals.id>'"
+   * error, which has nothing to do with auditing. Scope rides in `instructions`.
+   */
+  it('requires no subject — the scope rides in mode:set instructions', () => {
+    expect(audit!.requiresSubject).toBeUndefined();
+    expect(modeRequiresSubject('audit')).toBe(false);
+    expect(subjectRequiringModeIds()).not.toContain('audit');
+    expect(audit!.contract).toContain('instructions');
+  });
+
+  it('is not launchable — there is no psu flag for it', () => {
+    expect(audit!.launchable).toBeUndefined();
+    expect(isLaunchableMode('audit')).toBe(false);
+  });
+
+  it('keeps its index one-liner to a single line (P-008)', () => {
+    expect(audit!.oneLiner).not.toContain('\n');
+  });
+
+  /**
+   * The census is the load-bearing half of the mode. A census restricted to OPEN
+   * plans cannot distinguish a program that is converging from one that is
+   * churning — which is the exact question the owner asked ("are they making good
+   * progress or are they just spinning in circles?"). Dropping "shipped" and
+   * "superseded" would leave the loop looking correct while answering a different
+   * question, so the lifecycle words are pinned individually.
+   */
+  it('censuses the FULL lifecycle, not just the open plans', () => {
+    const c = audit!.contract;
+    expect(c).toContain('CENSUS');
+    expect(c).toContain('shipped');
+    expect(c).toContain('superseded');
+    expect(c).toContain('archived');
+  });
+
+  it('cross-checks the ## Now block against the ledger and records contradictions', () => {
+    const c = audit!.contract;
+    expect(c).toContain('## Now');
+    expect(c).toContain('the ledger wins');
+  });
+
+  /** Separating real progress from re-validation churn is the churn half. */
+  it('carries the churn markers and separates progress from re-validation', () => {
+    const c = audit!.contract;
+    expect(c).toContain('CHURN');
+    expect(c).toContain('re-validation');
+    expect(c).toContain('prior-worker');
+  });
+
+  it('checks holder LIVENESS rather than trusting a claim', () => {
+    const c = audit!.contract;
+    expect(c).toContain('coord:presence');
+    expect(c).toContain('A claim is not a worker');
+  });
+
+  /**
+   * The verify rail. "Read the writer behind every number" is the repo's standing
+   * corrective for reporting a metric by its NAME, and an audit is where that
+   * error is most expensive — a wrong number in an audit becomes the owner's
+   * mental model of the whole program.
+   */
+  it('demands the writer behind every number, and forbids manufacturing an owner wall', () => {
+    const c = audit!.contract;
+    expect(c).toContain('VERIFY BEFORE ASSERTING');
+    expect(c).toContain('Read the writer');
+    expect(c).toContain('[self-imposed]');
+    expect(c).toContain('sudo -n');
+  });
+
+  it('diagnoses mechanisms rather than symptoms', () => {
+    const c = audit!.contract;
+    expect(c).toContain('MECHANISMS, NOT SYMPTOMS');
+    expect(c).toContain('citations');
+  });
+
+  /**
+   * The two rails that keep an audit an audit. Without the first it becomes a
+   * work session that also wrote a report; without the second it starts executing
+   * remediation the owner never chose — which is precisely the drift the owner
+   * was reacting to when they asked for the mode.
+   */
+  it('is read-only toward its subject and never remediates un-routed', () => {
+    const c = audit!.contract;
+    expect(c).toContain('Read-only toward the subject');
+    expect(c).toContain('no drive-by fixes');
+    expect(c).toContain('never\n   executes remediation un-routed');
+  });
+
+  it('keeps the anti-false-verdict rails a report is most likely to violate', () => {
+    const c = audit!.contract;
+    expect(c).toContain('"All items terminal" is NOT a finished plan');
+    expect(c).toContain('A single grep is not an absence proof');
+    expect(c).toContain('bounded\n   count is never quoted as a total');
+  });
+});
+
+/**
+ * The everything-goal audit step (audit-mode-2026-09-01 P-007).
+ *
+ * Owner directive 2026-09-01, verbatim: "the everything goal should include an
+ * audit mode step when it seems like items are not progressing". The standing
+ * "Work on everything" goal runs under GOAL mode, so the durable home for the
+ * rule is this contract — the goal ROW's body is data that any future re-creation
+ * of that goal would lose.
+ *
+ * This guard exists because the rule is the kind that gets edited away by
+ * accident: every other route in the GOAL contract answers "nothing is moving"
+ * with more work (another plan, another fleet), so the one clause that says STOP
+ * AND DIAGNOSE reads like an interruption to the flow around it.
+ */
+describe('GOAL mode — the audit step when a lane stops progressing', () => {
+  const goal = modeById('goal');
+
+  it('tells the goal agent to AUDIT a stalled lane before placing more work', () => {
+    const c = goal!.contract;
+    expect(c).toContain('WHEN A LANE STOPS PROGRESSING, AUDIT IT BEFORE PLACING MORE WORK');
+  });
+
+  /**
+   * Naming the mode is what makes the step executable. A clause that said only
+   * "investigate why it is stuck" would pass a looser assertion while leaving the
+   * agent to invent an ad-hoc investigation — the exact thing AUDIT mode replaces.
+   */
+  it('names the concrete mechanism, not a vague "investigate"', () => {
+    const c = goal!.contract;
+    expect(c).toContain("mode:set { mode:'audit'");
+    expect(c).toContain('instructions');
+  });
+
+  /** The signals must be listed, or "seems like items are not progressing" stays a vibe. */
+  it('lists the not-progressing signals the agent is expected to read', () => {
+    const c = goal!.contract;
+    expect(c).toContain('re-claimed by successive');
+    expect(c).toContain('re-validation items');
+    expect(c).toContain('dead holders');
+  });
+
+  it('forbids answering a stalled lane with more work instead of a diagnosis', () => {
+    const c = goal!.contract;
+    expect(c).toContain('STOP\nplacing');
+    expect(c).toContain('instead of a diagnosis');
+  });
+
+  /**
+   * The step must reference a mode that actually exists. If AUDIT were ever
+   * removed from MODES this contract would be instructing every goal agent to
+   * call mode:set with an id the z.enum rejects — a runtime failure the prose
+   * alone cannot catch.
+   */
+  it('references a mode id that is really registered', () => {
+    expect(modeById('audit')).not.toBeNull();
+  });
+});
+
+/**
  * Index completeness (P-008).
  *
  * The su playbooks' hand-written mode index had drifted to 5 entries against a

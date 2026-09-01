@@ -1,8 +1,106 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { VoiceTurnEvent } from '@papercusp/chat-protocol';
-import { createPapercupVoiceTurnAdapter } from './papercup-voice-turn-adapter';
+import {
+  VOICE_PROTOCOL_VERSION,
+  type VoiceExecutorRequest,
+  type VoiceTurnEvent,
+} from '@papercusp/chat-protocol';
+import {
+  PAPERCUP_DEEP_EXECUTOR_ID,
+  PapercupDeepVoiceExecutor,
+  createPapercupVoiceTurnAdapter,
+} from './papercup-voice-turn-adapter';
+
+function deepRequest(): VoiceExecutorRequest<{ vault: 'fresh' }> {
+  return {
+    turn: {
+      version: VOICE_PROTOCOL_VERSION,
+      turnId: 'turn-deep-1',
+      sequence: 7,
+      occurredAt: '2026-08-31T18:00:00.000Z',
+      transport: 'papercup-local',
+      latencyClass: 'deliberative',
+      transcript: 'Use my context to answer this.',
+      conversation: {
+        kind: 'operator',
+        id: 'operator-conversation-1',
+        parentOperatorConversationId: null,
+      },
+      principal: {
+        kind: 'owner',
+        subjectId: 'owner-1',
+        authenticated: true,
+        authoritySource: 'owner-session',
+      },
+      capabilities: {
+        read: ['conversation-history', 'personal-memory'],
+        write: ['conversation-turn'],
+        tools: ['personal:search'],
+      },
+    },
+    context: { vault: 'fresh' },
+  };
+}
 
 describe('PapercupVoiceTurnAdapter', () => {
+  it('delegates a server-routed deep turn to the shared immutable executor session', () => {
+    let now = Date.parse('2026-08-31T18:00:00.000Z');
+    const events: VoiceTurnEvent[] = [];
+    const request = deepRequest();
+    const executor = new PapercupDeepVoiceExecutor<{ vault: 'fresh' }>({ now: () => now });
+    const adapter = createPapercupVoiceTurnAdapter({
+      executor,
+      now: () => now,
+      emit: (event) => { events.push(event); },
+    });
+
+    expect(executor.descriptor).toEqual({
+      id: PAPERCUP_DEEP_EXECUTOR_ID,
+      latencyClass: 'deliberative',
+      delivery: 'deliberative',
+    });
+    expect(adapter.beginExecutorTurn(request)).toMatchObject({
+      type: 'transcript.final',
+      turnId: 'turn-deep-1',
+      sequence: 0,
+    });
+
+    // Mutating the caller-owned object after dispatch cannot widen what the
+    // deep executor sees; the shared session owns a frozen canonical snapshot.
+    request.turn.capabilities.tools.push('untrusted:late-widening');
+    expect(adapter.activeRequest?.turn.capabilities.tools).toEqual(['personal:search']);
+    expect(Object.isFrozen(adapter.activeRequest?.turn.capabilities.tools)).toBe(true);
+
+    now += 180;
+    adapter.assistantSentence('Here is the context-aware answer.');
+    now += 320;
+    expect(adapter.complete()).toMatchObject({
+      type: 'completed',
+      metrics: {
+        executor: PAPERCUP_DEEP_EXECUTOR_ID,
+        latencyClass: 'deliberative',
+        firstSentenceMs: 180,
+        totalMs: 500,
+      },
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      'transcript.final', 'assistant.sentence', 'completed',
+    ]);
+    expect(adapter.complete()).toBeNull();
+  });
+
+  it('refuses to run an interactive request through the deliberative deep executor', () => {
+    const events: VoiceTurnEvent[] = [];
+    const request = deepRequest();
+    request.turn.latencyClass = 'interactive';
+    const adapter = createPapercupVoiceTurnAdapter({
+      emit: (event) => { events.push(event); },
+    });
+
+    expect(adapter.beginExecutorTurn(request)).toBeNull();
+    expect(adapter.activeTurnId).toBeNull();
+    expect(events).toEqual([]);
+  });
+
   it('normalizes a transcript/sentence and emits measured canonical completion', () => {
     let now = Date.parse('2026-08-31T16:00:00.000Z');
     const events: VoiceTurnEvent[] = [];

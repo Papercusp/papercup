@@ -391,6 +391,21 @@ HOW WORK GETS DONE — every route ends in an agent that is not you:
    builder already did gets a launched TEST-mode agent, whose deliverable is
    committed tests and an independent verdict — never the builder re-marking
    its own homework.
+WHEN A LANE STOPS PROGRESSING, AUDIT IT BEFORE PLACING MORE WORK (owner
+directive 2026-09-01, "the everything goal should include an audit mode step
+when it seems like items are not progressing"). Feeding a lane that is not
+converging is the most expensive move available to you, because it LOOKS like
+management while it feeds the loop — and every route above biases you toward it,
+since each answers "nothing is moving" with another plan or another fleet. So
+when a plan or pot in this goal shows the not-progressing signals — items
+non-terminal across several wakes, the same items re-claimed by successive
+workers, re-validation items that verbatim re-do earlier ones, re-opens, claims
+held by dead holders, or a \`## Now\` that no longer matches the ledger — STOP
+placing and AUDIT that scope: mode:set { mode:'audit', reason, instructions:
+'<the plan / pot / lane>' }, or launch an agent to do it if you would rather
+stay on the portfolio. Act on the verdict — retarget, kill, unblock, re-staff —
+and only then resume placing. You already read most of those signals each wake;
+what this step forbids is answering them with more work instead of a diagnosis.
 PARALLELIZE HARD — under-parallelizing is the named failure mode here, not
 over-spending. Run every independent pot, plan and fleet you can at once rather
 than driving one end-to-end and then starting the next; there is no ramp-one-at-
@@ -545,6 +560,71 @@ is not an autonomy posture, and a testing pass with an owner watching is a
 normal one. Scope — what to test, how deep, when to stop — arrives in mode:set's
 own instructions rather than a stored subject, because nothing downstream joins
 on a test's subject the way the goal paths join on a goal's.)`,
+  },
+  {
+    id: 'audit',
+    axis: 'overlay',
+    /*
+     * NO `implies` and NO `requiresSubject`, both deliberate.
+     *
+     * implies: an audit is a READ posture, and it is routinely run with the owner
+     * watching — turning "come look at this program" into a standing act-don't-ask
+     * grant would hand out autonomy on the one mode whose entire discipline is to
+     * observe rather than act.
+     *
+     * requiresSubject: the scope rides in mode:set's own `instructions`, exactly as
+     * TEST's does and for the same measured reason — `requiresSubject` exists for
+     * modes something downstream JOINS on, and nothing joins on an audit's scope.
+     * Verified rather than assumed: goal provenance resolves through
+     * `agent_modes.subject WHERE mode = 'goal'` (work_items/_create-core.ts
+     * stampGoalProvenance) and the edit guard fires on `agent_modes.mode = 'goal'`
+     * (locks/goal-mode-edit-guard.ts), so both consumers are goal-scoped. Setting
+     * the flag here would also point audit users at a hardcoded goal-flavoured
+     * error ("use goals:start … subject:'<goals.id>'", set.ts ~L339) that has
+     * nothing to do with auditing.
+     */
+    title: 'AUDIT — judge the whole program, not its items',
+    oneLiner:
+      'step back and audit an entire program — lifecycle census, ledger truth, flow, liveness, churn mechanisms — and deliver an evidenced verdict instead of an item-by-item status read',
+    contract: `## AUDIT mode — binding contract
+The objective is a VERDICT ON A PROGRAM: not progress on it, and not a status
+read of its items. Scope arrives in this mode's own \`instructions\`. Single-shot
+by default — exit (\`enabled:false\`) once the report is delivered, or when the
+owner says so. Overlay: stacks with AUTO / IDEATE and implies NEITHER.
+1. SCOPE + CENSUS. Resolve the scope to its FULL population — shipped,
+   superseded and archived rows INCLUDED. The lifecycle is the evidence: a
+   census of only the open plans cannot tell progress from churn. Register the
+   audit itself as a work-item; it is a structured deliverable.
+2. LEDGER TRUTH. Per open plan: item statuses (\`plans:items\`), decision volume,
+   revision counts, and a \`## Now\`-vs-ledger cross-check. Now blocks go stale and
+   the ledger wins — RECORD every contradiction rather than quietly reconciling
+   it, because the contradiction is itself a finding.
+3. FLOW + CHURN. Work-item created/closed series for the scope, open residue by
+   state, and the churn markers: prior-worker counts on stuck items,
+   re-validation items (one that verbatim re-does another), re-opens, phantom
+   blockers. Separate real progress from re-validation churn EXPLICITLY — an
+   item closing is not the same as an item advancing.
+4. LIVENESS. Targeted \`coord:presence\` on every named holder. Classify what you
+   find: stranded claims (dead holders), parked custodians, and unassigned
+   critical-path items. A claim is not a worker.
+5. VERIFY BEFORE ASSERTING. Read the writer behind every number before you quote
+   it. Spot-check "done" against tests and code, never against a completion's own
+   prose. Tag every carried directive [owner:…] / [self-imposed] / [inferred],
+   and never manufacture an owner wall — a wall is owner-gated only with the
+   owner's citable words, and for a credential only once \`sudo -n\` has failed too.
+6. DIAGNOSE MECHANISMS, NOT SYMPTOMS. Name the convergence bottleneck and the
+   loops that sustain it — staleness treadmill, custody churn, governance
+   overhead, serial convoys, phantom blockers — each with citations. "It is
+   slow" is a symptom; the loop that keeps it slow is the finding.
+7. DELIVER. A verdict answering the owner's ACTUAL questions; what is left, in
+   execution order; owner-only decisions with provenance; ranked recommendations.
+   Publish the report, record it on the audit work-item with a coverage record
+   (population / checked / residue), THEN ask the remediation route. AUDIT never
+   executes remediation un-routed.
+8. RAILS. Read-only toward the subject: file findings, no drive-by fixes
+   mid-audit. "All items terminal" is NOT a finished plan — check the plan's own
+   status and its ship ceremony. A single grep is not an absence proof. A bounded
+   count is never quoted as a total.`,
   },
 ];
 

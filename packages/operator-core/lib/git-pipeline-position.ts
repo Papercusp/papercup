@@ -3244,9 +3244,12 @@ export function computeStages(
         (g.fireStaleReason ? ` ${g.fireStaleReason}` : '')
       : null;
     const repairQueueDetail = g.repairQueue
-      ? `Frozen repair queue ${g.repairQueue.candidate.slice(0, 12)} is ${g.repairQueue.phase} at head ${g.repairQueue.repairHead.slice(0, 12)} ` +
+      ? `Frozen repair queue ${(
+          g.repairQueue.frozenCandidate ?? g.repairQueue.candidate
+        ).slice(0, 12)} is ${g.repairQueue.phase} with mutable repairHead ${g.repairQueue.repairHead.slice(0, 12)} ` +
         `(age ${Math.round(g.repairQueue.ageMs / 60_000)}m, fixer ${g.repairQueue.fixerSpawnId ?? 'none'} ` +
-        `${g.repairQueue.fixerAlive === null ? 'liveness unknown' : g.repairQueue.fixerAlive ? 'live' : 'not live'}, decision ${g.repairQueue.decision}).`
+        `${g.repairQueue.fixerAlive === null ? 'liveness unknown' : g.repairQueue.fixerAlive ? 'live' : 'not live'}, decision ${g.repairQueue.decision}; ` +
+        `${g.repairQueue.verdictProvenance?.currentStatus === 'no-suite' ? 'no suite ran on repairHead' : 'isolated repair suite result is recorded'}).`
       : null;
     const gateDetail = g.pause
       ? pauseDetail
@@ -4944,7 +4947,7 @@ export async function gitPipelinePosition(
   // `run-probe` non-authoritative on the sibling candidate cell) this stays `null`.
   const candidateFailures = snap.gate.repairQueue
     ? await (deps.readGateCandidateFailures ?? readGateCandidateFailures)({
-        candidateSha: snap.gate.repairQueue.candidate,
+        candidateSha: snap.gate.repairQueue.frozenCandidate ?? snap.gate.repairQueue.candidate,
         repairHeadSha: snap.gate.repairQueue.repairHead,
         root,
         submodulePaths: await submodulePaths(git, root),
