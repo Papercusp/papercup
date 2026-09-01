@@ -27,6 +27,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
+import { recordGateFire } from '../../release/gate-fire-ledger';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName, pipelineTag } from '../../release/pipeline-name';
@@ -53,7 +54,7 @@ import { summarizeStreakCause, type StreakCauseDigest, type StreakTick } from '.
 // does not — it lives in operator-core (checkpoint-log-tags.ts, moved down by
 // EI-19395755190419540), i.e. in THIS package, so the funnel is a plain relative import.
 import { orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
-import { isRecordedInconclusiveStatus } from '../../release/gate-abort-status';
+import { classifyGateAbort, isRecordedInconclusiveStatus } from '../../release/gate-abort-status';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import { admitCheckpointMemory } from '../../release/checkpoint-memory-admission';
 import {
@@ -1166,6 +1167,18 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // Pinned by a source test — a builder nobody calls is the same silent-but-well-formed
   // failure this whole item is about.
   console.log(`${orchestratorStdoutTag()} ${integrationRootEvidence()}`);
+  // P-001 (gate-verdict-liveness-and-repair-reliability-2026-08-31): anchor the FIRE itself,
+  // before routing/admission/skip/spawn — a tick killed anywhere past this line still leaves
+  // one kind='green_checkpoint_fire' ledger row (see ../../release/gate-fire-ledger.ts), so
+  // "fires with no outcome" is reconstructable from SQL alone. Best-effort by contract
+  // (appendPipelineEvent swallows + warns; until migration 1054 applies the DB CHECK makes it
+  // a visible noop). `root` is the best-known-at-entry default — per-hive routing hasn't
+  // resolved yet, and MUST NOT run first: its dynamic import can throw, which is exactly the
+  // vanished-fire class the anchor exists to record.
+  await recordGateFire(
+    { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug },
+    { route: 'scheduled', root: integrationRoot() },
+  );
   const routing = await resolveCheckpointRouting(ctx, integrationRoot());
   if (routing.skip) {
     console.log(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: ${routing.skip.reason}`);
@@ -2327,6 +2340,15 @@ export function gateStallNoopLogMessage(status: string, detail?: string | null):
 }
 
 /**
+ * P-002 (gate-verdict-liveness-and-repair-reliability-2026-08-31): how far forward a recorded
+ * TRANSIENT abort pulls the routine's next fire, instead of waiting out the cron hour. 10min is
+ * prompt without tight-looping: the run-lock serializes attempts, admission still gates each
+ * tick, and a persistently-aborting gate at ~6 attempts/hour is exactly the signal P-003's
+ * no-verdict rate alarm pages on. Exported for the trackGateStall requeue test.
+ */
+export const TRANSIENT_ABORT_REQUEUE_MINS = 10;
+
+/**
  * P-004: track green-checkpoint gate health in the routine metadata (`gate_health`)
  * and fire ONE urgent stall alert when the red streak / age crosses the threshold
  * (transition-only via `stallAlerted`). The data also surfaces on the Git tab via
@@ -2603,6 +2625,40 @@ export async function trackGateStall(
         console.warn(
           `${orchestratorStdoutTag()} inconclusive-verdict record failed: ${e instanceof Error ? e.message : e}`,
         );
+      }
+      // P-002 (gate-verdict-liveness-and-repair-reliability-2026-08-31): a TRANSIENT abort was
+      // caused by something that has ALREADY HAPPENED (external kill, suite-budget SIGTERM, a
+      // deleted module cache, an unexplained crash — see classifyGateAbort) and leaves nothing
+      // standing to clear, so the retry must not wait out the rest of the cron hour: pull the
+      // routine's next fire forward. Deliberately NOT for 'standing-condition' aborts
+      // (migrations-pending, dependency-prewarm-missing, …): those persist until their producer
+      // clears them, so the hourly tick is already the right cadence — a faster loop would only
+      // reproduce the same recorded abort. Not for 'peer-owned' either (a repair owns progress).
+      // Guards, each load-bearing:
+      //   · forward-only — never DELAY a fire already scheduled sooner (a manual/near tick wins);
+      //   · pause-aware — a paused routine keeps its pause (P-004's TTL sweep owns resumption);
+      //   · run-lock + admission still gate the pulled-forward tick, so this cannot stack runs.
+      // Worst case a persistently-transient-aborting gate retries ~6x/hour instead of 1x — which
+      // is exactly the visibility P-003's no-verdict RATE alarm keys on, and strictly better than
+      // discovering the same crash an hour later.
+      if (classifyGateAbort(status) === 'transient') {
+        try {
+          await sql.unsafe(
+            `UPDATE harness_shared.routines
+                SET next_fire_at = now() + make_interval(mins => $2),
+                    updated_at = now()
+              WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+                AND active = true
+                AND metadata->'pause' IS NULL
+                AND (next_fire_at IS NULL OR next_fire_at > now() + make_interval(mins => $2))`,
+            [ctx.installSlug, TRANSIENT_ABORT_REQUEUE_MINS],
+          );
+        } catch (e) {
+          // Same fail-safe contract: a missed requeue degrades to the hourly cron, never worse.
+          console.warn(
+            `${orchestratorStdoutTag()} transient-abort prompt requeue failed: ${e instanceof Error ? e.message : e}`,
+          );
+        }
       }
     }
     // P-003: a serialized repair hold is intentionally a red-counter NOOP, but its targeted

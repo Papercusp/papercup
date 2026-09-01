@@ -171,6 +171,7 @@ import {
   recordCheckpointVerdict,
   recordPendingCheckpointVerdict,
   trackGateStall,
+  TRANSIENT_ABORT_REQUEUE_MINS,
   buildCheckpointDetail,
   buildReleaseFixerKickoff,
   buildScheduledCheckpointShell,
@@ -709,6 +710,93 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
       });
     } finally {
       log.mockRestore();
+    }
+  });
+});
+
+describe('P-002 (gate-verdict-liveness): a recorded TRANSIENT abort requeues promptly, never waits out the cron hour', () => {
+  const requeueCall = () =>
+    fakeSql.unsafe.mock.calls.find(([query]) => String(query).includes('next_fire_at = now() + make_interval'));
+
+  it.each(['error', 'cancelled', 'deadline-exceeded', 'infra-inconclusive'])(
+    'a transient abort (%s) pulls next_fire_at forward by TRANSIENT_ABORT_REQUEUE_MINS',
+    async (status) => {
+      fakeSql.unsafe.mockClear();
+      await trackGateStall(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        status,
+        'abc123def456789',
+        [],
+        '28a3a3d50258',
+        undefined,
+        `${status} detail`,
+      );
+      const update = requeueCall();
+      expect(update).toBeDefined();
+      expect(update![1]).toEqual(['my-harness', TRANSIENT_ABORT_REQUEUE_MINS]);
+      const query = String(update![0]);
+      // The three load-bearing guards: forward-only, pause-aware, active-only. Losing any one
+      // regresses to delaying a sooner fire / fighting P-004's pause TTL / requeueing a dead row.
+      expect(query).toContain("metadata->'pause' IS NULL");
+      expect(query).toContain('active = true');
+      expect(query).toContain('next_fire_at IS NULL OR next_fire_at > now() + make_interval');
+    },
+  );
+
+  it.each(['migrations-pending', 'repair-staging-mismatch', 'dependency-prewarm-missing', 'dependency-generation-unusable'])(
+    'a STANDING-condition abort (%s) does NOT requeue — the condition persists until its producer clears it',
+    async (status) => {
+      fakeSql.unsafe.mockClear();
+      await trackGateStall(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        status,
+        'abc123def456789',
+        [],
+        '28a3a3d50258',
+        undefined,
+        `${status} detail`,
+      );
+      expect(requeueCall()).toBeUndefined();
+    },
+  );
+
+  it('a peer-owned hold (repair-in-progress) does NOT requeue — the repair owns progress', async () => {
+    fakeSql.unsafe.mockClear();
+    await trackGateStall(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      'repair-in-progress',
+      'abc123def456789',
+      [],
+      '28a3a3d50258',
+      undefined,
+      'repair detail',
+    );
+    expect(requeueCall()).toBeUndefined();
+  });
+
+  it('a requeue failure is fail-safe: warns and degrades to the hourly cron, never throws', async () => {
+    fakeSql.unsafe.mockClear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      fakeSql.unsafe.mockImplementation(async (query: unknown) => {
+        if (String(query).includes('next_fire_at = now() + make_interval')) throw new Error('pg down');
+        return Object.assign([] as unknown[], { count: 0 });
+      });
+      await expect(
+        trackGateStall(
+          { workspaceId: 'ws-42', installSlug: 'my-harness' },
+          'cancelled',
+          'abc123def456789',
+          [],
+          '28a3a3d50258',
+          undefined,
+          'killed externally',
+        ),
+      ).resolves.not.toThrow();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('transient-abort prompt requeue failed'));
+    } finally {
+      warn.mockRestore();
+      fakeSql.unsafe.mockImplementation(async (..._a: unknown[]) => Object.assign([] as unknown[], { count: 0 }));
     }
   });
 });
@@ -2796,7 +2884,25 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
     const stdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'not-green', green: false, candidate: 'abc123', recorded: true })}\n`;
     spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
     await getSystemAction('green-checkpoint')!(ctx);
-    expect(appendPipelineEvent).not.toHaveBeenCalled();
+    // P-001 (gate-verdict-liveness): the tick's FIRE ANCHOR (kind='green_checkpoint_fire') is
+    // the ONE permitted append — it marks the fire itself at entry, rides a separate kind no
+    // outcome consumer reads, and fires on EVERY tick by design. What this test forbids is a
+    // second OUTCOME row (kind='green_checkpoint') double-counting the run's own verdict.
+    const outcomeAppends = appendPipelineEvent.mock.calls.filter(
+      ([ev]) => (ev as { kind?: string }).kind !== 'green_checkpoint_fire',
+    );
+    expect(outcomeAppends).toEqual([]);
+    const anchors = appendPipelineEvent.mock.calls.filter(
+      ([ev]) => (ev as { kind?: string }).kind === 'green_checkpoint_fire',
+    );
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]![0]).toMatchObject({
+      kind: 'green_checkpoint_fire',
+      status: 'fired',
+      workspaceId: 'ws-42',
+      installSlug: 'my-harness',
+      detail: expect.objectContaining({ route: 'scheduled' }),
+    });
     // The decisive one: no gate_health read-modify-write, so the streak moves exactly once per
     // verdict — by the run that produced it.
     expect(fakeSql.unsafe).not.toHaveBeenCalledWith(expect.stringContaining('gate_health'), expect.anything());
