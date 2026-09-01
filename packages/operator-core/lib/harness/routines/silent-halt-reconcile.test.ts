@@ -150,6 +150,8 @@ function sweepHarness(
     sendWakeMessage?: ReturnType<typeof vi.fn>;
     fireWake?: ReturnType<typeof vi.fn>;
     readFleetParkPath?: SilentHaltSweepDeps['readFleetParkPath'];
+    /** Engine-loop residue fed to the end classifier; default = never armed (⇒ 'abnormal'). */
+    readEngineLoopRows?: SilentHaltSweepDeps['readEngineLoopRows'];
   } = {},
 ) {
   const nowMs = opts.nowMs ?? Date.now();
@@ -178,7 +180,7 @@ function sweepHarness(
           readWakeMarkers,
           sendWakeMessage: sendWakeMessage as unknown as SilentHaltSweepDeps['sendWakeMessage'],
           fireWake: fireWake as unknown as SilentHaltSweepDeps['fireWake'],
-          readEngineLoopRows: (async () => ({})) as never,
+          readEngineLoopRows: opts.readEngineLoopRows ?? ((async () => ({})) as never),
           readFleetParkPath: opts.readFleetParkPath ?? (async () => null),
         },
       }),
@@ -517,5 +519,39 @@ describe('sweepSilentHalts — wake-first rung (P-003)', () => {
     expect(body).toMatch(/park directive in force/);
     // The awaitable key is COPIED from the declaration (describeParkResumePath), never re-typed.
     expect(body).toMatch(/events:await \{ event: 'fleet:f1:resume' \}/);
+  });
+
+  it("FRAMING, not gating (D-005): a holder the classifier calls 'deliberate' is still WOKEN, and its page names that verdict", async () => {
+    // Engine-loop residue present and all inactive ⇒ isStoodDownOwner ⇒ 'deliberate'.
+    // Over the silent-halt population that is EVERY candidate (D-005), so gating the
+    // wake on abnormalEnd would wake nobody. This case FAILS if gating is reintroduced:
+    // the wake leg must select on the marker alone and consume the verdict as framing.
+    const stoodDown: SilentHaltSweepDeps['readEngineLoopRows'] = async () => ({
+      'su-halted': [{ active: false }],
+    });
+    const first = sweepHarness([candidate()], halted, {
+      nowMs: now,
+      wakeFirstEnabled: true,
+      readEngineLoopRows: stoodDown,
+    });
+    const r1 = await first.run();
+    expect(r1.woken).toEqual(['su-halted']);
+    expect(r1.paged).toEqual([]);
+
+    const later = now + 10 * MIN;
+    const marker: SilentHaltWakeMarker = {
+      to: ['su-halted'],
+      summary: wakeMarkerSummary('su-halted', disarmEpochToken(later, 130 * MIN)),
+      ts: new Date(now).toISOString(),
+    };
+    const second = sweepHarness([candidate({ inactiveForMs: 130 * MIN })], halted, {
+      nowMs: later,
+      wakeFirstEnabled: true,
+      markers: [marker],
+      readEngineLoopRows: stoodDown,
+    });
+    const r2 = await second.run();
+    expect(r2.paged).toEqual(['su-halted']);
+    expect(second.notify.mock.calls[0][0].data.endClassification).toBe('deliberate');
   });
 });
