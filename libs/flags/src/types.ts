@@ -1754,6 +1754,18 @@ export const FLAGS = {
   // drainless goal is only ever REPORTED after the kickoff grace — exactly the
   // pre-P-001 behavior.
   GOAL_DRAIN_FLEET_AUTOMINT: "papercusp-goal-drain-fleet-automint",
+  // WI-2140699 (card 4 goal-mode-e2e, owner:Avi 2026-09-01 grade+fix mandate): gates
+  // the goal-drain-fleet watchdog's RELAUNCH leg — for a STANDING, live-held goal whose
+  // declared drain fleet has read dead/missing for a full sweep (10 min, durable
+  // metadata.drainRespawn.deadSinceMs), re-mint the goal-scoped lane and launch ONE
+  // headless member through launch-su, at most 3 per rolling hour; a spent budget flips
+  // needsHuman and escalates once. Measured failure: the everything-goal's drain fleet
+  // had 0 live members for 3.5h+ while the report-only rail fired twice and the holder
+  // never awaited the event. Outcome (non-standing) goals stay report-only. Same
+  // authority as GOAL_DRAIN_FLEET_AUTOMINT above (the platform already spawns this
+  // member at goals:start with no agent action). DEFAULT ON. OFF = the kill-switch:
+  // the watchdog keeps reporting + emitting, it just never launches.
+  GOAL_DRAIN_FLEET_RELAUNCH: "papercusp-goal-drain-fleet-relaunch",
   // goal-mode-design-intent-hardening-2026-08-16 P-008 (EI-20581177540737568 half 2):
   // gates the goal-edit-claim watchdog — a ~90s pkey-range sweep of
   // edit_attribution_ledger joined to goal-mode agent_modes rows on ACTIVE goals.

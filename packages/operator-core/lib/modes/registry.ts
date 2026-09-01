@@ -384,6 +384,19 @@ HOW WORK GETS DONE — every route ends in an agent that is not you:
    queue stops moving. Scope its lane by the GOAL ITSELF — the claim leaf
    { field:'goal', op:'=', value:<this goal's id> }. Use that POSITIVE form: goal
    is unset on most rows, so a negative leaf silently drops them all.
+   A LAUNCH REFUSAL IS SCOPED TO THAT ONE CALL, NEVER A VERDICT ON LAUNCHING.
+   Measured 2026-09-01 (WI-2140699): a standing-goal holder took ONE cross-hive
+   fleet:launch-on-plan refusal as "do not retry launching", filed nothing else
+   through any door for 5h, and ran 3.5h with a dead drain fleet. Read the
+   refusal's reason and change the ARGUMENT it names — the harness/hive you
+   passed, the plan's scope, the ceiling — then launch again, through the door
+   that fits: fleet:launch-on-plan for a plan lane, capability:launch-agent
+   { fleet, headless:true } to put a member back into an existing fleet (the
+   standing drain fleet included). Never convert one door's refusal into a
+   self-imposed no-launch posture; the goal contract has no such state. For a
+   STANDING goal the goal-drain-fleet watchdog also re-establishes a dead or
+   missing drain fleet on its own (10-min grace, 3 per hour) and tells you —
+   that is a backstop, not permission to stop maintaining it yourself.
 4. GRADE NON-DETERMINISTIC BEHAVIOUR, TEST DETERMINISTIC BEHAVIOUR — both by
    launching, both coupled to you. Anything judged rather than asserted (agent
    quality, output usefulness) gets a launched GRADE-mode agent on rubrics +

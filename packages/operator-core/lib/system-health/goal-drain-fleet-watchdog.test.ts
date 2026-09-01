@@ -5,8 +5,13 @@ import type { Sql } from 'postgres';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import type { GoalHolderLike } from './goal-liveness-watchdog';
 import {
+  GOAL_DRAIN_FLEET_DEAD_GRACE_MS,
   GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
+  GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT,
   claimSpecFilterConstrainsGoal,
+  decideGoalDrainFleetRelaunch,
+  goalDrainRelaunchEligibility,
+  parseGoalDrainRespawnLedger,
   claimSpecIsPlanScoped,
   classifyGoalDrainFleet,
   classifyGoalPlanFleetCoverage,
@@ -15,6 +20,9 @@ import {
   scanGoalDrainFleets,
   type DrainFleetLiveness,
   type DrainFleetSpecScope,
+  type GoalDrainAlert,
+  type GoalDrainFleetSweepDeps,
+  type GoalDrainRelaunchResult,
   type GoalDrainRowLike,
   type GoalPlanFleetCohort,
 } from './goal-drain-fleet-watchdog';
@@ -397,19 +405,20 @@ describe('runGoalDrainFleetSweepOnce', () => {
     flagEnabled: vi.fn(async () => true),
     now: () => NOW,
     graceMs: GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
+    ...relaunchDeps(),
   });
 
   it('skips entirely when the flag is off', async () => {
     const deps = { ...baseDeps(), flagEnabled: vi.fn(async () => false) };
     const res = await runGoalDrainFleetSweepOnce(sql, deps);
-    expect(res).toEqual({ scanned: 0, escalated: 0, skipped: true });
+    expect(res).toEqual({ scanned: 0, escalated: 0, skipped: true, relaunched: 0, relaunchCapped: 0 });
     expect(deps.readGoals).not.toHaveBeenCalled();
   });
 
   it('escalates AND emits for a dead declared fleet', async () => {
     const deps = baseDeps();
     const res = await runGoalDrainFleetSweepOnce(sql, deps);
-    expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false });
+    expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false, relaunched: 0, relaunchCapped: 0 });
     expect(deps.escalate).toHaveBeenCalledTimes(1);
     expect(deps.emitDrainDead).toHaveBeenCalledTimes(1);
     expect(deps.escalate).toHaveBeenCalledWith(
@@ -441,7 +450,7 @@ describe('runGoalDrainFleetSweepOnce', () => {
         throw new Error('escalation surface down');
       });
       const res = await runGoalDrainFleetSweepOnce(sql, deps);
-      expect(res).toEqual({ scanned: 1, escalated: 0, skipped: false });
+      expect(res).toEqual({ scanned: 1, escalated: 0, skipped: false, relaunched: 0, relaunchCapped: 0 });
       expect(deps.emitDrainDead).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('escalate failed for g-1'));
     } finally {
@@ -457,7 +466,7 @@ describe('runGoalDrainFleetSweepOnce', () => {
         throw new Error('event engine down');
       });
       const res = await runGoalDrainFleetSweepOnce(sql, deps);
-      expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false });
+      expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false, relaunched: 0, relaunchCapped: 0 });
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('event emit failed for g-1'));
     } finally {
       warn.mockRestore();
@@ -474,7 +483,7 @@ describe('runGoalDrainFleetSweepOnce', () => {
     );
     deps.resolveFleetSpecScopes = vi.fn(async () => scopes({ 'g-1': 'goal-scoped' as const }));
     const res = await runGoalDrainFleetSweepOnce(sql, deps);
-    expect(res).toEqual({ scanned: 1, escalated: 0, skipped: false });
+    expect(res).toEqual({ scanned: 1, escalated: 0, skipped: false, relaunched: 0, relaunchCapped: 0 });
     expect(deps.escalate).not.toHaveBeenCalled();
     expect(deps.emitDrainDead).not.toHaveBeenCalled();
     // D-005: scope was actually consulted for the alive pair — an implementation
@@ -492,7 +501,7 @@ describe('runGoalDrainFleetSweepOnce', () => {
     );
     deps.resolveFleetSpecScopes = vi.fn(async () => scopes({ 'g-1': 'not-goal-scoped' as const }));
     const res = await runGoalDrainFleetSweepOnce(sql, deps);
-    expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false });
+    expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false, relaunched: 0, relaunchCapped: 0 });
     expect(deps.escalate).toHaveBeenCalledWith(
       expect.objectContaining({ reason: 'drain-fleet-not-goal-scoped' }),
     );
@@ -502,5 +511,272 @@ describe('runGoalDrainFleetSweepOnce', () => {
     const deps = baseDeps(); // baseDeps liveness: dead
     await runGoalDrainFleetSweepOnce(sql, deps);
     expect(deps.resolveFleetSpecScopes).toHaveBeenCalledWith([]);
+  });
+});
+
+// ── WI-2140699: the relaunch leg ──────────────────────────────────────────────
+
+/** Inert relaunch-leg deps: every ledger write records, nothing launches unless a test says so. */
+function relaunchDeps(): Pick<
+  GoalDrainFleetSweepDeps,
+  | 'relaunchFlagEnabled'
+  | 'markDrainDead'
+  | 'reserveRelaunchSlot'
+  | 'clearDrainLedger'
+  | 'relaunchDrainFleet'
+  | 'notifyRelaunch'
+  | 'escalateRelaunchExhausted'
+  | 'deadGraceMs'
+> {
+  return {
+    relaunchFlagEnabled: vi.fn(async () => true),
+    // Default: the episode began a full grace ago, so the timing leg says relaunch.
+    markDrainDead: vi.fn(async () => NOW - GOAL_DRAIN_FLEET_DEAD_GRACE_MS),
+    reserveRelaunchSlot: vi.fn(async () => ({ kind: 'reserved' as const, attemptsInWindow: 1 })),
+    clearDrainLedger: vi.fn(async () => {}),
+    relaunchDrainFleet: vi.fn(
+      async (): Promise<GoalDrainRelaunchResult> => ({ fleetSlug: 'drain-1', ownerId: 'su-drain-1', warnings: [] }),
+    ),
+    notifyRelaunch: vi.fn(async () => {}),
+    escalateRelaunchExhausted: vi.fn(async () => {}),
+    deadGraceMs: GOAL_DRAIN_FLEET_DEAD_GRACE_MS,
+  };
+}
+
+describe('goalDrainRelaunchEligibility (pure gate)', () => {
+  const dead = { reason: 'drain-fleet-dead' as const };
+  it('a dead or missing declared fleet on a standing goal is eligible', () => {
+    expect(goalDrainRelaunchEligibility(dead, { standing: true, drainRespawn: null })).toEqual({ eligible: true });
+    expect(
+      goalDrainRelaunchEligibility({ reason: 'drain-fleet-not-found' }, { standing: true, drainRespawn: null }),
+    ).toEqual({ eligible: true });
+  });
+  it('an outcome (non-standing) goal keeps the report-only posture', () => {
+    expect(goalDrainRelaunchEligibility(dead, { standing: false, drainRespawn: null })).toEqual({
+      eligible: false,
+      why: 'not-standing',
+    });
+    expect(goalDrainRelaunchEligibility(dead, { drainRespawn: null })).toMatchObject({ why: 'not-standing' });
+  });
+  it('undeclared / mis-scoped reasons are holder decisions, never relaunches', () => {
+    for (const reason of ['no-drain-fleet-declared', 'drain-fleet-not-goal-scoped'] as const) {
+      expect(goalDrainRelaunchEligibility({ reason }, { standing: true, drainRespawn: null })).toEqual({
+        eligible: false,
+        why: 'reason-not-relaunchable',
+      });
+    }
+  });
+  it('a spent budget (needsHuman) holds until a human clears it', () => {
+    expect(
+      goalDrainRelaunchEligibility(dead, { standing: true, drainRespawn: { deadSinceMs: 1, needsHuman: true } }),
+    ).toEqual({ eligible: false, why: 'needs-human' });
+  });
+});
+
+describe('decideGoalDrainFleetRelaunch (pure timing)', () => {
+  it('waits inside the dead grace, relaunches at/after it', () => {
+    expect(decideGoalDrainFleetRelaunch(NOW - 1, NOW)).toMatchObject({
+      kind: 'wait',
+      remainingMs: GOAL_DRAIN_FLEET_DEAD_GRACE_MS - 1,
+    });
+    expect(decideGoalDrainFleetRelaunch(NOW - GOAL_DRAIN_FLEET_DEAD_GRACE_MS, NOW)).toMatchObject({
+      kind: 'relaunch',
+      deadForMs: GOAL_DRAIN_FLEET_DEAD_GRACE_MS,
+    });
+    expect(decideGoalDrainFleetRelaunch(NOW - 3 * GOAL_DRAIN_FLEET_DEAD_GRACE_MS, NOW, 60_000)).toMatchObject({
+      kind: 'relaunch',
+    });
+  });
+  it('a future or non-finite stamp reads as "just now" — one more sweep of patience, never a relaunch off a bad clock', () => {
+    expect(decideGoalDrainFleetRelaunch(NOW + 5_000, NOW)).toMatchObject({ kind: 'wait', deadSinceMs: NOW });
+    expect(decideGoalDrainFleetRelaunch(Number.NaN, NOW)).toMatchObject({ kind: 'wait', deadSinceMs: NOW });
+  });
+});
+
+describe('parseGoalDrainRespawnLedger', () => {
+  it('reads a well-formed ledger, tolerates numeric strings, and treats junk as no episode', () => {
+    expect(parseGoalDrainRespawnLedger({ deadSinceMs: 5, needsHuman: true })).toEqual({ deadSinceMs: 5, needsHuman: true });
+    expect(parseGoalDrainRespawnLedger({ deadSinceMs: '7' })).toEqual({ deadSinceMs: 7, needsHuman: false });
+    expect(parseGoalDrainRespawnLedger({ attempts: [1, 2] })).toEqual({ deadSinceMs: null, needsHuman: false });
+    expect(parseGoalDrainRespawnLedger(null)).toBeNull();
+    expect(parseGoalDrainRespawnLedger('x')).toBeNull();
+    expect(parseGoalDrainRespawnLedger([1])).toBeNull();
+  });
+});
+
+describe('runGoalDrainFleetSweepOnce — relaunch leg (WI-2140699)', () => {
+  const sql = null as unknown as Sql;
+  const standingGoal = () =>
+    makeGoal({ drainFleet: 'drain-1', standing: true, installSlug: 'papercusp', drainRespawn: null });
+
+  const deadStandingDeps = () => ({
+    readGoals: vi.fn(async () => ({ goals: [standingGoal()], holders: [makeHolder()] })),
+    resolveLiveness: vi.fn(async () => verdicts(makeVerdict('su-a', 'live'))),
+    resolveFleetLiveness: vi.fn(async () => fleets({ [fleetKey('ws', 'drain-1')]: 'dead' as const })),
+    resolveFleetSpecScopes: vi.fn(async () => scopes()),
+    escalate: vi.fn(async () => {}),
+    emitDrainDead: vi.fn(async () => {}),
+    flagEnabled: vi.fn(async () => true),
+    now: () => NOW,
+    graceMs: GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
+    ...relaunchDeps(),
+  });
+
+  it('GUARD: a standing goal whose declared fleet stayed dead past the grace gets exactly ONE relaunch, the ledger is charged first, and the holder is told', async () => {
+    const deps = deadStandingDeps();
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false, relaunched: 1, relaunchCapped: 0 });
+    // the report-only rail still fires for the parked holder…
+    expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({ reason: 'drain-fleet-dead', standing: true }));
+    expect(deps.emitDrainDead).toHaveBeenCalledTimes(1);
+    // …and the relaunch leg ran in ledger order: mark → reserve → launch → notify
+    expect(deps.markDrainDead).toHaveBeenCalledWith(expect.objectContaining({ goalId: 'g-1' }), NOW);
+    expect(deps.reserveRelaunchSlot).toHaveBeenCalledTimes(1);
+    expect(deps.relaunchDrainFleet).toHaveBeenCalledTimes(1);
+    const [alert, goal] = (deps.relaunchDrainFleet as ReturnType<typeof vi.fn>).mock.calls[0] as [GoalDrainAlert, GoalDrainRowLike];
+    expect(alert.liveHolders).toEqual(['su-a']);
+    expect(goal.installSlug).toBe('papercusp');
+    expect(deps.notifyRelaunch).toHaveBeenCalledWith(
+      expect.objectContaining({ goalId: 'g-1' }),
+      expect.objectContaining({ goalId: 'g-1' }),
+      expect.objectContaining({ fleetSlug: 'drain-1', ownerId: 'su-drain-1' }),
+    );
+    expect(deps.escalateRelaunchExhausted).not.toHaveBeenCalled();
+    expect(deps.clearDrainLedger).not.toHaveBeenCalled();
+    // reservation happens BEFORE the launch — a crash mid-launch still costs the budget
+    const order = (name: keyof typeof deps) => (deps[name] as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(order('markDrainDead')).toBeLessThan(order('reserveRelaunchSlot'));
+    expect(order('reserveRelaunchSlot')).toBeLessThan(order('relaunchDrainFleet'));
+  });
+
+  it('a missing (not-found) declared fleet on a standing goal relaunches the same way', async () => {
+    const deps = deadStandingDeps();
+    deps.resolveFleetLiveness = vi.fn(async () => fleets({ [fleetKey('ws', 'drain-1')]: 'not-found' as const }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ relaunched: 1, relaunchCapped: 0 });
+    expect(deps.relaunchDrainFleet).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'drain-fleet-not-found' }),
+      expect.anything(),
+    );
+  });
+
+  it('inside the dead grace it only stamps the clock — no reservation, no launch', async () => {
+    const deps = deadStandingDeps();
+    deps.markDrainDead = vi.fn(async () => NOW); // first sighting this sweep
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ escalated: 1, relaunched: 0, relaunchCapped: 0 });
+    expect(deps.markDrainDead).toHaveBeenCalledTimes(1);
+    expect(deps.reserveRelaunchSlot).not.toHaveBeenCalled();
+    expect(deps.relaunchDrainFleet).not.toHaveBeenCalled();
+  });
+
+  it('GUARD: a spent budget launches nothing and escalates the give-up exactly once per sweep', async () => {
+    const deps = deadStandingDeps();
+    deps.reserveRelaunchSlot = vi.fn(async () => ({
+      kind: 'capped' as const,
+      attemptsInWindow: GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT,
+    }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ relaunched: 0, relaunchCapped: 1 });
+    expect(deps.relaunchDrainFleet).not.toHaveBeenCalled();
+    expect(deps.escalateRelaunchExhausted).toHaveBeenCalledWith(
+      expect.objectContaining({ goalId: 'g-1' }),
+      GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT,
+    );
+  });
+
+  it('once the ledger says needsHuman the leg is skipped before any write', async () => {
+    const deps = deadStandingDeps();
+    deps.readGoals = vi.fn(async () => ({
+      goals: [makeGoal({ drainFleet: 'drain-1', standing: true, drainRespawn: { deadSinceMs: 1, needsHuman: true } })],
+      holders: [makeHolder()],
+    }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ escalated: 1, relaunched: 0, relaunchCapped: 0 });
+    expect(deps.markDrainDead).not.toHaveBeenCalled();
+    expect(deps.relaunchFlagEnabled).not.toHaveBeenCalled();
+  });
+
+  it('an OUTCOME goal (standing:false) keeps the pre-WI-2140699 posture: report + emit, never launch, no ledger writes', async () => {
+    const deps = deadStandingDeps();
+    deps.readGoals = vi.fn(async () => ({ goals: [makeGoal({ drainFleet: 'drain-1', standing: false })], holders: [makeHolder()] }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false, relaunched: 0, relaunchCapped: 0 });
+    expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({ standing: false }));
+    expect(deps.markDrainDead).not.toHaveBeenCalled();
+    expect(deps.relaunchFlagEnabled).not.toHaveBeenCalled();
+    expect(deps.relaunchDrainFleet).not.toHaveBeenCalled();
+  });
+
+  it('the relaunch flag is the kill-switch: OFF keeps reporting and writes nothing', async () => {
+    const deps = deadStandingDeps();
+    deps.relaunchFlagEnabled = vi.fn(async () => false);
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ escalated: 1, relaunched: 0 });
+    expect(deps.markDrainDead).not.toHaveBeenCalled();
+    expect(deps.relaunchDrainFleet).not.toHaveBeenCalled();
+  });
+
+  it('the flag is read at most once per sweep, and only when some alert is eligible', async () => {
+    const deps = deadStandingDeps();
+    deps.readGoals = vi.fn(async () => ({
+      goals: [standingGoal(), makeGoal({ goalId: 'g-2', drainFleet: 'drain-2', standing: true, installSlug: 'papercusp' })],
+      holders: [makeHolder(), makeHolder({ goalId: 'g-2' })],
+    }));
+    deps.resolveFleetLiveness = vi.fn(async () =>
+      fleets({ [fleetKey('ws', 'drain-1')]: 'dead' as const, [fleetKey('ws', 'drain-2')]: 'dead' as const }),
+    );
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ relaunched: 2 });
+    expect(deps.relaunchFlagEnabled).toHaveBeenCalledTimes(1);
+  });
+
+  it('a launch that throws is contained: the sweep continues, nothing else is charged, and the failure is logged with the budget note', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const deps = deadStandingDeps();
+      deps.relaunchDrainFleet = vi.fn(async () => {
+        throw new Error('launch-su down');
+      });
+      const res = await runGoalDrainFleetSweepOnce(sql, deps);
+      expect(res).toMatchObject({ escalated: 1, relaunched: 0, relaunchCapped: 0 });
+      expect(deps.notifyRelaunch).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('relaunch failed for g-1'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('budget charged'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a fleet that reads ALIVE again ends the episode: the ledger (dead clock + needsHuman) is cleared', async () => {
+    const deps = deadStandingDeps();
+    deps.readGoals = vi.fn(async () => ({
+      goals: [
+        makeGoal({ drainFleet: 'drain-1', standing: true, drainRespawn: { deadSinceMs: NOW - 1, needsHuman: true } }),
+        makeGoal({ goalId: 'g-clean', drainFleet: 'drain-clean', standing: true, drainRespawn: { deadSinceMs: null, needsHuman: false } }),
+      ],
+      holders: [makeHolder(), makeHolder({ goalId: 'g-clean' })],
+    }));
+    deps.resolveFleetLiveness = vi.fn(async () =>
+      fleets({ [fleetKey('ws', 'drain-1')]: 'alive' as const, [fleetKey('ws', 'drain-clean')]: 'alive' as const }),
+    );
+    deps.resolveFleetSpecScopes = vi.fn(async () => scopes({ 'g-1': 'goal-scoped' as const, 'g-clean': 'goal-scoped' as const }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toEqual({ scanned: 2, escalated: 0, skipped: false, relaunched: 0, relaunchCapped: 0 });
+    expect(deps.clearDrainLedger).toHaveBeenCalledTimes(1);
+    expect(deps.clearDrainLedger).toHaveBeenCalledWith(expect.objectContaining({ goalId: 'g-1' }));
+  });
+
+  it('an UNKNOWN fleet verdict never clears the ledger (conservative rule holds on the way out too)', async () => {
+    const deps = deadStandingDeps();
+    deps.readGoals = vi.fn(async () => ({
+      goals: [makeGoal({ drainFleet: 'drain-1', standing: true, drainRespawn: { deadSinceMs: NOW - 1, needsHuman: false } })],
+      holders: [makeHolder()],
+    }));
+    deps.resolveFleetLiveness = vi.fn(async () => fleets({ [fleetKey('ws', 'drain-1')]: 'unknown' as const }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ escalated: 0, relaunched: 0 });
+    expect(deps.clearDrainLedger).not.toHaveBeenCalled();
+    expect(deps.markDrainDead).not.toHaveBeenCalled();
   });
 });
