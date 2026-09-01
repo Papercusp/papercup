@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   getCompletionIntegrityStats: vi.fn(),
   fleetEverMembers: vi.fn(),
   resolveAgentIdentity: vi.fn(),
+  agentOriginToolCallOwnersSince: vi.fn(),
 }));
 
 vi.mock('../../agent-fleets-store', async () => {
@@ -33,6 +34,17 @@ vi.mock('../../fleet/fleet-roster', async () => {
     liveFleetMemberIds: (...a: unknown[]) => h.liveFleetMemberIds(...a),
     countRunningWorkspaceBees: (...a: unknown[]) => h.countRunningWorkspaceBees(...a),
     countRunningFleetBees: (...a: unknown[]) => h.countRunningFleetBees(...a),
+  };
+});
+// WI-2034624: productive headcount is attested from recent agent-origin
+// execution over the canonical live roster, so the telemetry read is its own
+// mocked IO seam. `null` is its honest "leg failed" value, NOT a measured zero.
+vi.mock('../../fleet/assignments', async () => {
+  const actual =
+    await vi.importActual<typeof import('../../fleet/assignments')>('../../fleet/assignments');
+  return {
+    ...actual,
+    agentOriginToolCallOwnersSince: (...a: unknown[]) => h.agentOriginToolCallOwnersSince(...a),
   };
 });
 vi.mock('../../work-items', () => ({
@@ -120,6 +132,9 @@ beforeEach(() => {
   h.countRunningFleetBees.mockResolvedValue(0);
   h.getFleetHeadcountTarget.mockResolvedValue(null);
   h.liveFleetMemberIds.mockResolvedValue([]);
+  // Matches the real helper: an empty id list short-circuits to an empty Set —
+  // a MEASURED zero, never the `null` that means the telemetry leg failed.
+  h.agentOriginToolCallOwnersSince.mockResolvedValue(new Set<string>());
   h.getCompletionIntegrityStats.mockResolvedValue({
     harness: 'papercusp',
     terminalTotal: 10,
@@ -178,6 +193,9 @@ describe('fleet:status', () => {
       lastError: null,
     });
     h.liveFleetMemberIds.mockResolvedValueOnce(['su-1', 'su-2', 'su-3']);
+    // Telemetry unreadable: only then does a legacy fleet fall back to its
+    // live-roster count.
+    h.agentOriginToolCallOwnersSince.mockResolvedValueOnce(null);
 
     const out = parse(await invoke({ fleet: 'rocket' }));
 
@@ -191,6 +209,7 @@ describe('fleet:status', () => {
       basis: {
         kind: 'legacy-live-roster-fallback',
         liveRosterMembers: 3,
+        executingMembers: null,
         transactionWorkerReadyMembers: null,
       },
     });
@@ -209,6 +228,7 @@ describe('fleet:status', () => {
       lastError: null,
     });
     h.liveFleetMemberIds.mockResolvedValueOnce(['su-1', 'su-2']);
+    h.agentOriginToolCallOwnersSince.mockResolvedValueOnce(new Set(['su-1', 'su-2']));
 
     const out = parse(await invoke({ fleet: 'rocket' }));
 
@@ -220,14 +240,18 @@ describe('fleet:status', () => {
       underStrength: null,
       verdict: 'disabled',
       basis: {
-        kind: 'legacy-live-roster-fallback',
+        kind: 'agent-origin-execution-attested',
         liveRosterMembers: 2,
+        executingMembers: 2,
         transactionWorkerReadyMembers: null,
       },
     });
   });
 
-  it('reports productive headcount from worker-ready ids intersected with the live roster', async () => {
+  // WI-2034624: `su-prior-transaction-live` is deliberately ABSENT from
+  // `workerReadyMemberIds` and present in the execution attestation — the exact
+  // shape the old transaction-scoped intersection dropped.
+  it('reports productive headcount from agent-origin execution over the live roster', async () => {
     h.getFleet.mockResolvedValueOnce({
       workspaceId: 'ws',
       fleetSlug: 'rocket',
@@ -251,23 +275,32 @@ describe('fleet:status', () => {
       backoffMs: 0,
       lastError: null,
     });
-    h.liveFleetMemberIds.mockResolvedValueOnce(['su-ready-live', 'su-unready-live']);
+    h.liveFleetMemberIds.mockResolvedValueOnce([
+      'su-ready-live',
+      'su-unready-live',
+      'su-prior-transaction-live',
+    ]);
+    h.agentOriginToolCallOwnersSince.mockResolvedValueOnce(
+      new Set(['su-ready-live', 'su-prior-transaction-live']),
+    );
 
     const out = parse(await invoke({ fleet: 'rocket' }));
 
     expect(out.headcount).toEqual({
       enabled: true,
       target: 3,
-      current: 1,
-      shortfall: 2,
+      current: 2,
+      shortfall: 1,
       underStrength: true,
       verdict: 'under-strength',
       basis: {
-        kind: 'worker-ready-live-intersection',
-        liveRosterMembers: 2,
+        kind: 'agent-origin-execution-attested',
+        liveRosterMembers: 3,
+        executingMembers: 2,
         transactionWorkerReadyMembers: 2,
       },
     });
+    expect(out.degradedLegs ?? []).not.toContain('headcountExecuting');
   });
 
   it('labels unconfirmed launch ids by the roster presence read', async () => {
@@ -618,6 +651,7 @@ describe('fleet:status', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       h.getFleetHeadcountTarget.mockReturnValue(new Promise(() => {}));
       h.liveFleetMemberIds.mockResolvedValueOnce(['su-live']);
+      h.agentOriginToolCallOwnersSince.mockResolvedValueOnce(new Set(['su-live']));
       const resultPromise = invoke({ fleet: 'rocket' });
       await vi.advanceTimersByTimeAsync(10_000);
       const out = parse(await resultPromise);
@@ -629,8 +663,9 @@ describe('fleet:status', () => {
         underStrength: null,
         verdict: 'unknown',
         basis: {
-          kind: 'legacy-live-roster-fallback',
+          kind: 'agent-origin-execution-attested',
           liveRosterMembers: 1,
+          executingMembers: 1,
           transactionWorkerReadyMembers: null,
         },
       });

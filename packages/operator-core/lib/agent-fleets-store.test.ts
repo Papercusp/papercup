@@ -140,72 +140,156 @@ describe('projectFleetHeadcountState — productive worker population (EI-212754
     lastError: null,
   } as never;
 
-  it('counts only transaction worker-ready ids that are also in the live launch roster', () => {
+  it('counts live members attested by recent agent-origin execution', () => {
     expect(measureFleetProductiveHeadcount(
-      { workerReadyMemberIds: ['su-ready-live', 'su-ready-gone', 'su-ready-gone'] } as never,
-      ['su-ready-live', 'su-unready-live', 'su-other-live', 'su-other-live'],
+      { workerReadyMemberIds: ['su-ready-live'] } as never,
+      ['su-ready-live', 'su-other-live', 'su-idle-live', 'su-other-live'],
+      new Set(['su-ready-live', 'su-other-live', 'su-not-on-roster']),
     )).toEqual({
-      current: 1,
+      current: 2,
       basis: {
-        kind: 'worker-ready-live-intersection',
+        kind: 'agent-origin-execution-attested',
         liveRosterMembers: 3,
-        transactionWorkerReadyMembers: 2,
+        executingMembers: 2,
+        transactionWorkerReadyMembers: 1,
       },
     });
     expect(projectFleetHeadcountState(
       enabled,
-      { workerReadyMemberIds: ['su-ready-live', 'su-ready-gone', 'su-ready-gone'] } as never,
-      ['su-ready-live', 'su-unready-live', 'su-other-live', 'su-other-live'],
+      { workerReadyMemberIds: ['su-ready-live'] } as never,
+      ['su-ready-live', 'su-other-live', 'su-idle-live'],
+      new Set(['su-ready-live', 'su-other-live']),
     )).toEqual({
       enabled: true,
       target: 4,
-      current: 1,
-      shortfall: 3,
+      current: 2,
+      shortfall: 2,
       underStrength: true,
       verdict: 'under-strength',
       basis: {
-        kind: 'worker-ready-live-intersection',
+        kind: 'agent-origin-execution-attested',
         liveRosterMembers: 3,
-        transactionWorkerReadyMembers: 2,
+        executingMembers: 2,
+        transactionWorkerReadyMembers: 1,
       },
     });
   });
 
-  it('treats an explicitly empty worker-ready snapshot as measured zero, not legacy', () => {
+  // WI-2034624 REGRESSION. `current` was the live roster INTERSECT the CURRENT
+  // launch transaction's worker-ready ids, so a member opened by a prior
+  // transaction — or rebuilt by a carry-respawn — was invisible however hard it
+  // was working. Reproduced at the measured incident ratio: 37 live, 3 recorded
+  // worker-ready, 22 demonstrably executing. The old code answered 3.
+  it('counts an executing member the current launch transaction never recorded', () => {
+    const live = Array.from({ length: 37 }, (_, i) => `su-live-${i}`);
+    const transactionWorkerReady = live.slice(0, 3);
+    const executing = new Set(live.slice(0, 22));
+    const measured = measureFleetProductiveHeadcount(
+      { workerReadyMemberIds: transactionWorkerReady } as never,
+      live,
+      executing,
+    );
+    expect(measured.current).toBe(22);
+    expect(measured.basis).toEqual({
+      kind: 'agent-origin-execution-attested',
+      liveRosterMembers: 37,
+      executingMembers: 22,
+      transactionWorkerReadyMembers: 3,
+    });
+    // The transaction population is retained ONLY as a diagnostic; it must never
+    // be able to cap the count.
+    expect(measured.current).toBeGreaterThan(measured.basis.transactionWorkerReadyMembers!);
+  });
+
+  // The RECURRENCE GUARD for the whole class, stated as the invariant rather
+  // than as one shape: while the attestation is readable, the launch
+  // transaction must be unable to influence `current` AT ALL. Any future edit
+  // that lets transaction state back into the count — an intersection, a cap, a
+  // filter, a "prefer the recorded set when present" branch — breaks this
+  // without needing anyone to have anticipated its particular shape.
+  it('never lets launch-transaction state change the attested count', () => {
+    const live = ['su-a', 'su-b', 'su-c'];
+    const executing = new Set(['su-a', 'su-b']);
+    const transactions: unknown[] = [
+      null,
+      undefined,
+      {},
+      { workerReadyMemberIds: [] },
+      { workerReadyMemberIds: ['su-c'] },                       // disjoint from executing
+      { workerReadyMemberIds: ['su-a'] },                       // a strict subset
+      { workerReadyMemberIds: [...live, 'su-not-live'] },       // a superset
+      { workerAttestations: [], governor: {} },
+      { workerReadyMemberIds: ['su-c'], workerAttestations: [], governor: {} },
+    ];
+    for (const transaction of transactions) {
+      const measured = measureFleetProductiveHeadcount(
+        transaction as never,
+        live,
+        executing,
+      );
+      expect({ transaction, current: measured.current, kind: measured.basis.kind }).toEqual({
+        transaction,
+        current: 2,
+        kind: 'agent-origin-execution-attested',
+      });
+      expect(measured.basis.executingMembers).toBe(2);
+    }
+  });
+
+  it('measures headcount even when the launch-transaction read itself failed', () => {
+    expect(measureFleetProductiveHeadcount(undefined, ['su-a', 'su-b'], new Set(['su-a'])))
+      .toEqual({
+        current: 1,
+        basis: {
+          kind: 'agent-origin-execution-attested',
+          liveRosterMembers: 2,
+          executingMembers: 1,
+          transactionWorkerReadyMembers: null,
+        },
+      });
+  });
+
+  it('treats an empty executing set as a measured zero, not unknown', () => {
     expect(projectFleetHeadcountState(
       enabled,
-      { workerReadyMemberIds: [] } as never,
-      ['su-live-but-unready'],
+      { workerReadyMemberIds: ['su-live-but-silent'] } as never,
+      ['su-live-but-silent'],
+      new Set<string>(),
     )).toMatchObject({
       current: 0,
       shortfall: 4,
       verdict: 'under-strength',
       basis: {
-        kind: 'worker-ready-live-intersection',
+        kind: 'agent-origin-execution-attested',
         liveRosterMembers: 1,
-        transactionWorkerReadyMembers: 0,
+        executingMembers: 0,
+        transactionWorkerReadyMembers: 1,
       },
     });
   });
 
   it('retains the old live-roster count only for a transaction predating worker attestation', () => {
-    expect(projectFleetHeadcountState(enabled, null, ['su-a', 'su-b'])).toMatchObject({
+    expect(projectFleetHeadcountState(enabled, null, ['su-a', 'su-b'], null)).toMatchObject({
       current: 2,
       shortfall: 2,
       verdict: 'under-strength',
       basis: {
         kind: 'legacy-live-roster-fallback',
         liveRosterMembers: 2,
+        executingMembers: null,
         transactionWorkerReadyMembers: null,
       },
     });
   });
 
-  it('keeps an incomplete modern transaction unknown instead of crediting every live process', () => {
+  // The failure this replaces silently narrowed to the transaction population.
+  // Unknown is the only honest answer, and it makes the governor fail closed.
+  it('keeps a modern transaction with unreadable telemetry unknown, never worker-ready-scoped', () => {
     expect(projectFleetHeadcountState(
       enabled,
-      { workerAttestations: [] } as never,
-      ['su-live-but-unverified'],
+      { workerReadyMemberIds: ['su-recorded'] } as never,
+      ['su-recorded', 'su-live-from-a-prior-transaction'],
+      null,
     )).toMatchObject({
       current: null,
       shortfall: null,
@@ -213,26 +297,38 @@ describe('projectFleetHeadcountState — productive worker population (EI-212754
       verdict: 'unknown',
       basis: {
         kind: 'unknown',
-        liveRosterMembers: 1,
-        transactionWorkerReadyMembers: null,
+        liveRosterMembers: 2,
+        executingMembers: null,
+        transactionWorkerReadyMembers: 1,
       },
     });
   });
 
-  it('keeps a failed transaction or roster read unknown with the observed side in its basis', () => {
-    expect(projectFleetHeadcountState(enabled, undefined, ['su-live'])).toMatchObject({
+  it('keeps a failed roster read unknown with the observed side in its basis', () => {
+    expect(projectFleetHeadcountState(enabled, undefined, ['su-live'], null)).toMatchObject({
       current: null,
       verdict: 'unknown',
-      basis: { kind: 'unknown', liveRosterMembers: 1, transactionWorkerReadyMembers: null },
+      basis: {
+        kind: 'unknown',
+        liveRosterMembers: 1,
+        executingMembers: null,
+        transactionWorkerReadyMembers: null,
+      },
     });
     expect(projectFleetHeadcountState(
       enabled,
       { workerReadyMemberIds: ['su-ready'] } as never,
       null,
+      new Set(['su-ready']),
     )).toMatchObject({
       current: null,
       verdict: 'unknown',
-      basis: { kind: 'unknown', liveRosterMembers: null, transactionWorkerReadyMembers: 1 },
+      basis: {
+        kind: 'unknown',
+        liveRosterMembers: null,
+        executingMembers: null,
+        transactionWorkerReadyMembers: 1,
+      },
     });
   });
 });

@@ -89,8 +89,9 @@ describe('headcount aggregate projection (WI-41145)', () => {
               underStrength: true,
               verdict: 'under-strength',
               basis: {
-                kind: 'worker-ready-live-intersection',
+                kind: 'agent-origin-execution-attested',
                 liveRosterMembers: 53,
+                executingMembers: 3,
                 transactionWorkerReadyMembers: 5,
                 ignoredLargeField: 'x'.repeat(4_000),
               },
@@ -108,8 +109,9 @@ describe('headcount aggregate projection (WI-41145)', () => {
         underStrength: true,
         verdict: 'under-strength',
         basis: {
-          kind: 'worker-ready-live-intersection',
+          kind: 'agent-origin-execution-attested',
           liveRosterMembers: 53,
+          executingMembers: 3,
           transactionWorkerReadyMembers: 5,
         },
       });

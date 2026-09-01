@@ -51,6 +51,7 @@ import {
   getFleet,
   getFleetHeadcountTarget,
   projectFleetHeadcountState,
+  FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
   type FleetControlState,
   type FleetLaunchGovernorAction,
   type FleetLaunchGovernorOutcome,
@@ -3395,12 +3396,33 @@ export async function buildLeaderBrief(
         }),
     ] as const,
   );
+  // WI-2034624: `current` is attested from recent agent-origin execution over
+  // the canonical live roster — never from the current launch transaction's
+  // worker-ready set, which excludes every member a prior transaction or a
+  // carry-respawn created. Deliberately a SEPARATE read from the WI-583276
+  // collapse leg below: that one wants a tight window so silence is noticed
+  // fast, this one wants a wide one so a legitimately parked member is not
+  // mistaken for a missing seat. A failed read stays UNKNOWN.
+  const headcountExecutingRead = await withBoundedTimeout(
+    headcountCurrentResult.value == null
+      ? Promise.resolve(null)
+      : agentOriginToolCallOwnersSince(
+          headcountCurrentResult.value,
+          FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+        ),
+    {
+      fallback: null,
+      timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+      label: 'leader-brief:headcountExecuting',
+    },
+  );
   const headcount = projectFleetHeadcountState(
     headcountTargetResult.value,
     fleetRecordResult.value === undefined
       ? undefined
       : fleetRecordResult.value?.lastLaunchTransaction ?? null,
     headcountCurrentResult.value,
+    headcountExecutingRead.value,
   );
   const rosterEntries: DecoratedAgent[] = rosterResult.entries.map((entry) => ({
     ...entry,

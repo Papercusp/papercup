@@ -52,8 +52,9 @@ describe('buildFleetPopulationLifecycle', () => {
         underStrength: true,
         verdict: 'under-strength',
         basis: {
-          kind: 'worker-ready-live-intersection',
+          kind: 'agent-origin-execution-attested',
           liveRosterMembers: 4,
+          executingMembers: 2,
           transactionWorkerReadyMembers: 2,
         },
       },
@@ -77,8 +78,9 @@ describe('buildFleetPopulationLifecycle', () => {
         current: 2,
         verdict: 'under-strength',
         basis: {
-          kind: 'worker-ready-live-intersection',
+          kind: 'agent-origin-execution-attested',
           liveRosterMembers: 4,
+          executingMembers: 2,
           transactionWorkerReadyMembers: 2,
         },
       },

@@ -128,6 +128,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       target: 5,
       productiveCapacityFloor: 2,
       liveMemberIds: [],
+      executingMemberIds: new Set<string>(),
       transaction: null,
       now: 10_000,
     });
@@ -144,13 +145,14 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       target: 5,
       productiveCapacityFloor: 2,
       liveMemberIds: ['su-a', 'su-b'],
+      executingMemberIds: new Set(['su-a', 'su-b']),
       transaction: ready,
       now: 10_000,
     });
     expect(bulk).toMatchObject({ action: 'spawn', spawnCount: 3, workerReadyMemberIds: ['su-a', 'su-b'] });
   });
 
-  it('uses worker-ready live capacity for the deficit and opens a bounded wave once the floor is proven', () => {
+  it('uses attested executing capacity for the deficit and opens a bounded wave once the floor is proven', () => {
     const current = transaction(['su-ready', 'su-unverified-a', 'su-unverified-b'], {
       openedMemberIds: [],
       verifiedMemberIds: ['su-ready'],
@@ -171,17 +173,74 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       target: 3,
       productiveCapacityFloor: 1,
       liveMemberIds: ['su-ready', 'su-unverified-a', 'su-unverified-b'],
+      executingMemberIds: new Set(['su-ready']),
       transaction: current,
       now: 20_000,
     })).toMatchObject({
       productiveMemberCount: 1,
       deficit: 2,
-      headcountBasis: { kind: 'worker-ready-live-intersection' },
+      headcountBasis: { kind: 'agent-origin-execution-attested' },
       action: 'spawn',
       spawnCount: 2,
       pruneCandidateIds: [],
       unverifiedMemberIds: ['su-unverified-a', 'su-unverified-b'],
     });
+  });
+
+  // WI-2034624 REGRESSION — the churn engine. Members opened by a PRIOR launch
+  // transaction (or rebuilt by a carry-respawn) never re-enter the current
+  // transaction's `workerReadyMemberIds`, so sizing the deficit from that set
+  // reported a fleet at 3/50 while 37 members were live and 22 were executing.
+  // The governor then requested replacements it did not need, forever: 144
+  // ever-members in 13h, 932 lifetime on the predecessor fleet, each churned
+  // boot re-burning the quota that is the REAL constraint. `current` must come
+  // from execution over the canonical roster, so a member this transaction
+  // never recorded still counts.
+  it('counts executing members the current transaction never recorded, and asks for no replacement', () => {
+    const live = Array.from({ length: 37 }, (_, i) => `su-live-${i}`);
+    const current = transaction(live.slice(0, 3), {
+      openedMemberIds: [],
+      verifiedMemberIds: live.slice(0, 3),
+      unconfirmedMemberIds: [],
+      // Only THIS transaction's three seats are recorded ready.
+      workerReadyMemberIds: live.slice(0, 3),
+      workerAttestations: live.slice(0, 3).map((id) => workerAttestation(id, true)),
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+
+    const assessment = assessFleetHeadcountGovernor({
+      target: 20,
+      productiveCapacityFloor: 1,
+      liveMemberIds: live,
+      executingMemberIds: new Set(live.slice(0, 22)),
+      transaction: current,
+      now: 20_000,
+    });
+
+    expect(assessment).toMatchObject({
+      productiveMemberCount: 22,
+      deficit: 0,
+      action: 'wait',
+      spawnCount: 0,
+      headcountBasis: {
+        kind: 'agent-origin-execution-attested',
+        liveRosterMembers: 37,
+        executingMembers: 22,
+        transactionWorkerReadyMembers: 3,
+      },
+    });
+    // The failing behavior in one assertion: the transaction population must not
+    // be able to cap the count, or the governor spawns into an already-full fleet.
+    expect(assessment.productiveMemberCount).toBeGreaterThan(
+      assessment.workerReadyMemberIds.length,
+    );
   });
 
   it('keeps the one-canary guard while unverified seats coexist with an unproven productive floor', () => {
@@ -205,6 +264,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       target: 8,
       productiveCapacityFloor: 2,
       liveMemberIds: ['su-unverified-a', 'su-unverified-b'],
+      executingMemberIds: new Set<string>(),
       transaction: current,
       now: 20_000,
     })).toMatchObject({
@@ -239,6 +299,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     expect(assessFleetHeadcountGovernor({
       target: 2,
       liveMemberIds: ['su-ready', 'su-stale-unready'],
+      executingMemberIds: new Set(['su-ready']),
       transaction: current,
       now: 20_000,
     })).toMatchObject({
@@ -256,6 +317,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     const before = assessFleetHeadcountGovernor({
       target: 1,
       liveMemberIds: [],
+      executingMemberIds: new Set<string>(),
       transaction: slow,
       now: 2_000,
     });
@@ -272,6 +334,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     const after = assessFleetHeadcountGovernor({
       target: 1,
       liveMemberIds: ['su-slow'],
+      executingMemberIds: new Set(['su-slow']),
       transaction: slow,
       now: 3_000,
     });
@@ -288,6 +351,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     const result = assessFleetHeadcountGovernor({
       target: 1,
       liveMemberIds: ['su-legacy'],
+      executingMemberIds: new Set(['su-legacy']),
       transaction: legacy,
       now: 20_000,
     });
@@ -347,6 +411,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       target: 3,
       productiveCapacityFloor: 1,
       liveMemberIds: ['su-live-ready', 'su-live-unknown'],
+      executingMemberIds: new Set(['su-live-ready']),
       transaction: normalized,
       now: 30_000,
     })).toMatchObject({ action: 'spawn', spawnCount: 2, pendingOpenedMemberIds: [] });
@@ -370,6 +435,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     const retry = assessFleetHeadcountGovernor({
       target: 1,
       liveMemberIds: ['su-dark'],
+      executingMemberIds: new Set<string>(),
       transaction: member,
       now: 20_000,
     });
@@ -379,6 +445,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     const prune = assessFleetHeadcountGovernor({
       target: 1,
       liveMemberIds: ['su-dark'],
+      executingMemberIds: new Set<string>(),
       transaction: member,
       now: 20_000,
     });
@@ -404,6 +471,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     const result = assessFleetHeadcountGovernor({
       target: 1,
       liveMemberIds: ['su-unknown'],
+      executingMemberIds: new Set<string>(),
       transaction: member,
       now: 20_000,
     });
@@ -428,6 +496,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     expect(assessFleetHeadcountGovernor({
       target: 1,
       liveMemberIds: ['su-stuck'],
+      executingMemberIds: new Set<string>(),
       transaction: member,
       now: 1_000 + 300_000,
     })).toMatchObject({
@@ -444,6 +513,9 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       target: 2,
       productiveCapacityFloor: 1,
       liveMemberIds: [],
+      // Telemetry unreadable + a transaction with no worker contract: the legacy
+      // live-roster fallback is still the honest reading of an empty roster.
+      executingMemberIds: null,
       transaction: null,
       now: 20_000,
     });
@@ -461,6 +533,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       headcountBasis: {
         kind: 'legacy-live-roster-fallback',
         liveRosterMembers: 0,
+        executingMembers: null,
         transactionWorkerReadyMembers: null,
       },
       deficit: 2,

@@ -1389,6 +1389,12 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     try {
       liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
         .filter((id) => id !== launcherOwnerId);
+      // Re-attest over the post-launch roster: the members just opened are the
+      // ones whose execution the next deficit must account for.
+      executingMemberIds = await agentOriginToolCallOwnersSince(
+        liveMemberIds,
+        FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+      );
     } catch (error) {
       rosterError = `post-launch live roster read failed: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -1396,6 +1402,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       target: attempt.target,
       productiveCapacityFloor,
       liveMemberIds,
+      executingMemberIds,
       transaction: launchTransaction,
       now: Date.now(),
     });

@@ -129,7 +129,14 @@ function compactClaimableNow(value: unknown): unknown {
 /** Keep the productive-headcount provenance beside the six numeric fields while
  * bounding it to the stable, machine-readable fields emitted by the store. */
 function compactHeadcountBasis(value: unknown): unknown {
-  return pick(value, ['kind', 'liveRosterMembers', 'transactionWorkerReadyMembers'], 120) ?? value;
+  return pick(
+    value,
+    // `executingMembers` is the population `current` is actually counted from
+    // (WI-2034624); dropping it would leave a leader reading the count with no
+    // way to see which population produced it.
+    ['kind', 'liveRosterMembers', 'executingMembers', 'transactionWorkerReadyMembers'],
+    120,
+  ) ?? value;
 }
 
 /** P-005: validate and keep this bounded aggregate atomically. Its metadata is
