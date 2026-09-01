@@ -160,6 +160,8 @@ import {
 } from './design-evidence-gate';
 import { evaluateFeatureDesignGate } from '../../design-compare/feature-gate';
 import { designCompareDepsFor } from '../../design-compare/host-install';
+import { typeEvidenceGapInCompletion } from '../type-evidence-gap';
+export { typeEvidenceGapInCompletion } from '../type-evidence-gap';
 
 // EI-7031: coerce structured LLM mis-shapes (scalar↔array swaps, missing summary)
 // to the CompletionRecord contract BEFORE validation. A bare string is intentionally
@@ -544,11 +546,6 @@ function hasIntentionalTestNameFilterProof(
   return cleanRun.test(prose);
 }
 
-/** Source files whose correctness a test run says nothing about. */
-const TYPECHECKED_SOURCE_RE = /\.(?:[cm]?ts|tsx)$/i;
-/** Any mention of a real type check, in the caller's OWN evidence prose. */
-const TYPECHECK_MENTION_RE = /\b(?:tsc|typecheck|type-check|lint:tsc|build:typecheck)\b/i;
-
 type TypecheckGate = { npmScript: string; prefixes: string[] };
 
 /**
@@ -768,23 +765,6 @@ async function typecheckCommandsForFiles(files: string[]): Promise<string> {
  * LOOK, so a nudge at the moment of the claim is the whole fix. PURE — unit-tested
  * without PG.
  */
-export function typeEvidenceGapInCompletion(
-  evidence: CompletionVerificationEvidence | undefined,
-): { tsFiles: string[] } | undefined {
-  if (!evidence) return undefined;
-  const how = evidence.verifiedHow;
-  if (how !== 'unit' && how !== 'integration' && how !== 'already-passing') return undefined;
-  const tsFiles = (evidence.filesChanged ?? []).filter((f) => TYPECHECKED_SOURCE_RE.test(f.trim()));
-  if (tsFiles.length === 0) return undefined;
-  // The caller's OWN words settle it: if they mention a typecheck anywhere in the
-  // evidence, they already looked, and a nudge would be noise. Deliberately checks
-  // testsRun AND testResult — the command tends to live in one and the verdict in
-  // the other, and a caller who ran `lint:tsc` may record it in either.
-  const prose = `${evidence.testsRun ?? ''}\n${evidence.testResult ?? ''}`;
-  if (TYPECHECK_MENTION_RE.test(prose)) return undefined;
-  return { tsFiles };
-}
-
 /** Injectable filesystem seam so the check below is unit-testable without a real tree. */
 export interface CompletionPathProbe {
   repoRoot?: string | null;
