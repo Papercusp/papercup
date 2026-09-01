@@ -71,6 +71,14 @@ export interface ChecksBootSection {
   command?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /**
+   * Wall-clock budget for `buildCommand`; default 1800000 (30min). A real
+   * production build is minutes long and its tail is load-dependent, so this
+   * has to be sized from the app's MEASURED build time with margin, not from a
+   * round number. The `boot-e2e` vitest timeout is derived from this rather
+   * than hand-maintained beside it — see that check's budget preamble.
+   */
+  buildTimeoutMs?: number;
   readyTimeoutMs?: number;
   shutdownGraceMs?: number;
 }

@@ -6,22 +6,23 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "A guard that reasons from ABSENCE reports a blind enumerator as 'fixed' — and the gate calls it a real break"
 description: "A green-gate red held main ~6.5h / 70 commits for the whole fleet on failures that were ENVIRONMENTAL, not code: the release/checkpoint checkout archive-extracts submodules, so they have no .git, so `git ls-files --recurse-submodules` silently returns superproject-only. Guards then scanned 0 submodule files and the child-output ratchet — the one assertion that reasons from absence — reported 12 live unsafe sites as 'fixed — DELETE this key from BASELINE'. Following that advice would have retired a chunk-safety guard over ~21% of the repo. Covers the presence-vs-absence rule for writing guards, how to tell an environment red from a code red, why the gate's isolation re-run CONFIRMS such a red instead of absorbing it, and the marker technique that settles 'is my fix in the candidate' in one call."
+type: Convention
 discovered: 2026-08-02
-tags: [operator, green-checkpoint, release-pipeline, lint-guards, submodules, tracked-files, agent-orientation]
+tags: ["operator", "green-checkpoint", "release-pipeline", "lint-guards", "submodules", "tracked-files", "agent-orientation"]
 status: active
 documents:
-  - scripts/lib/tracked-files.mjs
-  - packages/operator-core/lib/child-output-guard.test.ts
-  - apps/operator/bin/release/setup-release-checkout.sh
-  - apps/operator/lib/release/release-config.ts
+  - "scripts/lib/tracked-files.mjs"
+  - "packages/operator-core/lib/child-output-guard.test.ts"
+  - "apps/operator/bin/release/setup-release-checkout.sh"
+  - "apps/operator/lib/release/release-config.ts"
+  - "libs/generic/sync/src/transports/polling/query-fetcher.ts"
+normative: true
+governs:
+  - "writing a lint guard that enumerates the tree"
+  - "diagnosing a green-checkpoint red"
 issues:
   - EI-19298378364087215
   - EI-19301033966613245
-normative: true
-governs:
-  - writing a lint guard that enumerates the tree
-  - diagnosing a green-checkpoint red
-type: Convention
 generated:
   by: agent
   at: 2026-08-01
@@ -98,7 +99,7 @@ not finding a thing* must first establish it **looked**. Concretely:
 
 :::caution[Do not "fix" this by weakening the guard]
 The non-recursive version of this guard reported green over ~21% of the repo. That is
-how a raw NUL byte shipped in `libs/generic/sync/src/query-fetcher.ts` — it made the
+how a raw NUL byte shipped in `libs/generic/sync/src/transports/polling/query-fetcher.ts` — it made the
 whole file binary to grep, so an audit of that very code path read as "that code does
 not exist". Deleting baseline entries or relaxing the assertion re-opens exactly that
 hole.
