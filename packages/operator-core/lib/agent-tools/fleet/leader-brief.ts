@@ -42,10 +42,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
-import {
-  canonicalExecutableWidth,
-  exactPositiveSinglePlanSlugFromFilter,
-} from '../../fleet/executable-frontier';
+import { canonicalExecutableWidth, exactPositiveSinglePlanSlugFromFilter } from '../../fleet/executable-frontier';
 import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
@@ -77,18 +74,10 @@ import {
 } from './leadership-disposition';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows, type SelfRef } from '../coordination/self-marker';
-import {
-  buildFleetPopulationLifecycle,
-  selectFleetPopulation,
-  type FleetPopulationCensus,
-} from './fleet-population';
+import { buildFleetPopulationLifecycle, selectFleetPopulation, type FleetPopulationCensus } from './fleet-population';
 import { fleetEverMembers } from '../../fleet-membership-store';
 import { COORD_ROLES } from '../coordination/roles';
-import {
-  listFleetRosterDiagnosed,
-  liveFleetMemberIds,
-  type ListFleetRosterResult,
-} from '../../fleet/fleet-roster';
+import { listFleetRosterDiagnosed, liveFleetMemberIds, type ListFleetRosterResult } from '../../fleet/fleet-roster';
 import {
   agentOriginToolCallOwnersSince,
   executingOwnersSince,
@@ -127,7 +116,11 @@ import {
   type UnownedCriticalCandidate,
   type OrphanedInFlightCandidate,
 } from '../../harness/improvements/unowned-critical-escalation';
-import { fetchFleetAdmissionBlocks, type FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
+import {
+  readFleetAdmissionBlocks,
+  type FleetAdmissionBlock,
+  type FleetAdmissionBlockRead,
+} from '../coordination/fleet-scope-admission-blocks';
 import type { InvariantEvaluation } from './invariants';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import {
@@ -157,10 +150,7 @@ import {
   parseFleetMetricsResult,
   type FleetMetricsResult,
 } from './fleet-metrics-contract';
-import {
-  resolveFleetMetricScope,
-  type FleetMetricScopeResolution,
-} from './fleet-metrics-scope';
+import { resolveFleetMetricScope, type FleetMetricScopeResolution } from './fleet-metrics-scope';
 import { buildFleetMetricsResult } from '../work_items/burn_down';
 import { trimToByteBudget } from '../_bound-output';
 import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
@@ -207,7 +197,12 @@ export const LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS = 750;
 export const LEADER_BRIEF_TOTAL_TIMEOUT_MS = 25_000;
 
 export interface LeaderBriefFleetMetricsDeps {
-  resolveScope(input: { workspaceId: string; harness: string; fleet: string; flowMode: 'current-spec' }): Promise<FleetMetricScopeResolution>;
+  resolveScope(input: {
+    workspaceId: string;
+    harness: string;
+    fleet: string;
+    flowMode: 'current-spec';
+  }): Promise<FleetMetricScopeResolution>;
   listItems(input: { harness: string; includeObservations: true; limit: number }): Promise<WorkItem[]>;
   readOccurrences(input: { workspaceId: string; harnessSlug: string; since: string }): Promise<IssueOccurrenceCounts>;
   build(
@@ -362,12 +357,20 @@ export async function runBoundedLeaderBriefReads<T extends readonly (() => Promi
   if (reads.length !== fallbacks.length) {
     throw new Error('leader-brief bounded read fallback count mismatch for ' + label);
   }
-  const boundedReads = reads.map((read, index) =>
-    () => boundedLeaderBriefRead<unknown>(label + ':' + index, read, fallbacks[index], timeoutMs),
+  const boundedReads = reads.map(
+    (read, index) => () => boundedLeaderBriefRead<unknown>(label + ':' + index, read, fallbacks[index], timeoutMs),
   );
   return (await runLeaderBriefReads(boundedReads as never, concurrency)) as {
     [K in keyof T]: LeaderBriefReadResult<T[K]>;
   };
+}
+
+/** PURE: keep an unavailable admission read distinct from a measured zero. */
+export function projectFleetAdmissionBlockRead(read: FleetAdmissionBlockRead): {
+  blocks: FleetAdmissionBlock[];
+  count: number | null;
+} {
+  return read.available ? { blocks: read.blocks, count: read.blocks.length } : { blocks: [], count: null };
 }
 
 /**
@@ -427,12 +430,13 @@ export async function readLeaderMonitoringBlindAdvisory(
   try {
     const eventKeys = resolveFleetLeaderTransitionEventKeys({ fleetSlug });
     const reads = await runLeaderBriefReads(
-      eventKeys.map((eventKey) => () =>
-        withBoundedTimeout(readActiveAwaits(eventKey), {
-          fallback: null,
-          timeoutMs,
-          label: 'leader-brief:monitoring-blind-awaiters',
-        }),
+      eventKeys.map(
+        (eventKey) => () =>
+          withBoundedTimeout(readActiveAwaits(eventKey), {
+            fallback: null,
+            timeoutMs,
+            label: 'leader-brief:monitoring-blind-awaiters',
+          }),
       ) as never,
     );
     const results = reads as Array<Awaited<ReturnType<typeof withBoundedTimeout<readonly unknown[] | null>>>>;
@@ -579,6 +583,9 @@ export interface LeaderBriefMember {
    *  disproves it. */
   stalled: boolean;
   contextPressure: ContextPressureBucket | null;
+  /** Seconds since the cached estimate behind contextPressure was recorded.
+   *  null means the estimate age is unavailable. */
+  contextPressureAgeSec: number | null;
   /** coord-delivery-residual-gaps P-001: this LIVE member has not read its
    *  coord mail for a whole budget window despite fresh activity — a
    *  coord:send to it will NOT be seen until it wakes/settles. Absent when
@@ -691,11 +698,12 @@ export interface LeaderBriefLaunchWorkerAttestation {
 export function compactLaunchWorkerAttestation(
   transaction: FleetLaunchTransaction | null | undefined,
 ): LeaderBriefLaunchWorkerAttestation | undefined {
-  if (!transaction || (
-    transaction.workerAttestations == null &&
-    transaction.workerReadyMemberIds == null &&
-    transaction.governor?.terminalVerdict == null
-  )) {
+  if (
+    !transaction ||
+    (transaction.workerAttestations == null &&
+      transaction.workerReadyMemberIds == null &&
+      transaction.governor?.terminalVerdict == null)
+  ) {
     return undefined;
   }
   const workerReadyMemberIds = [...new Set(transaction.workerReadyMemberIds ?? [])];
@@ -2617,6 +2625,7 @@ export type DecoratedAgent = AgentAssignment & {
   parkedOnResolved?: Array<string | ComposedParkEntry>;
   verifiedWaitTakeovers?: VerifiedWaitTakeoverAlert[];
   contextPressure?: ContextPressureBucket | null;
+  contextPressureAgeSec?: number | null;
   coordHook?: CoordDeafState | null;
   coordLastReadAgoSec?: number | null;
   unanswered?: UnansweredDirectedSummary;
@@ -3068,6 +3077,7 @@ export function projectMember(
     load: a.load,
     stalled: a.stalled === true && !speakingNow,
     contextPressure: a.contextPressure ?? null,
+    contextPressureAgeSec: a.contextPressureAgeSec ?? null,
     ...(a.coordHook ? { coordHook: a.coordHook } : {}),
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
     ...(a.directives ? { directives: a.directives } : {}),
@@ -3380,11 +3390,10 @@ export async function buildLeaderBrief(
   // answer for every fleet this owner leads.
   const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
   const membership = caller.resolveCallerMembership
-    ? await boundedLeaderBriefRead(
-        'presence-fleet',
-        () => resolvePresenceFleet(ownerId, deriveFleetMembership()),
-        { fleetSlug: null as string | null, fleetRole: null },
-      )
+    ? await boundedLeaderBriefRead('presence-fleet', () => resolvePresenceFleet(ownerId, deriveFleetMembership()), {
+        fleetSlug: null as string | null,
+        fleetRole: null,
+      })
     : { fleetSlug: null as string | null, fleetRole: null };
   const ledFleets =
     args.fleet === undefined && caller.resolveCallerMembership && ownerId
@@ -3441,31 +3450,26 @@ export async function buildLeaderBrief(
     },
     LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
   );
-  const [headcountTargetResult, headcountCurrentResult, fleetRecordResult] = await runLeaderBriefReads(
-    [
-      () =>
-        withBoundedTimeout(getFleetHeadcountTarget(workspaceId, fleet), {
-          fallback: undefined,
-          timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
-          label: 'leader-brief:headcountTarget',
-        }),
-      () =>
-        withBoundedTimeout(
-          liveFleetMemberIds(fleet, workspaceId, 'launch'),
-          {
-            fallback: null,
-            timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
-            label: 'leader-brief:headcountCurrent',
-          },
-        ),
-      () =>
-        withBoundedTimeout(getFleet(workspaceId, fleet), {
-          fallback: undefined,
-          timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
-          label: 'leader-brief:fleetRecord',
-        }),
-    ] as const,
-  );
+  const [headcountTargetResult, headcountCurrentResult, fleetRecordResult] = await runLeaderBriefReads([
+    () =>
+      withBoundedTimeout(getFleetHeadcountTarget(workspaceId, fleet), {
+        fallback: undefined,
+        timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+        label: 'leader-brief:headcountTarget',
+      }),
+    () =>
+      withBoundedTimeout(liveFleetMemberIds(fleet, workspaceId, 'launch'), {
+        fallback: null,
+        timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+        label: 'leader-brief:headcountCurrent',
+      }),
+    () =>
+      withBoundedTimeout(getFleet(workspaceId, fleet), {
+        fallback: undefined,
+        timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+        label: 'leader-brief:fleetRecord',
+      }),
+  ] as const);
   // WI-2034624: `current` is attested from recent agent-origin execution over
   // the canonical live roster — never from the current launch transaction's
   // worker-ready set, which excludes every member a prior transaction or a
@@ -3478,10 +3482,7 @@ export async function buildLeaderBrief(
   const headcountExecutingRead = await withBoundedTimeout(
     headcountCurrentResult.value == null
       ? Promise.resolve(null)
-      : executingOwnersSince(
-          headcountCurrentResult.value,
-          FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
-        ),
+      : executingOwnersSince(headcountCurrentResult.value, FLEET_HEADCOUNT_EXECUTION_WINDOW_MS),
     {
       fallback: null,
       timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
@@ -3490,9 +3491,7 @@ export async function buildLeaderBrief(
   );
   const headcount = projectFleetHeadcountState(
     headcountTargetResult.value,
-    fleetRecordResult.value === undefined
-      ? undefined
-      : fleetRecordResult.value?.lastLaunchTransaction ?? null,
+    fleetRecordResult.value === undefined ? undefined : (fleetRecordResult.value?.lastLaunchTransaction ?? null),
     headcountCurrentResult.value,
     headcountExecutingRead.value,
   );
@@ -3678,7 +3677,7 @@ export async function buildLeaderBrief(
   const [
     verifiedWaitTakeovers,
     unownedCriticalsAll,
-    admissionBlocked,
+    admissionBlockRead,
     orphanedInFlight,
     fleetLaneHealth,
     fleetPause,
@@ -3700,7 +3699,7 @@ export async function buildLeaderBrief(
       // member verdict barrier above makes the live-id filter stable before
       // this independent read begins.
       () =>
-        fetchFleetAdmissionBlocks(fleet, {
+        readFleetAdmissionBlocks(fleet, {
           harness: args.harness,
           liveMemberIds: grouped
             .filter((member) => member.alive !== false && member.verdict !== 'dead')
@@ -3778,7 +3777,11 @@ export async function buildLeaderBrief(
     [
       [] as VerifiedWaitTakeoverAlert[],
       [] as UnownedCriticalCandidate[],
-      [] as FleetAdmissionBlock[],
+      {
+        available: false,
+        blocks: null,
+        reason: 'leader-brief optional admission-block read timed out or failed',
+      } as FleetAdmissionBlockRead,
       [] as OrphanedInFlightCandidate[],
       null,
       { paused: false, reason: null },
@@ -3796,6 +3799,7 @@ export async function buildLeaderBrief(
   for (const agent of grouped) {
     agent.verifiedWaitTakeovers = takeoversBySubscriber.get(agent.agentId) ?? [];
   }
+  const { blocks: admissionBlocked, count: admissionBlockedCount } = projectFleetAdmissionBlockRead(admissionBlockRead);
   // WI-6846: a majority-remote-origin backlog reads as urgent unowned work a
   // leader is expected to act on, when in fact `origin:'remote'` rows are
   // structurally un-actionable here (cannot claim — the claimable pre-filter
@@ -3904,7 +3908,11 @@ export async function buildLeaderBrief(
             inFlight: members.reduce((count, member) => count + member.workItemIds.length, 0),
             orphaned: orphanedInFlight.length,
             stalled: members.filter((member) => member.verdict === 'stalled' || member.stalled).length,
-            idle: members.filter((member) => member.benchSuggestion?.kind === 'idle-with-claimable' || member.benchSuggestion?.kind === 'laneless-idle').length,
+            idle: members.filter(
+              (member) =>
+                member.benchSuggestion?.kind === 'idle-with-claimable' ||
+                member.benchSuggestion?.kind === 'laneless-idle',
+            ).length,
             criticalContext: members.filter((member) => member.contextPressure === 'critical').length,
           },
   }).snapshot;
@@ -4032,11 +4040,11 @@ export async function buildLeaderBrief(
     // P-005: this is a monotonic historical counter, not a live fleet gauge. Keep
     // it structurally separate so before/after readers cannot treat it as a snapshot.
     cumulative: {
-      admission_blocked: admissionBlocked.length,
+      admission_blocked: admissionBlockedCount,
     },
     // P-006: the critical subset whose refused item is an unresolved dependency
     // of work the member already holds. Rows carry the exact dependency + three routes.
-    admission_dependency_escapes: admissionDependencyEscapes.length,
+    admission_dependency_escapes: admissionBlockedCount == null ? null : admissionDependencyEscapes.length,
     // EI-18703234178947959: this fleet's own control_state is winding-down (fleet:pause /
     // fleet:wind-down). Emitted EXPLICITLY rather than left implicit, because it is the
     // reason the idle-member alerts above read 0/false: idle members are COMPLYING with
@@ -4234,18 +4242,18 @@ export async function buildLeaderBrief(
         };
       }
       if (readyWidth != null) {
-          const liveNonLeaderWorkers = grouped.filter(
-            (member) => member.fleetRole !== 'leader' && member.alive !== false && member.verdict !== 'dead',
-          ).length;
-          fleetHeadcountVsExecutableFrontierAlert = computeFleetHeadcountVsExecutableFrontierAlert({
-            planSlug: exactPlanSlug,
-            liveNonLeaderWorkers,
-            readyWidth,
-            claimable: fleetClaimableCount,
-            fleetPaused: fleetPause.paused,
-            harness: planHarness,
-            fleet,
-          });
+        const liveNonLeaderWorkers = grouped.filter(
+          (member) => member.fleetRole !== 'leader' && member.alive !== false && member.verdict !== 'dead',
+        ).length;
+        fleetHeadcountVsExecutableFrontierAlert = computeFleetHeadcountVsExecutableFrontierAlert({
+          planSlug: exactPlanSlug,
+          liveNonLeaderWorkers,
+          readyWidth,
+          claimable: fleetClaimableCount,
+          fleetPaused: fleetPause.paused,
+          harness: planHarness,
+          fleet,
+        });
       }
     }
   } catch {
@@ -4599,9 +4607,7 @@ export async function buildLeaderBrief(
         : {}),
       ...(darkFleetAlert.reason ? { darkFleetAlertReason: darkFleetAlert.reason } : {}),
       ...(darkFleetAlert.alert === true ? { darkFleetAlertFalsifier: darkFleetAlert.falsifier } : {}),
-      ...(executionCollapseAlert.reason
-        ? { fleetExecutionCollapseAlertReason: executionCollapseAlert.reason }
-        : {}),
+      ...(executionCollapseAlert.reason ? { fleetExecutionCollapseAlertReason: executionCollapseAlert.reason } : {}),
       ...(executionCollapseAlert.alert === true
         ? { fleetExecutionCollapseAlertFalsifier: executionCollapseAlert.falsifier }
         : {}),
