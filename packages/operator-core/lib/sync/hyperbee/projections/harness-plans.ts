@@ -26,6 +26,8 @@ import { observeMergedOp } from '../clobber-events';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
+import { deriveIndexFromContent } from '../../../agent-tools/plans/source';
+import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
 import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
 import {
   decideContentWriteAuthority,
@@ -338,7 +340,7 @@ async function writeToPg(
       // plan-federation-regrain D-004: when per-part federation is ON, the
       // recompose owns content + scalars. This whole-blob path is bootstrap-only.
       if (partFederationOn) {
-        await tx`
+        const inserted = await tx<Array<{ plan_slug: string }>>`
           INSERT INTO harness_shared.harness_plans
             (workspace_id, harness_slug, plan_slug, content, content_hash, version,
              title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
@@ -356,13 +358,25 @@ async function writeToPg(
              ${row.supersedes}, ${row.superseded_by},
              ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
           ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
+          RETURNING plan_slug
         `;
+        // A bootstrap insert creates the plan row without passing through the
+        // local write chokepoint, so seed its derived index in the same tx. An
+        // existing row is owned by per-part recomposition; never derive from a
+        // stale whole-blob snapshot over that row's index.
+        if (inserted.length > 0) {
+          await writePlanIndexRows(
+            tx as unknown as Parameters<typeof writePlanIndexRows>[0],
+            { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
+            deriveIndexFromContent(row.content),
+          );
+        }
         return;
       }
 
       // workspace_id is the LOCAL projection's bound workspace. version is the
       // local CAS counter; op_* remains machine-local and is preserved on update.
-      await tx`
+      const written = await tx<Array<{ plan_slug: string }>>`
         INSERT INTO harness_shared.harness_plans
           (workspace_id, harness_slug, plan_slug, content, content_hash, version,
            title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
@@ -410,7 +424,15 @@ async function writeToPg(
           fed_ts        = EXCLUDED.fed_ts,
           fed_hlc       = EXCLUDED.fed_hlc
         WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.harness_plans.fed_hlc, harness_shared.harness_plans.fed_ts)
+        RETURNING plan_slug
       `;
+      if (written.length > 0) {
+        await writePlanIndexRows(
+          tx as unknown as Parameters<typeof writePlanIndexRows>[0],
+          { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
+          deriveIndexFromContent(row.content),
+        );
+      }
     },
   );
   if (!admission.admitted) {

@@ -25,6 +25,8 @@ import { PgPlanPartsStore, type PlanPartsStore } from '../../../plan-parts/store
 import { ensurePlanPartsBaseline } from '../../../plan-parts/federation';
 import { canonicalHarnessSlug } from '../../../harness/operator-home-harness';
 import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
+import { deriveIndexFromContent } from '../../../agent-tools/plans/source';
+import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
 import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
 
 /** The federated subset of a harness_plan_parts row (the wire shape). */
@@ -152,7 +154,7 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
         candidateStatus: fm.status ?? null,
       },
       async (tx) => {
-        await tx`
+        const updated = await tx<Array<{ plan_slug: string }>>`
           UPDATE harness_shared.harness_plans
              SET content       = ${content},
                  content_hash  = ${contentHash},
@@ -171,7 +173,20 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
                  fed_ts        = ${fedTs}
            WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug} AND plan_slug = ${planSlug}
              AND content_hash IS DISTINCT FROM ${contentHash}
+          RETURNING plan_slug
         `;
+        // Per-part recomposition is a federation write path and therefore does
+        // not cross withPlanLock. Keep the normalized rows in the same
+        // dependency-admission transaction as the canonical plan update.
+        // A missing plan row is a no-op for the existing recompose path; avoid
+        // inserting child rows that would violate plan_items' FK in that case.
+        if (updated.length > 0) {
+          await writePlanIndexRows(
+            tx as unknown as Parameters<typeof writePlanIndexRows>[0],
+            { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, planSlug },
+            deriveIndexFromContent(content),
+          );
+        }
       },
     );
     if (!admission.admitted) {
