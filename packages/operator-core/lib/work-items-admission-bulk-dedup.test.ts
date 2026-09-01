@@ -1,11 +1,17 @@
 import { LlmCallError } from '@papercusp/testing-shell/llm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+const gateway = vi.hoisted(() => ({ fetchGatewayHeadroom: vi.fn() }));
+vi.mock('./inference-gateway/observability', () => gateway);
 import { classifyHttpError } from './agent-chat-stream';
 import { isTransientNetworkError } from './harness/routines/hetzner-orphan-frame-reaper';
 import {
   assertAdmissionCensusRatchet,
   buildBulkDedupPrompt,
   bulkJudgeMaxTokens,
+  BulkAdmissionBlockedError,
+  classifyBulkModelFailure,
+  defaultBulkDedupPreflight,
   isRetryableModelCallError,
   maxPairsForOutputBudget,
   BULK_JUDGE_MAX_OUTPUT_TOKENS,
@@ -158,6 +164,64 @@ describe('assertAdmissionCensusRatchet', () => {
 
   it('fails loudly on an injected rise', () => {
     expect(() => assertAdmissionCensusRatchet(2, 4)).toThrow('admission census ratchet violated: 2 -> 4 (+2)');
+  });
+});
+
+describe('P-003 preflight and structured failure evidence', () => {
+  it('preserves the already-classified LLM transport verdict', () => {
+    const error = new LlmCallError({
+      class: 'rate_limited',
+      message: 'gateway rate limited',
+      retryable: true,
+    });
+    expect(classifyBulkModelFailure(error)).toEqual({
+      kind: 'transport',
+      class: 'rate_limited',
+      retryable: true,
+      message: 'gateway rate limited',
+    });
+  });
+
+  it('classifies a capacity block separately from a failed transport', () => {
+    const error = new BulkAdmissionBlockedError('no healthy account', {
+      kind: 'capacity',
+      class: 'preflight_capacity_unavailable',
+      retryable: true,
+      message: 'no healthy account',
+    });
+    expect(classifyBulkModelFailure(error)).toMatchObject({
+      kind: 'capacity',
+      class: 'preflight_capacity_unavailable',
+      retryable: true,
+    });
+  });
+
+  it('treats a reachable gateway without provider capacity as unknown, not ready', async () => {
+    gateway.fetchGatewayHeadroom.mockResolvedValueOnce({ reachable: true, queueDepth: 2 });
+    await expect(
+      defaultBulkDedupPreflight({ workspaceId: 'ws', harnessSlug: 'h1', model: 'claude-sonnet-5' }),
+    ).resolves.toMatchObject({ status: 'unknown', provider: 'claude', evidence: { reachable: true } });
+  });
+
+  it('blocks zero-capacity and accepts positive provider headroom', async () => {
+    gateway.fetchGatewayHeadroom.mockResolvedValueOnce({ reachable: true, healthyAccounts: 0, queueDepth: 9 });
+    await expect(
+      defaultBulkDedupPreflight({ workspaceId: 'ws', harnessSlug: 'h1', model: 'claude-sonnet-5' }),
+    ).resolves.toMatchObject({ status: 'blocked', reason: 'gateway reports zero healthy accounts' });
+
+    gateway.fetchGatewayHeadroom.mockResolvedValueOnce({
+      reachable: true,
+      healthyAccounts: 2,
+      queueDepth: 1,
+      accountId: 'acct-a',
+    });
+    await expect(
+      defaultBulkDedupPreflight({ workspaceId: 'ws', harnessSlug: 'h1', model: 'gpt-5.5:xhigh' }),
+    ).resolves.toMatchObject({
+      status: 'ready',
+      provider: 'codex',
+      evidence: { healthyAccounts: 2, accountId: 'acct-a' },
+    });
   });
 });
 
