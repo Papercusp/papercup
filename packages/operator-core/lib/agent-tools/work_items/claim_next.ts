@@ -30,6 +30,9 @@ import {
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
 import { fetchContextPressure } from '../coordination/context-pressure';
 import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
+import { decideGoalStewardGate, goalStewardRefusalResult } from '../../scheduler/goal-steward-claim-gate';
+import { readGoalHolderAuthority } from '../../goals/holder-authority';
+import { getOrgPg } from '@papercusp/db-org';
 
 export default defineTool({
   name: 'work_items:claim_next',
@@ -129,6 +132,30 @@ export default defineTool({
       if (gate.refuse) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(contextCriticalRefusalResult(gate)) }],
+        };
+      }
+      // WI-2092233: the same route-it-instead refusal scheduler:get_next applies to an active
+      // GOAL steward, via the SHARED decision so the two self-select surfaces cannot drift.
+      // Self-pull only (this block) — a directed placement gates the wrong agent's authority.
+      // Fails OPEN on an unreadable flag/authority (see the gate module's hazard note).
+      const stewardGateEnabled = await getFlag(FLAGS.SCHEDULER_GOAL_STEWARD_GATE, ident.ownerId).catch(() => true);
+      // try/catch rather than .catch(): a synchronous getOrgPg() throw (no org pool in a
+      // unit-test harness) must fail open too, not escape past the promise chain.
+      let stewardAuthority = null as Awaited<ReturnType<typeof readGoalHolderAuthority>> | null;
+      if (stewardGateEnabled && ident.workspaceId) {
+        try {
+          stewardAuthority = await readGoalHolderAuthority(getOrgPg().sql, ident.workspaceId, ident.ownerId);
+        } catch {
+          stewardAuthority = null;
+        }
+      }
+      const stewardGate = decideGoalStewardGate({
+        authority: stewardAuthority,
+        enabled: stewardGateEnabled,
+      });
+      if (stewardGate.refuse) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(goalStewardRefusalResult(stewardGate)) }],
         };
       }
     }
