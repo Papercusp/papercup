@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { FleetLaunchTransaction } from '../../agent-fleets-store';
+import type { FleetHeadcountTarget, FleetLaunchTransaction } from '../../agent-fleets-store';
 import {
   assessFleetHeadcountGovernor,
   computeHeadcountDeficit,
   FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT,
   FLEET_HEADCOUNT_BULK_WAVE_SIZE,
   governorVerdictForAssessment,
+  grantingHeadcountTargets,
   nextHeadcountBackoff,
   resolveProductiveCapacityFloor,
   resolveFleetHeadcountLaunchRole,
@@ -56,6 +57,41 @@ const transaction = (
   waves: [{ index: 0, ownerIds: owners, state: 'partial', openedOwnerIds: owners }],
   recovery: { retryOwnerIds: owners, nextAction: 'observe' },
   ...overrides,
+});
+
+// R5 (interrupted-member-recovery-hardening-2026-09-01): the per-fleet GRANT filter the
+// governor sweep applies before its wave cap. Only an explicit `supervise: true` on the
+// persisted recipe admits a fleet; everything else — absent config, absent key, false,
+// a truthy non-boolean — is ungranted, because a recipe persisted for respawn (D-008)
+// is not supervision consent. FLEET_HEADCOUNT_GOVERNOR stays the master gate above it.
+describe('grantingHeadcountTargets (R5 — per-fleet supervise grant)', () => {
+  const recipe = { plan: 'p', harness: 'h', agent: 'claude' as const };
+  const target = (config: unknown, fleetSlug = 'f'): FleetHeadcountTarget => ({
+    workspaceId: 'ws',
+    fleetSlug,
+    enabled: true,
+    target: 1,
+    config: config as FleetHeadcountTarget['config'],
+    nextAttemptAt: null,
+    backoffMs: 0,
+    lastError: null,
+  });
+
+  it('admits only an explicit boolean supervise:true and preserves sweep order', () => {
+    const granted = grantingHeadcountTargets([
+      target({ ...recipe, supervise: true }, 'a'),
+      target({ ...recipe }, 'b'),
+      target({ ...recipe, supervise: false }, 'c'),
+      target(undefined, 'd'),
+      target({ ...recipe, supervise: 'true' }, 'e'),
+      target({ ...recipe, supervise: true }, 'f'),
+    ]);
+    expect(granted.map((t) => t.fleetSlug)).toEqual(['a', 'f']);
+  });
+
+  it('returns an empty sweep — the flag-ON no-op — when no fleet has granted', () => {
+    expect(grantingHeadcountTargets([target({ ...recipe }), target(undefined)])).toEqual([]);
+  });
 });
 
 describe('fleet headcount governor guards (WI-2479)', () => {
