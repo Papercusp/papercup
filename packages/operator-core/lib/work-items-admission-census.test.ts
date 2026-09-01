@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS,
   buildAdmissionShardPlan,
+  lexicalHardEdges,
+  LEXICAL_PAIR_GROUP_CAP,
   partitionTextContextIds,
   withCensusStatementTimeout,
   TEXT_CONTEXT_BATCH_SIZE,
@@ -23,6 +25,8 @@ function item(
     originClass,
     hasEmbedding: true,
     embeddingMode: 'gemma',
+    titleKey: null,
+    conditionKey: null,
   };
 }
 
@@ -100,6 +104,73 @@ describe('buildAdmissionShardPlan', () => {
     expect(() =>
       buildAdmissionShardPlan([item('huge', 101)], [], [], { targetTokens: 50, ceilingTokens: 100 }),
     ).toThrow(/ceiling/);
+  });
+});
+
+describe('lexicalHardEdges', () => {
+  it('pairs identical normalized titles as hard lexical edges regardless of embedding state', () => {
+    const edges = lexicalHardEdges([
+      { ...item('e1', 5), title: 'Dup twin' },
+      { ...item('e2', 5), title: 'Dup twin', hasEmbedding: false, embeddingMode: null },
+      { ...item('other', 5), title: 'Unrelated thing entirely' },
+    ]);
+    expect(edges).toEqual([{ a: 'e1', b: 'e2', similarity: 1, trgm: null, source: 'lexical', hard: true }]);
+  });
+
+  it('pairs persisted titleKeys and shared condition keys across differing display titles', () => {
+    const byKey = lexicalHardEdges([
+      { ...item('a', 5), title: 'Original phrasing', titleKey: 'title:persisted key' },
+      { ...item('b', 5), title: 'Edited later phrasing', titleKey: 'title:persisted key' },
+    ]);
+    expect(byKey.map((edge) => [edge.a, edge.b])).toEqual([['a', 'b']]);
+
+    const byCondition = lexicalHardEdges([
+      { ...item('m1', 5, 'machine-emitter'), title: 'Watcher saw red', conditionKey: 'watch:same' },
+      { ...item('m2', 5, 'machine-emitter'), title: 'Watcher saw blue', conditionKey: 'watch:same' },
+    ]);
+    expect(byCondition.map((edge) => [edge.a, edge.b])).toEqual([['m1', 'm2']]);
+  });
+
+  it('emits nothing for singletons or blank identities and dedupes overlapping buckets to one pair', () => {
+    expect(
+      lexicalHardEdges([
+        { ...item('solo', 5), title: 'Only one of these' },
+        { ...item('blank1', 5), title: '   ' },
+        { ...item('blank2', 5), title: '' },
+      ]),
+    ).toEqual([]);
+
+    // Same title AND same titleKey AND same conditionKey => still exactly one edge.
+    const overlapping = lexicalHardEdges([
+      { ...item('x', 5), title: 'Twin pair', titleKey: 'title:twin pair', conditionKey: 'watch:t' },
+      { ...item('y', 5), title: 'Twin pair', titleKey: 'title:twin pair', conditionKey: 'watch:t' },
+    ]);
+    expect(overlapping).toHaveLength(1);
+  });
+
+  it('caps an oversized identity group to a connectivity star instead of a quadratic clique', () => {
+    const big = Array.from({ length: LEXICAL_PAIR_GROUP_CAP + 2 }, (_, i) => ({
+      ...item(`g${String(i).padStart(3, '0')}`, 5),
+      title: 'Recurring detector condition title',
+    }));
+    const edges = lexicalHardEdges(big);
+    expect(edges).toHaveLength(big.length - 1); // star, not n*(n-1)/2
+    expect(new Set(edges.flatMap((edge) => [edge.a, edge.b])).size).toBe(big.length); // connectivity kept
+  });
+
+  it('glues lexical twins into one hard component and surfaces them in the merge projection', () => {
+    const items = [
+      { ...item('e1', 5), title: 'Dup twin' },
+      { ...item('e2', 5), title: 'Dup twin' },
+      { ...item('lone', 5), title: 'Unrelated item' },
+    ];
+    const lexical = lexicalHardEdges(items);
+    const plan = buildAdmissionShardPlan(items, lexical, lexical, { targetTokens: 10 });
+    const shardOf = (id: string) => plan.shards.find((shard) => shard.members.includes(id))?.shardId;
+    expect(shardOf('e1')).toBe(shardOf('e2'));
+    expect(plan.projection.byPairClass).toEqual({ 'agent-filed × agent-filed': 1 });
+    expect(plan.projection.outsideMachineEmitterPairs).toBe(1);
+    expect(plan.projection.componentCollapseUpperBound).toEqual({ 'agent-filed': 1 });
   });
 });
 

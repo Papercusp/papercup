@@ -331,6 +331,85 @@ describe('runWorkItemAdmissionCensus (real Postgres)', () => {
     expect(second.hardEdges).toBe(first.hardEdges);
   }, 60_000);
 
+  /**
+   * F1 (WI-2140406 / EI-22068819110487948) — lexical hard edges.
+   *
+   * Measured blindness this guards against: with cosine as the only corpus-wide
+   * candidate generator, an identical-title pair that is EMBEDDED but lands
+   * cos < 0.85 (divergent summaries) gets no edge from ANY leg, and text-context
+   * edges never enter the unadjudicated set, so the merge projection reports a
+   * dup-twin corpus as empty (1,826 open twin pairs, 0 edges, 2026-09-01).
+   */
+  it('forms lexical hard edges for identity twins regardless of embedding state and counts them in the projection', async () => {
+    const rows = [
+      // (a) embedded twins, orthogonal vectors: cos = 0 — invisible to every leg today
+      { id: 'e1', title: 'Dup twin', vec: '[1,0,0]', mode: 'gemma', condition: null },
+      { id: 'e2', title: 'Dup twin', vec: '[0,1,0]', mode: 'gemma', condition: null },
+      // (b) unembedded twins: text leg glues the plan, but the projection never sees them
+      { id: 'u1', title: 'Ghost twin', vec: null, mode: null, condition: null },
+      { id: 'u2', title: 'Ghost twin', vec: null, mode: null, condition: null },
+      // (c) same recurring-detector condition, different titles
+      { id: 'k1', title: 'Watcher red', vec: '[0,0,1]', mode: 'gemma', condition: 'watch:same' },
+      { id: 'k2', title: 'Watcher blue', vec: '[-1,0,0]', mode: 'gemma', condition: 'watch:same' },
+    ];
+    for (const row of rows) {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+           condition_key, created_ts, embedding, embedding_mode)
+        VALUES (${WS}, ${HARNESS}, ${row.id}, ${row.title}, '', 'open', NULL, '{}'::jsonb,
+                ${row.condition}, 1, ${row.vec}::vector, ${row.mode})`;
+    }
+    // An already-adjudicated lexical pair must stay out of the unadjudicated set.
+    await db.sql`
+      INSERT INTO harness_shared.dedup_adjudications
+        (workspace_id, harness_slug, a, b, verdict, judged_by, run_id)
+      VALUES (${WS}, ${HARNESS}, 'u1', 'u2', 'distinct', 'seed', 'pre-adjudicated')`;
+
+    const result = await runWorkItemAdmissionCensus({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'lexical-1',
+      chunkCount: 2,
+      targetTokens: 6,
+      ghostFraction: 0.5,
+      sql: db.sql,
+      now: () => 5_000,
+    });
+
+    // All three identity twins produce a hard lexical edge; the adjudicated one
+    // is excluded from the unadjudicated companion count.
+    expect(result.lexicalEdges).toBe(3);
+    expect(result.lexicalUnadjudicated).toBe(2);
+
+    // Each twin pair is glued into one hard component => co-resident members.
+    // targetTokens=6 forces one component per shard, so co-residency here is
+    // component cohesion, not incidental packing.
+    const shardOf = (id: string) =>
+      result.shards.find((shard) => shard.members.includes(id))?.shardId ?? `missing:${id}`;
+    expect(shardOf('e1')).toBe(shardOf('e2'));
+    expect(shardOf('u1')).toBe(shardOf('u2'));
+    expect(shardOf('k1')).toBe(shardOf('k2'));
+
+    // The merge projection finally sees the lexical dup mass.
+    expect(result.projection.byPairClass).toEqual({
+      'agent-filed × agent-filed': 1,
+      'machine-emitter × machine-emitter': 1,
+    });
+    expect(result.projection.outsideMachineEmitterPairs).toBe(1);
+    expect(result.projection.componentCollapseUpperBound).toEqual({
+      'agent-filed': 1,
+      'machine-emitter': 1,
+    });
+
+    // The ledger carries the companion lexical counts.
+    const detail = await db.sql<Array<{ lex: number; lexu: number }>>`
+      SELECT (detail #>> '{edges,lexicalHard}')::int AS lex,
+             (detail #>> '{edges,lexicalUnadjudicated}')::int AS lexu
+        FROM harness_shared.admission_runs WHERE id = 'lexical-1'`;
+    expect(detail).toEqual([{ lex: 3, lexu: 2 }]);
+  }, 60_000);
+
   it('records a failed run instead of laundering mixed embedding spaces into a clean census', async () => {
     await seed();
     await db.sql`UPDATE harness_shared.work_items SET embedding_mode = 'foreign' WHERE feature_id = 'c'`;

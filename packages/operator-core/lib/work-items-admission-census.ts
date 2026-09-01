@@ -11,6 +11,10 @@
  * - >= 0.90 edges form hard components, while cross-shard edges become capped
  *   read-only ghost context (D-006);
  * - the census counts only >= 0.90 pairs with NO adjudication (D-001);
+ * - corpus-wide LEXICAL identity (exact persisted titleKey, exact normalized
+ *   title, shared condition_key) forms in-memory hard edges regardless of
+ *   embedding state, so the dedup pipeline never goes blind when embeddings
+ *   lag or land with divergent summaries (WI-2140406);
  * - every run writes the owner-inspectable `admission_runs` ledger and an exact
  *   member-coverage assertion before any later model call can consume a shard.
  *
@@ -21,6 +25,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { clusterPairs, type OverlapPair } from '@papercusp/overlap-clusters';
 import { getOrgPg } from '@papercusp/db-org';
+import { admissionIdentity } from './harness/improvements/digest';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import type { OrgSql } from './work-items';
@@ -63,6 +68,10 @@ export interface AdmissionCensusItem {
   originClass: AdmissionOriginClass;
   hasEmbedding: boolean;
   embeddingMode: string | null;
+  /** Persisted file-time identity (`payload.admissionIdentity.titleKey`), when present. */
+  titleKey: string | null;
+  /** Machine-emitter recurring-condition identity. */
+  conditionKey: string | null;
 }
 
 export interface AdmissionCensusEdge {
@@ -70,7 +79,7 @@ export interface AdmissionCensusEdge {
   b: string;
   similarity: number;
   trgm?: number | null;
-  source: 'cosine' | 'text';
+  source: 'cosine' | 'text' | 'lexical';
   /** Exact text identity is a hard component edge even without an embedding. */
   hard?: boolean;
 }
@@ -133,6 +142,76 @@ function stableEdges(edges: readonly AdmissionCensusEdge[]): AdmissionCensusEdge
     }
   }
   return [...byPair.values()].sort((a, b) => a.a.localeCompare(b.a) || a.b.localeCompare(b.b));
+}
+
+/**
+ * Identity groups larger than this emit a connectivity star (first member to
+ * each other member) instead of a full pairwise clique. Components and shard
+ * cohesion are unchanged — clustering only needs connectivity — while a
+ * pathological identity group (a recurring detector condition with hundreds of
+ * open rows) stays O(n) edges instead of O(n²).
+ */
+export const LEXICAL_PAIR_GROUP_CAP = 200;
+
+/** Minimal identity shape, shared with the bulk pair generator. */
+export interface LexicalIdentityItem {
+  id: string;
+  title: string;
+  titleKey?: string | null;
+  conditionKey?: string | null;
+}
+
+/**
+ * Corpus-wide LEXICAL hard edges — exact persisted titleKey, exact normalized
+ * title (via {@link admissionIdentity}), or shared machine-emitter
+ * condition_key — computed in memory over EVERY corpus item regardless of
+ * embedding state. No table is touched; `dedup_edges` stays cosine-only.
+ *
+ * WI-2140406 (EI-22068819110487948): with cosine as the only corpus-wide
+ * candidate generator the pipeline goes blind exactly when filing volume
+ * spikes (embeddings lag), and the text leg anchors only on missing-embedding
+ * rows — so an identical-title pair that was embedded but landed cos < 0.85
+ * (divergent summaries) had NO edge from any leg. Measured 2026-09-01: 1,826
+ * open identical-title pairs, zero edges. Identity is a first-class edge
+ * source here, not a fallback.
+ */
+export function lexicalHardEdges(items: readonly LexicalIdentityItem[]): AdmissionCensusEdge[] {
+  const buckets = new Map<string, string[]>();
+  const add = (bucket: 'key' | 'title' | 'cond', key: string | null | undefined, id: string): void => {
+    const trimmed = key?.trim();
+    // `admissionIdentity('')` degenerates to the bare 'title:' prefix; a blank
+    // identity must never glue unrelated items together.
+    if (!trimmed || trimmed === 'title:') return;
+    const bucketKey = `${bucket}\0${trimmed}`;
+    buckets.set(bucketKey, [...(buckets.get(bucketKey) ?? []), id]);
+  };
+  for (const item of items) {
+    add('key', item.titleKey, item.id);
+    if (item.title.trim()) add('title', admissionIdentity(item.title).titleKey, item.id);
+    add('cond', item.conditionKey, item.id);
+  }
+
+  const lexical = (a: string, b: string): AdmissionCensusEdge => ({
+    a,
+    b,
+    similarity: 1,
+    trgm: null,
+    source: 'lexical',
+    hard: true,
+  });
+  const edges: AdmissionCensusEdge[] = [];
+  for (const ids of buckets.values()) {
+    const unique = [...new Set(ids)].sort();
+    if (unique.length < 2) continue;
+    if (unique.length > LEXICAL_PAIR_GROUP_CAP) {
+      for (let i = 1; i < unique.length; i += 1) edges.push(lexical(unique[0]!, unique[i]!));
+    } else {
+      for (let i = 0; i < unique.length; i += 1) {
+        for (let j = i + 1; j < unique.length; j += 1) edges.push(lexical(unique[i]!, unique[j]!));
+      }
+    }
+  }
+  return stableEdges(edges);
 }
 
 function overlapPairs(edges: readonly AdmissionCensusEdge[], ids: ReadonlySet<string>, floor: number): OverlapPair[] {
@@ -398,6 +477,7 @@ interface CorpusDbRow {
   has_embedding: boolean;
   embedding_mode: string | null;
   condition_key: string | null;
+  title_key: string | null;
   idea_origin: string | null;
 }
 
@@ -435,6 +515,10 @@ export interface AdmissionCensusRunResult extends AdmissionShardPlan {
   cosineEdges: number;
   hardEdges: number;
   textContextEdges: number;
+  /** In-memory identity edges (exact titleKey / title / condition_key), corpus-wide. */
+  lexicalEdges: number;
+  /** Lexical edges with no adjudication — the projection's lexical companion count. */
+  lexicalUnadjudicated: number;
   censusBefore: number;
   censusAfter: number;
   chunkCoverage: number[];
@@ -464,6 +548,7 @@ async function readCorpus(sql: OrgSql, opts: AdmissionCensusRunOptions): Promise
            (wi.embedding IS NOT NULL) AS has_embedding,
            wi.embedding_mode,
            wi.condition_key,
+           wi.payload #>> '{admissionIdentity,titleKey}' AS title_key,
            idea.origin AS idea_origin
       FROM harness_shared.work_items wi
       LEFT JOIN LATERAL (
@@ -485,6 +570,8 @@ async function readCorpus(sql: OrgSql, opts: AdmissionCensusRunOptions): Promise
     originClass: classifyOrigin(row),
     hasEmbedding: row.has_embedding,
     embeddingMode: row.embedding_mode,
+    titleKey: row.title_key,
+    conditionKey: row.condition_key,
   }));
 }
 
@@ -507,6 +594,28 @@ async function readUnadjudicatedCensus(
        AND e.a = ANY(${corpusIds}::text[])
        AND e.b = ANY(${corpusIds}::text[])`;
   return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Canonical `a\0b` keys of every adjudicated pair inside the corpus, so
+ * in-memory lexical edges honour the same "no adjudication" census rule the
+ * cosine leg gets from its `dedup_adjudications` anti-join.
+ */
+async function readAdjudicatedPairKeys(
+  sql: OrgSql,
+  opts: AdmissionCensusRunOptions,
+  corpusIds: readonly string[],
+): Promise<Set<string>> {
+  const rows = await sql<Array<{ a: string; b: string }>>`
+    SELECT d.a, d.b
+      FROM harness_shared.dedup_adjudications d
+     WHERE d.workspace_id = ${opts.workspaceId}
+       AND d.harness_slug = ${opts.harnessSlug}
+       AND d.a = ANY(${corpusIds}::text[])
+       AND d.b = ANY(${corpusIds}::text[])`;
+  const keys = new Set<string>();
+  for (const row of rows) keys.add(row.a < row.b ? `${row.a}\0${row.b}` : `${row.b}\0${row.a}`);
+  return keys;
 }
 
 /**
@@ -948,11 +1057,20 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       await removeStaleEdges(sql, opts, runId, startedAt, embeddedIds);
     }
 
-    const [cosine, textContext] = await Promise.all([
+    const lexical = lexicalHardEdges(corpus);
+    const [cosine, textContext, adjudicatedPairs] = await Promise.all([
       readCosineEdges(sql, opts, embeddedIds),
       readTextContextEdges(sql, opts, corpusIds, missingEmbeddingIds),
+      lexical.length > 0 ? readAdjudicatedPairKeys(sql, opts, corpusIds) : Promise.resolve(new Set<string>()),
     ]);
-    const plan = buildAdmissionShardPlan(corpus, [...cosine.all, ...textContext], cosine.unadjudicated, opts);
+    // stableEdges canonicalizes a < b, so the pair key matches the adjudication keys.
+    const lexicalUnadjudicated = lexical.filter((edge) => !adjudicatedPairs.has(`${edge.a}\0${edge.b}`));
+    const plan = buildAdmissionShardPlan(
+      corpus,
+      [...cosine.all, ...textContext, ...lexical],
+      [...cosine.unadjudicated, ...lexicalUnadjudicated],
+      opts,
+    );
     await persistShardMap(sql, opts, runId, plan);
     const censusAfter = await readUnadjudicatedCensus(sql, opts, corpusIds);
     const latencyMs = Math.max(0, now() - startedMs);
@@ -984,6 +1102,8 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         scanWrites: scannedEdgeWrites,
         scanHardWrites: scannedHardEdges,
         textContext: textContext.length,
+        lexicalHard: lexical.length,
+        lexicalUnadjudicated: lexicalUnadjudicated.length,
         chunkCoverage,
       },
       shards: {
@@ -1040,6 +1160,8 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       cosineEdges: cosine.total,
       hardEdges: cosine.hard,
       textContextEdges: textContext.length,
+      lexicalEdges: lexical.length,
+      lexicalUnadjudicated: lexicalUnadjudicated.length,
       censusBefore,
       censusAfter,
       chunkCoverage,
