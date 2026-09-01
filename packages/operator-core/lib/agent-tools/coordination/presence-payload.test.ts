@@ -76,6 +76,7 @@ const MAXIMAL_ROW: RosterRow = {
   onDesktop: true,
   viewerAttached: true,
   contextPressure: 'ok',
+  contextPressureAgeSec: 10,
   // — dropped (raw churning timestamps + the DG-3-only capability tags) —
   heartbeatAt: '2026-06-14T01:00:00.000Z',
   lastActiveAt: '2026-06-14T00:59:00.000Z',
@@ -128,7 +129,7 @@ describe('partitionPresenceRow', () => {
       claimCount: 2,
       wakeMode: 'auto',
     });
-    expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, onDesktop: true, viewerAttached: true, contextPressure: 'ok' });
+    expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, onDesktop: true, viewerAttached: true, contextPressure: 'ok', contextPressureAgeSec: 10 });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');
     expect(state).not.toHaveProperty('lastActiveAt');
@@ -217,6 +218,7 @@ describe('byte-stability (D-006)', () => {
     expect(emitted).toHaveProperty('viewerAttached');
     // P-007: context-pressure bucket is always emitted (null when untracked).
     expect(emitted).toHaveProperty('contextPressure');
+    expect(emitted).toHaveProperty('contextPressureAgeSec');
   });
 });
 

@@ -117,6 +117,11 @@ export type RosterRow = UnifiedPresenceRecord &
        *  LIVENESS like sessionState/wakeable, never delta-eligible. null = unknown
        *  (untracked owner / federated peer), never coerced to 'ok'. */
       contextPressure: ContextPressureBucket | null;
+      /** Seconds since the watchdog cached the context reading behind
+       * contextPressure. null = provenance unavailable. Kept adjacent to the
+       * bucket so consumers can distinguish a recent reading from one near the
+       * staleness cutoff without another read. */
+      contextPressureAgeSec: number | null;
       /** This session is CURRENTLY on the desktop — a live OS window on the
        *  user's screen (derived live via wmctrl + adv_sessions.window_id; owner
        *  decision 2026-06-29). true ⇒ hard-exempt from the idle-session reaper
@@ -209,6 +214,7 @@ export const PRESENCE_LIVENESS_FIELDS = [
   // P-007: derived every read from the watchdog-cached tokens/limit — continuous,
   // same lane as sessionState/wakeable, never a [coord+N] delta.
   'contextPressure',
+  'contextPressureAgeSec',
   // Derived live from the OS window list each read — a continuous external
   // signal, so it lives in LIVENESS (snapshot-only, never a [coord+N] delta:
   // open/close-window churn must not ride the byte-stable delta channel).
@@ -334,6 +340,7 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     confirmLiveness: (liveness.confirmLiveness as boolean | null | undefined) ?? null,
     // P-007: always present for a reader (null = unknown), like sessionState/wakeable.
     contextPressure: (liveness.contextPressure as ContextPressureBucket | null | undefined) ?? null,
+    contextPressureAgeSec: (liveness.contextPressureAgeSec as number | null | undefined) ?? null,
     // "On the desktop right now" — always emitted (null when un-derived, e.g. a
     // federated row), so a reader can always filter "agents on the desktop".
     onDesktop: (liveness.onDesktop as boolean | null | undefined) ?? null,

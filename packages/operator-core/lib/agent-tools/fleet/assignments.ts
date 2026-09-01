@@ -63,7 +63,11 @@ import {
   type PlanItemCoverage,
 } from '../../plan-item-coverage';
 import { listParkedAwaitsForSubscribers } from '../../events/await/store';
-import { fetchContextPressure, type ContextPressureBucket } from '../coordination/context-pressure';
+import {
+  fetchContextPressureReadings,
+  type ContextPressureBucket,
+  type ContextPressureReading,
+} from '../coordination/context-pressure';
 import {
   fetchUnansweredDirected,
   type UnansweredDirectedSummary,
@@ -723,15 +727,21 @@ export function buildParkedOnMap(
  * best-effort at the call site.
  */
 export async function decorateContextPressure<
-  T extends AgentAssignment & { contextPressure?: ContextPressureBucket | null },
+  T extends AgentAssignment & {
+    contextPressure?: ContextPressureBucket | null;
+    contextPressureAgeSec?: number | null;
+  },
 >(
   agents: T[],
-  fetchPressure: (ownerIds: string[]) => Promise<Map<string, ContextPressureBucket>> = fetchContextPressure,
+  fetchPressure: (ownerIds: string[]) => Promise<Map<string, ContextPressureReading | ContextPressureBucket>> =
+    fetchContextPressureReadings,
 ): Promise<T[]> {
   if (agents.length === 0) return agents;
   const pressure = await fetchPressure(agents.map((a) => a.agentId));
   for (const a of agents) {
-    a.contextPressure = pressure.get(a.agentId) ?? null;
+    const reading = pressure.get(a.agentId);
+    a.contextPressure = typeof reading === 'string' ? reading : (reading?.bucket ?? null);
+    a.contextPressureAgeSec = typeof reading === 'string' ? null : (reading?.ageSec ?? null);
   }
   return agents;
 }
@@ -1071,6 +1081,7 @@ export default defineTool({
       lastToolCallAt?: string | null;
       productiveToolCallAt?: string | null;
       contextPressure?: ContextPressureBucket | null;
+      contextPressureAgeSec?: number | null;
       unanswered?: UnansweredDirectedSummary;
       parkedOn?: string[];
       monitorState?: MonitorState | null;
@@ -1139,8 +1150,8 @@ export default defineTool({
         decorateContextPressure(agents, (ids) =>
           boundedRead(
             'contextPressure',
-            () => fetchContextPressure(ids),
-            new Map<string, ContextPressureBucket>(),
+            () => fetchContextPressureReadings(ids),
+            new Map<string, ContextPressureReading>(),
           ),
         ),
       ),

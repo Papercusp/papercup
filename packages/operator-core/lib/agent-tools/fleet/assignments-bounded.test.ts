@@ -70,7 +70,7 @@ vi.mock('../../events/await/store', () => ({
   listParkedAwaitsForSubscribers: mocks.parkedOn,
 }));
 vi.mock('../coordination/context-pressure', () => ({
-  fetchContextPressure: mocks.contextPressure,
+  fetchContextPressureReadings: mocks.contextPressure,
 }));
 vi.mock('../coordination/unanswered-directed', () => ({
   fetchUnansweredDirected: mocks.unanswered,

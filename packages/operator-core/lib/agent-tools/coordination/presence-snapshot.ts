@@ -38,7 +38,7 @@ import {
 } from './presence-wakeability';
 import { deriveVerdict } from './liveness-oracle';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
-import { deriveContextPressure } from './context-pressure';
+import { deriveContextPressure, deriveContextPressureAgeSec } from './context-pressure';
 import { writeWatermark } from './watermarks';
 import {
   getTxPool,
@@ -671,7 +671,11 @@ export async function assemblePresenceSnapshot(
   const withContextPressure = (r: RosterRow): RosterRow =>
     isFederated(r)
       ? r
-      : { ...r, contextPressure: deriveContextPressure(r.contextTokens, r.compactionLimit, r.contextEstimatedAt) };
+      : {
+          ...r,
+          contextPressure: deriveContextPressure(r.contextTokens, r.compactionLimit, r.contextEstimatedAt, nowMs),
+          contextPressureAgeSec: deriveContextPressureAgeSec(r.contextEstimatedAt, nowMs),
+        };
 
   /** Attach the P-005 named-fleet membership. An agent in no fleet (or a federated
    *  row with no local coord_presence) has no entry → fleetSlug/fleetRole stay absent

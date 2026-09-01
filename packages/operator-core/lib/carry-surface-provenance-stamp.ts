@@ -212,6 +212,73 @@ export const FALSIFIED_OWNER_ANCHOR_NOTE =
   'an unrelated turn citation, that is a false positive of a deliberately broad conjunction: put the citation on ' +
   'its own line and the write proceeds. See stable-candidate-related-gate-2026-08-23#D-085 / #D-086 / #D-089.';
 
+/** P-016 (EI-212678): the owner-authority vocabulary shared by every
+ * carry-surface writer. These matches were historically response-only warnings,
+ * so a later carry fold could lose the caveat entirely. */
+export const OWNER_AUTHORITY_LINT_KINDS: ReadonlySet<ProvenanceLintMatch['kind']> = new Set([
+  'owner-attribution',
+  'bare-gate-imperative',
+  'manual-owner-tag',
+  'unverified-dialog-answer-claim',
+]);
+
+export const UNVERIFIED_OWNER_ATTRIBUTION_MARKER =
+  '⚠ UNVERIFIED OWNER ATTRIBUTION — owner-authority prose was persisted without a verified owner turn; ' +
+  'treat it as agent-authored until re-checked.';
+
+export interface OwnerAttributionEnforcement {
+  unverified: boolean;
+  matches: ProvenanceLintMatch[];
+  falsifiedAnchors: FalsifiedOwnerAnchor[];
+  /** Owner-authority lines whose refs did not yield a matching owner verdict. */
+  unresolvedAnchorLines: string[];
+}
+
+/** Determine whether owner-authority prose is safe to persist as authority.
+ * Sync-lint matches are unverified by definition. Turn-ref'd lines bypass that
+ * lint, so a resolved non-owner turn on the same line is explicitly falsified. */
+export function ownerAttributionEnforcement(
+  text: string | null | undefined,
+  stamp: Pick<CarryProvenanceStamp, 'lint' | 'refs'> | null | undefined,
+): OwnerAttributionEnforcement {
+  const matches = (stamp?.lint?.matches ?? []).filter((m) => OWNER_AUTHORITY_LINT_KINDS.has(m.kind));
+  const falsifiedAnchors = falsifiedOwnerAnchors(text, stamp?.refs ?? []);
+  const verdicts = stamp?.refs ?? [];
+  const unresolvedAnchorLines = (text ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!assertsOwnerAuthority(line)) return false;
+      const refs = parseTurnRefs(line);
+      if (refs.length === 0) return false; // the sync lint owns unanchored lines
+      return !refs.some((ref) =>
+        verdicts.some(
+          (v) =>
+            v.ref === ref.raw &&
+            v.found &&
+            v.checked &&
+            v.verdict !== null &&
+            OWNER_TURN_VERDICTS.has(v.verdict) &&
+            v.quoteMatch !== false,
+        ),
+      );
+    })
+    .map((line) => line.slice(0, FALSIFIED_LINE_CAP));
+  return {
+    unverified: matches.length > 0 || unresolvedAnchorLines.length > 0,
+    matches,
+    falsifiedAnchors,
+    unresolvedAnchorLines,
+  };
+}
+
+/** Prefix an idempotent marker onto persisted narrative text. */
+export function markUnverifiedOwnerAttribution(text: string | null | undefined): string | null | undefined {
+  if (text == null || !text.trim()) return text;
+  if (text.includes(UNVERIFIED_OWNER_ATTRIBUTION_MARKER)) return text;
+  return `${UNVERIFIED_OWNER_ATTRIBUTION_MARKER}\n${text}`;
+}
+
 /**
  * P-005 (cold-carry-system-hardening-2026-07-19), PURE: a hand-written [owner:…] tag
  * is unproven in general (P-014) — but when THIS write happens during an owner-typed
@@ -302,6 +369,8 @@ export interface CarryProvenanceFieldsOptions {
   retainedText?: string | null;
   /** Successful same-turn coordination calls that can prove first-person action claims. */
   successfulActions?: readonly SuccessfulActionInvocation[] | null;
+  /** A stamp computed before persistence so enforcement and the response share one verdict. */
+  precomputedStamp?: CarryProvenanceStamp;
 }
 
 /**
@@ -360,9 +429,11 @@ export async function carryProvenanceFields(
   ownerId: string | null | undefined,
   options: CarryProvenanceFieldsOptions = {},
 ): Promise<CarryProvenanceFields> {
-  const stamp = await stampCarrySurfaceProvenance(text, ownerId, {
-    successfulActions: options.successfulActions,
-  });
+  const stamp =
+    options.precomputedStamp ??
+    (await stampCarrySurfaceProvenance(text, ownerId, {
+      successfulActions: options.successfulActions,
+    }));
   const retainedProvenance = options.retainedText ? provenanceLintField(options.retainedText) : undefined;
   // P-007: silent unless a repair queue is actually frozen, so this costs one failed marker
   // read in the ordinary case and never depends on the stamp having produced anything.

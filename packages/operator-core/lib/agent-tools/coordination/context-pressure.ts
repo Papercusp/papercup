@@ -45,6 +45,13 @@ import { contextGaugeBand, contextUsagePct } from './tools/inbox-context-usage';
 
 export type ContextPressureBucket = 'ok' | 'high' | 'critical';
 
+/** The bucket plus the provenance needed to judge how much to trust it. */
+export interface ContextPressureReading {
+  bucket: ContextPressureBucket | null;
+  estimatedAt: string | null;
+  ageSec: number | null;
+}
+
 /** How stale a cached (contextTokens, compactionLimit) estimate may be before it
  *  is no longer trustworthy enough to assert a bucket from. Several multiples of
  *  the watchdog's own 2-minute sweep cadence (compaction-compliance-watchdog.ts'
@@ -54,6 +61,19 @@ export type ContextPressureBucket = 'ok' | 'high' | 'critical';
  *  sessions since) is discarded. Not imported from the watchdog module directly
  *  to avoid pulling its DB/scheduler wiring into this pure, unit-tested file. */
 export const CONTEXT_ESTIMATE_STALE_MS = 15 * 60_000; // 15 min
+
+/** PURE: derive the non-negative age of a cached estimate, or null when its
+ * timestamp is absent/unparseable. This is deliberately separate from the
+ * bucket staleness guard: stale readings still carry their age as provenance. */
+export function deriveContextPressureAgeSec(
+  estimatedAt: string | number | Date | null | undefined,
+  now: number = Date.now(),
+): number | null {
+  if (estimatedAt == null) return null;
+  const estimatedAtMs = estimatedAt instanceof Date ? estimatedAt.getTime() : new Date(estimatedAt).getTime();
+  if (!Number.isFinite(estimatedAtMs)) return null;
+  return Math.max(0, Math.round((now - estimatedAtMs) / 1000));
+}
 
 /**
  * PURE: reduce (contextTokens, compactionLimit, estimatedAt) to the coarse
@@ -98,7 +118,20 @@ export function deriveContextPressure(
 export async function fetchContextPressure(
   ownerIds: string[],
 ): Promise<Map<string, ContextPressureBucket>> {
+  const readings = await fetchContextPressureReadings(ownerIds);
   const out = new Map<string, ContextPressureBucket>();
+  for (const [ownerId, reading] of readings) {
+    if (reading.bucket != null) out.set(ownerId, reading.bucket);
+  }
+  return out;
+}
+
+/** IO seam returning the bucket and its estimate age in one batch read. */
+export async function fetchContextPressureReadings(
+  ownerIds: string[],
+  now: number = Date.now(),
+): Promise<Map<string, ContextPressureReading>> {
+  const out = new Map<string, ContextPressureReading>();
   if (ownerIds.length === 0) return out;
   const { sql } = getOrgPg();
   const rows = await sql<
@@ -109,8 +142,12 @@ export async function fetchContextPressure(
      WHERE owner_id = ANY(${ownerIds}::text[])
   `;
   for (const r of rows) {
-    const bucket = deriveContextPressure(r.context_tokens, r.compaction_limit, r.context_estimated_at);
-    if (bucket != null) out.set(r.owner_id, bucket);
+    const bucket = deriveContextPressure(r.context_tokens, r.compaction_limit, r.context_estimated_at, now);
+    out.set(r.owner_id, {
+      bucket,
+      estimatedAt: r.context_estimated_at,
+      ageSec: deriveContextPressureAgeSec(r.context_estimated_at, now),
+    });
   }
   return out;
 }

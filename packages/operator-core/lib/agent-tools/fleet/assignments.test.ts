@@ -908,12 +908,24 @@ describe('decorateContextPressure — P-007 (fleet-deltas-leader-primitives-2026
       async () => new Map<string, ContextPressureBucket>([['a1', 'critical']]),
     );
     expect((agents[0] as { contextPressure?: ContextPressureBucket | null }).contextPressure).toBe('critical');
+    expect((agents[0] as { contextPressureAgeSec?: number | null }).contextPressureAgeSec).toBeNull();
+  });
+
+  it('stamps the bucket and estimate age from one structured reading', async () => {
+    const agents = [baseAgent({ agentId: 'a1' })];
+    await decorateContextPressure(
+      agents,
+      async () => new Map([['a1', { bucket: 'critical' as const, estimatedAt: '2026-09-01T00:00:00Z', ageSec: 840 }]]),
+    );
+    expect((agents[0] as { contextPressure?: ContextPressureBucket | null }).contextPressure).toBe('critical');
+    expect((agents[0] as { contextPressureAgeSec?: number | null }).contextPressureAgeSec).toBe(840);
   });
 
   it('an untracked agent (no fetcher entry) is stamped null, not left undefined', async () => {
     const agents = [baseAgent({ agentId: 'a1' })];
     await decorateContextPressure(agents, async () => new Map());
     expect((agents[0] as { contextPressure?: ContextPressureBucket | null }).contextPressure).toBeNull();
+    expect((agents[0] as { contextPressureAgeSec?: number | null }).contextPressureAgeSec).toBeNull();
   });
 
   it('empty agent list is a no-op that never calls the fetcher', async () => {
@@ -1009,7 +1021,7 @@ describe('shapeFleetAssignments carries contextPressure at every tier (P-007)', 
     orphaned: [],
     stalled: [],
     agents: [
-      { agentId: 'a1', contextPressure: 'critical', claims: [], queued: [] },
+      { agentId: 'a1', contextPressure: 'critical', contextPressureAgeSec: 840, claims: [], queued: [] },
       { agentId: 'a2', claims: [], queued: [] },
     ],
   };
@@ -1019,7 +1031,9 @@ describe('shapeFleetAssignments carries contextPressure at every tier (P-007)', 
       agents: Array<Record<string, unknown>>;
     };
     expect(shaped.agents[0].contextPressure).toBe('critical');
+    expect(shaped.agents[0].contextPressureAgeSec).toBe(840);
     expect(shaped.agents[1].contextPressure).toBeNull();
+    expect(shaped.agents[1].contextPressureAgeSec).toBeNull();
   });
 
   it('standard tier keeps it too', () => {
@@ -1027,6 +1041,7 @@ describe('shapeFleetAssignments carries contextPressure at every tier (P-007)', 
       agents: Array<Record<string, unknown>>;
     };
     expect(shaped.agents[0].contextPressure).toBe('critical');
+    expect(shaped.agents[0].contextPressureAgeSec).toBe(840);
   });
 });
 

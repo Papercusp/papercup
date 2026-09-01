@@ -9,6 +9,9 @@ import {
   falsifiedOwnerAnchors,
   mergeQuoteMismatchesIntoLint,
   OWNER_TURN_VERDICTS,
+  UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
+  markUnverifiedOwnerAttribution,
+  ownerAttributionEnforcement,
   retainedProvenanceText,
   stampCarrySurfaceProvenance,
 } from './carry-surface-provenance-stamp';
@@ -262,4 +265,60 @@ describe('falsifiedOwnerAnchors (WI-42142)', () => {
     const text = [D085_LINE, 'unrelated prose', `Owner mandate, source ${REF}.`].join('\n');
     expect(falsifiedOwnerAnchors(text, [anchorVerdict()])).toHaveLength(2);
   });
+});
+
+describe('owner-attribution persistence enforcement (P-016 / EI-212678)', () => {
+  const REF = '[turn:codex:machine1234@2026-08-26T09:46:32.215Z]';
+  const machineStamp: TurnRefVerdict = {
+    ref: REF,
+    found: true,
+    verdict: 'agent-injected',
+    origin: 'self-compaction',
+    snippet: 'Continue where you left off.',
+    quote: null,
+    quoteMatch: null,
+    checked: true,
+  };
+
+  it('treats exact owner-authority lint kinds as unverified', () => {
+    const text = 'the owner said to ship it dark';
+    const lint = lintCarrySurfaceProvenance(text);
+    const enforcement = ownerAttributionEnforcement(text, { lint: { flagged: true, note: 'x', matches: lint.matches } });
+    expect(enforcement.unverified).toBe(true);
+    expect(enforcement.matches[0]?.kind).toBe('owner-attribution');
+  });
+
+  it('treats a same-line ref resolved to a machine turn as unverified', () => {
+    const text = `Owner-directed ordering is approved at ${REF}.`;
+    const enforcement = ownerAttributionEnforcement(text, { refs: [machineStamp] });
+    expect(enforcement.unverified).toBe(true);
+    expect(enforcement.falsifiedAnchors).toHaveLength(1);
+  });
+
+  it.each(['owner-typed', 'owner-turn', 'owner-dialog'] as const)('accepts a %s same-line owner ref', (verdict) => {
+    const enforcement = ownerAttributionEnforcement(textForRef(REF), {
+      refs: [{ ...machineStamp, verdict, origin: null }],
+    });
+    expect(enforcement.unverified).toBe(false);
+  });
+
+  it('keeps an unchecked owner ref unverified until an owner verdict resolves', () => {
+    const enforcement = ownerAttributionEnforcement(textForRef(REF), {
+      refs: [{ ...machineStamp, checked: false }],
+    });
+    expect(enforcement.unverified).toBe(true);
+    expect(enforcement.unresolvedAnchorLines).toHaveLength(1);
+  });
+
+  it('prefixes an idempotent marker', () => {
+    const text = 'the owner said to ship it dark';
+    const marked = markUnverifiedOwnerAttribution(text)!;
+    expect(marked.startsWith(`${UNVERIFIED_OWNER_ATTRIBUTION_MARKER}\n`)).toBe(true);
+    expect(markUnverifiedOwnerAttribution(marked)).toBe(marked);
+    expect(markUnverifiedOwnerAttribution(null)).toBeNull();
+  });
+
+  function textForRef(ref: string): string {
+    return `Owner-directed ordering is approved at ${ref}.`;
+  }
 });

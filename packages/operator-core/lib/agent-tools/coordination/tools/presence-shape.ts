@@ -63,6 +63,8 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       // P-007: coarse context-pressure bucket (ok|high|critical|null) — cheap
       // enough (one short string) to keep at every tier, like state/wakeable.
       contextPressure: r.contextPressure ?? null,
+      contextPressureAgeSec:
+        typeof r.contextPressureAgeSec === "number" ? r.contextPressureAgeSec : null,
       // coord-delivery-residual-gaps P-001: deafness flag (stale|missing|null)
       // — "is this live session actually seeing its coord mail right now?".
       // One short string, kept at every tier like contextPressure: a leader

@@ -101,6 +101,8 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       // bucket (ok|high|critical) — kept at EVERY tier like verdict/wakeMode (one
       // short string; the monitor loop runs trimmed and needs it for the P-004 delta).
       contextPressure: typeof r.contextPressure === "string" ? r.contextPressure : null,
+      contextPressureAgeSec:
+        typeof r.contextPressureAgeSec === "number" ? r.contextPressureAgeSec : null,
       intent: clip(r.intent, c.intent),
       plan: r.declaredPlanSlug ?? null,
       fleet: r.fleetSlug ?? null,

@@ -5,7 +5,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   deriveContextPressure,
+  deriveContextPressureAgeSec,
   fetchContextPressure,
+  fetchContextPressureReadings,
   CONTEXT_ESTIMATE_STALE_MS,
   type ContextPressureBucket,
 } from './context-pressure';
@@ -94,10 +96,26 @@ describe('deriveContextPressure — staleness (EI-18729596985129261)', () => {
   });
 });
 
+describe('deriveContextPressureAgeSec — provenance (EI-21187441696630861)', () => {
+  const NOW = 1_800_000_000_000;
+
+  it('distinguishes a 10-second-old estimate from a 14-minute-old estimate', () => {
+    expect(deriveContextPressureAgeSec(NOW - 10_000, NOW)).toBe(10);
+    expect(deriveContextPressureAgeSec(NOW - 14 * 60_000, NOW)).toBe(14 * 60);
+  });
+
+  it('reports null for missing/unparseable provenance and clamps future clocks to zero', () => {
+    expect(deriveContextPressureAgeSec(null, NOW)).toBeNull();
+    expect(deriveContextPressureAgeSec('not-a-date', NOW)).toBeNull();
+    expect(deriveContextPressureAgeSec(NOW + 10_000, NOW)).toBe(0);
+  });
+});
+
 describe('fetchContextPressure (IO seam)', () => {
   it('empty ownerIds is a no-op that never calls sql', async () => {
     const out = await fetchContextPressure([]);
     expect(out).toEqual(new Map());
+    expect(await fetchContextPressureReadings([])).toEqual(new Map());
   });
 });
 
