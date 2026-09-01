@@ -231,7 +231,9 @@ beforeAll(async () => {
   // retyped test-only table. The fixture seeds only the rows needed by the regression below.
   await db.sql.unsafe(readMigration('675-normalize-plan-items-decisions.sql')).simple();
   await db.sql
-    .unsafe(`ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`)
+    .unsafe(
+      `ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`,
+    )
     .simple();
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
   // P-001 (the thing under test): the SSOT function + view. Applying the REAL migration file (not
@@ -456,7 +458,8 @@ describe('the three DELIBERATE, documented divergences are pinned (a future "ali
     expect(await drainInlineClaimIds()).not.toContain('WI-RIG'); // default single-box caller excludes it
 
     // proves ONLY the per-claim rig floor gated it: a rig-capable caller is served the same row.
-    const claimed = (await wi.claimNextIssueWorkItem({ harness: H, assignee: 'rig-fleet', rigAvailable: true }, WS))?.id ?? null;
+    const claimed =
+      (await wi.claimNextIssueWorkItem({ harness: H, assignee: 'rig-fleet', rigAvailable: true }, WS))?.id ?? null;
     expect(claimed).toBe('WI-RIG');
   });
 
@@ -525,15 +528,16 @@ describe('floor #13 plan-item-blocked — the PLAN blockedBy graph gates the cla
     const view = await viewClaimableIds();
     const drain = await drainInlineClaimIds(`probe-${++probeSeq}`);
     await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE workspace_id = ${WS}`;
-    return Object.fromEntries(
-      ids.map((id) => [id, [view.includes(id), drain.includes(id)] as [boolean, boolean]]),
-    );
+    return Object.fromEntries(ids.map((id) => [id, [view.includes(id), drain.includes(id)] as [boolean, boolean]]));
   }
   /** Single-id shorthand over {@link doorVerdicts} — same non-destructive guarantee. */
   const bothDoors = async (id: string): Promise<[boolean, boolean]> => (await doorVerdicts(id))[id];
 
   it('EXCLUDES an item whose plan-item is blockedBy an UNFINISHED sibling — and ADMITS it the moment the blocker is done', async () => {
-    await seedPlanWithItems('toggle-plan', [{ id: 'P-01', status: 'todo' }, { id: 'P-02', blockedBy: ['P-01'] }]);
+    await seedPlanWithItems('toggle-plan', [
+      { id: 'P-01', status: 'todo' },
+      { id: 'P-02', blockedBy: ['P-01'] },
+    ]);
     await seedPlanLinkedIssue('WI-TOGGLE', 'toggle-plan', 'P-02');
 
     // BEFORE: the blocker is 'todo' ⇒ neither door offers it. This is the bug the floor fixes —
@@ -555,7 +559,10 @@ describe('floor #13 plan-item-blocked — the PLAN blockedBy graph gates the cla
     // would have become permanently unclaimable with no diagnosis path. The canonical TS
     // predicate (plan-parser effective-status.ts L178) counts BOTH terminal tokens as satisfied,
     // and floor #12's own terminal sets already include 'dropped'. This case pins that.
-    await seedPlanWithItems('dropped-blocker', [{ id: 'P-01', status: 'dropped' }, { id: 'P-02', blockedBy: ['P-01'] }]);
+    await seedPlanWithItems('dropped-blocker', [
+      { id: 'P-01', status: 'dropped' },
+      { id: 'P-02', blockedBy: ['P-01'] },
+    ]);
     await seedPlanLinkedIssue('WI-DROPPED-OK', 'dropped-blocker', 'P-02');
 
     expect(await bothDoors('WI-DROPPED-OK')).toEqual([true, true]);
@@ -600,7 +607,10 @@ describe('floor #13 plan-item-blocked — the PLAN blockedBy graph gates the cla
     // EI-19412899868617052: a stored terminal token wins over the blocked-by graph. Without the
     // self-status leg, an item whose own plan-item is already done, but whose blocker is still
     // running, would be excluded from its own claim.
-    await seedPlanWithItems('self-terminal', [{ id: 'P-01', status: 'todo' }, { id: 'P-02', status: 'done', blockedBy: ['P-01'] }]);
+    await seedPlanWithItems('self-terminal', [
+      { id: 'P-01', status: 'todo' },
+      { id: 'P-02', status: 'done', blockedBy: ['P-01'] },
+    ]);
     await seedPlanLinkedIssue('WI-SELF-DONE', 'self-terminal', 'P-02');
 
     expect(await bothDoors('WI-SELF-DONE')).toEqual([true, true]);
@@ -784,10 +794,14 @@ describe('the CLAIM path honors every spec leg, not just kind/id (false-drain re
     // FIRST (older createdTs) — so a claim path blind to `paths` draws violators every time.
     for (let i = 0; i < 20; i++) await seed(`WI-OUT${i}`, { kind: 'change', createdTs: i });
     await seed('WI-INPATH1', {
-      kind: 'change', createdTs: 900, payload: { paths: ['packages/operator-core/lib/p2p/boot.ts'] },
+      kind: 'change',
+      createdTs: 900,
+      payload: { paths: ['packages/operator-core/lib/p2p/boot.ts'] },
     });
     await seed('WI-INPATH2', {
-      kind: 'change', createdTs: 901, payload: { paths: ['packages/operator-core/lib/p2p/wire.ts'] },
+      kind: 'change',
+      createdTs: 901,
+      payload: { paths: ['packages/operator-core/lib/p2p/wire.ts'] },
     });
     await seed('WI-INPIN', { kind: 'change', createdTs: 902 });
 
@@ -808,11 +822,7 @@ describe('the CLAIM path honors every spec leg, not just kind/id (false-drain re
     const compiled = gn.compileFilter(db.sql as never, lane);
     const claimed: string[] = [];
     for (let i = 0; i < 50; i++) {
-      const got = await wi.claimNextIssueWorkItem(
-        { harness: H, assignee: 'probe' },
-        WS,
-        { specFilterSql: compiled },
-      );
+      const got = await wi.claimNextIssueWorkItem({ harness: H, assignee: 'probe' }, WS, { specFilterSql: compiled });
       if (!got) break;
       claimed.push(got.id);
     }
