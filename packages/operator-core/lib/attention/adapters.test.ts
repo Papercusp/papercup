@@ -105,7 +105,12 @@ describe('P-013 — escalation severity folds into risk_tier', () => {
     ).toBe('alert');
     // D-006 ext 1: named automated infra bots (green-checkpoint CI) are operational too.
     expect(
-      coordEscalationToAttention({ msgId: 'm-gc', severity: 'blocker', summary: 'green-checkpoint held', from: 'green-checkpoint' }).tier,
+      coordEscalationToAttention({
+        msgId: 'm-gc',
+        severity: 'blocker',
+        summary: 'green-checkpoint held',
+        from: 'green-checkpoint',
+      }).tier,
     ).toBe('alert');
     // A system escalation that DOES carry a choice stays a decision.
     const sysChoice = coordEscalationToAttention({
@@ -141,11 +146,22 @@ describe('planItemToAttention — tier + needsHuman (D-001/D-002/D-006)', () => 
     expect(a.triageState).toBe('untriaged');
     expect(a.actions.map((x) => x.id)).toEqual(['answer', 'mark-done', 'drop', 'chat', 'message-owner']);
     expect(a.actions.find((x) => x.id === 'mark-done')?.primary).toBe(true);
-    expect(a.ref).toEqual({ kind: 'plan-item', slug: 'p-2026-05-31', itemId: 'P-007' });
+    expect(a.ref).toEqual({
+      kind: 'plan-item',
+      slug: 'p-2026-05-31',
+      itemId: 'P-007',
+      harnessSlug: 'papercup',
+      priorStatus: 'needs-human',
+    });
   });
 
   it('blocked → alert tier (not a decision), Chat + Message owner only', () => {
-    const a = planItemToAttention({ ...base, storedStatus: 'blocked', effectiveStatus: 'blocked', importance: 'normal' });
+    const a = planItemToAttention({
+      ...base,
+      storedStatus: 'blocked',
+      effectiveStatus: 'blocked',
+      importance: 'normal',
+    });
     expect(a.tier).toBe('alert');
     expect(a.needsHuman).toBe(false);
     expect(a.actions.map((x) => x.id)).toEqual(['chat', 'message-owner']);
@@ -173,7 +189,10 @@ describe('coordEscalationToAttention — severity → tier', () => {
       summary: 'Which auth lib?',
       harnessSlug: 'papercup',
       from: 'su-architect',
-      options: [{ id: 'authjs', label: 'Auth.js' }, { id: 'lucia', label: 'Lucia' }],
+      options: [
+        { id: 'authjs', label: 'Auth.js' },
+        { id: 'lucia', label: 'Lucia' },
+      ],
     });
     expect(a.tier).toBe('decision');
     expect(a.needsHuman).toBe(true);
@@ -221,7 +240,12 @@ describe('coordMessageToAttention — structured classification (D-003)', () => 
   });
 
   it('a non-auto message addressed directly to the human → alert, NOT a decision (P-102: a message is a communication, ack-only; decisions route through escalations)', () => {
-    const a = coordMessageToAttention({ msgId: 'm-4', summary: 'can you confirm the rename?', directToOwner: true, from: 'su-worker' });
+    const a = coordMessageToAttention({
+      msgId: 'm-4',
+      summary: 'can you confirm the rename?',
+      directToOwner: true,
+      from: 'su-worker',
+    });
     expect(a.tier).toBe('alert');
     expect(a.needsHuman).toBe(false);
     expect(a.ownerAgentId).toBe('su-worker');
@@ -230,7 +254,13 @@ describe('coordMessageToAttention — structured classification (D-003)', () => 
   });
 
   it('an auto message addressed to the human is STILL activity (lifecycle wins)', () => {
-    const a = coordMessageToAttention({ msgId: 'm-5', summary: '✅ done', auto: true, lifecycle: 'completion', directToOwner: true });
+    const a = coordMessageToAttention({
+      msgId: 'm-5',
+      summary: '✅ done',
+      auto: true,
+      lifecycle: 'completion',
+      directToOwner: true,
+    });
     expect(a.tier).toBe('activity');
     expect(a.needsHuman).toBe(false);
   });
@@ -347,7 +377,15 @@ describe('smokeFailToAttention — alert tier', () => {
 describe('unified shape invariants', () => {
   it('every adapter: unique-prefixed id, ref kind matches, needsHuman===decision, untriaged default, a discuss/message-owner action present', () => {
     const items: AttentionItem[] = [
-      planItemToAttention({ slug: 's', harnessSlug: null, id: 'P-001', text: 't', storedStatus: 'todo', effectiveStatus: 'todo', importance: 'normal' }),
+      planItemToAttention({
+        slug: 's',
+        harnessSlug: null,
+        id: 'P-001',
+        text: 't',
+        storedStatus: 'todo',
+        effectiveStatus: 'todo',
+        importance: 'normal',
+      }),
       coordEscalationToAttention({ msgId: 'm', severity: 'question', summary: 's' }),
       coordMessageToAttention({ msgId: 'm', summary: 's' }),
       smokeFailToAttention({ harnessSlug: 'h' }),
@@ -373,13 +411,37 @@ describe('needsHuman drops at the source (Brief 21 — the 62→12 intent)', () 
       // ── alerts (surface, but not decisions)
       coordEscalationToAttention({ msgId: 'adv', severity: 'advisory', summary: 'fyi' }),
       smokeFailToAttention({ harnessSlug: 'h' }),
-      planItemToAttention({ slug: 's', harnessSlug: 'h', id: 'P-9', text: 'stuck', storedStatus: 'blocked', effectiveStatus: 'blocked', importance: 'normal' }),
+      planItemToAttention({
+        slug: 's',
+        harnessSlug: 'h',
+        id: 'P-9',
+        text: 'stuck',
+        storedStatus: 'blocked',
+        effectiveStatus: 'blocked',
+        importance: 'normal',
+      }),
       // ── activity (normal work)
       ...Array.from({ length: 3 }, (_, i) =>
-        planItemToAttention({ slug: 's', harnessSlug: 'h', id: `P-${i}`, text: 'work', storedStatus: 'todo', effectiveStatus: 'todo', importance: 'normal' }),
+        planItemToAttention({
+          slug: 's',
+          harnessSlug: 'h',
+          id: `P-${i}`,
+          text: 'work',
+          storedStatus: 'todo',
+          effectiveStatus: 'todo',
+          importance: 'normal',
+        }),
       ),
       // ── genuine decisions
-      planItemToAttention({ slug: 's', harnessSlug: 'h', id: 'P-NH', text: 'sign off', storedStatus: 'needs-human', effectiveStatus: 'needs-human', importance: 'urgent' }),
+      planItemToAttention({
+        slug: 's',
+        harnessSlug: 'h',
+        id: 'P-NH',
+        text: 'sign off',
+        storedStatus: 'needs-human',
+        effectiveStatus: 'needs-human',
+        importance: 'urgent',
+      }),
       coordEscalationToAttention({ msgId: 'blk', severity: 'blocker', summary: 'blocked decision' }),
       coordEscalationToAttention({ msgId: 'ask', severity: 'question', summary: 'ask-owner question' }),
     ];
@@ -394,14 +456,26 @@ describe('needsHuman drops at the source (Brief 21 — the 62→12 intent)', () 
 
 describe('P-100 — folded disposition channels (B-14 / D-011)', () => {
   it('improvement: a human-routed improvement is a Decision (ideation-intake)', () => {
-    const a = improvementToAttention({ issueId: 'EI-42', title: 'fix the thing', severity: 'major', harnessSlug: 'papercup' });
+    const a = improvementToAttention({
+      issueId: 'EI-42',
+      title: 'fix the thing',
+      severity: 'major',
+      harnessSlug: 'papercup',
+      ideaLifecycle: { state: 'open' },
+    });
     expect(a.kind).toBe('improvement');
     expect(a.category).toBe('ideation-intake');
     expect(a.tier).toBe('decision');
     expect(a.needsHuman).toBe(true);
     expect(a.importance).toBe('high'); // major → high
     expect(a.id).toBe('improvement:EI-42');
-    expect(a.ref).toEqual({ kind: 'improvement', issueId: 'EI-42' });
+    expect(a.ref).toEqual({
+      kind: 'improvement',
+      issueId: 'EI-42',
+      harnessSlug: 'papercup',
+      priorIdeaLifecycle: { state: 'open' },
+      priorDecidedReason: null,
+    });
     // D-027 follow-on (1): Triage navigate (full place/gate/gym surface) + inline Dismiss (reject).
     expect(a.actions.map((x) => x.id)).toEqual(['open', 'dismiss']);
   });
@@ -421,7 +495,12 @@ describe('P-100 — folded disposition channels (B-14 / D-011)', () => {
   });
 
   it('conversation: an open question is an Alert (surfaced, not demanded), escalations category', () => {
-    const a = conversationToAttention({ conversationId: 'CONV-7', title: 'which approach?', askerId: 'su-abc', harnessSlug: 'h' });
+    const a = conversationToAttention({
+      conversationId: 'CONV-7',
+      title: 'which approach?',
+      askerId: 'su-abc',
+      harnessSlug: 'h',
+    });
     expect(a.kind).toBe('conversation');
     expect(a.category).toBe('escalations');
     expect(a.tier).toBe('alert');
@@ -474,6 +553,8 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
       body: 'the token refresh path 401s',
       harnessSlug: 'papercusp',
       ownerAgentId: 'su-abc',
+      status: 'blocked',
+      ownerGateKeys: ['needsHuman'],
     });
     expect(a.kind).toBe('work-item-needs-human');
     expect(a.category).toBe('plan-governance');
@@ -499,6 +580,9 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
       workItemId: 'WI-9001',
       itemKind: 'bug',
       ownerGate: 'payload',
+      harnessSlug: 'papercusp',
+      priorStatus: 'blocked',
+      ownerGateKeys: ['needsHuman'],
     });
   });
 
@@ -507,12 +591,7 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(a.body).toBe('ship it');
     // No asker to answer, so the owner-gate CLEAR becomes the primary action
     // rather than a navigate to the source (P-003).
-    expect(a.actions.map((action) => action.label)).toEqual([
-      'Release to agents',
-      'Drop',
-      'Open source',
-      'Discuss',
-    ]);
+    expect(a.actions.map((action) => action.label)).toEqual(['Release to agents', 'Drop', 'Open source', 'Discuss']);
     expect(a.actions[0]?.primary).toBe(true);
   });
 
@@ -577,12 +656,13 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     // gone, so answering it would reach nobody and it would otherwise sit in the
     // inbox forever. Its ref names a work-item, so 'Clear wall' clears that item's
     // owner gate rather than merely recording an acknowledgement (P-003).
-    expect(stranded.actions.map((action) => action.label)).toEqual([
-      'Open source',
-      'Clear wall',
-      'Discuss',
-    ]);
-    expect(stranded.ref).toEqual({ kind: 'owner-wall', wallSource: 'work-item', wallOwnerId: 'su-xyz', wallRef: 'WI-42' });
+    expect(stranded.actions.map((action) => action.label)).toEqual(['Open source', 'Clear wall', 'Discuss']);
+    expect(stranded.ref).toEqual({
+      kind: 'owner-wall',
+      wallSource: 'work-item',
+      wallOwnerId: 'su-xyz',
+      wallRef: 'WI-42',
+    });
   });
 
   it('owner-wall: an explicit non-actionable oracle verdict demotes a stale row to an Alert', () => {
@@ -622,7 +702,10 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
   });
 
   it('dark-flag-ratification: a Decision naming the flag key, falling back to a generic body', () => {
-    const withReason = darkFlagRatificationToAttention({ flagKey: 'papercusp-open-signup', justification: 'SECURITY: internet-reachable.' });
+    const withReason = darkFlagRatificationToAttention({
+      flagKey: 'papercusp-open-signup',
+      justification: 'SECURITY: internet-reachable.',
+    });
     expect(withReason.kind).toBe('dark-flag-ratification');
     expect(withReason.category).toBe('system-control');
     expect(withReason.needsHuman).toBe(true);
@@ -875,9 +958,7 @@ describe('curated-signal-cards P-001/P-002 — blocked work-items become Alert c
       blockedWorkItemToAttention({ workItemId: 'WI-9', itemKind: 'feature', title: 'uncovered', reason: 'r' }),
     ];
     const kept = dropDuplicateBlockedWorkItems(items);
-    expect(kept.map((i) => i.id).sort()).toEqual(
-      ['work-item-blocked:WI-9', 'work-item-needs-human:EI-5'].sort(),
-    );
+    expect(kept.map((i) => i.id).sort()).toEqual(['work-item-blocked:WI-9', 'work-item-needs-human:EI-5'].sort());
   });
 
   it('dropDuplicateBlockedWorkItems: an improvement or owner-wall covering the row also wins', () => {
@@ -933,7 +1014,15 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
   });
 
   it('each adapter stamps its kind category (the disposition domain, not the underlying work)', () => {
-    const planItem = planItemToAttention({ slug: 's', harnessSlug: null, id: 'P-1', text: 't', storedStatus: 'needs-human', effectiveStatus: 'needs-human', importance: 'normal' });
+    const planItem = planItemToAttention({
+      slug: 's',
+      harnessSlug: null,
+      id: 'P-1',
+      text: 't',
+      storedStatus: 'needs-human',
+      effectiveStatus: 'needs-human',
+      importance: 'normal',
+    });
     expect(planItem.category).toBe('plan-governance');
     expect(coordEscalationToAttention({ msgId: 'm', severity: 'blocker', summary: 's' }).category).toBe('escalations');
     expect(coordMessageToAttention({ msgId: 'm', summary: 's' }).category).toBe('inbox-triage');
@@ -947,7 +1036,15 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
 
   it('the adapter category always agrees with attentionCategory(kind) — one source of truth', () => {
     const items: AttentionItem[] = [
-      planItemToAttention({ slug: 's', harnessSlug: null, id: 'P-1', text: 't', storedStatus: 'todo', effectiveStatus: 'todo', importance: 'normal' }),
+      planItemToAttention({
+        slug: 's',
+        harnessSlug: null,
+        id: 'P-1',
+        text: 't',
+        storedStatus: 'todo',
+        effectiveStatus: 'todo',
+        importance: 'normal',
+      }),
       coordEscalationToAttention({ msgId: 'm', severity: 'question', summary: 's' }),
       coordMessageToAttention({ msgId: 'm', summary: 's' }),
       smokeFailToAttention({ harnessSlug: 'h' }),
@@ -956,7 +1053,15 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
   });
 
   it('behavior-neutral: tagging category leaves tier + needsHuman untouched', () => {
-    const a = planItemToAttention({ slug: 's', harnessSlug: null, id: 'P-1', text: 't', storedStatus: 'needs-human', effectiveStatus: 'needs-human', importance: 'urgent' });
+    const a = planItemToAttention({
+      slug: 's',
+      harnessSlug: null,
+      id: 'P-1',
+      text: 't',
+      storedStatus: 'needs-human',
+      effectiveStatus: 'needs-human',
+      importance: 'urgent',
+    });
     expect(a.tier).toBe('decision');
     expect(a.needsHuman).toBe(true);
     expect(a.category).toBe('plan-governance'); // the new axis rides alongside, changing nothing

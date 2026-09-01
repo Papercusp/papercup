@@ -42,17 +42,13 @@ export interface TerminalActionDependencies {
   }): Promise<void>;
   /** Best-effort brain nudge after `done`; Drop intentionally never calls it. */
   wakePlanLoop(input: { harnessSlug: string | null; reason: string }): Promise<void> | void;
-  dismissImprovement(input: { issueId: string }): Promise<void>;
+  dismissImprovement(input: { issueId: string; rationale: string }): Promise<void>;
   decideStandingApproval(input: {
     capability: string;
     targetHarness: string;
     decision: 'approve' | 'dismiss';
   }): Promise<void>;
-  triageAttentionItem(input: {
-    itemId: string;
-    action: 'resolve';
-    note: string;
-  }): Promise<void>;
+  triageAttentionItem(input: { itemId: string; action: 'resolve'; note: string }): Promise<void>;
   /**
    * P-003 — clear the OWNER-ACTION gate on a work-item so it returns to the
    * agents. `statusGated` means the row's own `status` is `needs-human` (the
@@ -68,11 +64,7 @@ export interface TerminalActionDependencies {
   }): Promise<void>;
   /** P-003 — close a work-item as won't-do, carrying the caller's audit rationale
    *  as the completion evidence a terminal state requires. */
-  closeWorkItem(input: {
-    workItemId: string;
-    harnessSlug?: string | null;
-    rationale: string;
-  }): Promise<void>;
+  closeWorkItem(input: { workItemId: string; harnessSlug?: string | null; rationale: string }): Promise<void>;
   /** P-003 — resolve an open question conversation. `acceptedAnswer` carries the
    *  owner's (or resolver's drafted) text when there is one; a bare close still
    *  records why it was closed. `capture` is `'none'` for a bare close: a close
@@ -85,11 +77,7 @@ export interface TerminalActionDependencies {
   }): Promise<void>;
   /** P-003 — close an open client-session gate (`session_pending_gates`), the
    *  same transition the watcher/hook performs when the ask clears. */
-  closeSessionGate(input: {
-    sessionId: string;
-    client: string;
-    refId: string;
-  }): Promise<void>;
+  closeSessionGate(input: { sessionId: string; client: string; refId: string }): Promise<void>;
   /**
    * Best-effort owner-authoritative reply delivery for named escalation picks.
    * The browser injects its admin-only route.  The bulk resolver injects the
@@ -109,14 +97,13 @@ function refString(item: TerminalAttentionItem, key: string): string {
 
 function escalationOptions(item: TerminalAttentionItem): Array<{ id: string; label: string }> {
   if (item.ref.kind !== 'coord-escalation' || !Array.isArray(item.ref.options)) return [];
-  return (item.ref.options as unknown[]).filter(
-    (value): value is { id: string; label: string } =>
-      Boolean(
-        value &&
-          typeof value === 'object' &&
-          typeof (value as { id?: unknown }).id === 'string' &&
-          typeof (value as { label?: unknown }).label === 'string',
-      ),
+  return (item.ref.options as unknown[]).filter((value): value is { id: string; label: string } =>
+    Boolean(
+      value &&
+      typeof value === 'object' &&
+      typeof (value as { id?: unknown }).id === 'string' &&
+      typeof (value as { label?: unknown }).label === 'string',
+    ),
   );
 }
 
@@ -167,11 +154,7 @@ export async function dispatchAttentionTerminalAction(input: {
   }
 
   if (item.ref.kind === 'plan-item') {
-    const status = actionId === 'mark-done' || actionId === 'resolve'
-      ? 'done'
-      : actionId === 'drop'
-        ? 'dropped'
-        : null;
+    const status = actionId === 'mark-done' || actionId === 'resolve' ? 'done' : actionId === 'drop' ? 'dropped' : null;
     if (status) {
       await deps.setPlanItemStatus({
         slug: refString(item, 'slug'),
@@ -194,7 +177,10 @@ export async function dispatchAttentionTerminalAction(input: {
   }
 
   if (item.ref.kind === 'improvement' && actionId === 'dismiss') {
-    await deps.dismissImprovement({ issueId: refString(item, 'issueId') });
+    await deps.dismissImprovement({
+      issueId: refString(item, 'issueId'),
+      rationale: rationale?.trim() || 'Dismissed from the Queue by the owner',
+    });
     return { resolved: true };
   }
 

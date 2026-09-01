@@ -46,7 +46,11 @@ const DISCUSS: AttentionAction = { id: 'discuss', label: 'Discuss' };
 
 /** First non-empty line, trimmed and truncated for a list-row title. */
 function clip(s: string | null | undefined, n = 120): string {
-  const firstLine = (s ?? '').split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+  const firstLine =
+    (s ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? '';
   return firstLine.length > n ? `${firstLine.slice(0, n - 1)}…` : firstLine;
 }
 
@@ -109,7 +113,13 @@ export function planItemToAttention(it: PlanItemInput): AttentionItem {
     ownerLabel: it.ownerLabel ?? null,
     ...untriaged(),
     actions,
-    ref: { kind: 'plan-item', slug: it.slug, itemId: it.id },
+    ref: {
+      kind: 'plan-item',
+      slug: it.slug,
+      itemId: it.id,
+      harnessSlug: it.harnessSlug,
+      priorStatus: it.storedStatus,
+    },
   };
 }
 
@@ -211,11 +221,7 @@ export function coordEscalationToAttention(e: CoordEscalationInput): AttentionIt
   // "waiting on you" decision flooded the queue (~7000+ open, 135 ever resolved);
   // the derived placements.cursed health metric is the proper rollup.
   const operationalSystem = isOperationalEscalation(e.from, options.length > 0);
-  const tier: AttentionTier = operationalSystem
-    ? 'alert'
-    : riskTierIsDecision(riskTier)
-      ? 'decision'
-      : 'alert';
+  const tier: AttentionTier = operationalSystem ? 'alert' : riskTierIsDecision(riskTier) ? 'decision' : 'alert';
   const needsHuman = needsHumanForTier(tier);
   return {
     id: `coord-escalation:${e.msgId}`,
@@ -297,9 +303,7 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
   // elevated (lifecycle wins — the same rule that keeps an auto directToOwner
   // message at activity), so machine-stamped robot chatter can't self-promote.
   const tier: AttentionTier =
-    report && !isAuto && baseTier === 'activity' && reportTier(report) !== 'activity'
-      ? 'alert'
-      : baseTier;
+    report && !isAuto && baseTier === 'activity' && reportTier(report) !== 'activity' ? 'alert' : baseTier;
   const needsHuman = needsHumanForTier(tier);
   return {
     id: `coord-message:${m.msgId}`,
@@ -364,11 +368,7 @@ export function smokeFailToAttention(s: SmokeFailInput): AttentionItem {
     // make a past smoke run pass, so acknowledging that the failure was seen is
     // the honest end of the CARD. Fixing it is engineering work with its own
     // work-item, which is why this is not a source mutation.
-    actions: [
-      { id: 'view-log', label: 'View log', primary: true },
-      { id: 'ack', label: 'Acknowledge' },
-      DISCUSS,
-    ],
+    actions: [{ id: 'view-log', label: 'View log', primary: true }, { id: 'ack', label: 'Acknowledge' }, DISCUSS],
     ref: { kind: 'smoke-fail', harnessSlug: s.harnessSlug },
   };
 }
@@ -412,16 +412,12 @@ function reportBody(report: ReportBlock): string {
  */
 export function operatorReportToAttention(r: OperatorReportInput): AttentionItem {
   const tier = reportTier(r.report);
-  const importance: Importance =
-    tier === 'decision' ? 'high' : tier === 'alert' ? 'normal' : 'low';
+  const importance: Importance = tier === 'decision' ? 'high' : tier === 'alert' ? 'normal' : 'low';
   // A single-plan report is *about* that plan — adopt its slug so the item
   // groups with the plan in the master list. Multi-plan snapshots stay
   // unattached (the synthetic bucket).
-  const planSlug =
-    r.report.plans.length === 1 ? r.report.plans[0]?.slug ?? null : null;
-  const actions: AttentionAction[] = [
-    { id: 'resolve', label: 'Resolve', primary: true },
-  ];
+  const planSlug = r.report.plans.length === 1 ? (r.report.plans[0]?.slug ?? null) : null;
+  const actions: AttentionAction[] = [{ id: 'resolve', label: 'Resolve', primary: true }];
   if (planSlug) actions.push({ id: 'open', label: 'Open plan' });
   return {
     id: `operator-report:${r.turnId}`,
@@ -480,6 +476,9 @@ export interface ImprovementInput {
   body?: string | null;
   severity?: string | null;
   harnessSlug?: string | null;
+  /** Source scalars captured before an unattended terminal action. */
+  ideaLifecycle?: unknown;
+  decidedReason?: string | null;
 }
 
 export function improvementToAttention(i: ImprovementInput): AttentionItem {
@@ -512,7 +511,13 @@ export function improvementToAttention(i: ImprovementInput): AttentionItem {
       { id: 'open', label: 'Triage', primary: true },
       { id: 'dismiss', label: 'Dismiss' },
     ],
-    ref: { kind: 'improvement', issueId: i.issueId },
+    ref: {
+      kind: 'improvement',
+      issueId: i.issueId,
+      harnessSlug: i.harnessSlug ?? null,
+      priorIdeaLifecycle: i.ideaLifecycle ?? null,
+      priorDecidedReason: i.decidedReason ?? null,
+    },
   };
 }
 
@@ -604,11 +609,7 @@ export function conversationToAttention(c: ConversationInput): AttentionItem {
     // question the owner is never going to answer — conversations:resolve on the
     // row itself, so it stops being an open question at the source rather than
     // sitting in the queue forever.
-    actions: [
-      { id: 'answer', label: 'Answer', primary: true },
-      { id: 'dismiss', label: 'Close' },
-      DISCUSS,
-    ],
+    actions: [{ id: 'answer', label: 'Answer', primary: true }, { id: 'dismiss', label: 'Close' }, DISCUSS],
     ref: { kind: 'conversation', conversationId: c.conversationId },
   };
 }
@@ -679,6 +680,8 @@ export interface WorkItemNeedsHumanInput {
    *  two legs admitted this row, so the terminal action clears the right gate;
    *  omitted ⇒ treated as the payload leg (the issue-family default). */
   status?: string | null;
+  /** Exact payload keys whose boolean true admitted the row to the owner gate. */
+  ownerGateKeys?: Array<'needsHuman' | 'needsOwnerAction'>;
 }
 
 /**
@@ -755,6 +758,9 @@ export function workItemNeedsHumanToAttention(i: WorkItemNeedsHumanInput): Atten
       workItemId: i.workItemId,
       itemKind: i.itemKind,
       ownerGate: i.status === 'needs-human' ? 'status' : 'payload',
+      harnessSlug: i.harnessSlug ?? null,
+      priorStatus: i.status ?? null,
+      ownerGateKeys: i.ownerGateKeys ?? [],
     },
   };
 }
@@ -824,11 +830,7 @@ export function blockedWorkItemToAttention(i: BlockedWorkItemInput): AttentionIt
     // P-003: a permanently-blocked row should be closeable from the surface that
     // shows it. Drop writes the terminal state with the caller's rationale as the
     // completion evidence a terminal close requires.
-    actions: [
-      { id: 'open', label: 'Open', primary: true },
-      { id: 'drop', label: 'Drop' },
-      DISCUSS,
-    ],
+    actions: [{ id: 'open', label: 'Open', primary: true }, { id: 'drop', label: 'Drop' }, DISCUSS],
     ref: { kind: 'work-item-blocked', workItemId: i.workItemId, itemKind: i.itemKind },
   };
 }
@@ -879,11 +881,7 @@ function ownerGateStatus(
 ): 'waiting' | 'stale' | 'stranded' | 'unknown' {
   if (actionability === 'actionable') return 'waiting';
   if (livenessState === 'draining' || fallback === 'stale') return 'stale';
-  if (
-    livenessState === 'ended' ||
-    livenessState === 'suspect' ||
-    fallback === 'stranded'
-  ) {
+  if (livenessState === 'ended' || livenessState === 'suspect' || fallback === 'stranded') {
     return 'stranded';
   }
   return 'unknown';
@@ -894,7 +892,7 @@ function livenessStatusNote(status: 'waiting' | 'stale' | 'stranded' | 'unknown'
     return '\n\n⚠ STALE — the raising session is draining and is not currently actionable; recheck its liveness before answering.';
   }
   if (status === 'stranded') {
-    return '\n\n⚠ STRANDED — the raising agent\'s session has died. Answering alone will not resume this work; it also needs a respawn.';
+    return "\n\n⚠ STRANDED — the raising agent's session has died. Answering alone will not resume this work; it also needs a respawn.";
   }
   if (status === 'unknown') {
     return '\n\n⚠ LIVENESS UNKNOWN — this row is retained for diagnosis but is not counted as waiting on the owner.';
@@ -916,8 +914,7 @@ export function ownerWallToAttention(w: OwnerWallInput): AttentionItem {
   const tier: AttentionTier = actionability === 'actionable' ? 'decision' : 'alert';
   const idPart = w.ref ?? w.ownerId ?? w.claim;
   const hours = w.waitingHours ?? 0;
-  const workItemSource =
-    w.source === 'work-item' && w.ref && /^(?:WI|EI|F)-\d+$/i.test(w.ref);
+  const workItemSource = w.source === 'work-item' && w.ref && /^(?:WI|EI|F)-\d+$/i.test(w.ref);
   // P-003: every branch here was navigate-only, so a registered wall could never
   // be ENDED from the inbox — only talked about. A work-item-backed wall clears
   // through the same owner gate as a `work-item-needs-human` card (a real source
@@ -941,11 +938,7 @@ export function ownerWallToAttention(w: OwnerWallInput): AttentionItem {
             DISCUSS,
           ]
         : w.ownerId
-          ? [
-              { id: 'message-owner', label: 'Open agent session', primary: true },
-              wallTerminal,
-              DISCUSS,
-            ]
+          ? [{ id: 'message-owner', label: 'Open agent session', primary: true }, wallTerminal, DISCUSS]
           : [{ ...wallTerminal, primary: true }, DISCUSS];
   return {
     id: `owner-wall:${w.source}:${idPart}`,
