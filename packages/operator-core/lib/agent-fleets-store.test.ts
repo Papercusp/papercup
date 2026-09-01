@@ -11,6 +11,7 @@ import {
   asFleetType,
   FLEET_TYPES,
   fleetSlugFromName,
+  measureFleetProductiveHeadcount,
   projectFleetHeadcountState,
 } from './agent-fleets-store';
 
@@ -140,6 +141,17 @@ describe('projectFleetHeadcountState — productive worker population (EI-212754
   } as never;
 
   it('counts only transaction worker-ready ids that are also in the live launch roster', () => {
+    expect(measureFleetProductiveHeadcount(
+      { workerReadyMemberIds: ['su-ready-live', 'su-ready-gone', 'su-ready-gone'] } as never,
+      ['su-ready-live', 'su-unready-live', 'su-other-live', 'su-other-live'],
+    )).toEqual({
+      current: 1,
+      basis: {
+        kind: 'worker-ready-live-intersection',
+        liveRosterMembers: 3,
+        transactionWorkerReadyMembers: 2,
+      },
+    });
     expect(projectFleetHeadcountState(
       enabled,
       { workerReadyMemberIds: ['su-ready-live', 'su-ready-gone', 'su-ready-gone'] } as never,
