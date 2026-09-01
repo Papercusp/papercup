@@ -25,7 +25,7 @@ export const BULK_CONFIDENCE_LEVELS = [
 
 export type BulkConfidence = (typeof BULK_CONFIDENCE_LEVELS)[number];
 
-/** Owner-selectable automation posture for a bulk run. */
+/** Owner-selectable automation posture for a bulk run (legacy audit shape). */
 export const BULK_AUTOMATION_MODES = [
   'review-all',
   'safe-high',
@@ -34,15 +34,35 @@ export const BULK_AUTOMATION_MODES = [
 
 export type BulkAutomationMode = (typeof BULK_AUTOMATION_MODES)[number];
 
+/** Ordered authority ladder stored once per workspace (P-006/P-007). */
+export const BULK_AUTOMATION_LEVELS = ['L0', 'L1', 'L2'] as const;
+export type BulkAutomationLevel = (typeof BULK_AUTOMATION_LEVELS)[number];
+
 export interface BulkAutomationPolicy {
   /** `safe-high` is the default when a legacy run has no policy snapshot. */
   mode: BulkAutomationMode;
   /** Minimum confidence required before a terminal action may auto-apply. */
   minConfidence: BulkConfidence;
+  /** P-006 snapshot metadata; absent on legacy run rows. */
+  level?: BulkAutomationLevel;
 }
 
 export const DEFAULT_BULK_AUTOMATION_POLICY: Readonly<BulkAutomationPolicy> = {
   mode: 'safe-high',
+  minConfidence: 'high',
+};
+
+/**
+ * The mutable workspace source of truth. Unlike the legacy run snapshot's
+ * combined `mode`, these axes are independent by construction.
+ */
+export interface StandingBulkAutomationPolicy {
+  level: BulkAutomationLevel;
+  minConfidence: BulkConfidence;
+}
+
+export const DEFAULT_STANDING_BULK_AUTOMATION_POLICY: Readonly<StandingBulkAutomationPolicy> = {
+  level: 'L0',
   minConfidence: 'high',
 };
 
@@ -75,7 +95,8 @@ export function bulkAutomationEligibility(
   policy: BulkAutomationPolicy,
   confidence: BulkConfidence | null | undefined,
 ): BulkAutomationEligibility {
-  if (policy.mode === 'review-all') {
+  const level = policy.level ?? (policy.mode === 'review-all' ? 'L0' : 'L1');
+  if (level === 'L0') {
     return { allowed: false, reason: 'review-all' };
   }
   if (confidence == null) {
@@ -91,23 +112,72 @@ export function isBulkAutomationMode(value: unknown): value is BulkAutomationMod
   return typeof value === 'string' && (BULK_AUTOMATION_MODES as readonly string[]).includes(value);
 }
 
-export function normalizeBulkAutomationPolicy(
-  value: Partial<BulkAutomationPolicy> | null | undefined,
+export function isBulkAutomationLevel(value: unknown): value is BulkAutomationLevel {
+  return typeof value === 'string' && (BULK_AUTOMATION_LEVELS as readonly string[]).includes(value);
+}
+
+export function normalizeStandingBulkAutomationPolicy(
+  value: Partial<StandingBulkAutomationPolicy> | null | undefined,
+): StandingBulkAutomationPolicy {
+  return {
+    level: isBulkAutomationLevel(value?.level)
+      ? value!.level
+      : DEFAULT_STANDING_BULK_AUTOMATION_POLICY.level,
+    minConfidence: isBulkConfidence(value?.minConfidence)
+      ? value!.minConfidence
+      : DEFAULT_STANDING_BULK_AUTOMATION_POLICY.minConfidence,
+  };
+}
+
+/** Immutable run receipt derived from the standing policy at launch. */
+export function bulkAutomationSnapshot(
+  policy: StandingBulkAutomationPolicy,
 ): BulkAutomationPolicy {
-  const mode = isBulkAutomationMode(value?.mode) ? value!.mode : DEFAULT_BULK_AUTOMATION_POLICY.mode;
-  const requested = isBulkConfidence(value?.minConfidence)
+  return {
+    level: policy.level,
+    mode: policy.level === 'L0' ? 'review-all' : 'safe-high',
+    minConfidence: policy.minConfidence,
+  };
+}
+
+export type BulkAutomationPolicyInput = Partial<BulkAutomationPolicy> & {
+  /** Pre-P-006 compatibility input; never persisted by the canonical writer. */
+  mode?: BulkAutomationMode;
+};
+
+export function normalizeBulkAutomationPolicy(
+  value: BulkAutomationPolicyInput | null | undefined,
+): BulkAutomationPolicy {
+  const legacyMode = isBulkAutomationMode(value?.mode) ? value!.mode : null;
+  const explicitLevel = isBulkAutomationLevel(value?.level) ? value!.level : null;
+  const level = explicitLevel
+    ? explicitLevel
+    : legacyMode === 'review-all'
+      ? 'L0'
+      : legacyMode === 'safe-high' || legacyMode === 'safe-medium-plus'
+        ? 'L1'
+        : undefined;
+  // Legacy mode values had an implicit floor (review-all/safe-high => high,
+  // safe-medium-plus => medium). Preserve that read compatibility only when
+  // no explicit standing level is present; the new standing shape keeps the
+  // confidence axis wholly independent.
+  const requestedConfidence = isBulkConfidence(value?.minConfidence)
     ? value!.minConfidence
-    : mode === 'safe-medium-plus'
+    : legacyMode === 'safe-medium-plus'
       ? 'medium'
       : DEFAULT_BULK_AUTOMATION_POLICY.minConfidence;
-  const modeFloor: BulkConfidence = mode === 'safe-medium-plus' ? 'medium' : 'high';
-  // Review-all is a stronger floor than any confidence value; keeping the
-  // explicit mode makes the UI/report understandable while the numeric floor
-  // remains useful to server-side policy checks.
+  const legacyFloor: BulkConfidence = legacyMode === 'safe-medium-plus' ? 'medium' : 'high';
+  const minConfidence = explicitLevel
+    ? requestedConfidence
+    : CONFIDENCE_RANK[requestedConfidence] >= CONFIDENCE_RANK[legacyFloor]
+      ? requestedConfidence
+      : legacyFloor;
   return {
-    mode,
-    minConfidence:
-      CONFIDENCE_RANK[requested] >= CONFIDENCE_RANK[modeFloor] ? requested : modeFloor,
+    mode:
+      legacyMode ??
+      (level === 'L0' ? 'review-all' : level ? 'safe-high' : DEFAULT_BULK_AUTOMATION_POLICY.mode),
+    minConfidence,
+    ...(explicitLevel ? { level: explicitLevel } : {}),
   };
 }
 

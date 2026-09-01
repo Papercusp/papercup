@@ -151,7 +151,9 @@ type StateTable =
   // dispatch checkCapabilityEnvelope step; empty payload ⇒ every session unconfined ⇒
   // byte-identical to no gate. Deliberately its OWN table rather than a field on
   // session_briefs.control_state, which other writers replace wholesale (D-017 §3).
-  | 'operator_session_confinements';
+  | 'operator_session_confinements'
+  // Migration 1057 — standing Inbox automation authority + confidence policy.
+  | 'operator_attention_automation_policy';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //
