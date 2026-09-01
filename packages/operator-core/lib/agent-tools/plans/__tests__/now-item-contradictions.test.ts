@@ -77,6 +77,29 @@ describe('detectNowItemContradictions', () => {
     expect(detectNowItemContradictions(parsed)).toEqual([]);
   });
 
+  it('allows an item completed on staging while absent from main/deployed', () => {
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.',
+        '**State:** P-001 is done on staging but not in main/deployed.',
+      ),
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([]);
+  });
+
+  it.each([
+    ['negated', 'P-001 is not done on staging but not in main/deployed.'],
+    ['future', 'P-001 will be done on staging but not in main/deployed.'],
+    ['action-oriented', 'Finish P-001 on staging but not in main/deployed.'],
+  ])('still flags %s staging wording', (_label, state) => {
+    const proposed = parsePlan(CURRENT.replace('**State:** P-001 is done.', `**State:** ${state}`));
+
+    expect(detectNowItemContradictions(proposed)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+  });
+
   // EI-21920559821120577 (partial) — the exemption vocabulary was missing the
   // past-tense completion verbs this codebase actually uses. Found while
   // implementing deterministic-plan-state-derivation-2026-08-31 P-002, whose
@@ -405,6 +428,18 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
 
     expect(result.value).toEqual({ ok: true });
     expect(result.newBody).toContain('**Next:** Continue with P-002.');
+  });
+
+  it('accepts staging completion before the item reaches main/deployed', () => {
+    const result = evaluateNowUpdate(
+      CURRENT,
+      'P-001 is done on staging but not in main/deployed.',
+      'Continue with P-002.',
+      SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+    expect(result.newBody).toContain('P-001 is done on staging but not in main/deployed.');
   });
 
   it('accepts grouped affirmative completion evidence in an incomplete plan', () => {

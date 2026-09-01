@@ -54,6 +54,15 @@ const NOW_CLOSED_RE =
   /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted|landed|merged|resolved)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
 const NOW_NEGATED_OR_FUTURE_RE =
   /\b(?:not|never|still|yet|will|would|should|must|need(?:s)?(?:\s+to)?|to)\b/i;
+// Staging is the implementation/acceptance plane; a terminal item can be
+// truthfully complete there before its commit reaches main/deployed. Keep the
+// exemption tied to affirmative completion grammar and explicit release-plane
+// absence so an item that is itself negated, future, or action-oriented still
+// trips the contradiction guard.
+const NOW_STAGING_COMPLETION_RE =
+  /\b(?:is|was|has\s+been|have\s+been)\s+(?:already\s+)?(?:fully\s+)?(?:done|complete(?:d)?|closed|shipped|finished|terminal|accepted|landed|merged|resolved)\s+(?:on|in)\s+staging\b/i;
+const NOW_RELEASE_PLANE_ABSENCE_RE =
+  /\b(?:but|and|while|although)?\s*(?:not|absent|missing|unavailable)\b[^.!?;:\n]{0,100}\b(?:main|deployed|production|release)\b/i;
 const NOW_HISTORICAL_RE =
   /\b(?:histor(?:y|ical)|prior|previous(?:ly)?|earlier|former(?:ly)?|legacy|archived?|record(?:ed)?)\b/i;
 // A Now sentence may describe the old state of several terminal items in one
@@ -116,6 +125,10 @@ function hasAffirmativeResolution(text: string): boolean {
   return false;
 }
 
+function isStagingOnlyCompletion(text: string): boolean {
+  return NOW_STAGING_COMPLETION_RE.test(text) && NOW_RELEASE_PLANE_ABSENCE_RE.test(text);
+}
+
 /**
  * PURE: find terminal plan items that the cold-resume Now block still presents
  * as current/future work. Explicit completion prose ("P-001 is done") is
@@ -171,6 +184,7 @@ export function detectNowItemContradictions(
     const after = clause.slice(refOffset + id.length);
     const closeAfter = NOW_CLOSED_RE.test(after) && !NOW_NEGATED_OR_FUTURE_RE.test(after);
     const closeBefore = NOW_CLOSED_RE.test(before) && !NOW_NEGATED_OR_FUTURE_RE.test(before.slice(-120));
+    const stagingOnlyCompletion = isStagingOnlyCompletion(after);
     const clauseItemIds = [...clause.matchAll(PLAN_ITEM_REF_RE)].map((itemMatch) => itemMatch[0]);
     const sentenceEndCandidates = [
       nowText.indexOf('.', rightBoundary + 1),
@@ -233,6 +247,7 @@ export function detectNowItemContradictions(
     if (
       closeAfter ||
       closeBefore ||
+      stagingOnlyCompletion ||
       historicalReference ||
       crossLedgerReference ||
       explicitForeignPlanReference ||
