@@ -25,6 +25,7 @@ const H = vi.hoisted(() => ({
   resume: vi.fn(),
   dismissItem: vi.fn(),
   reconcileItem: vi.fn(),
+  undoItem: vi.fn(),
   detail: vi.fn(),
   details: new Map<string, AttentionItem>(),
 }));
@@ -44,6 +45,7 @@ vi.mock("./use-inbox-bulk-run", async (importOriginal) => {
       resume: H.resume,
       dismissItem: H.dismissItem,
       reconcileItem: H.reconcileItem,
+      undoItem: H.undoItem,
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -100,6 +102,7 @@ vi.mock("./InboxBulkRecommendation", () => ({
 import InboxBulkReport, {
   buildInboxBulkReviewGroups,
   bulkRunItemToAttentionSnapshot,
+  bulkUndoAvailability,
   inboxBulkReviewConfidence,
 } from "./InboxBulkReport";
 
@@ -156,6 +159,36 @@ function runItem(over: Partial<BulkRunItem> = {}): BulkRunItem {
     ...over,
   };
 }
+
+describe("bulkUndoAvailability", () => {
+  it("opens only inside the persisted reversal window and closes after revert", () => {
+    const applied = runItem({
+      outcome: "auto_resolved",
+      revertHandle: { kind: "attention-bulk-item" },
+      reversalWindowUntil: "2026-09-02T00:00:00.000Z",
+    });
+    expect(
+      bulkUndoAvailability(applied, Date.parse("2026-09-01T00:00:00.000Z")),
+    ).toEqual({
+      available: true,
+    });
+    expect(
+      bulkUndoAvailability(applied, Date.parse("2026-09-03T00:00:00.000Z")),
+    ).toMatchObject({
+      available: false,
+      reason: expect.stringMatching(/expired/i),
+    });
+    expect(
+      bulkUndoAvailability({
+        ...applied,
+        revertedAt: "2026-09-01T12:00:00.000Z",
+      }),
+    ).toMatchObject({
+      available: false,
+      reason: expect.stringMatching(/already reverted/i),
+    });
+  });
+});
 
 function highCardinalityRunItems(count = 200): BulkRunItem[] {
   return Array.from({ length: count }, (_, position) =>
