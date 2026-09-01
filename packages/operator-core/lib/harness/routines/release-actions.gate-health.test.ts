@@ -1928,3 +1928,56 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
     expect(JSON.parse(escalationBody()).cause).toBeNull();
   });
 });
+
+/**
+ * P-009 (gate-verdict-liveness-and-repair-reliability-2026-08-31): an `awaiting-fixer`
+ * repair hold used to stamp `failingTestsMeasured:false` on EVERY tick — hours of "nothing
+ * is measured" while agents chased stale failing names (D-001 loss class 4). When the CLI's
+ * hold tick carries a cheap-legs measurement (CheckpointVerdict.repairTickLegs), the
+ * inconclusive write must instead keep the list MEASURED: refresh exactly the measured
+ * leg-shaped entries against the row's LIVE value, stamp `failingTestsMeasured` true, and
+ * record head+time provenance under `gate_health.repairTickLegs`. Without a measurement the
+ * historical `false` stamp must stay byte-identical.
+ */
+describe('P-009: an awaiting-fixer hold tick with a cheap-legs measurement stays MEASURED', () => {
+  const CANDIDATE = '1a9e8a1f0000000000000000000000000000abcd';
+  const tickLegs = {
+    head: 'c'.repeat(40),
+    atMs: 111,
+    ok: false,
+    failingSignatures: ['lint:tsc'],
+    legs: [
+      { id: 'lint:tsc', status: 'fail' as const, durationMs: 5 },
+      { id: 'lint:migrations', status: 'pass' as const, durationMs: 2 },
+    ],
+  };
+
+  it('writes failingTestsMeasured TRUE, refreshes the measured entries in SQL, and records provenance', async () => {
+    await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
+      repairTickLegs: tickLegs,
+    });
+    const write = calls.find((c) => /failingTestsMeasured/.test(c.query) && /'true'::jsonb/.test(c.query));
+    expect(write).toBeDefined();
+    // provenance lands on its own gate_health path…
+    expect(write!.query).toContain(`'{gate_health,repairTickLegs}'`);
+    // …and the failingTests refresh merges against the row's LIVE value at UPDATE time
+    // (the EI-7472 convention): measured ids filtered out, fresh failing appended.
+    expect(write!.query).toContain('jsonb_array_elements_text');
+    expect(write!.params[3]).toEqual(['lint:tsc', 'lint:migrations']);
+    expect(JSON.parse(write!.params[4] as string)).toEqual(['lint:tsc']);
+    const provenance = JSON.parse(write!.params[2] as string) as Record<string, unknown>;
+    expect(provenance).toMatchObject({ head: 'c'.repeat(12), atMs: 111, ok: false, failingSignatures: ['lint:tsc'] });
+    // and this tick must NOT also stamp the historical false — that is the exact staleness
+    // this item exists to kill.
+    const falseStamp = calls.find((c) => /failingTestsMeasured/.test(c.query) && /'false'::jsonb/.test(c.query));
+    expect(falseStamp).toBeUndefined();
+  });
+
+  it('without a measurement, the hold still stamps failingTestsMeasured false (unchanged behaviour)', async () => {
+    await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held');
+    const write = calls.find((c) => /failingTestsMeasured/.test(c.query));
+    expect(write).toBeDefined();
+    expect(write!.query).toContain(`'false'::jsonb`);
+    expect(write!.query).not.toContain('repairTickLegs');
+  });
+});
