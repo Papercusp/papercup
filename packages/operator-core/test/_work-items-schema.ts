@@ -601,6 +601,11 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     released_ts timestamptz,
     strategy text,
     note text,
+    created_at timestamptz DEFAULT now() NOT NULL,
+    updated_at timestamptz DEFAULT now() NOT NULL,
+    author_pubkey text,
+    origin text DEFAULT 'local' NOT NULL,
+    fed_key text GENERATED ALWAYS AS ((plan_slug || ':'::text) || item_id) STORED,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
   );
   -- Mirrors migration 140's agent_name_sessions (adoption binding read by the same floor leg).
