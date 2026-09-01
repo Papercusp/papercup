@@ -326,22 +326,31 @@ export async function readGovernorQueuePopulation(
     : GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS;
   const windowStartMs = observedAtMs - windowMs;
   const rows = await sql<GovernorQueuePopulationDbRow[]>`
-    WITH governor_rows AS (
+    WITH all_governor_rows AS (
+      SELECT record
+        FROM harness_shared.resource_governor_admissions
+       WHERE workspace_id = ${workspaceId}
+      UNION ALL
+      -- D-007 bounded overlap: include pre-retirement WI receipts until P-005
+      -- proves the population is zero and removes this branch.
       SELECT payload->'resource_governor' AS record
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-         AND btrim(COALESCE(payload->'resource_governor'->>'admissionClass', '')) <> ''
+    ), governor_rows AS (
+      SELECT record
+        FROM all_governor_rows
+       WHERE btrim(COALESCE(record->>'admissionClass', '')) <> ''
          AND (
-           payload->'resource_governor'->>'state' IN ('queued', 'eligible', 'leased', 'running')
+           record->>'state' IN ('queued', 'eligible', 'leased', 'running')
            OR (
-             jsonb_typeof(payload->'resource_governor'->'enqueuedAtMs') = 'number'
-             AND (payload->'resource_governor'->>'enqueuedAtMs')::double precision BETWEEN ${windowStartMs} AND ${observedAtMs}
+             jsonb_typeof(record->'enqueuedAtMs') = 'number'
+             AND (record->>'enqueuedAtMs')::double precision BETWEEN ${windowStartMs} AND ${observedAtMs}
            )
            OR (
-             payload->'resource_governor'->>'state' IN ('completed', 'cancelled', 'superseded', 'expired')
-             AND jsonb_typeof(payload->'resource_governor'->'updatedAtMs') = 'number'
-             AND (payload->'resource_governor'->>'updatedAtMs')::double precision BETWEEN ${windowStartMs} AND ${observedAtMs}
+             record->>'state' IN ('completed', 'cancelled', 'superseded', 'expired')
+             AND jsonb_typeof(record->'updatedAtMs') = 'number'
+             AND (record->>'updatedAtMs')::double precision BETWEEN ${windowStartMs} AND ${observedAtMs}
            )
          )
     )
