@@ -380,6 +380,17 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > a CONTENT question, never a date one → `git rev-parse <sha>:<path>` vs
 > `git rev-parse staging:<path>` (equal blobs ⇒ it carries it), or `git show --stat <sha>`.
 >
+> ⚠ **Ancestry containment is NOT content containment.**
+> `git merge-base --is-ancestor <fix-sha> <candidate>` proves only that the commit is
+> reachable from the candidate; it stays true forever even when a later git-sync sweep
+> overwrites or reverts the same lines. Never cite ancestry alone as evidence that a fix
+> is live. Ask the content question against the actual candidate with
+> `dev:pipeline_position { path }` or
+> `state:read { cell: 'gate.greenCheckpoint.candidate', as: '<path>' }`, then inspect
+> `git show <candidate>:<path>` or compare its blob with the known-good content. Whole-blob
+> equality is sufficient; after legitimate later edits, verify the fix's specific content
+> predicate instead.
+>
 > ⛔ **Use `--verify --quiet`, and NEVER `staging:` inside a submodule — both misreport SILENTLY.**
 > A bare `git rev-parse staging:<missing-path>` PRINTS the ref string to STDOUT before exiting 128,
 > so `S=$(git rev-parse "staging:$p" 2>/dev/null || echo ABSENT)` captures `staging:<path>` as if it
