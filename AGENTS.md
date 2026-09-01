@@ -760,6 +760,12 @@ row says so and bash remains correct.
 
 <!-- END GENERATED gen:tool-routing -->
 
+⚠ **A `head`-truncated search cannot support a NEGATIVE conclusion — "no callers exist" is precisely the verdict truncation manufactures.** Piping `grep -rn` into `head -N` is safe when you look FOR something (the first hit answers you) and unsound the moment you act on the ABSENCE of a hit: `head` cuts by POSITION and grep walks paths in directory order, so one noisy file (a test, a barrel, a docs blob) can fill the whole budget while the real production caller sits at N+1. The pattern is CORRECT and the match EXISTS — the output was simply cut before it, which is why the result looks like a clean negative rather than a failed search. Same family as the zero-work false-greens (`-t` matching zero tests, `pgrep -q`, a wrong-relation SQL zero-row, a `grep -r` that times out and prints nothing): an instrument that searched only part of the space, whose empty output is indistinguishable from a real absence.
+
+- **Never bound a search whose EMPTY result you will act on.** For "does any caller exist", use `grep -rl` — one line per FILE, so 20 files fit in 20 lines instead of one file eating the budget — or `-c`; if you must bound it, `| wc -l` first so a truncated count is visible as a count.
+- **Exclude the definition site when asking who CALLS this**: `| grep -v '<the lib dir>'` drops the definition, the barrel re-export, the docstrings and the tests in one move — both what you meant and what stops self-noise from crowding out the answer.
+
+
 The tool call is also cheaper: a structured result, no subprocess, nothing to
 re-parse. When a row's caveat applies (a `tail -f` follow, a non-operator database,
 a `\du`), the bash form is the right answer — the gate will not fight you on those.
