@@ -46,6 +46,7 @@ const {
   setRunPhase,
   failRunIfExecuting,
   executeBulkRunAction,
+  executeBulkRunItemReversal,
   reportOutcomes,
   getPendingReviewItems,
   markItemAccepted,
@@ -814,6 +815,106 @@ describe('attention bulk-run store (real PG)', () => {
     // a resolution that did not happen.
     expect(auditedAfterStop).toBe(false);
     expect((await getRunItems(lateRun.runId, ws))[0]!.outcome).toBe('pending');
+  });
+
+  it('persists a typed bounded handle and appends one compensation without rewriting the action audit', async () => {
+    const ws = `ws-reversal-${Date.now()}`;
+    const [item] = seed('reversal');
+    const run = await createRun({ items: [item!], workspaceId: ws });
+    await setRunPhase({ runId: run.runId, phase: 'running', workspaceId: ws });
+
+    await executeBulkRunAction({
+      runId: run.runId,
+      itemId: item!.itemId,
+      actionId: 'resolve',
+      rationale: 'The escalation was stale.',
+      workspaceId: ws,
+      execute: async () => ({ resolved: true }),
+      audit: async () => {},
+    });
+
+    const applied = (await getRunItems(run.runId, ws))[0]!;
+    expect(applied).toMatchObject({
+      outcome: 'auto_resolved',
+      actionId: 'resolve',
+      rationale: 'The escalation was stale.',
+      revertedAt: null,
+      revertNote: null,
+      revertHandle: {
+        kind: 'attention-bulk-item',
+        version: 1,
+        workspaceId: ws,
+        runId: run.runId,
+        itemId: item!.itemId,
+      },
+    });
+    expect(Date.parse(applied.reversalWindowUntil!)).toBeGreaterThan(Date.parse(applied.decidedAt!));
+
+    const compensationCalls: string[] = [];
+    const reverted = await executeBulkRunItemReversal({
+      runId: run.runId,
+      itemId: item!.itemId,
+      workspaceId: ws,
+      execute: async (lockedItem) => {
+        compensationCalls.push(lockedItem.itemId);
+        return { result: { reopened: true }, note: 'reopened the original escalation' };
+      },
+    });
+    expect(reverted.refused).toBeNull();
+    expect(reverted.result).toEqual({ reopened: true });
+    expect(reverted.item).toMatchObject({
+      // The decision is immutable; compensation is appended alongside it.
+      outcome: 'auto_resolved',
+      actionId: 'resolve',
+      rationale: 'The escalation was stale.',
+      revertNote: 'reopened the original escalation',
+    });
+    expect(reverted.item!.revertedAt).toBeTruthy();
+
+    const duplicate = await executeBulkRunItemReversal({
+      runId: run.runId,
+      itemId: item!.itemId,
+      workspaceId: ws,
+      execute: async () => {
+        compensationCalls.push('duplicate');
+        return { result: null, note: 'must not run' };
+      },
+    });
+    expect(duplicate.refused).toBe('already_reverted');
+    expect(compensationCalls).toEqual([item!.itemId]);
+  });
+
+  it('uses the database deadline and refuses expired compensation before entering the callback', async () => {
+    const ws = `ws-reversal-expired-${Date.now()}`;
+    const [item] = seed('reversal-expired');
+    const run = await createRun({ items: [item!], workspaceId: ws });
+    await setRunPhase({ runId: run.runId, phase: 'running', workspaceId: ws });
+    await executeBulkRunAction({
+      runId: run.runId,
+      itemId: item!.itemId,
+      actionId: 'resolve',
+      rationale: 'Applied for deadline test.',
+      workspaceId: ws,
+      execute: async () => ({ resolved: true }),
+      audit: async () => {},
+    });
+    await (h.sql as typeof db.adminSql)`
+      UPDATE harness_shared.attention_bulk_run_items
+         SET decided_at = now() - interval '2 hours',
+             reversal_window_until = now() - interval '1 hour'
+       WHERE workspace_id = ${ws}
+         AND run_id = ${run.runId}
+         AND item_id = ${item!.itemId}`;
+
+    const execute = vi.fn(async () => ({ result: null, note: 'must not run' }));
+    const result = await executeBulkRunItemReversal({
+      runId: run.runId,
+      itemId: item!.itemId,
+      workspaceId: ws,
+      execute,
+    });
+    expect(result.refused).toBe('window_expired');
+    expect(execute).not.toHaveBeenCalled();
   });
 
   // P-007. The properties here are the ones that fail SILENTLY: a heartbeat that

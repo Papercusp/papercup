@@ -1,0 +1,25 @@
+[Unit]
+Description=Papercusp shared-host CPU performance policy (WI-37533)
+Documentation=file:///etc/systemd/system/papercusp-host-performance.sh
+After=systemd-modules-load.service
+Before=postgresql@18-main.service
+ConditionPathExistsGlob=/sys/devices/system/cpu/cpufreq/policy*
+
+[Service]
+Type=oneshot
+ExecStart=/etc/systemd/system/papercusp-host-performance.sh
+RemainAfterExit=yes
+TimeoutStartSec=30
+UMask=0022
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=postgresql@18-main.service

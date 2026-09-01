@@ -42,17 +42,26 @@ describe('nightlyReleaseRoot', () => {
     expect(nightlyReleaseRoot({ PAPERCUSP_NIGHTLY_RELEASE_ROOT: root })).toBe(root);
   });
 
-  it('rejects canonical/staging/release checkout names', () => {
+  it('accepts an absent, explicitly nightly-named path for first-fire provisioning', () => {
+    root = path.join(mkdtempSync(path.join(tmpdir(), 'papercusp-nightly-parent-')), 'papercusp-nightly-release');
+    expect(nightlyReleaseRoot({ PAPERCUSP_NIGHTLY_RELEASE_ROOT: root }, '/tmp/papercusp')).toBe(root);
+  });
+
+  it('rejects canonical/staging/release checkout names and arbitrary existing directories', () => {
     expect(nightlyReleaseRoot({ PAPERCUSP_NIGHTLY_RELEASE_ROOT: '/tmp/papercusp-staging' })).toBeNull();
+    root = mkdtempSync(path.join(tmpdir(), 'papercusp-not-a-nightly-'));
+    expect(nightlyReleaseRoot({ PAPERCUSP_NIGHTLY_RELEASE_ROOT: root }, '/tmp/papercusp')).toBeNull();
   });
 });
 
 describe('buildNightlyCutInvocation', () => {
   it('uses the GUI-only channel and preserves the exact source SHA', () => {
-    const invocation = buildNightlyCutInvocation('/tmp/papercusp-nightly', '0.0.19-20260901.0304', 'a'.repeat(40), 'Avi', { PATH: '/bin' });
-    expect(invocation.cwd).toBe('/tmp/papercusp-nightly/papercusp-desktop');
+    const invocation = buildNightlyCutInvocation('/tmp/papercusp-nightly', '/tmp/papercusp', '0.0.19-20260901.0304', 'a'.repeat(40), 'Avi', { PATH: '/bin' });
+    expect(invocation.cwd).toBe('/tmp/papercusp');
     expect(invocation.args).toContain('nightly-release-cut');
     expect(invocation.args).toContain('0.0.19-20260901.0304');
+    expect(invocation.args.join(' ')).toContain('setup-release-checkout.sh');
+    expect(invocation.args.join(' ')).toContain('--source-integrity object-sourced');
     expect(invocation.env).toMatchObject({
       PAPERCUSP_BUILD_ROLES: 'gui',
       PAPERCUSP_PUBLISH_GITHUB: '0',

@@ -22,10 +22,13 @@
  * Flags:
  *   --apply                 actually write + apply (default is print-only)
  *   --check                 report drift and exit non-zero on any; writes nothing
+ *   --huge-pages            opt in to huge_pages=on (requires a restart; default
+ *                           leaves the safe reload-only planner apply path intact)
  *   --restart               force a full restart even when a reload would do
  *   --confd   <dir>         conf.d directory (default /etc/postgresql/18/main/conf.d)
  *   --service <unit>        systemd unit to restart (default postgresql@18-main.service)
  *   --port    <n>           port to verify against (default 5432)
+ *   --nr-hugepages <path>   kernel reservation counter (default /proc/sys/vm/nr_hugepages)
  *
  * ── Why --apply RELOADS by default (EI-19314331871893219) ────────────────────
  * This script used to restart PostgreSQL unconditionally. On a shared box with a
@@ -67,10 +70,12 @@ const opt = (f: string, d: string) => {
 
 const apply = has('--apply');
 const check = has('--check');
+const enableHugePages = has('--huge-pages');
 const forceRestart = has('--restart');
 const confDir = opt('--confd', '/etc/postgresql/18/main/conf.d');
 const service = opt('--service', 'postgresql@18-main.service');
 const port = opt('--port', '5432');
+const nrHugePagesPath = opt('--nr-hugepages', '/proc/sys/vm/nr_hugepages');
 const dropIn = join(confDir, '10-papercusp-autotune.conf');
 
 // Native PG = a dedicated DB (embeddedPg:false) → the textbook PGTune fractions.
@@ -143,8 +148,35 @@ const target: Record<string, string> = {
   shared_preload_libraries: preloadValue,
 };
 
+// huge_pages is postmaster-context and cannot be made live by the normal,
+// reload-only planner apply. Keep it an explicit opt-in so a safe planner
+// refresh never turns into an unannounced shared PostgreSQL restart.
+if (enableHugePages) target.huge_pages = 'on';
+
+// shared_memory_size_in_huge_pages is PostgreSQL's own estimate for the current
+// cluster. The derived shared_buffers floor covers a fresh/unreachable cluster;
+// 1,024 extra 2 MiB pages covers the postmaster's non-buffer shared structures
+// and keeps this preflight conservative across a first native provision.
+const pgHugePagesEstimate = Number(psql('show shared_memory_size_in_huge_pages'));
+const derivedHugePagesFloor = Math.ceil(tuning.sharedBuffersMb / 2) + 1024;
+const requiredHugePages = Math.max(
+  derivedHugePagesFloor,
+  Number.isSafeInteger(pgHugePagesEstimate) && pgHugePagesEstimate > 0 ? pgHugePagesEstimate : 0,
+);
+let reservedHugePages: number | null = null;
+try {
+  const parsed = Number(readFileSync(nrHugePagesPath, 'utf8').trim());
+  if (Number.isSafeInteger(parsed) && parsed >= 0) reservedHugePages = parsed;
+} catch {
+  reservedHugePages = null;
+}
+
 console.log('derived (target):');
 for (const [k, v] of Object.entries(target)) console.log(`  ${k} = ${v}`);
+console.log(
+  `huge-page reservation: ${reservedHugePages ?? '<unreadable>'} reserved, ` +
+    `${requiredHugePages} required before restart`,
+);
 
 const content =
   [
@@ -216,6 +248,17 @@ if (check) {
 if (!apply) {
   console.log('\n--print only. Re-run with --apply to write the drop-in and apply it.');
   process.exit(0);
+}
+
+if (enableHugePages && (reservedHugePages === null || reservedHugePages < requiredHugePages)) {
+  console.error(
+    `\n✗ refusing to enable huge_pages=on: kernel reservation is ` +
+      `${reservedHugePages ?? 'unreadable'}, but PostgreSQL needs at least ${requiredHugePages}.\n` +
+      `  Install/enable apps/operator/scripts/systemd/papercusp-host-performance.service ` +
+      `and reboot so its 34,000-page reservation runs before ${service}; then re-run --apply. ` +
+      `No PostgreSQL config was changed.`,
+  );
+  process.exit(1);
 }
 
 const tmp = join(tmpdir(), 'papercusp-autotune.conf');
@@ -308,8 +351,16 @@ if (!residual) {
   process.exit(1);
 }
 if (residual.inSync) {
+  const hugePagesStatus = enableHugePages ? psql('show huge_pages_status') : null;
+  if (enableHugePages && hugePagesStatus !== 'on') {
+    console.error(
+      `\n✗ settings match, but PostgreSQL reports huge_pages_status=${hugePagesStatus ?? '<unreadable>'}; ` +
+        `the kernel-backed allocation is not active.`,
+    );
+    process.exit(1);
+  }
   console.log(`\n✓ applied${needsRestart ? ' (restart)' : ' (reload, no downtime)'}. ` +
-    `All ${Object.keys(target).length} derived settings are live.`);
+    `All ${Object.keys(target).length} derived settings are live${enableHugePages ? '; huge_pages_status=on.' : '.'}`);
 } else {
   console.error(`\n✗ applied, but ${residual.diverged.length} setting(s) did NOT take effect:`);
   for (const d of residual.diverged) {

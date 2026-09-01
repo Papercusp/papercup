@@ -58,7 +58,7 @@ const TOAST_RING_BUFFER = 2000;
  * its target depends on live state rather than on the derivation — a fixed
  * expectation here would alarm on any host that legitimately preloads an extra
  * library. And `pg_settings` does not expose it to the operator's non-superuser
- * role at all (verified on the dev box: 14 of the 14 GUCs below are readable,
+ * role at all (verified on the dev box: the derived GUCs below are readable,
  * `shared_preload_libraries` is not), so it would only ever land in `unknown`.
  */
 export function targetSettings(): Record<string, string> {

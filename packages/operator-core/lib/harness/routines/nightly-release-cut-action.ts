@@ -59,13 +59,23 @@ export function integrationRoot(): string {
 }
 
 /** Resolve only a dedicated release checkout. Never fall back to the canonical tree. */
-export function nightlyReleaseRoot(env: NodeJS.ProcessEnv = process.env): string | null {
+export function nightlyReleaseRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  sourceRoot: string = integrationRoot(),
+): string | null {
   const candidate = env.PAPERCUSP_NIGHTLY_RELEASE_ROOT?.trim();
   if (!candidate) return null;
   const root = path.resolve(candidate);
-  if (!existsSync(path.join(root, 'papercusp-desktop', 'bin', 'release-local.sh'))) return null;
+  const source = path.resolve(sourceRoot);
+  if (root === source) return null;
   const base = path.basename(root);
   if (/^(papercup|papercusp)(-(staging|release|checkpoint))?$/.test(base)) return null;
+  // The system action is allowed to materialize an absent checkout on first fire,
+  // but only at a path whose name states its dedicated purpose. This keeps a typo
+  // from turning setup-release-checkout.sh's reset+clean into a destructive write
+  // against an arbitrary sibling repository.
+  if (!/(?:^|[-_.])nightly(?:[-_.]|$)/i.test(base)) return null;
+  if (existsSync(root) && !existsSync(path.join(root, 'papercusp-desktop', 'bin', 'release-local.sh'))) return null;
   return root;
 }
 
@@ -81,6 +91,7 @@ export interface NightlyCutInvocation {
 /** Pure command/env construction, kept exported for focused tests. */
 export function buildNightlyCutInvocation(
   releaseRoot: string,
+  sourceRoot: string,
   version: string,
   sourceSha: string,
   ownerName: string,
@@ -106,11 +117,16 @@ export function buildNightlyCutInvocation(
     // task, so DBOS recovery/concurrency sees a single flight.
     args: [
       '-c',
-      'PAPERCUSP_RELEASE_PREPARE_TAG_SHA="$PAPERCUSP_EXPECTED_SOURCE_SHA" PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM=1 bin/release-local.sh "$1" nightly && bin/release-local.sh "$1" nightly',
+      '"$2/apps/operator/bin/release/setup-release-checkout.sh" --integration "$2" --release "$3" --ref "$PAPERCUSP_EXPECTED_SOURCE_SHA" --node-modules auto --source-integrity object-sourced && cd "$3/papercusp-desktop" && PAPERCUSP_RELEASE_PREPARE_TAG_SHA="$PAPERCUSP_EXPECTED_SOURCE_SHA" PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM=1 bin/release-local.sh "$1" nightly && bin/release-local.sh "$1" nightly',
       'nightly-release-cut',
       version,
+      sourceRoot,
+      releaseRoot,
     ],
-    cwd: desktopRoot,
+    // First fire may create releaseRoot, so the spawn cwd must already exist.
+    // The managed child changes into the freshly pinned desktop tree after the
+    // shared release-checkout materializer succeeds.
+    cwd: sourceRoot,
     env,
     version,
     sourceSha,
@@ -197,14 +213,15 @@ export async function runNightlyCut(
   const env = opts.env ?? process.env;
   const ownerName = env.PAPERCUSP_RELEASE_OWNER_NAME?.trim();
   if (!ownerName) return { status: 'skipped', reason: 'PAPERCUSP_RELEASE_OWNER_NAME is not configured' };
-  const root = nightlyReleaseRoot(env);
+  const sourceRoot = integrationRoot();
+  const root = nightlyReleaseRoot(env, sourceRoot);
   if (!root) return { status: 'skipped', reason: 'PAPERCUSP_NIGHTLY_RELEASE_ROOT is missing or not a dedicated release checkout' };
+  const sourceSha = opts.sourceSha ?? execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'main^{commit}'], { encoding: 'utf8' }).trim();
+  if (!/^[0-9a-f]{40}$/.test(sourceSha)) return { status: 'skipped', reason: 'could not resolve an exact 40-character source SHA' };
   const desktopRoot = path.join(root, 'papercusp-desktop');
   const baseVersion = (opts.readVersion ?? readDesktopVersion)(desktopRoot);
   const version = nextNightlyVersion(baseVersion, opts.now);
-  const sourceSha = opts.sourceSha ?? execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  if (!/^[0-9a-f]{40}$/.test(sourceSha)) return { status: 'skipped', reason: 'could not resolve an exact 40-character source SHA' };
-  const invocation = buildNightlyCutInvocation(root, version, sourceSha, ownerName, env);
+  const invocation = buildNightlyCutInvocation(root, sourceRoot, version, sourceSha, ownerName, env);
   const lockPath = opts.lockPath ?? NIGHTLY_RELEASE_LOCK_PATH;
   if (!acquireNightlyLock(lockPath, version)) return { status: 'skipped', reason: 'a nightly release cut is already running' };
 
