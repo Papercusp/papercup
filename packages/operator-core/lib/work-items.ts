@@ -5588,6 +5588,9 @@ export function reservedPlanLaneExclusionSql(
   const wsCol = sql.unsafe(
     payloadCol === 'wi.payload' ? 'wi.workspace_id' : 'harness_shared.harness_features_consolidated.workspace_id',
   );
+  const idCol = sql.unsafe(
+    payloadCol === 'wi.payload' ? 'wi.feature_id' : 'harness_shared.harness_features_consolidated.feature_id',
+  );
   const claimantFleetSlug = authorization.claimantFleetSlug?.trim();
   const authorized = authorization.claimSpecReferencesFleet
     ? sql`TRUE`
@@ -5699,6 +5702,59 @@ export function reservedPlanLaneExclusionSql(
               WHERE ans.workspace_id = a.workspace_id
                 AND ans.session_owner_id = ${assignee}
                 AND ans.agent_name = a.assignee_name
+           )
+      )
+      -- EI-22040898205841125: a claimed WORK-ITEM sibling is the live ownership
+      -- evidence the transaction guard already enforces, but until now it was absent
+      -- from every pre-claim read. The ranked selector could therefore pick the same
+      -- duplicate implementation repeatedly, provisionally claim it, have
+      -- guardPlanItemSiblingClaim clear it, and return a bare miss. The claimability
+      -- oracle still counted that row, so scheduler:get_next misreported a
+      -- claim-path/read-path divergence even with hundreds of unrelated candidates.
+      --
+      -- Make the existing reserved-plan-lane floor see that ownership before UPDATE.
+      -- Match a sibling's canonical source columns when present; only fall back to its
+      -- legacy payload identity when those columns are incomplete, mirroring
+      -- guardPlanItemSiblingClaim. The outer candidate identity stays payload.plan_item
+      -- because that is this floor's established contract at every caller. The
+      -- transaction guard remains mandatory for concurrent races and source-only
+      -- candidates: this predicate is the churn/diagnosis floor, not the mutex.
+      OR EXISTS (
+        SELECT 1
+          FROM harness_shared.work_items sibling
+         WHERE sibling.workspace_id = ${wsCol}
+           AND sibling.feature_id <> ${idCol}
+           AND sibling.taken_by IS NOT NULL
+           AND btrim(sibling.taken_by) <> ''
+           AND lower(btrim(sibling.taken_by)) <> 'unassigned'
+           AND sibling.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
+           AND (
+             (
+               NULLIF(btrim(sibling.source_plan_slug), '') IS NOT NULL
+               AND EXISTS (
+                 SELECT 1
+                   FROM unnest(COALESCE(sibling.source_plan_item_ids, ARRAY[]::text[])) AS sibling_item(item_id)
+                  WHERE btrim(sibling_item.item_id) <> ''
+               )
+               AND btrim(sibling.source_plan_slug) = ${col}->'plan_item'->>'plan_slug'
+               AND ${col}->'plan_item'->>'item_id' = ANY(
+                 COALESCE(sibling.source_plan_item_ids, ARRAY[]::text[])
+               )
+             )
+             OR (
+               NOT (
+                 NULLIF(btrim(sibling.source_plan_slug), '') IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1
+                     FROM unnest(COALESCE(sibling.source_plan_item_ids, ARRAY[]::text[])) AS sibling_item(item_id)
+                    WHERE btrim(sibling_item.item_id) <> ''
+                 )
+               )
+               AND COALESCE(sibling.payload, '{}'::jsonb)->'plan_item'->>'plan_slug'
+                     = ${col}->'plan_item'->>'plan_slug'
+               AND COALESCE(sibling.payload, '{}'::jsonb)->'plan_item'->>'item_id'
+                     = ${col}->'plan_item'->>'item_id'
+             )
            )
       )
       -- EI-20467873456529090: a completed plan-item is terminal residue, not generic backlog.
