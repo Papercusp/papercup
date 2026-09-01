@@ -169,6 +169,20 @@ const CHAIN_SKIP_KEYS: ReadonlySet<string> = new Set<string>([
 /** Insertion-order cap on tracked sessions (backstop against unbounded growth). */
 const MAX_TRACKED_SESSIONS = 4000;
 
+/**
+ * Keep advisory state isolated when one stable coordination owner is carried by more than one
+ * MCP transport connection. The stable owner remains the first component so telemetry can still
+ * be joined back to the caller, while the transport component prevents one connection's recorded
+ * arguments (and one-shot guards) from appearing in another connection. A reconnect gets a fresh
+ * advisory window by design; coordination/replay state retains continuity elsewhere.
+ */
+export function advisorySessionKey(stableOwnerKey: string, transportSessionId?: string | null): string {
+  const stable = stableOwnerKey.trim();
+  const transport = typeof transportSessionId === 'string' ? transportSessionId.trim() : '';
+  if (!stable || !transport || transport === stable) return stable;
+  return `${stable}::mcp-transport::${transport}`;
+}
+
 /** Roles that hold code:run. As of the owner directive 2026-06-25, code:run is open to EVERY
  *  built-in role (run.ts `agentRoles: [...AGENT_ROLES]`), so the nudge audience is the full role
  *  universe — keep this in lockstep with code:run's gate. A superuser caller also qualifies
@@ -664,7 +678,7 @@ export interface BatchNudgeResult {
 }
 
 export interface BatchNudgeInput {
-  /** Stable per-session key — the handler's replayOwnerKey (uiClientId ?? spawnId). */
+  /** Advisory session key — stable owner plus the MCP transport identity when available. */
   sessionKey: string;
   /** The tool just called (MCP or verb form). */
   toolName: string;
@@ -1030,7 +1044,7 @@ function preemptSkeleton(key: string, values: string[]): string {
 }
 
 export interface ListFanoutPreemptInput {
-  /** Stable per-session key — the handler's replayOwnerKey (uiClientId ?? spawnId). */
+  /** Advisory session key — stable owner plus the MCP transport identity when available. */
   sessionKey: string;
   /** The tool that just returned (MCP or verb form). */
   toolName: string;
@@ -1186,7 +1200,7 @@ export const DOOR_POLL_TURN_THRESHOLD = 3;
 export const DOOR_POLL_WINDOW_MS = 30 * 60_000;
 
 export interface StatePlaneNudgeInput {
-  /** Stable per-session key — the handler's replayOwnerKey (uiClientId ?? spawnId). */
+  /** Advisory session key — stable owner plus the MCP transport identity when available. */
   sessionKey: string;
   /** The tool just SUCCESSFULLY called (MCP or verb form). */
   toolName: string;

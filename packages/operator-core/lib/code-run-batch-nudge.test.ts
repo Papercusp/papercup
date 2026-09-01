@@ -26,6 +26,7 @@ import {
   MAX_PREEMPT_PER_SESSION,
   TURN_GAP_MS,
   clusterTurns,
+  advisorySessionKey,
 } from './code-run-batch-nudge';
 
 const cap = { sessionKey: 's1', toolName: 'work_items:get', canCodeRun: true };
@@ -424,6 +425,32 @@ describe('maybeBatchNudge — isolation', () => {
     // A fresh session starts at zero — one call is below threshold, so silent.
     t += 1000;
     expect(maybeBatchNudge({ ...cap, sessionKey: 'b', now: t })).toBeNull();
+  });
+
+  it('separates advisory state for transport connections sharing one stable owner', () => {
+    const first = advisorySessionKey('stable-owner', 'transport-a');
+    const second = advisorySessionKey('stable-owner', 'transport-b');
+    expect(first).not.toBe(second);
+    expect(first).toContain('stable-owner');
+    expect(second).toContain('stable-owner');
+  });
+
+  it('keeps the stable key when transport identity is unavailable or identical', () => {
+    expect(advisorySessionKey('stable-owner')).toBe('stable-owner');
+    expect(advisorySessionKey('stable-owner', null)).toBe('stable-owner');
+    expect(advisorySessionKey('stable-owner', 'stable-owner')).toBe('stable-owner');
+  });
+
+  it('uses the transport-scoped key at the production advisory seam', () => {
+    const source = readFileSync(
+      new URL('./endpoint-route/routes/transport/_mcp-handler.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toMatch(/const nudgeSessionKey = advisorySessionKey\(replayOwnerKey, transportSessionId\)/);
+    expect(source).toMatch(/maybeBatchNudge\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);
+    expect(source).toMatch(/maybeListFanoutPreempt\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);
+    expect(source).toMatch(/maybeOrientDedupNudge\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);
+    expect(source).toMatch(/maybeStatePlaneNudge\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);
   });
 });
 
