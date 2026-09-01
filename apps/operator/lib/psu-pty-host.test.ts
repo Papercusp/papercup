@@ -69,6 +69,7 @@ import {
   LOADED_HOST_CODE_VERSION,
   PSU_REEXEC_EXIT_CODE,
   reexecExitCodeFrom,
+  shouldAdoptHostCode,
   handoffPathFor,
   writeHostHandoff,
   readHostHandoff,
@@ -3830,6 +3831,13 @@ describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {
 
   it('honours the kill switch even when the shim advertises the loop', () => {
     expect(reexecExitCodeFrom({ ...ADVERTISED, PAPERCUSP_PSU_HOST_ADOPT: '0' }, 4242)).toBeNull();
+  });
+
+  it('never re-execs an interactive PTY during carry-respawn', () => {
+    const onReexec = () => {};
+    expect(shouldAdoptHostCode({ onReexec, reexecCode: 87, bridgeTty: true })).toBe(false);
+    expect(shouldAdoptHostCode({ onReexec, reexecCode: 87, bridgeTty: false })).toBe(true);
+    expect(shouldAdoptHostCode({ onReexec: null, reexecCode: 87, bridgeTty: false })).toBe(false);
   });
 
   it('pins the exit code to the shim generator\'s copy', () => {

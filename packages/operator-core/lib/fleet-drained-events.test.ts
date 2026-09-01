@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { FleetAssignmentRow } from './fleet/assignments';
+import type { FleetLaneHealth } from './fleet/lane-health';
 import {
   isTerminalItemStatus,
   countOpenItems,
@@ -19,6 +20,28 @@ import {
 type EmitOpts = { key: string; summary?: string; payload?: unknown; to?: string[]; source?: string };
 const typedEmit = () =>
   vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 }));
+
+function laneHealth(claimable: number | null): FleetLaneHealth {
+  return {
+    claimable: claimable ?? 0,
+    matchedByFilter: claimable,
+    excluded: {},
+    issueFamily: { claimable: claimable ?? 0, matchedByFilter: claimable ?? 0, excluded: {} },
+    featureFamily: null,
+    effective: { claimable, matchedByFilter: claimable, excluded: {}, basis: 'issue-family' },
+    familyReachability: { issue: true, feature: false },
+    spec: {
+      ref: 'bugs@7',
+      specId: 'bugs',
+      revision: 7,
+      matchedBy: 'fleet-slug',
+      harness: 'papercusp',
+      assigneeScoped: null,
+    },
+  };
+}
+
+const zeroLane = () => vi.fn(async () => laneHealth(0));
 
 /** A fleet_assignment row with every field defaulted; override only what a case needs. */
 function row(p: Partial<FleetAssignmentRow>): FleetAssignmentRow {
@@ -87,14 +110,40 @@ describe('pure drain arithmetic', () => {
 describe('emitFleetDrainedEvent (WI-1830)', () => {
   it('fires fleet:drained:<slug> with the slug in both key and payload; awaiter-only (no `to`)', async () => {
     const emit = typedEmit();
-    emitFleetDrainedEvent('my-fleet', { emit });
+    emitFleetDrainedEvent('my-fleet', { emit, readLaneHealth: zeroLane(), workspaceId: 'ws' });
     await new Promise((r) => setTimeout(r, 0));
     expect(emit).toHaveBeenCalledTimes(1);
     const call = emit.mock.calls[0][0];
     expect(call.key).toBe('fleet:drained:my-fleet');
-    expect(call).toMatchObject({ source: 'fleet', payload: { fleetSlug: 'my-fleet' } });
+    expect(call).toMatchObject({
+      source: 'fleet',
+      payload: {
+        fleetSlug: 'my-fleet',
+        claimableProof: { value: 0, basis: 'issue-family', spec: 'bugs@7', harness: 'papercusp' },
+      },
+    });
     expect(call.summary).toContain('my-fleet');
     expect(call.to).toBeUndefined();
+  });
+
+  it('suppresses a false drain when the authoritative fleet lane still has work', async () => {
+    const emit = typedEmit();
+    const readLaneHealth = vi.fn(async () => laneHealth(422));
+    emitFleetDrainedEvent('busy-fleet', { emit, readLaneHealth, workspaceId: 'ws' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(readLaneHealth).toHaveBeenCalledWith({ fleet: 'busy-fleet', workspaceId: 'ws' });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when fleet claimability is unknown', async () => {
+    const emit = typedEmit();
+    emitFleetDrainedEvent('unknown-fleet', {
+      emit,
+      readLaneHealth: vi.fn(async () => null),
+      workspaceId: 'ws',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('never rejects on an emit failure (warns; the status flip must never break)', async () => {
@@ -102,7 +151,9 @@ describe('emitFleetDrainedEvent (WI-1830)', () => {
     const emit = vi.fn(async () => {
       throw new Error('engine down');
     });
-    expect(() => emitFleetDrainedEvent('f1', { emit: emit as never })).not.toThrow();
+    expect(() =>
+      emitFleetDrainedEvent('f1', { emit: emit as never, readLaneHealth: zeroLane(), workspaceId: 'ws' }),
+    ).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('drained-event for f1'));
     warn.mockRestore();
@@ -116,8 +167,8 @@ describe('emitFleetDrainedEvent (WI-1830)', () => {
     const missing = vi.fn(async () => {
       throw new Error('relation "harness_shared.event_await" does not exist');
     });
-    emitFleetDrainedEvent('f2', { emit: ended as never });
-    emitFleetDrainedEvent('f3', { emit: missing as never });
+    emitFleetDrainedEvent('f2', { emit: ended as never, readLaneHealth: zeroLane(), workspaceId: 'ws' });
+    emitFleetDrainedEvent('f3', { emit: missing as never, readLaneHealth: zeroLane(), workspaceId: 'ws' });
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
@@ -176,7 +227,12 @@ describe('emitFleetDrainedForPlan (orchestrator, injected seams)', () => {
       row({ source: 'presence', fleetSlug: 'gamma', planSlug: 'plan-x', agentId: 'su-3' }),
       row({ source: 'work_item_claim', fleetSlug: 'gamma', planSlug: 'plan-z', claimActive: true, agentId: 'su-3' }),
     ]);
-    emitFleetDrainedForPlan('plan-x', { emit, listAssignments });
+    emitFleetDrainedForPlan('plan-x', {
+      emit,
+      listAssignments,
+      readLaneHealth: zeroLane(),
+      workspaceId: 'ws',
+    });
     await new Promise((r) => setTimeout(r, 0));
     expect(listAssignments).toHaveBeenCalledTimes(1);
     const keys = emit.mock.calls.map((c) => c[0].key).sort();
@@ -190,6 +246,24 @@ describe('emitFleetDrainedForPlan (orchestrator, injected seams)', () => {
     ]);
     emitFleetDrainedForPlan('plan-x', { emit, listAssignments });
     await new Promise((r) => setTimeout(r, 0));
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a plan-terminal drain when the fleet oracle still has claimable work', async () => {
+    const emit = typedEmit();
+    const listAssignments = vi.fn(async () => [
+      row({ source: 'presence', fleetSlug: 'busy-fleet', planSlug: 'plan-x', agentId: 'su-1' }),
+    ]);
+    const readLaneHealth = vi.fn(async () => laneHealth(422));
+    emitFleetDrainedForPlan('plan-x', {
+      emit,
+      listAssignments,
+      readLaneHealth,
+      workspaceId: 'ws',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(readLaneHealth).toHaveBeenCalledWith({ fleet: 'busy-fleet', workspaceId: 'ws' });
     expect(emit).not.toHaveBeenCalled();
   });
 

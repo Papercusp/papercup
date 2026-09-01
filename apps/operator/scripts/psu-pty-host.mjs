@@ -146,6 +146,17 @@ export function reexecExitCodeFrom(env = process.env, ppid = process.ppid) {
   return advertised;
 }
 
+/**
+ * A host-code adoption re-exec is safe only when no human terminal is bridged.
+ * Interactive carry-respawns must stay inside the current PTY host: exiting the
+ * launcher visibly tears down the TUI and a missed successor handoff falls into
+ * the fresh-session wizard. Headless hosts have no such continuity boundary and
+ * may still adopt current on-disk host code.
+ */
+export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty }) {
+  return Boolean(onReexec && reexecCode && !bridgeTty);
+}
+
 /** The discovery dir. Owner-only (0700). Shared contract with the read side
  *  (operator-core psu-pty-discovery.ts). */
 export const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
@@ -6259,7 +6270,14 @@ export function hostThroughPty(o) {
       //     carry instead of a bare prompt.
       // Any of them missing ⇒ fall through to the in-process respawn, which is
       // the pre-WI-38292 behaviour: a stale host, but a live one.
-      if (onReexec && reexecCode) {
+      // Interactive sessions must never hand the terminal back to the shim.
+      // The shim's re-exec closes/reopens the launcher and can race the
+      // successor handoff, which presents as a fresh bootstrap/wizard and an
+      // apparent interruption to the owner.  Adoption is safe for headless
+      // hosts (there is no human TTY to tear down); keep interactive hosts on
+      // the in-process respawn path so the PTY, socket, and terminal remain
+      // continuous even when git-sync updates this module on disk.
+      if (shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty })) {
         let hostCode = { stale: false };
         try {
           hostCode = hostCodeStalenessFn();

@@ -6,6 +6,8 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { AgentAssignment } from '../fleet/assignments';
+import type { FleetLaneHealth } from '../fleet/lane-health';
+import { emitFleetDrainedEvent } from '../fleet-drained-events';
 import {
   allFleetMembersIdle,
   maybeEmitFleetIdleDrain,
@@ -14,6 +16,22 @@ import {
 } from './fleet-idle-drain';
 
 const NOW = 1_000_000_000;
+
+function laneHealth(claimable: number | null): FleetLaneHealth {
+  return {
+    claimable: claimable ?? 0,
+    matchedByFilter: claimable,
+    excluded: {},
+    issueFamily: { claimable: claimable ?? 0, matchedByFilter: claimable ?? 0, excluded: {} },
+    featureFamily: null,
+    effective: { claimable, matchedByFilter: claimable, excluded: {}, basis: 'issue-family' },
+    familyReachability: { issue: true, feature: false },
+    spec: {
+      ref: 'bugs@7', specId: 'bugs', revision: 7, matchedBy: 'fleet-slug',
+      harness: 'papercusp', assigneeScoped: null,
+    },
+  };
+}
 
 /** An AgentAssignment with every field defaulted; override only what a case needs. */
 function member(p: Partial<AgentAssignment>): AgentAssignment {
@@ -96,6 +114,25 @@ describe('maybeEmitFleetIdleDrain (orchestrator, injected seams)', () => {
     maybeEmitFleetIdleDrain('su-a', 'ws', { emit, listAssignments, fetchMembership, fetchLastToolCalls, now: () => NOW });
     await flush();
     expect(emit).toHaveBeenCalledWith('fleet-x');
+  });
+
+  it('shared boundary suppresses an idle-miss drain while authoritative work remains', async () => {
+    const rawEmit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    const emit = (fleetSlug: string) =>
+      emitFleetDrainedEvent(fleetSlug, {
+        emit: rawEmit as never,
+        readLaneHealth: vi.fn(async () => laneHealth(422)),
+        workspaceId: 'ws',
+      });
+    const fetchMembership = vi.fn().mockResolvedValue({ fleetSlug: 'fleet-x', fleetRole: 'member' });
+    const listAssignments = vi.fn().mockResolvedValue([rowFor('su-a', 'fleet-x')]);
+    const fetchLastToolCalls = vi.fn().mockResolvedValue(new Map());
+    maybeEmitFleetIdleDrain('su-a', 'ws', {
+      emit, listAssignments, fetchMembership, fetchLastToolCalls, now: () => NOW,
+    });
+    await flush();
+    await flush();
+    expect(rawEmit).not.toHaveBeenCalled();
   });
 
   it('does NOT emit when a member is speaking', async () => {

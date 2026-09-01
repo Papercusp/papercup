@@ -4,7 +4,7 @@
  * improvements-2026-07-10 P-006 / WI-3763, closeout-lane p2p-parity-closeout-lanes-
  * 2026-07-10 P-003).
  *
- * TWO signals, ANDed:
+ * THREE signals, ANDed:
  *   1. the claim-spec VIEW is empty — a member's scheduler:get_next (getNextForBee)
  *      just found zero eligible items under (global floors AND its resolved
  *      spec.view.filter). This rides the ALREADY-PERFORMED query — no extra SQL, no
@@ -16,6 +16,10 @@
  *   2. every member of the fleet is IDLE — none is `speaking` (MemberVerdict,
  *      EI-8995) — so an empty view caught mid-beat, while another member is still
  *      actively working the last few items, never fires a false drain.
+ *   3. the shared emit boundary re-reads the caller-neutral, family-complete fleet
+ *      lane oracle and requires claimable === 0. A miss caused by retry exhaustion,
+ *      a transient floor, or a stale runtime can therefore never terminate a live
+ *      queue. UNKNOWN/read failure suppresses the event.
  *
  * Fires the SAME `fleet:drained:<slug>` key fleet-drained-events.ts emits (reused
  * verbatim, not duplicated) — a leader awaits ONE key regardless of which detector
@@ -96,7 +100,16 @@ export function maybeEmitFleetIdleDrain(
   workspaceId: string | undefined,
   deps: IdleDrainDeps = {},
 ): void {
-  const emit = deps.emit ?? emitFleetDrainedEvent;
+  // The default emitter runs after this detached check. Preserve the workspace
+  // captured by the scheduler call; resolving it again inside the detached
+  // promise could fall through to the process-global workspace and prove the
+  // wrong fleet lane empty. Injected test emitters keep their existing shape.
+  const emit =
+    deps.emit ??
+    ((fleetSlug: string) =>
+      emitFleetDrainedEvent(fleetSlug, {
+        workspaceId,
+      }));
   const listAssignments = deps.listAssignments ?? listFleetAssignments;
   const fetchLastToolCalls = deps.fetchLastToolCalls ?? lastToolCallAtByOwner;
   const fetchMembership = deps.fetchMembership ?? latestFleetMembership;

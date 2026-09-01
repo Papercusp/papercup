@@ -17,18 +17,15 @@
  * module supplies (a) the pure drain arithmetic + (b) a fire-and-forget emitter, and is
  * driven from the ONE transition that can flip a fleet into drained: a plan item going
  * →done (wired in plans:set-status). Because set-status only fires on a real →done edge AND
- * we additionally gate on "this flip left the plan with zero open items", the emit is
- * TRANSITION-ONLY for free — once every item is terminal no further →done edge occurs, so a
- * waiting leader is woken exactly once on the draining edge, never re-woken while it stays
- * drained.
+ * we additionally gate on "this flip left the plan with zero open items", that edge identifies a
+ * drain CANDIDATE. The shared emit boundary then re-reads the family-complete fleet claim-lane
+ * oracle and fires only when its effective claimable count is exactly zero.
  *
- * SCOPE (v1, honest boundary): "the fleet's lane" is the plan that just drained; a fleet is
- * reported drained iff that plan reached zero open items AND the fleet holds no OTHER active
- * (non-terminal) claim on a different plan. The dominant one-fleet-one-plan case is exact. A
- * fleet with a SECOND, entirely-UNCLAIMED plan (open todos nobody has claimed, so no claim
- * row exists) is a documented non-goal — the fleet_assignment view only carries claims +
- * presence, not unclaimed backlog, so that lane is invisible here (same limitation the
- * design note's "zero claimable items in the fleet's lanes" phrasing carries).
+ * SCOPE: plan terminality + the assignment snapshot discover candidate fleets; the persisted
+ * fleet claim spec + family-complete lane-health reader decides whether each candidate is truly
+ * drained. An unclaimed issue/feature backlog is therefore visible to the final decision even
+ * though it is absent from fleet_assignment. Missing spec, unreadable lane state, or any positive
+ * claimable count fails closed to NO event.
  *
  * PURE core + injectable seams (session-compacted-events.ts / plan-item-events.ts
  * discipline): no PG / IO / clock in the arithmetic; the emit + the assignment read are the
@@ -37,6 +34,8 @@
 
 import { emitAwaitedEvent } from './events/await/engine';
 import { listFleetAssignments, type FleetAssignmentRow } from './fleet/assignments';
+import type { FleetLaneHealth } from './fleet/lane-health';
+import { resolveConcreteWorkspaceId } from './workspace-registry';
 
 /** Terminal plan-item statuses — a finished item (mirrors plans/set-status isTerminalStatus). */
 export const TERMINAL_ITEM_STATUSES = ['done', 'dropped'] as const;
@@ -88,33 +87,70 @@ export interface FleetDrainedEventsDeps {
   /** Load the fleet_assignment rows to derive fleet↔plan membership (default: the live
    *  view over ALL scopes). Injected for tests. */
   listAssignments?: () => Promise<FleetAssignmentRow[]>;
+  /** Current, family-complete fleet claimability proof. `null` is UNKNOWN and
+   *  therefore suppresses the control-plane event; it is never coerced to zero. */
+  readLaneHealth?: (args: {
+    fleet: string;
+    workspaceId?: string | null;
+  }) => Promise<FleetLaneHealth | null>;
+  /** Capture the caller's concrete workspace before the detached promise runs. */
+  workspaceId?: string;
+}
+
+async function readLaneHealthDefault(args: {
+  fleet: string;
+  workspaceId?: string | null;
+}): Promise<FleetLaneHealth | null> {
+  const { readFleetLaneHealth } = await import('./fleet/lane-health');
+  return readFleetLaneHealth(args);
 }
 
 /**
- * Fire `fleet:drained:<fleetSlug>` for one fleet that has drained. Awaiter-only (no `to`
+ * Verify and fire `fleet:drained:<fleetSlug>` for one candidate fleet. Awaiter-only (no `to`
  * push): the audience is whoever registered interest in this fleet. Fire-and-forget; never
- * throws — an emit failure can never break the status flip that triggered it.
+ * throws — an oracle/emit failure can never break the status flip that triggered it, and can
+ * never masquerade as a measured zero.
  */
 export function emitFleetDrainedEvent(fleetSlug: string, deps: FleetDrainedEventsDeps = {}): void {
   const emit = deps.emit ?? emitAwaitedEvent;
+  const readLaneHealth = deps.readLaneHealth ?? readLaneHealthDefault;
+  // Resolve synchronously while the request/tool ALS scope is still unquestionably
+  // present. The detached continuation must never fall through to another workspace.
+  const workspaceId = resolveConcreteWorkspaceId(deps.workspaceId);
   void Promise.resolve()
-    .then(() =>
-      emit({
+    .then(async () => {
+      // F-FIX-052: plan terminality and one member's scheduler miss are candidate
+      // signals, not proof that the whole fleet lane drained. Both producers converge
+      // here, so require the same family-complete, caller-neutral oracle used by
+      // fleet:leader-brief. UNKNOWN/read failure is not zero and fails closed.
+      const laneHealth = await readLaneHealth({ fleet: fleetSlug, workspaceId });
+      if (laneHealth?.effective.claimable !== 0) return;
+
+      await emit({
         key: `fleet:drained:${fleetSlug}`,
-        summary: `fleet ${fleetSlug} drained — every claimable lane is done`,
-        payload: { fleetSlug },
+        summary: `fleet ${fleetSlug} drained — authoritative claimability is zero`,
+        payload: {
+          fleetSlug,
+          claimableProof: {
+            value: 0,
+            basis: laneHealth.effective.basis,
+            spec: laneHealth.spec.ref,
+            harness: laneHealth.spec.harness,
+          },
+        },
         source: 'fleet',
-      }),
-    )
+      });
+    })
     .catch((e: unknown) => failSoft(`drained-event for ${fleetSlug}`, e));
 }
 
 /**
- * PURE: which fleets — given that `planSlug` just reached zero open items — have thereby
- * DRAINED, derived from a snapshot of the fleet_assignment rows. A CANDIDATE is any fleet
+ * PURE: which fleets — given that `planSlug` just reached zero open items — are drain
+ * CANDIDATES, derived from a snapshot of the fleet_assignment rows. A CANDIDATE is any fleet
  * with a presence/claim row on `planSlug`; it counts as drained iff it holds NO OTHER active
  * (non-terminal, non-presence) claim on a DIFFERENT plan (an in-flight lane elsewhere means
- * the fleet is not done). Deterministic order (slug-sorted) so callers/tests are stable.
+ * the fleet is not done). The emitter performs the authoritative final proof. Deterministic
+ * order (slug-sorted) so callers/tests are stable.
  */
 export function drainedFleetsForPlan(planSlug: string, rows: readonly FleetAssignmentRow[]): string[] {
   const candidates = new Set<string>();
@@ -142,10 +178,13 @@ export function drainedFleetsForPlan(planSlug: string, rows: readonly FleetAssig
  */
 export function emitFleetDrainedForPlan(planSlug: string, deps: FleetDrainedEventsDeps = {}): void {
   const load = deps.listAssignments ?? (() => listFleetAssignments({}));
+  const workspaceId = resolveConcreteWorkspaceId(deps.workspaceId);
   void Promise.resolve()
     .then(async () => {
       const rows = await load();
-      for (const fleet of drainedFleetsForPlan(planSlug, rows)) emitFleetDrainedEvent(fleet, deps);
+      for (const fleet of drainedFleetsForPlan(planSlug, rows)) {
+        emitFleetDrainedEvent(fleet, { ...deps, workspaceId });
+      }
     })
     .catch((e: unknown) => failSoft(`drained-scan for plan ${planSlug}`, e));
 }
