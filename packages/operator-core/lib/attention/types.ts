@@ -18,10 +18,7 @@
 import { type Importance, IMPORTANCE_LEVELS, type RiskTier, riskTierRank } from '@papercusp/plan-parser';
 import type { ReportBlock } from '@papercusp/chat-protocol';
 import { type AutonomyCategory, isProtectedCategory } from '../autonomy/categories';
-import {
-  ATTENTION_KIND_AUTHORITY,
-  type AttentionDelegation,
-} from './terminal-coverage';
+import { ATTENTION_KIND_AUTHORITY, type AttentionDelegation } from './terminal-coverage';
 
 export { ATTENTION_KIND_AUTHORITY, type AttentionDelegation } from './terminal-coverage';
 
@@ -83,9 +80,9 @@ export const ATTENTION_KIND_CATEGORY: Record<AttentionKind, AutonomyCategory | n
   'smoke-fail': null, // an alert/signal, not a governed decision
   'operator-report': null, // a status report, not a governed decision
   // B-14 / P-100 folded disposition channels (D-011):
-  'improvement': 'ideation-intake', // triage / promote a human-routed improvement
+  improvement: 'ideation-intake', // triage / promote a human-routed improvement
   'standing-approval': 'system-control', // grant standing auto-dispatch — autonomy-widening, owner-authority (PROTECTED, never-auto: the recursion D-005 guards)
-  'conversation': 'escalations', // answer an open agent question (coord:ask / the owner-decision-queue)
+  conversation: 'escalations', // answer an open agent question (coord:ask / the owner-decision-queue)
   'scout-grade': 'ideation-intake', // grade routed Scout ideas
   // owner-inbox-single-pane P-005: every folded owner-gate channel is the SAME
   // disposition as a needs-human plan item — ratify/answer the thing only the
@@ -299,8 +296,14 @@ export type AttentionActionId =
  * once made the Discuss button silently resolve real owner escalations
  * (EI-13037).
  */
-export const NAVIGATE_ACTION_IDS: ReadonlySet<AttentionActionId> =
-  new Set<AttentionActionId>(['chat', 'message-owner', 'answer', 'view-log', 'open', 'discuss']);
+export const NAVIGATE_ACTION_IDS: ReadonlySet<AttentionActionId> = new Set<AttentionActionId>([
+  'chat',
+  'message-owner',
+  'answer',
+  'view-log',
+  'open',
+  'discuss',
+]);
 
 /** True when `id` only opens a sub-surface — i.e. resolves nothing. */
 export function isNavigateAction(id: string): boolean {
@@ -322,7 +325,14 @@ export interface AttentionAction {
 /** The backend handle the UI needs to carry out an item's actions —
  *  discriminated by kind so resolution dispatches to the right place. */
 export type AttentionRef =
-  | { kind: 'plan-item'; slug: string; itemId: string }
+  | {
+      kind: 'plan-item';
+      slug: string;
+      itemId: string;
+      /** P-010 bounded compensation snapshot; optional for historical rows. */
+      harnessSlug?: string | null;
+      priorStatus?: string;
+    }
   | {
       kind: 'coord-escalation';
       msgId: string;
@@ -335,7 +345,14 @@ export type AttentionRef =
   | { kind: 'smoke-fail'; harnessSlug: string }
   | { kind: 'operator-report'; turnId: string; conversationId: string }
   // B-14 / P-100 folded disposition channels (D-011):
-  | { kind: 'improvement'; issueId: string }
+  | {
+      kind: 'improvement';
+      issueId: string;
+      /** P-010 bounded compensation snapshot; optional for historical rows. */
+      harnessSlug?: string | null;
+      priorIdeaLifecycle?: unknown;
+      priorDecidedReason?: string | null;
+    }
   | { kind: 'standing-approval'; capability: string; targetHarness: string }
   | { kind: 'conversation'; conversationId: string }
   | { kind: 'scout-grade'; count: number }
@@ -352,8 +369,17 @@ export type AttentionRef =
        *  action clears the payload keys either way — a row can hold both, and
        *  clearing only one leaves the card standing (EI-21675115869134466). */
       ownerGate: 'status' | 'payload';
+      /** P-010 bounded compensation snapshot; optional for historical rows. */
+      harnessSlug?: string | null;
+      priorStatus?: string | null;
+      ownerGateKeys?: Array<'needsHuman' | 'needsOwnerAction'>;
     }
-  | { kind: 'owner-wall'; wallSource: 'loop-carry-note' | 'work-item'; wallOwnerId: string | null; wallRef: string | null }
+  | {
+      kind: 'owner-wall';
+      wallSource: 'loop-carry-note' | 'work-item';
+      wallOwnerId: string | null;
+      wallRef: string | null;
+    }
   | { kind: 'dark-flag-ratification'; flagKey: string }
   | { kind: 'blocked-session'; sessionId: string; client: string; refId: string }
   // curated-signal-cards P-001:
@@ -438,10 +464,7 @@ export interface AttentionItem {
 
 /** The untriaged-default triage fields every adapter spreads into its item
  *  (the reader later overlays a real triage row via {@link applyTriage}). */
-export function untriaged(): Pick<
-  AttentionItem,
-  'triageState' | 'triageNote' | 'triagedBy' | 'triagedAt'
-> {
+export function untriaged(): Pick<AttentionItem, 'triageState' | 'triageNote' | 'triagedBy' | 'triagedAt'> {
   return { triageState: 'untriaged', triageNote: null, triagedBy: null, triagedAt: null };
 }
 
@@ -464,8 +487,7 @@ export interface TriageRecord {
  */
 export function applyTriage(item: AttentionItem, rec: TriageRecord): AttentionItem {
   const triageState = triageActionToState(rec.action);
-  const tier: AttentionTier =
-    triageState === 'downgraded' || triageState === 'resolved' ? 'handled' : 'decision';
+  const tier: AttentionTier = triageState === 'downgraded' || triageState === 'resolved' ? 'handled' : 'decision';
   return {
     ...item,
     tier,
