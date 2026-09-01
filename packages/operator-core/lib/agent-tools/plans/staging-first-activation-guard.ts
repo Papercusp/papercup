@@ -215,7 +215,8 @@ export function stagingFirstActivationProblems(plan: ParsedPlan): StagingFirstAc
         `${item.id} makes main/:3070/green-checkpoint/deployment a prerequisite for non-final implementation. ` +
         `Use staging/current-build for implementation and non-final acceptance, or declare a narrow exception on ` +
         `${item.id} (or a decision linked to it): name the deployed-only property, explain concretely why ` +
-        `staging/current-build cannot exercise it, and retain deployed-main verification only for that property.`,
+        `staging/current-build cannot exercise it, and retain deployed-main verification only for that property. ` +
+        narrowExceptionDiagnosis(relatedExceptionText(item, plan.decisions)),
     });
   }
 
