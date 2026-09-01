@@ -17,13 +17,19 @@ import {
   proposeRubric,
   rubricCompleteness,
   planRowToRubric,
+  normalizeAcceptanceRubricProposal,
   REPLICATION_DRILL_MARKER,
   METHOD_SHRINK_GUARD_MIN_CHARS,
   type Rubric,
   type RubricCriterion,
   type ProposeRubricInput,
+  type ProposeRubricCriterion,
 } from './rubrics';
-import { rubricCriterionSchema, rubricTemplateDataSchema } from './agent-tools/plans/rubric-template';
+import {
+  rubricCriterionSchema,
+  rubricTemplateDataSchema,
+  rubricTemplateDataAuthoringSchema,
+} from './agent-tools/plans/rubric-template';
 import { classifyToolError } from './harness/improvements/tool-error-classifier';
 
 const LONG_DRILL =
@@ -295,6 +301,72 @@ describe('criterion `replication` field end-to-end (schema + plan-row mapping)',
     expect(mapped).not.toBeNull();
     expect(mapped?.criteria[0]?.replication).toBe('the drill');
     expect(mapped?.criteria[1]).not.toHaveProperty('replication');
+  });
+});
+
+describe('legacy acceptance successor compatibility normalization (EI-22056951528892875)', () => {
+  it('upgrades projected blanks and an old scale without changing the legacy input', () => {
+    const legacyCriteria: ProposeRubricCriterion[] = [
+      { key: 'outcome', title: 'Outcome', model: '', method: '   ', driftMarkers: '' },
+      { key: 'native', title: 'Native criterion', driftMarkers: 'native regression marker' },
+    ];
+    const legacyScale = ['fail', 'weak', 'adequate', 'strong'];
+
+    const normalized = normalizeAcceptanceRubricProposal(legacyCriteria, 'acceptance', legacyScale);
+
+    expect(normalized.criteria[0]).toMatchObject({
+      key: 'outcome',
+      title: 'Outcome',
+      driftMarkers: expect.stringContaining("Legacy acceptance criterion 'outcome'"),
+    });
+    expect(normalized.criteria[0]).not.toHaveProperty('model');
+    expect(normalized.criteria[0]).not.toHaveProperty('method');
+    expect(normalized.criteria[1]).toEqual(legacyCriteria[1]);
+    expect(normalized.ratingScale).toEqual([...legacyScale, 'unknown']);
+    expect(
+      rubricTemplateDataAuthoringSchema.safeParse({
+        kind: 'acceptance',
+        subjectPlan: 'legacy-successor-subject',
+        characteristic: 'legacy-successor',
+        criteria: normalized.criteria,
+        ratingScale: normalized.ratingScale,
+      }).success,
+    ).toBe(true);
+    expect(normalized.compatibility).toMatchObject({
+      source: 'legacy-acceptance-read-projection',
+      upgrades: expect.arrayContaining([
+        expect.objectContaining({ field: 'criteria[0].model', action: 'omit-empty' }),
+        expect.objectContaining({ field: 'criteria[0].method', action: 'omit-empty' }),
+        expect.objectContaining({ field: 'criteria[0].driftMarkers', action: 'supply-falsifier' }),
+        expect.objectContaining({
+          field: 'ratingScale',
+          action: 'append-unknown-equivalent',
+          value: 'unknown',
+        }),
+      ]),
+    });
+    expect(legacyCriteria[0]).toEqual({
+      key: 'outcome',
+      title: 'Outcome',
+      model: '',
+      method: '   ',
+      driftMarkers: '',
+    });
+    expect(legacyScale).toEqual(['fail', 'weak', 'adequate', 'strong']);
+  });
+
+  it('does not rewrite standard rubrics or current acceptance vocabularies', () => {
+    const currentCriteria: ProposeRubricCriterion[] = [
+      { key: 'outcome', title: 'Outcome', driftMarkers: 'outcome regresses' },
+    ];
+    expect(normalizeAcceptanceRubricProposal(currentCriteria, 'acceptance', ['healthy', 'degraded', 'broken', 'unknown'])).toEqual({
+      criteria: currentCriteria,
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+    });
+    expect(normalizeAcceptanceRubricProposal(currentCriteria, 'standard', ['pass', 'partial', 'fail'])).toEqual({
+      criteria: currentCriteria,
+      ratingScale: ['pass', 'partial', 'fail'],
+    });
   });
 });
 
