@@ -51,13 +51,19 @@ vi.mock('./leader-control', () => ({
 // and mock them separately, because the two halves fail independently: a declaration
 // that does not land must store no gate, and a fire that does not land must report
 // members still parked rather than a clean resume.
-const registerAnnouncementM = vi.fn(async () => ({ id: 1, causalGeneration: 1 }));
-const emitAwaitedEventM = vi.fn(async () => ({ waiters: 2 }));
+const registerAnnouncementM = vi.fn(async (_input: unknown) => ({ id: 1, causalGeneration: 1 }));
+const applyPauseHoldsM = vi.fn(async (_input: unknown) => ({ items: [], failed: [] }));
+const clearPauseHoldsM = vi.fn(async (_input: unknown) => ({ items: [], failed: [] }));
+const emitAwaitedEventM = vi.fn(async (_input: unknown) => ({ waiters: 2 }));
 vi.mock('../../events/await/store', () => ({
-  registerAnnouncement: (...a: unknown[]) => registerAnnouncementM(...(a as [])),
+  registerAnnouncement: (input: unknown) => registerAnnouncementM(input),
 }));
 vi.mock('../../events/await/engine', () => ({
-  emitAwaitedEvent: (...a: unknown[]) => emitAwaitedEventM(...(a as [])),
+  emitAwaitedEvent: (input: unknown) => emitAwaitedEventM(input),
+}));
+vi.mock('./pause-holds', () => ({
+  applyFleetPauseHolds: (input: unknown) => applyPauseHoldsM(input),
+  clearFleetPauseHolds: (input: unknown) => clearPauseHoldsM(input),
 }));
 
 import {
@@ -123,9 +129,11 @@ beforeEach(() => {
   presenceM.mockResolvedValue(null as never);
   sendM.mockResolvedValue({ msg_id: 'm-cue' } as never);
   membersM.mockResolvedValue([]);
-  deliveryMembersM.mockResolvedValue([]);
-  drainStampM.mockResolvedValue(null); // default: fails-soft, no auto-stamp
-  markReleasedM.mockResolvedValue(true);
+    deliveryMembersM.mockResolvedValue([]);
+    drainStampM.mockResolvedValue(null); // default: fails-soft, no auto-stamp
+    applyPauseHoldsM.mockResolvedValue({ items: [], failed: [] });
+    clearPauseHoldsM.mockResolvedValue({ items: [], failed: [] });
+    markReleasedM.mockResolvedValue(true);
   clearReleasedM.mockResolvedValue(0);
   retireLeaderWatchesM.mockResolvedValue(0);
   // A fully-typed healthy outcome. Spelled out rather than cast `as never` so that a new
@@ -363,6 +371,30 @@ describe('applyFleetControl', () => {
     );
   });
 
+  it('a terminal noResumePath park clears this fleet’s pause holds without applying new ones', async () => {
+    getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+
+    await applyFleetControl({} as never, 'backend', 'wind-down', 'mission over', { noResumePath: true });
+
+    expect(clearPauseHoldsM).toHaveBeenCalledWith({ fleetSlug: 'backend', workspaceId: 'ws-1' });
+    expect(applyPauseHoldsM).not.toHaveBeenCalled();
+  });
+
+  it('a resumable wind-down still applies fleet pause holds with the pre-stamp reason', async () => {
+    getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+
+    await applyFleetControl({} as never, 'backend', 'wind-down', 'release cut');
+
+    expect(applyPauseHoldsM).toHaveBeenCalledWith({
+      fleetSlug: 'backend',
+      workspaceId: 'ws-1',
+      byOwnerId: callerRef.ownerId,
+      leaderOwnerId: callerRef.ownerId,
+      reason: 'release cut',
+    });
+    expect(clearPauseHoldsM).not.toHaveBeenCalled();
+  });
+
   it('uses the control roster so muted/digest members receive the binding release cue', async () => {
     getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
     // The delivery audience would omit these members; typed control must not.
@@ -595,6 +627,7 @@ describe('applyFleetControl', () => {
       // caller's reason PREPENDED, the auto-stamp APPENDED — both durable on the row.
       const persisted = setControlM.mock.calls[setControlM.mock.calls.length - 1][2];
       expect(persisted.reason).toBe(`plans shipped | ${STAMP.summary}`);
+      expect(applyPauseHoldsM).toHaveBeenCalledWith(expect.objectContaining({ reason: 'plans shipped' }));
       // structured stamp rides the result for the immediate caller.
       expect(r.drainStamp).toEqual(STAMP);
       // the member cue body carries the augmented reason (successor sees it at orient too).
