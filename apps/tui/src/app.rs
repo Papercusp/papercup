@@ -2373,7 +2373,10 @@ impl App {
             chat_loading_earlier: false,
             card_state: crate::card_view::CardState::new(),
             card_workspace: None,
-            operator_dock_open: false,
+            // P-004 / Surface B: Agent Chat is a persistent cockpit pane. Keep
+            // the legacy field for view-state compatibility, but the renderer
+            // no longer treats it as a visibility toggle.
+            operator_dock_open: true,
             operator_dock_focused: false,
             voice_phase: VoicePhase::Idle,
             convai_phase: ConvAiPhase::Off,
@@ -4256,7 +4259,10 @@ impl App {
         self.testing_sel = vs.testing_sel;
         self.pane_sel = vs.pane_sel;
         self.show_presence = vs.show_presence;
-        self.operator_dock_open = vs.operator_dock_open;
+        // P-004: older persisted snapshots may carry `false` from the retired
+        // hideable dock. Surface B is always present, so normalize that legacy
+        // value on restore instead of letting it suppress the sidebar.
+        self.operator_dock_open = true;
         self.fleet.agent_sel = vs.fleet_agent_sel;
         if let Some(m) = vs.fleet_mode.as_deref() {
             self.fleet.mode = crate::fleet::FleetMode::from_label(m);
@@ -8884,12 +8890,10 @@ impl App {
                 self.show_presence = !self.show_presence;
                 Action::Render
             }
-            // Operator dock (operator-always-visible-2026-06-05, Brief 24): `o`
-            // focuses the docked operator pane from any non-Operator tab — opening
-            // it if hidden — so you can talk to the operator without leaving the
-            // tab; `o` again (or Esc) returns focus to the tab. `O` toggles the
-            // dock's visibility (hide to reclaim width). On the Operator tab the
-            // whole tab is already the chat, so both are no-ops there.
+            // Operator dock (operator-always-visible-2026-06-05, Brief 24; P-004):
+            // `o` focuses the persistent docked operator pane from any non-Operator
+            // tab. The historical `O` visibility toggle now only focuses the pane;
+            // Surface B keeps Agent Chat present rather than hideable.
             KeyCode::Char('o') => {
                 // P-019: one universal action reaches Agent Chat AND focuses
                 // the composer. This stays visible/useful even when a restored
@@ -8900,10 +8904,8 @@ impl App {
                 Action::Render
             }
             KeyCode::Char('O') if self.tab != Tab::Operator => {
-                self.operator_dock_open = !self.operator_dock_open;
-                if !self.operator_dock_open {
-                    self.operator_dock_focused = false;
-                }
+                self.operator_dock_open = true;
+                self.operator_dock_focused = true;
                 Action::Render
             }
             // Plans-filter rail (D-009): `F` opens it on the tabs it narrows
@@ -17670,7 +17672,7 @@ mod tests {
     fn o_from_any_tab_opens_agent_chat_and_focuses_the_composer() {
         let mut a = App::new();
         a.tab = Tab::Plans;
-        assert!(!a.operator_dock_open && !a.operator_dock_focused);
+        assert!(a.operator_dock_open && !a.operator_dock_focused);
         a.update(key('o', KeyModifiers::NONE));
         assert_eq!(a.tab, Tab::Operator);
         assert!(a.chat_composing);
@@ -17678,13 +17680,13 @@ mod tests {
     }
 
     #[test]
-    fn operator_dock_shift_o_toggles_visibility_and_clears_focus() {
+    fn operator_dock_shift_o_focuses_the_persistent_sidebar() {
         let mut a = App::new();
         a.tab = Tab::Plans;
-        a.update(key('O', KeyModifiers::SHIFT)); // open (unfocused)
-        assert!(a.operator_dock_open && !a.operator_dock_focused);
-        a.update(key('O', KeyModifiers::SHIFT)); // hide
-        assert!(!a.operator_dock_open && !a.operator_dock_focused);
+        a.update(key('O', KeyModifiers::SHIFT));
+        assert!(a.operator_dock_open && a.operator_dock_focused);
+        a.update(key('O', KeyModifiers::SHIFT));
+        assert!(a.operator_dock_open && a.operator_dock_focused);
     }
 
     #[test]
@@ -17704,7 +17706,7 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Operator; // the whole tab is already the chat
         a.update(key('o', KeyModifiers::NONE));
-        assert!(!a.operator_dock_open && !a.operator_dock_focused);
+        assert!(a.operator_dock_open && !a.operator_dock_focused);
         assert!(a.chat_composing);
     }
 
