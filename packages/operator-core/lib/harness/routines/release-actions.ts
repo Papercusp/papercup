@@ -768,6 +768,207 @@ export interface CheckpointVerdict {
   };
 }
 
+/**
+ * A bounded, producer-side report from the DG-1 signed verdict publisher.
+ *
+ * The ordinary release gate is an aggregate run, while `gate_verdicts` is a
+ * per-shard fact table.  Keeping this result separate from `CheckpointVerdict`
+ * prevents a partial/empty publish from being mistaken for the gate's outcome.
+ */
+export interface SignedGateVerdictPublishResult {
+  published: number;
+  skipped: number;
+  reason?:
+    | 'not-recordable'
+    | 'missing-run-identity'
+    | 'registry-unreadable'
+    | 'repo-unreadable'
+    | 'identity-unreadable'
+    | 'manifest-unreadable'
+    | 'no-test-rows';
+}
+
+interface GateTestRunRow {
+  file_path: string;
+  status: string;
+  duration_ms: number | string | null;
+}
+
+interface SignedGateShard {
+  repoKey: string;
+  stagingSha: string;
+  shardId: string;
+  inputsHash: string;
+  verdict: 'pass' | 'fail';
+  durationMs: number;
+}
+
+/**
+ * Publish DG-1 signed shard facts for one completed checkpoint run.
+ *
+ * This is deliberately fail-closed and best-effort.  A checkpoint result has
+ * no trustworthy shard identity of its own, so the publisher obtains every
+ * load-bearing field from independent authoritative writers:
+ *
+ *   - registry entry → checkout path + canonical repo key + Hive home scope
+ *   - committed candidate tree → shard manifest + `inputsHash`
+ *   - CI `test_runs` rows for this exact runId/candidate → observed shard
+ *     outcomes and measured durations
+ *   - local GitHub identity + device keychain → signer and public key
+ *
+ * If any link is unavailable, no row is written.  In particular, aggregate
+ * `green` is never expanded into passes for shards that produced no test rows.
+ */
+export async function publishSignedGateVerdicts(
+  target: GateVerdictTarget,
+  verdict: CheckpointVerdict,
+): Promise<SignedGateVerdictPublishResult> {
+  if (!isRecordableVerdict(verdict.reason)) {
+    return { published: 0, skipped: 0, reason: 'not-recordable' };
+  }
+  const stagingSha = typeof verdict.candidate === 'string' ? verdict.candidate.trim() : '';
+  const runId = typeof verdict.runId === 'string' ? verdict.runId.trim() : '';
+  // GateVerdict's shape guard requires a full commit SHA.  A short marker (or
+  // a crash without a marker) is not enough to bind a signed fact to a tree.
+  if (!/^[0-9a-f]{40,64}$/i.test(stagingSha) || !runId) {
+    return { published: 0, skipped: 0, reason: 'missing-run-identity' };
+  }
+
+  try {
+    const [{ loadHarnessRegistry }, { canonicalRepoKey }, { buildShardManifestAtSha }] =
+      await Promise.all([
+        import('../../harness-registry'),
+        import('../../sync/pot-git/repo-identity'),
+        import('../../sync/pot-git/gate/shards'),
+      ]);
+    const registry = await loadHarnessRegistry(target.workspaceId, { fresh: true });
+    const entry = registry.projects.find((project) => project.slug === target.installSlug);
+    if (!entry?.path) return { published: 0, skipped: 0, reason: 'registry-unreadable' };
+
+    const manifestResult = await buildShardManifestAtSha(entry.path, stagingSha).catch(() => null);
+    if (!manifestResult) return { published: 0, skipped: 0, reason: 'manifest-unreadable' };
+
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const sql = getOrgPg().sql;
+    // The checkpoint runner intentionally leaves test_runs.workspace_id and
+    // harness_slug NULL (those rows describe the isolated gate tree).  The
+    // run-group UUID is the exact, non-guessable join key; source+commit keep
+    // unrelated local rows out even if a caller accidentally reuses a UUID.
+    const rows = (await sql.unsafe(
+      `SELECT file_path, status, duration_ms
+         FROM harness_shared.test_runs
+        WHERE run_group_id = $1
+          AND source = 'ci'
+          AND commit_sha = $2
+        ORDER BY file_path`,
+      [runId, stagingSha],
+    )) as GateTestRunRow[];
+    if (!rows.length) return { published: 0, skipped: 0, reason: 'no-test-rows' };
+
+    const identity = await (await import('../../identity/resolve-local-github-identity'))
+      .resolveLocalGithubIdentity();
+    if (identity.kind !== 'ok') return { published: 0, skipped: rows.length, reason: 'identity-unreadable' };
+    const keychainId = (await import('../../identity/device-keychain-id')).resolveDeviceKeychainId(
+      identity.githubUserId,
+    );
+    const keypair = await (await import('../../identity/attest')).loadOrGenerateDeviceKeypair(keychainId);
+    const signWithDeviceKey = (await import('../../identity/sign-with-device-key')).signWithDeviceKey;
+    const { signGateVerdict, gateVerdictId } = await import('../../sync/pot-git/gate/verdicts');
+
+    const normalize = (file: string): string => file.replaceAll('\\', '/').replace(/^\.\//, '');
+    const layerForFile = (file: string): 'unit' | 'integration' =>
+      /(?:^|\/)(?:integration\/|[^/]*\.integration\.(?:test|spec)\.)/.test(file)
+        ? 'integration'
+        : 'unit';
+    const normalizedRows = rows.map((row) => ({
+      file: normalize(String(row.file_path ?? '')),
+      status: String(row.status ?? '').toLowerCase(),
+      durationMs: Math.max(0, Number(row.duration_ms ?? 0) || 0),
+    }));
+    const repoKey = canonicalRepoKey(entry);
+    const hiveHomeSlug =
+      typeof entry.hive_slug === 'string' && entry.hive_slug.trim()
+        ? entry.hive_slug.trim()
+        : entry.harness_kind === 'hive'
+          ? entry.slug
+          : null;
+    const shards: SignedGateShard[] = [];
+    for (const shard of manifestResult.manifest.shards) {
+      const prefix = `${normalize(shard.workspaceDir).replace(/\/+$/, '')}/`;
+      const matching = normalizedRows.filter(
+        (row) =>
+          row.file.startsWith(prefix) &&
+          layerForFile(row.file.slice(prefix.length)) === shard.layer,
+      );
+      if (!matching.length) continue;
+      // A skipped/cancelled/error module did not establish a passing shard
+      // verdict.  Preserve a measured failure for explicit fail/error rows,
+      // but never turn an absence of execution into a pass.
+      if (matching.some((row) => ['skip', 'cancelled', 'error', 'running'].includes(row.status))) continue;
+      const failed = matching.some((row) => !['pass', 'passed'].includes(row.status));
+      const inputsHash = manifestResult.inputsHashByShardId[shard.shardId];
+      if (!inputsHash) continue;
+      shards.push({
+        repoKey,
+        stagingSha,
+        shardId: shard.shardId,
+        inputsHash,
+        verdict: failed ? 'fail' : 'pass',
+        durationMs: Math.round(matching.reduce((sum, row) => sum + row.durationMs, 0)),
+      });
+    }
+    if (!shards.length) return { published: 0, skipped: rows.length, reason: 'no-test-rows' };
+
+    let published = 0;
+    for (const shard of shards) {
+      const signed = await signGateVerdict(
+        {
+          repoKey: shard.repoKey,
+          stagingSha: shard.stagingSha,
+          shardId: shard.shardId,
+          inputsHash: shard.inputsHash,
+          verdict: shard.verdict,
+          durationMs: shard.durationMs,
+          devicePubkeyBase64: keypair.pubkeyBase64,
+          nowMs: Date.now(),
+        },
+        (bytes) => signWithDeviceKey(keychainId, bytes),
+      );
+      const verdictId = gateVerdictId(signed);
+      await sql.unsafe(
+        `INSERT INTO harness_shared.gate_verdicts
+          (workspace_id, verdict_id, harness_slug, schema_v, repo_key, staging_sha,
+           shard_id, inputs_hash, verdict, duration_ms, device_pubkey, verdict_ts,
+           sig, origin, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'local', now())
+         ON CONFLICT (workspace_id, verdict_id) DO NOTHING`,
+        [
+          target.workspaceId,
+          verdictId,
+          hiveHomeSlug,
+          signed.v,
+          signed.repo_key,
+          signed.staging_sha,
+          signed.shard_id,
+          signed.inputs_hash,
+          signed.verdict,
+          signed.duration_ms,
+          signed.device_pubkey,
+          signed.ts,
+          signed.sig,
+        ],
+      );
+      published += 1;
+    }
+    return { published, skipped: Math.max(0, rows.length - shards.length) };
+  } catch {
+    // The signed ledger is additive evidence.  A keychain/DB/registry hiccup
+    // must never erase the existing gate-health verdict or turn a green run
+    // into a crash.  Callers can re-attempt on the next checkpoint run.
+    return { published: 0, skipped: 0, reason: 'manifest-unreadable' };
+  }
+}
+
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
  *  producer-side write and the routine's fallback) so a manual run's history row is identical to a
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
