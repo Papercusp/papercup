@@ -2305,6 +2305,87 @@ export function buildAgentFactsSupersessionAdvisory(rawSql: string): string | nu
 }
 
 /**
+ * `harness_shared.event_key_fires` is an AGGREGATE LATCH, not a fire log
+ * (EI-19464809374955438).
+ *
+ * One row per (workspace_id, event_key): `first_fired_at`, `last_fired_at`,
+ * `fire_count`, `last_payload`. No per-fire history exists anywhere, so a
+ * WINDOWED question — "did this key fire between T1 and T2?" — is structurally
+ * unanswerable: every fire except the most recent leaves no timestamp behind.
+ * The query still runs, and returns 0.
+ *
+ * That 0 is the whole danger, and it is why this fires at the moment of the
+ * query rather than being left to discipline. `0` is the exact shape of "no
+ * harm occurred", so a wake-loss investigation returning 0 stranded awaits
+ * reads as reassurance when the true reading is "this instrument cannot see
+ * it". Measured on the filing that produced this advisory: 81 unbound green
+ * awaits cancelled-unfired over 7 days, joined to the latch on
+ * `last_fired_at BETWEEN cancelled_at AND expires_ts`, returned stranded_awaits
+ * 0 — while that same latch reported fire_count 101 on `release:green:papercusp`
+ * and 244 on `green-checkpoint:red:papercusp`, i.e. those keys fire constantly
+ * and the window for a missed fire was plainly wide open.
+ *
+ * ⚠ THIS ADVISORY NAMES NO CLEARING PREDICATE, and that is the point rather than
+ * an omission. Every other builder in this file ends by naming the clause that
+ * fixes the read; here the information is absent from the database, so the only
+ * correct response is to downgrade the CLAIM from "none" to "unknown". Offering
+ * a clearing clause would assert that a right answer is reachable by writing
+ * better SQL, which is the false-confidence failure these advisories exist to
+ * prevent.
+ *
+ * ⚠ AND `event_wake_attempts` IS NOT THE MISSING LOG — it is the second half of
+ * the same trap, which is why the remedy warns about it instead of pointing
+ * there. It holds a row per wake ATTEMPT, which exists only when some subscriber
+ * was ARMED at fire time, so absence of an attempt row is not absence of a fire.
+ * Measured 2026-09-01 across the attempts retention window, restricted to keys
+ * whose ENTIRE fire history falls inside it so `fire_count` is directly
+ * comparable: 60,692 keys, 192,369 fires, 6,607 observable as distinct
+ * attempt-moments (3.4%), and 59,805 keys (98.5%) carrying no attempt row at
+ * all. `fleet:context-critical:nonp2p-bug-drain-luna-max-50` alone fired 3,010
+ * times and is wholly invisible there. A reader who "corrects" a latch query by
+ * joining the attempts log therefore trades a false negative for a quieter one.
+ *
+ * DELIBERATE BOUNDARY: fires only on a genuine window question — a COMPARISON
+ * against a fire timestamp. Reading the latch AS a latch (`SELECT event_key,
+ * fire_count`, `max(last_fired_at)`, an ORDER BY recency) is a correct and
+ * common use of this table and stays silent; warning there would be noise that
+ * trains readers to skim advisories.
+ */
+export function buildEventFireWindowAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => bareTableName(t) === 'event_key_fires')) return null;
+
+  // Identifiers, so match the literal-and-comment-stripped body: a column named
+  // inside a quoted string or a `--` comment is not a predicate.
+  const body = stripSqlLiteralsAndComments(rawSql);
+
+  // A window question is a COMPARISON against a fire timestamp, on either side
+  // of the operator. Selecting, aggregating or ordering by one is not.
+  const TS = '(?:first_fired_at|last_fired_at)';
+  const windowed =
+    new RegExp(`\\b${TS}\\s*(?:>=?|<=?|between\\b)`, 'i').test(body) ||
+    new RegExp(`(?:>=?|<=?)\\s*(?:\\w+\\.)?${TS}\\b`, 'i').test(body);
+  if (!windowed) return null;
+
+  return (
+    '⚠ harness_shared.event_key_fires is an AGGREGATE LATCH, not a fire log: ONE row per event key ' +
+    '(first_fired_at, last_fired_at, fire_count, last_payload), with no interior history. A windowed ' +
+    'predicate on these timestamps therefore CANNOT answer "did this key fire between T1 and T2" — ' +
+    'every fire but the most recent left no timestamp behind, so a fire inside your window that was ' +
+    'later superseded is invisible. A 0 here means UNKNOWN, never NONE, and it is the exact shape of ' +
+    '"no harm occurred": measured on EI-19464809374955438, 81 cancelled-unfired green awaits joined ' +
+    'this way returned 0 stranded while the same latch showed fire_count 101 and 244 on the two keys ' +
+    'involved. Do NOT reach for harness_shared.event_wake_attempts to repair it — that carries a row ' +
+    'per wake ATTEMPT, which exists only when a subscriber was ARMED at fire time, so an absent row ' +
+    'is not an absent fire. Measured 2026-09-01 over its retention window (keys whose whole history ' +
+    'falls inside it): 192,369 fires, 6,607 observable (3.4%), and 59,805 of 60,692 keys (98.5%) with ' +
+    'no attempt row at all. State the result as unanswerable, or narrow to keys with fire_count = 1 ' +
+    '(where last_fired_at IS the only fire and a window predicate is exact). Answering it in general ' +
+    'needs a bounded per-fire log that does not exist yet.'
+  );
+}
+
+/**
  * Flag the seconds-as-milliseconds epoch trap on tool-invocation recency reads
  * (EI-20261119579595975).
  *

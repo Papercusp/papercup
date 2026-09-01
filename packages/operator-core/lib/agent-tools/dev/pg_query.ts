@@ -26,6 +26,7 @@ import {
   buildNativeToolAttributionAdvisory,
   buildAgentActivityLedgerAdvisory,
   buildAgentFactsSupersessionAdvisory,
+  buildEventFireWindowAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
@@ -334,6 +335,15 @@ export default defineTool({
     // are well-formed numbers that survive review, which is why the advisory
     // fires at the moment of the query rather than leaving it to discipline.
     const agentFactsSupersessionAdvisory = advisoryOf(() => buildAgentFactsSupersessionAdvisory(sql));
+    // EI-19464809374955438 — the sibling of the advisory above, and its own
+    // builder because the FAILURE MODE is different in kind: that one warns a
+    // predicate is wrong and names the clause that fixes it; this one warns the
+    // question is UNANSWERABLE from the data. event_key_fires is a one-row-per-key
+    // latch, so a windowed predicate on its timestamps silently drops every fire
+    // but the last and returns a 0 shaped exactly like "no harm occurred". There
+    // is deliberately no clearing clause — the honest fix is to downgrade the
+    // claim to "unknown", not to rewrite the SQL.
+    const eventFireWindowAdvisory = advisoryOf(() => buildEventFireWindowAdvisory(sql));
     // EI-20103748074297088 — two more ways a read returns a well-formed ZERO that reads as a
     // real answer. Kept as their own builders, like the three above, because each is a
     // DIFFERENT failure: the tenant advisory warns the rows may be from the wrong tenant;
@@ -377,6 +387,7 @@ export default defineTool({
       claimabilityAdvisory,
       backlogFlowAdvisory,
       agentFactsSupersessionAdvisory,
+      eventFireWindowAdvisory,
       nullPathAdvisory,
       jsonbTypeofAdvisory,
       splitEvidenceAdvisory,
