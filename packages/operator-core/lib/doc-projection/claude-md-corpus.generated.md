@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 298
-  corpus-blocks: 259
+  corpus-parts: 300
+  corpus-blocks: 260
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -1831,6 +1831,25 @@ row says so and bash remains correct.
 | a filtered work-item / issue slice — text, state set, kind, assignee, plan of origin, or a created/updated window | `work_items:list { q, state, notTerminal, kind, assignee, sourcePlanSlug, createdSince, updatedSince, limit }` — add includeObservations:true to match a raw SELECT, and completionAuthority to list under-evidenced closes | `SELECT … WHERE title ILIKE '%x%'`, or a hand-copied `status NOT IN ('done',…)` — that IS `notTerminal`. ⚠ `q` spans title+summary (a superset). No id filter; an exclusive `>`/`now()` window, a non-union exclusion set, a source_plan_slug PROJECTION, aggregates and JOINs stay SQL |
 
 <!-- END GENERATED gen:tool-routing -->
+
+⚠ **A `head`-truncated search cannot support a NEGATIVE conclusion — "no callers exist" is precisely the verdict truncation manufactures.** Piping `grep -rn` into `head -N` is safe when you look FOR something (the first hit answers you) and unsound the moment you act on the ABSENCE of a hit: `head` cuts by POSITION and grep walks paths in directory order, so one noisy file (a test, a barrel, a docs blob) can fill the whole budget while the real production caller sits at N+1. The pattern is CORRECT and the match EXISTS — the output was simply cut before it, which is why the result looks like a clean negative rather than a failed search. Same family as the zero-work false-greens (`-t` matching zero tests, `pgrep -q`, a wrong-relation SQL zero-row, a `grep -r` that times out and prints nothing): an instrument that searched only part of the space, whose empty output is indistinguishable from a real absence.
+
+- **Never bound a search whose EMPTY result you will act on.** For "does any caller exist", use `grep -rl` — one line per FILE, so 20 files fit in 20 lines instead of one file eating the budget — or `-c`; if you must bound it, `| wc -l` first so a truncated count is visible as a count.
+- **Exclude the definition site when asking who CALLS this**: `| grep -v '<the lib dir>'` drops the definition, the barrel re-export, the docstrings and the tests in one move — both what you meant and what stops self-noise from crowding out the answer.
+Measured 2026-08-03 (EI-19435288508184075), establishing whether the persisted sync cache is reachable at runtime:
+
+```
+grep -rn --include=*.ts --include=*.tsx \
+  'enablePersistedSyncCache\|restorePersistedSyncCache\|startSyncCachePersistence' \
+  libs apps packages papercusp-desktop | grep -v node_modules | head -20
+```
+
+All 20 returned lines were the lib's own `index.ts`/`types.ts` plus **17 lines of `persisted-cache.test.ts`**. The reading taken was "zero production callers — the feature never runs", and the next step was to build the much stronger claim that the whole mechanism was unreachable. The real caller — `apps/operator/app/_components/RootSyncProvider.tsx` calling `enablePersistedSyncCache({ buster: 'v1' })`, unconditional at module-eval with no flag gate — was **below the cut**. It surfaced one step later only because a differently-shaped grep (excluding the lib dir) happened to reorder the output.
+
+Cost was one step there, because the next probe contradicted it. The expensive version is the one that does NOT get contradicted: a confident "this surface is dead, delete it" filed against live code. A *delete-if-no-consumer* work item is exactly the shape where a truncated negative grep produces an irreversible wrong action.
+
+Sibling false-absence traps in this same family, each with a different instrument and all reading as a clean negative: a full-tree `grep -r` that TIMES OUT prints nothing and exits nonzero, visually identical to "no matches found" (measured twice inside ten minutes, 2026-08-13); `pgrep -q`, which does not exist on this box and reports `gone` for a live process; a vitest `-t` pattern matching zero tests, which used to report `status=passed`; and a zero-row lookup against an issue-family view that structurally cannot hold feature-family rows.
+
 
 The tool call is also cheaper: a structured result, no subprocess, nothing to
 re-parse. When a row's caveat applies (a `tail -f` follow, a non-operator database,
