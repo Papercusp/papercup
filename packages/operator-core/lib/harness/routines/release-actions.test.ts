@@ -2787,8 +2787,18 @@ describe('P-303: signed gate-verdict producer', () => {
         },
       }),
       readTestRuns: async () => [
-        { file_path: 'packages/core/src/core.test.ts', status: 'pass', duration_ms: 12 },
-        { file_path: 'packages/core/integration/core.integration.test.ts', status: 'fail', duration_ms: 9 },
+        {
+          file_path: 'packages/core/src/core.test.ts',
+          status: 'pass',
+          duration_ms: 12,
+          finished_at: '2026-09-01T00:00:01.000Z',
+        },
+        {
+          file_path: 'packages/core/integration/core.integration.test.ts',
+          status: 'fail',
+          duration_ms: 9,
+          finished_at: '2026-09-01T00:00:02.000Z',
+        },
       ],
       resolveLocalGithubIdentity: async () => ({ kind: 'ok', githubUserId: 7 }),
       resolveDeviceKeychainId: (id) => `github:${id}`,
@@ -2822,7 +2832,40 @@ describe('P-303: signed gate-verdict producer', () => {
       ['my-harness', 'repo-pin', candidate, '@p/core::unit', 'pass', 12],
       ['my-harness', 'repo-pin', candidate, '@p/core::integration', 'fail', 9],
     ]);
+    expect(inserted.map((r) => r.signed.ts)).toEqual([
+      Date.parse('2026-09-01T00:00:01.000Z'),
+      Date.parse('2026-09-01T00:00:02.000Z'),
+    ]);
     expect(inserted[0].verdictId).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('retries with the same evidence-addressed verdict ids instead of publishing another fact set', async () => {
+    const attemptedIds: string[] = [];
+    const attemptedTimestamps: number[] = [];
+    const persistedIds = new Set<string>();
+    const { base } = deps({
+      insertGateVerdict: async (row) => {
+        attemptedIds.push(row.verdictId);
+        attemptedTimestamps.push(row.signed.ts);
+        // Mirrors INSERT ... ON CONFLICT (workspace_id, verdict_id) DO NOTHING.
+        persistedIds.add(row.verdictId);
+      },
+    });
+
+    await publishSignedGateVerdicts(
+      target,
+      { reason: 'up-to-date', green: true, candidate, runId: 'run-1' },
+      base,
+    );
+    await publishSignedGateVerdicts(
+      target,
+      { reason: 'up-to-date', green: true, candidate, runId: 'run-1' },
+      base,
+    );
+
+    expect(attemptedIds.slice(2)).toEqual(attemptedIds.slice(0, 2));
+    expect(attemptedTimestamps.slice(2)).toEqual(attemptedTimestamps.slice(0, 2));
+    expect(persistedIds.size).toBe(2);
   });
 
   it('uses the final attempt per file so a later pass supersedes a historical failure', async () => {
@@ -2862,7 +2905,21 @@ describe('P-303: signed gate-verdict producer', () => {
 
   it('does not turn skipped or cancelled rows into a signed pass', async () => {
     const { base, inserted } = deps({
-      readTestRuns: async () => [{ file_path: 'packages/core/src/core.test.ts', status: 'skip', duration_ms: 12 }],
+      readTestRuns: async () => [{
+        file_path: 'packages/core/src/core.test.ts',
+        status: 'skip',
+        duration_ms: 12,
+        finished_at: '2026-09-01T00:00:01.000Z',
+      }],
+    });
+    const result = await publishSignedGateVerdicts(target, { reason: 'up-to-date', candidate, runId: 'run-1' }, base);
+    expect(result).toEqual({ published: 0, skipped: 1, reason: 'no-test-rows' });
+    expect(inserted).toHaveLength(0);
+  });
+
+  it('fails closed rather than substituting a wall-clock timestamp for incomplete evidence', async () => {
+    const { base, inserted } = deps({
+      readTestRuns: async () => [{ file_path: 'packages/core/src/core.test.ts', status: 'pass', duration_ms: 12 }],
     });
     const result = await publishSignedGateVerdicts(target, { reason: 'up-to-date', candidate, runId: 'run-1' }, base);
     expect(result).toEqual({ published: 0, skipped: 1, reason: 'no-test-rows' });
