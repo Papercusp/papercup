@@ -8,6 +8,9 @@ import {
   GOAL_OWNER_REPORT_MEASURED_FAILURE_SILENCE_MS,
   GOAL_OWNER_REPORT_MEASURED_HEALTHY_CADENCE_MS,
   GOAL_OWNER_REPORT_REVIEW_BY,
+  GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS,
+  GOAL_OWNER_REPORT_STANDING_MEASURED_FAILURE_SILENCE_MS,
+  GOAL_OWNER_REPORT_STANDING_MEASURED_HEALTHY_CADENCE_MS,
   buildReportSkeleton,
   findOverdueReports,
   isPastReportFloorReview,
@@ -19,6 +22,7 @@ import {
 
 const NOW = 1_800_000_000_000;
 const FLOOR = GOAL_OWNER_REPORT_MAX_SILENCE_MS;
+const STANDING_FLOOR = GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS;
 const HOUR = 3600_000;
 
 function makeRow(over: Partial<GoalOwnerReportRowLike> = {}): GoalOwnerReportRowLike {
@@ -28,6 +32,7 @@ function makeRow(over: Partial<GoalOwnerReportRowLike> = {}): GoalOwnerReportRow
     agentId: 'su-goal-owner',
     baselineTsMs: NOW - 24 * HOUR,
     lastReportTsMs: null,
+    standing: false,
     ...over,
   };
 }
@@ -140,6 +145,8 @@ describe('findOverdueReports — falsifiability controls (the fixtures can tell 
         agentId: r.agentId,
         referenceTsMs: r.baselineTsMs,
         silentMs: nowMs - r.baselineTsMs,
+        floorMs: FLOOR,
+        standing: r.standing,
       }));
   }
 
@@ -157,6 +164,8 @@ describe('findOverdueReports — falsifiability controls (the fixtures can tell 
         agentId: r.agentId,
         referenceTsMs: Math.min(r.baselineTsMs, r.lastReportTsMs ?? r.baselineTsMs),
         silentMs: nowMs - Math.min(r.baselineTsMs, r.lastReportTsMs ?? r.baselineTsMs),
+        floorMs: FLOOR,
+        standing: r.standing,
       }));
   }
 
@@ -204,11 +213,13 @@ describe('the cadence floor (D-016: a floor with no consequence is a comment)', 
   });
 
   it('the review date has consequence: this test FAILS once it passes', () => {
-    // If you are reading this because it went red: the 4h floor's review date has
-    // arrived. Re-litigate the number against current evidence (rubric trends,
-    // scorecard cadence, real goal-mode runs since 2026-08), update the WHY on
-    // GOAL_OWNER_REPORT_MAX_SILENCE_MS, and bump GOAL_OWNER_REPORT_REVIEW_BY.
-    // Deleting or skipping this test instead is the exact decay D-016 names.
+    // If you are reading this because it went red: the floors' review date has
+    // arrived. Re-litigate BOTH numbers (4h outcome, 1h standing) against
+    // current evidence (rubric trends, scorecard cadence, real goal-mode runs),
+    // update the WHY on GOAL_OWNER_REPORT_MAX_SILENCE_MS /
+    // GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS, and bump
+    // GOAL_OWNER_REPORT_REVIEW_BY. Deleting or skipping this test instead is
+    // the exact decay D-016 names. (Last re-litigated 2026-09-01, WI-2091959.)
     expect(isPastReportFloorReview(GOAL_OWNER_REPORT_REVIEW_BY, new Date())).toBe(false);
   });
 
@@ -220,6 +231,63 @@ describe('the cadence floor (D-016: a floor with no consequence is a comment)', 
   });
 });
 
+describe('the STANDING-goal cadence floor (WI-2091959: two graded FAILs sat BELOW the 4h floor by design)', () => {
+  it('a standing goal is judged against the standing floor: overdue where an outcome goal is not', () => {
+    const silentMs = STANDING_FLOOR + 1;
+    expect(
+      findOverdueReports([makeRow({ standing: true, baselineTsMs: NOW - silentMs })], NOW),
+    ).toHaveLength(1);
+    expect(findOverdueReports([makeRow({ baselineTsMs: NOW - silentMs })], NOW)).toHaveLength(0);
+  });
+
+  it('the standing floor is a strict bound too: exactly-at-floor silence is not overdue', () => {
+    expect(
+      findOverdueReports([makeRow({ standing: true, baselineTsMs: NOW - STANDING_FLOOR })], NOW),
+    ).toHaveLength(0);
+  });
+
+  it('the alert carries the floor it was judged against — the escalation text states the applied bound', () => {
+    const standing = findOverdueReports(
+      [makeRow({ standing: true, baselineTsMs: NOW - 2 * HOUR })],
+      NOW,
+    );
+    expect(standing[0]).toMatchObject({ floorMs: STANDING_FLOOR, standing: true });
+    const outcome = findOverdueReports([makeRow({ baselineTsMs: NOW - 24 * HOUR })], NOW);
+    expect(outcome[0]).toMatchObject({ floorMs: FLOOR, standing: false });
+  });
+
+  it('sits strictly ABOVE the measured healthy steward cadence — a compliant steward is never nagged', () => {
+    expect(STANDING_FLOOR).toBeGreaterThan(GOAL_OWNER_REPORT_STANDING_MEASURED_HEALTHY_CADENCE_MS);
+  });
+
+  it('sits AT-OR-BELOW the SMALLER measured failure silence — both graded breaches would have been caught', () => {
+    expect(STANDING_FLOOR).toBeLessThanOrEqual(
+      GOAL_OWNER_REPORT_STANDING_MEASURED_FAILURE_SILENCE_MS,
+    );
+    // Both graded FAIL silences trip the predicate (1h07m and 2h14m, per the
+    // WI-2094390 audit erratum's corrected numbers):
+    for (const silentMs of [GOAL_OWNER_REPORT_STANDING_MEASURED_FAILURE_SILENCE_MS, 134 * 60_000]) {
+      expect(
+        findOverdueReports([makeRow({ standing: true, baselineTsMs: NOW - silentMs })], NOW),
+      ).toHaveLength(1);
+    }
+  });
+
+  it('sits strictly BELOW the outcome floor — the split is real, not a rename', () => {
+    expect(STANDING_FLOOR).toBeLessThan(FLOOR);
+  });
+
+  it('the graded false-negative is closed: the 2h14m silence the 4h floor missed now alerts', () => {
+    // The exact miss that drove the re-litigation: 2h14m < 4h, so the old
+    // single-floor predicate stayed quiet on a standing goal. The same row
+    // judged per-kind alerts — and with only the flag flipped it stays quiet,
+    // which doubles as the falsifiability control on the split itself.
+    const row = makeRow({ standing: true, baselineTsMs: NOW - 134 * 60_000 });
+    expect(findOverdueReports([row], NOW)).toHaveLength(1);
+    expect(findOverdueReports([{ ...row, standing: false }], NOW)).toHaveLength(0);
+  });
+});
+
 describe('buildReportSkeleton', () => {
   it("carries the GOAL contract's four report fields and points at the sanctioned rail", () => {
     const skeleton = buildReportSkeleton({
@@ -228,6 +296,8 @@ describe('buildReportSkeleton', () => {
       agentId: 'su-goal-owner',
       referenceTsMs: NOW - 5 * HOUR,
       silentMs: 5 * HOUR,
+      floorMs: FLOOR,
+      standing: false,
     });
     expect(Object.keys(skeleton)).toEqual([
       'channel',

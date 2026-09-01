@@ -65,7 +65,11 @@ import {
 } from '@papercusp/orchestrator/codex-gateway-config';
 import { readCodexLockRuntimeVerdict, type CodexLockRuntimeVerdict } from './codex-lock-runtime';
 import { lintInstructionText, type InstructionLintReport, type InstructionRuntimeContext } from './instruction-lint';
-import { codexContextConfigToml } from './model-context-budget.mjs';
+import {
+  codexContextConfigToml,
+  codexModelConfigToml,
+  resolveCodexModel,
+} from './model-context-budget.mjs';
 
 import { dirname as __esmDirname } from 'node:path';
 import { fileURLToPath as __esmFileURLToPath } from 'node:url';
@@ -898,8 +902,14 @@ export function writeRoleCodexHome(opts: {
     ownerId: opts.sid,
     priority: opts.codexGatewayPriority,
   });
-  const contextConfig = codexContextConfigToml(opts.model).trimEnd();
+  // Resolve the model before writing the home.  A missing model MUST become an
+  // explicit safe root key; otherwise Codex reads its installed cache on the
+  // next model-less resume and can select the denied Spark entry.
+  const resolvedModel = resolveCodexModel(opts.model);
+  const modelConfig = codexModelConfigToml(resolvedModel);
+  const contextConfig = codexContextConfigToml(resolvedModel).trimEnd();
   const toml = [
+    ...modelConfig,
     ...(contextConfig ? contextConfig.split('\n') : []),
     `log_dir = "${tomlEscape(logDir)}"`,
     ...gatewayConfig.root,
@@ -1022,8 +1032,13 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     ownerId: opts.sid,
     priority: opts.codexGatewayPriority,
   });
-  const contextConfig = codexContextConfigToml(opts.model).trimEnd();
+  // Keep the effective model in the per-session root config so a resume that
+  // has no CLI `-m` flag cannot fall through to CODEX_HOME/models_cache.json.
+  const resolvedModel = resolveCodexModel(opts.model);
+  const modelConfig = codexModelConfigToml(resolvedModel);
+  const contextConfig = codexContextConfigToml(resolvedModel).trimEnd();
   return [
+    ...modelConfig,
     ...(contextConfig ? contextConfig.split('\n') : []),
     ...(opts.logDir ? [`log_dir = "${tomlEscape(opts.logDir)}"`] : []),
     ...gatewayConfig.root,
@@ -1078,7 +1093,9 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey:
   }
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
-  const expectedContextConfig = codexContextConfigToml(opts.model);
+  const resolvedModel = resolveCodexModel(opts.model);
+  const expectedModelConfig = codexModelConfigToml(resolvedModel).join('\n');
+  const expectedContextConfig = codexContextConfigToml(resolvedModel);
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
   const expectedClient = `client=${encodeURIComponent(opts.sid)}`;
   const expectedGateway = codexGatewayConfigToml(opts.codexGatewayAccountId, {
@@ -1089,9 +1106,10 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey:
   let configReady = false;
   try {
     const current = readFileSync(configPath, 'utf8');
-    const contextMatches = expectedContextConfig
-      ? current.startsWith(expectedContextConfig)
-      : !/^model_(?:context_window|auto_compact_token_limit)\s*=/m.test(current);
+    const modelMatches = current.includes(expectedModelConfig);
+    const contextMatches = modelMatches && (expectedContextConfig
+      ? current.includes(expectedContextConfig.trimEnd())
+      : !/^model_(?:context_window|auto_compact_token_limit)\s*=/m.test(current));
     const gatewayReady = expectedGateway.root.length
       ? current.includes(expectedGateway.root.join('\n')) && current.includes(expectedGateway.tables.join('\n'))
       : !current.includes('PAPERCUSP_CODEX_GATEWAY_ROOT') && !current.includes('PAPERCUSP_CODEX_GATEWAY_PROVIDER');

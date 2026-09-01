@@ -6,12 +6,46 @@ import * as modelContextBudget from './model-context-budget.mjs';
 
 const {
   buildContextBudget,
+  CODEX_DENIED_MODEL_IDS,
+  CODEX_SAFE_DEFAULT_MODEL,
+  codexModelConfigToml,
   formatCodexLaunchContextSection,
+  isCodexModelDenied,
   listCodexInstalledModels,
   normalizeCodexCliModel,
   readLaunchContextText,
+  resolveCodexModel,
   resolveModelContextWindow,
 } = modelContextBudget;
+
+describe('managed Codex model policy', () => {
+  it('resolves omitted models to the approved family-suffixed default', () => {
+    expect(resolveCodexModel()).toBe(CODEX_SAFE_DEFAULT_MODEL);
+    expect(resolveCodexModel('')).toBe(CODEX_SAFE_DEFAULT_MODEL);
+    expect(CODEX_SAFE_DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  });
+
+  it('denies Spark across provider prefixes, effort suffixes, and case', () => {
+    for (const spec of [
+      'gpt-5.3-codex-spark',
+      'GPT-5.3-CODEX-SPARK:high',
+      'openai-codex/gpt-5.3-codex-spark:xhigh',
+      'papercusp-gateway/gpt-5.3-codex-spark',
+    ]) {
+      expect(isCodexModelDenied(spec), spec).toBe(true);
+      expect(() => resolveCodexModel(spec), spec).toThrow(/denied/i);
+    }
+    expect(CODEX_DENIED_MODEL_IDS).toContain('gpt-5.3-codex-spark');
+  });
+
+  it('renders an explicit model and reasoning effort for resume-safe CODEX_HOME config', () => {
+    expect(codexModelConfigToml('sol:high')).toEqual([
+      'model = "gpt-5.6-sol"',
+      'model_reasoning_effort = "high"',
+      '',
+    ]);
+  });
+});
 
 describe('model-context-budget', () => {
   it('normalizes user-facing Codex families while preserving native ids and effort', () => {

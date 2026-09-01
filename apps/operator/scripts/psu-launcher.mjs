@@ -64,8 +64,11 @@ import {
   buildContextBudget,
   codexContextConfigArgs,
   codexContextConfigToml,
+  codexModelConfigToml,
   listCodexInstalledModels,
   normalizeCodexCliModel,
+  isCodexModelDenied,
+  resolveCodexModel,
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 // WI-126377: the ONE builder for this picker's rows + the effort intersection
 // rule. Plain .mjs for the same reason as every import below it — see that
@@ -1043,6 +1046,13 @@ export function parseArgs(argv) {
   if (!out.agent && hintedBackend) out.agent = hintedBackend;
   const pairing = validateAgentModelPair(out.agent, out.model);
   if (!pairing.ok) throw new Error(pairing.message);
+  // Resolve every managed Codex launch to an explicit safe model and reject
+  // Spark before bootstrap/PTY creation.  OMP remains multi-provider, but the
+  // retired Spark id is denied globally so an explicit provider prefix cannot
+  // bypass the policy through that backend.
+  if (out.agent === "codex" || isCodexModelDenied(out.model)) {
+    out.model = resolveCodexModel(out.model);
+  }
   out.model = normalizeModelSpecForAgent(out.agent, out.model);
   return out;
 }
@@ -1202,6 +1212,7 @@ export function ompResponsesCompatibilityEnv(
 }
 
 export function modelArgsFor(agent, model) {
+  if (agent === "codex") model = resolveCodexModel(model);
   if (!model) return [];
   const effectiveModel =
     agent === "codex"
@@ -10226,6 +10237,9 @@ export function freshSuBootstrapBody(
   { brain = false, bootstrapIdempotencyKey = null } = {},
 ) {
   const launchMode = launchModeFromArgs(args);
+  const effectiveModel =
+    selections.agent === "codex" ? resolveCodexModel(args.model) : args.model;
+  const effectiveArgs = effectiveModel === args.model ? args : { ...args, model: effectiveModel };
   return {
     agent: selections.agent,
     workspace: selections.workspace,
@@ -10239,7 +10253,7 @@ export function freshSuBootstrapBody(
       ? { bootstrap_idempotency_key: bootstrapIdempotencyKey }
       : {}),
     // WI-1343: the literal psu invocation → adv_sessions.launch_argv (traceability).
-    launch_argv: psuLaunchArgvRecord(selections, args, { brain }),
+    launch_argv: psuLaunchArgvRecord(selections, effectiveArgs, { brain }),
     // headless-fleet-launch-and-carry-knob: the launch argv is an audit record;
     // bootstrap also needs the resolved carry value to seed the member's loop.
     ...(args.carry ? { carry: args.carry } : {}),
@@ -10268,7 +10282,7 @@ export function freshSuBootstrapBody(
     // weak-model-tool-tier: forward the launch model so the server's tool-tier gate
     // (buildLaunchSpec) can hard-trim a WEAK/local model's catalog for the codex path
     // (omp trims client-side above; claude self-trims). Frontier ⇒ no trim (safe default).
-    ...(args.model ? { model: args.model } : {}),
+    ...(effectiveModel ? { model: effectiveModel } : {}),
     ...(brain ? { brain: true } : {}),
     ...(args.account ? { account: args.account } : {}),
     // named-su-agent-fleets P-006: `fleet` = the slug to JOIN (member); `fleet_name`
@@ -10321,6 +10335,7 @@ export function roleBootstrapBody({
   fleetName,
   fleetScheme,
 } = {}) {
+  const effectiveModel = agent === "codex" ? resolveCodexModel(model) : model;
   return {
     role,
     agent,
@@ -10329,7 +10344,7 @@ export function roleBootstrapBody({
     feature,
     plan,
     ...(account ? { account } : {}),
-    ...(model ? { model } : {}),
+    ...(effectiveModel ? { model: effectiveModel } : {}),
     ...(fleet ? { fleet } : {}),
     ...(fleetRole ? { fleet_role: fleetRole } : {}),
     ...(fleetName ? { fleet_name: fleetName } : {}),

@@ -16,6 +16,78 @@ export const MAX_LAUNCH_CONTEXT_BYTES = 1024 * 1024;
 const CODEX_REASONING_EFFORT_RE = /:(low|medium|high|xhigh|max)$/i;
 
 /**
+ * Managed Codex model policy.  Keep the default and deny-list in this
+ * dependency-free launch-policy module so the bare `psu` launcher, server-side
+ * CODEX_HOME writers, and the TypeScript launch paths all enforce the same
+ * rule.  The installed Codex cache is not a policy source: it may advertise a
+ * model that the ChatGPT subscription cannot serve (the Spark incident).
+ */
+export const CODEX_SAFE_DEFAULT_MODEL = 'gpt-5.6-sol';
+// Alias retained for callers that describe this as the launch default.
+export const CODEX_DEFAULT_MODEL = CODEX_SAFE_DEFAULT_MODEL;
+export const CODEX_DENIED_MODEL_IDS = Object.freeze(['gpt-5.3-codex-spark']);
+
+function codexPolicyBaseId(model) {
+  let value = String(model ?? '').trim();
+  if (!value) return '';
+  // Codex-facing provider selectors may be written as `openai-codex/<id>` or
+  // `provider/<id>`.  Policy compares the native id, regardless of that prefix.
+  const slash = value.indexOf('/');
+  if (slash > 0) value = value.slice(slash + 1);
+  value = value.replace(CODEX_REASONING_EFFORT_RE, '').replace(/\[[^\]]+\]$/i, '');
+  return normalizeCodexCliModel(value).toLowerCase();
+}
+
+/** True when a model spec resolves to the retired/forbidden Spark model. */
+export function isCodexModelDenied(model) {
+  const id = codexPolicyBaseId(model);
+  return id !== '' && CODEX_DENIED_MODEL_IDS.includes(id);
+}
+
+/**
+ * Resolve a managed Codex model to a safe explicit id, or throw on the deny
+ * list.  Empty/omitted input is intentionally resolved here (rather than at a
+ * caller's CLI default) so a fresh CODEX_HOME cannot fall through models_cache.
+ * Reasoning suffixes are preserved for callers that split them into config.
+ */
+export function resolveCodexModel(model) {
+  const raw = String(model ?? '').trim();
+  const resolved = raw
+    ? (() => {
+        const slash = raw.indexOf('/');
+        const bare = slash > 0 ? raw.slice(slash + 1) : raw;
+        return normalizeCodexCliModel(bare);
+      })()
+    : CODEX_SAFE_DEFAULT_MODEL;
+  if (isCodexModelDenied(resolved)) {
+    throw new Error(
+      `Codex model '${raw || resolved}' is denied by Papercusp policy (gpt-5.3-codex-spark is retired). ` +
+        `Use the approved default '${CODEX_SAFE_DEFAULT_MODEL}' or another supported Codex model.`,
+    );
+  }
+  return resolved;
+}
+
+/** Alias with an assertion-oriented name for request-boundary callers. */
+export const assertCodexModelAllowed = resolveCodexModel;
+
+/**
+ * Render the root model settings that must survive a model-less resume.  The
+ * model id and effort are separated because Codex's TOML schema accepts the
+ * effort as `model_reasoning_effort`, not as part of `model`.
+ */
+export function codexModelConfigToml(model) {
+  const resolved = resolveCodexModel(model);
+  const effort = CODEX_REASONING_EFFORT_RE.exec(resolved)?.[0] ?? '';
+  const id = effort ? resolved.slice(0, -effort.length) : resolved;
+  return [
+    `model = "${id.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`,
+    ...(effort ? [`model_reasoning_effort = "${effort.slice(1)}"`] : []),
+    '',
+  ];
+}
+
+/**
  * Map Papercusp's user-facing Codex model selectors to model ids the native
  * Codex CLI accepts. This sits in the existing plain-ESM launch-policy module
  * because both the bare-node psu launcher and TypeScript spawn paths need the
@@ -159,7 +231,7 @@ export function listCodexInstalledModels({ home = homedir() } = {}) {
       id: String(m.slug ?? m.id ?? m.model ?? '').trim(),
       priority: POSITIVE(m.priority) ?? Number.MAX_SAFE_INTEGER,
     }))
-    .filter((m) => m.id !== '')
+    .filter((m) => m.id !== '' && !isCodexModelDenied(m.id))
     .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))
     .map(({ record, id }) => ({
       id,

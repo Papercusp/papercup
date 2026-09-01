@@ -92,6 +92,7 @@ import {
   PSU_LAUNCH_LOG_TAIL_CHARS,
   readPsuLaunchLogTail,
 } from '../../psu-launch-log.mjs';
+import { resolveCodexModel } from '../../model-context-budget.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
 import {
@@ -99,11 +100,6 @@ import {
   type SavedFleetLaunchConfig,
   type SavedFleetLaunchSpecProvenance,
 } from '../fleet_registry/saved-launch-spec';
-
-// ChatGPT-backed Codex accounts reject the bare `gpt-5.6` model id. Keep the
-// omitted-model fallback on a family-suffixed id that the subscription backend
-// accepts; explicit caller/goal/member models still win below.
-const DEFAULT_CODEX_LAUNCH_MODEL = 'gpt-5.6-sol';
 
 /** How long to wait for a resumed session's live psu-pty host to appear before
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
@@ -1069,9 +1065,11 @@ export default defineTool({
       // pinning here, add an explicit `goalRole` to MemberSpec — do NOT reinstate
       // the `--role` lookup.
       const folded = foldMemberSpec(flatBase, memberSpecs[i]);
-      return folded.agent === 'codex' && !folded.model?.trim()
-        ? { ...folded, model: DEFAULT_CODEX_LAUNCH_MODEL }
-        : folded;
+      if (folded.agent !== 'codex') return folded;
+      // One policy owns both the omitted-model default and the Spark deny. Do
+      // this before any terminal/PTY is opened so a bad member cannot partially
+      // launch a batch and leave an untracked process behind.
+      return { ...folded, model: resolveCodexModel(folded.model) };
     });
     if (!isResume) {
       const roleFailure = unresolvedAgentRole({
