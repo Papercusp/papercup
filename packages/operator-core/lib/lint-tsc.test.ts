@@ -33,6 +33,8 @@ import {
   countByFile,
   parseExplicitFiles,
   decidePerFile,
+  relatedSourceFiles,
+  filesModifiedDuringRun,
   effectiveBaselineByFile,
   exportedTypeNames,
   filesReferencingTypeNames,
@@ -202,6 +204,32 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     for (const code of [1, 2, 124, 137, 143]) {
       const marker = formatLintTscResultMarker({ label: 'operator-core', scope: 'all', code });
       expect(marker).not.toContain('status=clean');
+    }
+  });
+
+  it('marks a regression observed across a concurrent source edit as inconclusive', () => {
+    const marker = formatLintTscResultMarker({
+      label: 'operator-core',
+      scope: 'all',
+      code: 1,
+      concurrentEditInconclusive: true,
+    });
+    expect(marker).toBe(
+      'LINT_TSC_RESULT label=operator-core scope=all exit=1 status=inconclusive-concurrent-edit',
+    );
+    expect(marker).not.toContain('status=regressed');
+  });
+
+  it('keeps abnormal exits as errors even when the concurrent-edit flag is set', () => {
+    for (const code of [2, 124, 137, 143]) {
+      expect(
+        formatLintTscResultMarker({
+          label: 'operator-core',
+          scope: 'all',
+          code,
+          concurrentEditInconclusive: true,
+        }),
+      ).toContain(`status=error(${code})`);
     }
   });
 
@@ -480,6 +508,85 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     );
     expect(gateSource).toMatch(/process\.on\(\s*['"]exit['"]/);
     expect(gateSource).toContain('formatLintTscResultMarker');
+  });
+});
+
+describe('concurrent-edit regression guard (EI-20211153048499132)', () => {
+  let dir = '';
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = '';
+  });
+
+  it('walks local imports to identify a regression dependency cone', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-cone-'));
+    writeFileSync(join(dir, 'entry.ts'), "import { value } from './lib/value';\nexport const answer = value;\n");
+    mkdirSync(join(dir, 'lib'), { recursive: true });
+    writeFileSync(join(dir, 'lib/value.ts'), 'export const value = 42;\n');
+    expect([...relatedSourceFiles({ root: dir, files: ['entry.ts'] })].sort()).toEqual([
+      'entry.ts',
+      'lib/value.ts',
+    ]);
+  });
+
+  it('reports a dependency file modified after the run start', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-concurrent-'));
+    const start = 1_700_000_000_000;
+    writeFileSync(join(dir, 'entry.ts'), "import { value } from './lib/value';\nexport const answer = value;\n");
+    mkdirSync(join(dir, 'lib'), { recursive: true });
+    writeFileSync(join(dir, 'lib/value.ts'), 'export const value = 42;\n');
+    utimesSync(join(dir, 'entry.ts'), (start - 1000) / 1000, (start - 1000) / 1000);
+    utimesSync(join(dir, 'lib/value.ts'), (start + 1000) / 1000, (start + 1000) / 1000);
+    expect(
+      filesModifiedDuringRun({ root: dir, files: ['entry.ts'], runStartMs: start }),
+    ).toEqual(['lib/value.ts']);
+  });
+
+  it('returns no concurrent edit when every dependency predates the run', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-settled-'));
+    writeFileSync(join(dir, 'entry.ts'), "import { value } from './lib/value';\nexport const answer = value;\n");
+    mkdirSync(join(dir, 'lib'), { recursive: true });
+    writeFileSync(join(dir, 'lib/value.ts'), 'export const value = 42;\n');
+    const before = Date.now() + 1000;
+    expect(filesModifiedDuringRun({ root: dir, files: ['entry.ts'], runStartMs: before })).toEqual([]);
+  });
+
+  it('a real gate run refuses to call a mid-run cross-file edit regressed', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-concurrent-gate-'));
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const gateUrl = pathToFileURL(join(repoRoot, 'scripts/lib/tsc-baseline-gate.mjs')).href;
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src/entry.ts'), "import { value } from './value';\nexport const answer = value;\n");
+    writeFileSync(join(dir, 'src/value.ts'), 'export const value = 42;\n');
+    writeFileSync(join(dir, 'baseline.json'), JSON.stringify({ files: { 'src/entry.ts': 0 } }));
+    writeFileSync(
+      join(dir, 'fake-tsc.mjs'),
+      "import { appendFileSync } from 'node:fs';\n" +
+        "appendFileSync('src/value.ts', '// edited during compile\\n');\n" +
+        `console.log("src/entry.ts(1,10): error TS2305: Module './value' has no exported member 'value'.");\n` +
+        'process.exit(1);\n',
+    );
+    writeFileSync(
+      join(dir, 'run.mjs'),
+      `import { runTscBaselineGate } from ${JSON.stringify(gateUrl)};\n` +
+        `await runTscBaselineGate({ root: ${JSON.stringify(dir)}, ` +
+        `tscCommand: ${JSON.stringify(`${process.execPath} ${join(dir, 'fake-tsc.mjs')}`)}, ` +
+        `baselineFile: ${JSON.stringify(join(dir, 'baseline.json'))}, label: 'fixture', argv: [] });\n`,
+    );
+
+    let stdout = '';
+    let stderr = '';
+    try {
+      execFileSync(process.execPath, [join(dir, 'run.mjs')], { cwd: dir, encoding: 'utf8', stdio: 'pipe' });
+    } catch (error) {
+      stdout = String((error as { stdout?: string }).stdout ?? '');
+      stderr = String((error as { stderr?: string }).stderr ?? '');
+    }
+    expect(stdout).toContain('status=inconclusive-concurrent-edit');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('INCONCLUSIVE');
+    expect(stderr).toContain('src/value.ts');
+    expect(stderr).not.toContain('Fix the new errors');
   });
 });
 
