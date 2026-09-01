@@ -28,6 +28,7 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { clampText, softText } from '../limits';
 import { readEventConditionReachability } from '../../external-condition-reachability';
 import type { DurableParkReleaseContract } from '../../work-items-durable-park-audit';
+import { PREMISE_STAMPS_FIELD } from '../coordination/premise-resolve';
 
 const RELEASE_REASON_MAX_CHARS = 500;
 const releaseReasonSchema = () =>
@@ -125,6 +126,35 @@ function completionAssertionText(message: unknown): string[] {
   return parts;
 }
 
+/**
+ * EI-22067370681761514: `premisesClassified` (and the raw `premises` a sender
+ * typed) carry only the SYNTACTIC shape of a cited ref — stamped unconditionally,
+ * before anything checks whether the claim is true. `premiseStamps` (send.ts,
+ * P-011/WI-6731) is the SEPARATE, later-resolved verdict: `status:'broken'` means
+ * the ref was checked at send time and found FALSE — here, that `<itemId>#completion`
+ * had NOT happened. A sender citing a broken `#completion` premise is not asserting
+ * the item is done; they are recording that it explicitly is not (e.g. "premise:
+ * EI-X#completion — broken, item is open" attached to a "claimed for the next wake,
+ * no edits started" message). Read the resolved verdict when one was stamped; only
+ * fall back to the bare syntactic match when no stamp exists for that ref (older
+ * messages, or a stamp the resolver could not produce — fail toward the existing,
+ * more conservative behavior rather than a new false negative).
+ */
+function resolvedCompletionPremiseStatus(message: unknown, ref: string): unknown {
+  if (!message || typeof message !== 'object') return undefined;
+  const stamps = (message as Record<string, unknown>)[PREMISE_STAMPS_FIELD];
+  if (!Array.isArray(stamps)) return undefined;
+  const normalized = ref.trim().toLowerCase();
+  const stamp = stamps.find(
+    (s) =>
+      s &&
+      typeof s === 'object' &&
+      typeof (s as Record<string, unknown>).ref === 'string' &&
+      ((s as Record<string, unknown>).ref as string).trim().toLowerCase() === normalized,
+  ) as Record<string, unknown> | undefined;
+  return stamp?.status;
+}
+
 function hasStructuredCompletionPremise(message: unknown, itemId: string): boolean {
   if (!message || typeof message !== 'object') return false;
   const record = message as Record<string, unknown>;
@@ -150,7 +180,14 @@ function hasStructuredCompletionPremise(message: unknown, itemId: string): boole
     }
   }
   const ref = new RegExp(`^(?:wi:)?${itemId.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}#completion$`, 'i');
-  return refs.some((candidate) => ref.test(candidate.trim()));
+  const matches = refs.map((candidate) => candidate.trim()).filter((candidate) => ref.test(candidate));
+  if (!matches.length) return false;
+  // A resolved `broken` verdict on EVERY matching ref means every cited
+  // #completion premise was checked and found false — not an assertion.
+  // A ref with no stamp, or a stamp whose status is not `broken` (holds /
+  // stale / unresolvable / unknown / not-checkable), keeps the existing
+  // conservative (fires) behavior.
+  return !matches.every((candidate) => resolvedCompletionPremiseStatus(record, candidate) === 'broken');
 }
 
 /**

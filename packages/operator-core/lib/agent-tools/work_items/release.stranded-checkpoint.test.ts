@@ -313,4 +313,47 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
     expect(b.results[0]).toMatchObject({ ok: true, id: ITEM, released: true });
     expect(b.results[0].completionAssertionWarning).toBeUndefined();
   });
+
+  // EI-22067370681761514: a structured `#completion` premise citation is only an
+  // assertion when it actually resolved true (or was never resolved at all — the
+  // pre-existing conservative fallback). A `premiseStamps` verdict of `broken`
+  // means the sender checked at send time and found the item NOT complete — the
+  // exact "next admitted item, no edits have started" shape the report named.
+  it('stays silent when the structured #completion premise resolved to broken', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-completion-broken',
+        ts: '2026-08-20T18:44:00.000Z',
+        from: 'me',
+        summary: `${ITEM} was newly claimed for the next wake; no edits have started.`,
+        sections: [{ text: 'Picking this up next.', premises: [`${ITEM}#completion`] }],
+        premiseStamps: [
+          { ref: `${ITEM}#completion`, kind: 'work-item-completion', invalidatable: true, status: 'broken' },
+        ],
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
+  // Control for the case above: the SAME structured citation but a `holds` verdict
+  // (or no verdict at all) must still fire — the fix reads the resolved status, it
+  // does not just go quiet whenever `premiseStamps` happens to be present.
+  it('still warns when the structured #completion premise resolved to holds', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-completion-holds',
+        ts: '2026-08-20T18:45:00.000Z',
+        from: 'me',
+        sections: [{ text: 'Verification is recorded.', premises: [`${ITEM}#completion`] }],
+        premiseStamps: [
+          { ref: `${ITEM}#completion`, kind: 'work-item-completion', invalidatable: true, status: 'holds' },
+        ],
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toMatch(/msg-completion-holds/);
+  });
 });
