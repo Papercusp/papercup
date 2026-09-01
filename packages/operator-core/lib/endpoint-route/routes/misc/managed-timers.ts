@@ -38,6 +38,7 @@ import {
 import { defaultGetRegisteredSchedules } from '../../../dbos/dbos-schedule-introspect';
 import { describeProcessRole, ownHonoPort } from '../../../schedule-federation';
 import { getCachedPrimaryManagedTimers } from '../../../cluster-managed-timers-sync';
+import { getStallWakerStatus } from '../../../inference-gateway/stall-waker-loop';
 
 export default defineTool({
   method: 'GET',
@@ -118,11 +119,21 @@ export default defineTool({
     // (the primary never broadcasts there) or before the first beat arrives — the field
     // is simply omitted in that case, never a fabricated empty snapshot.
     const cachedPrimary = getCachedPrimaryManagedTimers();
+    // EI-22054545312178322: this WORKER's own StallWakerStatus reading — always a
+    // pure in-process read (mirrors getStallWakerStatus's own contract of "this
+    // function stays a pure, honest LOCAL read"). A caller on a request-only host
+    // reads `running:false` here for THIS process, exactly as it should; federating
+    // to find the loop's real production home (bg-host) is schedule-federation.ts's
+    // job on the CALLING side, not this route's. Never wrapped in try/catch:
+    // getStallWakerStatus() only reads module-scope primitives (booleans, numbers,
+    // a Map) and cannot throw.
+    const stallWaker = getStallWakerStatus();
     return Response.json({
       ok: timersError === null,
       ...identity,
       timers,
       dbosSchedules,
+      stallWaker,
       moduleEvaluations,
       ...(moduleDuplication ? { moduleDuplication } : {}),
       ...(moduleDuplications.length > 0

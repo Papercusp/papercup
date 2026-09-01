@@ -1991,6 +1991,23 @@ async function buildMcpToolContext(
       // source, not an excerpt a tier already cut.
       projectionNeedsFullSource = !('payloadTier' in dispatchToolArgs);
     }
+    // EI-22052744493834331: nested `ctx.dispatchTool` (the `tools:invoke` re-dispatch
+    // path) is still the SAME transport request as a direct `tools/call` and must not
+    // become a privilege bridge around the scoped-superuser workspace/hive clamp — see
+    // applyScopedSuperuserTransportClamp's own doc comment. Apply it here, against the
+    // OUTER session's unclamped `spawn` context, BEFORE computing effectiveWs: the clamp
+    // force-overwrites any `workspace`/`workspaceId` target arg to the confined value
+    // (and rejects an escaping `harness`/hive arg outright), so effectiveDispatchWorkspace
+    // below then resolves against ALREADY-CLAMPED args, mirroring the direct path's order.
+    const clampResult = await applyScopedSuperuserTransportClamp(
+      { name: canonicalName, crossWorkspace: target.crossWorkspace, profile: target.profile },
+      spawn,
+      dispatchToolArgs,
+    );
+    if (!clampResult.ok) {
+      return clampResult.result;
+    }
+    dispatchToolArgs = clampResult.args;
     // EI-6982: bind the tx/principal the TARGET tool needs — NOT the outer
     // tools:invoke ctx (requirePrincipal:false, so tx-less). Without this, every
     // crossWorkspace/needsTx target (memory:*, flags:set, harness:list, …) threw
@@ -2001,9 +2018,13 @@ async function buildMcpToolContext(
     // path via dispatchWithSynthesizedTx so the two can't drift.
     const effectiveWs = effectiveDispatchWorkspace(spawn, dispatchToolArgs);
     const spawnCtx: BuiltSpawnContext =
-      effectiveWs === spawn.workspaceId ? spawn : { ...spawn, workspaceId: effectiveWs };
+      effectiveWs === spawn.workspaceId && clampResult.effectiveHarnessSlug === spawn.harnessSlug
+        ? spawn
+        : { ...spawn, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug };
     const baseCtx: UnifiedToolContext =
-      effectiveWs === ctxRef.current!.workspaceId ? ctxRef.current! : { ...ctxRef.current!, workspaceId: effectiveWs };
+      effectiveWs === ctxRef.current!.workspaceId && clampResult.effectiveHarnessSlug === ctxRef.current!.harnessSlug
+        ? ctxRef.current!
+        : { ...ctxRef.current!, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug };
     const dispatched = (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
       const materializationCtx = projectionMaterializationContext(
         ctx,
@@ -2398,8 +2419,13 @@ const handler = createMcpHandler(
               if (def?.args) await applyEntityRefEnums(def.args, advertised);
               out.inputSchema = sanitizeToolSchema(advertised);
             }
-            // outputSchema (P-010) gets the same boolean-subschema objectification.
-            if (tt.outputSchema) out.outputSchema = sanitizeToolSchema(tt.outputSchema);
+            // outputSchema (P-010) gets the same boolean-subschema objectification,
+            // but with position:'output' (EI-22064217935223876): unlike inputSchema,
+            // outputSchema is read back by the MCP client SDK to validate the tool's
+            // REAL return value, so it must NOT force `type: 'object'` onto a
+            // z.unknown()/z.any() result field whose actual value is a string, number,
+            // array, or boolean — see tool-schema-sanitize.ts's `SanitizePosition` doc.
+            if (tt.outputSchema) out.outputSchema = sanitizeToolSchema(tt.outputSchema, 'output');
             return out;
           }),
         ),

@@ -241,3 +241,75 @@ describe("sanitizeToolSchema", () => {
     expect(sanitizeToolSchema(null as unknown)).toBe(null);
   });
 });
+
+describe("sanitizeToolSchema position:'output' (EI-22064217935223876)", () => {
+  it("maps a boolean property to a plain annotated object, NEVER type:'object' (a real non-object return value must still validate)", () => {
+    const out = sanitizeToolSchema(
+      { type: "object", properties: { count: true, name: { type: "string" } } },
+      "output",
+    ) as any;
+    expect(out.properties.count).toEqual({ description: "matches any value" });
+    expect(out.properties.count.type).toBeUndefined();
+    expect(out.properties.name).toEqual({ type: "string" });
+  });
+
+  it("maps false → { not: {} } for output too (accept-nothing is position-independent)", () => {
+    expect(
+      sanitizeToolSchema({ properties: { x: false } }, "output"),
+    ).toEqual({ properties: { x: { not: {} } } });
+  });
+
+  it("maps a boolean items schema without forcing type:'object'", () => {
+    const out = sanitizeToolSchema(
+      { type: "array", items: true },
+      "output",
+    ) as any;
+    expect(out.items).toEqual({ description: "matches any value" });
+  });
+
+  it("rewrites an empty-object property schema to an annotated (never-empty, never type-forced) object", () => {
+    const out = sanitizeToolSchema(
+      { type: "object", properties: { hits: {} } },
+      "output",
+    ) as any;
+    expect(out.properties.hits.type).toBeUndefined();
+    expect(Object.keys(out.properties.hits).length).toBeGreaterThan(0);
+  });
+
+  it("preserves an unconstrained schema's own description instead of the generic placeholder", () => {
+    const out = sanitizeToolSchema(
+      { type: "object", properties: { detail: { description: "raw payload" } } },
+      "output",
+    ) as any;
+    expect(out.properties.detail).toEqual({ description: "raw payload" });
+    expect(out.properties.detail.type).toBeUndefined();
+  });
+
+  it("replaces a recursive self-$ref cycle edge with a description-only placeholder (no type:'object')", () => {
+    const recursiveRef = "#/$defs/node";
+    const out = sanitizeToolSchema(
+      {
+        type: "object",
+        $defs: {
+          node: {
+            type: "object",
+            properties: { child: { $ref: recursiveRef } },
+          },
+        },
+        properties: { root: { $ref: recursiveRef } },
+      },
+      "output",
+    ) as any;
+    expect(out.properties.root).toEqual({ $ref: recursiveRef });
+    expect(out.$defs.node.properties.child).toEqual({
+      description: "recursive value validated by the tool",
+    });
+  });
+
+  it("default position stays 'input' — omitting the argument is byte-identical to the pre-fix behavior", () => {
+    const schema = { properties: { a: true }, items: true };
+    expect(sanitizeToolSchema(schema)).toEqual(
+      sanitizeToolSchema(schema, "input"),
+    );
+  });
+});

@@ -246,3 +246,22 @@ export function filterToFiles(diagnostics: TscDiagnostic[], files: string[]): Ts
     return wanted.some((w) => path === w || path.endsWith(`/${w}`) || w.endsWith(`/${path}`) || w === path);
   });
 }
+
+/**
+ * Keep only diagnostics whose file falls under one of `dirs` — a directory
+ * PREFIX match, anchored at a path-segment boundary so `apps/operator` cannot
+ * match `apps/operator-vite`. This is the server-side form of `grep -E
+ * '^dir/'`, for the directory-ATTRIBUTION question `filterToFiles` (a suffix
+ * match) cannot express: "does ANY error fall under apps/operator-vite/?"
+ * (EI-22050606808498557) is not expressible as a set of full/suffix file
+ * paths when the caller does not know — or does not want to enumerate —
+ * every file the directory contains.
+ */
+export function filterToDirs(diagnostics: TscDiagnostic[], dirs: string[]): TscDiagnostic[] {
+  const wanted = dirs.map((d) => d.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, ''));
+  return diagnostics.filter((d) => {
+    if (!d.file) return false;
+    const path = d.file.replace(/\\/g, '/');
+    return wanted.some((w) => path === w || path.startsWith(`${w}/`));
+  });
+}

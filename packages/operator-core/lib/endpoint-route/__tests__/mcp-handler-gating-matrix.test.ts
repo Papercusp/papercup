@@ -2898,6 +2898,56 @@ describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less 
   });
 });
 
+/* ─── nested tools:invoke inherits the hive/workspace clamp (EI-22052744493834331) ─── */
+
+describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-22052744493834331)', () => {
+  // Root cause: ctx.dispatchTool (the tools:invoke re-dispatch engine) never called
+  // applyScopedSuperuserTransportClamp at all — only the direct tools/call path did.
+  // A scoped superuser confined to hive hiveA-home could read a sibling hive
+  // (hiveB-home) by routing the SAME call through tools:invoke instead of calling it
+  // directly. Mirrors the "scoped-superuser hive clamp" describe block's direct-call
+  // assertions, through the nested path.
+  const hiveScoped = () => superuserExtra('&workspace=ws-test&harness=hiveA-home');
+
+  it('flag ON: rejects a per-call `harness` in a DIFFERENT hive via nested tools:invoke, same as direct', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:scoped', args: { harness: 'hiveB-home' } },
+      hiveScoped(),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: denies a nested cross_harness:* tool (it reads other harnesses)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('tools:invoke', { name: 'cross_harness:probe', args: {} }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: allows a same-hive per-call `harness` via nested tools:invoke', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:scoped', args: { harness: 'hiveA-member' } },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag OFF: no clamp applied — nested cross-hive harness read is not rejected by this gate', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:scoped', args: { harness: 'hiveB-home' } },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+});
+
 /* ─── su identity precedence (EI-7066 — explicit SID outranks the transport id) ─── */
 
 describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)', () => {
