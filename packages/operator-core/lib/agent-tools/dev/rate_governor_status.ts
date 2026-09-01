@@ -48,7 +48,6 @@ export default defineTool({
     notWhen: 'Service up/down — dev:service_health. Migration drift — db:check_drift. EDITING the cap — operator:rate_limit_config.',
     returns: '{ configured, effective, evidence, rootCause, nextVerb, config, fleet, buckets, usage, opusBudget }',
     seeAlso: [
-      'dev:worker_chunk_loop_metrics (per-feature chunk-loop pacing)',
       'dev:service_health (service up / down)',
       'operator:rate_limit_config (edit the cap)',
     ],

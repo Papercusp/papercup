@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { assembleRolePrompt } from '../prompt-assembly';
+
 import {
   PUI_LOOP_PROJECT_GUIDE_MAX_CHARS,
   projectGuideAtBudget,
@@ -51,6 +53,34 @@ describe('pui-loop prompt profile (D-034 / WI-583183)', () => {
     expect(out.text).toContain('Project guide truncated by the pui-loop prompt budget');
     expect(out.text).toContain(source);
     expect(out.text).not.toContain('tail sentinel');
+  });
+
+  it('applies profile omissions before measuring the project-guide budget', () => {
+    const dropped = 'client-only drop sentinel\n'.repeat(40);
+    const kept = 'kept repo convention';
+    const guideText =
+      '# Guide\n\n' +
+      '## Reaching for bash? These reads already have a tool\n\n' +
+      dropped +
+      '\n## Project-specific convention\n\n' +
+      kept;
+    const maxChars = 128;
+    expect(guideText.length).toBeGreaterThan(maxChars);
+
+    const rendered = assembleRolePrompt({
+      role: 'operator',
+      profile: 'pui-loop',
+      projectDir,
+      toolNames: [],
+      projectGuideText: guideText,
+      projectGuideSource: '/repo/CLAUDE.md',
+      projectGuideMaxChars: maxChars,
+      toolCatalogText: '',
+    });
+
+    expect(rendered.projectGuideTruncated).toBe(false);
+    expect(rendered.text).toContain(kept);
+    expect(rendered.text).not.toContain('client-only drop sentinel');
   });
 
   it('the live agent-chats route selects this profile only for the owned loop operator seam', () => {

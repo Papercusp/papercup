@@ -29,7 +29,8 @@ import {
   CUT_SEED_DRAIN_STALL_MS,
   mergeReleaseSeedRedactionValues,
   deriveSourceStoreDirs,
-} from './cut-seed-cli';
+  createFilteredSeedProgressReporter,
+} from "./cut-seed-cli";
 import { DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 
@@ -43,6 +44,37 @@ const HEX32 = 'ab'.repeat(32); // 64 hex chars = 32 bytes
 const FIXTURE_BUILD_HOST = 'papercusp-build';
 const FIXTURE_BUILD_USER = 'fixture-builduser';
 const FIXTURE_REAL_HOST = 'fixture-host-0000';
+
+describe("createFilteredSeedProgressReporter", () => {
+  it("logs the first window, meaningful percentage/time progress, and completion without window spam", () => {
+    let now = 1_000;
+    const warn = vi.fn();
+    const report = createFilteredSeedProgressReporter({
+      warn,
+      now: () => now,
+      minIntervalMs: 60_000,
+      minPercentStep: 5,
+    });
+
+    report({ phase: "filtered-source-scan", processed: 256, total: 10_000 });
+    report({ phase: "filtered-source-scan", processed: 512, total: 10_000 });
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    report({ phase: "filtered-source-scan", processed: 768, total: 10_000 });
+    expect(warn).toHaveBeenCalledTimes(2);
+
+    now += 60_000;
+    report({ phase: "filtered-source-scan", processed: 1_024, total: 10_000 });
+    expect(warn).toHaveBeenCalledTimes(3);
+
+    report({ phase: "filtered-source-scan", processed: 10_000, total: 10_000 });
+    report({ phase: "filtered-source-scan", processed: 10_000, total: 10_000 });
+    expect(warn).toHaveBeenCalledTimes(4);
+    expect(warn).toHaveBeenLastCalledWith(
+      "[cut-seed] filtered-source-scan: 10000/10000 source blocks folded (100%).",
+    );
+  });
+});
 
 describe('mergeReleaseSeedRedactionValues (WI-37894)', () => {
   it('keeps the real host when the audit runs inside the neutralized UTS child', () => {

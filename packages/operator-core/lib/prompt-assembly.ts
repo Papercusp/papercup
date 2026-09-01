@@ -726,16 +726,21 @@ function assemblePuiLoopPrompt(opts: AssembleOptions): AssembledPrompt {
   const rawGuide =
     opts.projectGuideText ??
     (projectGuideSource ? readFileSync(projectGuideSource, 'utf8') : '');
-  const guide = projectGuideAtBudget(
+  // Apply profile-specific omissions BEFORE measuring the project-guide budget.
+  // Budgeting the raw guide first can report/truncate content that this profile
+  // immediately removes. The live CLAUDE.md exposed that ordering bug when the
+  // removable bash/tool-discovery section alone pushed the raw source past 96k,
+  // while the guide actually projected into the prompt remained well below it.
+  const projectedRawGuide = removeMarkdownHeadingSection(
     rawGuide,
+    'Reaching for bash? These reads already have a tool',
+  ).text.replaceAll('ToolSearch', 'deferred-tool discovery');
+  const guide = projectGuideAtBudget(
+    projectedRawGuide,
     projectGuideSource,
     opts.projectGuideMaxChars,
   );
-  const projectedGuide = removeMarkdownHeadingSection(
-    guide.text,
-    'Reaching for bash? These reads already have a tool',
-  ).text.replaceAll('ToolSearch', 'deferred-tool discovery');
-  const projectGuide = renderPuiLoopProjectGuide(projectedGuide);
+  const projectGuide = renderPuiLoopProjectGuide(guide.text);
   if (projectGuide) {
     parts.push(projectGuide);
     sections.push({ name: 'project-guide', chars: projectGuide.length });

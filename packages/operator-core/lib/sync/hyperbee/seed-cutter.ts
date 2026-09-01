@@ -28,7 +28,7 @@ import {
   type SeedKeyRef,
 } from '@papercusp/seed-bundle';
 import { createGitSeedProvider } from './seed-provider-git';
-import { createCorestoreSeedProvider, isRocksInfoLog } from './seed-provider-corestore';
+import { createCorestoreSeedProvider, isRocksInfoLog, type CorestoreCutContext } from './seed-provider-corestore';
 import { openOwnLog } from './peer-log';
 
 /** The seed root subdir each store's payload is written under (and recorded as
@@ -87,6 +87,12 @@ export interface CorestoreCutSpec {
   readonly filtered?: boolean;
   /** Identity literals emitted by the desktop release audit for the projection scrub. */
   readonly redactValues?: readonly string[];
+  /** Optional bounded source-scan progress sink for filtered release cuts. */
+  readonly onProgress?: CorestoreCutContext['onProgress'];
+  /** Optional cursor-stall sink for filtered release cuts. */
+  readonly onStall?: CorestoreCutContext['onStall'];
+  /** Optional test/release override for the filtered-scan stall diagnostic. */
+  readonly filteredScanStallMs?: CorestoreCutContext['filteredScanStallMs'];
 }
 
 export interface HiveSeedCutInputs {
@@ -211,6 +217,9 @@ export async function cutHiveSeed(inputs: HiveSeedCutInputs): Promise<HiveSeedCu
       ...(corestore.sparse ? { sparse: true } : {}),
       ...(corestore.filtered ? { filtered: true } : {}),
       ...(corestore.redactValues ? { redactValues: corestore.redactValues } : {}),
+      ...(corestore.onProgress ? { onProgress: corestore.onProgress } : {}),
+      ...(corestore.onStall ? { onStall: corestore.onStall } : {}),
+      ...(corestore.filteredScanStallMs !== undefined ? { filteredScanStallMs: corestore.filteredScanStallMs } : {}),
     });
     stores.push({ ...entry, source: { type: 'resource', path: CORESTORE_SUBDIR } });
     sizes.push({ kind: entry.kind, subdir: CORESTORE_SUBDIR, sizeBytes: entry.sizeBytes, encrypted: false });

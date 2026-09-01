@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 840,
+  "count": 841,
   "tools": [
     {
       "name": "ablation:report",
@@ -2909,7 +2909,7 @@
           "POST"
         ]
       },
-      "description": "Run a git subcommand (argv, no shell) in the project dir. `push` is refused (git-sync owns push). Output spills to a log if large.",
+      "description": "Run a git subcommand (argv, no shell), or create a guarded cheap local scratch clone that borrows object stores. `push` is refused (git-sync owns push).",
       "capabilities": [
         "capability:git"
       ],
@@ -2970,9 +2970,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Inspect or stage git state — status, diff, log, show, add, commit (within a worktree). Prefer this over capability:bash for git so the action is gated as git, not arbitrary shell.",
-        "notWhen": "Pushing (refused — git-sync owns push). Arbitrary shell — use capability:bash.",
-        "chaining": "capability:git { args: [\"status\",\"--porcelain\"] } → inspect → capability:git { args: [\"add\",\"-A\"] } etc."
+        "when": "Inspect/stage git state, or make an ephemeral local checkout. For scratch work use scratchClone: it pins a detached ref, borrows packs, skips untracked node_modules, materialises only resolvable local submodules, and removes origins.",
+        "notWhen": "Pushing (refused — git-sync owns push). Remote/network clones or persistent product checkouts. Arbitrary shell — use capability:bash.",
+        "chaining": "Read form: capability:git { args: [\"status\",\"--porcelain\"] }. Scratch form: capability:git { scratchClone: { ref: \"HEAD\" } } → use returned path; OS temp cleanup remains the lifecycle owner."
       }
     },
     {
@@ -9893,30 +9893,6 @@
       }
     },
     {
-      "name": "dev:worker_chunk_loop_metrics",
-      "http": {
-        "path": "/api/agent-tools/dev/worker_chunk_loop_metrics",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Worker rollout metrics. The default P-020 view compares worker:chunk-loop execution paths. Set includeOwnedLoopParity=true for the P-011 fail-closed owned-loop vs omp -p worker gate: paired task success, cost/task, stream fidelity, and MCP compatibility. A worker engine may flip only when ownedLoopParity.workerFlipAllowed is true.",
-      "capabilities": [
-        "intel:read"
-      ],
-      "agentRoles": [
-        "operator",
-        "architect",
-        "debugger",
-        "kettle",
-        "cup"
-      ],
-      "guidance": {
-        "when": "Watch worker:chunk-loop dark-launch/ramp health. For own-loop cutover, pass includeOwnedLoopParity=true and require its explicit green verdict before changing worker engine defaults.",
-        "notWhen": "Live rate-limit pacing — dev:rate_governor_status. Per-feature chunk progress — the harness UI / harness_chunk_plans. Whether the op path is ROUTED on a harness — check the per-harness workerChunkLoop config knob."
-      }
-    },
-    {
       "name": "discovery:pots",
       "http": {
         "path": "/api/agent-tools/discovery/pots",
@@ -13056,6 +13032,37 @@
         "when": "Recording a verified child-fleet spend snapshot against a goal's declared ceiling, revising its statement or kill criterion, or CLOSING it (achieved / killed). A spend snapshot is accepted only when it exactly matches the measured goals:pots rollup.",
         "notWhen": "For per-pot progress or measured spend use goals:pots { goalId } and the pot/plan/work-item beneath the goal — this row carries the goal-level state only. Do not invent interactive-session cost. To read current state first, goals:get { id, detail:\"full\" }.",
         "chaining": "goals:get → goals:pots → goals:update only when writing a verified measured snapshot. Pausing/killing winds the projects down FOR you (placement gate + loop disarm); a degraded spend result means no snapshot was written and the tripwire remains unmeasured — chase it with goals:pots, then fleet:assignments / loop:status on the reported projects."
+      }
+    },
+    {
+      "name": "governor:admission_cutover",
+      "http": {
+        "path": "/api/agent-tools/governor/admission_cutover",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the dedicated admission-ledger rolling-cutover census or establish the serialized one-way legacy-writer retirement marker. Retirement requires the exact newest-legacy-row watermark from a fresh status read, explicit confirmation, and an attestation that every deployed writer plane is ledger-only. This tool never deletes receipts or arms migration 1077.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "During the bounded resource-governor admission-ledger migration: status first; retire only after every independently deployed writer plane is confirmed ledger-only.",
+        "notWhen": "For ordinary governor health use state:read governor.*. Never use retirement as proof that active legacy receipts are zero, and never use this tool to arm/delete migration 1077.",
+        "chaining": "governor:admission_cutover {op:\"status\"} → externally prove every writer plane ledger-only → retire_legacy_writers with the exact returned watermark → reconcile to zero → arm migration 1077 only after a fresh ready census."
       }
     },
     {
@@ -27206,6 +27213,36 @@
       }
     },
     {
+      "name": "sessions:record-prompt-origin",
+      "http": {
+        "path": "/api/agent-tools/sessions/record-prompt-origin",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record a short-lived, hook-authenticated interactive prompt stamp for transcript ingest. Called by UserPromptSubmit hooks; model clients are refused.",
+      "capabilities": [
+        "activity:report"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Only from a first-party UserPromptSubmit hook after classifying the submitted prompt as OWNER (interactive).",
+        "notWhen": "Never call by hand or from a model client; this is an authenticated hook-to-ingest carrier."
+      }
+    },
+    {
       "name": "sessions:rename",
       "http": {
         "path": "/api/agent-tools/sessions/rename",
@@ -28842,7 +28879,7 @@
           "POST"
         ]
       },
-      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the best-matching tool names with their description, ARG schema, and declared RESPONSE shape (`returns`) — so you can write a code:run batch over a tool without calling it once just to learn its field names. ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list (activated:true) and are directly callable; on a full-catalog session there is nothing to expand (activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1. Always read `activated` + `howToCall` rather than assuming a direct call resolves.",
+      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the best-matching tool names with their description, ARG schema, and resolved RESPONSE shape (`returns` + `returnsSource`; registered output schemas outrank authored prose) — so you can write a code:run batch over a tool without calling it once just to learn its field names. ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list (activated:true) and are directly callable; on a full-catalog session there is nothing to expand (activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1. Always read `activated` + `howToCall` rather than assuming a direct call resolves.",
       "capabilities": [
         "agent_tools:read"
       ],
@@ -30201,7 +30238,7 @@
       "guidance": {
         "when": "At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript. Declare `dependsOn` for a real freshness verdict.",
         "notWhen": "Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit channel: use work_items:update for the body, work_items:comment for a note. Not for a peer's item — claim it, or comment instead.",
-        "chaining": "Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed."
+        "chaining": "Call before work_items:complete / on yield; clear with checkpoint:null or clear:true. Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed."
       }
     },
     {

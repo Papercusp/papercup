@@ -137,6 +137,18 @@ describe('live tool guidance references', () => {
     expect(danglingGuidanceReferences(tools as readonly CatalogTool[])).toEqual([]);
   });
 
+  it('keeps the retired per-harness chunk-loop surface out of the projected catalog', () => {
+    const tools = listAllProjectedTools() as readonly CatalogTool[];
+    const modelFacingCatalog = tools.flatMap((tool) => [
+      tool.expose?.mcp?.name ?? '',
+      typeof tool.description === 'string' ? tool.description : '',
+      ...collectGuidanceStrings(tool.guidance).map(({ text }) => text),
+    ]).join('\n');
+
+    expect(modelFacingCatalog).not.toContain('dev:worker_chunk_loop_metrics');
+    expect(modelFacingCatalog).not.toMatch(/\bworkerChunkLoop\b/i);
+  });
+
   it('keeps structured values and prose placeholders out of the tool-reference scan', () => {
     const fixture = [
       {

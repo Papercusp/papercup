@@ -14,7 +14,7 @@
  * CLI (apps/operator/lib/release/cut-seed-cli.ts) prints the real numbers.
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import Corestore from 'corestore';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -249,6 +249,37 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
     const coreEntry = res.manifest.stores.find((s) => s.kind === 'corestore')!;
     expect(coreEntry.encryption).toBeUndefined();
     expect((coreEntry.source as { path: string }).path).toBe(CORESTORE_SUBDIR);
+  });
+
+  it('forwards filtered source-scan progress through the combined cutter', async () => {
+    const { store, keyHex } = await makeHiveStore('cutter-progress-store-', 257);
+    const onProgress = vi.fn();
+
+    await cutHiveSeed({
+      potId: 'papercusp',
+      cutAtEpoch: 0,
+      cutHlc: '0',
+      cutTs: 1,
+      outDir: tmpDir('cutter-progress-out-'),
+      git: null,
+      corestore: {
+        sourceStore: store,
+        coreKeys: [keyHex],
+        filtered: true,
+        onProgress,
+      },
+    });
+
+    expect(onProgress).toHaveBeenNthCalledWith(1, {
+      phase: 'filtered-source-scan',
+      processed: 256,
+      total: 257,
+    });
+    expect(onProgress).toHaveBeenLastCalledWith({
+      phase: 'filtered-source-scan',
+      processed: 257,
+      total: 257,
+    });
   });
 
   it('rejects a cut with neither store', async () => {

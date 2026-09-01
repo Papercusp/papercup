@@ -117,7 +117,10 @@ import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-ep
 import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
 import { drainOutboxOnce, DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import { openOwnLog, type OwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
-import { produceLogSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/log-snapshot';
+import {
+  produceLogSnapshot,
+  type SnapshotFoldProgress,
+} from "@papercusp/operator-core/lib/sync/hyperbee/log-snapshot";
 import { SEED_EXCLUDED_TABLES } from '@papercusp/operator-core/lib/sync/hyperbee/seed-excluded-tables';
 import {
   findLiveOperatorHoldingHive,
@@ -133,6 +136,45 @@ import type { BootedHarnessHandle, LocalWriteOp } from '@papercusp/operator-core
 
 const DEFAULT_HIVE = 'papercusp';
 const DEFAULT_ORIGIN = 'https://github.com/Papercusp/papercup';
+
+/** Keep a long filtered scan visibly alive without writing one line per 256-block window. */
+export const CUT_SEED_FILTERED_PROGRESS_INTERVAL_MS = 60_000;
+export const CUT_SEED_FILTERED_PROGRESS_PERCENT_STEP = 5;
+
+export function createFilteredSeedProgressReporter(input: {
+  readonly warn?: (message: string) => void;
+  readonly now?: () => number;
+  readonly minIntervalMs?: number;
+  readonly minPercentStep?: number;
+} = {}): (progress: SnapshotFoldProgress) => void {
+  const warn = input.warn ?? ((message: string) => console.warn(message));
+  const now = input.now ?? Date.now;
+  const minIntervalMs = input.minIntervalMs ?? CUT_SEED_FILTERED_PROGRESS_INTERVAL_MS;
+  const minPercentStep = input.minPercentStep ?? CUT_SEED_FILTERED_PROGRESS_PERCENT_STEP;
+  let lastReportedAt = Number.NEGATIVE_INFINITY;
+  let lastReportedPercent = Number.NEGATIVE_INFINITY;
+  let lastProcessed = -1;
+
+  return (progress) => {
+    if (progress.processed <= lastProcessed) return;
+    const percent = progress.total <= 0
+      ? 100
+      : Math.min(100, Math.floor((progress.processed / progress.total) * 100));
+    const at = now();
+    const first = lastProcessed < 0;
+    const complete = progress.processed >= progress.total;
+    const intervalElapsed = at - lastReportedAt >= minIntervalMs;
+    const percentAdvanced = percent - lastReportedPercent >= minPercentStep;
+    lastProcessed = progress.processed;
+    if (!first && !complete && !intervalElapsed && !percentAdvanced) return;
+
+    warn(
+      `[cut-seed] ${progress.phase}: ${progress.processed}/${progress.total} source blocks folded (${percent}%).`,
+    );
+    lastReportedAt = at;
+    lastReportedPercent = percent;
+  };
+}
 
 /**
  * Cross-process singleton for a release cut's live-hive refresh/open window.
@@ -1374,6 +1416,7 @@ async function main(): Promise<void> {
       // redacts email-shaped values, and leaves the live source log untouched.
       filtered: true,
       redactValues: releaseSeedRedactionValues(root),
+      onProgress: createFilteredSeedProgressReporter(),
     };
   }
 
