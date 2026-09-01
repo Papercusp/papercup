@@ -1763,9 +1763,7 @@ async function dbHotSeqScanDetectorTick(): Promise<void> {
     async () => {
       if (shouldShedHeavyTick('db-hot-seq-scan-detector')) return;
       try {
-        const { runHotSeqScanDetectionOnce, describeFinding } = await import(
-          '../system-health/hot-seq-scan-detector'
-        );
+        const { runHotSeqScanDetectionOnce, describeFinding } = await import('../system-health/hot-seq-scan-detector');
         const { sql } = getOrgPg();
         const r = await runHotSeqScanDetectionOnce(sql, { baseline: __hotSeqScanState.baseline });
         // Carry the sample forward even on a skip: 'window-too-short' deliberately returns
@@ -1978,9 +1976,7 @@ async function cloudResourceObligationSweepTick(): Promise<void> {
     async () => {
       if (shouldShedHeavyTick('cloud-resource-obligation-sweep')) return;
       try {
-        const { runCloudResourceObligationSweepOnce } = await import(
-          '../workspace-host/cloud-resource-obligations'
-        );
+        const { runCloudResourceObligationSweepOnce } = await import('../workspace-host/cloud-resource-obligations');
         const { captureImprovement } = await import('../harness/improvements/capture-core');
         const { sql } = getOrgPg();
         const r = await runCloudResourceObligationSweepOnce(sql, { capture: captureImprovement });
