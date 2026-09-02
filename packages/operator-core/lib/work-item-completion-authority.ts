@@ -438,7 +438,9 @@ export type InsufficientEvidenceReason =
   | 'no-verified-how'
   | 'no-test-run-or-result'
   | 'added-tests-without-path'
+  | 'no-requirement-disposition'
   | 'test-result-contradicted-by-run'
+  | 'requirement-disposition-unfaithful'
   | 'files-changed-never-existed';
 
 /**
@@ -489,6 +491,36 @@ export interface CompletionEvidenceFindings {
     failingFiles: readonly string[];
     filesInRun: number;
   };
+
+  /**
+   * The close's requirement-by-requirement disposition is absent where the close's own
+   * fields demand one, or is present and unfaithful to the ask it claims to answer.
+   *
+   * P-021 / D-014: layer A's answer to under-delivery. `kind:'unfaithful'` names entries
+   * whose quote is not a literal span of the originating body (paraphrase is where silent
+   * narrowing hides), whose `implemented` cites no path that resolves, or whose `deferred`
+   * names no filed follow-up. `kind:'absent'` fires ONLY on the self-contradictory
+   * population — a close that declares deferred work while saying nothing about which
+   * part of the ask was left — because demanding a disposition from every code-shaped
+   * close would reclassify 2,053 closes/week and is a policy call, not a coherence check
+   * (D-019; the same line this module already draws at the 530/day rule above).
+   *
+   * Resolution lives in `agent-tools/work_items/requirement-disposition.ts` and is
+   * generous by construction: no source text, a body too thin to state a requirement, no
+   * resolvable repo root, an unjudgeable citation, or any throw all yield silence.
+   * Absence means "not judged", never "judged clean".
+   *
+   * Note the ONE narrative field this consults — `deferred` — only ever DEMOTES. The
+   * invariant that narrative fields never participate in authority exists to stop them
+   * PROMOTING an evidence-free close to `committed`; reading one to demand more evidence
+   * respects that purpose rather than bending it.
+   */
+  requirementDispositionShortfall?: {
+    kind: 'absent' | 'unfaithful';
+    notQuotedFromSource: readonly string[];
+    implementedWithoutResolvingCitation: readonly string[];
+    deferredWithoutFollowUp: readonly string[];
+  };
 }
 
 /**
@@ -517,7 +549,20 @@ export function insufficientEvidenceReason(
   if (evidence.addedTests === true && !evidence.filesChanged?.some((f) => f.trim())) {
     return 'added-tests-without-path';
   }
-  // P-002 / D-017. FIRST of the two present-and-wrong checks, deliberately: a red test run
+  // P-021 / D-014. LAST of the missing-field checks: the four above name a field the close
+  // omitted about ITSELF, whose remedy is one line. This one names a missing account of the
+  // ASK, whose remedy is to re-read the originating body and enumerate it — more work, so a
+  // close failing both should hear the cheaper repair first.
+  //
+  // Reaching this line means the caller ran the probe AND the close contradicts itself:
+  // it declared deferred work while saying nothing about which part of the ask was left.
+  // Every other shape (no deferred work, a body too thin to quote, a close naming no files,
+  // any throw) leaves the field undefined and falls through — see D-019 for why this is
+  // deliberately not demanded of every code-shaped close.
+  if (findings?.requirementDispositionShortfall?.kind === 'absent') {
+    return 'no-requirement-disposition';
+  }
+  // P-002 / D-017. FIRST of the three present-and-wrong checks, deliberately: a red test run
   // means the WORK is not finished, while a fabricated path means the RECORD is wrong about
   // finished work. A close failing both should hear the blocking one first — "your own last
   // test run failed" is what has to change before the close is legitimate at all, and being
@@ -529,7 +574,14 @@ export function insufficientEvidenceReason(
   if (findings?.testRunContradictedByLedger?.failingFiles?.length) {
     return 'test-result-contradicted-by-run';
   }
-  // P-001 / D-016. LAST deliberately: the four checks above name a MISSING field, whose
+  // P-021 / D-014. Between the two: a red run means the WORK is unfinished (blocking), a
+  // fabricated path means the RECORD is wrong about the files. This one sits between them
+  // because it means the record is wrong about the ASK — more serious than a mis-stated
+  // file list, less blocking than a suite that does not pass.
+  if (findings?.requirementDispositionShortfall?.kind === 'unfaithful') {
+    return 'requirement-disposition-unfaithful';
+  }
+  // P-001 / D-016. LAST deliberately: the checks above name a MISSING field, whose
   // remedy is "supply it". This one names a field that is present and wrong, whose remedy
   // is "correct it" — so a close failing both should hear about the missing field first,
   // because supplying it is the cheaper and more basic repair.

@@ -350,6 +350,41 @@ const FilesChangedSchema = z
   .array(z.string().min(1).refine(isPathShapedFilesChangedEntry, { message: FILES_CHANGED_NOT_PATH_SHAPED_MESSAGE }))
   .optional();
 
+/**
+ * P-021 / D-014 — the requirement-by-requirement disposition of the originating ask.
+ *
+ * `requirement` must be a VERBATIM span of the originating item body, never a
+ * paraphrase: paraphrase is where silent narrowing hides ("make the retry robust"
+ * becomes "added a retry"), and a literal quote is checkable as a substring while a
+ * paraphrase is a matter of opinion. The check lives in
+ * `agent-tools/work_items/requirement-disposition.ts`.
+ */
+const RequirementDispositionSchema = z
+  .array(
+    z.object({
+      requirement: z
+        .string()
+        .min(1)
+        .describe('VERBATIM quote from the originating item body — never a paraphrase.'),
+      disposition: z.enum(['implemented', 'not-applicable', 'deferred', 'rejected']),
+      citations: z
+        .array(z.string().min(1))
+        .optional()
+        .describe('Repo-relative paths that must RESOLVE; required for `implemented`.'),
+      followUp: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Filed work-item ref (WI-/EI-/F-); required for `deferred`.'),
+      note: z.string().min(1).optional(),
+    }),
+  )
+  .describe(
+    'Requirement-by-requirement disposition of the ask. Each `requirement` is a VERBATIM ' +
+    'quote from the originating item body (substring-checked, never paraphrased), each ' +
+    '`implemented` cites a path that resolves, each `deferred` names a filed follow-up ref.',
+  );
+
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */
   filesChanged: FilesChangedSchema,
@@ -369,6 +404,8 @@ export const CompletionVerificationEvidenceSchema = z.object({
     ),
   /** Enumerated population + per-entry status for universal verification claims (WI-37960). */
   coverage: CompletionCoverageSchema.optional(),
+  /** P-021 / D-014: requirement-by-requirement disposition against the originating ask. */
+  requirementDisposition: RequirementDispositionSchema.optional(),
   /**
    * EI-19319623239777505: the caller's free-text `completion.summary`, carried alongside
    * the structured fields it sits next to. Before this field existed, `summary` was NEVER
