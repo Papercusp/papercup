@@ -33,7 +33,7 @@ describe('reportSemanticDedupProbeUnavailable', () => {
     delete process.env.VITEST;
     await reportSemanticDedupProbeUnavailable({ harnessSlug: 'papercusp' });
     expect(escalationMocks.open).toHaveBeenCalledTimes(1);
-    const [identity, input] = escalationMocks.open.mock.calls[0] as [
+    const [identity, input] = escalationMocks.open.mock.calls[0] as unknown as [
       { ownerId: string },
       { severity: string; summary: string; meta?: { dedupKind?: string; subjectSignature?: string } },
     ];
@@ -55,7 +55,7 @@ describe('reportSemanticDedupProbeUnavailable', () => {
   it('omits the harness clause from the body when no harnessSlug is known', async () => {
     delete process.env.VITEST;
     await reportSemanticDedupProbeUnavailable({});
-    const input = escalationMocks.open.mock.calls[0][1] as { body: string };
+    const input = (escalationMocks.open.mock.calls[0] as unknown as [unknown, { body: string }])[1];
     expect(input.body).not.toContain('in harness');
   });
 });
