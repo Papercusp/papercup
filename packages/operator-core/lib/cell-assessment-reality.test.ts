@@ -659,19 +659,23 @@ const CONTROLS: Record<string, readonly Control[]> = {
   'testing.coverage.floor': [
     {
       label: 'no denominator — the census enumerated zero surfaces',
-      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 0, below: 0, belowUnwaived: 0 }),
+      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 0, below: 0, belowUnwaived: 0, evidenced: 0 }),
     },
     {
       label: 'unwaived gaps below the floor',
-      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2 }),
+      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2, evidenced: 10 }),
     },
     {
       label: 'gaps exist but every one is waived',
-      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0 }),
+      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0, evidenced: 10 }),
     },
     {
       label: 'every surface meets the floor',
-      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 0, belowUnwaived: 0 }),
+      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 0, belowUnwaived: 0, evidenced: 10 }),
+    },
+    {
+      label: 'gaps below the floor, but nothing was ever measured about them (P-008)',
+      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 10, belowUnwaived: 10, evidenced: 0 }),
     },
   ],
   'governor.health': [
@@ -827,7 +831,13 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'memory.cgroupAttribution': ['crit', 'warn', 'ok', null],
   'agent.goal': ['nothing-held', 'corroborated', 'sole', 'divergent', 'divergent', null],
   'testing.census.population': ['no-providers', 'census-not-run', 'empty-measured', 'populated'],
-  'testing.coverage.floor': ['no-population', 'below-floor', 'measured-with-waivers', 'meets-floor'],
+  'testing.coverage.floor': [
+    'no-population',
+    'below-floor',
+    'measured-with-waivers',
+    'meets-floor',
+    'no-evidence',
+  ],
   'governor.health': ['healthy', 'degraded', 'unknown'],
   'governor.admission': ['open', 'constrained', 'paused', 'unknown'],
   'governor.queue': ['empty', 'draining', 'growing', 'unknown'],
@@ -1234,8 +1244,8 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
     [
       'testing.coverage.floor',
       'coverage.belowUnwaived',
-      assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2 }),
-      assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0 }),
+      assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2, evidenced: 10 }),
+      assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0, evidenced: 10 }),
       'a waived gap must not read as an unwaived one',
     ],
     ['governor.health', 'health.state', 'healthy', 'degraded', 'healthy and degraded must not collapse'],
