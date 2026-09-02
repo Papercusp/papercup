@@ -286,6 +286,50 @@ function findClaudeOwnerDialogAnswer(content: readonly unknown[]): string | null
   return null;
 }
 
+/**
+ * WI-2141807: Claude Code records a prompt the owner TYPED WHILE A TURN WAS
+ * RUNNING (queued, then absorbed once the turn completes — visible as a
+ * paired `queue-operation` enqueue/remove in the same transcript) as a
+ * top-level `attachment` line, never as the ordinary `type:'user'` /
+ * `message.content` shape the rest of this parser reads:
+ *
+ *   { type:'attachment', attachment:{ type:'queued_command',
+ *     commandMode:'prompt', origin:{kind:'human'}, prompt:<text>,
+ *     timestamp } }
+ *
+ * session-ingest.ts's `parseClaudeQueuedCommand` already recognizes this
+ * exact shape for the recall index — which is why `sessions:search` resolves
+ * such a turn while this raw-transcript reader (what `verifyTurnRefs`'s
+ * default owner-chain scope actually reads) reported `found:false` for a
+ * REAL owner-typed directive. Mirrored here rather than imported:
+ * session-ingest.ts already imports FROM this module (classifyRecordedTurn),
+ * so importing back would cycle. Same asymmetry class, same fix shape, as
+ * EI-22171324436610992's findClaudeOwnerDialogAnswer above — kept
+ * deliberately narrower than session-ingest's cleanTurnText (no boilerplate-
+ * prefix / min-length drop): this reader's contract is to surface ALL user
+ * turns for per-turn classification, never to silently drop a short one.
+ */
+function findClaudeQueuedCommandTurn(o: Record<string, unknown>): RecordedUserTurn | null {
+  const attachment = o.attachment as
+    | { type?: unknown; commandMode?: unknown; origin?: { kind?: unknown }; prompt?: unknown; timestamp?: unknown }
+    | undefined;
+  if (
+    !attachment ||
+    attachment.type !== 'queued_command' ||
+    attachment.commandMode !== 'prompt' ||
+    attachment.origin?.kind !== 'human' ||
+    typeof attachment.prompt !== 'string' ||
+    !attachment.prompt.trim()
+  ) {
+    return null;
+  }
+  const ts =
+    (typeof attachment.timestamp === 'string' && attachment.timestamp) ||
+    (typeof o.timestamp === 'string' && o.timestamp) ||
+    '';
+  return { ts, text: attachment.prompt };
+}
+
 /** Parse ALL user turns (with timestamps) out of raw JSONL — including
  *  machine-injected ones; classification happens per turn, not by dropping. */
 export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
@@ -297,6 +341,11 @@ export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
       o = JSON.parse(line) as Record<string, unknown>;
     } catch {
       continue; // torn first line of a tail read
+    }
+    if (o.type === 'attachment') {
+      const queued = findClaudeQueuedCommandTurn(o);
+      if (queued) out.push(queued);
+      continue;
     }
     let c: unknown;
     let isClaudeUserLine = false;

@@ -348,6 +348,56 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
     expect(turns).toEqual([]);
   });
 
+  // WI-2141807: a prompt the owner typed WHILE A TURN WAS RUNNING is queued
+  // and absorbed once the turn completes — recorded as a top-level
+  // `attachment`/`queued_command` line, never the ordinary `type:'user'`
+  // shape. session-ingest.ts's parseClaudeLine already promotes this shape
+  // (see its own tests), but this raw-transcript reader used to only match
+  // `type:'user'`/`type:'response_item'` and silently dropped it — so a ref
+  // pointing at a real, resolvable-by-sessions:search owner-typed turn came
+  // back found:false from verifyTurnRefs's default (owner-chain) scope.
+  it('parseUserTurns promotes a Claude queued_command (owner-typed-while-busy) turn', () => {
+    const prompt = 'ONCE THEY ARE PAUSED KILL THEM ALL';
+    const ts = '2026-09-01T23:01:08.844Z';
+    const turns = parseUserTurns(
+      JSON.stringify({
+        type: 'attachment',
+        timestamp: ts,
+        sessionId: SID,
+        attachment: {
+          type: 'queued_command',
+          commandMode: 'prompt',
+          origin: { kind: 'human' },
+          prompt,
+          timestamp: ts,
+        },
+      }),
+    );
+    expect(turns).toEqual([{ ts, text: prompt }]);
+    expect(classifyRecordedTurn(turns[0].text)).toEqual({ verdict: 'owner-typed', origin: null });
+  });
+
+  // Regression guards for the same change: a non-human origin, a non-'prompt'
+  // commandMode, and an empty prompt must all still be dropped — the gate is
+  // exactly as narrow as session-ingest.ts's parseClaudeQueuedCommand.
+  it('parseUserTurns drops a non-human or non-prompt queued_command attachment', () => {
+    const base = {
+      type: 'attachment',
+      timestamp: '2026-09-01T23:01:08.844Z',
+      attachment: {
+        type: 'queued_command',
+        commandMode: 'prompt',
+        origin: { kind: 'human' },
+        prompt: 'ignored either way',
+        timestamp: '2026-09-01T23:01:08.844Z',
+      },
+    };
+    expect(parseUserTurns(JSON.stringify({ ...base, attachment: { ...base.attachment, origin: { kind: 'assistant' } } }))).toEqual([]);
+    expect(parseUserTurns(JSON.stringify({ ...base, attachment: { ...base.attachment, commandMode: 'other' } }))).toEqual([]);
+    expect(parseUserTurns(JSON.stringify({ ...base, attachment: { ...base.attachment, prompt: '   ' } }))).toEqual([]);
+    expect(parseUserTurns(JSON.stringify({ ...base, attachment: { ...base.attachment, type: 'other' } }))).toEqual([]);
+  });
+
   it('verifyTurnRefs resolves an owner-dialog (AskUserQuestion) ref via the raw transcript (owner-chain default scope)', async () => {
     const answer = 'The user answered: "provision the WorkOS values credentials now"="yes".';
     const ts = '2026-09-01T15:49:35.226Z';
@@ -372,6 +422,37 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
     expect(v.checked).toBe(true);
     expect(v.verdict).toBe('owner-dialog');
     expect(v.snippet).toContain('provision the WorkOS values credentials now');
+  });
+
+  // WI-2141807 end-to-end: the exact repro shape from the live bug report —
+  // a genuinely owner-typed queued_command ref must resolve as owner-typed
+  // via the same default (owner-chain) scope loop:checkpoint actually uses,
+  // not just be recognized by parseUserTurns in isolation.
+  it('verifyTurnRefs resolves a queued_command (owner-typed-while-busy) ref via the raw transcript (owner-chain default scope)', async () => {
+    const prompt = 'ONCE THEY ARE PAUSED KILL THEM ALL';
+    const ts = '2026-09-01T23:01:08.844Z';
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: 'attachment',
+        timestamp: ts,
+        sessionId: SID,
+        attachment: {
+          type: 'queued_command',
+          commandMode: 'prompt',
+          origin: { kind: 'human' },
+          prompt,
+          timestamp: ts,
+        },
+      }) + '\n',
+      { flag: 'a' },
+    );
+    const refs = parseTurnRefs(formatTurnRef(SID, ts));
+    const [v] = await verifyTurnRefs('owner-x', refs, { filePath: file, sessionId: SID });
+    expect(v.found).toBe(true);
+    expect(v.checked).toBe(true);
+    expect(v.verdict).toBe('owner-typed');
+    expect(v.snippet).toContain('ONCE THEY ARE PAUSED KILL THEM ALL');
   });
 });
 
