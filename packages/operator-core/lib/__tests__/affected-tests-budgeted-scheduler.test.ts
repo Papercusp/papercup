@@ -11,6 +11,7 @@ import {
   durationEstimate,
   emptyDurationHistory,
   formatAdmissionHolder,
+  formatAdmissionProspect,
   formatAffectedTaskShardMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
