@@ -2807,31 +2807,57 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     ? prev.cumulativePeelTicks + 1
     : 0;
 
+  // EI-22154166487566939: the local-sync guard above is stopped in its own finally
+  // (~2773-2777) before this point, so the record step + all 7 post-legs legs below
+  // previously ran with ZERO idle/hard-timeout protection — a hang in any one of them
+  // wedged `phase: 'post-legs'` indefinitely with no error ever recorded. Give this
+  // phase its OWN independent guard, scoped exactly to the try/finally immediately
+  // below, rather than extending the local-sync guard's lifetime (which would leave
+  // its timers armed-but-unstopped on the early `return` at the live-lock-read
+  // failure path above, silently corrupting a later tick's activity metadata up to
+  // hardTimeoutMs later).
+  const postLegsLiveness = createGitSyncActionLivenessGuard({
+    idleTimeoutMs: gitSyncActionIdleTimeoutMs(),
+    hardTimeoutMs: gitSyncActionHardTimeoutMs(),
+    onTimeout: async (error) => {
+      // Same shape as the local-sync guard's onTimeout. cleanupLocks() is
+      // memoized/idempotent — safe even though local-sync's finally already
+      // called it once; by this phase it is normally already a no-op.
+      const activity = recordTimeoutActivity(error);
+      await cleanupLocks();
+      await activity;
+    },
+  });
+  const guardedPostLegs = <T>(phase: string, operation: () => Promise<T>): Promise<T> =>
+    postLegsLiveness.run(operation, phase);
+
   try {
     // STEP `git-sync:record` — outcome recording + the whole escalation/dispatch tail as
     // ONE checkpoint: a resumed fire that already recorded never re-appends the pipeline
     // event or re-decides escalations (the resolver/fixer dispatches inside are further
     // deduped by their own in-flight markers).
-    await runCheckpointedStep('git-sync:record', () =>
-      recordAndEscalateTick({
-        slug,
-        workspaceId,
-        outcome,
-        errTicks,
-        contentTicks,
-        prevContentTicks: prev.contentTicks,
-        prevOversizedKeys: prev.oversizedKeys,
-        cumulativePeelTicks,
-        // EI-21230011589307899: surface a frozen own-head publish. Read from the
-        // previous tick's publish leg — see readEscalationCounters.
-        publishRefusal: prev.publishRefusal,
-        prevPublishBlockedAtCommit: prev.prevPublishBlockedAtCommit,
-        cfgBranch: cfg.branch,
-        maxBlobBytes: cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES,
-        maxCommitTotalBytes: cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES,
-        attributionOn,
-        pushMode: effectivePushMode,
-      }),
+    await guardedPostLegs('git-sync:record', () =>
+      runCheckpointedStep('git-sync:record', () =>
+        recordAndEscalateTick({
+          slug,
+          workspaceId,
+          outcome,
+          errTicks,
+          contentTicks,
+          prevContentTicks: prev.contentTicks,
+          prevOversizedKeys: prev.oversizedKeys,
+          cumulativePeelTicks,
+          // EI-21230011589307899: surface a frozen own-head publish. Read from the
+          // previous tick's publish leg — see readEscalationCounters.
+          publishRefusal: prev.publishRefusal,
+          prevPublishBlockedAtCommit: prev.prevPublishBlockedAtCommit,
+          cfgBranch: cfg.branch,
+          maxBlobBytes: cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES,
+          maxCommitTotalBytes: cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES,
+          attributionOn,
+          pushMode: effectivePushMode,
+        }),
+      ),
     );
 
     // `recordOutcome` writes the local stage's status before any GitHub bridge or
@@ -2867,7 +2893,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // FLAGS.GITHUB_BRIDGE (default ON; the per-hive `hiveGit.mode` setting is the
     // real activation — this leg only exists when the gate resolved 'bridged').
     if (gate.hiveGitMode === 'bridged' && (await getFlag(FLAGS.GITHUB_BRIDGE, slug))) {
-      await runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId));
+      await guardedPostLegs('git-sync:github-bridge', () =>
+        runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId)),
+      );
     }
 
     // p2p-git-live-activation P-205 (WI-3591, G-8): on ANY non-legacy hive, one
@@ -2885,7 +2913,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // skipped untouched"). Own checkpoint so a resumed fire never re-attempts
     // past it.
     if (gate.hiveGitMode) {
-      await runCheckpointedStep('git-sync:bootstrap', () => runBootstrapLeg(slug, workspaceId));
+      await guardedPostLegs('git-sync:bootstrap', () =>
+        runCheckpointedStep('git-sync:bootstrap', () => runBootstrapLeg(slug, workspaceId)),
+      );
     }
 
     // G-2a (WI-5146): on ANY non-legacy hive, publish THIS device's own worktree
@@ -2897,7 +2927,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // guard runs INSIDE the tick, before the ref write makes objects servable.
     // Own checkpoint so a resumed fire never re-publishes past it.
     if (gate.hiveGitMode) {
-      await runCheckpointedStep('git-sync:own-head-publish', () => runOwnHeadPublishLeg(slug, workspaceId, cfg.branch));
+      await guardedPostLegs('git-sync:own-head-publish', () =>
+        runCheckpointedStep('git-sync:own-head-publish', () => runOwnHeadPublishLeg(slug, workspaceId, cfg.branch)),
+      );
     }
 
     // p2p-git-live-activation P-202: on ANY non-legacy hive (bridged OR
@@ -2908,7 +2940,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // same tick, not last tick's. Own checkpoint so a resumed fire never
     // re-announces/re-receives past it.
     if (gate.hiveGitMode) {
-      await runCheckpointedStep('git-sync:ref-announce', () => runRefAnnounceLeg(slug, workspaceId));
+      await guardedPostLegs('git-sync:ref-announce', () =>
+        runCheckpointedStep('git-sync:ref-announce', () => runRefAnnounceLeg(slug, workspaceId)),
+      );
     }
 
     // p2p-git-live-activation P-203: on ANY non-legacy hive (bridged OR
@@ -2918,7 +2952,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // (`skipped: 'not-integrator'`). Own checkpoint so a resumed fire never
     // re-integrates/re-announces past it.
     if (gate.hiveGitMode) {
-      await runCheckpointedStep('git-sync:integrator', () => runIntegratorLeg(slug, workspaceId));
+      await guardedPostLegs('git-sync:integrator', () =>
+        runCheckpointedStep('git-sync:integrator', () => runIntegratorLeg(slug, workspaceId)),
+      );
     }
 
     // P-302/Leg A: the integrator may advance refs/hive/staging and publish its
@@ -2928,8 +2964,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // git-sync tick. This pass is publish-only: receiving the same pending peer
     // announcements twice would double-drive fetch failures and their budgets.
     if (gate.hiveGitMode) {
-      await runCheckpointedStep('git-sync:ref-announce-post-integrator', () =>
-        runRefAnnounceLeg(slug, workspaceId, { receive: false }),
+      await guardedPostLegs('git-sync:ref-announce-post-integrator', () =>
+        runCheckpointedStep('git-sync:ref-announce-post-integrator', () =>
+          runRefAnnounceLeg(slug, workspaceId, { receive: false }),
+        ),
       );
     }
 
@@ -2941,18 +2979,35 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // follows staging too). Own checkpoint so a resumed fire never re-processes
     // past it.
     if (gate.hiveGitMode) {
-      await runCheckpointedStep('git-sync:worktree-bridge', () => runWorktreeBridgeLeg(slug, workspaceId));
+      await guardedPostLegs('git-sync:worktree-bridge', () =>
+        runCheckpointedStep('git-sync:worktree-bridge', () => runWorktreeBridgeLeg(slug, workspaceId)),
+      );
     }
   } catch (error) {
-    await writeGitSyncActivity(slug, workspaceId, {
-      active: false,
-      phase: 'error',
-      started_at: activityStartedAt,
-      updated_at: Date.now(),
-      completed_at: Date.now(),
-      outcome_status: outcome.status,
-    }).catch(() => {});
+    // EI-22154166487566939: mirror the local-sync phase's outer catch (~2756-2761) —
+    // a guardedPostLegs timeout rejects with GitSyncActionTimeoutError naming the
+    // exact leg that hung (e.g. 'git-sync:github-bridge'); record that specific
+    // diagnosis instead of the generic write below, which would otherwise erase
+    // which leg hung.
+    if (error instanceof GitSyncActionTimeoutError) {
+      await recordTimeoutActivity(error);
+    } else {
+      await writeGitSyncActivity(slug, workspaceId, {
+        active: false,
+        phase: 'error',
+        started_at: activityStartedAt,
+        updated_at: Date.now(),
+        completed_at: Date.now(),
+        outcome_status: outcome.status,
+      }).catch(() => {});
+    }
     throw error;
+  } finally {
+    // Guarantee the post-legs guard's timers are cleared on every exit from this
+    // try (the happy path falling through, or the catch above rethrowing) —
+    // mirrors the local-sync phase's own finally (~2773-2777) for its guard.
+    await postLegsLiveness.waitForTimeoutCleanup();
+    postLegsLiveness.stop();
   }
 
   // P-004 / WI-305952: derive the FINAL published candidate after every Git
