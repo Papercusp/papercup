@@ -4214,6 +4214,33 @@ export function isStaleReleaseFixerCandidate(check: ReleaseFixerCandidateStaleCh
 }
 
 /**
+ * WI-2140605. TRUE when a FROZEN-REPAIR dispatch would hand a reproduce-style fixer an
+ * empty failure set — i.e. there is provably nothing to reproduce.
+ *
+ * Pure (no PG, no git) so it is unit-testable without a live DB, matching
+ * `isStaleReleaseFixerCandidate` above.
+ *
+ * Why this is a dispatch-time question and not the fixer's problem to discover: the brief
+ * `buildReleaseFixerKickoff` produces is "identify the exact failing tests, reproduce, fix
+ * hermetically". With an empty set that brief is unexecutable BY CONSTRUCTION — the fixer
+ * has no target, so it parks at "reproduce" rather than failing usefully. Measured
+ * 2026-09-01 on candidate edaf692e: three consecutive fixers died/parked exactly there
+ * against `failingTests=[]` while the verdict was itself stale.
+ *
+ * Scoped to the frozen-repair path on purpose. A fresh-verdict red whose failing set was
+ * merely not extracted is a different question, and widening this predicate to cover it
+ * would risk suppressing a legitimate dispatch on a genuinely red gate — the one outcome
+ * the fixer path must never have.
+ */
+export function frozenRepairHasNoMeasuredFailures(
+  repairQueue: FrozenCandidateRepairQueue | undefined,
+  failingTests: string[] | undefined,
+): boolean {
+  if (!repairQueue) return false;
+  return !failingTests || failingTests.length === 0;
+}
+
+/**
  * Build the release-fixer's task brief at the single dispatch seam.
  *
  * Frozen repairs are delegated children of the gate owner. The parent keeps the
@@ -4821,6 +4848,52 @@ export async function dispatchReleaseFixer(
         candidate: candidate.slice(0, 12),
         candidateExists: staleCheck.candidateExists,
         candidatePromoted: staleCheck.candidatePromoted,
+      },
+    }).catch(() => {});
+    return null;
+  }
+
+  // WI-2140605: a FROZEN-REPAIR dispatch with an EMPTY failing set has nothing for a
+  // reproduce-style fixer to reproduce. The kickoff brief this dispatch produces is
+  // "identify the exact failing tests, reproduce, fix hermetically"
+  // (`buildReleaseFixerKickoff`), so an empty set makes that brief unexecutable by
+  // construction — it is not a fixer that tried and failed, it is a fixer that was never
+  // given a target. Measured 2026-09-01 on candidate edaf692e: three consecutive fixers
+  // parked/died at "reproduce" against `failingTests=[]` while the verdict itself was
+  // stale (`failingTestsMeasured=false`).
+  //
+  // The dispatch was not merely wasted, it DEADLOCKED the gate: each one wrote a
+  // `last_fixer` record, and the owner policy ("no LIVE_GATE_OPS while a fixer is alive")
+  // then blocked the very `release:checkpoint-run` that the STALE VERDICT label prescribes
+  // as the fix. The gate stayed red 3h+ with the repair already in the tree.
+  //
+  // `describeGateRedOwnership` ALREADY refuses to name failures in this state
+  // (`state:'verdict-stale'` → "do NOT diagnose the failures it names; get a fresh
+  // verdict first"). This guard stops the DISPATCHER from quietly disagreeing with that
+  // RENDERER — the same renderer/dispatcher drift `gateFailureSignature` was extracted to
+  // prevent, one field over.
+  //
+  // Deliberately scoped to the frozen-repair path (`repairQueue` present): an ordinary
+  // fresh-verdict red whose failing set was simply not extracted is a different question
+  // and keeps its existing dispatch behaviour. Returning null here is an already-exercised
+  // outcome — the stale-candidate guard above does the same, and
+  // `finalizeFrozenCandidateRepairFixer` releases the dispatch reservation on a null
+  // `fired` rather than wedging the queue.
+  if (frozenRepairHasNoMeasuredFailures(repairQueue, failingTests)) {
+    console.log(
+      `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: frozen repair ` +
+        `queue has no measured failing tests — nothing to reproduce; a fresh verdict is the unblock, not a fixer`,
+    );
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'green_checkpoint',
+      status: 'release-fixer-skipped-no-measured-failures',
+      detail: {
+        candidate: candidate.slice(0, 12),
+        repairHead: repairQueue.repairHead.slice(0, 12),
+        phase: repairQueue.phase,
+        attempts: repairQueue.attempts,
       },
     }).catch(() => {});
     return null;
