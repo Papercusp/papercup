@@ -517,6 +517,16 @@ export interface ListTasksFilter {
   states?: readonly TaskState[];
   classes?: readonly string[];
   launchedBy?: string;
+  /**
+   * The coord ownerId the task BELONGS to — not `launchedBy`, which is whoever
+   * SPAWNED it. For an agent-session those differ (a fleet member's row is
+   * launched_by its launcher), so `launchedBy` cannot answer "which task is
+   * me?". That gap is why diagnosing an agent's own confinement fell back to
+   * `pgrep -f <ownerId>`, an idiom that self-matches the caller's own command
+   * line — the documented `pkill -f` trap, returning the caller's pid as if it
+   * were the target's (P-023/WI-2141828).
+   */
+  coordOwnerId?: string;
   workItemId?: string;
   rootTaskId?: string;
   /** Native Claude/Codex session id recorded after bootstrap. */
@@ -552,6 +562,7 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
        ${filter.states?.length ? sql`AND state = ANY(${sql.array(filter.states as string[])})` : sql``}
        ${filter.classes?.length ? sql`AND class = ANY(${sql.array(filter.classes as string[])})` : sql``}
        ${filter.launchedBy ? sql`AND launched_by = ${filter.launchedBy}` : sql``}
+       ${filter.coordOwnerId ? sql`AND detail ->> 'coordOwnerId' = ${filter.coordOwnerId}` : sql``}
        ${filter.workItemId ? sql`AND work_item_id = ${filter.workItemId}` : sql``}
        ${filter.rootTaskId ? sql`AND root_task_id = ${filter.rootTaskId}` : sql``}
        ${filter.sessionId ? sql`AND session_id = ${filter.sessionId}` : sql``}
