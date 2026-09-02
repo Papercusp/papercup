@@ -52,6 +52,7 @@ vi.mock('../messages', () => ({
   getMessageById: getMessageByIdMock,
   resolveMessageRef: resolveMessageRefMock,
   getUnresolvedAudienceSelectors: vi.fn(() => []),
+  getUnreachableAudienceSelectors: vi.fn(() => []),
 }));
 // The dispatch-advisory leg dynamically imports the work-item store only when
 // a directed action message names a WI-/EI- id. Keep this unit suite DB-free;
@@ -152,7 +153,13 @@ vi.mock('../stale-quote-stamp', async (importOriginal) => ({
   resolveStaleQuoteStamps: vi.fn(async () => []),
 }));
 
-import { sendMessage, getMessageById, resolveMessageRef, getUnresolvedAudienceSelectors } from '../messages';
+import {
+  sendMessage,
+  getMessageById,
+  resolveMessageRef,
+  getUnresolvedAudienceSelectors,
+  getUnreachableAudienceSelectors,
+} from '../messages';
 import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
@@ -174,6 +181,7 @@ const getByIdM = vi.mocked(getMessageById);
 const getWorkItemM = vi.mocked(getWorkItemMock);
 const resolveRefM = vi.mocked(resolveMessageRef);
 const unresolvedAudienceM = vi.mocked(getUnresolvedAudienceSelectors);
+const unreachableAudienceM = vi.mocked(getUnreachableAudienceSelectors);
 const resolveM = vi.mocked(resolveRecipients);
 const remoteIdsM = vi.mocked(remoteSessionOwnerIds);
 const remoteMapM = vi.mocked(remoteSessionsByOwnerId);
@@ -1412,6 +1420,77 @@ describe('coord:send zero-recipient audience (EI-6874)', () => {
     expect(b.results[0].unresolved_audience.note).toMatch(
       /named fleet may be absent|active member may be acting as leader|fleet:take-leadership/i,
     );
+  });
+
+  // EI-22180848452883121 — the reported failure, reproduced at the send seam.
+  // The registry leader pointer is deliberately not liveness-gated, so a REAPED
+  // leader resolves to exactly one id. Cardinality 1 slips past every miss-signal
+  // here (they all test for ZERO), and the caller was handed ok:true /
+  // recipients_resolved:1 for a message that no inbox would ever receive.
+  it('a @fleet-leader: resolving ONLY to a REAPED session → ok:false, never a success receipt', async () => {
+    mockReturnOnceTyped(unreachableAudienceM, [
+      { selector: '@fleet-leader:coordination-spec-adoption-2026-08-03-plan-fleet', ownerIds: ['su-98873d1c'] },
+    ]);
+    mockImplementationTyped(sendM, async () => ({
+      from: 'me',
+      // The exact shape of the bug: the selector DID resolve — to a corpse.
+      to: ['su-98873d1c'],
+      kind: 'message',
+      msg_id: 'm1',
+      ts: 't1',
+    }));
+    const b = await body({
+      to: ['@fleet-leader:coordination-spec-adoption-2026-08-03-plan-fleet'],
+      summary: 'plan complete',
+    });
+
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'recipients_unreachable',
+      // The count that used to read 1 and be believed.
+      recipients_resolved: 0,
+      recipients_unreachable: { ownerIds: ['su-98873d1c'] },
+    });
+    // The dead id must be NAMED — a caller cannot re-resolve a leader it can't see.
+    expect(b.results[0].message).toContain('su-98873d1c');
+    // And the repair must lead, not the diagnosis.
+    expect(b.results[0].message).toMatch(/fleet:status|coord:presence|fleet:take-leadership/i);
+  });
+
+  it('distinguishes a REAPED recipient from a merely-offline one by NOT refusing the latter', async () => {
+    // The line the whole fix rests on. An ended-but-recorded leader keeps a durable
+    // inbox — which is exactly what liveness-independent resolution exists for — so
+    // the probe reports nothing and the send must stand.
+    mockReturnOnceTyped(unreachableAudienceM, []);
+    mockImplementationTyped(sendM, async () => ({
+      from: 'me',
+      to: ['su-offline-but-recorded'],
+      kind: 'message',
+      msg_id: 'm1',
+      ts: 't1',
+    }));
+    const b = await body({ to: ['@fleet-leader:backend'], summary: 'status' });
+    expect(b.results[0]).toMatchObject({ ok: true, recipients_resolved: 1 });
+    expect(b.results[0].recipients_unreachable).toBeUndefined();
+  });
+
+  it('a live recipient does NOT hide a reaped one — warns while keeping ok:true', async () => {
+    mockReturnOnceTyped(unreachableAudienceM, [
+      { selector: '@fleet-leader:backend', ownerIds: ['su-ghost'] },
+    ]);
+    mockImplementationTyped(sendM, async () => ({
+      from: 'me',
+      to: ['su-ghost', 'su-live'],
+      kind: 'message',
+      msg_id: 'm1',
+      ts: 't1',
+    }));
+    const b = await body({ to: ['@fleet-leader:backend', 'su-live'], summary: 'status' });
+    // Somebody real got it, so the send stands — but the corpse is still reported.
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      recipients_unreachable: { selectors: ['@fleet-leader:backend'], ownerIds: ['su-ghost'] },
+    });
   });
 
   it('a @topic: selector resolving to zero → ok:false zero_recipients with a catch-up hint (non-fleet)', async () => {

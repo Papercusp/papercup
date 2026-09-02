@@ -10,6 +10,7 @@ import {
   objectSelector,
   type ActivePresence,
   type AudienceResolvers,
+  type UnreachableAudience,
 } from './audience';
 
 function makeResolvers(opts: {
@@ -308,6 +309,35 @@ describe('expandAudience', () => {
       expect(out.resolved).toEqual(['*']);
       expect(out.unreachableSelectors).toEqual([]);
       expect(probed.flat()).not.toContain('*');
+    });
+
+    // FALSIFIABILITY CONTROL (CLAUDE.md: for a MODULE you import, keep a
+    // deliberately-wrong implementation permanently in the test file rather than
+    // mutating the shared tree). `preFixExpansion` reproduces the SHIPPED PRE-FIX
+    // behaviour exactly — resolve the selector, report only cardinality — so the
+    // assertions above are shown to discriminate rather than to pass vacuously.
+    // Same input, same leader, opposite verdicts: the only difference is the
+    // mechanism under test.
+    it('CONTROL: the pre-fix implementation reports the bug, so the guard above is not vacuous', async () => {
+      const preFixExpansion = (resolvedIds: string[]) => ({
+        resolved: resolvedIds,
+        // Pre-fix, the ONLY miss-signal was cardinality zero.
+        unresolvedSelectors: resolvedIds.length === 0 ? ['@fleet-leader:backend'] : [],
+        unreachableSelectors: [] as UnreachableAudience[],
+      });
+      const reapedLeader = preFixExpansion(['ghost']);
+      // This is the defect in one assertion: a reaped leader is indistinguishable
+      // from a delivered one, because both are "one resolved recipient".
+      expect(reapedLeader.unresolvedSelectors).toEqual([]);
+      expect(reapedLeader.unreachableSelectors).toEqual([]);
+      expect(reapedLeader.resolved).toHaveLength(1);
+
+      // CALIBRATION: the real subject, on the identical input, must NOT agree.
+      const r = makeResolvers({ fleetLeaders: { backend: 'ghost' }, reaped: ['ghost'] });
+      const real = await expandAudienceDetailed(['@fleet-leader:backend'], r);
+      expect(real.resolved).toEqual(reapedLeader.resolved); // same delivery…
+      expect(real.unreachableSelectors).not.toEqual(reapedLeader.unreachableSelectors); // …different verdict
+      expect(real.unreachableSelectors).toHaveLength(1);
     });
 
     it('does not flag a plain ownerId the caller typed — that path has its own refusal', async () => {

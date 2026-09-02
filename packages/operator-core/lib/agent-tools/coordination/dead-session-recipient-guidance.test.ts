@@ -115,8 +115,23 @@ describe('the guidance itself', () => {
         'nonp2p-bug-drain-luna-max-0811',
       ) ?? '';
     expect(text).toContain('@fleet-leader:nonp2p-bug-drain-luna-max-0811');
-    expect(text).toContain('fleet registry');
+    expect(text).toMatch(/fleet registry/i);
     expect(text).toContain('@role:<slot>');
+  });
+
+  // EI-22180848452883121: this guidance is handed to an agent AT the moment a dead
+  // recipient stranded them, so a promise it cannot keep sends them straight back
+  // into the failure. It used to claim the selector "resolves the fleet registry's
+  // LIVE leader and survives this leader session ending" — both false when the
+  // registry pointer still names a reaped session.
+  it('does not promise the fleet-leader selector is liveness-gated', () => {
+    const text =
+      roleAddressingGuidance([{ id: INCIDENT_ID, kind: 'session-shaped' }], 'some-fleet') ?? '';
+    expect(text).not.toMatch(/resolves the fleet registry's live leader/i);
+    // It must say what the selector actually does — follow a POINTER — and name the
+    // refusal the caller will now get instead of a silent success receipt.
+    expect(text).toMatch(/pointer/i);
+    expect(text).toContain('recipients_unreachable');
   });
 
   it('does not invent a fleet selector when no fleet membership is available', () => {
