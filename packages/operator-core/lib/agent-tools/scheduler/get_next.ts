@@ -23,7 +23,9 @@ import {
   resolveClaimSpecWorkspace,
   getClaimSpecRecord,
   readClaimConcurrency,
+  fleetSpecBeeKey,
 } from '../../scheduler/claim-spec-store';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { CURRENT_SPEC_VERSION } from '../../scheduler/claim-spec';
 import { CLAIM_STATES_ALLOWLIST, releaseWorkItem } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
@@ -319,6 +321,36 @@ export function specIsIssueFamilyOnly(spec: unknown): boolean {
 }
 
 /**
+ * EI-22143638502920491: pure text for the SHADOWED-FLEET-SPEC note appended to a miss
+ * diagnosis when the caller's effective spec is a per-bee override (`source:'cup'`) that
+ * permanently shadows an inherited fleet spec — confirmed live: a `plans:start`-installed
+ * per-bee spec whose own plan later drained left a DRAIN fleet leader idling beside 2,493
+ * claimable items its OWN fleet spec matched, with nothing in the miss diagnosis saying so
+ * (the fleet spec is never even consulted once a per-bee row exists — getClaimSpecRecord
+ * returns the moment it finds one). Kept pure + exported so the message text is
+ * unit-testable without a live DB fetch; the DB-side lookup (fleet membership, the fleet's
+ * own spec record, its match count) lives in buildMissDiagnosis, which calls this only once
+ * it already has the three concrete numbers below.
+ */
+export function shadowedFleetSpecNote(args: {
+  ownerId: string;
+  fleetSlug: string;
+  revision: number | null;
+  matchedByFilter: number;
+}): string {
+  const { ownerId, fleetSlug, revision, matchedByFilter } = args;
+  return (
+    ` ⚠ SHADOWED FLEET SPEC: your effective spec is a PER-BEE OVERRIDE (source:'cup'), which ` +
+    `always wins over an inherited fleet spec and was NEVER consulted. Your fleet '${fleetSlug}'` +
+    (revision !== null ? ` (rev ${revision})` : '') +
+    ` has its own sentinel spec whose filter matches ${matchedByFilter} issue-family row(s) your ` +
+    `current spec's filter does not — this is very likely why you are idling. Remedy: ` +
+    `scheduler:set_claim_spec { cupId: '${ownerId}', clear:true } to drop the override and inherit ` +
+    `the fleet spec (scheduler:get_claim_spec { fleet: '${fleetSlug}' } for detail).`
+  );
+}
+
+/**
  * WI-6409: the ONE cap-led refusal EVERY miss branch returns when the caller is at its
  * concurrency cap — shared so the fleet-scoped and non-fleet branches cannot drift.
  *
@@ -570,6 +602,58 @@ async function buildMissDiagnosis(args: {
       }
     }
 
+    // EI-22143638502920491: a per-bee override (source:'cup') ALWAYS wins over an inherited
+    // fleet spec, and getClaimSpecRecord stops looking the instant it finds one — so nothing
+    // in this diagnosis, until now, ever told a shadowed caller that a DIFFERENT spec (their
+    // own fleet's) would have matched. Confirmed live: a plans:start-installed per-bee spec
+    // whose plan later drained left a DRAIN fleet leader idling beside 2,493 claimable items
+    // its OWN fleet spec matched — while `diag` above (floor-only, filter-agnostic) correctly
+    // reported a healthy readyUnclaimed pool, giving no hint that the caller's FILTER, not the
+    // floors, was the actual cause. Skip when the pool is genuinely drained: no spec would help.
+    let shadowedFleetNote = '';
+    let shadowedFleetSpec: { fleetSlug: string; revision: number | null; matchedByFilter: number } | undefined;
+    if (rec?.source === 'cup' && !diag.drained) {
+      try {
+        const { latestFleetMembership } = await import('../../fleet-membership-store');
+        const membership = await latestFleetMembership(resolvedWorkspace ?? DEFAULT_COORD_WORKSPACE, args.ownerId);
+        if (membership?.fleetSlug) {
+          const fleetRec = await getClaimSpecRecord({
+            cupId: fleetSpecBeeKey(membership.fleetSlug),
+            workspaceId: resolvedWorkspace,
+          }).catch(() => null);
+          if (fleetRec && fleetRec.source === 'fleet') {
+            const { aggregateIssueClaimExclusions } = await import('../../scheduler/get-next');
+            const fleetFilter = (fleetRec.spec as { view?: { filter?: unknown } } | undefined)?.view?.filter;
+            const agg = await withBoundedTimeout(
+              aggregateIssueClaimExclusions(fleetFilter as never, {
+                harness: args.harness,
+                states: effectiveStates,
+                assignee: args.ownerId,
+                rigAvailable: args.rigAvailable,
+                statementTimeoutMs: MISS_BREAKDOWN_BUDGET_MS,
+              }),
+              { fallback: null, timeoutMs: MISS_BREAKDOWN_BUDGET_MS, label: 'get_next:shadowedFleetSpec' },
+            );
+            if (agg.value && agg.value.matchedByFilter > 0) {
+              shadowedFleetSpec = {
+                fleetSlug: membership.fleetSlug,
+                revision: fleetRec.revision,
+                matchedByFilter: agg.value.matchedByFilter,
+              };
+              shadowedFleetNote = shadowedFleetSpecNote({
+                ownerId: args.ownerId,
+                fleetSlug: membership.fleetSlug,
+                revision: fleetRec.revision,
+                matchedByFilter: agg.value.matchedByFilter,
+              });
+            }
+          }
+        }
+      } catch {
+        /* best-effort enrichment only — never let this break the miss diagnosis */
+      }
+    }
+
     const aggregate = diag.drained
       ? 'the backlog is genuinely DRAINED (0 unclaimed items in the pool) — idling is correct'
       : `the backlog is NOT drained: ${diag.pendingUnclaimed} unclaimed item(s) in the pool, but ${diag.readyUnclaimed} pass the floors` +
@@ -646,13 +730,14 @@ async function buildMissDiagnosis(args: {
         'rather than trusting an issue-family-only 0 here.';
 
     return {
-      error: `${STATIC}. Diagnosis: ${aggregate}.${namedSummary}${breakdownSummary}${flagReadErrorNote}${familyScopeNote}`,
+      error: `${STATIC}. Diagnosis: ${aggregate}.${shadowedFleetNote}${namedSummary}${breakdownSummary}${flagReadErrorNote}${familyScopeNote}`,
       diagnosis: {
         drained: diag.drained,
         pendingUnclaimed: diag.pendingUnclaimed,
         readyUnclaimed: diag.readyUnclaimed,
         issueFamilyOnlyDiagnosis: issueFamilyOnly,
         ...(diag.flagReadError ? { flagReadError: diag.flagReadError } : {}),
+        ...(shadowedFleetSpec ? { shadowedFleetSpec } : {}),
       },
       floors,
       ...(excludedBreakdown ? { excludedBreakdown } : {}),

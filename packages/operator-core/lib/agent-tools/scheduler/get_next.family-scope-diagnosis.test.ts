@@ -101,7 +101,7 @@ describe('EI-18741395910746959 — buildMissDiagnosis threads the family-scope n
 
   it('gates the family-scope NOTE on specIsIssueFamilyOnly, appended to the returned error', () => {
     expect(SRC).toContain('const issueFamilyOnly = specIsIssueFamilyOnly(rec?.spec);');
-    expect(SRC).toMatch(/error:\s*`\$\{STATIC\}\. Diagnosis: \$\{aggregate\}\.\$\{namedSummary\}\$\{breakdownSummary\}\$\{flagReadErrorNote\}\$\{familyScopeNote\}`/);
+    expect(SRC).toMatch(/error:\s*`\$\{STATIC\}\. Diagnosis: \$\{aggregate\}\.\$\{shadowedFleetNote\}\$\{namedSummary\}\$\{breakdownSummary\}\$\{flagReadErrorNote\}\$\{familyScopeNote\}`/);
   });
 
   it('the note explicitly tells the caller to check plans:items / work_items:get instead of trusting the issue-family zero', () => {
