@@ -26,7 +26,14 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 // Both deps are pulled in via dynamic import() inside buildQueryEmbedder, so the
 // mocks below intercept those too (same shape rerank.test.ts uses).
 vi.mock('../../credentials', () => ({ readCredentials: vi.fn() }));
-vi.mock('../../voice-prefs', () => ({ loadVoicePrefs: vi.fn() }));
+// PARTIAL mock (real exports preserved, only loadVoicePrefs stubbed): the typed
+// fixtures below need the REAL `DEFAULT_VOICE_PREFS`, and a whole-module factory
+// would leave it `undefined` at runtime while still typechecking — the exact
+// silently-wrong shape typed-mock.ts exists to remove.
+vi.mock('../../voice-prefs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../voice-prefs')>()),
+  loadVoicePrefs: vi.fn(),
+}));
 // EI-19347189538723471: `@huggingface/transformers` is a real declared+installed
 // dependency (packages/operator-core/package.json), so `localAvailable()` (the
 // resolveEmbedderWith cascade's `localInstalled` seam, memory/configure.ts)
@@ -50,7 +57,8 @@ import { buildQueryEmbedder, withAcquireBudget, _clearQueryEmbedCacheForTests } 
 // of stranding a fixture here (the 384→768 strand this line was fixed for).
 import { PROSE_VECTOR_DIMS } from '../../search/prose-vector-dims';
 import { readCredentials } from '../../credentials';
-import { loadVoicePrefs } from '../../voice-prefs';
+import { loadVoicePrefs, DEFAULT_VOICE_PREFS } from '../../voice-prefs';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap } from '../../memory/embed-sidecar-wiring';
 import { markOpenAiEmbedFailure, __resetOpenAiEmbedCooldownForTest } from '../../memory/configure';
 

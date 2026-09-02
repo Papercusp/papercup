@@ -49,6 +49,7 @@ function input(over: Partial<CoverageRawInput> = {}): CoverageRawInput {
       meets_l3: 0,
       meets_l4: 0,
       meets_floor: 0,
+      evidenced: 0,
       // below_unwaived_* mirrors the SQL: count(NOT meets_lN AND NOT waived) over the
       // whole population — i.e. `surfaces - meets_lN - waived` while waived ∩ meets = ∅.
       below_unwaived_l1: 0,
@@ -97,11 +98,27 @@ describe('testing assessment truth tables', () => {
     // (D-012): the verdict is not an assessment code, so only the code had to move off the
     // CellUnknownCode vocabulary. Both rows below are the empty-population case reached by
     // its two different routes, and both must yield the same code.
-    [{ verdict: 'not-measured', surfaces: 0, below: 0, belowUnwaived: 0 }, 'no-population'],
-    [{ verdict: 'measured', surfaces: 0, below: 0, belowUnwaived: 0 }, 'no-population'],
-    [{ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2 }, 'below-floor'],
-    [{ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0 }, 'measured-with-waivers'],
-    [{ verdict: 'measured', surfaces: 10, below: 0, belowUnwaived: 0 }, 'meets-floor'],
+    [{ verdict: 'not-measured', surfaces: 0, below: 0, belowUnwaived: 0, evidenced: 0 }, 'no-population'],
+    [{ verdict: 'measured', surfaces: 0, below: 0, belowUnwaived: 0, evidenced: 0 }, 'no-population'],
+    [{ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2, evidenced: 10 }, 'below-floor'],
+    [{ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0, evidenced: 10 }, 'measured-with-waivers'],
+    [{ verdict: 'measured', surfaces: 10, below: 0, belowUnwaived: 0, evidenced: 10 }, 'meets-floor'],
+
+    // P-008. The pair the `evidenced` dimension exists to separate: IDENTICAL ratio
+    // inputs, opposite meanings. The first is a gap queue worth working; the second is
+    // the state measured 2026-09-02 across all 2,017 live surfaces, where the queue was
+    // the same size and none of it was work.
+    [{ verdict: 'measured', surfaces: 10, below: 10, belowUnwaived: 10, evidenced: 1 }, 'below-floor'],
+    [{ verdict: 'measured', surfaces: 10, below: 10, belowUnwaived: 10, evidenced: 0 }, 'no-evidence'],
+
+    // A missing numerator may make a shortfall unattributable; it must NEVER turn a
+    // passing floor into a failing one. Both of these read `evidenced: 0` and neither
+    // is allowed to become `no-evidence`.
+    [{ verdict: 'measured', surfaces: 10, below: 0, belowUnwaived: 0, evidenced: 0 }, 'meets-floor'],
+    [
+      { verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0, evidenced: 0 },
+      'measured-with-waivers',
+    ],
   ] as const)('coverage %j → %s', (facts, expected) => {
     expect(assessTestingCoverageFloor(facts)).toBe(expected);
   });
@@ -208,6 +225,9 @@ describe('markers ride EVERY aggregate (the P-005 acceptance requirement)', () =
         meets_l3: 30,
         meets_l4: 5,
         meets_floor: 40,
+        // Rungs are met here, so the apparatus plainly reached this population — the
+        // ratio cases below are about the ratio, not about a missing numerator (P-008).
+        evidenced: 100,
         // 100 surfaces, 1 waived: below_unwaived_lN = 100 - meets_lN - 1.
         below_unwaived_l1: 59,
         below_unwaived_l2: 89,
