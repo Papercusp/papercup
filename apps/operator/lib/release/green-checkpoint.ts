@@ -10564,7 +10564,33 @@ async function runGreenCheckpointInner(
         initialCandidateVerification &&
         repairQueue?.phase === "ready-to-test"
       ) {
-        repairQueue = markFrozenCandidateVerificationRed(repairQueue, {
+        // WI-2141375: `repairQueue` was read once before this (possibly hour-long) suite
+        // started — a peer's `release:repair-queue{op:'converge'}` can advance the
+        // PERSISTED row's repairHead in the meantime without touching phase (convergence
+        // only ever fast-forwards repairHead while it stays an ancestor of staging; see
+        // `shouldConvergeRepairHead`'s doc-comment). Writing the red transition from that
+        // stale in-memory snapshot would silently overwrite the peer's converged
+        // repairHead back to the candidate, discarding it from the queue row (it still
+        // survives on staging tip, but the frozen lineage loses it). Re-read the current
+        // row right before the write and prefer it — but ONLY when it is still
+        // unambiguously the SAME queue in the SAME writable phase; any mismatch (a
+        // concurrent retire, a phase advance, a read fault) falls back to today's
+        // behaviour (the in-memory snapshot) rather than risk operating on the wrong row.
+        const freshQueue = await deps.readFrozenRepairQueue?.().catch(() => null);
+        const queueForRedTransition =
+          freshQueue &&
+          freshQueue.candidate === repairQueue.candidate &&
+          freshQueue.phase === "ready-to-test"
+            ? freshQueue
+            : repairQueue;
+        if (queueForRedTransition !== repairQueue) {
+          deps.log(
+            `frozen candidate ${repairQueue.candidate.slice(0, 8)} repairHead re-read before red ` +
+              `transition: preserving converged repairHead ${queueForRedTransition.repairHead.slice(0, 8)} ` +
+              `(was ${repairQueue.repairHead.slice(0, 8)} in the pre-suite snapshot)`,
+          );
+        }
+        repairQueue = markFrozenCandidateVerificationRed(queueForRedTransition, {
           failingTests,
           nowMs: Date.now(),
         });

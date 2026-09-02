@@ -436,6 +436,105 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
         `Logs seen: ${JSON.stringify(logs)}`,
     ).toBe(true);
   });
+
+  it("WI-2141375: a peer's mid-suite converge is NOT clobbered by the red-transition write", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    const convergedHead = await commit("c", "3", "peer converged this in");
+    // The pre-suite snapshot: repairHead === candidate, exactly as read before the (in this
+    // test, instant) suite starts.
+    const staleQueue: FrozenCandidateRepairQueue = {
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 0,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+    };
+    let reads = 0;
+    let queue: FrozenCandidateRepairQueue | null = staleQueue;
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => {
+      reads += 1;
+      // First read: the pre-suite snapshot (repairHead === candidate). Simulate a peer's
+      // `release:repair-queue{op:'converge'}` landing on the PERSISTED row, mid-suite,
+      // before the second (red-transition) read.
+      if (reads === 1) return staleQueue;
+      return { ...staleQueue, repairHead: convergedHead, updatedAtMs: now };
+    };
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.prepareFrozenRepairWorktree = async () => {};
+    deps.dispatchFrozenRepairFixer = async () => ({
+      spawnId: "fixer",
+      runId: "run",
+    });
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(queue).toMatchObject({
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      // The whole point: the converged repairHead survives the red transition instead of
+      // being reset back to the stale pre-suite candidate.
+      repairHead: convergedHead,
+    });
+  });
+
+  it("WI-2141375: falls back to the pre-suite snapshot when the re-read can't be trusted", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    const staleQueue: FrozenCandidateRepairQueue = {
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 0,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+    };
+    let queue: FrozenCandidateRepairQueue | null = staleQueue;
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    // The re-read comes back null (a genuine read fault, or the queue was concurrently
+    // retired) — the write must fall back to the in-memory snapshot, never crash or drop
+    // the red transition entirely.
+    let reads = 0;
+    deps.readFrozenRepairQueue = async () => {
+      reads += 1;
+      return reads === 1 ? staleQueue : null;
+    };
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.prepareFrozenRepairWorktree = async () => {};
+    deps.dispatchFrozenRepairFixer = async () => ({
+      spawnId: "fixer",
+      runId: "run",
+    });
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(queue).toMatchObject({
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      repairHead: frozen,
+    });
+  });
 });
 
 describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
