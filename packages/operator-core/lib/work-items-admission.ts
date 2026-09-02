@@ -25,6 +25,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { ACTIONABLE_CONDITION_PREFIXES } from './coord/actionable-conditions';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -172,6 +173,46 @@ export function admissionPromoterTickSec(tickMinutes = DEFAULT_PROMOTER_TICK_MIN
 /** Seconds until the fail-open backstop admits a pending row regardless of the promoter. */
 export function admissionFailOpenSec(tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES): number {
   return ADMISSION_FAIL_OPEN_TICKS * tickMinutes * 60;
+}
+
+/**
+ * EI-22166155287498355: whether the work-item-admission-promoter's MOST RECENT
+ * completed fire ended in an error (typically LLM account exhaustion) — the one
+ * fact the admission-pending claim floor needs to publish an HONEST retry bound
+ * instead of the promoter's healthy-cadence figure unconditionally.
+ *
+ * The refusal text used to say "typically within ~30m" whether or not the
+ * promoter was actually doing that job — a routine that is `active:true` with a
+ * recent `lastFiredAt` reads as healthy on every liveness surface even while its
+ * WORK errors out every tick, so a caller had no way to tell "not yet" from "the
+ * mechanism that would admit this is currently dead" (measured: fleet-wide
+ * admission latency silently doubled to the fail-open bound for over an hour).
+ *
+ * `metadata.last_error` is CLEARED on every successful runner fire and SET on
+ * every failed one (packages/operator-core/lib/dbos/routines-workflow.ts,
+ * last_error_source:'runner'), so its mere presence already answers the question
+ * — no extra staleness/consecutive-tick math needed.
+ *
+ * Read-only, single indexed row lookup (routines_install_slug_name_key), and
+ * fail-open on any query problem: an unreadable health signal must never make an
+ * admission-pending refusal look WORSE than the caller already sees (same posture
+ * as {@link loadOwnAuthorPubkeys} above).
+ */
+export async function admissionPromoterUnhealthy(workspaceId: string): Promise<boolean> {
+  if (!workspaceId) return false;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ last_error: string | null }[]>`
+      SELECT metadata->>'last_error' AS last_error
+        FROM harness_shared.routines
+       WHERE workspace_id = ${workspaceId}
+         AND install_slug = ${operatorHomeHarnessSlug()}
+         AND name = 'work-item-admission-promoter'
+       LIMIT 1`;
+    return !!rows[0]?.last_error;
+  } catch {
+    return false;
+  }
 }
 
 /**

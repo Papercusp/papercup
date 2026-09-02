@@ -61,6 +61,7 @@ import {
   admissionPendingCreateRemedy,
   admissionPendingExplanation,
   admissionPromoterTickSec,
+  admissionPromoterUnhealthy,
   autoPickableWhereSql,
   type BornAdmission,
   isWorkItemDuplicateAdmitted,
@@ -7437,6 +7438,11 @@ export async function explainIssueClaimFloors(
        AND wi.feature_id = ANY(${[...ids]}::text[])`;
 
   const byId = new Map(rows.map((r) => [r.id, r]));
+  // EI-22166155287498355: only pay for the promoter-health lookup when at least one
+  // named id is actually floored on admission-pending — the common case (a fleet
+  // leader diagnosing a mix of floors) never touches it.
+  const anyAdmissionPending = rows.some((r) => !r.ok_admission);
+  const promoterUnhealthy = anyAdmissionPending ? await admissionPromoterUnhealthy(issueWs) : false;
   return ids.map((id) => {
     const r = byId.get(id);
     const refusedBy = !r
@@ -7493,14 +7499,30 @@ export async function explainIssueClaimFloors(
       // the drift this whole attribution exists to prevent.
       ...(refusedBy === 'admission-pending'
         ? {
-            retry: {
-              clearsOnItsOwn: true as const,
-              expectedWithinSec: admissionPromoterTickSec(),
-              guaranteedWithinSec: admissionFailOpenSec(),
-              basis:
-                'the work-item-admission-promoter cron tick, with the independent ' +
-                'work-item-admission-fail-open runner as the backstop if that promoter is dead',
-            },
+            // EI-22166155287498355: a promoter whose last fire ERRORED (LLM account
+            // exhaustion, most commonly) is `active:true` with a fresh `lastFiredAt`
+            // on every liveness surface, so the ONLY honest thing this floor can do
+            // is stop quoting its healthy-cadence figure once that failure is
+            // visible — otherwise the refusal text and reality silently diverge for
+            // as long as the promoter keeps erroring.
+            retry: promoterUnhealthy
+              ? {
+                  clearsOnItsOwn: true as const,
+                  expectedWithinSec: admissionFailOpenSec(),
+                  guaranteedWithinSec: admissionFailOpenSec(),
+                  basis:
+                    "the work-item-admission-promoter's last fire errored, so duplicate screening is " +
+                    'currently NOT running; the independent work-item-admission-fail-open runner is ' +
+                    'the only mechanism presently admitting rows',
+                }
+              : {
+                  clearsOnItsOwn: true as const,
+                  expectedWithinSec: admissionPromoterTickSec(),
+                  guaranteedWithinSec: admissionFailOpenSec(),
+                  basis:
+                    'the work-item-admission-promoter cron tick, with the independent ' +
+                    'work-item-admission-fail-open runner as the backstop if that promoter is dead',
+                },
             remedy: admissionPendingCreateRemedy(),
           }
         : {}),

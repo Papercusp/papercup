@@ -8,6 +8,7 @@ import {
   admissionPendingCreateRemedy,
   admissionPendingExplanation,
   admissionPromoterTickSec,
+  admissionPromoterUnhealthy,
 } from './work-items-admission';
 
 /**
@@ -75,6 +76,20 @@ describe('admission-pending states a bound, derived from the promoter cadence', 
         'changed, update ADMISSION_FAIL_OPEN_TICKS rather than this assertion, because the claim ' +
         "path publishes that number to callers as the wait's ceiling",
     ).toContain(`${ADMISSION_FAIL_OPEN_TICKS} * tickMinutes * 60_000`);
+  });
+});
+
+describe('EI-22166155287498355: the retry bound is promoter-health-aware, and always fail-open', () => {
+  it('an empty workspaceId short-circuits to false without touching the DB', async () => {
+    await expect(admissionPromoterUnhealthy('')).resolves.toBe(false);
+  });
+
+  it('a DB/query problem never throws — it resolves false (fail-open, same posture as loadOwnAuthorPubkeys)', async () => {
+    // No testcontainers DB is wired up in this plain unit file, so getOrgPg()/the query
+    // itself is expected to fail here. The whole point of this test is that the failure
+    // is swallowed rather than propagated: an unreadable health signal must never make
+    // an admission-pending refusal look WORSE than the caller already sees.
+    await expect(admissionPromoterUnhealthy('some-workspace-id')).resolves.toBe(false);
   });
 });
 
