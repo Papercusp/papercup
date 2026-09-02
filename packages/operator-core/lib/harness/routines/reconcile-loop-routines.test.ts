@@ -3043,14 +3043,23 @@ describe('reconcileLoopRoutines — looksDeadOrStuck stays bounded to the fire, 
     const nowMs = T0 + 1_000 + 10 * 60_000; // just past quickRetryParkMs(60s)=10min — beat is ~6min stale
     const recordFire = vi.fn(async () => {});
     const res = await reconcile({
-      sql: fakeSql([undeliveredRow({ presence_last_active_at: pgString(beatAtMs) })], []),
+      sql: fakeSql(
+        [
+          undeliveredRow({
+            presence_last_active_at: pgString(beatAtMs),
+            turns_ingest_watermark: pgString(T0),
+          }),
+        ],
+        [],
+      ),
       nowMs,
       recordFire,
       readFireState: NO_PRIOR_ERRORS,
       checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
     });
     expect(res.rearmed).toBe(1);
-    expect(res.loops[0]).toMatchObject({ id: 'rt-undelivered', via: 'stuck-backstop' });
+    // DIAGNOSTIC PROBE (EI-22171105225585428) — temporary, replaced after diagnosis.
+    expect(res.loops[0].via).toBe('__PROBE__');
   });
 
   it('past the full dwell, the classic stuck-backstop still fires even with a somewhat-recent stray beat', async () => {
