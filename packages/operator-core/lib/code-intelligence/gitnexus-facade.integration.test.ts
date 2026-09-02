@@ -31,6 +31,7 @@ import { join } from 'node:path';
 
 import {
   configureGitnexusDispatch,
+  fileEdgeNotice,
   gitnexusFacade,
   gitnexusOpForIntent,
   gitnexusRefusal,

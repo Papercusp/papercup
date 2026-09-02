@@ -1726,25 +1726,32 @@ Then for each path, `git rev-parse <candidate>:<path>` vs `git rev-parse <repair
   can silently hit a different tenant's row and look like a stale/diverged
   store when it isn't:
   [raw SQL plan reads need workspace+harness scope](/internal/docs/agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).
-  ⚠ A work-item's **severity** (issue-family only: bug/change/task) has **two
-  access paths, one per relation** — and the wrong one for a relation returns
-  NULL for every row *without erroring*, so the query yields a well-formed,
-  plausible, WRONG answer. Bind the accessor to the relation; never carry one
-  across to the other (WI-6674):
+  ⚠ A work-item's **severity** (issue-family only: bug/change/task) is reached
+  **differently per relation**, and the wrong accessor returns NULL without
+  erroring — a well-formed, plausible, WRONG answer. Bind the accessor to the
+  relation (WI-6674):
   - **`harness_shared.work_items` (the TABLE)** has **no `severity` column** — it
     lives at **`payload->'_ei'->>'severity'`** (migration 374's fold). A raw
-    top-level `payload ? 'severity'` audit always returns **zero rows**, which
-    reads exactly like "no criticals" even when there are plenty.
+    top-level `payload ? 'severity'` / `payload->>'severity'` audit returns
+    **zero rows**, reading exactly like "no criticals" when there are plenty.
+    Measured 2026-08-01 and still true: 0 of 13,711 open rows via the top-level
+    path vs 13,711 via the `_ei` path — **30 genuine criticals reported as none**.
   - **`harness_shared.engineer_issues` (the VIEW)** exposes **`severity` as a real
-    column** — and deliberately drops the blob (`payload - '_ei'`) after exploding
-    every `_ei` field into its own column, so on the VIEW
-    `payload->'_ei'->>'severity'` is NULL for **every** row. Measured 2026-08-01:
-    0 of 13,711 open rows via that path, 13,711 via the column, and **30 genuine
-    criticals reported as none**. ✅ `dev:pg_query` now warns on an always-NULL
-    accessor (WI-6674) and that advisory is **LIVE** as of the 2026-08-03 02:30Z
-    deploy (release `13d9c65db69c`, verified in the running release checkout).
-    Treat it as a backstop, not a licence: it fires on the shapes it knows, so
-    still **bind the accessor to the relation yourself**.
+    column — read that column.** ⚠ This half INVERTED on 2026-09-02. The view used
+    to subtract the blob (`payload - '_ei'`) after exploding it, so
+    `payload->'_ei'->>'severity'` was NULL for every row; **migration 1096 stopped
+    the subtraction**, so that path now *resolves and agrees* — on 166,941 of
+    166,948 rows (measured 2026-09-02). Still prefer the column: the 7
+    disagreements are rows with a NULL `payload`, where the column reports its
+    `COALESCE(…, 'minor')` default and the nested path reports NULL. The column is
+    right on every row; the nested path is right on *almost* every row, which is
+    harder to catch, not safer.
+  ⚠ `dev:pg_query`'s always-NULL advisory **no longer covers this view** — the entry
+  was retired with 1096, because an advisory firing on a path that now resolves is
+  itself the confidently-wrong answer it exists to prevent. It still fires for the
+  `work_items` shapes it knows. Treat it as a backstop that *shrinks when a trap is
+  fixed*, never as a licence to skip binding the accessor to the relation yourself.
+
 
   Prefer `work_items:list{severity}` / `work_items:claimable` over either raw path;
   the view scopes on `scope = 'harness:<slug>'`, not `harness_slug`:

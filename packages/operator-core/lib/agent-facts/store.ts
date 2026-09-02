@@ -1007,8 +1007,11 @@ export function resolveFactLifetime(
   const byConfidence = defaultTtlSecForConfidence(input.confidence);
   if (byConfidence != null) return { permanent: false, ttlSec: byConfidence };
 
-  // UNREACHABLE while validateFactLifetime runs first — asserted by
-  // `resolve-is-total-only-past-validate` in store.test.ts. Never treat this as a default.
+  // UNREACHABLE while validateFactLifetime runs first — pinned from BOTH directions by
+  // describe('the two functions AGREE — resolve is only ever reached past validate') in
+  // agent-facts/fact-lifetime.test.ts: the only input that reaches this line is exactly the
+  // one validate REFUSES, and every input validate ACCEPTS resolves above it. Never treat
+  // this as a default.
   return { permanent: false, ttlSec: FACT_DEFAULT_TTL_SEC };
 }
 
