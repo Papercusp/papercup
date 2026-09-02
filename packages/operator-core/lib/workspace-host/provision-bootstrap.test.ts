@@ -242,7 +242,9 @@ describe('workspace-host provision bootstrap profile', () => {
     // digest — assert both halves, since either alone could be present while the other drifted.
     expect(script).toContain(Buffer.from(SIGNING_PUBLIC_KEY, 'utf8').toString('base64'));
     expect(script).toContain(createHash('sha256').update(SIGNING_PUBLIC_KEY, 'utf8').digest('hex'));
-    expect(script).toContain(CONTROLLER_KEY);
+    // Also base64: WORKSPACE_AUTHORIZED_KEYS_B64 is decoded into the workspace account's
+    // authorized_keys BEFORE harden-os locks sshd to publickey-only (D-238).
+    expect(script).toContain(Buffer.from(`${CONTROLLER_KEY}\n`, 'utf8').toString('base64'));
     expect(script).toContain('host-p046-1');
     // Same host + same controller configuration must render the same bytes; a bootstrap that
     // varied per call could not be reasoned about from the configuration alone.
