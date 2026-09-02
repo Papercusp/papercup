@@ -55,7 +55,7 @@ describe('P-028 cut-over gate reference set', () => {
   });
 
   it('never dereferences a name the runtime only stores as a label', () => {
-    const resolved = new Set(HOSTED_RUNTIME_RESOLVED_SECRET_REFS.map((ref) => ref.env));
+    const resolved = new Set<string>(HOSTED_RUNTIME_RESOLVED_SECRET_REFS.map((ref) => ref.env));
     const labels = bashArray(script, 'OPTIONAL_LABEL_NAMES');
 
     expect(labels).toContain('WORKOS_WEBHOOK_SECRET_KEY_REF');
