@@ -107,6 +107,7 @@ import {
   type CompletionEvidenceFindings,
 } from '../../work-item-completion-authority';
 import { evaluateCompletionClaims, repoSourceReader } from '../../completion-claims';
+import { completionClaimBaseline } from '../../completion-claim-recheck';
 import { fabricatedPathsInCompletion } from './fabricated-paths';
 import { requirementDispositionShortfall } from './requirement-disposition';
 import {
@@ -2884,14 +2885,30 @@ async function completeOne(
       ? completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
       : completionTreeStamp({ filesChanged: completionEvidenceBeforeStamp.filesChanged })
     : undefined;
-  const completionEvidenceToPersist: PersistedCompletionEvidence | undefined =
-    completionEvidenceBeforeStamp && treeStamp
-      ? (() => {
-          const stamped = { ...completionEvidenceBeforeStamp, treeStamp };
-          const settlementManifest = completionSettlementManifest(stamped);
-          return settlementManifest ? { ...stamped, settlementManifest } : stamped;
-        })()
-      : completionEvidenceBeforeStamp;
+  // WI-2142447: record the CLOSE-TIME verdict for every declared claim, beside the claims
+  // it judged. The grade is already decided (the `claimsFalsified` finding above); this is
+  // the record that finding leaves behind, and it is what lets the post-close sweep tell a
+  // claim that has GONE false from one that was already false when written and was already
+  // graded for it. Narrative-side, like `selfReviewJudgement` — it never promotes a close.
+  //
+  // Folded in HERE rather than into `completionNarrative` because `claimVerdicts` is
+  // computed further down this function, after that object is assembled; this is the same
+  // seam `treeStamp` and `settlementManifest` already use for the same reason.
+  const claimBaseline = claimVerdicts
+    ? completionClaimBaseline(claimVerdicts, new Date().toISOString())
+    : undefined;
+  const completionEvidenceToPersist: PersistedCompletionEvidence | undefined = (() => {
+    // Preserves the deliberate invariant above: a close carrying NO record at all never
+    // gains an `_completionEvidence` object whose only key came from the server.
+    const base =
+      completionEvidenceBeforeStamp && claimBaseline
+        ? { ...completionEvidenceBeforeStamp, claimVerdicts: claimBaseline }
+        : completionEvidenceBeforeStamp;
+    if (!base || !treeStamp) return base;
+    const stamped = { ...base, treeStamp };
+    const settlementManifest = completionSettlementManifest(stamped);
+    return settlementManifest ? { ...stamped, settlementManifest } : stamped;
+  })();
   // P-001: `authorityWithFindings` supersedes `authorityByEvidence` from here on — it is the
   // same judgement with the tree-resolution finding folded in. `authorityByEvidence` remains
   // the PRE-findings verdict and is still what the caller-facing explanation below reports on,

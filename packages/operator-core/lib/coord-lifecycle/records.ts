@@ -22,6 +22,7 @@ import { z } from 'zod';
 // about the stored shape without a compile error — and so no runtime import cycle
 // is created between this module and the facts substrate.
 import { COMPLETION_CLAIMS_CONTRACT, CompletionClaimSchema } from '../completion-claims';
+import type { CompletionClaimBaseline } from '../completion-claim-recheck';
 import type { ResolvedAssumption } from '../agent-facts/assumptions';
 // A leaf module with no imports of its own, so this edge cannot form a cycle.
 import type { PersistedSelfReviewJudgement } from '../work-item-self-review';
@@ -503,6 +504,23 @@ export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
     verified?: string;
     contested?: string;
   }>;
+  /**
+   * WI-2142447 — the CLOSE-TIME verdict for each declared `claims` entry, recorded at the
+   * moment the close computed it.
+   *
+   * Server-computed and narrative-side for the same reason as `selfReviewJudgement` above:
+   * it describes the close and must NEVER promote an evidence-free completion to
+   * `committed`. The GRADE is already carried by the `claimsFalsified` finding at close
+   * time; this is the record that finding leaves behind.
+   *
+   * It exists because the post-close sweep's finding is a TRANSITION (`holds` then,
+   * `falsified` now), and nothing about the current tree can tell a claim that has GONE
+   * false from one that was already false when written and was already graded for it.
+   * Re-deriving the baseline later from the close's `treeStamp` would be an inference that
+   * fails silently whenever that sha is unreachable; recording the verdict where it is
+   * computed is an observation. See `completion-claim-recheck.ts`.
+   */
+  claimVerdicts?: CompletionClaimBaseline;
 };
 
 /**
