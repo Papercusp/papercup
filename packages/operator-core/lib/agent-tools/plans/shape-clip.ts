@@ -167,6 +167,13 @@ function recordMarker(
   );
 }
 
+/**
+ * EI-22128943077118798: cap on how many omitted-record headings ride on
+ * {@link ClippedSection.omittedHeadings}, so a mega-plan (30+ decisions) cannot
+ * turn the sibling field into another oversized payload the caller has to page.
+ */
+const OMITTED_HEADINGS_CAP = 20;
+
 export interface ClippedSection {
   body: string;
   truncated: boolean;
@@ -175,6 +182,37 @@ export interface ClippedSection {
   /** Present only for a record-structured body that was cut. */
   recordsShown?: number;
   recordsTotal?: number;
+  /**
+   * EI-22128943077118798: the heading of every OMITTED `### ` record (capped at
+   * {@link OMITTED_HEADINGS_CAP}, with a trailing "+N more" entry beyond that),
+   * as a SIBLING field alongside `body` rather than only inside its in-band
+   * marker.
+   *
+   * This is deliberately NOT a substitute for the in-band marker above (see the
+   * file header on why a sibling alone is not enough against a caller's
+   * `projection.pick` stripping it) — it defends against a DIFFERENT failure
+   * mode this module did not yet cover: the generic outer bounded-payload
+   * envelope re-truncates an already-shape-clipped `body` when the whole
+   * result still overflows the per-call budget, and it clips from the tail —
+   * exactly where the in-band recover marker lives. Measured live
+   * (EI-22128943077118798): a `body_records_shown`/`body_records_total`-bearing
+   * response still lost its embedded "which record is missing" marker to that
+   * outer clip, while short sibling fields survived untouched (the outer
+   * truncator targets the single largest string, not small fields). A grading
+   * spot-check read the truncated Decisions section and could not tell which
+   * decision had been cut. This field is small by construction, so it survives
+   * that outer clip and states plainly which records were omitted even when
+   * the body's own marker does not make it through.
+   */
+  omittedHeadings?: string[];
+}
+
+function boundedOmittedHeadings(body: string, offsets: number[]): string[] {
+  const shown = offsets.slice(0, OMITTED_HEADINGS_CAP).map((offset) => recordHeadingAt(body, offset));
+  if (offsets.length > OMITTED_HEADINGS_CAP) {
+    shown.push(`+${offsets.length - OMITTED_HEADINGS_CAP} more`);
+  }
+  return shown;
 }
 
 /**
@@ -222,6 +260,7 @@ export function clipSectionBody(body: string, n: number): ClippedSection {
         fullChars,
         recordsShown: shown,
         recordsTotal: total,
+        omittedHeadings: boundedOmittedHeadings(body, offsets.slice(shown)),
       };
     }
     // The FIRST record alone overruns the budget — a boundary cut would show
@@ -236,6 +275,7 @@ export function clipSectionBody(body: string, n: number): ClippedSection {
       fullChars,
       recordsShown: 0,
       recordsTotal: total,
+      omittedHeadings: boundedOmittedHeadings(body, offsets),
     };
   }
 

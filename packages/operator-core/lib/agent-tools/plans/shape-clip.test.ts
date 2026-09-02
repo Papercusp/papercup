@@ -247,6 +247,34 @@ describe("clipSectionBody — record recovery pointer", () => {
     expect(cut.body).toContain('heading:"D-020');
   });
 
+  it("EI-22128943077118798: omittedHeadings names EVERY omitted record, not just the first", () => {
+    const cut = clipSectionBody(PLAN_SECTION, 4_000);
+    expect(cut.recordsShown).toBe(1);
+    expect(cut.recordsTotal).toBe(3);
+    // D-001 was shown; D-020 and D-030 were both omitted — both must be named,
+    // not only the D-020 the in-band marker points at.
+    expect(cut.omittedHeadings).toEqual([
+      "D-020 — the load-bearing ruling",
+      "D-030 — a later ruling",
+    ]);
+  });
+
+  it("EI-22128943077118798: omittedHeadings survives even when ZERO complete records fit", () => {
+    const huge = `### D-001 — a ruling\n${"x".repeat(50_000)}\n\n### D-002 — second\nsecond\n`;
+    const cut = clipSectionBody(huge, 1_000);
+    expect(cut.recordsShown).toBe(0);
+    expect(cut.omittedHeadings).toEqual(["D-001 — a ruling", "D-002 — second"]);
+  });
+
+  it("EI-22128943077118798: omittedHeadings is capped so a mega-plan cannot re-inflate the payload", () => {
+    const records = Array.from({ length: 25 }, (_, i) => `### D-${String(i).padStart(3, "0")} — ruling\nbody`).join(
+      "\n\n",
+    );
+    const cut = clipSectionBody(records, 200);
+    expect(cut.omittedHeadings?.length).toBe(21); // 20 named + one "+N more" entry
+    expect(cut.omittedHeadings?.at(-1)).toMatch(/^\+\d+ more$/);
+  });
+
   it("THE POINTER RESOLVES: the heading it names round-trips through plans:get's resolver", () => {
     // The falsifier for this whole change. A marker that quotes a heading the
     // real lookup cannot find would be exactly the lie this module forbids —

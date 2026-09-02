@@ -85,6 +85,11 @@ function shapeResult(res: unknown, tier: TierName): unknown {
       ...(cut.recordsTotal != null
         ? { body_records_shown: cut.recordsShown, body_records_total: cut.recordsTotal }
         : {}),
+      // EI-22128943077118798: a short sibling field naming every omitted record
+      // survives the outer bounded-payload envelope's own re-truncation of this
+      // (already shape-clipped) body even when that outer clip eats the in-band
+      // recover marker above — see shape-clip.ts's ClippedSection.omittedHeadings.
+      ...(cut.omittedHeadings ? { body_omitted_headings: cut.omittedHeadings } : {}),
     };
   }
 
