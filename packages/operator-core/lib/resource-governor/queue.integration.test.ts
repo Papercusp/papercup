@@ -35,10 +35,35 @@ beforeEach(async () => {
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
 });
 
+/**
+ * Pin the owner-liveness enrichment leg (WI-2141150).
+ *
+ * This file's subject is durable receipt persistence and exclusive leasing — NOT
+ * liveness. `PgWorkItemAdmissionQueueStore` resolves owner-death lease reclamation
+ * through `resolveSessionStatesFn ?? (await import('.../liveness-oracle')).resolveSessionStates`,
+ * so a store handed this file's ISOLATED `db.sql` still falls through to the REAL
+ * global oracle: the injected client scopes the queue reads, but not the liveness
+ * read. Verdicts about these synthetic owners ('targeted-worker', ...) are then
+ * decided from global state, and `selectEndedLeaseOwners` requeues the leases under
+ * test as 'owner-ended' — bumping `decision.generation`/`updatedAtMs` and changing
+ * lease and ordering outcomes. That silently reddened 6 of these 12 cases between
+ * 2026-08-31T20:14Z and 2026-09-02T07:09Z with the test file itself unchanged.
+ *
+ * Returning no verdicts means no owner is ever classified `ended`, so the
+ * reclamation leg is inert and the lease semantics under test are deterministic.
+ * A test of X must pin everything that is not X; same seam and `as never` idiom as
+ * reconcile-escalations.reroute.integration.test.ts.
+ */
+const pinNoEndedOwners = (async () => new Map()) as never;
+
 function instance(label: string, now = () => 10_000) {
   let requestNo = 0;
   let leaseNo = 0;
-  const store = new PgWorkItemAdmissionQueueStore({ sql: db.sql, workspaceId: 'ws-governor' });
+  const store = new PgWorkItemAdmissionQueueStore({
+    sql: db.sql,
+    workspaceId: 'ws-governor',
+    resolveSessionStatesFn: pinNoEndedOwners,
+  });
   const driver = new WorkItemAdmissionQueueDriver(store, {
     namespace: 'integration',
     now,
@@ -300,6 +325,7 @@ describe('PgWorkItemAdmissionQueueStore', () => {
       sql: db.sql,
       workspaceId: 'ws-governor',
       abandonAfterMs: dwellMs,
+      resolveSessionStatesFn: pinNoEndedOwners,
     });
     const first = instance('abandon', () => clock.now);
 
@@ -373,6 +399,7 @@ describe('PgWorkItemAdmissionQueueStore', () => {
       sql: db.sql,
       workspaceId: 'ws-governor',
       abandonAfterMs: dwellMs,
+      resolveSessionStatesFn: pinNoEndedOwners,
     });
     const first = instance('deadline-control', () => clock.now);
     const admitted = await first.governor.admit({
