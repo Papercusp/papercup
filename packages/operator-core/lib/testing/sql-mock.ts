@@ -57,6 +57,8 @@
  * branch list itself, not silently defaulted.
  */
 
+import { reassembleSql } from './sql-prepare-validation';
+
 export interface SqlMockBranch {
   /** Short human label — surfaces in both failure modes' error messages. */
   label: string;
@@ -71,10 +73,31 @@ export interface BranchedSqlMock {
   handler: (...args: unknown[]) => Promise<unknown[]>;
   /** Throws (naming the unreached label(s)) if any declared branch was never matched. */
   assertAllMatched: () => void;
-  /** Clears hit-tracking (NOT the branch list) — call in beforeEach when reusing one mock across tests. */
+  /**
+   * Clears hit-tracking AND {@link BranchedSqlMock.capturedSql} (NOT the branch
+   * list) — call in beforeEach when reusing one mock across tests.
+   */
   resetHits: () => void;
   /** True once every declared branch has matched at least one call. */
   readonly allMatched: boolean;
+  /**
+   * Every query this mock received, in call order, reassembled into
+   * PARAMETERISED `$1..$n` SQL (WI-2141982).
+   *
+   * ⚠ This is deliberately NOT the same text `match` sees. Branch matching gets
+   * `queryTextOf`'s joined form, which DELETES every interpolation — fine for a
+   * substring matcher, but not valid SQL, so it cannot be parsed or PREPAREd.
+   * `capturedSql` rebuilds the placeholders via `reassembleSql` so the text is
+   * something a database can actually judge.
+   *
+   * The point: a mocked suite never sends its SQL anywhere, so nothing ever
+   * parses it, and a query that is well-formed-looking and WRONG (the incident:
+   * `column "t.payload" does not exist`) stays green. Hand this to
+   * `validateManyByPrepare` from `./sql-prepare-validation` to have Postgres
+   * parse and plan it without executing it. Captured BEFORE branch matching, so
+   * a query no branch covers is still available for validation.
+   */
+  readonly capturedSql: readonly string[];
 }
 
 export interface CreateBranchedSqlMockOptions {
@@ -102,9 +125,15 @@ export function createBranchedSqlMock(
   }
   const onUnmatched = options.onUnmatched ?? 'throw';
   const hit = new Set<string>();
+  const captured: string[] = [];
 
   const handler = async (...args: unknown[]): Promise<unknown[]> => {
     const queryText = queryTextOf(args[0]);
+    // Capture FIRST, so a query that matches no branch (and is about to throw)
+    // is still available for PREPARE-validation. See `capturedSql`.
+    captured.push(
+      Array.isArray(args[0]) ? reassembleSql(args[0] as readonly string[]) : queryText,
+    );
     const branch = branches.find((b) => b.match(queryText, args));
     if (!branch) {
       if (onUnmatched === 'empty') return [];
@@ -136,9 +165,15 @@ export function createBranchedSqlMock(
         );
       }
     },
-    resetHits: () => hit.clear(),
+    resetHits: () => {
+      hit.clear();
+      captured.length = 0;
+    },
     get allMatched() {
       return branches.every((b) => hit.has(b.label));
+    },
+    get capturedSql(): readonly string[] {
+      return captured;
     },
   };
 }
