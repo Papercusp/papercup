@@ -671,6 +671,17 @@ same for an armed AUTO loop (mandatory every turn on a cold loop). Not
 cold-loop-only: ANY state a future you must resume from belongs in a
 checkpoint, never in prose that scrolls away.
 
+A work-item checkpoint now **journals** (effort-scoped-continuity P-003): it
+was replace-on-write, so week 3's agent silently destroyed week 1's reasoning.
+The ring is bounded and changes what is STORED, not what is delivered.
+Write a lesson at the level it belongs to with **`learnedLevel:
+'work_item'|'plan'|'goal'`** — default the item; a cross-lane ruling filed on
+the one item that surfaced it is invisible to every sibling lane. Nothing is
+promoted between levels; a level the item lacks falls back to the nearest it
+has and says so. The tool returns a write-time advisory naming which rungs
+your prose will yield to a future brief ("root cause:", "false premise",
+"still open") — heed it while you still hold the context.
+
 **goal + assumptions — RECORD BOTH, on every task, as the work starts**
 [owner 2026-07-28]: a goal nobody can read is a goal nobody can correct, and
 **an assumption you did not write down is indistinguishable from a verified

@@ -859,6 +859,29 @@ mug-memory-hybrid L1b).
   cold-loop-only tools: ANY state a future you (or a peer) must resume from
   belongs in a checkpoint, never in prose that scrolls away. Standing
   conclusions go in facts; in-flight progress goes in checkpoints — don't mix.
+  - **A work-item checkpoint now JOURNALS** (effort-scoped-continuity P-003).
+    It was a pure replace-on-write slot, so week 3's agent silently destroyed
+    week 1's reasoning — measured 10,326 workitem-scoped rows carrying ZERO
+    journal entries while the loop scope on the same substrate had 29,377.
+    The ring is bounded (15 entries / 600 chars each / 6KB) and costs a reader
+    nothing: claim-time delivery is unchanged, and the ring's reader is the
+    claim-time briefing, which spends it against a budget. One behaviour
+    change: CLEARING a checkpoint no longer deletes the row while the ring is
+    non-empty — `note` still reads back null.
+  - **Write a lesson at the LEVEL IT BELONGS TO** — `learnedLevel:
+    'work_item'|'plan'|'goal'` on `work_items:checkpoint` / `loop:checkpoint`
+    (P-017/D-007). Default `work_item`; a cross-lane ruling filed on the one
+    item that surfaced it is invisible to every sibling lane. Nothing is ever
+    promoted or copied between levels (D-009) — you name the level once and it
+    is written there. A level the item does not HAVE falls back to the nearest
+    it does and REPORTS the demotion, so a note is never silently dropped.
+    The tool hands back a write-time advisory naming which rungs your prose
+    will yield to a future brief ("root cause:", "false premise", "still
+    open") and which it will not — heed it while you still hold the context.
+  - **The claim-time briefing serves ANY item**, plan-backed or orphan
+    (P-018), bounded by an explicit token ceiling (P-021) with the omitted
+    records named by ref rather than dropped, so a bounded brief is never
+    mistaken for a complete one.
 - **goal + assumptions — RECORD BOTH, on every task, as the work starts**
   [owner 2026-07-28]. A goal nobody can read is a goal nobody can correct,
   and **an assumption you did not write down is indistinguishable from a verified
