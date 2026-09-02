@@ -1212,6 +1212,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/okf-backfill-insights.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/patch-coverage.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/patch-coverage.ts: its only start is a single synchronous execFileSync `git diff --unified=0` that computes the added-line set for the patch-coverage report. execFileSync blocks its own caller, so the child is awaited by construction and cannot outlive the call; the file declares no interval, worker, detached spawn or unref, so it parks no resident queue and cannot materially increase residency while productive capacity is pressured.",
+  },
+  {
     path: "scripts/pg-autotune.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",

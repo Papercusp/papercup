@@ -487,7 +487,10 @@ async function loadEscalations(): Promise<{
  * the SAME comparator as foldEscalations({status:'open'}) so the output is
  * byte-identical to the fold path (collation-independent).
  */
-async function readOpenEscalationsProjection(from?: string): Promise<EscalationRecord[]> {
+async function readOpenEscalationsProjection(
+  from?: string,
+  filter?: EscalationLookupFilter,
+): Promise<EscalationRecord[]> {
   const sql = coordSql();
   const ws = coordWorkspaceId();
   // EI-19403159016550818: `from` filters SERVER-SIDE. A caller that wants only its
@@ -505,9 +508,14 @@ async function readOpenEscalationsProjection(from?: string): Promise<EscalationR
         SELECT body FROM harness_shared.coord_open_escalations
          WHERE workspace_id = ${ws}
       `;
-  return rows
+  const all = rows
     .map((r) => r.body)
     .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
+  // EI-15377: this projection table already holds exactly the (small) open set,
+  // not the ~35k-event full surface — so a conditionKey/q filter applied here is
+  // cheap and, unlike the legacy windowed fold path below, sees the WHOLE open
+  // backlog rather than only a recency window.
+  return filter ? all.filter((rec) => escalationMatchesFilter(rec, filter)) : all;
 }
 
 /** List escalation records. Optionally filter by open/resolved. */
@@ -578,21 +586,69 @@ function boundBodyForList(rec: EscalationRecord): EscalationRecord {
 }
 
 /**
+ * EI-15377: server-side lookup filters, so re-verifying ONE known escalation
+ * against a 300+ backlog no longer requires dumping the whole page and
+ * grepping a door-truncated scratch file.
+ *
+ * `conditionKey` is an EXACT match against the record's `subjectSignature` —
+ * the same field a caller supplies (as `meta.subjectSignature`) when opening
+ * an escalation with an explicit dedup key (see `escalationDedupIdentity`
+ * above); it is what the write-side dedup/coalesce logic already keys on, so
+ * the read side now supports the mirror lookup the write side has always had.
+ * `q` is a case-insensitive substring match over `summary` + `body`.
+ */
+export interface EscalationLookupFilter {
+  conditionKey?: string;
+  q?: string;
+}
+
+function escalationMatchesFilter(rec: EscalationRecord, filter?: EscalationLookupFilter): boolean {
+  if (!filter) return true;
+  if (filter.conditionKey !== undefined) {
+    const sig = (rec as Record<string, unknown>)[OPEN_ESCALATION_SUBJECT_SIGNATURE_KEY];
+    if (sig !== filter.conditionKey) return false;
+  }
+  if (filter.q !== undefined) {
+    const needle = filter.q.toLowerCase();
+    const summaryMatch = typeof rec.summary === 'string' && rec.summary.toLowerCase().includes(needle);
+    const bodyMatch = typeof rec.body === 'string' && rec.body.toLowerCase().includes(needle);
+    if (!summaryMatch && !bodyMatch) return false;
+  }
+  return true;
+}
+
+/**
  * List escalation records with pagination to prevent unbounded response sizes.
  * Loads up to maxRecords events, folds them, and returns with a truncated flag.
  * WI-239: bounds coord:escalations so one call never returns ~9M chars.
  */
 export async function listEscalationsPaginated(
-  opts: { status?: 'open' | 'resolved'; maxRecords?: number; offset?: number; from?: string } = {},
+  opts: {
+    status?: 'open' | 'resolved';
+    maxRecords?: number;
+    offset?: number;
+    from?: string;
+    conditionKey?: string;
+    q?: string;
+  } = {},
 ): Promise<{
   escalations: EscalationRecord[];
   truncated: boolean;
   total: number;
   trueOpenTotal?: number;
   offset?: number;
+  /** EI-15377: set when conditionKey/q was applied via the legacy windowed fold
+   *  path (i.e. NOT the unbounded open-set projection) — a miss there does not
+   *  prove absence, only that the match (if any) fell outside the recency
+   *  window this page scanned. Never set on the projection fast path, which
+   *  filters the complete open set and needs no such caveat. */
+  filterWindowCaveat?: boolean;
 }> {
   const maxRecords = Math.max(1, Math.min(opts.maxRecords ?? 50, 500));
   const offset = Math.max(0, opts.offset ?? 0);
+  const conditionKey = typeof opts.conditionKey === 'string' && opts.conditionKey.trim() ? opts.conditionKey.trim() : undefined;
+  const q = typeof opts.q === 'string' && opts.q.trim() ? opts.q.trim() : undefined;
+  const filter: EscalationLookupFilter | undefined = conditionKey !== undefined || q !== undefined ? { conditionKey, q } : undefined;
 
   // EI-18712273081050373 (WI-6038's sibling) — for status:'open', when the P-005
   // materialized projection is available, serve the PAGE directly from it instead
@@ -619,8 +675,10 @@ export async function listEscalationsPaginated(
       try {
         // EI-19403159016550818: push `from` into the projection query, so an
         // author-scoped read is COMPLETE for that author rather than "whatever
-        // survived the workspace-wide window".
-        const all = await readOpenEscalationsProjection(opts.from);
+        // survived the workspace-wide window". EI-15377: conditionKey/q are
+        // pushed the same way — this leg reads the WHOLE open set, so the
+        // filter is complete, not windowed.
+        const all = await readOpenEscalationsProjection(opts.from, filter);
         // EI-19938772014458100: `all` is sorted ASCENDING (oldest-first — see
         // readOpenEscalationsProjection's comparator). Slicing from the FRONT
         // with offset=0 therefore returned the OLDEST `maxRecords` rows, while
@@ -734,7 +792,16 @@ export async function listEscalationsPaginated(
   // this leg filters AFTER a recency-bounded fold, so it is bounded-by-window in
   // the way that path always was — it is consistent, not complete. The projection
   // path is the one that gives an author a complete read.
-  const escalations = (opts.from ? foldedAll.filter((r) => r.from === opts.from) : foldedAll).map(boundBodyForList);
+  const fromFiltered = opts.from ? foldedAll.filter((r) => r.from === opts.from) : foldedAll;
+  // EI-15377: conditionKey/q applied HERE, on this leg only, are bounded by the
+  // SAME recency window as everything else on this path (see the EI-19403159016550818
+  // note above `foldedAll`) — a miss does not prove absence, it may just be older
+  // than what this window scanned. `filterWindowCaveat` says so explicitly, so a
+  // caller re-checking one known escalation does not mistake a windowed miss for
+  // confirmed resolution.
+  const escalations = (filter ? fromFiltered.filter((r) => escalationMatchesFilter(r, filter)) : fromFiltered).map(
+    boundBodyForList,
+  );
   // `total` = escalations actually returned (matches the tool's own human-facing
   // "Bounded to the N most-recent escalation events" note — never inconsistent
   // with `escalations`, unlike the old raw-event-scan count). `truncated` flags
@@ -746,6 +813,7 @@ export async function listEscalationsPaginated(
     truncated,
     total: escalations.length,
     ...(trueOpenTotal !== undefined ? { trueOpenTotal } : {}),
+    ...(filter ? { filterWindowCaveat: true } : {}),
   };
 }
 
