@@ -147,7 +147,7 @@ function blankRoleAllowlistArrays(text) {
   const MAX_ARRAY_CHARS = 4000;
   // split(""), NOT [...text]: the spread iterates CODE POINTS while every index
   // below (match.index, matchAll) is a UTF-16 offset. One emoji earlier in the
-  // file (allhive-broadcast-sweep.ts has a 📣) would shift the two apart and blank
+  // file (allpot-broadcast-sweep.ts has a 📣) would shift the two apart and blank
   // the wrong characters — silently, and only in files that contain one.
   const chars = text.split("");
   let match;
@@ -403,14 +403,14 @@ export const ACTIVE_RETIRED_GUIDANCE_EXEMPTIONS = [
       "The same CLASSIFIER shape as scout/router.ts above: this regex RECOGNISES legacy steering prose ('pause the hive/queen', 'place no new bees') so orient can WITHHOLD those standing facts from a responsive session. The role words are the input alphabet, not an assignment. Deleting them would stop the withholding and start injecting retired-tier steering into live sessions — the exact opposite of this guard's purpose. The reader-facing half of this file (QUEEN_LOOP_WITHHELD_REASON, injected into every orient that withholds) was CORRECTED rather than exempted, so this anchor covers data only.",
   },
   {
-    file: "packages/operator-core/lib/agent-tools/coordination/allhive-broadcast-sweep.ts",
-    anchor: "findUnflaggedAllHiveBroadcasts",
+    file: "packages/operator-core/lib/agent-tools/coordination/allpot-broadcast-sweep.ts",
+    anchor: "findUnflaggedAllPotBroadcasts",
     reason:
       "`'hive-queen'` here is a PERSISTED cueAuthority stamp value compared in SQL (`body->'cueAuthority'->>'authority' <> 'hive-queen'`), not a role being told to act. The literal is the platform-derived stamp coord-schema.ts/relay-provenance.ts write; rows carrying it exist in the log regardless of the tier's retirement. Note the polarity: this sweep detects broadcasts that LACK the stamp, so retirement makes it MORE load-bearing, not less.",
   },
   {
-    file: "packages/operator-core/lib/agent-tools/coordination/allhive-broadcast-sweep.ts",
-    anchor: "writeAllHiveAuditRow",
+    file: "packages/operator-core/lib/agent-tools/coordination/allpot-broadcast-sweep.ts",
+    anchor: "writeAllPotAuditRow",
     reason:
       "The human-addressed alert for the detector above ('non-queen HIVE-WIDE broadcast … with no hive-queen authority stamp'). It reports the ABSENCE of a stored stamp to a human reader; it assigns no work to any role and is never injected as agent guidance.",
   },

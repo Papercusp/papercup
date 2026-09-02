@@ -3,7 +3,7 @@
  * against REAL Postgres (baseline-schema DB), covering exactly what the unit
  * suites CANNOT: the PG fast paths and the cross-piece interactions.
  *
- * Unit coverage (allhive-broadcast-sweep.test.ts, retraction.test.ts,
+ * Unit coverage (allpot-broadcast-sweep.test.ts, retraction.test.ts,
  * tools/retract.test.ts, inbox-retraction-suppression.test.ts, feed.test.ts)
  * exercises orchestration with the DB mocked and the seam-read fallbacks. This
  * file pins the layers those mocks stand in for:
@@ -13,7 +13,7 @@
  *   • readInbox fast-path parity WITH suppression vs the authoritative
  *     full-scan reference;
  *   • readCoordFeed + readThread against real bounded-cursor reads;
- *   • the allhive sweep's REAL SELECT (jsonb predicates, queen/system/flag/
+ *   • the allpot sweep's REAL SELECT (jsonb predicates, queen/system/flag/
  *     kind exclusions, lookback window, NOT EXISTS dedupe) + REAL audit INSERT
  *     against the live audit_log schema;
  *   • the retract↔detector interaction: a retraction notice for a '*' blast is
@@ -42,10 +42,10 @@ import { readCoordFeed } from './feed';
 import { resolveAgentIdentity } from './identity';
 import { RETRACTS_FIELD, suppressRetracted, collectRetractedIds } from './retraction';
 import {
-  runAllHiveBroadcastSweepOnce,
-  ALLHIVE_SWEEP_OWNER,
-  ALLHIVE_AUDIT_ACTION,
-} from './allhive-broadcast-sweep';
+  runAllPotBroadcastSweepOnce,
+  ALLPOT_SWEEP_OWNER,
+  ALLPOT_AUDIT_ACTION,
+} from './allpot-broadcast-sweep';
 import { ALLHIVE_BROADCAST_FIELD } from './scope-broadcast';
 
 const identityM = vi.mocked(resolveAgentIdentity);
@@ -81,12 +81,12 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await fx.admin`TRUNCATE harness_shared.coord_event_log`.catch(() => {});
-  await fx.admin`DELETE FROM harness_shared.audit_log WHERE action = ${ALLHIVE_AUDIT_ACTION}`.catch(() => {});
+  await fx.admin`DELETE FROM harness_shared.audit_log WHERE action = ${ALLPOT_AUDIT_ACTION}`.catch(() => {});
   await fx.dispose();
 });
 beforeEach(async () => {
   await fx.admin`TRUNCATE harness_shared.coord_event_log`;
-  await fx.admin`DELETE FROM harness_shared.audit_log WHERE action = ${ALLHIVE_AUDIT_ACTION}`;
+  await fx.admin`DELETE FROM harness_shared.audit_log WHERE action = ${ALLPOT_AUDIT_ACTION}`;
 });
 
 // ───────────────────────── P-011 coord:retract — real PG ─────────────────────────
@@ -184,9 +184,9 @@ describe('coord:retract end-to-end (PG fast paths)', () => {
   });
 });
 
-// ───────────────────────── P-010 allhive sweep — real PG ─────────────────────────
+// ───────────────────────── P-010 allpot sweep — real PG ─────────────────────────
 
-describe('allhive-broadcast-sweep against the real schema', () => {
+describe('allpot-broadcast-sweep against the real schema', () => {
   const offender = (over: Partial<CoordEnvelope> = {}) =>
     seed({
       msg_id: over.msg_id ?? 'm-blast',
@@ -200,25 +200,25 @@ describe('allhive-broadcast-sweep against the real schema', () => {
 
   it('detects a flagged non-queen blast: REAL audit_log row + owner notice row; second pass dedupes via the REAL NOT EXISTS', async () => {
     await offender();
-    const r1 = await runAllHiveBroadcastSweepOnce();
+    const r1 = await runAllPotBroadcastSweepOnce();
     expect(r1).toEqual({ detected: 1, notified: 1, truncated: false });
 
     const audit = await fx.admin`
-      SELECT actor, action, subject FROM harness_shared.audit_log WHERE action = ${ALLHIVE_AUDIT_ACTION}
+      SELECT actor, action, subject FROM harness_shared.audit_log WHERE action = ${ALLPOT_AUDIT_ACTION}
     `;
     expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({ actor: 'su-rogue-leader', subject: 'm-blast' });
 
     const notice = await fx.admin`
       SELECT body FROM harness_shared.coord_event_log
-       WHERE surface = 'messages' AND body->>'from' = ${ALLHIVE_SWEEP_OWNER}
+       WHERE surface = 'messages' AND body->>'from' = ${ALLPOT_SWEEP_OWNER}
          AND body->>'related_msg_id' = 'm-blast'
     `;
     expect(notice).toHaveLength(1);
     expect((notice[0].body as CoordEnvelope).to).toEqual(['human']);
 
     // Idempotency in the real SQL: the notice row IS the marker.
-    const r2 = await runAllHiveBroadcastSweepOnce();
+    const r2 = await runAllPotBroadcastSweepOnce();
     expect(r2).toEqual({ detected: 0, notified: 0, truncated: false });
   });
 
@@ -228,15 +228,15 @@ describe('allhive-broadcast-sweep against the real schema', () => {
     await seed({ msg_id: 'u1', from: 'su-solo', to: ['*'], summary: 'routine solo broadcast' }); // no flag
     await offender({ msg_id: 'd1', to: ['bob'] }); // flag but not '*'
     await offender({ msg_id: 'k1', kind: 'plan_event' as CoordEnvelope['kind'] }); // wrong kind
-    const r = await runAllHiveBroadcastSweepOnce();
+    const r = await runAllPotBroadcastSweepOnce();
     expect(r).toEqual({ detected: 0, notified: 0, truncated: false });
-    expect(await fx.admin`SELECT 1 FROM harness_shared.audit_log WHERE action = ${ALLHIVE_AUDIT_ACTION}`).toHaveLength(0);
+    expect(await fx.admin`SELECT 1 FROM harness_shared.audit_log WHERE action = ${ALLPOT_AUDIT_ACTION}`).toHaveLength(0);
   });
 
   it('the lookback window bounds the real ts range scan', async () => {
     await offender();
     // Window [now+59s, now+60s] — the just-inserted row (ts ≈ now) falls outside.
-    const r = await runAllHiveBroadcastSweepOnce({ nowMs: Date.now() + 60_000, lookbackMs: 1_000 });
+    const r = await runAllPotBroadcastSweepOnce({ nowMs: Date.now() + 60_000, lookbackMs: 1_000 });
     expect(r.detected).toBe(0);
   });
 
@@ -249,14 +249,14 @@ describe('allhive-broadcast-sweep against the real schema', () => {
 
     // The retraction notice went to ['*'] from system:coord-retract — the sweep
     // must NOT flag it (system exemption + no allHiveBroadcast stamp)…
-    const r = await runAllHiveBroadcastSweepOnce();
+    const r = await runAllPotBroadcastSweepOnce();
     // …while the ORIGINAL blast is STILL detected: retraction withdraws the
     // message from readers, it does not erase the authority incident (the
     // retraction notice is not a sweep marker — dedupe is scoped to the
     // sweep's own from).
     expect(r).toEqual({ detected: 1, notified: 1, truncated: false });
     const audit = await fx.admin`
-      SELECT actor, subject FROM harness_shared.audit_log WHERE action = ${ALLHIVE_AUDIT_ACTION}
+      SELECT actor, subject FROM harness_shared.audit_log WHERE action = ${ALLPOT_AUDIT_ACTION}
     `;
     expect(audit).toEqual([expect.objectContaining({ actor: 'su-rogue-leader', subject: 'm-blast' })]);
 

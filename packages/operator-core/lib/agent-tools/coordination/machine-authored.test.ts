@@ -27,7 +27,7 @@ describe('WI-4537 — isMachineAuthoredSender', () => {
       'system:delivery-ladder', // 29 — the sweep that nags you about unread directed mail…
       'system:claim-integrity-monitor', // 10
       'system:improvement-human-digest',
-      'system:allhive-broadcast-sweep',
+      'system:allpot-broadcast-sweep',
       'system:coord-invariant-monitor',
       'system-watchdog',
       'system-backup-alert',

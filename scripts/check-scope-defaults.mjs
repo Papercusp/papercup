@@ -5,7 +5,7 @@
  *
  * The rule (D-003): a function designed to take a workspace / harness / scope must
  * REQUIRE it, or fail loud via the existing fail-loud resolvers (`_harness-scope.ts
- * resolveHarnessScope`, `_hive-scope.ts resolveHiveScope`, `plans/source.ts
+ * resolveHarnessScope`, `_pot-scope.ts resolvePotScope`, `plans/source.ts
  * resolvePlanScope`). A silent `?? 'default'` / `|| DEFAULT_WORKSPACE_ID` / `?? 'operator'`
  * on a SCOPE value is the smell — the shared root cause of BOTH cross-workspace data
  * mixing AND the null-harness work-item invisibility. An empty/missing scope collapsed to
@@ -55,7 +55,7 @@ const FILE_ALLOW = new Set([
   'packages/operator-core/lib/dock-layouts.ts',
   'packages/operator-core/lib/workspace-registry.ts', // resolves THE global/current workspace
   'packages/operator-core/lib/agent-tools/_harness-scope.ts',
-  'packages/operator-core/lib/agent-tools/_hive-scope.ts',
+  'packages/operator-core/lib/agent-tools/_pot-scope.ts',
   'packages/operator-core/lib/agent-tools/plans/source.ts',
   'packages/operator-core/lib/llm-testing/targets/operator.ts', // LLM-test target's test-workspace header
 ]);

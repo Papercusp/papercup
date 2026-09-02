@@ -57,7 +57,7 @@ import {
 } from '../attention/reconcile-escalations';
 import { reconcileStalePendingHandoffsOnce, reconcileHandoffRepingsOnce } from '../reconcile-handoffs';
 import { runReplyDeadlineSweepOnce } from '../agent-tools/coordination/reply-deadline-sweep';
-import { runAllHiveBroadcastSweepOnce } from '../agent-tools/coordination/allhive-broadcast-sweep';
+import { runAllPotBroadcastSweepOnce } from '../agent-tools/coordination/allpot-broadcast-sweep';
 import { runDeliveryLadderSweepOnce, DELIVERY_LADDER_OWNER } from '../agent-tools/coordination/delivery-ladder-sweep';
 import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
@@ -833,24 +833,24 @@ DBOS.registerScheduled(replyDeadlineSweepWorkflow, { name: 'replyDeadlineSweep',
 // allHiveBroadcast envelope stamp — NOT every literal '*', which is routine
 // solo-agent traffic) whose sender is neither hive-queen-stamped nor a
 // platform principal, writes an audit row + a one-line owner notice (which
-// doubles as the per-msg idempotency marker — see allhive-broadcast-sweep.ts).
+// doubles as the per-msg idempotency marker — see allpot-broadcast-sweep.ts).
 // Cheap: the query rides the mig-576 partial index.
-async function allHiveBroadcastSweepTick(): Promise<void> {
+async function allPotBroadcastSweepTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
-      if (shouldShedHeavyTick('allhive-broadcast-sweep')) return;
-      await runAllHiveBroadcastSweepOnce();
+      if (shouldShedHeavyTick('allpot-broadcast-sweep')) return;
+      await runAllPotBroadcastSweepOnce();
     },
-    { name: 'allhive-broadcast-sweep' },
+    { name: 'allpot-broadcast-sweep' },
   );
 }
-const allHiveBroadcastSweepWorkflow = idempotentRegisterWorkflow('allHiveBroadcastSweep', () =>
-  DBOS.registerWorkflow(allHiveBroadcastSweepTick, {
-    name: 'allHiveBroadcastSweep',
+const allPotBroadcastSweepWorkflow = idempotentRegisterWorkflow('allPotBroadcastSweep', () =>
+  DBOS.registerWorkflow(allPotBroadcastSweepTick, {
+    name: 'allPotBroadcastSweep',
     maxRecoveryAttempts: 5,
   }),
 );
-DBOS.registerScheduled(allHiveBroadcastSweepWorkflow, { name: 'allHiveBroadcastSweep', crontab: '45 */5 * * * *' });
+DBOS.registerScheduled(allPotBroadcastSweepWorkflow, { name: 'allPotBroadcastSweep', crontab: '45 */5 * * * *' });
 
 // Every 2 minutes (:30s, off the reply-deadline stampede): the coord delivery
 // ESCALATION LADDER (coord-delivery-residual-gaps-2026-07-11 P-004, WI-4160) —
