@@ -153,6 +153,24 @@ describe('real-tree enforcement', () => {
     expect(out).toContain('every tool authoring guidance.returns also registers result:');
   });
 
+  it('reproduces the measured 2026-09-02 violation from REAL tool source', () => {
+    // The synthetic fixtures above prove the detector fires on a shape I wrote. This
+    // one proves it fires on the shape that actually red-pinned the gate: take the
+    // real `capability:bash_output` source and remove its `result:` registration IN
+    // MEMORY — the tree is never touched, so the git-sync sweep has nothing to commit.
+    const path = 'packages/operator-core/lib/agent-tools/capability/bash_output.ts';
+    const real = readFileSync(resolve(ROOT, path), 'utf8');
+    expect(real, 'fixture drifted: bash_output no longer registers this schema').toContain(
+      'result: bashOutputResultSchema,',
+    );
+
+    expect(findGuidanceReturnsWithoutResult([{ path, text: real }]), 'real source is compliant today').toEqual([]);
+
+    const regressed = real.replace('result: bashOutputResultSchema,', '');
+    const violations = findGuidanceReturnsWithoutResult([{ path, text: regressed }]);
+    expect(violations.map((v) => v.tool)).toEqual(['capability:bash_output']);
+  });
+
   it('enumerates the roots the affected-tests registration claims to cover', () => {
     expect(TOOL_ROOTS).toContain('packages/operator-core/lib/agent-tools');
     expect(TOOL_ROOTS).toContain('packages/agent-mcp/src');
