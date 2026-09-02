@@ -1004,6 +1004,102 @@ export function formatAdmissionHolder(ownerText, now = Date.now()) {
   return bits.length > 0 ? bits.join(" ") : raw;
 }
 
+/**
+ * WI-2142172: tell the WAITER whether it can plausibly be admitted before its own budget
+ * runs out — the one thing the queued notice never said.
+ *
+ * The measured failure: a 4-path run queued behind a 36-task holder whose declared
+ * `etaMinSec` (2654s) already exceeded the waiter's entire 2700s budget. Every input needed
+ * to see that was ALREADY on the notice — the holder's ETA, the waiter's elapsed, the
+ * waiter's budget — but nobody did the arithmetic, so the line read as ordinary
+ * serialization for ~40 minutes and the run ended `refused` with 28/28 undetermined and
+ * zero tasks measured. Nothing was broken; the reader simply had no prognosis.
+ *
+ * ONE-DIRECTIONAL BY CONSTRUCTION, and this is the whole design. `etaMinSec` is a declared
+ * LOWER BOUND (tasks with no duration history contribute zero — see `admissionIntent`), so
+ * it can PROVE starvation and can never rule it out. Hence two graded warning bands and no
+ * third: PROJECTED TO STARVE once even the optimistic figure does not fit, ADMISSION AT
+ * RISK once most of the remaining budget is already committed to waiting, and silence
+ * below that. It deliberately never emits an it-looks-fine line — a reassuring message
+ * derived from a lower bound is exactly the confidently-wrong number this repo keeps
+ * getting bitten by, and manufacturing false comfort is the failure being fixed here, not
+ * a nicety to add symmetry with.
+ *
+ * `etaFromTasks=0/n` is reported as an explicit unknown rather than silently skipped, for
+ * the same reason `intent=undeclared` is: "the holder could not estimate" and "the holder
+ * is nearly done" must never read alike.
+ *
+ * Fails open to "". It is a diagnostic printed while something is already blocked; it must
+ * never be the thing that throws.
+ */
+export function formatAdmissionProspect(ownerText, waiter, now = Date.now()) {
+  try {
+    const elapsedMs = Number(waiter?.elapsedMs);
+    const budgetMs = Number(waiter?.budgetMs);
+    if (!Number.isFinite(elapsedMs) || !Number.isFinite(budgetMs) || budgetMs <= 0) return "";
+
+    const parsed = JSON.parse(String(ownerText ?? "").trim());
+    const intent =
+      parsed?.intent && typeof parsed.intent === "object" && !Array.isArray(parsed.intent)
+        ? parsed.intent
+        : null;
+    if (!intent) return "";
+
+    const etaMinSec = Number(intent.etaMinSec);
+    if (!Number.isFinite(etaMinSec) || etaMinSec <= 0) return "";
+
+    // A ratio whose numerator is 0 means the sum saw no duration history at all, so the
+    // "lower bound" is really zero information wearing a number's clothes. Say so.
+    const covered = /^(\d+)\s*\/\s*(\d+)$/.exec(String(intent.etaFromTasks ?? ""));
+    if (covered && Number(covered[1]) === 0) {
+      return (
+        ` — PROSPECT UNKNOWN: the holder's etaMinSec covers ${intent.etaFromTasks} of its ` +
+        `tasks, so it carries no information about when you will be admitted.`
+      );
+    }
+
+    const acquiredAtMs = parsed.acquiredAt ? Date.parse(parsed.acquiredAt) : NaN;
+    const heldSec = Number.isFinite(acquiredAtMs) ? Math.max(0, (now - acquiredAtMs) / 1000) : 0;
+    const holderRemainingSec = Math.max(0, etaMinSec - heldSec);
+    const budgetRemainingSec = Math.max(0, (budgetMs - elapsedMs) / 1000);
+    if (budgetRemainingSec <= 0) return "";
+
+    // THE BAND MATTERS, and a strict exceeds-the-budget test is NOT enough. In the incident
+    // this fixes, the holder declared etaMinSec=2654 against a 2700s budget — so a
+    // "lower bound exceeds remaining budget" rule would have stayed SILENT on the very run
+    // it exists to warn about, and then the run starved anyway because a lower bound is by
+    // construction an underestimate. Warning only on proof would reproduce the original
+    // failure while looking like a fix.
+    //
+    // So warn in two graded bands, both honest about direction: at >=1.0 starvation is
+    // PROVEN (even the optimistic figure does not fit); at >=0.5 it is AT RISK (most of the
+    // budget is already committed to waiting, and the true wait is longer than the number
+    // shown). Below that, stay silent — a lower bound still cannot certify safety, so there
+    // is nothing sound to say and the notice keeps its existing wording.
+    const ratio = holderRemainingSec / budgetRemainingSec;
+    if (ratio < 0.5) return "";
+
+    const shared =
+      `at least ${Math.round(holderRemainingSec)}s of work remains for the holder ` +
+      `(etaMinSec=${etaMinSec}` +
+      `${intent.etaFromTasks ? ` over ${intent.etaFromTasks} tasks` : ""}, held=` +
+      `${Math.round(heldSec)}s) and only ${Math.round(budgetRemainingSec)}s of your budget ` +
+      `remains. etaMinSec is a LOWER BOUND, so the real wait is longer than that.`;
+
+    return ratio >= 1
+      ? ` — ⚠ PROJECTED TO STARVE: ${shared} You will almost certainly measure NOTHING — ` +
+          `fall back to narrower verification NOW rather than discovering this at the ` +
+          `budget wall. (A lower bound can prove starvation but never rule it out, so the ` +
+          `absence of this warning is not reassurance.)`
+      : ` — ⚠ ADMISSION AT RISK: ${shared} Roughly ${Math.round(ratio * 100)}% of your ` +
+          `remaining budget is already committed to waiting; consider falling back to ` +
+          `narrower verification now. (A lower bound can prove starvation but never rule ` +
+          `it out, so the absence of this warning is not reassurance.)`;
+  } catch {
+    return "";
+  }
+}
+
 export async function runBudgetedTasks(tasks, options) {
   // WI-1490656: `console.error` cannot reach the affected-tests RUN LOG — that file is
   // written by the runner's own `logLine`/`errSync`, so the queued notice landed only on
@@ -1029,11 +1125,17 @@ export async function runBudgetedTasks(tasks, options) {
       // caller is the only layer that knows its own scope; this layer only forwards it.
       intent: options?.admissionIntent,
       onWaiting: ({ owner, elapsedMs }) => {
+        // WI-2142172: the base sentence stays (starvation is genuinely not a hang), but it
+        // is no longer the LAST word. When the holder's declared lower bound already
+        // exceeds this waiter's remaining budget, the prospect clause says so outright, so
+        // "normal serialization" can never again be the only thing a reader is told while
+        // the run is in fact projected to measure nothing at all.
         notify(
           `AFFECTED_TESTS_ADMISSION_QUEUED waiting on the shared test-process ` +
             `admission mutex (${Math.round(elapsedMs / 1000)}s so far, budget ` +
             `${Math.round(timeoutMs / 1000)}s) — this is normal serialization under ` +
-            `fleet load, not a hang; holder: ${formatAdmissionHolder(owner)}`,
+            `fleet load, not a hang; holder: ${formatAdmissionHolder(owner)}` +
+            formatAdmissionProspect(owner, { elapsedMs, budgetMs: timeoutMs }),
           { kind: "queued", elapsedMs, budgetMs: timeoutMs },
         );
       },

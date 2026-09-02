@@ -1784,7 +1784,20 @@ function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boole
   });
 }
 
-/** Live server inventory — for health surfaces and the corpus runner. */
+/**
+ * Live server inventory — for health surfaces and the corpus runner.
+ *
+ * The readiness fields are NOT decoration. Whether an EMPTY answer is
+ * trustworthy is decided entirely by `certifiedReadiness` (see
+ * `healthForAnswer`), and until WI-2142382 that state was observable from
+ * nowhere: an operator could see a client's `health: 'healthy'` and had no way
+ * to ask HOW the proof behind it was minted, or whether the server had ever
+ * actually completed a progress cycle. That is precisely the gap that let a
+ * vacuous certification serve a false-healthy empty for a client's whole life
+ * while every surface reported a healthy server. Exposing the proof state next
+ * to the health it justifies is what makes the difference between "certified"
+ * and "certified on silence" visible without attaching a debugger.
+ */
 export function lspClientInventory(): Array<{
   language: LspLanguage;
   rootPath: string;
@@ -1793,6 +1806,18 @@ export function lspClientInventory(): Array<{
   coldStartMs: number;
   openDocs: number;
   pid: number | null;
+  /** True once at least one progress cycle has COMPLETED. */
+  everSettled: boolean;
+  /** The server's own readiness verdict; `null` means it has not reported. */
+  quiescent: boolean | null;
+  /** Progress tokens open right now. */
+  pendingProgress: number;
+  /** Completed progress cycles observed. */
+  progressGeneration: number;
+  /** Intents holding a readiness proof — an empty answer for these is believed. */
+  certifiedReadiness: LspReadinessIntent[];
+  /** Intents with positive-but-unproven canary evidence. */
+  unprovenReadiness: LspReadinessIntent[];
 }> {
   return [...state.clients.entries()].map(([key, c]) => ({
     language: c.language,
@@ -1802,5 +1827,11 @@ export function lspClientInventory(): Array<{
     coldStartMs: c.coldStartMs,
     openDocs: c.openDocs.size,
     pid: c.child.pid ?? null,
+    everSettled: c.everSettled === true,
+    quiescent: c.quiescent ?? null,
+    pendingProgress: c.pendingProgress?.size ?? 0,
+    progressGeneration: c.progressGeneration ?? 0,
+    certifiedReadiness: [...(c.certifiedReadiness ?? [])],
+    unprovenReadiness: [...(c.unprovenReadiness ?? [])],
   }));
 }

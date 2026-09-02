@@ -85,6 +85,20 @@ export interface OrientationAnnouncedGate {
   note?: string | null;
 }
 
+/**
+ * WI-2142142: the SENDER-side mirror of `unansweredDirected` — directed
+ * messages THIS agent sent, expecting a reply, that the recipient has not
+ * yet answered. `unansweredDirected` is "what do I still owe?"; this is
+ * "what am I still owed?", and the block previously had no line for it at
+ * all. `oldestTo` is computed directly by fetchOpenAsks, not derived from a
+ * capped list, so it stays correct even when `count` exceeds any display cap.
+ */
+export interface OrientationOpenAsk {
+  count: number;
+  oldestAgeMs: number;
+  oldestTo: string;
+}
+
 /** The one actionable captured-improvement row worth injecting this turn. */
 export interface OrientationImprovementTriage {
   /** Untriaged rows in the same bounded window that produced `top`. */
@@ -185,6 +199,9 @@ export interface OrientationState {
   unansweredDirected: number;
   /** Newest actionable inbox headlines; count remains `unansweredDirected`. */
   inboxRecent: OrientationInboxEntry[];
+  /** Directed messages THIS agent sent that await a PEER's reply; null means
+   *  none or unreadable. See {@link OrientationOpenAsk}. */
+  openAsks: OrientationOpenAsk | null;
   /** Declared-but-unfired gates visible to the caller's fleet/plan/harness. */
   announcedGates: OrientationAnnouncedGate[];
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
@@ -335,6 +352,7 @@ export function isEmptyOrientation(state: OrientationState): boolean {
   return (
     state.held.length === 0 &&
     state.unansweredDirected === 0 &&
+    state.openAsks === null &&
     state.inboxRecent.length === 0 &&
     state.announcedGates.length === 0 &&
     !state.loopArmed &&
@@ -448,6 +466,10 @@ export function fingerprintOrientation(
       .sort()
       .join(','),
     unanswered: state.unansweredDirected,
+    // COUNT ONLY, mirroring `unanswered` above (not identity, not age): a
+    // fingerprint keyed on oldestAgeMs would re-emit every turn purely
+    // because time passed, defeating the whole point of the diff.
+    openAsks: state.openAsks ? state.openAsks.count : 0,
     inbox: state.inboxRecent.map((entry) => `${entry.msgId}:${entry.from}:${entry.summary ?? ''}`).join('|'),
     gates: state.announcedGates
       .map((gate) => `${gate.event}:${gate.note ?? ''}`)
@@ -500,6 +522,9 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
   return (
     a.held === b.held &&
     a.unanswered === b.unanswered &&
+    // REQUIRED, same rule as `unanswered` beside it: writing the token in
+    // fingerprintOrientation does nothing unless it is compared here.
+    (a.openAsks ?? 0) === (b.openAsks ?? 0) &&
     a.inbox === b.inbox &&
     a.gates === b.gates &&
     a.loop === b.loop &&
@@ -553,6 +578,18 @@ function compactIds(ids: string[], cap: number): string {
 
 function compactActor(actor: string): string {
   return actor.length <= 18 ? actor : `${actor.slice(0, 15)}…`;
+}
+
+/** Terse age for a budget-constrained line — "38m" / "17h", never a full
+ *  duration formatter. Deliberately not shared with the fuller `humanAge`
+ *  helpers elsewhere (carry-respawn-outcome.ts, release-deploy-staleness-
+ *  watchdog.ts): both already duplicate the same tiny shape locally, and a
+ *  cross-module import here would cost more than the six lines it saves. */
+function compactAgeHours(ageMs: number): string {
+  if (!Number.isFinite(ageMs) || ageMs < 0) return '?';
+  const minutes = ageMs / 60_000;
+  if (minutes < 90) return `${Math.max(1, Math.round(minutes))}m`;
+  return `${Math.round(minutes / 60)}h`;
 }
 
 /** Truncate the SLUG, never the type prefix (`guard-rail:` / `wall:` / `dead-end:`):
@@ -614,6 +651,15 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
   }
   if (state.unansweredDirected > 0) {
     lines.push(`- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`);
+  }
+  // The reciprocal counter (WI-2142142): asks THIS agent made that a peer has
+  // not yet answered. Lower priority than the line above (an ask you are
+  // owed never outranks an ask you owe), so it renders second.
+  if (state.openAsks) {
+    const { count, oldestAgeMs, oldestTo } = state.openAsks;
+    lines.push(
+      `- ${count} open ask(s) sent, oldest ${compactAgeHours(oldestAgeMs)} — awaiting ${compactActor(oldestTo)}.`,
+    );
   }
   // A missing wake source can strand every line below it, so the WARNING is
   // high-priority. The reassuring ARMED line is cheap context and goes last.
@@ -737,6 +783,10 @@ export interface OrientationDeps {
     newest: OrientationInboxEntry[];
   }>;
   announcedGates: (ownerId: string) => Promise<OrientationAnnouncedGate[]>;
+  /** WI-2142142: directed messages this agent sent that a peer has not yet
+   *  answered; null for none/unreadable — same fail-soft contract as every
+   *  other source here. */
+  openAsks: (ownerId: string) => Promise<OrientationOpenAsk | null>;
   loopArmed: (ownerId: string) => Promise<boolean>;
   loopFireWithheld: (ownerId: string) => Promise<boolean>;
   /** Existing improvement triage/ranking path, reduced to one bounded row. */
@@ -786,6 +836,7 @@ export async function resolveOrientationState(
     held,
     inbox,
     announcedGates,
+    openAsks,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -797,6 +848,9 @@ export async function resolveOrientationState(
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
     d.announcedGates(ownerId).catch(() => [] as OrientationAnnouncedGate[]),
+    // Fail-soft to null, same rule as toolSurface below: "cannot tell" must
+    // render as silence, never as a false "nothing outstanding".
+    d.openAsks(ownerId).catch(() => null as OrientationOpenAsk | null),
     d.loopArmed(ownerId).catch(() => false),
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
@@ -820,6 +874,7 @@ export async function resolveOrientationState(
     unansweredDirected: inbox.count,
     inboxRecent: inbox.newest,
     announcedGates,
+    openAsks,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -896,6 +951,17 @@ export function defaultOrientationDeps(): OrientationDeps {
             })),
           }
         : { count: 0, newest: [] };
+    },
+    // WI-2142142: the sender-side mirror of `inbox` above, from the SAME
+    // module (unanswered-directed.ts) so the two definitions of "answered"
+    // cannot drift apart.
+    openAsks: async (ownerId) => {
+      const { fetchOpenAsks } = await import('./agent-tools/coordination/unanswered-directed');
+      const map = await fetchOpenAsks([ownerId]);
+      const summary = map.get(ownerId);
+      return summary && summary.count > 0
+        ? { count: summary.count, oldestAgeMs: summary.oldestAgeMs, oldestTo: summary.oldestTo }
+        : null;
     },
     // D-004 keeps event discovery a directory. Reuse the SAME announcement
     // store + visibility predicate as coord:orient/events:catalog, deriving the

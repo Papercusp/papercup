@@ -29,6 +29,7 @@ import type { ScoredItem } from './harness/improvements/digest';
 const base: OrientationState = {
   held: [],
   unansweredDirected: 0,
+  openAsks: null,
   inboxRecent: [],
   announcedGates: [],
   loopArmed: false,
@@ -50,6 +51,7 @@ const withWork: OrientationState = {
     },
   ],
   unansweredDirected: 2,
+  openAsks: null,
   inboxRecent: [{ msgId: 'm-1', from: 'su-peer', summary: 'Need your decision on the shared seam.' }],
   announcedGates: [{ event: 'fleet:atlas:phase-open', note: 'Phase 2 may begin.' }],
   loopArmed: true,
@@ -487,6 +489,7 @@ describe('turn-start-orientation — what it says', () => {
     expect(state).toEqual({
       held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
       unansweredDirected: 1,
+      openAsks: null,
       inboxRecent: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],
       announcedGates: [{ event: 'fleet:f:ready' }],
       loopArmed: true,

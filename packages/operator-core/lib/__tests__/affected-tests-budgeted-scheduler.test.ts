@@ -1523,3 +1523,107 @@ describe('formatAdmissionHolder', () => {
     expect(AFFECTED_TESTS_SRC).toContain('etaFromTasks');
   });
 });
+
+// WI-2142172: the queued notice told a waiter about the HOLDER but never about ITSELF, so a
+// run could spend a full 2700s budget queued and end `refused` with 28/28 undetermined
+// while every line it printed read as ordinary serialization.
+describe('formatAdmissionProspect', () => {
+  const NOW = Date.parse('2026-09-02T17:40:00.000Z');
+  const owner = (intent: Record<string, unknown> | null, heldSec = 120) =>
+    JSON.stringify({
+      pid: 1298335,
+      acquiredAt: new Date(NOW - heldSec * 1000).toISOString(),
+      ...(intent ? { intent } : {}),
+    });
+
+  it('warns on the REPORTED numbers — the case a strict exceeds-budget rule would miss', () => {
+    // The measured incident: holder declared etaMinSec=2654 against the waiter's 2700s
+    // budget. The optimistic figure very nearly FITS, so a "lower bound exceeds remaining
+    // budget" rule stays silent — and the run starved anyway, because a lower bound
+    // underestimates by construction. This test exists to pin that the fix covers the
+    // filed case and not merely the provable one.
+    const line = formatAdmissionProspect(
+      owner({ scope: 'explicit', workspaces: 13, tasks: 36, etaMinSec: 2654, etaFromTasks: '30/36' }),
+      { elapsedMs: 120_000, budgetMs: 2_700_000 },
+      NOW,
+    );
+
+    expect(line).toContain('ADMISSION AT RISK');
+    expect(line).toContain('etaMinSec=2654');
+    // The direction of the error is the actionable part: the number shown is a floor.
+    expect(line).toContain('LOWER BOUND');
+    expect(line).toMatch(/fall(ing)? back/i);
+  });
+
+  it('escalates to PROJECTED TO STARVE once even the optimistic figure does not fit', () => {
+    const line = formatAdmissionProspect(
+      owner({ tasks: 36, etaMinSec: 3600, etaFromTasks: '30/36' }),
+      { elapsedMs: 600_000, budgetMs: 2_700_000 },
+      NOW,
+    );
+
+    expect(line).toContain('PROJECTED TO STARVE');
+    expect(line).toContain('measure NOTHING');
+  });
+
+  it('stays SILENT rather than emitting reassurance a lower bound cannot support', () => {
+    // The asymmetry is the design: etaMinSec can prove starvation and can never rule it
+    // out, so there is no it-looks-fine band. A cheap holder must produce NO clause at all
+    // — an "on track" line derived from a floor is the confidently-wrong number this whole
+    // change exists to remove.
+    const line = formatAdmissionProspect(
+      owner({ tasks: 2, etaMinSec: 30, etaFromTasks: '2/2' }),
+      { elapsedMs: 60_000, budgetMs: 2_700_000 },
+      NOW,
+    );
+
+    expect(line).toBe('');
+  });
+
+  it('subtracts time already held, so a nearly-finished holder stops raising alarm', () => {
+    const intent = { tasks: 36, etaMinSec: 2000, etaFromTasks: '30/36' };
+    // Same declaration, same budget — only elapsed hold time differs.
+    const fresh = formatAdmissionProspect(owner(intent, 0), { elapsedMs: 0, budgetMs: 2_400_000 }, NOW);
+    const nearlyDone = formatAdmissionProspect(owner(intent, 1900), { elapsedMs: 0, budgetMs: 2_400_000 }, NOW);
+
+    expect(fresh).not.toBe('');
+    expect(nearlyDone).toBe('');
+  });
+
+  it('reports an unusable ETA as an explicit unknown instead of silently skipping it', () => {
+    // Same reason `intent=undeclared` is emitted rather than omitted: "could not estimate"
+    // and "nearly done" must never read alike. A 0-numerator ratio means the sum saw no
+    // duration history at all, so the number carries no information.
+    const line = formatAdmissionProspect(
+      owner({ tasks: 9, etaMinSec: 5000, etaFromTasks: '0/9' }),
+      { elapsedMs: 60_000, budgetMs: 2_700_000 },
+      NOW,
+    );
+
+    expect(line).toContain('PROSPECT UNKNOWN');
+    expect(line).toContain('0/9');
+    expect(line).not.toContain('STARVE');
+  });
+
+  it('fails open to an empty clause instead of throwing while a caller is already blocked', () => {
+    const waiter = { elapsedMs: 60_000, budgetMs: 2_700_000 };
+    expect(formatAdmissionProspect('not json at all', waiter, NOW)).toBe('');
+    expect(formatAdmissionProspect(undefined, waiter, NOW)).toBe('');
+    expect(formatAdmissionProspect('[1,2,3]', waiter, NOW)).toBe('');
+    // An owner record with no declared intent, and a declaration with no usable ETA.
+    expect(formatAdmissionProspect(owner(null), waiter, NOW)).toBe('');
+    expect(formatAdmissionProspect(owner({ tasks: 4 }), waiter, NOW)).toBe('');
+    // A caller that cannot describe its own budget gets no projection, not a NaN one.
+    expect(
+      formatAdmissionProspect(owner({ etaMinSec: 9999, etaFromTasks: '4/4' }), { elapsedMs: 0, budgetMs: 0 }, NOW),
+    ).toBe('');
+  });
+
+  it('is what the queued notice actually appends, not a helper nothing reaches', () => {
+    // The sibling of formatAdmissionHolder's wiring test. Without this the projection could
+    // be silently dropped from the notice and every unit test above would still pass.
+    expect(SCHEDULER_SRC).toMatch(
+      /formatAdmissionProspect\(owner,\s*\{\s*elapsedMs,\s*budgetMs:\s*timeoutMs\s*\}\)/,
+    );
+  });
+});
