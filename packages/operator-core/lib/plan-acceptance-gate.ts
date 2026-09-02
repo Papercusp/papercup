@@ -54,6 +54,9 @@ import {
   UNFINISHED_ITEM_STATUSES,
 } from './plan-audits';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
+import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
+
+export type { CitationDeployment };
 
 export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_missing'
@@ -115,6 +118,33 @@ export interface PlanAcceptanceGateVerdict {
    */
   unknownRatedCriteria?: string[];
   /**
+   * EI-22181490624100467 — the DEPLOYMENT POSITION of the code/test citations this
+   * plan's code-truth audit rests on. Present only when `probeCitationDeployment`
+   * asked for it (the ship write); absent means NOT MEASURED, never "deployed".
+   *
+   * WHY THIS EXISTS. Plan completion requires a per-item code-truth audit whose only
+   * VERIFYING citations are `code`/`test` blobs, and acceptance criteria are then
+   * graded against those citations. A blob citation is BLIND TO DEPLOYMENT by
+   * construction: a grader opens the cited file, reads a correct and even falsifiable
+   * fix, and rates PASS — while the live surface still exhibits the very defect the
+   * item claims closed, because the fix is committed but `main` has not fast-forwarded.
+   * The card then records a pass that means less than its wording claims, and nothing
+   * in the artifact says so. That is the platform's own `silent-wrong-answers` class
+   * reproduced inside the acceptance instrument.
+   *
+   * WHY IT RECORDS AND NEVER REFUSES. Two independent reasons, either sufficient:
+   * (1) the same D-002 rule the audit verdicts follow — evidence RECORDS, the item's
+   * own status is the ship-blocking question; and (2) deployment is not the author's
+   * to control. When the green-checkpoint gate is red nothing reaches `main` for
+   * ANYONE, so refusing here would freeze every plan completion fleet-wide on an
+   * outage the author cannot clear — converting a reporting gap into an outage
+   * amplifier. The defect being fixed is SILENCE, not permissiveness.
+   *
+   * Read `undeployedPaths` as the direct answer to "was this graded against code that
+   * is not live?", and `unknownPaths` as "the probe could not say" — never as a pass.
+   */
+  citationDeployment?: CitationDeployment;
+  /**
    * HOW that grader was selected, read from the durable grading-cascade row
    * (unified-responder-selection-critique-and-grading-2026-08-30 P-004):
    * `'floor'` = cleared the relevance floor; `'minimum'` = a below-floor
@@ -174,6 +204,21 @@ export interface PlanAcceptanceGateOpts {
    * Missing/stale audit evidence fails toward the ordinary unfinished-item refusal.
    */
   gradingRecruitment?: boolean;
+  /**
+   * EI-22181490624100467 — resolve the DEPLOYMENT POSITION of the code/test
+   * citations this plan's code-truth audit rests on, returned as report-only
+   * `citationDeployment`. Never refuses; see that field for why.
+   *
+   * OPT-IN BECAUSE THE PROBE IS EXPENSIVE AND THIS GATE IS A HOT READ. Each
+   * probed path forks git and may probe systemd + an HTTP health endpoint, while
+   * `evaluatePlanAcceptanceGate` is called per plan by the `planAcceptanceGateVerdict`
+   * SYNC RESOLVER (every UI read) and by the acceptance-grading sweep routine.
+   * Turning this on unconditionally would put a capped-but-real fan-out of forked
+   * git reads on a render path — the repo's A1-class perf anti-pattern. Only the
+   * SHIP write (`plans:set-plan-status`) sets it, which is both rare and the exact
+   * moment the record needs to be permanent.
+   */
+  probeCitationDeployment?: boolean;
 }
 
 /**
@@ -347,6 +392,13 @@ export async function evaluatePlanAcceptanceGate(
   // audit is authored BEFORE the rubric (D-004): refusing on a missing rubric while
   // the plan still has unbuilt items would send the agent to the wrong repair.
   const forcedChecks: PlanAcceptanceGateCode[] = [];
+  /**
+   * EI-22181490624100467 — repo-relative paths of the code/test citations the
+   * code-truth audit actually rests on, collected as they are re-resolved below so
+   * the deployment probe measures the SAME evidence the gate just checked rather
+   * than a separately-derived path list that could drift from it.
+   */
+  const citedEvidencePaths = new Set<string>();
   const force = opts.force;
 
   // A plan's Now/decision prose is the durable hand-off read by the independent
@@ -495,6 +547,10 @@ export async function evaluatePlanAcceptanceGate(
               );
               continue;
             }
+
+            // Collect only RESOLVED code/test citations: an unresolvable path is
+            // already reported as `broken` and has no deployment position to ask about.
+            if (citation.path?.trim()) citedEvidencePaths.add(citation.path.trim());
 
             const currentBlobSha = citationBlobSha(citation, citationContext.deps);
             if (!citation.blobSha) {
@@ -943,6 +999,15 @@ export async function evaluatePlanAcceptanceGate(
         `scorecards:emit; the latest implementer verdict is authoritative.`,
     };
   }
+  // EI-22181490624100467 — the ship is going to happen; record WHAT the graded
+  // evidence's deployment position actually was, so the shipped artifact cannot
+  // imply more than it verified. Fail-soft by contract (the probe swallows its own
+  // errors), and only when the caller opted in: see `probeCitationDeployment`.
+  const citationDeployment =
+    opts.probeCitationDeployment && citedEvidencePaths.size > 0
+      ? await citationDeploymentForPaths([...citedEvidencePaths])
+      : undefined;
+
   return {
     satisfied: true,
     rubricId: rubric.rubricId,
@@ -951,6 +1016,7 @@ export async function evaluatePlanAcceptanceGate(
     gradedBy: independent.createdBy ?? null,
     gradedVia: independentVia,
     ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
+    ...(citationDeployment ? { citationDeployment } : {}),
     ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
   };
 }

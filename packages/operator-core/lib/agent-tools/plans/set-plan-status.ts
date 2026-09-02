@@ -32,7 +32,7 @@ import { stampForcedPastWaiver, type ForcedPastRecord } from './forced-past-stam
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
-import { evaluatePlanAcceptanceGate } from '../../plan-acceptance-gate';
+import { evaluatePlanAcceptanceGate, type CitationDeployment } from '../../plan-acceptance-gate';
 import { launchAcceptanceGrader, resolveAcceptanceGrader, type AcceptanceGraderLifecycle } from '../../acceptance-grader';
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
@@ -357,8 +357,20 @@ export default defineTool({
         // the WRITE below is what makes it permanent, so the record has to
         // survive the branch that produced it.
         let forcedPast: ForcedPastRecord | undefined;
+        // EI-22181490624100467 — hoisted for the same reason as `forcedPast`: the gate
+        // measures it, but this result is what tells the shipper their code-truth
+        // evidence was (or was not) live. A ship on undeployed evidence is allowed and
+        // must never be SILENT.
+        let citationDeployment: CitationDeployment | undefined;
         if (shouldEvaluateAcceptanceGate(status, args.expectedCurrent)) {
-          const gate = await evaluatePlanAcceptanceGate(slug, args.force ? { force: args.force } : undefined);
+          // EI-22181490624100467 — this is the ONE caller that asks for the citation
+          // deployment probe. It is a rare write, unlike the sync resolver and the
+          // grading sweep which call this same gate on hot/periodic paths.
+          const gate = await evaluatePlanAcceptanceGate(slug, {
+            probeCitationDeployment: true,
+            ...(args.force ? { force: args.force } : {}),
+          });
+          citationDeployment = gate.citationDeployment;
           if (gate.forcedPast) {
             const actor = resolveAgentIdentity(ctx);
             forcedPast = {
@@ -564,6 +576,11 @@ export default defineTool({
           // file: the caller who waived the gate should not have to re-read the
           // plan to see what they waived.
           ...(forcedPast ? { forcedPast: { reason: forcedPast.reason, checks: [...forcedPast.checks] } } : {}),
+          // EI-22181490624100467 — same principle as `forcedPast` above: the shipper
+          // should not have to run `dev:pipeline_position` per cited path to learn that
+          // the code-truth evidence they just shipped on is not live. Absent means NOT
+          // MEASURED (a non-ship status change), never "deployed".
+          ...(citationDeployment ? { citationDeployment } : {}),
           revision: result.value.changed && rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
         };
       },
