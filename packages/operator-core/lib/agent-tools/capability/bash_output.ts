@@ -1336,6 +1336,16 @@ export default defineTool({
           const ledgerArgv = ledgerRow?.argv;
           const rawCommand = ledgerArgv && ledgerArgv.length > 0 ? ledgerArgv[ledgerArgv.length - 1] : undefined;
           const bufferingStage = rawCommand ? detectBufferingLastStage(rawCommand) : null;
+          // EI-22185525501280167: a durable liveness proof (ledger pid re-probe, or
+          // systemd ActiveState) says nothing about whether this job's OUTPUT
+          // survived — `stranded` above already STAT'd every candidate log path, so
+          // `stranded === null` means none of them currently exist. Live repro: a
+          // reply confidently promised "the log tail will keep growing" and offered
+          // `log_path` to "read directly", while that path 404'd and never would —
+          // an unrecoverable-output job read identically to a merely-quiet one, and
+          // the caller waited ~30 minutes on a tail that could never arrive. Never
+          // advertise growth, or hand back a path, we have not verified exists.
+          const logVerifiedOnDisk = stranded !== null;
           // A self-output redirect trumps the buffering-stage note: whatever the
           // pipeline stages do, the bytes land in the command's own file, so the
           // capability tail below will never grow (EI-21301075566136325).
@@ -1345,6 +1355,16 @@ export default defineTool({
               ? formatBufferingPipelineAdvice(bufferingStage, 'tracking-lost')
               : 'Keep polling capability:bash_output (the log tail below will keep growing as it runs)';
           const readPathAdvice = bufferingStage || selfRedirect ? '' : ', or read log_path directly';
+          const outputAdvice = logVerifiedOnDisk
+            ? 'It may be queued behind pc-heavy and still produce no new output. ' +
+              'Do NOT re-run capability:bash — that would start a SECOND concurrent job and double the load. ' +
+              `${growthAdvice}${readPathAdvice}.`
+            : 'Its buffered OUTPUT IS UNRECOVERABLE: the spill log this job was writing to cannot be found on ' +
+              'disk (checked every known location), so polling this job will never return new output — do not ' +
+              'keep waiting on a tail that will never grow, and there is no log_path to read directly. Do NOT ' +
+              're-run capability:bash — that would start a SECOND concurrent job and double the load. Wait for ' +
+              'it to reach a terminal state instead (its exit code will be reported normally once observed), or ' +
+              'verify its effect another route (e.g. testing:run for a test-run job).';
           return {
             content: [
               {
@@ -1362,8 +1382,9 @@ export default defineTool({
                     ? { recovered_from_scope: true, liveness_proof: 'systemd_active_state' }
                     : { liveness_proof: 'process_identity_and_cgroup' }),
                   tracking_lost: true,
+                  output_recoverable: logVerifiedOnDisk,
                   output_is_tail: true,
-                  ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
+                  ...(logVerifiedOnDisk && recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
                   ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
                   ...(diedMarkerWritten ? { job_died_marker_written: true } : {}),
@@ -1373,14 +1394,11 @@ export default defineTool({
                   advice: scopeActive
                     ? `This job's in-memory tracking is gone, but its durable systemd service ${ledgerRow?.scopeUnit} is ` +
                       'CONFIRMED ACTIVE — verified just now with systemd ActiveState, independent of the worker-local ' +
-                      'registry and PID/cgroup probe. It may be queued behind pc-heavy and still produce no new output. ' +
-                      'Do NOT re-run capability:bash — that would start a SECOND concurrent job and double the load. ' +
-                      `${growthAdvice}${readPathAdvice}. To stop ${confirmedAliveStopAdvice()}`
+                      `registry and PID/cgroup probe. ${outputAdvice} To stop ${confirmedAliveStopAdvice()}`
                     : `This job's in-memory tracking is gone, but its real OS process (pid ${processAlive?.pid}` +
                       `${processAlive?.scopeUnit ? `, systemd scope ${processAlive.scopeUnit}` : ''}) is CONFIRMED ` +
                       'STILL RUNNING — verified just now via a process-identity re-probe against the durable task ' +
-                      'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
-                      `SECOND concurrent job and double the load. ${growthAdvice}${readPathAdvice}. To stop ` +
+                      `ledger (immune to PID reuse), not a guess. ${outputAdvice} To stop ` +
                       confirmedAliveStopAdvice(),
                 }),
               },
