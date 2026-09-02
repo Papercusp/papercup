@@ -4,14 +4,19 @@
  * `work_items:set_blocker` records conditions that are NOT work-items (event /
  * gate / runtime / human). Its clearing contract says so explicitly:
  * `external-blockers.ts` — clearing "never touches internal work-item dependency
- * edges". `applyExternalBlockerUpdate` has exactly ONE caller (set_blocker
- * itself), so no routine anywhere clears a blocker because some other row went
- * terminal.
+ * edges".
  *
- * A bare id such as `WI-40086` is therefore INERT TEXT: no event key, nothing to
- * await, nothing to fire, nothing to clear. The blocked row waits forever. This
- * was not hypothetical — 22 papercusp rows sat blocked on already-terminal
- * items, 18 of them on WI-40086 alone, several parked for weeks.
+ * There IS exactly one automatic clear path, and knowing its shape is what sets
+ * this guard's bounds: `reconcileEventExternalBlockers` (work-items.ts), called
+ * from the event-await store when a key fires, clears blockers whose row matches
+ * `kind:'event'` AND whose `ref` equals the fired event key. So an EVENT blocker
+ * naming a real key self-heals; a gate/runtime/human blocker never does, and an
+ * event blocker whose ref is not a real key never does either.
+ *
+ * A bare id such as `WI-40086` therefore matches nothing that will ever fire — it
+ * is INERT TEXT: no event key, nothing to await, nothing to clear. The blocked
+ * row waits forever. This was not hypothetical — 22 papercusp rows sat blocked on
+ * already-terminal items, 18 of them on WI-40086 alone, several parked for weeks.
  *
  * SCOPE, and why it is narrower than it could be — both bounds are set by the
  * measured population, not by taste:
