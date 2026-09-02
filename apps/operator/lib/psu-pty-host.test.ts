@@ -2654,6 +2654,107 @@ describe('makeInjectMutex (EI-8822 — gated-inject serialization)', () => {
     release2();
     expect(order).toEqual(['1', '2']);
   });
+
+  // EI-22123519641932348: the watchdog. Every OTHER gate/verify step in the
+  // gated-delivery pipeline is independently time-capped; `acquire()`'s own
+  // `await prev` was the one unbounded wait, matching a live ~6h total-silence
+  // incident (a wedged holder that never reached its `finally` release left
+  // every later gated inject queued behind it, forever, with zero trace).
+  // warnMs/forceReleaseMs are tiny real ms here (this file's own convention —
+  // no fake timers anywhere in it) so these run fast without waiting out the
+  // multi-minute production defaults.
+  describe('watchdog (EI-22123519641932348 — a wedged holder must not wedge the queue forever)', () => {
+    it('does NOT fire onStuck, and behaves exactly like the unwatched mutex, when nothing is stuck', async () => {
+      const onStuck = vi.fn();
+      const m = makeInjectMutex({ warnMs: 10_000, forceReleaseMs: 20_000, onStuck });
+      const release1 = await m.acquire();
+      release1();
+      const release2 = await m.acquire();
+      release2();
+      expect(onStuck).not.toHaveBeenCalled();
+    });
+
+    it('fires onStuck({phase:"warn"}) once past warnMs while still genuinely waiting — and does NOT proceed', async () => {
+      const onStuck = vi.fn();
+      const m = makeInjectMutex({ warnMs: 15, forceReleaseMs: 10_000, onStuck });
+      const release1 = await m.acquire(); // holder 1 never releases in this test
+      let entered2 = false;
+      const p2 = m.acquire().then((r2) => {
+        entered2 = true;
+        return r2;
+      });
+      // Wait past warnMs but nowhere near forceReleaseMs.
+      await new Promise((r) => setTimeout(r, 40));
+      expect(onStuck).toHaveBeenCalledWith(expect.objectContaining({ phase: 'warn' }));
+      expect(onStuck).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'force-release' }));
+      // The warn is advisory only — holder 2 must still be genuinely blocked.
+      expect(entered2).toBe(false);
+      // Clean up: release holder 1 so holder 2 (and the test process) can settle.
+      release1();
+      const release2 = await p2;
+      expect(entered2).toBe(true);
+      release2();
+    });
+
+    it('force-releases past forceReleaseMs so a wedged (never-released) holder cannot wedge the queue forever', async () => {
+      const onStuck = vi.fn();
+      const m = makeInjectMutex({ warnMs: 10, forceReleaseMs: 30, onStuck });
+      const order: string[] = [];
+      await m.acquire(); // holder 1 acquires and — deliberately, to model the bug — NEVER releases
+      order.push('1:enter');
+      const release2 = await m.acquire(); // must NOT hang forever
+      order.push('2:enter');
+      release2();
+      expect(order).toEqual(['1:enter', '2:enter']);
+      expect(onStuck).toHaveBeenCalledWith(expect.objectContaining({ phase: 'warn' }));
+      expect(onStuck).toHaveBeenCalledWith(expect.objectContaining({ phase: 'force-release' }));
+    });
+
+    it('a wedged holder that eventually DOES call release() late is a harmless no-op — the queue keeps working normally', async () => {
+      const onStuck = vi.fn();
+      const m = makeInjectMutex({ warnMs: 10, forceReleaseMs: 20, onStuck });
+      const release1 = await m.acquire();
+      const release2 = await m.acquire(); // force-releases past 20ms
+      // The original holder calls its release LATE, after being force-passed.
+      expect(() => release1()).not.toThrow();
+      release2();
+      // The mutex must still serialize correctly for everyone AFTER the wedge —
+      // a THIRD acquire chains off holder 2's tail, never off the stale `prev`.
+      const order: string[] = [];
+      const release3 = await m.acquire();
+      order.push('3:enter');
+      let entered4 = false;
+      const p4 = m.acquire().then((r4) => {
+        entered4 = true;
+        order.push('4:enter');
+        return r4;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(entered4).toBe(false); // still properly serialized post-wedge
+      release3();
+      const release4 = await p4;
+      release4();
+      expect(order).toEqual(['3:enter', '4:enter']);
+    });
+
+    it('a disabled watchdog (0/Infinity) never fires onStuck and never changes ordinary blocking behavior', async () => {
+      const onStuck = vi.fn();
+      const m = makeInjectMutex({ warnMs: 0, forceReleaseMs: Infinity, onStuck });
+      const release1 = await m.acquire();
+      let entered2 = false;
+      const p2 = m.acquire().then((r2) => {
+        entered2 = true;
+        return r2;
+      });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(entered2).toBe(false); // no force-release ever fires
+      expect(onStuck).not.toHaveBeenCalled();
+      release1();
+      const release2 = await p2;
+      release2();
+    });
+  });
 });
 
 describe('WI-3455 — pidLooksLikePsuHost (host-side identity check, mirrors psu-pty-discovery)', () => {
