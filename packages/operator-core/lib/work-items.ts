@@ -91,7 +91,12 @@ import {
 } from './coord-lifecycle/records';
 import type { StoredAssumptionDeclaration } from './coord-lifecycle/records';
 import type { TopicTagMirrorOutcome, TopicTagMirrorResult } from './work-item-topic-tags';
-import { auditWhereSql, completionAuthorityPredicateSql, type WorkItemAudit } from './completion-audit';
+import {
+  auditWhereSql,
+  completionAuthorityPredicateSql,
+  derivedTerminalCompletionAuthority,
+  type WorkItemAudit,
+} from './completion-audit';
 import type { CompletionAttestation, PersistedCompletionEvidence } from './coord-lifecycle/records';
 import { isWorkItemCompletionAuthority, type WorkItemCompletionAuthority } from './work-item-completion-authority';
 // EI-19362441037986499: the DECISION lives in a leaf module so it is exercisable without PG
@@ -3714,6 +3719,29 @@ export async function setWorkItemState(
       }
     }
     const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
+    // EI-21184699633369991 (issue-family twin): a force ref-only correction must not turn a
+    // valid completion into an authority:null row. Hoisted out of the SQL below so the
+    // derivation and the CASE arm that honours it read the SAME condition.
+    const preserveExistingCompletionRecord =
+      Boolean(opts.force) &&
+      !opts.skipCompletionGate &&
+      !opts.completionAuthority &&
+      !(opts.completionEvidence && Object.keys(opts.completionEvidence).length > 0);
+    // design-to-code-coverage-seam-2026-09-02 P-003: an AGENT close that satisfied the gate
+    // with a bare completionRef judged nothing, and a NULL terminal authority reads as a
+    // legacy pre-contract close that COUNTS toward burn-down (D-005). Judge it here, through
+    // the same single grader, so no close made under the contract can be filed as predating
+    // it. Returns null — today's behaviour, unchanged — for every case in its doc.
+    const effectiveCompletionAuthority =
+      opts.completionAuthority ??
+      derivedTerminalCompletionAuthority({
+        isTerminal,
+        by: opts.by,
+        skipCompletionGate: opts.skipCompletionGate,
+        suppliedAuthority: opts.completionAuthority,
+        preserveExistingRecord: preserveExistingCompletionRecord,
+        evidence: opts.completionEvidence,
+      });
     // D-007: a genuine terminal success/drop resets the stale-reclaim requeue
     // counter, so a later legitimate re-open starts fresh with the full cap.
     const resetRequeue = isTerminal;
@@ -3768,17 +3796,17 @@ export async function setWorkItemState(
                                             ELSE ${opts.completionRef ?? null} END,
              -- P-004: the authority judgement for THIS close. NULL when the caller
              -- supplied none — a legacy-shaped close (D-008), which is the right reading
-             -- for the skipCompletionGate system paths and any writer not yet migrated.
+             -- for the skipCompletionGate system paths.
+             -- design-to-code-coverage-seam-2026-09-02 P-003 closed the OTHER half of that
+             -- sentence ("any writer not yet migrated"): an AGENT close that satisfied the
+             -- gate with a bare ref is now judged by derivedTerminalCompletionAuthority
+             -- above, so it can no longer be filed as a pre-contract legacy close. SYSTEM
+             -- and transport-only identities still land NULL, deliberately.
              authority = CASE WHEN ${Boolean(opts.skipCompletionGate)}
-                                THEN COALESCE(authority, ${opts.completionAuthority ?? null})
-                              WHEN ${
-                                Boolean(opts.force) &&
-                                !opts.skipCompletionGate &&
-                                !opts.completionAuthority &&
-                                !(opts.completionEvidence && Object.keys(opts.completionEvidence).length > 0)
-                              }
+                                THEN COALESCE(authority, ${effectiveCompletionAuthority ?? null})
+                              WHEN ${preserveExistingCompletionRecord}
                                 THEN authority
-                              ELSE ${opts.completionAuthority ?? null} END,
+                              ELSE ${effectiveCompletionAuthority ?? null} END,
              -- WI-1409142: sanitize only the INCOMING patch, and never its completion
              -- evidence. Two separate defects lived in the old
              -- jsonb_strip_nulls(payload || delta):
