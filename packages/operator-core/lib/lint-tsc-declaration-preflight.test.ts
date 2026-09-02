@@ -59,9 +59,22 @@ function discoverLegs(): { script: string; source: string }[] {
   return legs;
 }
 
-/** The directory a leg's `tsc -p <project>` compiles, e.g. `apps/operator`. */
+/**
+ * The directory a leg's `tsc -p <project>` compiles, e.g. `apps/operator`.
+ *
+ * Read ONLY out of the exported `TSC_COMMAND` assignment, never from the file at large: these
+ * scripts quote example `tsc --noEmit -p tsconfig.json` invocations in their usage prose, and a
+ * looser scan matches that instead — resolving a leg to the repo root, where nothing is owned,
+ * so it silently drops out of the census with no assertion firing.
+ *
+ * `null` means the leg is a FAN-OUT (`lint:tsc:papercusp-libs`, `lint:tsc:workspaces`) that
+ * discovers many per-package projects at runtime instead of naming one. Those are out of scope
+ * here — they compile packages that own no generated-declaration inputs.
+ */
 function projectDirOf(source: string): string | null {
-  const m = /-p\s+([\w./-]+tsconfig[\w.-]*\.json)/.exec(source);
+  const decl = /export const TSC_COMMAND\s*=\s*([\s\S]{0,200}?);/.exec(source);
+  if (!decl) return null;
+  const m = /-p\s+([\w./-]+tsconfig[\w.-]*\.json)/.exec(decl[1]);
   return m ? dirname(m[1]) : null;
 }
 
@@ -75,7 +88,19 @@ describe('lint:tsc legs refresh generated .d.mts companions before typechecking'
     // below become vacuously true and the gap reopens unobserved.
     expect(inputs.length).toBeGreaterThan(20);
     expect(legs.length).toBeGreaterThan(4);
-    expect(legs.every((l) => projectDirOf(l.source) !== null)).toBe(true);
+
+    // Single-project legs are the ones this rule can speak about at all. If the TSC_COMMAND
+    // shape ever changes, this count collapses and the census below goes quiet — which would
+    // read as "no leg is missing a preflight" rather than "no leg was examined".
+    const single = legs.filter((l) => projectDirOf(l.source) !== null);
+    expect(single.length).toBeGreaterThanOrEqual(4);
+
+    // Every leg is either single-project or a known fan-out; nothing falls between.
+    const unresolved = legs
+      .filter((l) => projectDirOf(l.source) === null)
+      .map((l) => l.script)
+      .sort();
+    expect(unresolved).toEqual(['lint:tsc:papercusp-libs', 'lint:tsc:workspaces']);
   });
 
   it('every leg whose project contains generated-declaration inputs runs the preflight', () => {
