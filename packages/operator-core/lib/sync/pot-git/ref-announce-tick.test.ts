@@ -157,7 +157,7 @@ describe('decideRefAnnounceReceiveCursor (EI-15335 → P-203 Leg A parking)', ()
     const rejected: RefAnnounceReceiveResult = {
       device: 'X',
       version: 1,
-      result: { action: 'rejected', reason: 'not-a-member', budgetState: null } as RefAnnounceReceiveResult['result'],
+      result: { action: 'rejected', reason: 'not-a-member', budgetState: null } as unknown as RefAnnounceReceiveResult['result'],
     };
     const prior: ParkedRefAnnouncements = { X: { rowId: 5, announcement: ann('X'), parkedSinceMs: NOW, attempts: 1 } };
     const d = decideRefAnnounceReceiveCursor([rejected], [{ ...row(5, 'X'), parked: true }], 9, prior, NOW);

@@ -58,6 +58,9 @@ export function makeFakeBootedHandle(opts: {
     harnessSlug,
     store: {} as never,
     ownLog,
+    // P-203 Leg A: the fake never joins a swarm, so it greets peers as nobody —
+    // a git-sync leg reading it falls back to the gh-login actor, as before.
+    announceIdentity: null,
     async append(op: LocalWriteOp): Promise<void> {
       appended.push(op);
       ops.push({
