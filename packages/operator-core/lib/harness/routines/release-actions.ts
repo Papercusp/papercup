@@ -4879,7 +4879,11 @@ export async function dispatchReleaseFixer(
   // outcome — the stale-candidate guard above does the same, and
   // `finalizeFrozenCandidateRepairFixer` releases the dispatch reservation on a null
   // `fired` rather than wedging the queue.
-  if (frozenRepairHasNoMeasuredFailures(repairQueue, failingTests)) {
+  // The redundant `repairQueue &&` is load-bearing for the type checker: the predicate
+  // returns a plain boolean rather than a `repairQueue is …` type guard on purpose, because
+  // a type guard would also narrow the NEGATIVE branch to `undefined` — which is false here
+  // (a defined queue WITH failures returns false) and would mis-type the dispatch path below.
+  if (repairQueue && frozenRepairHasNoMeasuredFailures(repairQueue, failingTests)) {
     console.log(
       `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: frozen repair ` +
         `queue has no measured failing tests — nothing to reproduce; a fresh verdict is the unblock, not a fixer`,
