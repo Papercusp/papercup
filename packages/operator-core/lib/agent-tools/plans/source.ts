@@ -19,10 +19,11 @@
 import * as fs from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
-import { parsePlan, type ParsedPlan, type PlanItem, type PlanStatus } from './parser';
+import { parsePlan, type ParsedPlan, type PlanItem } from './parser';
+import type { PlanIndexItem, PlanIndexDecision } from './derive-index';
 import { hashPlanContent } from './content-hash';
 import { summarizeForcedPast, type ForcedPastSummary } from './forced-past-stamp';
-import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
+import type { ParsePromoteResult } from './promote-policy';
 import type { Sql } from 'postgres';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
@@ -35,7 +36,6 @@ import { potHomeSlugForHarness } from '../../hive-federation';
 import { isTerminalItemStatus } from '../../fleet-drained-events';
 import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
 import { BLENDER_PLAN_SQL_PATTERN } from './plan-provenance';
-import { deriveOwnerGateMarkers } from './owner-gate-marker';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -1492,98 +1492,25 @@ export async function readAllPlans(
   }));
 }
 
-/** A plan item as stored in the derived `items` jsonb column (Stage 3 normalize). */
-export interface PlanIndexItem {
-  id: string;
-  status: string;
-  text: string;
-  importance: string;
-  blockedBy: string[];
-  decisionRefs: string[];
-  phase: string | null;
-  /** Optional marker parsed from plan prose for owner-gated items. */
-  ownerGateMarker?: string | null;
-}
-
-/** A decision as stored in the derived `decisions` jsonb column (Stage 3 normalize). */
-export interface PlanIndexDecision {
-  id: string;
-  title: string;
-  body: string;
-  date: string | null;
-  itemRefs: string[];
-}
-
 /**
- * Frontmatter + structured derived index for a plan, recomputed from the
- * canonical markdown on every write + backfill (D-006 — content is canonical;
- * these are a queryable derived index).
+ * The derived-index shapes and `deriveIndexFromContent` now live in the LEAF module
+ * `./derive-index`, and are re-exported here so existing importers are unaffected.
+ *
+ * They were moved out because deriving an index from markdown is pure, while THIS
+ * module is the plans data-access layer — it reaches `@papercusp/db-org`, the harness
+ * registry, hive federation and `fleet-drained-events`, and through that last edge the
+ * coordination → locks → db-org subgraph. Importing `source.ts` merely to derive an
+ * index dragged all of that in, which is what took `perf/child-driver.test.ts` red on
+ * the gate (the perf peer child stubs db-org to throw, and `locks/configure.ts` calls
+ * into it at module top level). Import from `./derive-index` in new code; see that
+ * module's header for the full chain.
  */
-export interface PlanIndex {
-  title: string | null;
-  status: PlanStatus | null;
-  created: string | null;
-  updated: string | null;
-  owner: string | null;
-  initiative: string | null;
-  /** Template TYPE (frontmatter-derived, mirrors `initiative`) — P-004/P-005. */
-  template: string | null;
-  supersedes: string[];
-  supersededBy: string | null;
-  isLegacy: boolean;
-  // Stage-3 structured index (normalize).
-  items: PlanIndexItem[];
-  decisions: PlanIndexDecision[];
-  nowState: string | null;
-  nowNext: string | null;
-  /** v2 P-001: the operator-side parsed `## Promote` policy ({ policy, warnings }), recomputed
-   *  on every write so consumers read it structured instead of re-parsing the markdown. */
-  promotePolicy: ParsePromoteResult;
-}
-
-/** Parse a plan body into its derived index (frontmatter + structured sections). */
-export function deriveIndexFromContent(content: string): PlanIndex {
-  const p = parsePlan(content);
-  const fm = p.frontmatter;
-  const ownerGateMarkers = deriveOwnerGateMarkers(p.items, p.now?.raw, p.decisions);
-  return {
-    title: fm.title ?? null,
-    status: fm.status ?? null,
-    created: fm.created ?? null,
-    updated: fm.updated ?? null,
-    owner: fm.owner ?? null,
-    initiative: fm.initiative ?? null,
-    // P-004/P-005: the template TYPE is frontmatter-derived (like initiative); the
-    // structured template_data is written separately + never parsed from frontmatter.
-    template: fm.template ?? null,
-    supersedes: fm.supersedes ?? [],
-    supersededBy: fm.supersededBy ?? null,
-    isLegacy: p.isLegacy,
-    items: p.items.map((i) => ({
-      id: i.id,
-      status: i.storedStatus,
-      text: i.text,
-      importance: i.importance,
-      blockedBy: i.blockedBy,
-      decisionRefs: i.decisionRefs,
-      phase: i.phase,
-      ownerGateMarker: ownerGateMarkers.get(i.id) ?? null,
-    })),
-    decisions: p.decisions.map((d) => ({
-      id: d.id,
-      title: d.title,
-      body: d.body,
-      date: d.date,
-      itemRefs: d.itemRefs,
-    })),
-    nowState: p.now?.state ?? null,
-    nowNext: p.now?.next ?? null,
-    // v2 P-001: parse the `## Promote` policy ONCE here (operator-side; the pure @papercusp/plan-parser
-    // has no YAML dep) so the write stores it structured + the consumers (lint/expand-generators/promote)
-    // stop re-parsing the markdown at read time.
-    promotePolicy: parsePromotePolicy(content),
-  };
-}
+export {
+  deriveIndexFromContent,
+  type PlanIndex,
+  type PlanIndexItem,
+  type PlanIndexDecision,
+} from './derive-index';
 
 /**
  * Resolve a plan row's items from the PG-canonical structured `items` index

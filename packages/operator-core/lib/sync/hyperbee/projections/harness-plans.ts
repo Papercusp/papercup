@@ -26,7 +26,11 @@ import { observeMergedOp } from '../clobber-events';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
-import { deriveIndexFromContent } from '../../../agent-tools/plans/source';
+// LEAF import, deliberately NOT `plans/source` (WI-2141279): a projection module is in
+// the perf peer-child's import graph, and `plans/source` transitively reaches
+// `agent-tools/locks/configure`, which calls into the stubbed `@papercusp/db-org` at
+// module top level and kills the child before it can emit `ready`.
+import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index';
 import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
 import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
 import {
