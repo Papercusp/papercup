@@ -197,6 +197,36 @@ describe('fetchOverDuplex — pre-destroyed duplex (WI-3496)', () => {
     expect(res.stderr).toContain('duplex already destroyed before fetch began');
     expect(Date.now() - started).toBeLessThan(2_000);
   });
+
+  it('names the stub REASON it was destroyed with, not a generic "no live dial path"', async () => {
+    // Every dial leg destroys its fail-soft stub with a distinct reason; the
+    // transport must surface it or a dead registry, a backoff skip and a
+    // missing swarm join all print identically (the P-203 rig stall).
+    const { fetchOverDuplex } = await import('./fetch-transport');
+    const dead = new PassThrough();
+    dead.on('error', () => {});
+    dead.destroy(new Error('no-such-repo backoff: dcJWGlbQ definitively refused gh-1; next dial in 1700s'));
+    const res = await fetchOverDuplex('/nonexistent/repo.git', dead, ['+refs/*:refs/*'], {
+      timeoutMs: 10_000,
+    });
+    expect(res.code).toBe(-1);
+    expect(res.stderr).toContain(
+      'duplex already destroyed before fetch began (no-such-repo backoff: dcJWGlbQ definitively refused gh-1; next dial in 1700s)',
+    );
+    expect(res.stderr).not.toContain('(no live dial path)');
+  });
+
+  it('falls back to "no live dial path" when the stub carried no reason', async () => {
+    const { fetchOverDuplex } = await import('./fetch-transport');
+    const dead = new PassThrough();
+    dead.on('error', () => {});
+    dead.destroy();
+    const res = await fetchOverDuplex('/nonexistent/repo.git', dead, ['+refs/*:refs/*'], {
+      timeoutMs: 10_000,
+    });
+    expect(res.code).toBe(-1);
+    expect(res.stderr).toContain('duplex already destroyed before fetch began (no live dial path)');
+  });
 });
 
 /**
