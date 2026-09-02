@@ -68,7 +68,13 @@ describe('addressContinuationToOwner', () => {
 });
 
 describe('the addressing is applied where a caller-supplied note cannot bypass it', () => {
-  const SOURCE = readFileSync(join(__dirname, 'request-compaction.ts'), 'utf8');
+  // Subject path is overridable so `scripts/mutation-probe.sh --against-commit`
+  // can point this at a frozen pre-fix snapshot OUTSIDE the tree — proving the
+  // guard falsifiable without mutating the shared checkout that git-sync sweeps.
+  const SOURCE = readFileSync(
+    process.env.WI2140968_SUBJECT ?? join(__dirname, 'request-compaction.ts'),
+    'utf8',
+  );
 
   it('wraps the continueNote ?? defaultContinueNote expression, not just the default', () => {
     // The bypass is the case worth guarding: `continueNote` REPLACES the default

@@ -18,7 +18,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { truncateHint } from './request-compaction';
+import { addressContinuationToOwner, truncateHint } from './request-compaction';
+/**
+ * WI-2140968: every successor first prompt is now prefixed with the ownerId it
+ * was written FOR. Derive the prefix from the implementation rather than
+ * restating it — a copied literal would drift the moment the wording changes,
+ * and these assertions are about the note BODY, not the safety preamble.
+ */
+const ADDRESS_PREFIX = addressContinuationToOwner('', 'su-caller');
 import { __resetRefusalMarkers } from '../../enforcement-gate-io';
 import { __resetRespawnExpectedMarkers, consumeRespawnExpected } from '../../carry-respawn-marker';
 const flushMarks = vi.hoisted(() => new Map<string, number>());
@@ -414,13 +421,20 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     );
   });
 
-  it('continueNote overrides the derived first prompt verbatim (behind the provenance envelope)', async () => {
+  it('continueNote overrides the derived first prompt verbatim (behind the provenance envelope + WI-2140968 address line)', async () => {
     findLiveHost.mockReturnValue(carryHost);
     await call({ focus: 'x', continueNote: 'resume: do the thing' });
     const msg = injected();
     expect(msg.mode).toBe('carry-respawn');
     expect(msg.data).toMatch(ENVELOPE_LINE);
-    expect(msg.data.replace(ENVELOPE_LINE, '')).toBe('resume: do the thing');
+    const payload = msg.data.replace(ENVELOPE_LINE, '');
+    // WI-2140968: a caller-supplied note REPLACES the derived one, so it is the
+    // branch that would ship unaddressed if the stamp lived in
+    // defaultContinueNote. It must carry the address line too.
+    expect(payload.startsWith(ADDRESS_PREFIX)).toBe(true);
+    expect(payload).toContain('su-caller');
+    // The caller's text still rides verbatim — unparaphrased, untruncated.
+    expect(payload.replace(ADDRESS_PREFIX, '')).toBe('resume: do the thing');
   });
 
   it('autoContinue is a wire-compat no-op: passing false still respawns (a carry-respawn always resumes)', async () => {
@@ -829,8 +843,13 @@ describe('session:request-compaction over-long hint truncation (EI-7032)', () =>
     it('an over-long continueNote also parses instead of rejecting', async () => {
       const b = body(await call({ focus: 'x', continueNote: 'z'.repeat(1400) }));
       expect(b).toMatchObject({ ok: true });
-      // The NOTE is capped at 1000; the provenance envelope line rides on top of it.
-      expect(injected().data.replace(ENVELOPE_LINE, '').length).toBeLessThanOrEqual(1000);
+      // The CALLER'S note is capped at 1000; the provenance envelope line and the
+      // WI-2140968 address line both ride on top of it. The cap governs the
+      // caller's hint — measuring it against the fixed machine-authored preamble
+      // too would make every future safety line eat the caller's budget.
+      const note = injected().data.replace(ENVELOPE_LINE, '').replace(ADDRESS_PREFIX, '');
+      expect(note.length).toBeLessThanOrEqual(1000);
+      expect(note.startsWith('z')).toBe(true);
     });
 
     it('a normal short focus rides untouched inside the first prompt', async () => {
