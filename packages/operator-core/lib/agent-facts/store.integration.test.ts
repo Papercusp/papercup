@@ -338,6 +338,7 @@ describe('createdBy binding (EI-19952118814692217 regression guard)', () => {
     // NOT NULL constraint fires instead and names the actual column, which is
     // what makes the fail-soft catch's logged error diagnosable at all.
     const badInput = {
+      ttlSec: 3600,
       scope: 'owner',
       scopeRef: 'su-missing-createdby',
       key: 'missing-createdby',
@@ -687,7 +688,13 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
     const live = await foldFacts(
       [{ scope: 'owner', scopeRef }],
-      { workspaceId: WS, audiences: 'all', limitPerSelector: 500 },
+      // WI-6935: read past the ordinary cap on purpose — `wall:`/`dead-end:` keys are
+      // EXEMPT from the cap and its eviction ranking, so they live ALONGSIDE the 500
+      // ordinary survivors (502 total here). foldFacts orders by updated_at DESC, and
+      // these two were asserted first (oldest-updated) — a limitPerSelector pinned to
+      // exactly FACTS_PER_SCOPE_CAP truncates the read before it reaches them, which
+      // reads as "the wall was evicted" when it was actually just never fetched.
+      { workspaceId: WS, audiences: 'all', limitPerSelector: FACTS_PER_SCOPE_CAP + 100 },
       db.sql,
     );
     const keys = live.map((f) => f.key);
@@ -713,7 +720,10 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // The two rows the OLD `ORDER BY updated_at DESC` ranking would have killed
     // FIRST, precisely because they are written once and never touched again.
     // Asserting them before the filler makes them the oldest-updated in the scope.
-    await assertFact({ ...base, key: 'settled', body: 'a verified finding', confidence: 'verified' }, db.sql);
+    await assertFact(
+      { ...base, key: 'settled', body: 'a verified finding', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
     await assertFact({ ...base, key: 'long-lived', body: 'deliberately given 90 days', ttlSec: 90 * 86400 }, db.sql);
     // …and a hedge, which SHOULD be the first thing sacrificed.
     await assertFact({ ...base, key: 'hedge', body: 'a hunch', confidence: 'suspected' }, db.sql);
