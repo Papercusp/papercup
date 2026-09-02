@@ -609,6 +609,63 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
+  it('does not bar an independent critic from grading when a second critic vetted through the OTHER channel (EI-22182364716054326)', async () => {
+    // Two SEPARATE attestations for the same rubric revision, one per channel —
+    // the shape a rubric vetted twice actually produces, since scorecards:emit
+    // refuses vettingConsult + vettingWorkItem together (WI-41477). Before this
+    // fix, resolveAcceptanceGraderEligibility read only the first matching card
+    // via `.find()` and would have barred su-reviewer here as a false "sole critic".
+    listScorecards.mockImplementation(async (query: { rubricRef?: string; subjectRef?: string }) => {
+      if (query.rubricRef === 'meta-acceptance-rubric' && query.subjectRef === 'ar-some-plan') {
+        return [
+          {
+            issueId: 'EI-vetting-consult',
+            createdAt: '2026-08-29T01:00:00Z',
+            createdBy: 'su-author',
+            rubricRef: 'meta-acceptance-rubric',
+            ratings: META_RATINGS,
+            nKeys: 2,
+            missingKeys: [],
+            extraKeys: [],
+            rubricResolved: true,
+            synthesized: false,
+            score10: 10,
+            linkedItems: [],
+            vetting: { consultId: 'conv-vet-1', rubricRevision: 7, critiquePosts: 2, critics: ['su-reviewer'] },
+          },
+          {
+            issueId: 'EI-vetting-workitem',
+            createdAt: '2026-08-29T02:00:00Z',
+            createdBy: 'su-author',
+            rubricRef: 'meta-acceptance-rubric',
+            ratings: META_RATINGS,
+            nKeys: 2,
+            missingKeys: [],
+            extraKeys: [],
+            rubricResolved: true,
+            synthesized: false,
+            score10: 10,
+            linkedItems: [],
+            vetting: { workItemId: 'WI-review-1', rubricRevision: 7, critiquePosts: 2, critics: ['su-other-reviewer'] },
+          },
+        ] as never;
+      }
+      return [];
+    });
+
+    const gradeByConsultCritic = await emitScorecard(
+      { rubricRef: 'ar-some-plan', ratings: META_RATINGS } as never,
+      { createdBy: 'su-reviewer', ctxHarness: 'papercusp' },
+    );
+    expect(gradeByConsultCritic).not.toMatchObject({ code: 'grader_is_sole_vetting_critic' });
+
+    const gradeByWorkItemCritic = await emitScorecard(
+      { rubricRef: 'ar-some-plan', ratings: META_RATINGS } as never,
+      { createdBy: 'su-other-reviewer', ctxHarness: 'papercusp' },
+    );
+    expect(gradeByWorkItemCritic).not.toMatchObject({ code: 'grader_is_sole_vetting_critic' });
+  });
+
   it('refuses third-party critique from a consult unrelated to the vetted rubric', async () => {
     readVettingConsultCritique.mockResolvedValue(
       critique({ relevance: { matched: false, matchedRefs: [], via: [] } }),
