@@ -20,6 +20,23 @@ use ratatui::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+/// Minimum body width for the Surface B cockpit (P-004 / D-005,
+/// pui-psu-exact-launch-and-task-latency-2026-09-01).
+///
+/// DERIVED from `draw`'s own horizontal constraints rather than chosen by feel:
+/// the Agent Chat dock is `Length(40)`, the presence rail `Length(30)`, and the
+/// body keeps `Min(48)` — 118 columns, rounded up to 120.
+///
+/// This was `260` until WI-2140985 — roughly 2.7x what the layout it guards
+/// actually needs. At 260 the cockpit never rendered on an ordinary terminal,
+/// which is the same user-visible outcome D-005 rejected for the old opt-in
+/// toggle ("hiding Agent Chat behind an optional toggle does not satisfy the
+/// original layout intent"). The suite stayed green because both dock tests
+/// straddled the gap — one renders at 80, the other at 280 — so nothing
+/// exercised 120..=259, where real terminals live. Guarded now by
+/// `operator_dock_renders_at_ordinary_terminal_width`.
+pub(crate) const SURFACE_B_MIN_WIDTH: u16 = 120;
+
 pub fn draw(f: &mut Frame, app: &App) {
     // Pinned single-pane dock mode (native-terminal-desktop P-013 / D-011): the
     // desktop-docked native terminal's panes render JUST one tab's body — no
@@ -84,7 +101,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         // Surface B needs enough room for a readable main pane, presence rail,
         // and the fixed Agent Chat column. Keep the existing full-width layout
         // below this threshold rather than collapsing its content to a sliver.
-        && root[1].width >= 260
+        // The threshold is the arithmetic of the constraints just below, not a
+        // feel-good margin — see SURFACE_B_MIN_WIDTH.
+        && root[1].width >= SURFACE_B_MIN_WIDTH
     {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -7497,8 +7516,8 @@ mod tests {
             false,
             None,
         );
-        // Wide enough (>=260) → the persistent dock is carved on the right
-        // alongside Plans without an opt-in toggle.
+        // Comfortably above SURFACE_B_MIN_WIDTH → the persistent dock is carved
+        // on the right alongside Plans without an opt-in toggle.
         let text = render(&app, 280, 20);
         assert!(
             text.contains("Title alpha"),
@@ -7594,11 +7613,66 @@ mod tests {
         app.tab = Tab::Plans;
         app.plans = vec![plan("alpha", "todo")];
         app.operator_dock_open = true;
-        // Below the width gate (<100) the dock is suppressed; Plans gets full width.
+        // Below SURFACE_B_MIN_WIDTH the dock is suppressed; Plans gets full width.
         let text = render(&app, 80, 20);
         assert!(text.contains("Title alpha"));
         // The dock's focus marker ("○ o" / "●") never appears when it isn't drawn.
         assert!(!text.contains("○ o"));
+    }
+
+    /// WI-2140985 regression (found by independent acceptance grading of
+    /// pui-psu-exact-launch-and-task-latency-2026-09-01, card
+    /// EI-22123862806145770): the Surface B cockpit must render at an ORDINARY
+    /// terminal width, not only an ultra-wide one.
+    ///
+    /// The gate was `>= 260` while the layout it guards needs 118 (dock 40 +
+    /// presence rail 30 + body 48), so D-005's "always-visible" Agent Chat pane
+    /// was invisible on every realistic terminal. The suite could not see it:
+    /// `operator_dock_hidden_on_narrow_terminal` renders at 80 and
+    /// `operator_dock_is_persistent_beside_tab_content` at 280, so both pass
+    /// under a gate of 120 OR 260 and nothing covered the band between. This
+    /// test sits inside that band and FAILS under the old 260 gate.
+    #[test]
+    fn operator_dock_renders_at_ordinary_terminal_width() {
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        app.plans = vec![plan("alpha", "todo")];
+        app.set_chat_history(
+            "c1".into(),
+            vec![crate::models::ChatMessage::assistant("docked reply here")],
+            false,
+            None,
+        );
+        // A commonplace wide-but-not-ultrawide terminal, inside the band the
+        // old gate excluded.
+        let text = render(&app, 160, 20);
+        assert!(
+            text.contains("Title alpha"),
+            "the Plans tab content still renders beside the dock at width 160"
+        );
+        assert!(
+            text.contains("Agent Chat"),
+            "the Agent Chat dock renders at an ordinary terminal width (regression: the gate was 260)"
+        );
+        assert!(
+            text.contains("docked reply here"),
+            "the dock shows its transcript at an ordinary terminal width"
+        );
+    }
+
+    /// The gate must stay the layout's own arithmetic rather than drifting back
+    /// into a magic number: dock `Length(40)` + presence rail `Length(30)` +
+    /// body `Min(48)` = 118, and it must still fit an ordinary wide terminal.
+    #[test]
+    fn surface_b_min_width_matches_the_layout_constraints_it_guards() {
+        assert!(
+            SURFACE_B_MIN_WIDTH >= 40 + 30 + 48,
+            "the gate must leave room for the dock, the presence rail and a readable body"
+        );
+        assert!(
+            SURFACE_B_MIN_WIDTH <= 160,
+            "the gate must fit an ordinary wide terminal — above this, D-005's always-visible pane is hidden in practice (WI-2140985)"
+        );
     }
 
     #[test]
