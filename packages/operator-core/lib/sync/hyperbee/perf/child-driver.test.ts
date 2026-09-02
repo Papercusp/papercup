@@ -18,11 +18,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import createTestnet from 'hyperdht/testnet.js';
-import { spawnPeerChild, spawnProcMesh, type PeerChildHandle } from './child-driver';
+import { PeerChildHandle, spawnPeerChild, spawnProcMesh } from './child-driver';
 import { MeshFormationError } from './mesh-outcome';
 import type { PeerChildConfig } from './peer-child';
 
@@ -136,7 +137,13 @@ describe('local perf peer boot', () => {
     );
 
     try {
-      await expect(child.waitFor('ready', 30_000)).resolves.toMatchObject({ evt: 'ready' });
+      // A null here is almost always the child dying at module-LINK time — a name bound from
+      // '@papercusp/db-org' that no-pg-stub.mjs does not export (guarded by
+      // no-pg-stub-covers-db-org-imports.test.ts). Put the child's own cause in the assertion
+      // message: a bare `resolves.toMatchObject` reports "expected null to match { evt: 'ready' }"
+      // and leaves the one-line SyntaxError unread in `logs` (WI-761481, WI-2141194 #9).
+      const ready = await child.waitFor('ready', 30_000);
+      expect(ready, child.diagnostics()).toMatchObject({ evt: 'ready' });
       await expect(child.stopAndCollect(30_000)).resolves.toMatchObject({
         evt: 'result',
         role: 'writer',
@@ -148,5 +155,39 @@ describe('local perf peer boot', () => {
       await testnet.destroy();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('PeerChildHandle settles a pending waitFor when the child dies (WI-2141194 #9)', () => {
+  it('resolves null as soon as the child closes, and diagnostics() names the exit + stderr', async () => {
+    // A real OS child that fails the way a link-time SyntaxError does: one line on stderr, a
+    // non-zero exit, nothing on stdout. The 30s budget must NOT be spent — the child is gone
+    // within ~100ms and the event it was asked for can never arrive.
+    const proc = spawn(process.execPath, [
+      '-e',
+      "process.stderr.write('SyntaxError: fake link failure for the settle test\\n'); process.exit(7);",
+    ]);
+    const logs: string[] = [];
+    const handle = new PeerChildHandle(
+      { role: 'writer', workspaceId: 'ws', harnessSlug: 'h', root: '/tmp/unused', peerIndex: 0, count: 0 },
+      proc,
+      (line) => logs.push(line),
+    );
+    const t0 = Date.now();
+    const ready = await handle.waitFor('ready', 30_000);
+    const elapsedMs = Date.now() - t0;
+    expect(ready).toBeNull();
+    // Far below the requested budget: the settle came from the child's close, not the timer.
+    expect(elapsedMs).toBeLessThan(10_000);
+    expect(handle.exited).toBe(true);
+    expect(handle.closed).toBe(true);
+    expect(handle.exitCode).toBe(7);
+    const diagnostics = handle.diagnostics();
+    expect(diagnostics).toContain('exit code 7');
+    expect(diagnostics).toContain('fake link failure for the settle test');
+    // A waitFor issued AFTER close must not wait either.
+    await expect(handle.waitFor('result', 30_000)).resolves.toBeNull();
+    // The stderr line still reached the ordinary log sink as before.
+    expect(logs.some((line) => line.includes('fake link failure'))).toBe(true);
   });
 });

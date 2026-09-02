@@ -118,13 +118,22 @@ export function catchUpElapsedMs(
   return opts.tAwait - opts.tGo + opts.elapsedMs;
 }
 
+/** How many trailing stderr lines a handle keeps for `diagnostics()`. */
+const STDERR_TAIL_LINES = 40;
+
 export class PeerChildHandle {
   readonly events: ChildEvent[] = [];
   private waiters: Array<{
     pred: (e: ChildEvent) => boolean;
-    resolve: (e: ChildEvent) => void;
+    resolve: (e: ChildEvent | null) => void;
   }> = [];
   exited = false;
+  /** Set once the process has exited AND every stdio stream has drained — after this no
+   *  further event can arrive, so every pending `waitFor` is settled with null. */
+  closed = false;
+  exitCode: number | null = null;
+  exitSignal: NodeJS.Signals | null = null;
+  private readonly stderrTail: string[] = [];
 
   constructor(
     readonly cfg: PeerChildConfig,
@@ -158,31 +167,73 @@ export class PeerChildHandle {
     });
     proc.stderr!.setEncoding('utf8');
     proc.stderr!.on('data', (chunk: string) => {
-      for (const line of chunk.split('\n')) {
-        if (line.trim()) this.log(`[child ${cfg.peerIndex} stderr] ${line.trim()}`);
+      for (const raw of chunk.split('\n')) {
+        const line = raw.trim();
+        if (!line) continue;
+        this.log(`[child ${cfg.peerIndex} stderr] ${line}`);
+        this.stderrTail.push(line);
+        if (this.stderrTail.length > STDERR_TAIL_LINES) this.stderrTail.shift();
       }
     });
-    proc.on('exit', () => {
+    proc.on('exit', (code, signal) => {
       this.exited = true;
+      this.exitCode = code;
+      this.exitSignal = signal;
+    });
+    // 'close' fires after 'exit' AND after stdout/stderr have fully drained, so every event
+    // the child managed to emit has already been parsed above. A waiter still pending here
+    // is waiting for something that can no longer happen: settle it NOW rather than letting
+    // it sit out its full timeout. Measured (WI-2141194 #9): a child that dies at module-link
+    // time exits in ~3s, and before this the parent's `waitFor('ready', 30_000)` spent the
+    // remaining ~27s reporting nothing — the failure was a timeout that named no cause.
+    proc.on('close', () => {
+      this.closed = true;
+      const pending = this.waiters;
+      this.waiters = [];
+      for (const w of pending) w.resolve(null);
     });
   }
 
-  /** First event (past or future) matching `pred`, bounded by `timeoutMs`. */
+  /**
+   * First event (past or future) matching `pred`, bounded by `timeoutMs`. Resolves null on
+   * timeout — or IMMEDIATELY once the child has closed without emitting a match, since the
+   * event can never arrive; read `diagnostics()` for why.
+   */
   waitFor(pred: string | ((e: ChildEvent) => boolean), timeoutMs: number): Promise<ChildEvent | null> {
     const p = typeof pred === 'string' ? (e: ChildEvent) => e.evt === pred : pred;
     const past = this.events.find(p);
     if (past) return Promise.resolve(past);
+    if (this.closed) return Promise.resolve(null);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.waiters = this.waiters.filter((w) => w.resolve !== wrapped);
         resolve(null);
       }, timeoutMs);
-      const wrapped = (e: ChildEvent) => {
+      const wrapped = (e: ChildEvent | null) => {
         clearTimeout(timer);
         resolve(e);
       };
       this.waiters.push({ pred: p, resolve: wrapped });
     });
+  }
+
+  /**
+   * One string naming WHY an awaited event never came: whether the child is still running,
+   * how it exited, and the tail of its stderr. Meant for the message slot of an assertion, so
+   * a null from `waitFor` fails with the child's own one-line cause (a link-time
+   * `SyntaxError` from no-pg-stub.mjs, an unhandled rejection, a signal) instead of the bare
+   * "expected null to match { evt: 'ready' }" that hid exactly that for days (WI-761481,
+   * WI-2141194 #9).
+   */
+  diagnostics(): string {
+    const state = !this.exited
+      ? 'child still running'
+      : this.exitSignal
+        ? `child exited on signal ${this.exitSignal}`
+        : `child exited with exit code ${this.exitCode}`;
+    const events = this.events.map((e) => String(e.evt)).join(', ') || '(none)';
+    const stderr = this.stderrTail.length ? this.stderrTail.join('\n    ') : '(empty)';
+    return `[child ${this.cfg.peerIndex} ${this.cfg.role}] ${state}; events seen: ${events}; stderr tail:\n    ${stderr}`;
   }
 
   send(line: 'go' | 'stop' | 'ping' | 'wait-snapshot'): void {
