@@ -578,6 +578,11 @@ defineTool({
       // EI-19320479870270699: the third, non-judging outcome — armed alongside the
       // other two so "await the decision" covers every way the run can end.
       buildKey("checkpoint-inconclusive", { pipeline }),
+      // EI-20689157831228179: the FOURTH outcome — the suite passed but a post-suite
+      // gate withheld promotion (payload.reason names which). Without this a caller
+      // slept to the full timeout on the single most actionable result the gate can
+      // produce: the code fix worked, only promotion is blocked.
+      buildKey("checkpoint-held", { pipeline }),
     ];
     const note =
       args.note ??

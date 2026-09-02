@@ -4228,6 +4228,10 @@ describe("runGreenCheckpoint", () => {
       "release:green:papercusp",
       "green-checkpoint:red",
       "green-checkpoint:red:papercusp",
+      // EI-20689157831228179: the held outcome joined the sibling set — an
+      // inconclusive verdict retires a stale pending "held" wait too.
+      "green-checkpoint:held",
+      "green-checkpoint:held:papercusp",
     ]);
   });
 
@@ -12275,6 +12279,54 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
     // ...and a held verdict points AT that log, or the trailer is unreachable from the tool
     // surface that reports the hold (a held result used to carry no logPath at all).
     expect(r.logPath).toBe(logPath);
+  });
+
+  it("EI-20689157831228179: a HELD verdict fires the global + pipeline-scoped held event — checkpoint:await must not sleep to its deadline on the single most actionable outcome the gate can produce", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const logPath = join(repo, "verdict-held-event.log");
+    const deps = withLog(stubDeps(true).deps, true, logPath);
+    deps.perfGate = async () => ({ action: "block", summary: "perf BLOCK" });
+    const emitted: { key: string; summary: string; payload: unknown; cancelSiblingKeysFor?: string[] }[] = [];
+    deps.emitEvent = async ({ key, summary, payload, cancelSiblingKeysFor }) => {
+      emitted.push({ key, summary, payload, cancelSiblingKeysFor });
+    };
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(r).toMatchObject({ green: true, advanced: false, reason: "perf-held" });
+    const pipeline = pipelineName(repo);
+    const heldEvents = emitted.filter((e) => e.key.startsWith("green-checkpoint:held"));
+    expect(heldEvents.map((e) => e.key)).toEqual([
+      "green-checkpoint:held",
+      `green-checkpoint:held:${pipeline}`,
+    ]);
+    for (const e of heldEvents) {
+      expect(e.payload).toMatchObject({
+        sha: r.candidate,
+        pipeline,
+        reason: "perf-held",
+        summary: "perf BLOCK",
+      });
+      expect(e.summary).toContain("HELD");
+      expect(e.summary).toContain("perf-held");
+      // The three OTHER terminal outcomes are mutually exclusive with this one for the
+      // same candidate — a held emit must retire any stale pending wait on them.
+      expect(e.cancelSiblingKeysFor).toEqual(
+        expect.arrayContaining([
+          "release:green",
+          `release:green:${pipeline}`,
+          "green-checkpoint:red",
+          `green-checkpoint:red:${pipeline}`,
+          "green-checkpoint:inconclusive",
+          `green-checkpoint:inconclusive:${pipeline}`,
+        ]),
+      );
+    }
+    // Neither of the other three families fired — held is mutually exclusive with them.
+    expect(emitted.some((e) => e.key.startsWith("release:green"))).toBe(false);
+    expect(emitted.some((e) => e.key.startsWith("green-checkpoint:red"))).toBe(false);
   });
 
   it("a candidate that really did become the pin says promoted=true (the positive control)", async () => {

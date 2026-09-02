@@ -1496,49 +1496,6 @@ export async function emitInconclusiveCheckpointVerdict(
   });
 }
 
-/**
- * EI-20689157831228179: emit the HELD verdict pair — the suite passed
- * (`result.green === true`) but a post-suite gate withheld promotion
- * (`result.advanced === false`, `result.reason` names which gate: e.g.
- * `desktop-perf-held`, `perf-held`, `delta-held`, `cupboard-hygiene-held`). Mirrors
- * `emitInconclusiveCheckpointVerdict`'s shape exactly (global + pipeline-scoped keys,
- * shared sibling-cancellation) so a `checkpoint:await` caller wakes on this outcome
- * instead of sleeping to its full timeout with `eventCount:0` on the single most
- * actionable result the gate can produce: the fix worked, only promotion is blocked.
- */
-export async function emitHeldCheckpointVerdict(
-  result: CheckpointResult,
-  pipeline: string,
-  emit: (opts: EmitAwaitedEventOpts) => Promise<unknown>,
-): Promise<void> {
-  const summary = `${pipelineTag(pipeline)} green-checkpoint: ${result.candidate.slice(0, 8)} PASSED but HELD (${result.reason}) — promotion withheld${result.summary ? `: ${result.summary}` : ""}`;
-  const payload = {
-    sha: result.candidate,
-    from: result.from,
-    pipeline,
-    candidateSource: result.candidateSource ?? "tip",
-    ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
-    reason: result.reason,
-    summary: result.summary ?? null,
-    runId: result.runId ?? null,
-  };
-  const cancelSiblingKeysFor = checkpointVerdictSiblingKeys(pipeline);
-  await emit({
-    key: "green-checkpoint:held",
-    summary,
-    payload,
-    source: "green-checkpoint",
-    cancelSiblingKeysFor,
-  });
-  await emit({
-    key: `green-checkpoint:held:${pipeline}`,
-    summary,
-    payload,
-    source: "green-checkpoint",
-    cancelSiblingKeysFor,
-  });
-}
-
 export interface CheckpointRunLock {
   acquired: boolean;
   lockDir: string;
@@ -11597,6 +11554,58 @@ async function runGreenCheckpointInner(
     );
   }
 
+  // EI-20689157831228179: the suite is GREEN, but a post-suite gate is about to withhold
+  // promotion (perf/desktop-perf/delta/cupboard-hygiene "-held" branches below). Before this
+  // existed, that outcome fired NEITHER `release:green` (only an actual advance dispatches
+  // it) NOR `green-checkpoint:red` (green IS true) NOR `green-checkpoint:inconclusive`
+  // (green is `true`, not `null` — a verdict WAS rendered), so a `checkpoint:await` caller
+  // slept to its full deadline on the single most actionable outcome the gate can produce.
+  // Mirrors `emitTerminalRed`'s local-closure shape immediately below (same `deps.emitEvent`
+  // call, same cancelSiblingKeysFor convention) rather than the CLI-wrapper's
+  // `emitInconclusiveCheckpointVerdict` path, because — like red — a held verdict has no
+  // single funnel every exit passes through; each held branch calls this directly.
+  const emitHeldVerdict = async (
+    reason: string,
+    summary: string,
+  ): Promise<void> => {
+    const pipeline = pipelineName(cfg.integrationRoot);
+    const heldSummary = `${pipelineTag(pipeline)} green-checkpoint: ${candidate.slice(0, 8)} PASSED but HELD (${reason}) — promotion withheld: ${summary}`;
+    const payload = {
+      sha: candidate,
+      from: lastReady ?? null,
+      pipeline,
+      reason,
+      summary,
+      runId: deps.runId ?? null,
+    };
+    const cancelSiblingKeysFor = [
+      "release:green",
+      `release:green:${pipeline}`,
+      "green-checkpoint:red",
+      `green-checkpoint:red:${pipeline}`,
+      "green-checkpoint:inconclusive",
+      `green-checkpoint:inconclusive:${pipeline}`,
+    ];
+    try {
+      await deps.emitEvent?.({
+        key: "green-checkpoint:held",
+        summary: heldSummary,
+        payload,
+        cancelSiblingKeysFor,
+      });
+      await deps.emitEvent?.({
+        key: `green-checkpoint:held:${pipeline}`,
+        summary: heldSummary,
+        payload,
+        cancelSiblingKeysFor,
+      });
+    } catch (error) {
+      deps.log(
+        `warn: green-checkpoint:held emit failed: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  };
+
   // F2 (round-4 P-031): the candidate is GREEN — but if the operator is in a definitive
   // per-thread wedge right NOW, don't silently advance the green pin into a degraded
   // runtime. Default-WARN (surface + still advance); BLOCK only when the owner armed
@@ -11613,6 +11622,7 @@ async function runGreenCheckpointInner(
           perf.summary,
         )
         .catch(() => {});
+      await emitHeldVerdict("perf-held", perf.summary);
       stampPromotion(false, "perf-held");
       return {
         advanced: false,
@@ -11692,6 +11702,7 @@ async function runGreenCheckpointInner(
           desktopPerf.summary,
         )
         .catch(() => {});
+      await emitHeldVerdict("desktop-perf-held", desktopPerf.summary);
       stampPromotion(false, "desktop-perf-held");
       return {
         advanced: false,
@@ -11723,6 +11734,7 @@ async function runGreenCheckpointInner(
           delta.summary,
         )
         .catch(() => {});
+      await emitHeldVerdict("delta-held", delta.summary);
       stampPromotion(false, "delta-held");
       return {
         advanced: false,
@@ -11754,6 +11766,7 @@ async function runGreenCheckpointInner(
           cupboardHygiene.summary,
         )
         .catch(() => {});
+      await emitHeldVerdict("cupboard-hygiene-held", cupboardHygiene.summary);
       stampPromotion(false, "cupboard-hygiene-held");
       return {
         advanced: false,
