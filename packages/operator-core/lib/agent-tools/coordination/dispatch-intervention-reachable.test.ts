@@ -34,6 +34,16 @@ const INVOKE_TS = fileURLToPath(
 );
 
 /**
+ * Strip `//` and block comments. These lists are HEAVILY commented and the prose
+ * contains apostrophes ("an item's body"), so a naive quote match reads comment
+ * text as tool names — measured: 53 parsed against 45 real. The positive control
+ * below is what caught that, and is why it exists.
+ */
+function stripComments(block: string): string {
+  return block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/[^\n]*/g, '$1');
+}
+
+/**
  * Extract every `export const <NAME>_MCP_TOOL_NAMES: readonly string[] = [...]`
  * block and the quoted tool names inside it.
  */
@@ -44,7 +54,7 @@ function parseSeedLists(source: string): Map<string, string[]> {
     const start = m.index + m[0].length;
     const end = source.indexOf('\n];', start);
     if (end === -1) continue;
-    const body = source.slice(start, end);
+    const body = stripComments(source.slice(start, end));
     out.set(m[1], [...body.matchAll(/'([^']+)'/g)].map((t) => t[1]));
   }
   return out;
