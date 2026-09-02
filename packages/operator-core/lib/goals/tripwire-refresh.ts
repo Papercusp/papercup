@@ -57,7 +57,65 @@ export type GoalTripwireLike = {
   threshold: number;
   current?: number | null;
   unit?: string;
+  /**
+   * PROVENANCE. Written ONLY by this module's platform-advance path; absent
+   * means nobody measured this reading — an agent typed it (EI-21605510614702802).
+   *
+   * ⚠ This field is deliberately ABSENT from `TripwireSchema` (the zod shape
+   * `goals:create` / `goals:update` / `goals:propose` validate against), and zod
+   * strips unknown keys. An agent therefore cannot forge a stamp, and an agent
+   * update that rewrites the tripwire array correctly DROPS the stamp — the
+   * value it just hand-wrote reads as hand-set until the platform re-derives it.
+   */
+  measuredBy?: TripwireMeasuredBy | null;
+  /**
+   * An optional DECLARED evidence source for a metric the platform has no
+   * built-in resolver for. Consulted only when `metric` has no entry in
+   * RESOLVERS (see the precedence rule on {@link refreshTripwireCurrents}).
+   */
+  evidence?: TripwireEvidenceBinding | null;
 };
+
+/**
+ * How a reading came to be, stamped at the moment the platform produced it.
+ *
+ * `value` is the hinge that makes hand-editing DETECTABLE rather than merely
+ * discouraged. A stamp records the number it was issued for, so a later
+ * hand-written `current` no longer matches its own stamp and {@link isDerived}
+ * reports false. Without `value` a stale stamp would keep vouching for a number
+ * nobody measured — the exact "stale manual values persist" failure this closes.
+ *
+ * A `type`, not an `interface`, for the same JSONValue-assignability reason
+ * documented on {@link GoalTripwireLike}.
+ */
+export type TripwireMeasuredBy = {
+  /** `resolver:<metric>` for a built-in, `evidence:<kind>:<ref>` for a declared binding. */
+  source: string;
+  /** When the platform WROTE this reading (not necessarily when it last confirmed it). */
+  atMs: number;
+  /** The value this stamp was issued for. A `current` that has drifted from it is hand-set. */
+  value: number;
+};
+
+/**
+ * A declared pointer at an authoritative evidence source.
+ *
+ * Deliberately opaque and tiny: this module never executes anything. The tick
+ * that owns the evidence resolves it and passes the numbers in, exactly as
+ * `spend-rollup` already does for spend — which is what keeps this module pure
+ * and keeps arbitrary author-supplied queries out of the platform.
+ */
+export type TripwireEvidenceBinding = {
+  /** Evidence family, e.g. `work-item-count`. An unrecognised kind resolves to nothing. */
+  kind: string;
+  /** Kind-specific selector (a saved query name, a rubricRef, a census artifact ref). */
+  ref?: string;
+};
+
+/** The key a caller supplies evidence under. Stable, and the `evidence:` stamp suffix. */
+export function evidenceKey(binding: TripwireEvidenceBinding): string {
+  return `${binding.kind}:${binding.ref ?? ''}`;
+}
 
 /**
  * The facts a tripwire may be advanced FROM. Deliberately tiny: every field here
@@ -72,6 +130,27 @@ export interface TripwireMeasurement {
   measuredSpentCents: number | null;
   /** Age of the goal at measurement time, in ms. Negative values are treated as 0. */
   goalAgeMs: number;
+  /**
+   * Values for DECLARED evidence bindings, keyed by {@link evidenceKey}. A
+   * binding with no entry here — or a null one — advances nothing, per rule 2.
+   */
+  evidence?: Readonly<Record<string, number | null>> | null;
+  /** Clock for the provenance stamp. Defaults to `Date.now()` at call time. */
+  nowMs?: number;
+}
+
+/**
+ * Is this reading currently backed by a platform measurement?
+ *
+ * True only when a stamp exists AND still vouches for the number actually
+ * stored. Everything else — no stamp, a stamp whose `value` has drifted from
+ * `current` — is hand-set, and callers must not present it as a reading.
+ */
+export function isDerived(t: GoalTripwireLike): boolean {
+  const stamp = t.measuredBy;
+  if (!stamp || typeof stamp.source !== 'string' || !Number.isFinite(stamp.value)) return false;
+  const current = readCurrent(t);
+  return current !== null && current === stamp.value;
 }
 
 /** Why a tripwire did or did not move. */
@@ -90,14 +169,23 @@ export interface TripwireRefreshOutcome {
   before: number | null;
   after: number | null;
   reason: TripwireRefreshReason;
+  /** Which measurement produced it — the value stamped into `measuredBy.source`. */
+  source?: string;
 }
 
 export interface TripwireRefreshResult {
   /** The tripwire array to persist. Referentially equal to the input when nothing moved. */
   next: GoalTripwireLike[];
   outcomes: TripwireRefreshOutcome[];
-  /** How many tripwires took a new value. `changed` is `advanced > 0`. */
+  /** How many tripwires took a new value. */
   advanced: number;
+  /**
+   * How many kept their value but gained or corrected a provenance stamp. Counted
+   * separately so "the number moved" stays answerable — `advanced` means what it
+   * always did, and a caller can still tell a measurement change from a stamp fix.
+   */
+  restamped: number;
+  /** Whether anything needs persisting: `advanced + restamped > 0`. */
   changed: boolean;
 }
 
@@ -149,43 +237,82 @@ export function refreshTripwireCurrents(
 
   const outcomes: TripwireRefreshOutcome[] = [];
   const next: GoalTripwireLike[] = [];
+  const nowMs = Number.isFinite(measurement.nowMs) ? (measurement.nowMs as number) : Date.now();
   let advanced = 0;
+  let restamped = 0;
 
   for (const t of input) {
     const before = readCurrent(t);
     const resolver = RESOLVERS[t.metric];
 
-    if (!resolver) {
-      // Rule 1 — the executor's to score. Pass the tripwire through byte-identical.
+    /*
+     * PRECEDENCE, and it is a security property rather than a preference: a
+     * built-in resolver ALWAYS wins over a declared binding. Spend truth comes
+     * from the platform cost ledger (goal-mode-design-intent-hardening D-003),
+     * so a goal author must not be able to point `spend_usd` at an evidence ref
+     * of their choosing and have the platform stamp the result as measured.
+     * Bindings therefore only reach metrics the platform has no opinion about.
+     */
+    let value: number | null = null;
+    let source: string | null = null;
+    if (resolver) {
+      value = resolver(measurement);
+      source = `resolver:${t.metric}`;
+    } else if (t.evidence && typeof t.evidence.kind === 'string' && t.evidence.kind) {
+      const key = evidenceKey(t.evidence);
+      const supplied = measurement.evidence?.[key];
+      value = typeof supplied === 'number' && Number.isFinite(supplied) ? supplied : null;
+      source = `evidence:${key}`;
+    }
+
+    if (source === null) {
+      // Rule 1 — no resolver and no binding. The executor's to score. Byte-identical.
       outcomes.push({ metric: t.metric, before, after: before, reason: 'no-resolver' });
       next.push(t);
       continue;
     }
 
-    const value = resolver(measurement);
     if (value === null || !Number.isFinite(value)) {
-      // Rule 2 — a floor, or nothing measured. Never clears an existing value.
-      outcomes.push({ metric: t.metric, before, after: before, reason: 'unmeasured' });
+      // Rule 2 — a floor, an absent binding value, or nothing measured. Never
+      // clears an existing value, and never touches its stamp: a binding that
+      // stops resolving leaves the last reading standing with its ORIGINAL
+      // `atMs`, which is what lets a reader see it going stale.
+      outcomes.push({ metric: t.metric, before, after: before, reason: 'unmeasured', source });
       next.push(t);
       continue;
     }
 
     if (before !== null && before === value) {
-      outcomes.push({ metric: t.metric, before, after: before, reason: 'unchanged' });
-      next.push(t);
+      /*
+       * The value is right, but the STAMP may not be: an unstamped reading (one
+       * written before provenance existed, or hand-typed to coincidentally the
+       * measured number) would otherwise read as hand-set forever. Re-stamp it —
+       * the platform did just produce this number — while still skipping the
+       * write when the stamp already vouches for it.
+       */
+      if (isDerived(t) && t.measuredBy?.source === source) {
+        outcomes.push({ metric: t.metric, before, after: before, reason: 'unchanged', source });
+        next.push(t);
+        continue;
+      }
+      outcomes.push({ metric: t.metric, before, after: value, reason: 'unchanged', source });
+      next.push({ ...t, current: value, measuredBy: { source, atMs: nowMs, value } });
+      restamped += 1;
       continue;
     }
 
-    outcomes.push({ metric: t.metric, before, after: value, reason: 'advanced' });
-    next.push({ ...t, current: value });
+    outcomes.push({ metric: t.metric, before, after: value, reason: 'advanced', source });
+    next.push({ ...t, current: value, measuredBy: { source, atMs: nowMs, value } });
     advanced += 1;
   }
 
   // Referential identity when nothing moved, so a caller can skip the write.
-  if (advanced === 0) {
-    return { next: input as GoalTripwireLike[], outcomes, advanced: 0, changed: false };
+  // A re-stamp counts as movement even though no number changed: the stamp is
+  // what separates a measurement from a hand-set value, so it has to persist.
+  if (advanced === 0 && restamped === 0) {
+    return { next: input as GoalTripwireLike[], outcomes, advanced: 0, restamped: 0, changed: false };
   }
-  return { next, outcomes, advanced, changed: true };
+  return { next, outcomes, advanced, restamped, changed: true };
 }
 
 /**
