@@ -1322,27 +1322,24 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // NB the reported symptom blamed append-versioning ("the upsert supersedes
     // into a NEW row"). That is not the cause: the non-exempt re-assert case is
     // already correct and already pinned by the dryRun-upsert sibling above.
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
-        db.sql,
-      );
-    }
+    //
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1). The defect was in
+    // the sweep's OFFSET, which is volatile-only now; the mirrored claim for
+    // the ordinary partition — an exempt key is never REFUSED at the ceiling —
+    // is pinned by the P-002 ceiling suite instead.
+    await seedVolatile('owner', scopeRef, volatileCohort(VOLATILE_CAP, { confidence: 'verified' }));
 
     // ── POSITIVE CONTROL, FIRST — this is the calibration case ─────────────
     // An ORDINARY new key MUST evict exactly one row here. Without it, "the
     // exempt writes evicted nothing" is equally true of a scope where the cap
     // never fired at all, and the test would pass against a sweep that had been
     // disabled outright. This is what makes the assertions below falsifiable.
-    const ordinary = await assertFact(
-      { ...base, key: 'ordinary-newcomer', body: 'x', confidence: 'verified', ttlSec: 30 * 86400 },
-      db.sql,
-    );
+    const ordinary = await assertFact(volatileWrite('owner', scopeRef, 'ordinary-newcomer', { body: 'x' }), db.sql);
     expect(ordinary.evicted?.length).toBe(1);
 
-    // The control left the ordinary population at exactly the cap again (199
-    // incumbents + the newcomer), so every exempt write below meets a SATURATED
-    // scope — the only condition under which the bug can fire.
+    // The control left the ranked population at exactly the cap again, so every
+    // exempt write below meets a SATURATED scope — the only condition under
+    // which the bug can fire.
     for (const probe of [
       { label: 'convention', input: { key: 'a-convention', kind: 'convention' as const } },
       { label: 'wall', input: { key: 'wall:owner-must-rule-on-the-guard' } },
@@ -1350,7 +1347,10 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       { label: 'guard-rail', input: { key: 'guard-rail:do-not-refire' } },
     ]) {
       const r = await assertFact(
-        { ...base, ...probe.input, body: `exempt ${probe.label}`, confidence: 'verified' },
+        volatileWrite('owner', scopeRef, probe.input.key, {
+          ...probe.input,
+          body: `exempt ${probe.label}`,
+        }),
         db.sql,
       );
       expect(r.evicted ?? [], `${probe.label} write must not evict — it takes no cap seat`).toEqual([]);
@@ -1358,7 +1358,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
     // The exact reported shape: RE-asserting an ALREADY-LIVE convention key.
     const reassert = await assertFact(
-      { ...base, key: 'a-convention', kind: 'convention', body: 'revised body' },
+      volatileWrite('owner', scopeRef, 'a-convention', { kind: 'convention', body: 'revised body' }),
       db.sql,
     );
     expect(reassert.evicted ?? []).toEqual([]);
@@ -1373,10 +1373,11 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
          AND source_hive IS NULL AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
+         AND measurement->'subjectVolatile' = 'true'::jsonb
          AND COALESCE(kind, '') <> 'convention'
          AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%'
          AND key NOT LIKE 'guard-rail:%'`;
-    expect(ordinaryLive).toBe(CAP);
+    expect(ordinaryLive).toBe(VOLATILE_CAP);
 
     // ...and all four exempt rows are live alongside it — the cap-bearing
     // population is CAP, the exempt rows sit outside it, and neither displaced
@@ -1387,6 +1388,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
          AND source_hive IS NULL AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
+         AND measurement->'subjectVolatile' = 'true'::jsonb
          AND (COALESCE(kind, '') = 'convention'
               OR key LIKE 'wall:%' OR key LIKE 'dead-end:%' OR key LIKE 'guard-rail:%')`;
     expect(exemptLive).toBe(4);
@@ -1396,25 +1398,23 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const scopeRef = 'su-exempt-preview';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
-        db.sql,
-      );
-    }
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1) — see the sibling
+    // sweep test above; the forecast can only be checked against a sweep that
+    // still runs.
+    await seedVolatile('owner', scopeRef, volatileCohort(VOLATILE_CAP, { confidence: 'verified' }));
 
     // Non-vacuity: at this saturation an ORDINARY newcomer is forecast to kill
     // someone, so "the exempt forecast is empty" is a claim about exemption
     // rather than about a scope with room to spare.
     const ordinary = await previewFactCapImpact(
-      { ...base, key: 'ordinary-newcomer', body: 'x', confidence: 'verified', ttlSec: 30 * 86400 },
+      volatileWrite('owner', scopeRef, 'ordinary-newcomer', { body: 'x' }),
       db.sql,
     );
     expect(ordinary.exempt).toBe(false);
     expect(ordinary.wouldEvict.length).toBeGreaterThan(0);
 
     const conventionPreview = await previewFactCapImpact(
-      { ...base, key: 'a-convention', kind: 'convention', body: 'x' },
+      volatileWrite('owner', scopeRef, 'a-convention', { kind: 'convention', body: 'x' }),
       db.sql,
     );
     expect(conventionPreview.exempt).toBe(true);
@@ -1424,7 +1424,10 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(conventionPreview.survival).toBeNull();
 
     // ── THE PIN: forecast must survive contact with the real sweep ─────────
-    const real = await assertFact({ ...base, key: 'a-convention', kind: 'convention', body: 'x' }, db.sql);
+    const real = await assertFact(
+      volatileWrite('owner', scopeRef, 'a-convention', { kind: 'convention', body: 'x' }),
+      db.sql,
+    );
     expect(real.evicted ?? []).toEqual([]);
 
     // A refresh of that now-live convention must report replacesExistingKey.
@@ -1432,7 +1435,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // the population alone answered a confident `false` — "this takes a new
     // slot" about a write that takes none.
     const refresh = await previewFactCapImpact(
-      { ...base, key: 'a-convention', kind: 'convention', body: 'revised' },
+      volatileWrite('owner', scopeRef, 'a-convention', { kind: 'convention', body: 'revised' }),
       db.sql,
     );
     expect(refresh.replacesExistingKey).toBe(true);
@@ -1441,7 +1444,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // Control for that field: a convention key that does NOT exist yet must
     // still read false, so the branch above is not simply hardcoding true.
     const freshConvention = await previewFactCapImpact(
-      { ...base, key: 'a-convention-never-written', kind: 'convention', body: 'y' },
+      volatileWrite('owner', scopeRef, 'a-convention-never-written', { kind: 'convention', body: 'y' }),
       db.sql,
     );
     expect(freshConvention.exempt).toBe(true);
@@ -1458,65 +1461,42 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // it was written, by the next agent's unrelated assert, because the pool was
     // full of incumbents holding later ABSOLUTE expiries. The scope's survival
     // floor had ratcheted to ~30 days, so nothing shorter could live in it.
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
-        db.sql,
-      );
-    }
-
-    // Age the whole cohort to EIGHT HOURS old, keeping the declared TTL at 30
-    // days (both timestamps shift together). Without this the incumbents are
-    // SECONDS old and the test is genuinely flaky, for a reason worth stating:
-    // a 48-hour fact burns its declared share ~15× faster per wall-clock second
-    // than a 30-day one, so against seconds-old incumbents the sub-second delay
-    // between the write and the ranking query decides the verdict, and the same
-    // code returns rank 41 on one run and LAST on the next. Both were observed.
     //
-    // Eight hours is the regime actually measured in production, and it gives
-    // the urgent write ~34 minutes of clear headroom — ample against a delay of
-    // milliseconds, so the assertions below are decided by the RANKING and not
-    // by how loaded the box was.
-    await db.sql`
-      UPDATE harness_shared.agent_facts
-         SET created_at = now() - interval '8 hours',
-             expires_at = now() + interval '30 days' - interval '8 hours'
-       WHERE workspace_id = ${WS} AND scope = 'owner'
-         AND scope_ref = ${scopeRef} AND key LIKE 'incumbent-%'
-         AND superseded_at IS NULL AND retracted_at IS NULL`;
-
-    // Age ONE incumbent much harder: 29 days into a 34-day life ⇒ ~0.15 left,
-    // the worst in the scope. BOTH timestamps move, because backdating
-    // created_at alone would LENGTHEN the declared TTL rather than consume it —
-    // the fraction's denominator is (expires_at - created_at).
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1). The ranking that
+    // produces this verdict is volatile-only now, so the fixture is rebuilt at
+    // that partition's timescale (seconds, not days) while keeping the ONE
+    // property that makes it discriminate — see the incumbent-0 note below.
     //
-    // Its absolute expiry (5 days out) is deliberately LATER than the urgent
-    // write below (2 days). That is what makes this fixture DISCRIMINATE:
-    //   • under the old `expires_at DESC`, the urgent write is last and dies;
-    //   • under the fraction, it ranks top and this aged row dies instead.
-    // Without that inversion the test would pass against the very bug it guards.
-    await db.sql`
-      UPDATE harness_shared.agent_facts
-         SET created_at = now() - interval '29 days',
-             expires_at = now() + interval '5 days'
-       WHERE workspace_id = ${WS} AND scope = 'owner'
-         AND scope_ref = ${scopeRef} AND key = 'incumbent-0'
-         AND superseded_at IS NULL AND retracted_at IS NULL`;
+    // The cohort is seeded already 60s into a 3600s declared life. Without an
+    // age the incumbents would be MILLISECONDS old and the test genuinely
+    // flaky, for a reason worth stating: the arriving row burns its declared
+    // share faster per wall-clock second than a longer-declared incumbent, so
+    // against zero-age incumbents the sub-millisecond delay between the write
+    // and the ranking query decides the verdict, and the same code returns a
+    // mid rank on one run and LAST on the next. Both were observed.
+    await seedVolatile('owner', scopeRef, [
+      // ⚠ THE DISCRIMINATING ROW. Its declared life is long and almost entirely
+      // SPENT (29000s of 30000s ⇒ ~0.03 left, the worst fraction in the scope),
+      // while its ABSOLUTE expiry (~1000s out) is deliberately LATER than the
+      // arriving snapshot's (900s). That inversion is the whole fixture:
+      //   • under the old `expires_at DESC`, the arriving row sorts last and is
+      //     reported as next to die;
+      //   • under the FRACTION it ranks top, and this aged row is the victim.
+      // A seeded declared life longer than the 15-minute volatile clamp is
+      // deliberate: `assertFact` would flatten every fraction to ~1.0, which is
+      // precisely the degenerate fixture this test must not have.
+      { key: 'most-elapsed', confidence: 'verified', ageSec: 29_000, ttlSec: 30_000 },
+      ...volatileCohort(VOLATILE_CAP - 1, { confidence: 'verified', ageSec: 60, ttlSec: 3600 }),
+    ]);
 
     const urgent = await assertFact(
-      {
-        ...base,
-        key: 'urgent-48h',
-        body: 'a live hazard, true for about two days',
-        confidence: 'verified',
-        ttlSec: 48 * 3600,
-      },
+      volatileWrite('owner', scopeRef, 'urgent-48h', { body: 'a live hazard, true for about two days' }),
       db.sql,
     );
 
     // Non-vacuity: the cap BIT, so every verdict below came from a ranking that
     // actually ran — and it took the most-elapsed row, not the shortest-lived.
-    expect(urgent.evicted?.map((e) => e.key)).toEqual(['incumbent-0']);
+    expect(urgent.evicted?.map((e) => e.key)).toEqual(['most-elapsed']);
 
     // ── THE REGRESSION ASSERTION ───────────────────────────────────────────
     // This was `true` under `expires_at DESC`: the write arrived already last
@@ -1527,33 +1507,27 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // 48h fact holds ~0.99999, so it is the SAFEST row in the scope.
     expect(urgent.survival?.rank).toBe(1);
 
-    // ⚠ Not a claim that a short-TTL fact now lives its full life. It does not:
-    // both rows age, and this one loses ground 15× faster, so it falls to last
-    // after ~34 minutes (solve t/172800 > (28800+t)/2592000). That is the fix
-    // working as designed rather than a residual bug — at that crossover both
-    // facts have spent ~1.19% of the life their authors declared, so they are
-    // genuinely comparable losses. The change is 15 SECONDS → ~34 minutes, and
-    // the removal of the TTL floor that made the scope structurally closed to
-    // short-lived facts; it is not immortality, and should not be sold as it.
+    // ⚠ Not a claim that a short-lived fact now lives its full life. It does
+    // not: both rows age, and a shorter declared life loses ground faster, so
+    // it eventually falls to last. That is the fix working as designed rather
+    // than a residual bug — at the crossover both facts have spent the same
+    // share of the life their authors declared, so they are genuinely
+    // comparable losses. The change is the removal of the TTL floor that made
+    // the scope structurally closed to short-lived facts; it is not
+    // immortality, and should not be sold as it.
     expect(urgent.survival!.rank).toBeLessThan(urgent.survival!.liveCount);
 
-    // A cross-author next writer is now refused before it can destroy a
-    // verified incumbent. The dedicated EI-21442182972969040 regression
-    // proves the refusal is atomic; this ranking test only needs to pin that
-    // the urgent fact remains live after the attempted follow-up write.
-    await expect(
-      assertFact(
-        {
-          ...base,
-          createdBy: 'su-other-writer',
-          key: 'a-later-write',
-          body: 'by someone else entirely',
-          confidence: 'verified',
-          ttlSec: 30 * 86400,
-        },
-        db.sql,
-      ),
-    ).rejects.toThrow(/REFUSED before write:.*another author's verified fact/i);
+    // The point of "not doomed on arrival" is that it also survives the NEXT
+    // agent's unrelated write — the fifteen-second death in the report was
+    // caused by a stranger's assert, not by its own.
+    const later = await assertFact(
+      volatileWrite('owner', scopeRef, 'a-later-write', {
+        createdBy: 'su-other-writer',
+        body: 'by someone else entirely',
+      }),
+      db.sql,
+    );
+    expect(later.evicted?.map((e) => e.key)).not.toContain('urgent-48h');
 
     const stillLive = await foldFacts(
       [{ scope: 'owner', scopeRef }],
@@ -1567,17 +1541,21 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const scopeRef = 'su-survival-quiet';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
-    // Short-lived incumbents this time, so a newcomer with a long TTL outranks
-    // most of them rather than sinking to the bottom.
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 3600 },
-        db.sql,
-      );
-    }
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1) — the alarm this
+    // pins is part of the survival receipt, which only the volatile sweep
+    // produces now.
+    //
+    // Well-elapsed incumbents this time (two thirds of their declared life
+    // spent), so a freshly-measured newcomer outranks all of them rather than
+    // sinking to the bottom.
+    await seedVolatile(
+      'owner',
+      scopeRef,
+      volatileCohort(VOLATILE_CAP, { confidence: 'verified', ageSec: 600, ttlSec: 900 }),
+    );
 
     const safe = await assertFact(
-      { ...base, key: 'well-declared', body: 'deliberately long-lived', confidence: 'verified', ttlSec: 90 * 86400 },
+      volatileWrite('owner', scopeRef, 'well-declared', { body: 'freshly measured, plenty of life left' }),
       db.sql,
     );
 
@@ -1636,11 +1614,14 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
   it('EI-19485000346355077: listFactEvictionDisclosures reports a recent cap eviction to an ORDINARY reader (not just the writer)', async () => {
     const scopeRef = 'su-eviction-disclosure';
-    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
-    // Saturate the scope so the cap starts evicting incumbents.
-    for (let i = 0; i < CAP + 3; i++) {
-      await assertFact({ ttlSec: 3600, ...base, key: `sat-${i}`, body: `n ${i}` }, db.sql);
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1) — there is nothing
+    // to disclose on the ordinary partition any more, because nothing is
+    // destroyed there. Saturate the volatile partition, then write into it
+    // three times so the cap evicts three incumbents.
+    await seedVolatile('owner', scopeRef, volatileCohort(VOLATILE_CAP, { prefix: 'sat' }));
+    for (let i = 0; i < 3; i++) {
+      await assertFact(volatileWrite('owner', scopeRef, `arrival-${i}`), db.sql);
     }
 
     const disclosures = await listFactEvictionDisclosures(
@@ -1655,6 +1636,12 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(disclosures[0].recentEvictedCount).toBeGreaterThanOrEqual(3);
     expect(disclosures[0].latestEvictedAt).toEqual(expect.any(String));
     expect(disclosures[0].meaning).toContain('cap-evicted');
+    // The notice must say WHICH population lost rows, and must not leave an
+    // ordinary reader suspecting their standing facts were destroyed — under
+    // D-003 they cannot have been, and a disclosure that implies otherwise
+    // sends the reader hunting for a loss that did not happen.
+    expect(disclosures[0].meaning).toContain('VOLATILE');
+    expect(disclosures[0].meaning).toMatch(/Ordinary standing facts are never evicted/);
   });
 
   it('EI-19485000346355077: listFactEvictionDisclosures is silent for a scope with no cap evictions', async () => {
@@ -1675,9 +1662,10 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
   it('EI-19485000346355077: an OUT-OF-WINDOW cap eviction is not disclosed — the read is bounded, not a permanent scar', async () => {
     const scopeRef = 'su-eviction-disclosure-stale';
-    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
-    for (let i = 0; i < CAP + 2; i++) {
-      await assertFact({ ttlSec: 3600, ...base, key: `stale-${i}`, body: `n ${i}` }, db.sql);
+    // Ported to the volatile partition for the same reason as its sibling above.
+    await seedVolatile('owner', scopeRef, volatileCohort(VOLATILE_CAP, { prefix: 'stale' }));
+    for (let i = 0; i < 2; i++) {
+      await assertFact(volatileWrite('owner', scopeRef, `arrival-${i}`), db.sql);
     }
 
     // A window of 0s means "nothing counts as recent" — proves the read is bounded
