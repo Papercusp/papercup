@@ -82,7 +82,12 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { probeServiceStart } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
-import { checkBgHostQuiesce, isQuiesceSensitiveTarget, type QuiesceVerdict } from './bg-host-quiesce-guard';
+import {
+  checkBgHostQuiesce,
+  isQuiesceSensitiveTarget,
+  type QuiesceMarker,
+  type QuiesceVerdict,
+} from './bg-host-quiesce-guard';
 import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -406,6 +411,9 @@ async function writeRestartAudit(
     /** The atomic legacy-resource barrier intentionally left to expire after
      *  systemctl has crossed the delayed handoff. */
     gitSyncBarrier?: { resource: string; expiresAt: string } | null;
+    /** WI-2140796: a real restart that deliberately crossed an active bg-host
+     *  quiesce (override_quiesce:true) is attributable from the durable audit row. */
+    quiesceOverridden?: { marker: QuiesceMarker | null } | null;
   },
 ): Promise<void> {
   try {
@@ -679,7 +687,7 @@ export default defineTool({
               ? ` ℹ A git-sync operation shares this cgroup, but you passed git_sync_drain_sec:${gitSyncDrainSec} — on that path the cgroup preflight is ADVISORY and the workspace-wide \`git-sync\` barrier arbitrates instead (fires hold it only ~5-10s). This preview reserves nothing; the confirmed call can still refuse with drain_timeout, which is transient and side-effect-free — retry rather than abandon.`
               : ` ⚠ ${gitSyncPreview.note} On a merely BUSY host the supported way through is git_sync_drain_sec (up to ${GIT_SYNC_RESTART_BARRIER_DRAIN_SEC}s) — WAIT for the drain. override_git_sync_collision is for a WEDGED host: it SIGKILLs an in-flight commit and strands a peer's uncommitted work.`
             : ''
-        }${preview.blocked ? ` ⚠ ${preview.note}` : ''}`,
+        }${preview.blocked ? ` ⚠ ${preview.note}` : ''}${quiescePreview?.blocked ? ` ⚠ ${quiescePreview.note}` : ''}`,
       });
     }
 
@@ -757,6 +765,27 @@ export default defineTool({
           `on its current (working) code. ${bootIntegrity.note} Restarting now would take ${cfg.unit} down and ` +
           `crash-loop it instead of bringing it back. Fix the tree first, then re-run this call. If the restart is ` +
           `itself the remedy, re-call with override_boot_integrity:true.`,
+      });
+    }
+
+    // WI-2140796: refuse to restart bg-host while a P-101 seed cut (or similar) holds
+    // it deliberately quiesced (systemd mask + a marker written by
+    // cut-seed-quiesced.sh). Placed HERE for the same reason as the boot-integrity
+    // check just above — cheap, no probe cost beyond this, and it must fire before we
+    // drain anyone or schedule a restart command that would otherwise either silently
+    // no-op against the mask or race the wrapper's own unmask/restart in its EXIT trap.
+    const quiesce: QuiesceVerdict | null = isQuiesceSensitiveTarget(target)
+      ? await checkBgHostQuiesce(target, args.override_quiesce === true)
+      : null;
+    if (quiesce && quiesce.blocked) {
+      return json({
+        ok: false,
+        target,
+        reason: 'bg_host_quiesced',
+        restarted: false,
+        drained: false,
+        quiesce: { quiesced: quiesce.quiesced, probeFailed: quiesce.probeFailed, ...(quiesce.marker ? { marker: quiesce.marker } : {}) },
+        note: `Restart REFUSED — NOTHING was done: no lock taken, no drain, ${cfg.unit} left exactly as it was. ${quiesce.note}`,
       });
     }
 
@@ -1119,6 +1148,7 @@ export default defineTool({
             gitSyncBarrier?.acquired === true
               ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
               : null,
+          quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
         });
         // Detached + delayed so this response returns before the service dies.
         // systemd latches a unit after it exceeds StartLimitBurst. A plain
@@ -1156,6 +1186,7 @@ export default defineTool({
           ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
           ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
           ...(gitSync?.overridden ? { gitSyncCollisionOverridden: { kind: gitSync.kind, ...gitSync.detail } } : {}),
+          ...(quiesce?.overridden ? { quiesceOverridden: { marker: quiesce.marker } } : {}),
           ...(gitSyncBarrier?.acquired === true
             ? {
                 gitSyncRestartBarrier: {
@@ -1180,7 +1211,7 @@ export default defineTool({
             target === 'bg-host'
               ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
               : ''
-          }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}`,
+          }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}${quiesce?.overridden ? ` ⚠ ${quiesce.note}` : ''}`,
         });
       },
     ).catch(async (error) => {

@@ -55,6 +55,13 @@ vi.mock('../../release/gate-collision-guard', async (importOriginal) => {
     acquireGitSyncRestartBarrier: vi.fn(),
   };
 });
+// WI-2140796: the bg-host quiesce preflight. isQuiesceSensitiveTarget stays real
+// (spread importOriginal) so the dev/staging/etc. "never even probed" assertions
+// below are meaningful; only the probing/judging call is mocked.
+vi.mock('./bg-host-quiesce-guard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./bg-host-quiesce-guard')>();
+  return { ...actual, checkBgHostQuiesce: vi.fn() };
+});
 // EI-18198340374286980: the audit_log writer — asserted directly in the new
 // authorize-arg tests below, and must never make a real restart fail if it
 // throws (fire-and-forget), so every OTHER test gets a working no-op stub.
@@ -79,6 +86,7 @@ import {
   checkGateCollision,
   checkGitSyncCollision,
 } from '../../release/gate-collision-guard';
+import { checkBgHostQuiesce } from './bg-host-quiesce-guard';
 import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 const acquireM = vi.mocked(tryAcquireResource);
@@ -109,6 +117,19 @@ const gateCollisionM = vi.mocked(checkGateCollision);
 const gitSyncCollisionM = vi.mocked(checkGitSyncCollision);
 const gitSyncBarrierM = vi.mocked(acquireGitSyncRestartBarrier);
 const gitSyncBarrierReleaseM = vi.fn(async () => undefined);
+const quiesceM = vi.mocked(checkBgHostQuiesce);
+/** A quiesce verdict. Defaults to "not quiesced" (see beforeEach). */
+const quiesceVerdict = (over: Record<string, unknown> = {}) =>
+  ({
+    target: 'bg-host',
+    quiesced: false,
+    blocked: false,
+    overridden: false,
+    marker: null,
+    probeFailed: false,
+    note: 'bg-host is not quiesced.',
+    ...over,
+  }) as never;
 
 const clearGateCollision = () => ({
   blocked: false,
@@ -206,6 +227,7 @@ beforeEach(() => {
   orgPgM.mockReturnValue({ sql: { unsafe: auditUnsafeM } } as never);
   gateCollisionM.mockResolvedValue(clearGateCollision());
   gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+  quiesceM.mockResolvedValue(quiesceVerdict());
   gitSyncBarrierReleaseM.mockClear();
   gitSyncBarrierM.mockResolvedValue({
     acquired: true,
@@ -548,6 +570,116 @@ describe('dev:restart boot-integrity preflight', () => {
       dry_run: true,
       boot_integrity: { checked: true, would_block: true, tree: '/tree', missing: ['hono', 'postgres'] },
     });
+  });
+});
+
+// WI-2140796: a P-101 seed cut (cut-seed-quiesced.sh) `systemctl --user mask
+// --runtime`s bg-host and publishes a marker for its duration. dev:restart's own
+// restart command runs detached with stdio ignored (see the `spawn` call below in
+// this file), so — before this guard — a masked-unit failure was invisible: the
+// tool still reported `ok:true, restarted:true` a moment before systemd silently
+// no-op'd against the mask. These assert the refusal fires BEFORE any lock/drain.
+describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
+  const quiesced = (over: Record<string, unknown> = {}) =>
+    quiesceVerdict({
+      quiesced: true,
+      blocked: true,
+      marker: { pid: 4242, unit: 'papercusp-bg-host.service', reason: 'release seed cut', since: '2026-09-01T20:00:00Z', log: '/tmp/p101-seed-cut.log' },
+      note: "bg-host's unit is masked (pid 4242, since 2026-09-01T20:00:00Z: release seed cut) — a P-101 seed cut (or similar) has it deliberately quiesced.",
+      ...over,
+    });
+
+  it('REFUSES a quiesced bg-host and does NOT drain, lock, restart or audit', async () => {
+    quiesceM.mockResolvedValue(quiesced());
+    // guardResource is deliberately left UNARMED, same idiom as the boot-integrity
+    // refusal test above: a regression here would call it and fail loudly.
+    const b = body(await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'x' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'bg-host',
+      reason: 'bg_host_quiesced',
+      restarted: false,
+      drained: false,
+      quiesce: { quiesced: true, marker: { pid: 4242 } },
+    });
+    expect(b.note).toMatch(/NOTHING was done/i);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(acquireM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it('checks the target actually requested, after the enablement gate but before the drain', async () => {
+    quiesceM.mockResolvedValue(quiesced());
+    await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'x' });
+    expect(quiesceM).toHaveBeenCalledWith('bg-host', false);
+  });
+
+  it('never probes quiesce state for a target the guard does not cover (dev)', async () => {
+    mockImplementationTyped(guardM, async (_spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
+      return { acquired: true, result: await run(fenceOk() as never), lock_id: 'L-test' } as GuardOutcome<unknown>;
+    });
+    await call({ confirm: true, authorize: true, target: 'dev', reason: 'x' });
+    expect(quiesceM).not.toHaveBeenCalled();
+  });
+
+  it('override_quiesce:true proceeds — reaching guardResource is the proof the refusal did not fire', async () => {
+    quiesceM.mockResolvedValue(quiesced({ blocked: false, overridden: true }));
+    await call({
+      confirm: true,
+      authorize: true,
+      target: 'bg-host',
+      reason: 'confirmed safe with the cut holder',
+      override_quiesce: true,
+    }).catch(() => undefined);
+    expect(quiesceM).toHaveBeenCalledWith('bg-host', true);
+    expect(guardM).toHaveBeenCalled();
+  });
+
+  it('a genuine override is recorded on the result AND the durable audit row', async () => {
+    mockImplementationTyped(guardM, async (_spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
+      return { acquired: true, result: await run(fenceOk(7) as never), lock_id: 'L-test' } as GuardOutcome<unknown>;
+    });
+    quiesceM.mockResolvedValue(
+      quiesced({
+        blocked: false,
+        overridden: true,
+        marker: { pid: 4242, unit: 'papercusp-bg-host.service', reason: 'release seed cut', since: '2026-09-01T20:00:00Z', log: '/tmp/p101-seed-cut.log' },
+      }),
+    );
+    const b = body(
+      await call({
+        confirm: true,
+        authorize: true,
+        target: 'bg-host',
+        reason: 'confirmed safe with the cut holder',
+        override_quiesce: true,
+      }),
+    );
+    expect(b).toMatchObject({ ok: true, restarted: true, quiesceOverridden: { marker: { pid: 4242 } } });
+    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
+    const [, params] = auditUnsafeM.mock.calls[0]!;
+    const details = JSON.parse(params[5] as string);
+    expect(details.quiesceOverridden).toMatchObject({ marker: { pid: 4242 } });
+  });
+
+  it('previews the quiesce block in the DRY RUN, where the decision is actually made', async () => {
+    quiesceM.mockResolvedValue(quiesced());
+    const b = body(await call({ target: 'bg-host' }));
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      quiesce: { checked: true, would_block: true, quiesced: true, marker: { pid: 4242 } },
+    });
+    expect(b.note).toMatch(/quiesced/i);
+  });
+
+  it('fails OPEN when the probe itself could not verify state (checked:false, not blocked)', async () => {
+    guardM.mockImplementation(runGuard(fenceOk()) as never);
+    quiesceM.mockResolvedValue(quiesceVerdict({ probeFailed: true }));
+    await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'x' }).catch(() => undefined);
+    expect(guardM).toHaveBeenCalled();
   });
 });
 

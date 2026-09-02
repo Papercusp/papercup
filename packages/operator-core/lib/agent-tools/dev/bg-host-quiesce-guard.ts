@@ -39,7 +39,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
-import { RESTART_TARGET_UNITS, type RestartTargetName } from './restart-target-units';
+import { RESTART_TARGET_UNITS } from './restart-target-units';
 
 let run: ((...args: any[]) => Promise<any>) | undefined;
 const execFileP = (...args: any[]) => (run ??= promisify(execFile) as any)(...args);
@@ -192,7 +192,7 @@ export async function checkBgHostQuiesce(
       override,
     });
   }
-  const unit = RESTART_TARGET_UNITS[target as RestartTargetName];
+  const unit = RESTART_TARGET_UNITS[target];
   const probe = await probeBgHostQuiesce(unit, deps);
   return judgeBgHostQuiesce({ target, probe, override });
 }
