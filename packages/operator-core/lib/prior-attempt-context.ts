@@ -28,7 +28,23 @@ import { getWorkItemLifecycleHistory } from './work-item-lifecycle-history';
 import { getClaimTimePriorWorkHint } from './work-item-prior-work';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
 
-export type PriorAttemptScope = 'same-spec' | 'same-plan-item' | 'plan-wide';
+/**
+ * DISTANCE FROM THE REQUESTED REF, nearest first (P-018 / D-007).
+ *
+ * This was a PLAN-ANCHORED ladder ('same-spec' | 'same-plan-item' | 'plan-wide'),
+ * which could only describe a work-item that carried a plan pointer. Measured
+ * 2026-09-02: of 16,792 open items, 15,791 (94.0%) carry neither a plan nor a goal —
+ * so the old vocabulary had no word for the position of 94% of this system's work, and
+ * `getClaimTimePriorAttemptBrief` returned null rather than say it.
+ *
+ * The rungs are now positions in the containment tree (see ./containment-tree):
+ *  - `self`            the requested ref's OWN history. Always available, plan or no plan.
+ *  - `same-spec`       a different item bound to one of the requested item's target specs.
+ *  - `same-plan-item`  a different item implementing the same plan item.
+ *  - `plan-wide`       the plan level itself (decisions, its thread) and its other items.
+ *  - `goal-wide`       the goal level and what hangs off it — ADMITTED, not tuned (D-020).
+ */
+export type PriorAttemptScope = 'self' | 'same-spec' | 'same-plan-item' | 'plan-wide' | 'goal-wide';
 export type PriorAttemptAuthority =
   | 'current-spec'
   | 'spec-revision'
@@ -51,9 +67,24 @@ export interface PriorAttemptSource {
   at?: string | null;
   actor?: string | null;
   text: string;
+  /**
+   * D-008 ROLLUP DEPTH — hops DOWNWARD from the requested ref, and the only field
+   * the compression ladder spends against. 0 (default) means full resolution.
+   *
+   * ⚠ Deliberately NOT "distance in the containment tree". Anything reached through
+   * an ANCESTOR — a plan decision, the plan's thread, a plan sibling's checkpoint —
+   * stays at 0, because those are already bounded by `maxPlanWorkItems` and are the
+   * behaviour a member's claim has always received. Charging them depth would strip
+   * text from a plan-backed claim that gets it today: a regression dressed as a
+   * budget fix. Depth is spent ONLY on the descendant closure, which is where D-008
+   * measured the unbounded cost (the worst plan here carries 126 items, rolling up
+   * ~167k chars) and which only a LEADER read ever requests.
+   */
+  depth?: number;
   /** Explicit source metadata (evidence refs, lifecycle detail, fingerprints). */
   detail?: Record<string, unknown> | null;
 }
+
 
 export interface PriorAttemptRecord extends PriorAttemptSource {
   id: string;
@@ -149,10 +180,16 @@ export interface PriorAttemptBriefBudget {
   maxTextChars?: number;
 }
 
+/** Nearest-first (P-018 keeps this ordering property; only the rungs changed).
+ *  `self` leads because the claimant's own prior trajectory is the single record
+ *  most likely to stop it re-doing finished work — and for the 94% orphan case it
+ *  is the ONLY rung that exists. */
 const SCOPE_RANK: Record<PriorAttemptScope, number> = {
-  'same-spec': 0,
-  'same-plan-item': 1,
-  'plan-wide': 2,
+  self: 0,
+  'same-spec': 1,
+  'same-plan-item': 2,
+  'plan-wide': 3,
+  'goal-wide': 4,
 };
 
 // D-008: this order is authority, not a relevance guess.  In particular, a
@@ -220,6 +257,36 @@ function testsIn(text: string): string[] {
   return [...new Set([...commands, ...namedFiles])].slice(0, 30);
 }
 
+/** The rungs the reader derives from free prose. Exported so the WRITE side can run
+ *  the SAME extractor (see {@link describeCaptureGaps}) — never a second copy of
+ *  these patterns, which is precisely the drift the derived-truth ladder forbids. */
+export interface PriorAttemptRungs {
+  rootCauses: string[];
+  falsePremises: string[];
+  residue: string[];
+  touchedFiles: string[];
+  tests: string[];
+}
+
+/**
+ * D-010: the compression ladder's fields are KEYWORD-MATCHED PROSE, not data supplied
+ * by the writer — `rootCauses` is populated only when the author happened to write
+ * "root cause" or "originates at". Measured 2026-09-02 against the live corpora:
+ * 95.6% of work-item checkpoints yield NO rootCause and 97.5% no falsePremise.
+ *
+ * This is exported so the write path can show an author what its own note WILL and
+ * WILL NOT yield, at the one moment that is actionable. One extractor, two callers.
+ */
+export function extractPriorAttemptRungs(text: string): PriorAttemptRungs {
+  return {
+    rootCauses: markedFragments(text, /\b(?:root\s*cause|origin(?:ates|ated)?\s+at)\b/gi),
+    falsePremises: markedFragments(text, /\b(?:false\s+premise|retract(?:ed|ion)?|was\s+wrong|incorrect\s+assumption)\b/gi),
+    residue: markedFragments(text, /\b(?:residue|remaining|follow[- ]?up|still\s+open|deferred)\b/gi),
+    touchedFiles: filesIn(text),
+    tests: testsIn(text),
+  };
+}
+
 function normalizedRecord(source: PriorAttemptSource): PriorAttemptRecord {
   const text = source.text.trim();
   const isCompletion = source.authority === 'verified-completion';
@@ -228,17 +295,19 @@ function normalizedRecord(source: PriorAttemptSource): PriorAttemptRecord {
     .update(`${source.rawRef}\0${source.authority}\0${source.scope}\0${text}\0${JSON.stringify(canonicalValue(source.detail ?? null))}`)
     .digest('hex')
     .slice(0, 20);
+  const rungs = extractPriorAttemptRungs(text);
   return {
     ...source,
     text,
     id,
+    depth: source.depth ?? 0,
     approach: isCheckpoint || source.authority === 'comment' ? boundedLine(text) || null : null,
     outcome: isCompletion ? boundedLine(text) || null : null,
-    rootCauses: markedFragments(text, /\b(?:root\s*cause|origin(?:ates|ated)?\s+at)\b/gi),
-    falsePremises: markedFragments(text, /\b(?:false\s+premise|retract(?:ed|ion)?|was\s+wrong|incorrect\s+assumption)\b/gi),
-    touchedFiles: filesIn(text),
-    tests: testsIn(text),
-    residue: markedFragments(text, /\b(?:residue|remaining|follow[- ]?up|still\s+open|deferred)\b/gi),
+    rootCauses: rungs.rootCauses,
+    falsePremises: rungs.falsePremises,
+    touchedFiles: rungs.touchedFiles,
+    tests: rungs.tests,
+    residue: rungs.residue,
   };
 }
 
