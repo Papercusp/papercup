@@ -299,6 +299,10 @@ async function main(): Promise<void> {
         "  --accept-evictions     proceed with a --write that pushes OTHER parts out of",
         "                         the file. Every run reports the eviction delta; this",
         "                         flag is what makes causing one deliberate.",
+        "  --accept-deprojection  proceed with a --write that empties THIS part's",
+        "                         client_scope, so it stops reaching every client file",
+        "                         and becomes corpus-only. A separate consent from",
+        "                         --accept-evictions, which covers only OTHER parts.",
         "",
         "After a successful write, project it:  node scripts/project-doc-parts.mjs --write",
       ].join("\n"),
@@ -576,8 +580,23 @@ async function main(): Promise<void> {
       docId,
       budget: budgetFor(proj),
       projectClient: proj.projectClient,
+      partKey,
     });
     console.log(renderImpact(impacts, partKey));
+
+    // A NEW part that projects nowhere is the create-side of the same blind spot: the
+    // row is written, `✓ written` is printed, and the text reaches no agent — which is
+    // how rule-shaped content ends up filed as corpus-only prose and stays there. This
+    // is a NOTICE, not a gate: corpus-only parts are legitimate and numerous, so the
+    // author is told what they got, not stopped (EI-22179257919368370).
+    if (!existing && merged.clientScope.length === 0) {
+      console.log(
+        `\n  ⓘ '${partKey}' is CORPUS-ONLY — client_scope is empty, so it projects into\n` +
+          `    no client file and no agent's launch context will carry it. It is still\n` +
+          `    searchable in the corpus. If you meant this to be a RULE, pass\n` +
+          `    --client-scope all (and a --kind other than 'prose', which may never project).`,
+      );
+    }
 
     // ── canonical identity ───────────────────────────────────────────────────
     // The projector REFUSES to write any client file while a canonical row disagrees
@@ -646,6 +665,34 @@ async function main(): Promise<void> {
         "\n  ✓ dry run — nothing written. Re-run with --write to apply.",
       );
       return;
+    }
+
+    // De-projection is gated SEPARATELY from eviction, and first, because it is the
+    // more silent of the two and it is a DIFFERENT consent. `--accept-evictions` means
+    // "I accept crowding OTHER parts out"; it must not double as blanket permission to
+    // delete the rule I am editing from every agent's context — which is what a single
+    // shared flag would make it, including when the empty scope was a typo.
+    //
+    // Nothing else in the pipeline reports this. The projector's `⚠ cut:` list covers
+    // budget cuts only, and this part is not cut — it is absent, so it appears in no
+    // list at all while `project-doc-parts --write` still exits 0 (EI-22179257919368370).
+    const deprojecting = impacts.filter((i) => i.deprojected);
+    if (
+      deprojecting.length > 0 &&
+      args.get("accept-deprojection") !== true
+    ) {
+      await client.query("ROLLBACK");
+      die(
+        REFUSED,
+        `✗ refused: this edit empties '${partKey}'s client_scope, removing it from ` +
+          `${deprojecting.map((i) => i.file).join(", ")}.\n` +
+          `  The row would stay live and searchable (tombstone=false), so nothing\n` +
+          `  downstream would read as broken — and no agent's launch context would ever\n` +
+          `  carry this rule again. That is the failure this guard exists to stop, not a\n` +
+          `  budget eviction, so --accept-evictions does NOT cover it.\n\n` +
+          `  Keep it projecting with --client-scope all, or re-run with\n` +
+          `  --accept-deprojection to demote it to corpus-only on purpose.`,
+      );
     }
 
     // Eviction is gated, growth is not. A net-negative headroom change is ordinary and

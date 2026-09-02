@@ -40,6 +40,13 @@ export interface ProjectionRow {
 export interface ProjectionResult {
   text: string;
   dropped: ProjectionRow[];
+  /**
+   * The parts that actually REACH this client's file. Read so `deprojected` can be
+   * decided from the projector's own verdict rather than from a second copy of its
+   * `partTargetsClient` scope rule — a part scoped `{codex}` never reached CLAUDE.md,
+   * so emptying its scope de-projects it from AGENTS.md and from nothing else.
+   */
+  kept: ProjectionRow[];
 }
 
 export type ProjectClientFn = (
@@ -65,6 +72,23 @@ export interface ClientImpact {
   evicted: string[];
   /** Parts THIS edit makes room for (a shrinking edit). */
   restored: string[];
+  /**
+   * The EDITED part itself stops reaching this file, because its `client_scope` was
+   * emptied rather than because the budget cut it.
+   *
+   * `evicted` structurally CANNOT report this, and that is the whole reason this field
+   * exists. `evicted` is derived from the projector's `dropped` list — the parts it
+   * considered and cut — but a scope-emptying edit removes the part from the candidate
+   * set entirely (`applyEditInMemory(..., null)`), so it is never considered and never
+   * dropped. Worse, its bytes are freed, so previously-cut parts fit again and the
+   * report reads `✓ restores N part(s)` with a RISING headroom: the one shape an author
+   * is least likely to read as "I just deleted a rule from every agent's context".
+   *
+   * This is the mechanism that left ~4.6KB of `harness_doc_parts` rules live-looking
+   * (`tombstone=false`) but unreachable, with nothing in the pipeline reporting it
+   * (EI-22179257919368370).
+   */
+  deprojected: boolean;
   headroomBefore: number;
   headroomAfter: number;
   /** Set when the projector refused outright; the headroom numbers are then meaningless. */
@@ -105,8 +129,11 @@ export function evictionDelta(opts: {
   docId: string;
   budget: number;
   projectClient: ProjectClientFn;
+  /** The part being edited — the subject of `deprojected`. */
+  partKey: string;
 }): ClientImpact[] {
-  const { before, after, clients, docId, budget, projectClient } = opts;
+  const { before, after, clients, docId, budget, projectClient, partKey } =
+    opts;
 
   return clients.map(({ client, file, reader }): ClientImpact => {
     try {
@@ -115,6 +142,16 @@ export function evictionDelta(opts: {
       const a = projectClient(after, args);
       const droppedBefore = new Set(b.dropped.map((p) => p.part_key));
       const droppedAfter = new Set(a.dropped.map((p) => p.part_key));
+      // Decided from the projector's OWN `kept`/`dropped` verdict on both passes, so it
+      // asks the only question that matters per client: did this part reach this file,
+      // and does it still? Reached-before AND now neither kept nor cut means it is not
+      // in the projection at all — the scope-emptying case, which `evicted` cannot see.
+      // A part still present but cut by the budget IS in `dropped`, so it stays an
+      // ordinary eviction and is not double-reported here.
+      const deprojected =
+        b.kept.some((p) => p.part_key === partKey) &&
+        !a.kept.some((p) => p.part_key === partKey) &&
+        !droppedAfter.has(partKey);
       return {
         file,
         evicted: a.dropped
@@ -123,6 +160,7 @@ export function evictionDelta(opts: {
         restored: b.dropped
           .map((p) => p.part_key)
           .filter((k) => !droppedAfter.has(k)),
+        deprojected,
         headroomBefore: budget - b.text.length,
         headroomAfter: budget - a.text.length,
       };
@@ -131,6 +169,7 @@ export function evictionDelta(opts: {
         file,
         evicted: [],
         restored: [],
+        deprojected: false,
         headroomBefore: Number.NaN,
         headroomAfter: Number.NaN,
         failed: err instanceof Error ? err.message : String(err),
@@ -215,6 +254,28 @@ export function renderImpact(
     const arrow =
       `headroom ${n(i.headroomBefore)} -> ${n(i.headroomAfter)} chars ` +
       `(${delta >= 0 ? "+" : ""}${n(delta)})`;
+
+    // FIRST, and never folded into the branches below. A de-projecting edit frees its
+    // own bytes, so it commonly ALSO has a non-empty `restored` list — and reporting
+    // that first would head the block with `✓ restores N part(s)` and a rising headroom
+    // while the rule the author was editing left the file.
+    if (i.deprojected) {
+      out.push(
+        `    ${i.file.padEnd(12)} ⚠ DE-PROJECTED — '${partKey}' NO LONGER REACHES THIS FILE — ${arrow}`,
+        "                   Its client_scope is now empty, so it leaves the projection",
+        "                   altogether rather than being cut by the budget. The row stays",
+        "                   live and searchable in the corpus (tombstone=false), which is",
+        "                   why nothing downstream reads as broken — but no agent launch",
+        "                   context will carry this rule again.",
+      );
+      if (i.restored.length > 0) {
+        out.push(
+          `                   ${i.restored.length} part(s) fit again ONLY because this rule left:`,
+        );
+        for (const k of i.restored) out.push(`                   + ${k}`);
+      }
+      continue;
+    }
 
     if (i.evicted.length > 0) {
       out.push(
