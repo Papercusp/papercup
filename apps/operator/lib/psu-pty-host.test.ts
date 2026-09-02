@@ -54,6 +54,7 @@ import {
   turnCoalesceKey,
   renderCoalescedTurn,
   makeTurnCoalescer,
+  injectTurn,
   decodeDeliveryId,
   makeDeliveryDedup,
   DELIVERY_DEDUP_TTL_MS,
@@ -96,6 +97,7 @@ import {
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';
 import { join as pathJoin } from 'node:path';
+import net from 'node:net';
 import { oscRecolorSequence, COLOR_SCHEMES } from '@papercusp/operator-core/lib/console-color-schemes';
 import { buildConsoleOneliner } from '@papercusp/operator-core/lib/console-spawn';
 
@@ -2436,6 +2438,28 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
       expect(turnCoalesceKey('')).toBe('');
       expect(turnCoalesceKey(undefined)).toBe('');
     });
+
+    // WI-2141436 hole #4: routineId alone has no owner component. These pin the
+    // ownerId-aware behavior added as defense-in-depth around a socket-identity
+    // collision combined with an unaddressed (ownerId-less) arrival.
+    it('folds ownerId into the key: same routine/text, different owners never collide', () => {
+      const a = turnCoalesceKey('Loop wake #1 — short form', 'routine-1', 'su-aaa');
+      const b = turnCoalesceKey('Loop wake #1 — short form', 'routine-1', 'su-bbb');
+      expect(a).not.toBe(b);
+      // and the SAME owner still coalesces across fires, exactly as before
+      expect(a).toBe(turnCoalesceKey('Loop wake #9 — short form', 'routine-1', 'su-aaa'));
+    });
+    it('folds ownerId into the text-only key path too (no routineId)', () => {
+      const a = turnCoalesceKey('owner: please check the deploy', undefined, 'su-aaa');
+      const b = turnCoalesceKey('owner: please check the deploy', undefined, 'su-bbb');
+      expect(a).not.toBe(b);
+    });
+    it('omitting ownerId reproduces the pre-existing (owner-less) key exactly — backward compatible', () => {
+      expect(turnCoalesceKey('Loop wake #1 — short form', 'routine-1', undefined)).toBe(
+        turnCoalesceKey('Loop wake #1 — short form', 'routine-1'),
+      );
+      expect(turnCoalesceKey('x'.repeat(1000), undefined, undefined).length).toBe(300);
+    });
   });
 
   describe('renderCoalescedTurn', () => {
@@ -2539,6 +2563,62 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
       expect(delivered).toContain('8 duplicate queued wakes were coalesced');
     });
   });
+});
+
+/**
+ * injectTurn (WI-2141436 hole #1): had NO ownerId param at all — an
+ * envelope-less write with no addressed-recipient assertion. A lightweight
+ * echo server (no real psu host) is enough to verify the ENVELOPE this
+ * function actually puts on the wire; the receiver's EI-153 misdelivery guard
+ * itself is covered elsewhere (this only proves the sender now carries the
+ * identity that guard checks).
+ */
+describe('injectTurn ownerId envelope (WI-2141436 hole #1)', () => {
+  function withEchoServer(fn: (sock: string, received: () => Buffer[]) => Promise<void>) {
+    return async () => {
+      const dir = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'psu-pty-inject-test-'));
+      const sock = pathJoin(dir, 'h.sock');
+      const chunks: Buffer[] = [];
+      const server = net.createServer((conn) => {
+        conn.on('data', (d) => chunks.push(d));
+        conn.on('end', () => conn.end());
+      });
+      await new Promise<void>((resolve) => server.listen(sock, resolve));
+      try {
+        await fn(sock, () => chunks);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        try {
+          nodeFs.rmSync(dir, { recursive: true, force: true });
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+    };
+  }
+
+  it(
+    'passing ownerId puts it on the wire, decodable by the receiver',
+    withEchoServer(async (sock, received) => {
+      const ok = await injectTurn(sock, 'hello', 'su-target-owner');
+      expect(ok).toBe(true);
+      const decoded = decodeControl(Buffer.concat(received()));
+      expect(decoded.mode).toBe('turn');
+      expect(decoded.data).toBe('hello');
+      expect((decoded as { ownerId?: string }).ownerId).toBe('su-target-owner');
+    }),
+  );
+
+  it(
+    'omitting ownerId still works (legacy call) and carries none — the pre-fix, still-a-hole shape',
+    withEchoServer(async (sock, received) => {
+      const ok = await injectTurn(sock, 'hello');
+      expect(ok).toBe(true);
+      const decoded = decodeControl(Buffer.concat(received()));
+      expect(decoded.mode).toBe('turn');
+      expect((decoded as { ownerId?: string }).ownerId).toBeUndefined();
+    }),
+  );
 });
 
 /**

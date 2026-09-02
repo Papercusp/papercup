@@ -150,6 +150,20 @@ function cmdInject(argv) {
       console.error('psupty inject: no live sessions — start one with `psupty` (or `psupty claude`)');
       process.exit(1);
     }
+    // WI-2141436 hole #3: this used to pick live[0].sock POSITIONALLY — the
+    // "newest live session" by sort order, not by any identity the caller
+    // named. With exactly one live session that's unambiguous; with more than
+    // one it silently injects into whichever session happened to start last,
+    // which is exactly the "positional binding is not an identity" shape the
+    // umbrella bug calls out. Require --sock= to disambiguate instead of
+    // guessing.
+    if (live.length > 1) {
+      console.error(
+        `psupty inject: ${live.length} live sessions — ambiguous without --sock=PATH. Pick one:\n` +
+          live.map((m) => `  --sock=${m.sock}  (pid ${m.pid}, ${m.command} ${(m.args || []).join(' ')})`).join('\n'),
+      );
+      process.exit(1);
+    }
     sock = live[0].sock;
   }
 
