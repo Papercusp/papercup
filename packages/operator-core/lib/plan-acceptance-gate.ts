@@ -765,7 +765,15 @@ export async function evaluatePlanAcceptanceGate(
   // acceptance card. Arbitrary superseded history remains ineligible.
   const scorecards = await listScorecards({ rubricRef: rubric.rubricId, limit: 50, includeSuperseded: true });
   const allComplete = scorecards.filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized);
-  const implementer = rubric.proposedBy ?? rubric.createdBy ?? null;
+  // WI-2141007: `createdBy` FIRST, matching `scorecards:emit` and
+  // `grader-eligibility.ts`. This file previously read `proposedBy ?? createdBy`
+  // — the OPPOSITE precedence. For a rubric whose later revision was
+  // repair-proposed by a different agent, emit demanded the verdict come from
+  // `createdBy` while this gate measured independence against `proposedBy`, so
+  // the writer and the gate disagreed about who the author even was. They must
+  // agree, or a seat succession stamped against emit's author is not recognized
+  // here and the plan stays unshippable for a different reason than before.
+  const implementer = rubric.createdBy ?? rubric.proposedBy ?? null;
   const implementerIdentities = new Set<string>();
   if (implementer) {
     implementerIdentities.add(implementer);
@@ -780,10 +788,29 @@ export async function evaluatePlanAcceptanceGate(
   }
   const isImplementerScorecard = (scorecard: (typeof allComplete)[number]) =>
     scorecard.createdBy != null && implementerIdentities.has(scorecard.createdBy);
+  /**
+   * WI-2141007: a verdict recorded by a SUCCESSOR to a dead rubric author holds
+   * author authority even though its `createdBy` is, by construction, outside the
+   * author's lineage. The `seat` stamp is written server-side by `scorecards:emit`
+   * (`acceptance` is a `.strict()` zod object, so a caller cannot forge it), and
+   * is honoured only when it names THIS rubric's author of record.
+   *
+   * Without this the repair would be self-defeating: the successor's card would
+   * satisfy emit and then be misread here as an INDEPENDENT grading, leaving the
+   * plan at `acceptance_not_recorded` — and, worse, letting that card stand in as
+   * the independent grading it is not.
+   */
+  const isSeatSuccessorVerdict = (scorecard: (typeof allComplete)[number]) => {
+    const seat = scorecard.acceptance?.seat;
+    return seat != null && implementer != null && seat.succeededFrom === implementer;
+  };
+  /** Holds author authority: by identity/lineage, or by audited seat succession. */
+  const holdsAuthorAuthority = (scorecard: (typeof allComplete)[number]) =>
+    isImplementerScorecard(scorecard) || isSeatSuccessorVerdict(scorecard);
   const standingAuthorVerdicts = new Map(
     allComplete
       .filter(
-        (s) => !s.supersededBy && isImplementerScorecard(s) && s.acceptance != null && typeof s.supersedes === 'string',
+        (s) => !s.supersededBy && holdsAuthorAuthority(s) && s.acceptance != null && typeof s.supersedes === 'string',
       )
       .map((s) => [s.issueId, s.supersedes!] as const),
   );
@@ -823,7 +850,7 @@ export async function evaluatePlanAcceptanceGate(
   // value (D-006), and a card with no cascade provenance ranks as floor rather
   // than being demoted — see acceptance-grading-authority.ts for both.
   const independentCards = complete.filter(
-    (s) => !implementer || (s.createdBy != null && !isImplementerScorecard(s)),
+    (s) => !implementer || (s.createdBy != null && !holdsAuthorAuthority(s)),
   );
   const graderVia = await readGraderSelectionVia(rubric.workspaceId, rubric.rubricId);
   const independent = pickAuthoritativeGrading(independentCards, (s) => gradingViaOf(s, graderVia));
@@ -876,7 +903,7 @@ export async function evaluatePlanAcceptanceGate(
     };
   }
 
-  const explicitVerdicts = implementer ? complete.filter((s) => isImplementerScorecard(s) && s.acceptance) : [];
+  const explicitVerdicts = implementer ? complete.filter((s) => holdsAuthorAuthority(s) && s.acceptance) : [];
   // listScorecards is newest-first, but sort defensively because tests/injected
   // readers are not required to preserve the storage ordering contract.
   const latestVerdict = explicitVerdicts.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
