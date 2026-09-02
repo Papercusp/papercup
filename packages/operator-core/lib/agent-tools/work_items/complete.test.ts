@@ -2216,6 +2216,20 @@ describe('work_items:complete (keyed-array)', () => {
       expect(message).toContain("residue:['none']");
     });
 
+    // EI-22158326197204788: the refusal named ONLY the nested path, so a caller who
+    // read the message and wrote a top-level `completion.coverage` instead (a fully
+    // schema-accepted alias — CompletionRecordSchema declares `coverage` directly, and
+    // completionEvidenceFromRecord falls back to it) had no way to learn that from the
+    // rejection text alone. Assert the alias is now named alongside the canonical path.
+    it('also names the top-level completion.coverage alias, not only the nested path', async () => {
+      getWorkItem.mockResolvedValue(verificationItem);
+      const r = await one({ id: 'WI-verify', state: 'resolved', completion: universalCompletion });
+
+      const message = String(r.verificationCoverageError);
+      expect(message).toContain('completion.verification.coverage');
+      expect(message).toContain('completion.coverage');
+    });
+
     it('reports the complete coverage contract for malformed nested bucket shapes in one rejection', () => {
       const result = (
         complete.args as {

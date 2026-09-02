@@ -207,3 +207,157 @@ describe('SpawnerIpcClient — multi-byte UTF-8 split across socket chunks (WI-6
     }
   });
 });
+
+/**
+ * WI-2141693 — the client latched onto a dead connection forever.
+ *
+ * Measured on the tower 2026-09-02: the spawner-sidecar crashed (exit 7) and
+ * RESPAWNED 11s later on the same socket path, yet bg-host logged 333+
+ * `spawner-sidecar git unavailable, using local spawn` lines over the next 99
+ * minutes, every one of them `Cannot call write after a stream was destroyed`.
+ * Fallback counters climbed to pot-git 13,230 / harness-docs 3,423 /
+ * git-sync 1,922, and only a bg-host restart cleared it.
+ *
+ * The mechanism is a settled-promise latch in `ensureConnected()`:
+ * `connectPromise` was never cleared once settled, so after `connected` went
+ * false the guard `if (this.connectPromise) return this.connectPromise` handed
+ * back the ALREADY-SETTLED promise and no re-dial ever happened. `call()`'s
+ * `if (!this.socket)` check then passed — a destroyed socket is still
+ * non-null — and wrote into it.
+ *
+ * It latches in BOTH directions, which is why there are two cases here: a
+ * settled-RESOLVED promise after a death, and a settled-REJECTED promise after
+ * a failed first dial (a sidecar not yet listening would then stay unreachable
+ * for the life of the process, even once it came up).
+ *
+ * The sibling substrate client already carries this fix (WI-895); this client
+ * was cloned from it and never received it.
+ */
+describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () => {
+  /** Echo server that tracks live connections so a sidecar DEATH can be simulated. */
+  async function startTrackedServer(p: string): Promise<{ server: net.Server; killConnections: () => void }> {
+    const conns = new Set<net.Socket>();
+    const srv = net.createServer((socket) => {
+      conns.add(socket);
+      socket.on('close', () => conns.delete(socket));
+      socket.on('error', () => {});
+      const decoder = new StringDecoder('utf8');
+      let buffer = '';
+      socket.on('data', (chunk: Buffer) => {
+        buffer += decoder.write(chunk);
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          const req = JSON.parse(line) as { params?: { value?: string }; id: number };
+          socket.write(JSON.stringify({ jsonrpc: '2.0', result: { value: req.params?.value }, id: req.id }) + '\n');
+        }
+      });
+    });
+    await new Promise<void>((resolve) => srv.listen(p, () => resolve()));
+    return { server: srv, killConnections: () => { for (const c of conns) c.destroy(); } };
+  }
+
+  it('reconnects after the sidecar dies and a replacement listens on the same path', async () => {
+    const p = socketPath();
+    let live = await startTrackedServer(p);
+    const c = new SpawnerIpcClient(p);
+    try {
+      expect(await c.call<{ value: string }>('echo', { value: 'before' }, { timeoutMs: 3000 })).toEqual({
+        value: 'before',
+      });
+
+      // The sidecar dies: its connections drop and it stops listening.
+      live.killConnections();
+      await new Promise<void>((resolve) => live.server.close(() => resolve()));
+      if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* already gone */ } }
+
+      // Let the client actually OBSERVE the disconnect. Measured with a
+      // standalone probe: after a peer destroy Node delivers 'end'/'close' a
+      // macrotask or two later, NOT synchronously — immediately after
+      // `server.close()` resolves the socket still reads
+      // `destroyed=false, readyState='open'`. Production had 11 seconds and 99
+      // minutes here, so this models the real sequence; without it the test
+      // would be asserting on the inherent death-to-EOF race (covered
+      // separately below) instead of on the latch.
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+      // ...and the sidecar respawns on the SAME socket path.
+      live = await startTrackedServer(p);
+
+      // Pre-fix this rejects with "Cannot call write after a stream was
+      // destroyed" — permanently, for the life of the process.
+      expect(await c.call<{ value: string }>('echo', { value: 'after' }, { timeoutMs: 3000 })).toEqual({
+        value: 'after',
+      });
+    } finally {
+      c.close();
+      live.killConnections();
+      await new Promise<void>((resolve) => live.server.close(() => resolve()));
+      if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* already gone */ } }
+    }
+  });
+
+  it('recovers on the NEXT call when one call is lost to the death→EOF race', async () => {
+    // The production symptom was not "one call failed" — a call issued between
+    // the sidecar's death and the kernel delivering EOF cannot succeed, and no
+    // client can prevent that. It was that ALL 333 subsequent calls failed for
+    // 99 minutes. This pins the property that actually regressed: a lost call
+    // must leave the client RECOVERABLE, not latched.
+    const p = socketPath();
+    let live = await startTrackedServer(p);
+    const c = new SpawnerIpcClient(p);
+    try {
+      await c.call('echo', { value: 'before' }, { timeoutMs: 3000 });
+
+      // Kill and immediately respawn, giving the client NO chance to observe
+      // the close first — so the next call races the EOF.
+      live.killConnections();
+      await new Promise<void>((resolve) => live.server.close(() => resolve()));
+      if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* already gone */ } }
+      live = await startTrackedServer(p);
+
+      // This one may legitimately fail (it is the inherent race) or succeed —
+      // either is acceptable, so the outcome is deliberately not asserted.
+      await c.call('echo', { value: 'racy' }, { timeoutMs: 3000 }).catch(() => undefined);
+
+      // What is NOT acceptable is staying broken. Pre-fix, every call from here
+      // on rejected forever; post-fix the client re-dials.
+      expect(await c.call<{ value: string }>('echo', { value: 'recovered' }, { timeoutMs: 3000 })).toEqual({
+        value: 'recovered',
+      });
+    } finally {
+      c.close();
+      live.killConnections();
+      await new Promise<void>((resolve) => live.server.close(() => resolve()));
+      if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* already gone */ } }
+    }
+  });
+
+  it('does not latch on a FAILED first dial — connects once the sidecar comes up', async () => {
+    const p = socketPath();
+    const c = new SpawnerIpcClient(p);
+    let live: { server: net.Server; killConnections: () => void } | null = null;
+    try {
+      // Nothing is listening yet, so the first call must fail...
+      await expect(c.call('echo', { value: 'nope' }, { timeoutMs: 3000 })).rejects.toThrow();
+
+      // ...but that failure must not be cached. The sidecar now starts up.
+      live = await startTrackedServer(p);
+
+      // Pre-fix, ensureConnected() returns the stale REJECTED promise forever,
+      // so this fails even though the sidecar is listening.
+      expect(await c.call<{ value: string }>('echo', { value: 'up' }, { timeoutMs: 3000 })).toEqual({
+        value: 'up',
+      });
+    } finally {
+      c.close();
+      if (live) {
+        live.killConnections();
+        await new Promise<void>((resolve) => live.server.close(() => resolve()));
+      }
+      if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* already gone */ } }
+    }
+  });
+});

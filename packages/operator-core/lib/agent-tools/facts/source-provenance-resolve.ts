@@ -38,6 +38,7 @@ import {
   FACT_PROVENANCE_QUOTE_CHARS,
   type FactSourceProvenance,
 } from '../../agent-facts/store';
+import { redactProvenanceQuote } from './quote-secret-redaction';
 
 /**
  * Resolve a sourceRef into an assert-time provenance stamp.
@@ -55,10 +56,12 @@ export async function resolveFactSourceProvenance(
     if (ref.kind === 'owner-turn') {
       const { stamp } = await resolveRelayProvenance(identity, { relayOf: OWNER_TURN_SENTINEL });
       if (stamp?.tier === 'owner-verified-turn') {
+        const safe = redactProvenanceQuote(clampSnippet(stamp.quote, FACT_PROVENANCE_QUOTE_CHARS));
         return {
           kind: 'owner-turn',
           verified: true,
-          quote: clampSnippet(stamp.quote, FACT_PROVENANCE_QUOTE_CHARS),
+          ...(safe.quote ? { quote: safe.quote } : {}),
+          ...(safe.redacted ? { quoteRedacted: true } : {}),
           ...(stamp.turnTs ? { label: `owner turn ${stamp.turnTs}` } : {}),
           verifiedAt,
         };
@@ -71,10 +74,12 @@ export async function resolveFactSourceProvenance(
         budget: { snippetChars: FACT_PROVENANCE_QUOTE_CHARS, maxRefs: 1 },
       });
       if (h?.ok) {
+        const safe = redactProvenanceQuote(h.snippet);
         return {
           kind: ref.kind,
           verified: true,
-          ...(h.snippet ? { quote: h.snippet } : {}),
+          ...(safe.quote ? { quote: safe.quote } : {}),
+          ...(safe.redacted ? { quoteRedacted: true } : {}),
           label: h.label,
           verifiedAt,
         };

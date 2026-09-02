@@ -205,6 +205,50 @@ export interface FleetPopulationLifecycleEverMembers {
   reason?: string;
 }
 
+/**
+ * P-019 (`silent-wrong-answers-2026-08-01`) — the roster read that can report LOSS.
+ *
+ * Every other population in this snapshot is a PRESENT-STATE read, so a member that
+ * dropped off the roster entirely is not counted as anything: it is simply absent, and
+ * a fleet that lost ten members renders as a healthy small fleet. `liveness.dead` does
+ * not close the gap — that counts rows still ON the roster carrying an ended verdict,
+ * which is the visible case. The invisible one has no row at all.
+ *
+ * This does not merely hide loss, it FABRICATES a phantom event: because absence is
+ * discovered late and all at once, batched DISCOVERY is indistinguishable from a
+ * batched EVENT. That is what put "mass death" in a leader's head before a single
+ * timestamp was read (D-003), and aimed two successive hypotheses at a simultaneous
+ * killer that never existed.
+ *
+ * Two properties are deliberate, and both are the bug class this plan exists to close:
+ *
+ * 1. `count` is null — never 0 — when ever-members could not be read. The subtraction
+ *    has no minuend, so the honest answer is UNKNOWN. Rendering it as 0 would state
+ *    "you have lost nobody" on the strength of a failed read (this plan's P-014).
+ * 2. Departure TIMING is not derived here at all. The available signal,
+ *    `adv_sessions.ended_at`, is written by the idle-session-reaper when it NOTICES a
+ *    dead row — 9 rows stamped inside 13ms, one dead since 20 July — so it clusters by
+ *    construction and dates the sweep, not the loss (D-003, and the caveat P-015
+ *    shipped for exactly this column). A `since` sourced from it would be precisely the
+ *    silent wrong answer this item was filed to remove, so `timing` names what is
+ *    unmeasured and points at the column that can answer it.
+ */
+export interface FleetPopulationLifecycleMembersLost {
+  population: 'ever-members-absent-from-roster';
+  basis: 'ever-members minus every identity still present on the fleet roster in ANY lifecycle state; a member still on the roster as ended is visible and is NOT counted here';
+  writer: 'harness_shared.fleet_membership_events';
+  /** False when ever-members could not be read; `count` is then null, never 0. */
+  available: boolean;
+  count: number | null;
+  ownerIds: string[];
+  timing: {
+    status: 'not-measured';
+    reason: string;
+    insteadRead: string;
+  };
+  reason?: string;
+}
+
 export interface FleetPopulationLifecycleTarget {
   enabled: boolean | null;
   target: number | null;
@@ -265,6 +309,7 @@ export interface FleetPopulationLifecycleSnapshot {
   currentRunnableRoster: FleetPopulationLifecycleRoster;
   relevantRoster: FleetPopulationLifecycleRoster;
   everMembers: FleetPopulationLifecycleEverMembers;
+  membersLost: FleetPopulationLifecycleMembersLost;
   target: FleetPopulationLifecycleTarget | null;
   liveness: FleetPopulationLifecycleLiveness;
   claimFlow: FleetPopulationLifecycleFlow;
@@ -349,6 +394,13 @@ export function buildFleetPopulationLifecycle<T extends {
   const currentOwnerIds = currentRunnableRows.map((row) => row.agentId);
   const relevantOwnerIds = relevantRows.map((row) => row.agentId);
   const everOwnerIds = [...new Set(input.everMemberIds.filter((id) => typeof id === 'string' && id.length > 0))].sort();
+  // P-019: subtract against EVERY candidate the roster still carries, in any lifecycle
+  // state — not the runnable/relevant filters. A member visible as `ended` is already
+  // reportable through `liveness.dead`; the loss this field exists to surface is the
+  // identity with no roster row at all, which no present-state read can return.
+  const everMembersReadable = input.everMembersAvailable ?? true;
+  const rosterOwnerIds = new Set(input.candidates.map((row) => row.agentId));
+  const lostOwnerIds = everMembersReadable ? everOwnerIds.filter((id) => !rosterOwnerIds.has(id)) : [];
   const target = input.target
     ? {
         enabled: input.target.enabled ?? null,
@@ -411,12 +463,29 @@ export function buildFleetPopulationLifecycle<T extends {
         population: 'ever-members',
         basis: 'append-only fleet membership events',
         writer: 'harness_shared.fleet_membership_events',
-        available: input.everMembersAvailable ?? true,
-        counted: (input.everMembersAvailable ?? true) ? everOwnerIds.length : null,
-        ownerIds: (input.everMembersAvailable ?? true) ? everOwnerIds : [],
-        ...((input.everMembersAvailable ?? true) || !input.everMembersReason
-          ? {}
-          : { reason: input.everMembersReason }),
+        available: everMembersReadable,
+        counted: everMembersReadable ? everOwnerIds.length : null,
+        ownerIds: everMembersReadable ? everOwnerIds : [],
+        ...(everMembersReadable || !input.everMembersReason ? {} : { reason: input.everMembersReason }),
+      },
+      membersLost: {
+        population: 'ever-members-absent-from-roster',
+        basis:
+          'ever-members minus every identity still present on the fleet roster in ANY lifecycle state; a member still on the roster as ended is visible and is NOT counted here',
+        writer: 'harness_shared.fleet_membership_events',
+        available: everMembersReadable,
+        // null, never 0: with ever-members unreadable the subtraction has no minuend,
+        // and "0 lost" would assert a fleet is whole on the strength of a failed read.
+        count: everMembersReadable ? lostOwnerIds.length : null,
+        ownerIds: lostOwnerIds,
+        timing: {
+          status: 'not-measured',
+          reason:
+            'departure time is not derivable here: adv_sessions.ended_at is stamped by the idle-session-reaper when it NOTICES a dead row, so it clusters by construction and dates the sweep rather than the loss (plan silent-wrong-answers-2026-08-01 D-003, P-015)',
+          insteadRead:
+            'coord_presence.last_active_at per member in membersLost.ownerIds — true last activity; adv_sessions.ended_by names which process wrote the end',
+        },
+        ...(everMembersReadable || !input.everMembersReason ? {} : { reason: input.everMembersReason }),
       },
       target,
       liveness: lifecycleLiveness(input.candidates),

@@ -71,8 +71,6 @@ export class SpawnerIpcClient {
    */
   private decoder = new StringDecoder('utf8');
   private connectPromise: Promise<void> | null = null;
-  private connectResolve: (() => void) | null = null;
-  private connectReject: ((error: Error) => void) | null = null;
 
   constructor(socketPath?: string) {
     // Absolute, env-pinned path (the spawner sets PAPERCUSP_SPAWNER_IPC_SOCKET
@@ -81,58 +79,121 @@ export class SpawnerIpcClient {
   }
 
   /**
-   * Ensure connected to the sidecar socket.
+   * Reset ALL per-connection state so the NEXT ensureConnected() dials fresh.
+   *
+   * WI-2141693 — the load-bearing piece. Before this, a sidecar death (or a
+   * failed dial) left `socket` + `connectPromise` populated forever: every
+   * later ensureConnected() short-circuited on the ALREADY-SETTLED promise and
+   * every call() wrote into a dead socket. Measured 2026-09-02: the sidecar
+   * crashed and respawned in 11s, yet bg-host logged 333+ `Cannot call write
+   * after a stream was destroyed` fallbacks over the next 99 minutes
+   * (pot-git 13,230 / harness-docs 3,423 / git-sync 1,922) and only a restart
+   * cleared it. The fallback is functionally correct, so nothing errored — what
+   * degraded was latency, back to the ~40ms/GB fork stall the sidecar exists to
+   * remove.
+   *
+   * Guarded by socket IDENTITY so a stale socket's late 'error'/'close' can
+   * never clobber a newer re-dialed connection. This is the same fix the
+   * sibling substrate client carries (WI-895); this client was cloned from it
+   * and never received it.
+   */
+  private teardown(sock: net.Socket, err: Error): void {
+    if (this.socket !== sock) return; // late event from a superseded socket
+    this.socket = null;
+    this.connected = false;
+    this.connectPromise = null;
+    // Drop any partial line AND any partial multi-byte sequence: carrying
+    // either across a reconnect would prepend garbage to the next connection's
+    // first line (same reason close() resets them).
+    this.buffer = '';
+    this.decoder = new StringDecoder('utf8');
+    // Reject all pending requests + drop their callbacks.
+    for (const [id, { reject: rej }] of this.pending) {
+      rej(new Error(`Socket error: ${err.message}`));
+      this.callbacks.delete(id);
+    }
+    this.pending.clear();
+  }
+
+  /**
+   * Ensure connected to the sidecar socket. Re-dials after any error/close —
+   * a dead connection never sticks (WI-2141693).
    */
   async ensureConnected(): Promise<void> {
-    if (this.connected) return;
+    if (this.connected && this.socket && !this.socket.destroyed) return;
+
+    // A socket that is already destroyed but whose 'close' has not yet been
+    // delivered would otherwise fall through to the settled `connectPromise`
+    // below and be written into. Retire it now so the dial is deterministic
+    // rather than dependent on event ordering.
+    if (this.socket?.destroyed) {
+      this.teardown(this.socket, new Error(`Sidecar socket destroyed (${this.socketPath})`));
+    }
 
     if (this.connectPromise) {
       return this.connectPromise;
     }
 
     this.connectPromise = new Promise<void>((resolve, reject) => {
-      this.connectResolve = resolve;
-      this.connectReject = reject;
+      // A connect attempt settles exactly once, but 'error' and 'close' can
+      // both fire for the same failure; without this the second one would
+      // reject an already-resolved promise (a silent no-op that made the real
+      // dial error unreportable).
+      let settled = false;
+      const settleOk = (): void => {
+        if (!settled) { settled = true; resolve(); }
+      };
+      const settleErr = (e: Error): void => {
+        if (!settled) { settled = true; reject(e); }
+      };
 
-      this.socket = net.createConnection(this.socketPath, () => {
+      const sock = net.createConnection(this.socketPath, () => {
         this.connected = true;
         // Keep the persistent connection available for a long-lived host, but
         // do not let it keep a short-lived diagnostic process alive after its
         // last RPC completes. The owner-side shutdown hook still closes it
         // when the host exits.
-        this.socket?.unref();
-        if (this.connectResolve) this.connectResolve();
+        sock.unref();
+        settleOk();
+      });
+      this.socket = sock;
+
+      sock.on('data', (chunk: Buffer) => {
+        // Ignore a superseded socket's late data — it would be decoded into
+        // the CURRENT connection's buffer and desync its frame walk.
+        if (this.socket === sock) this.handleData(chunk);
       });
 
-      this.socket.on('data', (chunk: Buffer) => this.handleData(chunk));
-      this.socket.on('error', (err) => {
-        this.connected = false;
-        if (this.connectReject) {
-          this.connectReject(err);
-        }
-        // Reject all pending requests + drop their callbacks.
-        for (const [id, { reject: rej }] of this.pending) {
-          rej(new Error(`Socket error: ${err.message}`));
-          this.callbacks.delete(id);
-        }
-        this.pending.clear();
+      sock.on('error', (err) => {
+        const e = err instanceof Error ? err : new Error(String(err));
+        this.teardown(sock, e);
+        settleErr(e);
       });
 
-      this.socket.on('end', () => {
-        this.connected = false;
+      sock.on('close', () => {
+        // Fires on sidecar death AND after error/destroy; teardown is
+        // idempotent via the socket-identity guard. After an ESTABLISHED
+        // connection closes, settleErr is a no-op (already resolved) — the
+        // RESET is what lets the next ensureConnected() re-dial.
+        const e = new Error(`Sidecar socket closed (${this.socketPath})`);
+        this.teardown(sock, e);
+        settleErr(new Error(`Sidecar connection closed before ready (${this.socketPath})`));
       });
 
-      // Connection timeout: 5s
+      // Connection timeout: 5s (only reachable when the dial neither connects
+      // nor errors — e.g. a listener with a saturated accept queue).
       const timeout = setTimeout(() => {
-        if (this.socket && !this.connected) {
-          this.socket.destroy();
-          if (this.connectReject) {
-            this.connectReject(new Error('Connection timeout'));
-          }
+        if (!this.connected && this.socket === sock) {
+          const e = new Error(`Connection timeout dialing spawner sidecar at ${this.socketPath}`);
+          this.teardown(sock, e);
+          settleErr(e);
+          sock.destroy();
         }
       }, 5000);
+      timeout.unref?.();
 
-      this.socket.once('connect', () => clearTimeout(timeout));
+      sock.once('connect', () => clearTimeout(timeout));
+      sock.once('close', () => clearTimeout(timeout));
     });
 
     return this.connectPromise;

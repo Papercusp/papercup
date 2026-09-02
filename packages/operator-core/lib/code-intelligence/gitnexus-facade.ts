@@ -518,15 +518,103 @@ async function enrichEdge(
   }
 }
 
+/**
+ * The wording for a graph edge that points at a FILE rather than a call site.
+ *
+ * One source, because the label is the whole fix: without it a file row is
+ * rendered `{ path, line1: null, kind: null, detail: 'index.test.ts' }`, which
+ * reads as "a caller named index.test.ts".
+ */
+export const FILE_LEVEL_EDGE_DETAIL =
+  'file-level graph edge — GitNexus links this FILE to the symbol; it is NOT a resolved call site';
+
+/** A caller/callee answer, split by what the graph actually resolved. */
+interface EdgeSites {
+  sites: SymbolSite[];
+  /** Edges that resolved to a real symbol with a line. */
+  callSiteCount: number;
+  /** Edges that are file nodes — no line, no kind, not a call site. */
+  fileEdgeCount: number;
+}
+
+/**
+ * Split `incoming.calls` / `outgoing.*` into resolved call sites and file-level
+ * edges, and LABEL the second kind so it cannot be read as the first.
+ *
+ * ── The measurement (2026-09-02, gitnexus 1.6.9, HEAD acab51f9) ────────────
+ * Every raw edge row carries only `{uid, name, filePath}` — no `kind`, no
+ * `startLine` — so each is enriched through `context({uid})`. That call returns
+ * `status:'found'` for BOTH node kinds, but only a symbol node carries a line:
+ *
+ *   uid '.../index.test.ts:make' -> symbol { name:'make', kind:'Function', startLine:71 }
+ *   uid '.../index.test.ts'      -> symbol { name:'index.test.ts' }   // no kind, no line
+ *   uid '.../pinned-subject.fixture.ts' -> symbol { name:'pinned-subject.fixture.ts' }
+ *
+ * So `callers('pinModuleState')` returned THREE rows of which one was a real
+ * caller, and `index.test.ts` appeared twice — once as the true caller `make`
+ * at line 72, once as the bare containing file. The only tell was an
+ * unexplained `line1: null`.
+ *
+ * That is the failure this module's own header names — a result whose success
+ * and whose noise are indistinguishable — reproduced one layer up. Enrichment
+ * "succeeding" with nothing to add is precisely the shape that hides it.
+ *
+ * File edges are KEPT (they are real graph facts, and dropping data silently is
+ * the other way to lie) but are labelled and sorted after the resolved sites,
+ * and the caller is told the split through `error`.
+ */
 async function sitesFromEdges(
   edges: GnxSymbol[],
   dispatch: GitnexusDispatch,
   repo: string,
-): Promise<SymbolSite[]> {
+): Promise<EdgeSites> {
   const enriched = await Promise.all(edges.map((edge) => enrichEdge(edge, dispatch, repo)));
-  return enriched
-    .map((edge) => siteOf(edge, edge.name))
-    .filter((site): site is SymbolSite => site !== null);
+
+  const callSites: SymbolSite[] = [];
+  const fileEdges: SymbolSite[] = [];
+
+  for (const edge of enriched) {
+    // Resolution is judged on the LINE, not on the dispatch outcome: a file
+    // node answers `status:'found'` with no line, so "the probe succeeded" is
+    // not evidence that a call site was located.
+    const resolved = typeof edge.startLine === 'number' && Number.isFinite(edge.startLine);
+    const site = resolved
+      ? siteOf(edge, edge.name)
+      : siteOf({ ...edge, kind: 'file' }, FILE_LEVEL_EDGE_DETAIL);
+    if (!site) continue;
+    (resolved ? callSites : fileEdges).push(site);
+  }
+
+  return {
+    // Resolved call sites lead, so the answer to the question asked comes
+    // first and a `limit` cut keeps the call sites rather than the files.
+    sites: [...callSites, ...fileEdges],
+    callSiteCount: callSites.length,
+    fileEdgeCount: fileEdges.length,
+  };
+}
+
+/**
+ * The caveat for an edge answer that is partly file-level.
+ *
+ * Non-null `error` beside non-empty `sites` is this facade's existing channel
+ * for "here is an answer, and here is what is wrong with it" (the stale-index
+ * note uses it the same way), so the split rides there rather than overloading
+ * `truncation`, whose `totalAvailable` means "rows before the cut".
+ */
+export function fileEdgeNotice(
+  op: GitnexusFacadeOp,
+  callSiteCount: number,
+  fileEdgeCount: number,
+): string | null {
+  if (fileEdgeCount <= 0) return null;
+  const total = callSiteCount + fileEdgeCount;
+  return (
+    `gitnexus ${op} returned ${total} edge(s): ${callSiteCount} resolved call site(s) and ` +
+    `${fileEdgeCount} FILE-level edge(s) carrying no line. The file rows are listed last, ` +
+    `with kind:"file". Do not count them as ${op} — the same file can appear both as a ` +
+    'resolved site and as a file edge, so counting rows overstates the real total.'
+  );
 }
 
 /**
@@ -730,17 +818,22 @@ export async function gitnexusFacade(
 
     const sym = json.symbol as GnxSymbol | undefined;
     let sites: SymbolSite[] = [];
+    let edgeNotice: string | null = null;
 
     if (op === 'symbol') {
       const s = siteOf(sym);
       if (s) sites = [s];
     } else if (op === 'callers') {
       const incoming = (json.incoming as { calls?: GnxSymbol[] } | undefined)?.calls ?? [];
-      sites = await sitesFromEdges(incoming, activeDispatch, repo);
+      const resolved = await sitesFromEdges(incoming, activeDispatch, repo);
+      sites = resolved.sites;
+      edgeNotice = fileEdgeNotice(op, resolved.callSiteCount, resolved.fileEdgeCount);
     } else if (op === 'callees') {
       const outgoing = json.outgoing as Record<string, GnxSymbol[]> | undefined;
       const flat = outgoing ? Object.values(outgoing).flat() : [];
-      sites = await sitesFromEdges(flat, activeDispatch, repo);
+      const resolved = await sitesFromEdges(flat, activeDispatch, repo);
+      sites = resolved.sites;
+      edgeNotice = fileEdgeNotice(op, resolved.callSiteCount, resolved.fileEdgeCount);
     }
 
     return applyBudget(
@@ -748,7 +841,7 @@ export async function gitnexusFacade(
         ...indexHealth.freshness,
         sites,
         totalAvailable: sites.length,
-        error: indexHealth.error,
+        error: joinErrors(indexHealth.error, edgeNotice),
       }),
       limit,
     );

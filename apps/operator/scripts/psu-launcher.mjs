@@ -2769,7 +2769,12 @@ export function stripKickoffPositional(args = []) {
 
 export function mintRecycleArgs(
   args = [],
-  { mintId = () => randomUUID(), agent = null, personaFile = null } = {},
+  {
+    mintId = () => randomUUID(),
+    agent = null,
+    personaFile = null,
+    model = null,
+  } = {},
 ) {
   const raw = args.map((a) => String(a ?? ""));
   // stale-prompt-render-in-live-sessions-2026-08-02 P-002: the freshly re-rendered
@@ -2779,6 +2784,12 @@ export function mintRecycleArgs(
     typeof personaFile === "string" && personaFile.trim()
       ? personaFile.trim()
       : null;
+  // WI-2141859: the model this session is CURRENTLY running, when the caller
+  // detected one that differs from the inherited flag (detectRespawnModelSpec).
+  // Same shape as `persona` above and for the same reason — see the --model
+  // case in the copy loop below.
+  const freshModel =
+    typeof model === "string" && model.trim() ? model.trim() : null;
   const hasSessionId = raw.some(
     (a) => a === "--session-id" || a.startsWith("--session-id="),
   );
@@ -2842,6 +2853,38 @@ export function mintRecycleArgs(
       out.push(`--system-prompt-file=${persona}`);
       continue;
     }
+    // WI-2141859: THE MODEL half of exactly the staleness the persona case
+    // above fixes, and the bare `out.push(a)` below is again where it lived.
+    // `--model` copied through verbatim pins the successor to the model the
+    // CHAIN was launched with — and because an explicit --model OVERRIDES the
+    // CLI's in-session `/model` selection, an owner who changes model in the
+    // chat has it reverted at the very next respawn. Owner-reported 2026-09-02
+    // ("I switched all models to opus, which worked, but whenever they carry
+    // themselves to a new session they restart as fable agents again"),
+    // measured on three live chains — su-60757119 ran fable, fable, fable,
+    // OPUS, FABLE, fable: the switch held for one session, then the respawn
+    // undid it.
+    //
+    // REPLACE the value, never append a second flag (claude takes the last one,
+    // but relying on that would be an accident waiting to be reordered), and
+    // only when the caller actually detected the session's current model — a
+    // null `model` means detection was unavailable and the deliberate fail-soft
+    // is the inherited spec: a stale model beats a successor that boots on the
+    // wrong one. An argv with NO --model is left alone; we never ADD the flag,
+    // and that is not an oversight — such a session already honours `/model`
+    // across respawns on its own, because the CLI persists the selection and
+    // there is no flag to override it (measured: su-0c710c57 switched to opus
+    // mid-session and both successors stayed opus). Adding a flag there would
+    // newly pin a session that currently self-corrects.
+    if (freshModel && a === "--model") {
+      out.push("--model", freshModel);
+      i++; // consume the stale spec
+      continue;
+    }
+    if (freshModel && a.startsWith("--model=")) {
+      out.push(`--model=${freshModel}`);
+      continue;
+    }
     out.push(a);
   }
   if (!hasSessionId) out.push("--session-id", freshId);
@@ -2876,6 +2919,7 @@ export function mintCarryRespawnArgs(
     agent = "claude",
     personaFile = null,
     codexHome = null,
+    model = null,
   } = {},
 ) {
   const text = String(systemPromptAddendum ?? "").trim();
@@ -2895,7 +2939,13 @@ export function mintCarryRespawnArgs(
   // respawn modes (carry AND plain recycle) get the fresh render from one code
   // path. This function stays PURE: the network call that produces personaFile is
   // the caller's, where its failure can be caught and fail-softed.
-  const rotated = mintRecycleArgs(args, { mintId, agent, personaFile });
+  // `personaFile` (P-002) and `model` (WI-2141859) both ride through to
+  // mintRecycleArgs, which owns the --system-prompt-file and --model swaps —
+  // the copy-through they fix lives there, so both respawn modes (carry AND
+  // plain recycle) get the fresh values from one code path. This function stays
+  // PURE: the fs/network reads that produce them are the caller's, where their
+  // failure can be caught and fail-softed.
+  const rotated = mintRecycleArgs(args, { mintId, agent, personaFile, model });
   const dir = join(home, ".papercusp", "launch-context");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const key = String(ownerId || rotated.nativeId || "unknown")
@@ -3177,6 +3227,12 @@ export function lastActiveModelFor(session, { home = homedir() } = {}) {
     if (!line.includes(marker) || !line.includes('"model"')) continue; // cheap prefilter
     try {
       const o = JSON.parse(line);
+      // WI-2141859: a SUBAGENT turn (`isSidechain`) can answer on a different
+      // model from the session's own, and it is never the answer to "what is
+      // this session running" — for the resume picker OR for the respawn model
+      // carry below. Claude stamps the flag on every record it writes; codex
+      // and omp have no sidechains, so the guard is inert for them.
+      if (o?.isSidechain === true) continue;
       const m =
         session.agent === "codex"
           ? o?.type === "turn_context"
@@ -3195,6 +3251,126 @@ export function lastActiveModelFor(session, { home = homedir() } = {}) {
     }
   }
   return null;
+}
+
+/** The effort levels a `<model>:<effort>` spec may carry. Kept local so the
+ *  respawn-model helpers below stay dependency-free (this file is a standalone
+ *  .mjs the CLI runs directly). */
+const RESPAWN_MODEL_EFFORT_RE = /^(low|medium|high|xhigh|max)$/i;
+
+/**
+ * Split a model spec into the parts that mean different things across a
+ * respawn: the model IDENTITY (`claude-opus-5`), and the EFFORT suffix.
+ *
+ * Identity drops the `[1m]`-style window marker as well as the effort, because
+ * a transcript records the model that ANSWERED (`claude-opus-5`) while the
+ * launch flag carries the decorated spec (`claude-opus-5[1m]:max`). Comparing
+ * the raw strings would report a change on every respawn of an unchanged
+ * session. Pure; exported for tests.
+ */
+export function splitRespawnModelSpec(spec) {
+  let base = String(spec ?? "").trim();
+  let effort = "";
+  const c = base.lastIndexOf(":");
+  if (c > 0 && RESPAWN_MODEL_EFFORT_RE.test(base.slice(c + 1))) {
+    effort = base.slice(c + 1);
+    base = base.slice(0, c);
+  }
+  return {
+    id: base
+      .replace(/\[[^\]]*\]/g, "")
+      .trim()
+      .toLowerCase(),
+    effort,
+  };
+}
+
+/**
+ * WI-2141859: the model spec a successor should be launched with, given the
+ * spec its predecessor's argv carried and the model that predecessor was
+ * ACTUALLY answering on. Returns null for "keep the inherited spec".
+ *
+ * Null on every uncertain input — no inherited flag (we never ADD one; see
+ * mintRecycleArgs), nothing detected, an unrecognizable detected id, or an
+ * unchanged identity. A change is composed as detected-identity + the
+ * INHERITED effort: `/model` in the chat changes the model, it does not restate
+ * the effort the session was launched at, so effort rides across rather than
+ * being silently dropped to the model default. normalizeModelSpec then re-adds
+ * the `[1m]` window marker exactly as the resume path does, so an opus/fable/
+ * sonnet-5 successor keeps its 1M window. Pure; exported for tests.
+ */
+export function reconcileRespawnModelSpec(inheritedSpec, detectedModel) {
+  const inherited = splitRespawnModelSpec(inheritedSpec);
+  const detected = splitRespawnModelSpec(detectedModel);
+  if (!inherited.id || !detected.id) return null;
+  // A transcript can hold junk (`<synthetic>` is already filtered upstream, but
+  // a future marker would not be). Only a plausible model id may re-pin a live
+  // session's model; anything else fails soft to the inherited spec.
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(detected.id)) return null;
+  if (detected.id === inherited.id) return null;
+  return composeResumeModelSpec(detected.id, detected.effort || inherited.effort);
+}
+
+/** The `--model` spec an argv carries, or null. Pure; the read half of the
+ *  respawn model carry (mintRecycleArgs owns the write half). */
+export function modelSpecFromRecycleArgv(args = []) {
+  const raw = args.map((a) => String(a ?? ""));
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] === "--model") return (raw[i + 1] ?? "").trim() || null;
+    if (raw[i].startsWith("--model=")) return raw[i].slice(8).trim() || null;
+  }
+  return null;
+}
+
+/**
+ * WI-2141859: detect the model a live session is CURRENTLY running, for the
+ * respawn about to replace it — the owner-directed semantics (2026-09-02):
+ * "at the time our system ends their session and restarts it … check what the
+ * model is currently set at internally (it should pick up any user changes like
+ * ones they might do by /model)".
+ *
+ * The session's OWN transcript is that check: `lastActiveModelFor` reads the
+ * model that answered the most recent turn, which is the post-`/model` model
+ * whenever the owner switched mid-session. Reads FS; every failure path returns
+ * null so a respawn keeps the inherited spec rather than being blocked or
+ * re-pinned on a guess.
+ */
+export function detectRespawnModelSpec(
+  args = [],
+  {
+    ownerId = null,
+    agent = null,
+    home = homedir(),
+    configDir = null,
+    readLastActiveModel = lastActiveModelFor,
+  } = {},
+) {
+  // An empty/absent agent means "the claude argv shape" — `--model` and
+  // `--session-id` in this position are claude flags, and the host passes
+  // env.PAPERCUSP_AGENT which is unset on some claude launches. An explicitly
+  // non-claude agent is left alone: codex/omp compose model flags differently.
+  const normalized = String(agent ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized && normalized !== "claude") return null;
+  const inherited = modelSpecFromRecycleArgv(args);
+  if (!inherited) return null; // no flag to replace — never ADD one
+  const sessionId = nativeSessionIdFromLaunchArgs(args);
+  if (!sessionId) return null;
+  try {
+    const detected = readLastActiveModel(
+      {
+        agent: "claude",
+        sessionId,
+        coordOwnerId: ownerId,
+        ...(configDir ? { configDir } : {}),
+      },
+      { home },
+    );
+    return reconcileRespawnModelSpec(inherited, detected);
+  } catch {
+    return null; // an unreadable transcript only costs the refresh
+  }
 }
 
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
@@ -9250,8 +9426,35 @@ export function runWrapper(options) {
         // WI-1980: a cold-loop RECYCLE must respawn with a FRESH --session-id
         // (reusing the on-disk id storms the supervisor). Inject the arg-rewrite
         // + native→coord re-anchor here so the host stays launcher-agnostic.
-        mintRecycleArgs,
-        mintCarryRespawnArgs,
+        // WI-2141859: both respawn modes re-detect the model the session is
+        // CURRENTLY running — an in-session `/model` switch included — instead
+        // of copying the launch-time flag forward. Detection happens per
+        // respawn (the native session id rotates each time, so the transcript
+        // to read is the one named by the argv being replaced) and is
+        // fail-soft: a null keeps the inherited spec. An explicit `model` from
+        // the host still wins, so this can never fight a deliberate caller.
+        mintRecycleArgs: (a, o = {}) =>
+          mintRecycleArgs(a, {
+            ...o,
+            model:
+              o.model ??
+              detectRespawnModelSpec(a, {
+                ownerId,
+                agent: env.PAPERCUSP_AGENT,
+                configDir: env.CLAUDE_CONFIG_DIR || null,
+              }),
+          }),
+        mintCarryRespawnArgs: (a, o = {}) =>
+          mintCarryRespawnArgs(a, {
+            ...o,
+            model:
+              o.model ??
+              detectRespawnModelSpec(a, {
+                ownerId,
+                agent: o.agent ?? env.PAPERCUSP_AGENT,
+                configDir: env.CLAUDE_CONFIG_DIR || null,
+              }),
+          }),
         // stale-prompt-render-in-live-sessions-2026-08-02 P-002: a respawn must
         // re-render the base persona instead of inheriting the predecessor's file,
         // or every prompt fix stops at the session's FIRST launch. Injected like the

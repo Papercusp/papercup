@@ -74,6 +74,10 @@ describe('buildFleetPopulationLifecycle', () => {
         ownerIds: ['live', 'parked', 'dead'],
       },
       everMembers: { counted: 3, ownerIds: ['dead', 'historical', 'live'] },
+      // P-019: `historical` was a member and has NO roster row at all — the loss no
+      // present-state read can return. `dead` is NOT counted: it is still on the
+      // roster carrying an ended verdict, so `liveness.dead` already reports it.
+      membersLost: { available: true, count: 1, ownerIds: ['historical'] },
       target: {
         current: 2,
         verdict: 'under-strength',
@@ -87,6 +91,82 @@ describe('buildFleetPopulationLifecycle', () => {
       liveness: { live: 1, parked: 1, dead: 1, unknown: 1 },
       claimFlow: { status: 'unknown', values: null, reason: 'claim-flow-unread' },
     });
+  });
+});
+
+/**
+ * P-019 (`silent-wrong-answers-2026-08-01`) — WI-7130. A fleet that lost 10 members read
+ * as a healthy 1-member fleet: `summary.dead: 0` was literally true and completely
+ * misleading, because a departed member drops off the roster and is then counted as
+ * nothing at all. The measured harm was not the hidden loss but the phantom event —
+ * batched DISCOVERY of absence was read as a batched death, which sent two successive
+ * hypotheses after a simultaneous killer that never existed (D-003).
+ */
+describe('buildFleetPopulationLifecycle membersLost (P-019)', () => {
+  const lifecycle = (
+    candidates: { agentId: string; alive?: boolean; sessionState?: 'live' | 'parked' | 'ended' | null }[],
+    everMemberIds: string[],
+    extra: { everMembersAvailable?: boolean; everMembersReason?: string } = {},
+  ) => buildFleetPopulationLifecycle({ fleet: 'f', candidates, everMemberIds, ...extra }).snapshot.membersLost;
+
+  it('counts an ever-member with NO roster row — the loss every present-state read returns as nothing', () => {
+    const lost = lifecycle([{ agentId: 'here', alive: true, sessionState: 'live' }], ['here', 'gone-1', 'gone-2']);
+    expect(lost.count).toBe(2);
+    expect(lost.ownerIds).toEqual(['gone-1', 'gone-2']);
+    expect(lost.available).toBe(true);
+  });
+
+  it('does NOT count a member still on the roster as ended — that one is already visible', () => {
+    // The discriminating case. `liveness.dead` reports roster rows carrying an ended
+    // verdict; double-counting them here would make the new field agree with the old
+    // one on the population it was added to disagree about.
+    const snapshot = buildFleetPopulationLifecycle({
+      fleet: 'f',
+      candidates: [
+        { agentId: 'here', alive: true, sessionState: 'live' as const },
+        { agentId: 'ended-but-listed', alive: false, sessionState: 'ended' as const },
+      ],
+      everMemberIds: ['here', 'ended-but-listed', 'vanished'],
+    }).snapshot;
+    expect(snapshot.liveness.dead).toBe(1);
+    expect(snapshot.membersLost.ownerIds).toEqual(['vanished']);
+    expect(snapshot.membersLost.count).toBe(1);
+  });
+
+  it('reports count:null — NOT 0 — when ever-members could not be read', () => {
+    // The plan's P-014 shape: a failed READ must not render as a real answer. "0 lost"
+    // on an unreadable source asserts the fleet is whole on the strength of a failure,
+    // and 0 is the value a leader is least likely to question.
+    const lost = lifecycle([{ agentId: 'here', alive: true, sessionState: 'live' }], ['here', 'gone'], {
+      everMembersAvailable: false,
+      everMembersReason: 'membership-events read failed',
+    });
+    expect(lost.count).toBeNull();
+    expect(lost.count).not.toBe(0);
+    expect(lost.available).toBe(false);
+    expect(lost.ownerIds).toEqual([]);
+    expect(lost.reason).toBe('membership-events read failed');
+  });
+
+  it('returns count:0 with available:true when the roster genuinely lost nobody', () => {
+    // The other half of the previous test: a real zero and an unreadable source must
+    // not render identically, or the caveat carries no information.
+    const lost = lifecycle([{ agentId: 'here', alive: true, sessionState: 'live' }], ['here']);
+    expect(lost.count).toBe(0);
+    expect(lost.available).toBe(true);
+  });
+
+  it('does not fabricate a departure timestamp from the reaper-written column', () => {
+    // D-003: adv_sessions.ended_at is stamped when the idle-session-reaper NOTICES a
+    // dead row (9 rows inside 13ms, one dead since 20 July), so it dates the sweep and
+    // clusters by construction. A `since` sourced from it would BE the silent wrong
+    // answer this item was filed to remove, so timing stays explicitly unmeasured and
+    // names the column that can actually answer it.
+    const lost = lifecycle([], ['gone']);
+    expect(lost.timing.status).toBe('not-measured');
+    expect(lost).not.toHaveProperty('since');
+    expect(lost.timing.insteadRead).toContain('last_active_at');
+    expect(lost.timing.reason).toContain('ended_at');
   });
 });
 

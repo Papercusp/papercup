@@ -826,10 +826,11 @@ export function nativeSessionIdFromLaunchArgs(args?: any[]): string | null;
  * for tests.
  */
 export function stripKickoffPositional(args?: any[]): string[];
-export function mintRecycleArgs(args?: any[], { mintId, agent, personaFile }?: {
+export function mintRecycleArgs(args?: any[], { mintId, agent, personaFile, model, }?: {
     mintId?: (() => `${string}-${string}-${string}-${string}-${string}`) | undefined;
     agent?: null | undefined;
     personaFile?: null | undefined;
+    model?: null | undefined;
 }): {
     args: any[];
     nativeId: null;
@@ -837,13 +838,14 @@ export function mintRecycleArgs(args?: any[], { mintId, agent, personaFile }?: {
     args: any[];
     nativeId: `${string}-${string}-${string}-${string}-${string}`;
 };
-export function mintCarryRespawnArgs(args?: any[], { systemPromptAddendum, ownerId, mintId, home, agent, personaFile, codexHome, }?: {
+export function mintCarryRespawnArgs(args?: any[], { systemPromptAddendum, ownerId, mintId, home, agent, personaFile, codexHome, model, }?: {
     ownerId?: null | undefined;
     mintId?: (() => `${string}-${string}-${string}-${string}-${string}`) | undefined;
     home?: string | undefined;
     agent?: string | undefined;
     personaFile?: null | undefined;
     codexHome?: null | undefined;
+    model?: null | undefined;
 }): {
     args: string[];
     nativeId: null;
@@ -936,6 +938,58 @@ export function sessionTranscriptFile(session: any, { home }?: {
 export function lastActiveModelFor(session: any, { home }?: {
     home?: string | undefined;
 }): string | null;
+/**
+ * Split a model spec into the parts that mean different things across a
+ * respawn: the model IDENTITY (`claude-opus-5`), and the EFFORT suffix.
+ *
+ * Identity drops the `[1m]`-style window marker as well as the effort, because
+ * a transcript records the model that ANSWERED (`claude-opus-5`) while the
+ * launch flag carries the decorated spec (`claude-opus-5[1m]:max`). Comparing
+ * the raw strings would report a change on every respawn of an unchanged
+ * session. Pure; exported for tests.
+ */
+export function splitRespawnModelSpec(spec: any): {
+    id: string;
+    effort: string;
+};
+/**
+ * WI-2141859: the model spec a successor should be launched with, given the
+ * spec its predecessor's argv carried and the model that predecessor was
+ * ACTUALLY answering on. Returns null for "keep the inherited spec".
+ *
+ * Null on every uncertain input — no inherited flag (we never ADD one; see
+ * mintRecycleArgs), nothing detected, an unrecognizable detected id, or an
+ * unchanged identity. A change is composed as detected-identity + the
+ * INHERITED effort: `/model` in the chat changes the model, it does not restate
+ * the effort the session was launched at, so effort rides across rather than
+ * being silently dropped to the model default. normalizeModelSpec then re-adds
+ * the `[1m]` window marker exactly as the resume path does, so an opus/fable/
+ * sonnet-5 successor keeps its 1M window. Pure; exported for tests.
+ */
+export function reconcileRespawnModelSpec(inheritedSpec: any, detectedModel: any): any;
+/** The `--model` spec an argv carries, or null. Pure; the read half of the
+ *  respawn model carry (mintRecycleArgs owns the write half). */
+export function modelSpecFromRecycleArgv(args?: any[]): string | null;
+/**
+ * WI-2141859: detect the model a live session is CURRENTLY running, for the
+ * respawn about to replace it — the owner-directed semantics (2026-09-02):
+ * "at the time our system ends their session and restarts it … check what the
+ * model is currently set at internally (it should pick up any user changes like
+ * ones they might do by /model)".
+ *
+ * The session's OWN transcript is that check: `lastActiveModelFor` reads the
+ * model that answered the most recent turn, which is the post-`/model` model
+ * whenever the owner switched mid-session. Reads FS; every failure path returns
+ * null so a respawn keeps the inherited spec rather than being blocked or
+ * re-pinned on a guess.
+ */
+export function detectRespawnModelSpec(args?: any[], { ownerId, agent, home, configDir, readLastActiveModel, }?: {
+    ownerId?: null | undefined;
+    agent?: null | undefined;
+    home?: string | undefined;
+    configDir?: null | undefined;
+    readLastActiveModel?: typeof lastActiveModelFor | undefined;
+}): any;
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
 export function planValue(picked: any): any;
 /**

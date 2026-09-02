@@ -371,6 +371,33 @@ function compactSummary(value: unknown, ultra = false): unknown {
           : {}),
       };
     }
+    // P-019: membersLost must survive shaping, and survive it WHOLE. It is the only
+    // population here that reports loss rather than presence, so a leader reading a
+    // trimmed brief is exactly the reader who needs it — and it is projected apart
+    // from the loop above because its scalars are `count`/`available` (not `counted`)
+    // and because dropping `timing` would leave a bare count that invites the reader
+    // to date the loss from the reaper's sweep, which is the misreading P-019 and
+    // D-003 exist to prevent.
+    const membersLost = asDict(lifecycle.membersLost);
+    if (membersLost) {
+      const lostOwnerIds = Array.isArray(membersLost.ownerIds)
+        ? membersLost.ownerIds.filter((id): id is string => typeof id === 'string').slice(0, 4)
+        : [];
+      const timing = asDict(membersLost.timing);
+      compactLifecycle.membersLost = {
+        ...(pick(membersLost, ['available', 'count'], 60) ?? {}),
+        ownerIds: lostOwnerIds,
+        ...(Array.isArray(membersLost.ownerIds) && membersLost.ownerIds.length > lostOwnerIds.length
+          ? { ownerIdsTruncated: membersLost.ownerIds.length }
+          : {}),
+        // Short form only: the marker a leader must see is that departure time is
+        // UNMEASURED and which column answers it. The full rationale (D-003) rides
+        // on the unshaped snapshot at full tier.
+        ...(timing
+          ? { timingStatus: timing.status, timingInsteadRead: 'coord_presence.last_active_at' }
+          : {}),
+      };
+    }
     out.populationLifecycle = compactLifecycle;
   }
 

@@ -361,6 +361,11 @@ export interface FactSourceProvenance {
   /** Bounded verbatim quote of the source (msg summary/body, WI title, the
    *  owner's human-turn text) — captured server-side, never caller-supplied. */
   quote?: string;
+  /** EI-22164571843016048: the captured quote carried a credential-shaped value
+   *  and was replaced before persisting. A fold renders a redacted quote as the
+   *  marker, so this flag is what lets a reader tell "withheld on purpose" from
+   *  "the source had nothing quotable" — the two are otherwise identical. */
+  quoteRedacted?: boolean;
   /** Compact source label, e.g. `msg <id> (<handle> → <to>, <ts>)` / `WI-4172 [feature/wip]`. */
   label?: string;
   /** When !verified: why (not_found / resolve_error / …) — rendered LOUDLY. */
@@ -1034,6 +1039,7 @@ export function parseFactSourceProvenance(raw: unknown): FactSourceProvenance | 
     verified: s.verified,
     verifiedAt: s.verifiedAt,
     ...(typeof s.quote === 'string' && s.quote ? { quote: s.quote } : {}),
+    ...(s.quoteRedacted === true ? { quoteRedacted: true } : {}),
     ...(typeof s.label === 'string' && s.label ? { label: s.label } : {}),
     ...(typeof s.error === 'string' && s.error ? { error: s.error } : {}),
   };

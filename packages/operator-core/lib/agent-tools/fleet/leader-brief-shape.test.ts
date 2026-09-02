@@ -74,6 +74,15 @@ function largeBrief() {
           ownerIds: members.map((member) => member.agentId),
         },
         everMembers: { counted: 53, ownerIds: members.map((member) => member.agentId) },
+        membersLost: {
+          population: 'ever-members-absent-from-roster',
+          basis: 'x'.repeat(300),
+          writer: 'harness_shared.fleet_membership_events',
+          available: true,
+          count: 9,
+          ownerIds: ['lost-1', 'lost-2', 'lost-3', 'lost-4', 'lost-5', 'lost-6', 'lost-7', 'lost-8', 'lost-9'],
+          timing: { status: 'not-measured', reason: 'y'.repeat(300), insteadRead: 'z'.repeat(120) },
+        },
         target: { enabled: true, target: 53, current: 53, shortfall: 0, underStrength: false, verdict: 'at-target' },
         liveness: { live: 25, parked: 28, dead: 0, suspect: 0, draining: 0, recorded: 0, unknown: 0 },
         claimFlow: { status: 'unknown', values: null, reason: 'claim-flow-unread' },
@@ -260,6 +269,30 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       everMembers: { counted: 53, ownerIds: expect.any(Array) },
       claimFlow: { status: 'unknown', values: null },
     });
+  });
+
+  // P-019: the loss read is the ONE population here that reports absence rather than
+  // presence, and a leader on a trimmed monitor projection is precisely the reader who
+  // needs it — every other field in this object would still render a fleet that lost
+  // nine members as healthy. Shaped away, the field may as well not exist.
+  it('keeps membersLost and its unmeasured-timing marker through the trimmed projection', () => {
+    const lifecycle = (largeBrief() as { summary: Record<string, unknown> }).summary.populationLifecycle;
+    const out = shapeLeaderBrief(
+      { ok: true, summary: { fleet: 'small-fleet', members: 1, populationLifecycle: lifecycle } },
+      'trimmed',
+    ) as { summary: Record<string, unknown> };
+
+    const shaped = (out.summary.populationLifecycle as Record<string, unknown>).membersLost as Record<string, unknown>;
+    expect(shaped).toMatchObject({ available: true, count: 9, timingStatus: 'not-measured' });
+    // Bounded identities, but the TOTAL must survive the bound — otherwise a reader
+    // counts four ids and concludes four were lost.
+    expect(shaped.ownerIds).toEqual(['lost-1', 'lost-2', 'lost-3', 'lost-4']);
+    expect(shaped.ownerIdsTruncated).toBe(9);
+    // The long rationale prose is deliberately NOT carried at this tier (it rides on
+    // the unshaped snapshot); what must survive is the count and the "do not date this
+    // from the reaper's column" pointer.
+    expect(shaped.timingInsteadRead).toBe('coord_presence.last_active_at');
+    expect(JSON.stringify(shaped).length).toBeLessThan(400);
   });
 
   // WI-2034563 / P-008: shaped away, `underStrength` reads as MISSING capacity when
