@@ -170,11 +170,13 @@ describe("checkpoint:await sugar", () => {
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
       "green-checkpoint:inconclusive:papercusp",
+      "green-checkpoint:held:papercusp",
     ]);
     expect(out.events).toEqual([
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
       "green-checkpoint:inconclusive:papercusp",
+      "green-checkpoint:held:papercusp",
     ]);
     expect(out.advice).toContain("End your turn");
   });
@@ -189,6 +191,7 @@ describe("checkpoint:await sugar", () => {
       "release:green:papercup",
       "green-checkpoint:red:papercup",
       "green-checkpoint:inconclusive:papercup",
+      "green-checkpoint:held:papercup",
     ]);
   });
 
@@ -202,6 +205,7 @@ describe("checkpoint:await sugar", () => {
       "release:green",
       "green-checkpoint:red",
       "green-checkpoint:inconclusive",
+      "green-checkpoint:held",
     ]);
   });
 
@@ -239,6 +243,7 @@ describe("checkpoint:await sugar", () => {
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
       "green-checkpoint:inconclusive:papercusp",
+      "green-checkpoint:held:papercusp",
     ]);
   });
 
@@ -262,6 +267,7 @@ describe("checkpoint:await sugar", () => {
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
       "green-checkpoint:inconclusive:papercusp",
+      "green-checkpoint:held:papercusp",
     ]);
   });
 
@@ -302,6 +308,7 @@ describe("checkpoint:await sugar", () => {
         "release:green:papercusp",
         "green-checkpoint:red:papercusp",
         "green-checkpoint:inconclusive:papercusp",
+        "green-checkpoint:held:papercusp",
       ],
       { excludeNotePrefix: "[fleet:bench] " },
     );
@@ -339,7 +346,7 @@ describe("checkpoint:await sugar", () => {
     const timeouts = vi
       .mocked(registerAwait)
       .mock.calls.map((c) => c[0].timeoutSec);
-    expect(timeouts).toEqual([60, 60, 60]);
+    expect(timeouts).toEqual([60, 60, 60, 60]);
   });
 });
 
@@ -663,11 +670,12 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
     const out = await call({ candidateSha: "94c1234567890abcdef" });
 
     expect(out.already_judged).toBeUndefined();
-    expect(registerAwait).toHaveBeenCalledTimes(3);
+    expect(registerAwait).toHaveBeenCalledTimes(4);
     expect(out.events).toEqual([
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
       "green-checkpoint:inconclusive:papercusp",
+      "green-checkpoint:held:papercusp",
     ]);
   });
 
@@ -696,6 +704,7 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
       "green-checkpoint:inconclusive:papercusp",
+      "green-checkpoint:held:papercusp",
     ]);
   });
 
@@ -710,6 +719,7 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
       "green-checkpoint:inconclusive:papercusp",
+      "green-checkpoint:held:papercusp",
     ]);
   });
 
@@ -752,7 +762,7 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
     const out = await call({ candidateSha: "94c1234567890abcdef" });
 
     expect(out.already_judged).toBeUndefined();
-    expect(registerAwait).toHaveBeenCalledTimes(3);
+    expect(registerAwait).toHaveBeenCalledTimes(4);
     warnSpy.mockRestore();
   });
 
@@ -766,7 +776,7 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
     const out = await call({ candidateSha: "94c1234567890abcdef" });
 
     expect(out.already_judged).toBeUndefined();
-    expect(registerAwait).toHaveBeenCalledTimes(3);
+    expect(registerAwait).toHaveBeenCalledTimes(4);
   });
 });
 
