@@ -74,6 +74,24 @@ export interface WallRow {
   livenessState?: SessionState | null;
 }
 
+/**
+ * Owner-facing ranking. A wall the owner can ACT on outranks one that needs a
+ * respawn or has no live waiter, however much older the latter is; within a
+ * rank, oldest-first still wins.
+ *
+ * WI-2141328: ordering by age ALONE let a backlog of ancient rows crowd every
+ * live ask out of the `limit` window. Measured on 2026-09-02 this workspace held
+ * 765 carry-note rows carrying walls; the default read returned the 50 oldest —
+ * all dead July sessions — and reported `waiting: 0` while a live 12h wall stood
+ * unanswered. The owner's whole "what's blocked on me" view showed only corpses.
+ */
+const WALL_STATUS_RANK: Record<WallRow['status'], number> = {
+  waiting: 0,
+  stale: 1,
+  unknown: 2,
+  stranded: 3,
+};
+
 export interface ListOwnerWallsOpts {
   workspaceId?: string;
   harness?: string;
@@ -86,16 +104,28 @@ export interface ListOwnerWallsOpts {
 /**
  * The reusable core of `coord:walls` (owner-inbox-single-pane-2026-07-17 P-005b
  * reuse-first extraction): unions loop-carry-note walls + needs-human work-items
- * with the liveness join, sorted oldest-wait-first. Exported so the unified
- * `plans:attention` reader can fold the SAME rows into the owner's inbox
- * (`ownerWallToAttention`) without duplicating this SQL/liveness logic — the
- * tool handler below is now a thin wrapper over this function.
+ * with the liveness join, ranked actionable-first and then oldest-wait-first.
+ * Exported so the unified `plans:attention` reader can fold the SAME rows into
+ * the owner's inbox (`ownerWallToAttention`) without duplicating this
+ * SQL/liveness logic — the tool handler below is now a thin wrapper over this
+ * function.
+ *
+ * `waiting`/`stranded`/`oldestWaitHours`/`total` are a CENSUS over the whole
+ * eligible population, deliberately NOT over the returned window: `limit` bounds
+ * the row list only. Counting after the slice (WI-2141328) turned a truncated
+ * page into a confident "nothing is waiting on you".
  */
 export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   walls: WallRow[];
   waiting: number;
   stranded: number;
   oldestWaitHours: number | null;
+  /** Size of the eligible population, independent of `limit`. */
+  total: number;
+  /** Size of the returned window (`walls.length`). */
+  returned: number;
+  /** True when the window omits eligible rows — so a count is never read as a total. */
+  truncatedByLimit: boolean;
 }> {
   const sql = getOrgPg().sql;
   const ws = opts.workspaceId ?? 'default';
@@ -218,17 +248,32 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
     else wall.status = 'unknown';
   }
 
-  const filtered = walls
+  // The eligible POPULATION — every filter applied, nothing truncated. The
+  // census below is taken here, before `limit` bounds the row list.
+  const eligible = walls
     .filter((w) => (includeStranded ? true : w.status !== 'stranded'))
     .filter((w) => (opts.minHours == null ? true : (w.waitingHours ?? 0) >= opts.minHours))
-    .sort((a, b) => (b.waitingHours ?? -1) - (a.waitingHours ?? -1))
-    .slice(0, limit);
+    .sort((a, b) => {
+      const rank = WALL_STATUS_RANK[a.status] - WALL_STATUS_RANK[b.status];
+      if (rank !== 0) return rank;
+      return (b.waitingHours ?? -1) - (a.waitingHours ?? -1);
+    });
+
+  const filtered = eligible.slice(0, limit);
+  const waitingRows = eligible.filter((w) => w.status === 'waiting');
 
   return {
     walls: filtered,
-    waiting: filtered.filter((w) => w.status === 'waiting').length,
-    stranded: filtered.filter((w) => w.status === 'stranded').length,
-    oldestWaitHours: filtered.length > 0 ? (filtered[0]!.waitingHours ?? null) : null,
+    waiting: waitingRows.length,
+    stranded: eligible.filter((w) => w.status === 'stranded').length,
+    // The oldest ACTIONABLE wall when there is one — that is the number an owner
+    // acts on. Falling back to the oldest row overall keeps a stranded-only read
+    // informative instead of reporting null.
+    oldestWaitHours:
+      (waitingRows[0]?.waitingHours ?? eligible[0]?.waitingHours) ?? null,
+    total: eligible.length,
+    returned: filtered.length,
+    truncatedByLimit: eligible.length > filtered.length,
   };
 }
 
@@ -239,7 +284,7 @@ export default defineTool({
     'Unions the two surfaces where agents are already required to register owner-gated blockers: loop carry-note walls ' +
     '(loop:checkpoint { walls }) and work-items in needs-human. Each row carries the ask VERBATIM, how long it has been ' +
     'waiting, the re-check command, and — critically — whether the blocked agent is still ALIVE (waiting) or its session ' +
-    'has died (stranded: answering will not resume it; it must be respawned). Ordered oldest-wait first.',
+    'has died (stranded: answering will not resume it; it must be respawned). Live asks rank first, then oldest-wait.',
   guidance: {
     when:
       'The owner asks "what needs me / what is waiting on me / am I blocking anything", at the top of an owner session, ' +
@@ -252,7 +297,8 @@ export default defineTool({
       'coord:walls → answer the claim (coord:send to the ownerId), then the agent clears it via loop:checkpoint { walls: [...] } ' +
       '(pass the remaining set; [] clears all). A `stranded` row needs a respawn as well as an answer — the waiter is gone.',
     returns:
-      '{ ok, count, waiting, stranded, oldestWaitHours, walls: [{ source, ownerId, harness, claim, recheck?, ref?, sinceIso, waitingHours, status }] }. ' +
+      '{ ok, count, returned, truncatedByLimit, waiting, stranded, oldestWaitHours, walls: [{ source, ownerId, harness, claim, recheck?, ref?, sinceIso, waitingHours, status }] }. ' +
+      '`count`/`waiting`/`stranded` are a census over the whole population; `returned` is the row-list size and `truncatedByLimit` says rows were omitted. ' +
       'status: waiting = agent alive and parked on you; stranded = its session died (answer AND respawn); unknown = no presence row.',
     seeAlso: ['coord:presence', 'coord:send', 'loop:checkpoint', 'work_items:list'],
   },
@@ -281,6 +327,8 @@ export default defineTool({
     .object({
       ok: z.boolean(),
       count: z.number().int().nonnegative(),
+      returned: z.number().int().nonnegative(),
+      truncatedByLimit: z.boolean(),
       waiting: z.number().int().nonnegative(),
       stranded: z.number().int().nonnegative(),
       oldestWaitHours: z.number().nullable(),
@@ -292,7 +340,15 @@ export default defineTool({
     // owner-inbox-single-pane P-005b: the union/liveness-join logic now lives in
     // the exported `listOwnerWalls` (reuse-first — `plans:attention` folds the
     // SAME rows into the unified inbox without duplicating this SQL).
-    const { walls: filtered, waiting, stranded, oldestWaitHours } = await listOwnerWalls({
+    const {
+      walls: filtered,
+      waiting,
+      stranded,
+      oldestWaitHours,
+      total,
+      returned,
+      truncatedByLimit,
+    } = await listOwnerWalls({
       workspaceId: ctx.workspaceId ?? 'default',
       harness: args.harness,
       ownerId: args.ownerId,
@@ -307,15 +363,22 @@ export default defineTool({
     return {
       data: {
         ok: true,
-        count: filtered.length,
+        // `count` is the POPULATION, not the page — a truncated window must never
+        // read as a total (WI-2141328). `returned` is the row-list size.
+        count: total,
+        returned,
+        truncatedByLimit,
         waiting,
         stranded,
         oldestWaitHours,
         note:
-          filtered.length === 0
+          total === 0
             ? 'Nothing is blocked on the owner.'
-            : `${filtered.length} owner-gated blocker(s): ${waiting} agent(s) alive and parked on an answer, ` +
+            : `${total} owner-gated blocker(s): ${waiting} agent(s) alive and parked on an answer, ` +
               `${stranded} STRANDED (session died — answering alone will not resume them; respawn as well). ` +
+              (truncatedByLimit
+                ? `Showing the ${returned} highest-priority (live asks first, then oldest); raise \`limit\` for the rest. `
+                : '') +
               'Answer via coord:send to the ownerId; the agent clears its wall with loop:checkpoint { walls }.',
         walls: filtered,
       },
