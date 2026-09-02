@@ -63,9 +63,9 @@ async function main() {
 
   // §3.1 gateway attribution — pure, always live.
   {
-    const cred = issueForeignGatewayCredential({ sessionId: 'drill-sess-1', scopeHiveSlug: 'gh-drill/hive', now: Date.now() });
-    const admit = decideGatewayAdmission({ credential: cred, now: Date.now(), requestedHiveSlug: 'gh-drill/hive' });
-    const deny = decideGatewayAdmission({ credential: null, now: Date.now(), requestedHiveSlug: 'gh-drill/hive' });
+    const cred = issueForeignGatewayCredential({ sessionId: 'drill-sess-1', scopePotSlug: 'gh-drill/hive', now: Date.now() });
+    const admit = decideGatewayAdmission({ credential: cred, now: Date.now(), requestedPotSlug: 'gh-drill/hive' });
+    const deny = decideGatewayAdmission({ credential: null, now: Date.now(), requestedPotSlug: 'gh-drill/hive' });
     record({
       leg: '§3.1 gateway-attribution',
       status: admit.allow && !deny.allow ? 'PASS' : 'FAIL',

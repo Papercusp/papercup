@@ -428,7 +428,7 @@ export function programPayloadFromTemplate(payloadTemplate: Record<string, unkno
     kickoff: _kickoff,
     timeoutMs: _timeoutMs,
     launchInstallSlug: _launchInstallSlug,
-    potSlug: _hiveSlug,
+    potSlug: _potSlug,
     hiveInstallSlug: _hiveInstallSlug,
     targetInstallSlug: _targetInstallSlug,
     workItem: _workItem,

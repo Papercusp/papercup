@@ -26,7 +26,7 @@ export function hiveScopeKey(potSlug: string): string {
 }
 
 /** `hive:<slug>` → `<slug>`, or null when the scope isn't hive-shaped. */
-export function hiveSlugFromScope(scope: string): string | null {
+export function potSlugFromScope(scope: string): string | null {
   return scope.startsWith(HIVE_SCOPE_PREFIX) ? scope.slice(HIVE_SCOPE_PREFIX.length) : null;
 }
 
@@ -37,7 +37,7 @@ export interface RegistryEntryLite {
 }
 
 /** Pure member→hive resolution over registry entries. De-duped, input order. */
-export function hiveSlugsForHarnesses(
+export function potSlugsForHarnesses(
   entries: readonly RegistryEntryLite[],
   harnessSlugs: readonly string[],
 ): string[] {
@@ -56,13 +56,13 @@ export function hiveSlugsForHarnesses(
  * Registry-backed resolution. One operator-state read per call — callers on
  * hot paths (pre-turn injection) treat it as best-effort and catch failures.
  */
-export async function resolveHiveSlugsForHarnesses(
+export async function resolvePotSlugsForHarnesses(
   workspaceId: string | undefined,
   harnessSlugs: readonly string[],
 ): Promise<string[]> {
   if (harnessSlugs.length === 0) return [];
   const reg = await loadHarnessRegistry(workspaceId);
-  return hiveSlugsForHarnesses(reg.projects, harnessSlugs);
+  return potSlugsForHarnesses(reg.projects, harnessSlugs);
 }
 
 /**
@@ -90,7 +90,7 @@ export function narrowHarnessSlugsToSessionHive(
   sessionHarness: string | null | undefined,
 ): string[] {
   if (!sessionHarness || sessionHarness === '*') return [...harnessSlugs];
-  const scopeHive = hiveSlugsForHarnesses(entries, [sessionHarness])[0];
+  const scopeHive = potSlugsForHarnesses(entries, [sessionHarness])[0];
   if (!scopeHive) return [...harnessSlugs]; // session not in a hive → no narrowing
   const bySlug = new Map(entries.map((e) => [e.slug, e]));
   return harnessSlugs.filter((slug) => {

@@ -25,14 +25,14 @@ export interface ForeignGatewayCredential {
   /** The foreign session this credential attributes calls to (M21 threading). */
   sessionId: string;
   /** The hive/pot this session is scoped to — never crosses hive boundaries. */
-  scopeHiveSlug: string;
+  scopePotSlug: string;
   issuedAtMs: number;
   expiresAtMs: number;
 }
 
 export interface IssueCredentialInput {
   sessionId: string;
-  scopeHiveSlug: string;
+  scopePotSlug: string;
   now: number;
   /** Default 15 minutes — short-lived; a wedged/orphaned session's credential
    *  expires well inside the H13 orphan-supervision window rather than
@@ -49,13 +49,13 @@ const DEFAULT_TTL_MS = 15 * 60 * 1000;
 export function issueForeignGatewayCredential(input: IssueCredentialInput): ForeignGatewayCredential {
   const sessionId = input.sessionId?.trim();
   if (!sessionId) throw new Error('issueForeignGatewayCredential: sessionId is required');
-  const scopeHiveSlug = input.scopeHiveSlug?.trim();
-  if (!scopeHiveSlug) throw new Error('issueForeignGatewayCredential: scopeHiveSlug is required');
+  const scopePotSlug = input.scopePotSlug?.trim();
+  if (!scopePotSlug) throw new Error('issueForeignGatewayCredential: scopePotSlug is required');
   const ttlMs = input.ttlMs ?? DEFAULT_TTL_MS;
   if (ttlMs <= 0) throw new Error('issueForeignGatewayCredential: ttlMs must be positive');
   return {
     sessionId,
-    scopeHiveSlug,
+    scopePotSlug,
     issuedAtMs: input.now,
     expiresAtMs: input.now + ttlMs,
   };
@@ -75,11 +75,11 @@ export type GatewayAdmissionDecision =
 export function decideGatewayAdmission(input: {
   credential: ForeignGatewayCredential | null | undefined;
   now: number;
-  requestedHiveSlug: string;
+  requestedPotSlug: string;
 }): GatewayAdmissionDecision {
   if (!input.credential) return { allow: false, reason: 'unattributed_loopback_call' };
   if (input.now >= input.credential.expiresAtMs) return { allow: false, reason: 'credential_expired' };
-  if (input.credential.scopeHiveSlug !== input.requestedHiveSlug) {
+  if (input.credential.scopePotSlug !== input.requestedPotSlug) {
     return { allow: false, reason: 'hive_scope_mismatch' };
   }
   return { allow: true, sessionId: input.credential.sessionId };
