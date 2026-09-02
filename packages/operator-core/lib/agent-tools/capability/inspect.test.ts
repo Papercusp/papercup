@@ -736,6 +736,32 @@ const OOM_OUTPUT = [
   'Aborted (core dumped)',
 ].join('\n');
 
+/**
+ * The REGISTRY SQUATTER's entire output, captured verbatim on 2026-09-02 by running
+ * `npx tsc --noEmit -p tsconfig.json` in a scratch dir with no local typescript
+ * (EI-22142032090978471). The ANSI codes are the real ones, written as `\x1b` escapes
+ * per `lint:no-control-bytes`; the guard has to survive them, and the key phrase is
+ * contiguous only because the package brackets the colour codes around the message
+ * rather than inside it.
+ *
+ * Measured with it: the process exits **1**, in every invocation shape including a cold
+ * npx cache. The filed report's "EXITS 0" does not reproduce — the decoy's own source
+ * ends with `process.exitCode = 1`. So this was never a false green; it was a correct
+ * verdict with the wrong cause attached.
+ */
+const NPX_TSC_DECOY_OUTPUT = [
+  '',
+  '\x1b[41m                                                                               \x1b[0m',
+  '\x1b[41m\x1b[37m                This is not the tsc command you are looking for                \x1b[0m',
+  '\x1b[41m                                                                               \x1b[0m',
+  '',
+  'To get access to the TypeScript compiler, \x1b[34mtsc\x1b[0m, from the command line either:',
+  '',
+  '- Use \x1b[1mnpm install typescript\x1b[0m to first add TypeScript to your project \x1b[1mbefore\x1b[0m using npx',
+  '- Use \x1b[1myarn\x1b[0m to avoid accidentally running code from un-installed packages',
+  '',
+].join('\n');
+
 describe('deadTypecheckVerdict — a crashed typecheck is never a pass', () => {
   it('returns null for a genuinely clean run (CALIBRATION — must not cry wolf)', () => {
     expect(deadTypecheckVerdict({ exitCode: 0, status: 'completed', output: '', parsedErrors: 0 })).toBeNull();
@@ -781,6 +807,51 @@ describe('deadTypecheckVerdict — a crashed typecheck is never a pass', () => {
   it('flags any other nonzero exit with no diagnostics (a bad operand, a missing tsconfig)', () => {
     const v = deadTypecheckVerdict({ exitCode: 2, status: 'completed', output: 'nonsense', parsedErrors: 0 });
     expect(v?.reason).toBe('typecheck_died_without_diagnostics');
+  });
+
+  it('names the npx DECOY package rather than blaming the tsconfig (EI-22142032090978471)', () => {
+    // Exit 1, zero diagnostics — the generic branch above already caught this shape,
+    // so the bug was never a false green. The defect was ATTRIBUTION: it advised
+    // "a bad --project operand, a missing tsconfig, or a crash", and an agent spends
+    // the next half hour auditing a tsconfig that is perfectly fine.
+    const v = deadTypecheckVerdict({
+      exitCode: 1,
+      status: 'completed',
+      output: NPX_TSC_DECOY_OUTPUT,
+      parsedErrors: 0,
+    });
+    expect(v?.reason).toBe('typecheck_ran_npx_decoy_package');
+    expect(v?.headline).toContain('MEASURED NOTHING');
+    // The remedy has to be the one that actually works.
+    expect(v?.advice).toContain('install:safe');
+    // ...and it must actively clear the innocent suspects, or the reader still checks them.
+    expect(v?.advice).toMatch(/tsconfig/i);
+  });
+
+  it('does NOT mistake a real compile that merely mentions TypeScript for the decoy', () => {
+    // The decoy's other line ("To get access to the TypeScript compiler…") is ordinary
+    // English and can reach this buffer from a diagnostic or a path. Keying on it would
+    // mislabel a REAL failure, which is strictly worse than the generic verdict.
+    const v = deadTypecheckVerdict({
+      exitCode: 1,
+      status: 'completed',
+      output: 'To get access to the TypeScript compiler, see docs/typescript.md',
+      parsedErrors: 0,
+    });
+    expect(v?.reason).toBe('typecheck_died_without_diagnostics');
+  });
+
+  it('CALIBRATION: the decoy output carries zero parseable diagnostics', () => {
+    // The premise the whole branch rests on — if the banner ever parsed as an error,
+    // `parsedErrors > 0` would return null before the decoy check is reached.
+    expect(filterTscOutputToPaths(NPX_TSC_DECOY_OUTPUT, ['src/a.ts']).totalErrors).toBe(0);
+  });
+
+  it('CALIBRATION: the fixture still carries real ANSI, not flattened text', () => {
+    // A later edit that round-trips this file through a control-byte-normalising reader
+    // (or writes `\\x1b` instead of `\x1b`) would leave every assertion above passing
+    // while the fixture silently stopped exercising ANSI-bearing output at all.
+    expect(NPX_TSC_DECOY_OUTPUT).toContain(String.fromCharCode(27));
   });
 
   it('PRE-FIX CONTROL: the OOM output really is indistinguishable from clean to the filter', () => {
