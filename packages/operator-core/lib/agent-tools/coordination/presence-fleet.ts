@@ -40,6 +40,44 @@ export async function fetchPresenceFleet(
   return out;
 }
 
+/** The two fleet-CONTROL fields a presence row carries beside its membership label. */
+export interface FleetControlVisibility {
+  fleetControlState: 'active' | 'winding-down';
+  canAcquireWork: boolean;
+}
+
+/**
+ * EI-22072194984361823 — the pure derivation behind `fleetControlState` /
+ * `canAcquireWork` on a presence row. Extracted from presence-snapshot's
+ * `withFleet` so the rule a router now filters on is directly testable: the
+ * bug being fixed is precisely that this capability consequence was invisible,
+ * so it must not be provable only through a fully-mocked snapshot build.
+ *
+ * Two policies are encoded here, and BOTH are deliberate:
+ *
+ *  - FAIL-OPEN on an unresolved fleet. A slug absent from `controlStates`
+ *    (deleted fleet, or a stale hand-set coord_presence.fleet_slug label that
+ *    never had a row) reads 'active'. This mirrors `fleetControlWindDownRefusal`,
+ *    which refuses only on a POSITIVE winding-down read — so presence never
+ *    advertises a gate the claim path would not actually enforce.
+ *  - The gate is MEMBER-ONLY. `resolveFleetScopeContext` returns null unless
+ *    `fleetRole === 'member'`, so the refusal can never fire for a leader; a
+ *    leader of a winding-down fleet therefore reads canAcquireWork:true,
+ *    because nothing actually blocks its claims.
+ */
+export function deriveFleetControlVisibility(
+  membership: Pick<FleetMembership, 'fleetSlug' | 'fleetRole'>,
+  controlStates: ReadonlyMap<string, { controlState: 'active' | 'winding-down' }>,
+): FleetControlVisibility {
+  const fleetControlState = membership.fleetSlug
+    ? controlStates.get(membership.fleetSlug)?.controlState ?? 'active'
+    : 'active';
+  return {
+    fleetControlState,
+    canAcquireWork: !(membership.fleetRole === 'member' && fleetControlState === 'winding-down'),
+  };
+}
+
 /** One agent's fleet membership WITH the timing legs a supervision edge needs (P-007). */
 export interface FleetSupervisionRow {
   ownerId: string;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolvePresenceFleet, type FleetMembership } from './presence-fleet';
+import { deriveFleetControlVisibility, resolvePresenceFleet, type FleetMembership } from './presence-fleet';
 
 const LAUNCH: FleetMembership = { fleetSlug: 'launch-fleet', fleetRole: 'member' };
 
