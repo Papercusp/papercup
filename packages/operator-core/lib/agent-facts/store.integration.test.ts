@@ -285,8 +285,8 @@ describe('assertFact against the REAL mig-461 identity index', () => {
       createdBy: 'su-int',
       workspaceId: WS,
     };
-    await assertFact({ ...base, body: 'v1', shareable: true, potHomeSlug: 'home' }, db.sql);
-    await assertFact({ ...base, body: 'v2', shareable: true }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'v1', shareable: true, potHomeSlug: 'home' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'v2', shareable: true }, db.sql);
     // P-008 (a): must name the CURRENT version explicitly — there are now two
     // rows for this identity, and an unqualified `rows[0]` would be reading an
     // arbitrary one. The carry-forward moved from the UPDATE branch's COALESCE
@@ -314,7 +314,7 @@ describe('createdBy binding (EI-19952118814692217 regression guard)', () => {
     // in the INSERT (`?? null` or equivalent) — an un-coalesced bind throws before
     // a row is ever written, exactly as `created_by` did.
     const fact = await assertFact(
-      {
+      { ttlSec: 3600,
         scope: 'owner',
         scopeRef: 'su-required-fields-only',
         key: 'required-only',
@@ -357,15 +357,15 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
              FROM harness_shared.agent_facts WHERE key = 'ver' ORDER BY id`;
 
   it('the first version has an id, supersedes nothing, and is current', async () => {
-    const v1 = await assertFact({ ...base, body: 'one' }, db.sql);
+    const v1 = await assertFact({ ttlSec: 3600, ...base, body: 'one' }, db.sql);
     expect(typeof v1.id).toBe('number');
     expect(v1.supersedesId).toBeNull();
     expect(v1.supersededAt).toBeNull();
   });
 
   it('a correction keeps the OLD row intact and chains the new one to it', async () => {
-    const v1 = await assertFact({ ...base, body: 'one' }, db.sql);
-    const v2 = await assertFact({ ...base, body: 'two' }, db.sql);
+    const v1 = await assertFact({ ttlSec: 3600, ...base, body: 'one' }, db.sql);
+    const v2 = await assertFact({ ttlSec: 3600, ...base, body: 'two' }, db.sql);
     expect(v2.id).not.toBe(v1.id);
     expect(v2.supersedesId).toBe(v1.id);
     const rows = await chain();
@@ -377,8 +377,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   });
 
   it('reads serve ONLY the current version — a fold never shows a value beside its own correction', async () => {
-    await assertFact({ ...base, body: 'one' }, db.sql);
-    await assertFact({ ...base, body: 'two' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'one' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'two' }, db.sql);
     const folded = await foldFacts([{ scope: 'owner', scopeRef: 'su-v' }], { workspaceId: WS, audiences: 'all' }, db.sql);
     const mine = folded.filter((f) => f.key === 'ver');
     expect(mine).toHaveLength(1);
@@ -386,9 +386,9 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   });
 
   it('factVersions walks the chain, current first', async () => {
-    await assertFact({ ...base, body: 'one' }, db.sql);
-    await assertFact({ ...base, body: 'two' }, db.sql);
-    await assertFact({ ...base, body: 'three' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'one' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'two' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'three' }, db.sql);
     const hist = await factVersions({ scope: 'owner', scopeRef: 'su-v', key: 'ver', workspaceId: WS }, db.sql);
     expect(hist.map((h) => h.body)).toEqual(['three', 'two', 'one']);
     expect(hist[0].supersededAt).toBeNull();
@@ -396,7 +396,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   });
 
   it('⚠ a retraction SURVIVES on its own version — the old code erased it on revive', async () => {
-    await assertFact({ ...base, body: 'one' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'one' }, db.sql);
     await retractFact({ scope: 'owner', scopeRef: 'su-v', key: 'ver', workspaceId: WS }, db.sql);
     const retractedRows = await chain();
     expect(retractedRows[0].retracted_at).not.toBeNull();
@@ -404,7 +404,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // `retracted_at = NULL` on the mutated row — i.e. by destroying the record
     // that it had ever been retracted. Now the retraction stays on the version
     // that carried it, and the revival is a new version.
-    await assertFact({ ...base, body: 'revived' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'revived' }, db.sql);
     const rows = await chain();
     expect(rows).toHaveLength(2);
     expect(rows[0].retracted_at).not.toBeNull(); // history intact
@@ -413,8 +413,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   });
 
   it('a retract marks the CURRENT version only and never rewrites history', async () => {
-    await assertFact({ ...base, body: 'one' }, db.sql);
-    await assertFact({ ...base, body: 'two' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'one' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'two' }, db.sql);
     await retractFact({ scope: 'owner', scopeRef: 'su-v', key: 'ver', workspaceId: WS }, db.sql);
     const rows = await chain();
     expect(rows[0].retracted_at).toBeNull(); // the superseded version is untouched
@@ -422,7 +422,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   });
 
   it('a deliberate retract preserves its actor and reason in version history', async () => {
-    await assertFact({ ...base, body: 'temporary conclusion' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'temporary conclusion' }, db.sql);
     await retractFact(
       {
         scope: 'owner',
@@ -441,7 +441,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   });
 
   it('the partial unique index still forbids a SECOND current version', async () => {
-    await assertFact({ ...base, body: 'one' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'one' }, db.sql);
     await expect(
       db.sql`INSERT INTO harness_shared.agent_facts
                (workspace_id, scope, scope_ref, key, body, created_by, expires_at)
@@ -452,7 +452,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   it('the cap counts CURRENT versions, so a heavily-corrected fact cannot evict its neighbours', async () => {
     // One fact revised many times must not consume the (scope, ref) budget.
     for (let i = 0; i < FACTS_PER_SCOPE_CAP + 5; i++) {
-      await assertFact({ ...base, body: `rev ${i}` }, db.sql);
+      await assertFact({ ttlSec: 3600, ...base, body: `rev ${i}` }, db.sql);
     }
     const live = await foldFacts(
       [{ scope: 'owner', scopeRef: 'su-v' }],
@@ -561,7 +561,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       { key: 'convention-peer-cap', body: 'scope convention', kind: 'convention' as const },
     ];
     for (const exempt of exemptWrites) {
-      const result = await assertFact({ ...base, ...exempt, createdBy: writer }, db.sql);
+      const result = await assertFact({ ttlSec: 3600, ...base, ...exempt, createdBy: writer }, db.sql);
       expect(result.key).toBe(exempt.key);
       expect(result.evicted ?? []).toEqual([]);
     }
@@ -682,7 +682,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // the bug was certain rather than unlikely: a wall is asserted once and then
     // never touched again, so it sinks to the bottom of the victim ordering.
     for (let i = 0; i < FACTS_PER_SCOPE_CAP + 10; i++) {
-      await assertFact({ ...slotted, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
+      await assertFact({ ttlSec: 3600, ...slotted, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
     }
 
     const live = await foldFacts(
@@ -719,7 +719,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     await assertFact({ ...base, key: 'hedge', body: 'a hunch', confidence: 'suspected' }, db.sql);
 
     for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
-      await assertFact({ ...base, key: `filler-${i}`, body: `n ${i}` }, db.sql);
+      await assertFact({ ttlSec: 3600, ...base, key: `filler-${i}`, body: `n ${i}` }, db.sql);
     }
 
     const live = await foldFacts(
@@ -1436,11 +1436,11 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
     // `deliberate` is asserted first and then explicitly retracted, so it carries a
     // retracted_at that the cap did NOT write — the control case.
-    await assertFact({ ...base, key: 'deliberate', body: 'retract me on purpose' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'deliberate', body: 'retract me on purpose' }, db.sql);
     await retractFact({ scope: 'owner', scopeRef, key: 'deliberate', workspaceId: WS }, db.sql);
 
     for (let i = 0; i < FACTS_PER_SCOPE_CAP + 10; i++) {
-      await assertFact({ ...base, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
+      await assertFact({ ttlSec: 3600, ...base, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
     }
 
     const rows = await db.sql<{ key: string; retracted: boolean; evicted: boolean }[]>`
@@ -1467,7 +1467,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
     // Saturate the scope so the cap starts evicting incumbents.
     for (let i = 0; i < FACTS_PER_SCOPE_CAP + 3; i++) {
-      await assertFact({ ...base, key: `sat-${i}`, body: `n ${i}` }, db.sql);
+      await assertFact({ ttlSec: 3600, ...base, key: `sat-${i}`, body: `n ${i}` }, db.sql);
     }
 
     const disclosures = await listFactEvictionDisclosures(
@@ -1487,7 +1487,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   it('EI-19485000346355077: listFactEvictionDisclosures is silent for a scope with no cap evictions', async () => {
     const scopeRef = 'su-eviction-disclosure-quiet';
     await assertFact(
-      { scope: 'owner', scopeRef, key: 'only-one', body: 'x', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'owner', scopeRef, key: 'only-one', body: 'x', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
 
@@ -1504,7 +1504,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const scopeRef = 'su-eviction-disclosure-stale';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
     for (let i = 0; i < FACTS_PER_SCOPE_CAP + 2; i++) {
-      await assertFact({ ...base, key: `stale-${i}`, body: `n ${i}` }, db.sql);
+      await assertFact({ ttlSec: 3600, ...base, key: `stale-${i}`, body: `n ${i}` }, db.sql);
     }
 
     // A window of 0s means "nothing counts as recent" — proves the read is bounded
@@ -1530,9 +1530,9 @@ describe('EI-15900 cross-key supersession — one current conclusion replaces it
   const selector = { scope: 'owner' as const, scopeRef };
 
   it('normalizes + deduplicates keys, retires only current same-scope locals, and reports what changed', async () => {
-    await assertFact({ ...base, key: 'incident-a', body: 'partial diagnosis A' }, db.sql);
-    await assertFact({ ...base, key: 'incident-b', body: 'partial diagnosis B' }, db.sql);
-    await assertFact({ ...base, key: 'already-retired', body: 'old conclusion' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'incident-a', body: 'partial diagnosis A' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'incident-b', body: 'partial diagnosis B' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'already-retired', body: 'old conclusion' }, db.sql);
     await retractFact(
       {
         ...selector,
@@ -1544,7 +1544,7 @@ describe('EI-15900 cross-key supersession — one current conclusion replaces it
       db.sql,
     );
     await assertFact(
-      {
+      { ttlSec: 3600,
         ...base,
         scopeRef: 'a-different-owner',
         key: 'wrong-scope',
@@ -1554,7 +1554,7 @@ describe('EI-15900 cross-key supersession — one current conclusion replaces it
     );
 
     const replacement = await assertFact(
-      {
+      { ttlSec: 3600,
         ...base,
         key: 'incident-settled',
         body: 'one corrected incident conclusion',
@@ -1610,7 +1610,7 @@ describe('EI-15900 cross-key supersession — one current conclusion replaces it
   it('refuses the asserted key itself and enforces the direct-store fan-out bound', async () => {
     await expect(
       assertFact(
-        {
+        { ttlSec: 3600,
           ...base,
           key: 'self-key',
           body: 'must not write',
@@ -1622,7 +1622,7 @@ describe('EI-15900 cross-key supersession — one current conclusion replaces it
 
     await expect(
       assertFact(
-        {
+        { ttlSec: 3600,
           ...base,
           key: 'too-many',
           body: 'must not write',
@@ -1636,7 +1636,7 @@ describe('EI-15900 cross-key supersession — one current conclusion replaces it
   });
 
   it('rolls sibling retirement back when the replacement insert fails', async () => {
-    await assertFact({ ...base, key: 'still-valid', body: 'keep me on failed replacement' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'still-valid', body: 'keep me on failed replacement' }, db.sql);
     const invalid = {
       scope: 'owner',
       scopeRef,
@@ -1659,7 +1659,7 @@ describe('EI-15900 cross-key supersession — one current conclusion replaces it
 describe('findFactKeyElsewhere (EI-19328780288425209 — the retract-scope-miss disambiguator)', () => {
   it('finds the SAME key live at a DIFFERENT scope/scopeRef', async () => {
     await assertFact(
-      { scope: 'harness', scopeRef: 'papercusp', key: 'elsewhere-1', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'papercusp', key: 'elsewhere-1', body: 'b', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const hits = await findFactKeyElsewhere(
@@ -1682,7 +1682,7 @@ describe('findFactKeyElsewhere (EI-19328780288425209 — the retract-scope-miss 
 
   it('excludes the scope actually searched — a hit there means retractFact should not have missed', async () => {
     await assertFact(
-      { scope: 'owner', scopeRef: 'su-elsewhere', key: 'elsewhere-2', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'owner', scopeRef: 'su-elsewhere', key: 'elsewhere-2', body: 'b', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const hits = await findFactKeyElsewhere(
@@ -1694,7 +1694,7 @@ describe('findFactKeyElsewhere (EI-19328780288425209 — the retract-scope-miss 
 
   it('excludes a RETRACTED copy at another scope — retraction is not a live "elsewhere" hit', async () => {
     await assertFact(
-      { scope: 'harness', scopeRef: 'papercusp', key: 'elsewhere-3', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'papercusp', key: 'elsewhere-3', body: 'b', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     await retractFact({ scope: 'harness', scopeRef: 'papercusp', key: 'elsewhere-3', workspaceId: WS }, db.sql);
@@ -1709,15 +1709,15 @@ describe('findFactKeyElsewhere (EI-19328780288425209 — the retract-scope-miss 
 describe('findFactKeyMatches (EI-20246178086794269 — key-only retract resolution)', () => {
   it('returns one current identity for a unique key and both identities when the key is ambiguous', async () => {
     await assertFact(
-      { scope: 'owner', scopeRef: 'su-key-only', key: 'key-only-unique', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'owner', scopeRef: 'su-key-only', key: 'key-only-unique', body: 'b', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     await assertFact(
-      { scope: 'owner', scopeRef: 'su-key-only', key: 'key-only-shared', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'owner', scopeRef: 'su-key-only', key: 'key-only-shared', body: 'b', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     await assertFact(
-      { scope: 'harness', scopeRef: 'papercusp', key: 'key-only-shared', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'papercusp', key: 'key-only-shared', body: 'b', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
 
@@ -1734,11 +1734,11 @@ describe('findFactKeyMatches (EI-20246178086794269 — key-only retract resoluti
 
   it('ignores retracted and superseded copies when resolving a key', async () => {
     await assertFact(
-      { scope: 'owner', scopeRef: 'su-key-history', key: 'key-only-history', body: 'old', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'owner', scopeRef: 'su-key-history', key: 'key-only-history', body: 'old', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     await assertFact(
-      { scope: 'owner', scopeRef: 'su-key-history', key: 'key-only-history', body: 'current', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'owner', scopeRef: 'su-key-history', key: 'key-only-history', body: 'current', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
 
@@ -1781,7 +1781,7 @@ describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {
   });
 
   it('a fact with no declaration reads kind:null, claim:null and an EMPTY dependsOn (never null)', async () => {
-    await assertFact({ ...base, body: 'plain' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'plain' }, db.sql);
     const f = await read();
     expect(f?.kind).toBeNull();
     expect(f?.claim).toBeNull();
@@ -1794,7 +1794,7 @@ describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {
     // The laundering this forbids: a blank digest would later compare EQUAL to
     // another failed read and certify the fact as fresh.
     await assertFact(
-      { ...base, body: 'rests on something I could not read', dependsOn: [dep({ digest: undefined, unknown: 'not-measured' })] },
+      { ttlSec: 3600, ...base, body: 'rests on something I could not read', dependsOn: [dep({ digest: undefined, unknown: 'not-measured' })] },
       db.sql,
     );
     const f = await read();
@@ -1803,8 +1803,8 @@ describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {
   });
 
   it('⚠ depends_on does NOT carry forward to a corrected version — it is an observation, not an identity', async () => {
-    await assertFact({ ...base, body: 'one', dependsOn: [dep()] }, db.sql);
-    await assertFact({ ...base, body: 'two' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'one', dependsOn: [dep()] }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'two' }, db.sql);
     // Inheriting the old digest would stamp a reading taken at v1's time onto a
     // claim made later, and it would fail in the CONFIDENT direction (reporting
     // fresh against an anchor that was never re-observed).
@@ -1816,7 +1816,7 @@ describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {
 
   it('normalizes on write: de-dupes by cell, drops anchorless entries, and bounds the list', async () => {
     await assertFact(
-      {
+      { ttlSec: 3600,
         ...base,
         body: 'messy declaration',
         dependsOn: [
@@ -1870,7 +1870,7 @@ describe('P-010 standing-fact recheck contract (migration 940)', () => {
   };
 
   it('round-trips through assert, fold, version history, and does not carry forward implicitly', async () => {
-    const written = await assertFact({ ...base, recheck }, db.sql);
+    const written = await assertFact({ ttlSec: 3600, ...base, recheck }, db.sql);
     expect(written.recheck).toEqual(recheck);
     const folded = await foldFacts(
       [{ scope: 'owner', scopeRef: 'su-recheck' }],
@@ -1882,7 +1882,7 @@ describe('P-010 standing-fact recheck contract (migration 940)', () => {
       `RECHECK: ${recheck.probe} — FALSIFIED IF: ${recheck.falsifier}`,
     );
 
-    await assertFact({ ...base, body: 'corrected without a new recheck observation' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'corrected without a new recheck observation' }, db.sql);
     const history = await factVersions(
       { scope: 'owner', scopeRef: 'su-recheck', key: base.key, workspaceId: WS },
       db.sql,
@@ -1941,7 +1941,7 @@ describe('H6 local-partition discipline (foreign partitions untouchable locally)
   it('the local assert coexists with a foreign partition of the SAME identity', async () => {
     await seedForeign('both');
     await assertFact(
-      { scope: 'harness', scopeRef: 'member-a', key: 'both', body: 'local view', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'member-a', key: 'both', body: 'local view', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const rows = await db.sql`SELECT source_hive FROM harness_shared.agent_facts WHERE key = 'both' ORDER BY source_hive NULLS FIRST`;
@@ -1953,7 +1953,7 @@ describe('H6 local-partition discipline (foreign partitions untouchable locally)
   it('retractFact retracts ONLY the local partition', async () => {
     await seedForeign('r1');
     await assertFact(
-      { scope: 'harness', scopeRef: 'member-a', key: 'r1', body: 'local', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'member-a', key: 'r1', body: 'local', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const did = await retractFact({ scope: 'harness', scopeRef: 'member-a', key: 'r1', workspaceId: WS }, db.sql);
@@ -1968,7 +1968,7 @@ describe('H6 local-partition discipline (foreign partitions untouchable locally)
     await seedForeign('cap-foreign');
     for (let i = 0; i <= FACTS_PER_SCOPE_CAP; i++) {
       await assertFact(
-        { scope: 'harness', scopeRef: 'member-a', key: `cap-${i}`, body: 'x', createdBy: 'su-int', workspaceId: WS },
+        { ttlSec: 3600, scope: 'harness', scopeRef: 'member-a', key: `cap-${i}`, body: 'x', createdBy: 'su-int', workspaceId: WS },
         db.sql,
       );
     }
@@ -1980,7 +1980,7 @@ describe('H6 local-partition discipline (foreign partitions untouchable locally)
   it('foldFacts surfaces BOTH partitions (foreign observations inform briefs)', async () => {
     await seedForeign('fold-1');
     await assertFact(
-      { scope: 'harness', scopeRef: 'member-a', key: 'fold-1', body: 'local', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'member-a', key: 'fold-1', body: 'local', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const folded = await foldFacts([{ scope: 'harness', scopeRef: 'member-a' }], { workspaceId: WS }, db.sql);
@@ -2008,15 +2008,15 @@ describe('P-007 audience_scope + source_provenance (mig 574)', () => {
   };
 
   it('audienceScope + sourceProvenance round-trip through assert → fold', async () => {
-    await assertFact({ ...base, key: 'aud-rt', audienceScope: 'fleet:backend', sourceProvenance: STAMP }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'aud-rt', audienceScope: 'fleet:backend', sourceProvenance: STAMP }, db.sql);
     const [f] = await foldFacts(SEL, { workspaceId: WS, audiences: ['fleet:backend'] }, db.sql);
     expect(f.audienceScope).toBe('fleet:backend');
     expect(f.sourceProvenance).toEqual(STAMP);
   });
 
   it('fold default excludes audience-scoped facts; only the MATCHING audience (or "all") includes them', async () => {
-    await assertFact({ ...base, key: 'aud-only', body: 'fleet-only', audienceScope: 'fleet:backend' }, db.sql);
-    await assertFact({ ...base, key: 'open', body: 'for everyone' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'aud-only', body: 'fleet-only', audienceScope: 'fleet:backend' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'open', body: 'for everyone' }, db.sql);
 
     const noAudience = await foldFacts(SEL, { workspaceId: WS }, db.sql);
     expect(noAudience.map((f) => f.key)).toEqual(['open']);
@@ -2033,8 +2033,8 @@ describe('P-007 audience_scope + source_provenance (mig 574)', () => {
   });
 
   it('a re-assert REPLACES audience + provenance (omitting them clears — fresh assert wins)', async () => {
-    await assertFact({ ...base, key: 'swap', audienceScope: 'fleet:backend', sourceProvenance: STAMP }, db.sql);
-    await assertFact({ ...base, key: 'swap', body: 'now unrestricted' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'swap', audienceScope: 'fleet:backend', sourceProvenance: STAMP }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'swap', body: 'now unrestricted' }, db.sql);
     const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql); // default fold now sees it
     expect(f.key).toBe('swap');
     expect(f.audienceScope).toBeNull();
@@ -2094,7 +2094,7 @@ describe('confidence (evidence-strength tier, mig 671 / WI-6052)', () => {
 
   it('a re-assert REPLACES confidence (omitting it clears — fresh assert wins, same semantics as audienceScope/sourceProvenance)', async () => {
     await assertFact({ ...base, key: 'conf-swap', confidence: 'suspected' }, db.sql);
-    await assertFact({ ...base, key: 'conf-swap', body: 'now unset' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'conf-swap', body: 'now unset' }, db.sql);
     const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
     expect(f.key).toBe('conf-swap');
     expect(f.confidence).toBeNull();
@@ -2125,7 +2125,7 @@ describe('volatile measurements (migration 795)', () => {
   const measuredAt = '2026-08-11T20:50:00.000Z';
 
   it('measurement metadata round-trips and defaults the TTL to 15 minutes', async () => {
-    await assertFact({ ...base, key: 'volatile-rt', subjectVolatile: true, measuredAt }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'volatile-rt', subjectVolatile: true, measuredAt }, db.sql);
     const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
     expect(f.measurement).toEqual({ subjectVolatile: true, measuredAt });
     const [row] = await db.sql<{ ttl_seconds: number }[]>`
@@ -2136,8 +2136,8 @@ describe('volatile measurements (migration 795)', () => {
   });
 
   it('a re-assert without the marker clears the prior snapshot metadata', async () => {
-    await assertFact({ ...base, key: 'volatile-clear', subjectVolatile: true, measuredAt }, db.sql);
-    await assertFact({ ...base, key: 'volatile-clear', body: 'the invariant is stable' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'volatile-clear', subjectVolatile: true, measuredAt }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'volatile-clear', body: 'the invariant is stable' }, db.sql);
     const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
     expect(f.measurement).toBeNull();
   });
@@ -2223,7 +2223,7 @@ describe('P-006 / D-011 normalization writes the repaired value, not just a rece
   it('INFERS subjectVolatile from measuredAt and persists the marker as a real boolean', async () => {
     // measuredAt supplied, subjectVolatile omitted: you do not stamp a sample time for a
     // non-sample. Pre-P-006 this was a hard refusal that stored nothing.
-    const result = await assertFact({ ...base, key: 'inferred', measuredAt }, db.sql);
+    const result = await assertFact({ ttlSec: 3600, ...base, key: 'inferred', measuredAt }, db.sql);
 
     expect(result.normalized?.subjectVolatileInferred).toBe(true);
 
@@ -2644,7 +2644,7 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
   const resolve = (declared: string[]) => resolveAssumptions(declared, selectors, { workspaceId: WS }, db.sql);
 
   it('resolves a live bare key and STAMPS the absolute versioned ref', async () => {
-    const f = await assertFact({ ...base, key: 'gate-flake' }, db.sql);
+    const f = await assertFact({ ttlSec: 3600, ...base, key: 'gate-flake' }, db.sql);
     const [r] = await resolve(['gate-flake']);
     expect(r.condition).toBe('live');
     expect(r.ref).toBe(`fact:owner:su-me:gate-flake@v${f.id}`);
@@ -2654,7 +2654,7 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
   });
 
   it('an EXPIRED key resolves as lapsed — NOT dangling (the D-050 question)', async () => {
-    await assertFact({ ...base, key: 'stale-hunch' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'stale-hunch' }, db.sql);
     await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 hour'
                   WHERE workspace_id = ${WS} AND key = 'stale-hunch'`;
     const [r] = await resolve(['stale-hunch']);
@@ -2664,7 +2664,7 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
   });
 
   it('a RETRACTED key resolves as retracted, not dangling', async () => {
-    await assertFact({ ...base, key: 'withdrawn' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'withdrawn' }, db.sql);
     await retractFact({ scope: 'owner', scopeRef: 'su-me', key: 'withdrawn', workspaceId: WS }, db.sql);
     const [r] = await resolve(['withdrawn']);
     expect(r.condition).toBe('retracted');
@@ -2677,8 +2677,8 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
   });
 
   it('a bare key resolves to the CURRENT version after a correction', async () => {
-    await assertFact({ ...base, key: 'revised', body: 'v1' }, db.sql);
-    const v2 = await assertFact({ ...base, key: 'revised', body: 'v2' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'revised', body: 'v1' }, db.sql);
+    const v2 = await assertFact({ ttlSec: 3600, ...base, key: 'revised', body: 'v2' }, db.sql);
     const [r] = await resolve(['revised']);
     expect(r.condition).toBe('live');
     expect(r.versionId).toBe(v2.id);
@@ -2686,8 +2686,8 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
   });
 
   it('a version-pinned ref whose version was superseded reports superseded, pointing at the current one', async () => {
-    const v1 = await assertFact({ ...base, key: 'pinned', body: 'first' }, db.sql);
-    const v2 = await assertFact({ ...base, key: 'pinned', body: 'second' }, db.sql);
+    const v1 = await assertFact({ ttlSec: 3600, ...base, key: 'pinned', body: 'first' }, db.sql);
+    const v2 = await assertFact({ ttlSec: 3600, ...base, key: 'pinned', body: 'second' }, db.sql);
     const [r] = await resolve([`fact:owner:su-me:pinned@v${v1.id}`]);
     expect(r.condition).toBe('superseded');
     expect(r.versionId).toBe(v2.id);
@@ -2696,10 +2696,10 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
 
   it('most-specific scope wins, and the multi-scope hit is flagged ambiguous', async () => {
     await assertFact(
-      { scope: 'workspace', key: 'shared-slug', body: 'workspace-wide', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'workspace', key: 'shared-slug', body: 'workspace-wide', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
-    await assertFact({ ...base, key: 'shared-slug', body: 'mine' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'shared-slug', body: 'mine' }, db.sql);
     const [r] = await resolve(['shared-slug']);
     expect(r.scope).toBe('owner');
     expect(r.excerpt).toBe('mine');
@@ -2707,7 +2707,7 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
   });
 
   it('a single-scope hit is NOT flagged ambiguous', async () => {
-    await assertFact({ ...base, key: 'only-mine' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'only-mine' }, db.sql);
     const [r] = await resolve(['only-mine']);
     expect(r.ambiguous).toBeUndefined();
   });
@@ -2718,7 +2718,7 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
    */
   it('an absolute ref resolves a scope OUTSIDE the caller selector set', async () => {
     await assertFact(
-      {
+      { ttlSec: 3600,
         scope: 'role',
         scopeRef: 'engineer',
         key: 'role-rule',
@@ -2736,15 +2736,15 @@ describe('P-008 (d) assumption resolution (D-079)', () => {
   });
 
   it('a foreign hive partition is not the fact you asserted', async () => {
-    await assertFact({ ...base, key: 'local-only' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'local-only' }, db.sql);
     await db.sql`UPDATE harness_shared.agent_facts SET source_hive = 'other-hive'
                   WHERE workspace_id = ${WS} AND key = 'local-only'`;
     expect((await resolve(['local-only']))[0].condition).toBe('dangling');
   });
 
   it('resolves a whole batch in ONE read, preserving caller order', async () => {
-    await assertFact({ ...base, key: 'k-a' }, db.sql);
-    await assertFact({ ...base, key: 'k-b' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'k-a' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'k-b' }, db.sql);
     const out = await resolve(['k-b', 'ghost', 'k-a']);
     expect(out.map((r) => r.key)).toEqual(['k-b', 'ghost', 'k-a']);
     expect(out.map((r) => r.condition)).toEqual(['live', 'dangling', 'live']);
@@ -2784,11 +2784,11 @@ describe('P-006 / D-001 — the version-chain producer the dispute detector cons
   const base = { scope: 'owner' as const, scopeRef: 'su-me', createdBy: 'su-alice', workspaceId: WS };
 
   it('stamps supersedesId on a RE-assert and leaves it null on the first', async () => {
-    const v1 = await assertFact({ ...base, key: 'gate-candidate', body: 'judging 1ee32228' }, db.sql);
+    const v1 = await assertFact({ ttlSec: 3600, ...base, key: 'gate-candidate', body: 'judging 1ee32228' }, db.sql);
     expect(v1.supersedesId ?? null).toBeNull();
 
     const v2 = await assertFact(
-      { ...base, createdBy: 'su-bob', key: 'gate-candidate', body: 'judging 4a9b218b' },
+      { ttlSec: 3600, ...base, createdBy: 'su-bob', key: 'gate-candidate', body: 'judging 4a9b218b' },
       db.sql,
     );
     expect(v2.supersedesId).toBe(v1.id);
@@ -2860,7 +2860,7 @@ describe('countLiveFacts is the census behind a listFacts page (WI-38910)', () =
 
   async function seat(n: number, prefix = 'census') {
     for (let i = 0; i < n; i += 1) {
-      await assertFact({ ...base, key: `${prefix}-${i}`, body: `fact ${i}` }, db.sql);
+      await assertFact({ ttlSec: 3600, ...base, key: `${prefix}-${i}`, body: `fact ${i}` }, db.sql);
     }
   }
 
@@ -2882,7 +2882,7 @@ describe('countLiveFacts is the census behind a listFacts page (WI-38910)', () =
     // Excluded rows are the whole point: same table is not the same population.
     // A retracted fact must be invisible to BOTH, or `total` overstates what the
     // reader could actually page to — untrustworthy in the other direction.
-    await assertFact({ ...base, key: 'retracted-one', body: 'retract me' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'retracted-one', body: 'retract me' }, db.sql);
     await retractFact({ scope: 'workspace', scopeRef: null, key: 'retracted-one', workspaceId: WS }, db.sql);
 
     const all = await foldFacts([sel], { workspaceId: WS, limitPerSelector: 1000, audiences: 'all' }, db.sql);
@@ -2895,7 +2895,7 @@ describe('countLiveFacts is the census behind a listFacts page (WI-38910)', () =
 
   it('an EXPIRED fact is excluded by both, so the census cannot drift from the fold as TTLs lapse', async () => {
     await seat(2);
-    await assertFact({ ...base, key: 'already-lapsed', body: 'short ttl' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'already-lapsed', body: 'short ttl' }, db.sql);
     await db.sql.unsafe(
       `UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 hour' WHERE key = 'already-lapsed'`,
     );
