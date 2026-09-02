@@ -599,6 +599,50 @@ describe('resolveCitation — a miss says WHERE it looked (EI-20449557927956357)
   });
 });
 
+/**
+ * EI-22129491468808913: a bare repo-relative citation for genuinely cross-repo work
+ * (no sibling-name prefix at all) misses `within()`'s existing sibling branch entirely
+ * — that branch only fires when the FIRST SEGMENT already names a sibling — so the
+ * miss reads identically to a wholly nonexistent path. An auditor who tries the
+ * natural bare shape, watches it fail, and has no signal that a sibling repo holds the
+ * same relative path reasonably (but wrongly) concludes cross-repo citation is unsafe
+ * and downgrades real code to `not-code`.
+ */
+describe('resolveCitation — sibling repair suggestion on a miss (EI-22129491468808913)', () => {
+  it('suggests the sibling-prefixed path when the bare citation matches one', () => {
+    const deps = repoCitationDeps(repoRoot);
+    const res = resolveCitation(code('apps/web/src/SellerDock.tsx'), deps);
+    expect(res).toMatchObject({ ok: false, reason: 'file_not_found' });
+    expect((res as { detail: string }).detail).toContain('did you mean "sidestage/apps/web/src/SellerDock.tsx"?');
+  });
+
+  it('names no suggestion when nothing under any sibling matches', () => {
+    const res = resolveCitation(code('apps/operator/does-not-exist.ts'), repoCitationDeps(repoRoot));
+    expect((res as { detail: string }).detail).not.toContain('did you mean');
+  });
+
+  it('does not re-suggest the same sibling prefix a citation already carries', () => {
+    // `within()` already tried `sidestage/apps/web/src/NoSuchFile.tsx` under the
+    // sibling directly; a suggestion re-adding the same "sidestage/" prefix would be
+    // noise ("did you mean sidestage/sidestage/..."), not a repair.
+    const res = resolveCitation(code('sidestage/apps/web/src/NoSuchFile.tsx'), repoCitationDeps(repoRoot));
+    expect((res as { detail: string }).detail).not.toContain('did you mean');
+  });
+
+  it('stays pure: injected deps without siblingSuggestion return the bare miss detail unchanged', () => {
+    const res = resolveCitation(code('apps/operator/nope.ts'), {
+      statFile: () => null,
+      readFile: () => null,
+      describeRoots: () => repoRoot,
+    });
+    expect(res).toEqual({
+      ok: false,
+      reason: 'file_not_found',
+      detail: `apps/operator/nope.ts (searched ${repoRoot})`,
+    });
+  });
+});
+
 describe('per-item audit provenance (plan D-006/D-007)', () => {
   it('stores a Git-compatible blob sha for code evidence only', () => {
     expect(gitBlobSha('hello\n')).toBe('ce013625030ba8dba906f756967f9e9ca394464a');

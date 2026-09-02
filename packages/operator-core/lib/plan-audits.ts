@@ -410,6 +410,22 @@ export interface CitationDeps {
    * Optional so injected/pure test deps stay a two-field object.
    */
   describeRoots?: (rel: string) => string | null;
+  /**
+   * EI-22129491468808913: repo-relative `rel` that just MISSED everywhere else →
+   * the workspace-relative citation that WOULD resolve, if prefixing `rel` with
+   * an admitted sibling repo's name lands on a real file. Null when no such
+   * sibling match exists (the common case — most misses are just wrong paths).
+   *
+   * Why this needs its own probe rather than reusing `within()`'s existing
+   * sibling branch: that branch only fires when `rel`'s FIRST SEGMENT already
+   * names an admitted sibling (`sidestage/apps/...`). A citation written
+   * repo-relative for genuinely cross-repo work (`packages/contracts/...`, no
+   * sibling-name prefix at all) never reaches it, so the miss looks identical
+   * to a wholly nonexistent path — which is exactly what read to an auditor as
+   * "cross-repo citation is unsafe here" rather than "you wrote the wrong path
+   * shape". Optional so injected/pure test deps stay a two-field object.
+   */
+  siblingSuggestion?: (rel: string) => string | null;
   /** Repo-relative → Git-compatible blob hash of the file's current bytes. Optional
    *  only so small injected resolver tests remain a two-function fixture. */
   blobSha?: (rel: string) => string | null;
@@ -435,10 +451,16 @@ export function citationBlobSha(citation: AuditCitation, deps: CitationDeps): st
   return body == null ? null : gitBlobSha(body);
 }
 
-/** `file_not_found` detail: the path the caller wrote, plus where we actually looked. */
+/**
+ * `file_not_found` detail: the path the caller wrote, where we actually looked, and —
+ * EI-22129491468808913 — a repair suggestion when the same relative path exists under
+ * an admitted sibling repo once its name is prefixed.
+ */
 function missDetail(rel: string, deps: CitationDeps): string {
   const roots = deps.describeRoots?.(rel);
-  return roots ? `${rel} (searched ${roots})` : rel;
+  const base = roots ? `${rel} (searched ${roots})` : rel;
+  const suggestion = deps.siblingSuggestion?.(rel);
+  return suggestion ? `${base}; did you mean "${suggestion}"?` : base;
 }
 
 /**
@@ -722,6 +744,22 @@ export function repoCitationDeps(
       }
       roots.push(...admittedRegisteredRoots);
       return roots.join(', ');
+    },
+    siblingSuggestion: (rel) => {
+      siblings ??= independentSiblingRepos(repoRoot);
+      const first = rel.split('/')[0];
+      for (const name of siblings) {
+        // Already-prefixed misses were already tried above by `within()` — a
+        // second suggestion naming the same prefix would be noise, not a repair.
+        if (name === first) continue;
+        const abs = path.resolve(workspaceRoot, name, rel);
+        try {
+          if (fs.statSync(abs).isFile()) return `${name}/${rel}`;
+        } catch {
+          /* not there either — keep looking */
+        }
+      }
+      return null;
     },
   };
 }
