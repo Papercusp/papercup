@@ -1194,6 +1194,57 @@ export const MCP_LANGUAGE_SERVER_SERVED_INTENTS: readonly CodeIntelIntent[] = Ob
   'diagnostics',
 ]);
 
+/**
+ * The banner an empty-but-claimed-healthy answer has earned, or `null`.
+ *
+ * TWO failures live here and only one of them used to be reported, in the
+ * inverted order of harm:
+ *
+ * - `FALSE-EMPTY` — the backend claimed healthy+empty and LATER produced sites.
+ *   A lie that corrects itself, and the only one the report used to banner.
+ * - `CERTIFIED-EMPTY` — the backend claimed healthy+empty and never filled.
+ *   `healthForAnswer` returns a client's health for an EMPTY answer only when
+ *   `certifiedReadiness.has(intent)`, and `isTrustworthyEmpty()` blesses any
+ *   empty whose health is `healthy`. So this row is the one reported to callers
+ *   as PROOF the symbol has no definition — the permanent lie, previously
+ *   rendered as an ordinary FAIL row.
+ *
+ * WI-2142382 showed the permanent case is the COMMON one rather than an edge:
+ * a readiness proof minted from silence was cached irrevocably for the client's
+ * life, so the empty could never fill and `emptyThenFilledMs` was structurally
+ * unable to fire on exactly the case that mattered most. That fix removes most
+ * instances; this detector covers the residue and is what makes the conclusion
+ * READABLE instead of a join the reader has to perform by hand (which is how
+ * WI-2142174 had to be diagnosed).
+ *
+ * Kept pure and exported so each direction is asserted independently — the two
+ * banners must never collapse into one another.
+ */
+export function emptyAnswerBanner(
+  m: Pick<
+    BenchMeasurement,
+    'emptyThenFilledMs' | 'answerHealth' | 'returnedSites' | 'sitesStableForMs' | 'pollStoppedOn'
+  >,
+): string | null {
+  if (m.emptyThenFilledMs !== null) {
+    return `⚠ FALSE-EMPTY: claimed healthy+empty, filled ${m.emptyThenFilledMs}ms later`;
+  }
+  // `never-queried` is the not-attempted sentinel: a probe the budget never ran
+  // has no answer to be wrong about, and must never be reported as a lie.
+  if (
+    m.answerHealth === 'healthy' &&
+    m.returnedSites.length === 0 &&
+    m.pollStoppedOn !== 'never-queried'
+  ) {
+    const stable = m.sitesStableForMs === null ? '' : ` for ${m.sitesStableForMs}ms`;
+    return (
+      `⚠ CERTIFIED-EMPTY: healthy+empty${stable}, never filled — ` +
+      `isTrustworthyEmpty() would read this as PROVEN ABSENCE`
+    );
+  }
+  return null;
+}
+
 /** Render a leg report as a compact table for a Decision body. */
 export function formatLegReport(report: LspLegReport): string {
   const rows = report.measurements.map((m) => {
@@ -1216,9 +1267,7 @@ export function formatLegReport(report: LspLegReport): string {
           ? ` (median of ${m.warmQuerySamplesMs.length}, max=${m.warmQueryMaxMs}ms)`
           : ''),
       `attempts=${m.attempts}`,
-      m.emptyThenFilledMs !== null
-        ? `⚠ FALSE-EMPTY: claimed healthy+empty, filled ${m.emptyThenFilledMs}ms later`
-        : '',
+      emptyAnswerBanner(m) ?? '',
       // WHY the poll stopped, and what the answer claimed while it ran. Printed
       // on every non-PASS row because their absence is what made WI-2142253 a
       // deduction: `toCorrect=NEVER attempts=569` cannot, by itself, distinguish

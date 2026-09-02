@@ -38,6 +38,7 @@ import {
   type BenchMeasurement,
   probeBudget,
   pollStopDecision,
+  emptyAnswerBanner,
 } from './code-intel-bench.ts';
 import { corpusCase } from './acceptance-corpus.ts';
 import {
@@ -878,5 +879,77 @@ describe('pollStopDecision — when the loop has learned all it is going to', ()
     expect(
       pollStopDecision({ ...BARREL_REEXPORT, siteCount: 0, ...stalledEmpty }),
     ).toBeNull();
+  });
+});
+
+describe('emptyAnswerBanner — the PERMANENT false-empty was the silent one (EI-22179492086218698)', () => {
+  // Ranked by harm the old labelling was exactly inverted: the lie that
+  // self-corrects got the banner, and the one reported to callers as PROOF of
+  // absence rendered as an ordinary FAIL row.
+  const base = {
+    emptyThenFilledMs: null as number | null,
+    answerHealth: 'healthy' as string | null,
+    returnedSites: [] as readonly string[],
+    sitesStableForMs: 244_626 as number | null,
+    pollStoppedOn: 'deadline' as BenchMeasurement['pollStoppedOn'],
+  };
+
+  it('fills-later => FALSE-EMPTY only', () => {
+    const banner = emptyAnswerBanner({ ...base, emptyThenFilledMs: 1_200 });
+    expect(banner).toMatch(/FALSE-EMPTY/);
+    expect(banner).not.toMatch(/CERTIFIED-EMPTY/);
+  });
+
+  it('never-fills + healthy => CERTIFIED-EMPTY only', () => {
+    const banner = emptyAnswerBanner(base);
+    expect(banner).toMatch(/CERTIFIED-EMPTY/);
+    expect(banner).not.toMatch(/FALSE-EMPTY/);
+    // The severity claim must be IN the banner: this is the row whose empty
+    // isTrustworthyEmpty() blesses as proven absence.
+    expect(banner).toMatch(/PROVEN ABSENCE/);
+  });
+
+  it('healthy + NON-empty => neither (the ordinary passing shape)', () => {
+    expect(
+      emptyAnswerBanner({ ...base, returnedSites: ['libs/generic/x/src/index.ts:1'] }),
+    ).toBeNull();
+  });
+
+  it('degraded + empty => neither — an honest refusal is not a lie', () => {
+    // Post-WI-2142382 this is what the shadowed-symbol probe now looks like.
+    // Bannering it would train readers to ignore the banner, which is how a
+    // detector dies.
+    expect(emptyAnswerBanner({ ...base, answerHealth: 'degraded' })).toBeNull();
+  });
+
+  it('a probe the budget NEVER RAN is never called a lie', () => {
+    // notAttempted rows carry pollStoppedOn:'never-queried' and a null health.
+    // Either alone must be enough to stay silent.
+    expect(emptyAnswerBanner({ ...base, pollStoppedOn: 'never-queried' })).toBeNull();
+    expect(emptyAnswerBanner({ ...base, answerHealth: null })).toBeNull();
+  });
+
+  it('REGRESSION: the exact leg-v5 row that got NO banner now gets one', () => {
+    // Measured, /tmp/p018-bakeoff-v5.log, shadowed-symbol-no-cross-contamination:
+    //   attempts=486 stoppedOn=deadline health=healthy siteSetChanges=0
+    //   sitesStableForMs=244626 returned=[nothing]
+    // A reader had to join health=healthy with returned=[nothing] BY HAND to
+    // see this was a certified absence rather than a never-ready probe. That
+    // hand-join is how WI-2142174 had to be diagnosed.
+    const banner = emptyAnswerBanner({
+      emptyThenFilledMs: null,
+      answerHealth: 'healthy',
+      returnedSites: [],
+      sitesStableForMs: 244_626,
+      pollStoppedOn: 'deadline',
+    });
+    expect(banner).toMatch(/CERTIFIED-EMPTY/);
+    expect(banner).toContain('244626ms');
+
+    // FALSIFIABILITY CONTROL, kept permanently: the OLD rule really was silent
+    // on this row. If this stops reproducing, the assertion above proves nothing.
+    const oldRule = (m: { emptyThenFilledMs: number | null }) =>
+      m.emptyThenFilledMs !== null ? 'banner' : '';
+    expect(oldRule({ emptyThenFilledMs: null })).toBe('');
   });
 });
