@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -194,6 +194,7 @@ const EXPECTED_POLICY_IMPORTERS = [
   'packages/operator-core/lib/gym/boot-spec.ts',
   'packages/operator-core/lib/gym/judge-scoring.ts',
   'packages/operator-core/lib/harness/routines/improvement-actions.ts',
+  'packages/operator-core/lib/harness/routines/resolver-whole-corpus-action.ts',
   'packages/operator-core/lib/harness/routines/work-item-admission-bulk-dedup-action.ts',
   'packages/operator-core/lib/harness/routines/work-item-admission-daily-digest-action.ts',
   'packages/operator-core/lib/harness/routines/work-item-admission-delta-sweep-action.ts',
@@ -201,6 +202,7 @@ const EXPECTED_POLICY_IMPORTERS = [
   'packages/operator-core/lib/iq-battery/beekeeper-gen0-runner.ts',
   'packages/operator-core/lib/replay/battery.ts',
   'packages/operator-core/lib/replay/regret/replay-adapter.ts',
+  'packages/operator-core/lib/resolver/whole-corpus-pass.ts',
   'packages/operator-core/lib/scout/models.ts',
   'packages/operator-core/lib/scout/register-scout-action.ts',
   'packages/operator-core/lib/transfer/live-deps.ts',
@@ -429,16 +431,31 @@ describe('canonical learning model policy', () => {
   });
 
   it('keeps every built-in Gym rubric override canonical in source and sidecar projection', () => {
-    const roots = [
-      'libs/papercusp/packages/harness/blueprints',
-      'apps/operator/dist-sidecar/blueprints',
-    ];
+    // Neither root may make this guard's verdict depend on UNTRACKED local state, in
+    // either direction — a crash on debris, or a silent empty walk.
+    //
+    // SOURCE is tracked, so it is mandatory: asserted present before the walk, because
+    // "the directory vanished" must fail loudly rather than pass over zero blueprints.
+    // SIDECAR is a generated projection — `apps/operator/dist-sidecar/` was gitignored
+    // and untracked on 2026-09-02, so it is legitimately ABSENT from a clean checkout
+    // (the gate's candidate checkout included) and is checked only when it is present.
+    const SOURCE_ROOT = 'libs/papercusp/packages/harness/blueprints';
+    const roots = [SOURCE_ROOT, 'apps/operator/dist-sidecar/blueprints'];
+    expect(existsSync(resolve(ROOT, SOURCE_ROOT)), `${SOURCE_ROOT} is tracked and must exist`).toBe(true);
     const violations: string[] = [];
+    let blueprintsChecked = 0;
     for (const root of roots) {
       const absoluteRoot = resolve(ROOT, root);
+      if (!existsSync(absoluteRoot)) continue;
       for (const entry of readdirSync(absoluteRoot, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const path = join(absoluteRoot, entry.name, 'blueprint.yaml');
+        // A directory with no blueprint.yaml is not a blueprint. Git cannot track an
+        // empty directory, so an abandoned local one (`worker/`, seen 2026-08-31) is
+        // pure debris — reading it unconditionally turned that into an ENOENT crash
+        // that reds this guard for a reason having nothing to do with model policy.
+        if (!existsSync(path)) continue;
+        blueprintsChecked += 1;
         const parsed = parseYaml(readFileSync(path, 'utf8')) as { gym?: { rubric?: { model?: unknown } } };
         const model = parsed.gym?.rubric?.model;
         if (model !== undefined && model !== LEARNING_MODEL_SPEC) {
@@ -446,6 +463,9 @@ describe('canonical learning model policy', () => {
         }
       }
     }
+    // Non-vacuity: the two `continue`s above must never be able to walk nothing and
+    // report compliance — that is the failure mode a skip-on-absence rule invites.
+    expect(blueprintsChecked).toBeGreaterThan(0);
     expect(violations).toEqual([]);
   });
 
