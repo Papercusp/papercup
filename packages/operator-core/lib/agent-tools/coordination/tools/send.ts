@@ -2244,16 +2244,17 @@ async function effectiveFederationScope(
 
 export default defineTool({
   name: 'coord:send',
-  // P-011 prompt-weight: `description` and `when` are BOTH counted, so anything said in
-  // both is paid for twice. They had drifted into near-duplicates (the `basedOn` sentence
-  // was ~150 chars verbatim in each), which is what pushed this tool 69 over the hard cap.
-  // Split by role instead: `description` = what it is + the required arg shapes; `when` =
-  // the situational calls that are NOT in description. Response/refusal prose belongs in
-  // `returns` below, which is free (EI-22083648545226771 / EI-18742337097445085).
+  // P-011 prompt-weight: this tool was 69 over the HARD CAP. The obvious trim — deduping
+  // `description` against `when` — is WRONG here, and send-arg-shape.test.ts enforces that:
+  // three facts (summary-is-the-required-inbox-headline, `why` = { goalRef, note? }, and
+  // `basedOn` OUTPUT-ONLY/auto-derived/omit) are asserted against EACH surface separately,
+  // because a caller may see only one of them. That redundancy is deliberate — keep it.
+  // Budget is recovered by tightening prose instead; response/refusal detail lives in the
+  // free `returns` below (EI-22083648545226771 / EI-18742337097445085).
   description:
-    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is the REQUIRED one-line inbox headline, `body` optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. `why` is { goalRef, note? }, not prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it; authored claim refs go in `body[].premises`. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
+    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is the required one-line inbox headline, `body` optional detail. Distinct messages: items:[…]. `to` takes ownerIds, ["*"], or ["human"]. `expects` required: ack|answer|action|none. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it; authored refs go in `body[].premises`. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
   guidance: {
-    when: 'Share context or ask. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. Waiting on something? `blockedOn: { kind, ref }` on that section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
+    when: 'Share context or ask. `summary` is the required inbox headline; `body` is detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on that section gets readers a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
     argRedirects: sectionOnlyArgRedirects,
     returns:
       'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. A body above the 600-character default inbox cap is refused before a load-bearing expects:ack/answer/action send; an expects:none FYI may persist with top-level `bodyDeliveryWarning` because truncation is then explicit. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
