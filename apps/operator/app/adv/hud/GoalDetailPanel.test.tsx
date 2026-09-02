@@ -1263,6 +1263,38 @@ describe('GoalDetailPanel', () => {
       expect(screen.getByTestId('goal-tripwires').textContent).toMatch(/past limit/i);
     });
 
+    it('marks a HAND-SET reading in text, so it cannot pass for a measurement', () => {
+      /* EI-21605510614702802. Both bars carry a number, so before provenance
+         existed they were indistinguishable on screen — one is refreshed by the
+         platform every five minutes, the other was typed by an agent and may be
+         weeks stale. Exactly one is stamped, so this fails both if the marker
+         vanishes AND if it starts appearing on measured bars too. */
+      renderPanel(
+        withTripwires([
+          {
+            metric: 'spend',
+            label: 'Spend',
+            threshold: 500,
+            current: 310,
+            unit: 'usd',
+            measuredBy: { source: 'resolver:spend_usd', atMs: 1_700_000, value: 310 },
+          },
+          { metric: 'surfaces_verified', label: 'Surfaces', threshold: 30, current: 0 },
+        ]),
+      );
+
+      const handSet = screen.getAllByTestId('goal-tripwire-handset');
+      expect(handSet).toHaveLength(1);
+      expect(handSet[0]!.textContent).toMatch(/hand-set/i);
+
+      // The machine-readable half, on the row rather than the chip: a hand-set
+      // reading is still `measured` (a reading exists) but is not `derived`.
+      const rows = screen.getByTestId('goal-tripwires').querySelectorAll('.hud-goal__bar');
+      const byDerived = [...rows].map((r) => r.getAttribute('data-derived'));
+      expect(byDerived).toEqual(['true', 'false']);
+      expect([...rows].map((r) => r.getAttribute('data-measured'))).toEqual(['true', 'true']);
+    });
+
     it('leaves an INDETERMINATE bar with no aria-valuenow — never a comfortable 0', () => {
       /* `pct` is null for TWO different reasons and both are genuinely
          indeterminate: nobody took a reading, OR there is a reading but no

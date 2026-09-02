@@ -620,23 +620,26 @@ fn draw_headline(
     work_items_error: Option<&str>,
     area: Rect,
 ) {
+    // SPAN ORDER IS THE DROP PRIORITY, and that is load-bearing rather than
+    // cosmetic: this is a one-row `Paragraph` with no `.wrap()`, so ratatui
+    // truncates at the right edge and the LAST spans are the ones that vanish
+    // under width pressure. There is no separate elision pass to tune — ordering
+    // is the whole mechanism.
+    //
+    // So the error goes immediately after the label, AHEAD of the stats blob.
+    // WI-2141006: it used to follow that ~75-column blob, so a body under ~130
+    // columns silently swallowed it — the headline dropped the one segment that
+    // reports something is broken, precisely on the small terminals where a user
+    // has least room to go looking. An error must be the last thing a headline
+    // drops, not the first. Stats are recoverable by widening or by reading the
+    // panels below; a dropped error is not recoverable at all, because nothing
+    // tells you it was there.
     let mut spans = vec![
         // Label is "Fleet" — the cup-theme rename was reverted by the owner (2026-06-05).
         Span::styled(
             format!(" {} Fleet ", glyph::nav::FLEET),
             Theme::title_active(),
         ),
-        Span::raw(format!(
-            " {}/{} online · plans {}/{} items ({} active) · work-items {}/{} done ({} open) · ",
-            agg.agents_online,
-            agg.agents_total,
-            agg.plan_items_done,
-            agg.plan_items_total,
-            agg.active_plans,
-            agg.wi_done,
-            agg.wi_total,
-            agg.wi_remaining,
-        )),
     ];
     if let Some(error) = work_items_error {
         spans.push(Span::styled(
@@ -644,6 +647,17 @@ fn draw_headline(
             Theme::warn(),
         ));
     }
+    spans.push(Span::raw(format!(
+        " {}/{} online · plans {}/{} items ({} active) · work-items {}/{} done ({} open) · ",
+        agg.agents_online,
+        agg.agents_total,
+        agg.plan_items_done,
+        agg.plan_items_total,
+        agg.active_plans,
+        agg.wi_done,
+        agg.wi_total,
+        agg.wi_remaining,
+    )));
     spans.push(Span::styled(
         format!("[{}]  Tab: curated→mirror→tape", mode.label()),
         Theme::info(),
@@ -2506,15 +2520,50 @@ mod tests {
         app.show_presence = false;
         app.fleet.work_items_error = Some("array-root decode failed".into());
 
-        // +40 for the Surface B dock (WI-2140985): at or above
-        // SURFACE_B_MIN_WIDTH the cockpit takes a fixed 40 columns, so 200
-        // leaves this assertion the same 160-column body it was authored
-        // against. NOTE: at exactly 160 the headline now elides this error
-        // segment — tracked as its own follow-up, since an error is the last
-        // thing a headline should drop.
-        let view = render_fleet(&app, 200, 24);
+        // Back at 160 — the width this was authored against — now that
+        // WI-2141006 is fixed. It was temporarily moved to 200 to keep a
+        // 160-column body once the Surface B dock (WI-2140985) started taking
+        // its fixed 40 columns; that was a fixture number papering over a real
+        // elision, and widening the fixture is exactly the move that would have
+        // hidden the bug instead of fixing it.
+        let view = render_fleet(&app, 160, 24);
         assert!(view.contains("work-items error: array-root decode failed"));
         assert!(app.last_error.is_none());
+    }
+
+    /// WI-2141006 regression guard. The headline is a single unwrapped
+    /// `Paragraph`, so span ORDER decides what survives truncation: this renders
+    /// narrow enough that the headline provably cannot hold every segment, and
+    /// pins which one is allowed to go. It fails on the pre-fix ordering, where
+    /// the error trailed the ~75-column stats blob and was clipped from ~130
+    /// columns down.
+    ///
+    /// 120 is below SURFACE_B_MIN_WIDTH, so no dock is carved and the body IS
+    /// the full 120 — the assertion is about headline priority alone and does
+    /// not silently re-test the dock gate.
+    #[test]
+    fn work_items_error_outranks_the_stats_blob_when_the_headline_cannot_fit_both() {
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Fleet;
+        app.show_presence = false;
+        app.fleet.work_items_error = Some("array-root decode failed".into());
+
+        let view = render_fleet(&app, 120, 24);
+
+        // The error survives...
+        assert!(
+            view.contains("work-items error: array-root decode failed"),
+            "the error segment must outrank the stats blob under width pressure; \
+             an error is the last thing a headline may drop"
+        );
+        // ...and this is a real forced choice, not a width that happens to fit
+        // everything: the trailing mode/Tab hint is the segment that gives way.
+        // If this ever passes, the headline stopped being under pressure and the
+        // assertion above stopped proving anything — re-derive the width.
+        assert!(
+            !view.contains("Tab: curated→mirror→tape"),
+            "120 columns must not fit the whole headline, or this guard proves nothing"
+        );
     }
 
     #[test]
