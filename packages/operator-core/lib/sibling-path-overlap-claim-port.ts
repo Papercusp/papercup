@@ -95,10 +95,49 @@ export interface PathOverlapSibling {
   state: string;
   /** Held by an agent right now (a coordination collision rather than a done-already). */
   inFlight: boolean;
+  /**
+   * The peer holding this sibling RIGHT NOW — null unless `inFlight`. Carried through
+   * so the warning can NAME them: the detection already knew a peer held the item (it
+   * is what `inFlight` is derived from) and threw the identity away, which left
+   * "coordinate before editing" as advice the reader could not act on without a second
+   * lookup. See `siblingCoordinationOffers`.
+   */
+  holder: string | null;
   /** The RARE shared paths — the evidence, not a similarity score. */
   sharedPaths: string[];
   /** Settled items touching this sibling's rarest shared path. Lower is stronger. */
   rarestSharedPathSharers: number;
+}
+
+/**
+ * A ready-to-send coordination message to the peer holding an overlapping item
+ * (lateral-fleet-coordination-2026-09-02 P-003 / D-005).
+ *
+ * ⚠ AN OFFER, NEVER A SEND. Nothing here dispatches anything: the claiming agent still
+ * decides whether the overlap is real. That distinction is the whole reason this clears
+ * D-001, which ruled that low fleet-wide message volume is DELIBERATE — member context
+ * budget is the constraint — and that new lateral traffic is defensible only where a
+ * specific message prevents more context cost than it creates. An automatic send would
+ * spend that budget without judgement; a prepared handle costs only the bytes of a
+ * warning that already renders.
+ *
+ * Shape follows the repo's established "copy the handle, not the number" pattern
+ * (`dev:pipeline_position`'s `plane` block): the structured call travels as DATA on the
+ * result, and the rendered warning carries only the holder's id plus a pointer to it, so
+ * naming the peer does not cost a paragraph of JSON in every claim.
+ */
+export interface SiblingCoordinationOffer {
+  /** The peer to message — the agent holding the overlapping item. */
+  holder: string;
+  /** The in-flight sibling they hold. */
+  workItemId: string;
+  /** The rare shared paths that triggered the offer — the reason to send. */
+  sharedPaths: string[];
+  /** A ready-to-paste `coord:send` call. */
+  send: {
+    tool: 'coord:send';
+    args: Record<string, unknown>;
+  };
 }
 
 export interface ClaimTimeSiblingPathOverlapHint {
@@ -108,6 +147,12 @@ export interface ClaimTimeSiblingPathOverlapHint {
   ratedPaths: string[];
   /** Named siblings, strongest first. Capped at MAX_SIBLINGS. */
   siblings: PathOverlapSibling[];
+  /**
+   * Prepared (never sent) coordination messages, one per named in-flight sibling whose
+   * holder is known. Empty when nothing is in flight — which is the common case, and is
+   * why this cannot become a source of ambient traffic.
+   */
+  coordinationOffers: SiblingCoordinationOffer[];
   /**
    * How many siblings MATCHED in total, before the cap. Reported separately from
    * `siblings.length` so a capped list can never be read as the whole population —
@@ -124,6 +169,7 @@ interface SiblingRow {
   title: string | null;
   status: string | null;
   in_flight: boolean | null;
+  taken_by: string | null;
   shared_paths: string[] | null;
   rarest: number | string | null;
   total_matched: number | string | null;
@@ -183,6 +229,11 @@ export async function getClaimTimeSiblingPathOverlap(ref: {
                s.title,
                s.status,
                (s.taken_by IS NOT NULL AND s.status <> ALL(${settled})) AS in_flight,
+               -- The HOLDER, returned rather than only tested. The in_flight flag above
+               -- is derived from this exact column, so the identity was already read and
+               -- then discarded; carrying it out is what lets the warning name a peer
+               -- instead of telling the reader to go find one (P-003).
+               s.taken_by,
                s.closed_ts,
                s.updated_ts,
                ARRAY(
@@ -205,7 +256,7 @@ export async function getClaimTimeSiblingPathOverlap(ref: {
                    JOIN rare r ON r.path = p.path
                )
       )
-      SELECT feature_id, title, status, in_flight, shared_paths, rarest,
+      SELECT feature_id, title, status, in_flight, taken_by, shared_paths, rarest,
              count(*) OVER () AS total_matched
         FROM cand
        -- Settled first (the code may already BE in the tree), then rarest shared path,
@@ -224,6 +275,9 @@ export async function getClaimTimeSiblingPathOverlap(ref: {
         title: String(r.title ?? ''),
         state: String(r.status ?? '').trim().toLowerCase(),
         inFlight: r.in_flight === true,
+        // Only meaningful for an in-flight sibling: a settled item's taken_by is a
+        // historical assignee, not a peer to coordinate with.
+        holder: r.in_flight === true && r.taken_by ? String(r.taken_by) : null,
         sharedPaths: (r.shared_paths ?? []).map(String),
         rarestSharedPathSharers: Number(r.rarest ?? 0),
       }));
@@ -234,6 +288,7 @@ export async function getClaimTimeSiblingPathOverlap(ref: {
       claimedPaths,
       ratedPaths,
       siblings,
+      coordinationOffers: siblingCoordinationOffers(siblings, ref.workItemId),
       totalMatched: Number(rows[0]?.total_matched ?? siblings.length),
       implementedCount: siblings.filter((s) => !s.inFlight).length,
       inFlightCount: siblings.filter((s) => s.inFlight).length,
@@ -241,6 +296,71 @@ export async function getClaimTimeSiblingPathOverlap(ref: {
   } catch {
     return null;
   }
+}
+
+/**
+ * Build the prepared coordination sends for the in-flight siblings that name a holder
+ * (P-003). Pure + exported so the offer's ADDRESSING is directly testable: the one way
+ * this mechanism can be wrong independently of how often it fires is by naming the wrong
+ * peer, and a rendered string cannot be asserted on precisely enough to catch that.
+ *
+ * Silence when nothing is in flight, and silence for an in-flight sibling with no known
+ * holder — an offer addressed to nobody is worse than no offer, because it reads as a
+ * coordination step already taken.
+ *
+ * `expects:'answer'` rather than 'action': the claiming agent is asking what the holder
+ * has already covered, not assigning them work. `forYouBecause` is REQUIRED on a
+ * directed send expecting an answer, and `owns` is the honest relation — they own the
+ * overlapping item. `couldNotDetermine` states the gap the sender genuinely cannot close
+ * from their side, which is the entire reason the message is worth its cost.
+ */
+export function siblingCoordinationOffers(
+  siblings: readonly PathOverlapSibling[],
+  workItemId: string,
+): SiblingCoordinationOffer[] {
+  if (!workItemId) return [];
+  const offers: SiblingCoordinationOffer[] = [];
+  for (const s of siblings) {
+    if (!s.inFlight || !s.holder) continue;
+    const paths = s.sharedPaths.join(', ');
+    offers.push({
+      holder: s.holder,
+      workItemId: s.workItemId,
+      sharedPaths: [...s.sharedPaths],
+      send: {
+        tool: 'coord:send',
+        args: {
+          to: [s.holder],
+          expects: 'answer',
+          summary:
+            `Path overlap: you hold ${s.workItemId}, I just claimed ${workItemId} — ` +
+            `we share ${paths}`,
+          body: [
+            {
+              text:
+                `I claimed ${workItemId} and the claim-time rare-path check named ${s.workItemId} ` +
+                `(yours, in flight) as sharing ${paths}. Only seldom-touched paths are counted, so ` +
+                `this is a filter rather than a verdict — but before I edit those file(s) I would ` +
+                `rather ask than duplicate you. Have you already covered that ground, and how do ` +
+                `you want to split it?`,
+              forYouBecause: {
+                relation: 'owns',
+                ref: s.workItemId,
+                note: `you hold ${s.workItemId}, which shares the rare path(s) ${paths}`,
+              },
+              couldNotDetermine: [
+                {
+                  what: `whether your in-flight work on ${s.workItemId} already covers ${paths}`,
+                  note: 'path overlap shows the collision, not who has done what',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+  }
+  return offers;
 }
 
 /**
@@ -273,9 +393,22 @@ export function siblingPathOverlapWarning(
     hint.implementedCount > 0
       ? `${hint.implementedCount} of them ALREADY LANDED, so the code may already be in the tree. `
       : '';
+  // P-003 / D-005: name the holder inline, and keep the prepared call itself on the
+  // structured result rather than inlining its JSON here — the warning is read on every
+  // qualifying claim, so it pays for the id and a pointer, not for a payload.
+  // Array-checked rather than assumed: the hint crosses an `unknown`-typed enrichment
+  // boundary, so an older serialized shape must degrade to the pre-P-003 sentence
+  // instead of throwing inside a warning renderer.
+  const offers = Array.isArray(hint.coordinationOffers) ? hint.coordinationOffers : [];
   const inFlight =
     hint.inFlightCount > 0
-      ? `${hint.inFlightCount} is held by a peer RIGHT NOW — coordinate before editing. `
+      ? `${hint.inFlightCount} is held by a peer RIGHT NOW — coordinate before editing` +
+        (offers.length > 0
+          ? `: ${offers.map((o) => `${o.holder} holds ${o.workItemId}`).join('; ')}. ` +
+            `A ready coord:send to each is already built on ` +
+            `siblingPathOverlap.coordinationOffers[].send — copy the handle instead of ` +
+            `looking the holder up. NOTHING WAS SENT; asking is your call. `
+          : '. ')
       : '';
   return (
     `⚠ SIBLING ITEMS TOUCH YOUR RARE PATHS: ${hint.totalMatched} other work-item(s) share ` +
