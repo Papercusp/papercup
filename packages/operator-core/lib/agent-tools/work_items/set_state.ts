@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { getWorkItem, setWorkItemStateWithAliasInfo } from '../../work-items';
+import { getWorkItem, setWorkItemStateWithAliasInfo, type TerminalCompletionConflict } from '../../work-items';
 import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 // From the LEAF module, not '../../work-items': unit tests here mock that module
 // wholesale, which would make the guard `undefined` at exactly this call site.
@@ -300,6 +300,19 @@ export default defineTool({
             /* fail-open */
           }
         }
+        // WI-2142258 / EI-22177453452277846: a terminal write here can land on a row a
+        // DIFFERENT actor already closed (most commonly system:plan-item-reconcile racing
+        // ahead of a caller who resolved the "would race ahead of that plan gate" refusal by
+        // flipping the plan item first — see reconcile-linked-work-items.ts). setWorkItemState
+        // ALREADY computes the full attested/upgraded diagnosis for that case (the same
+        // `onTerminalConflict` callback work_items:complete wires at complete.ts:3037/3106) —
+        // this tool simply never listened for it, so a caller who got back `ok:true` had no
+        // way to learn their evidence was filed as a second attestation
+        // (payload._completionAttestations) rather than installed as the row's completion
+        // record. Wire it the same way complete.ts does, and surface it the same way
+        // (`terminalConflictWarning` + raw `terminalConflict`) so the two tools do not disagree
+        // about whether a stranded close is visible to the caller.
+        let terminalConflict: TerminalCompletionConflict | undefined;
         const { workItem, aliased, requestedState, appliedState, aliasNote } =
           await setWorkItemStateWithAliasInfo(it.id, it.state, {
             harness,
@@ -307,6 +320,9 @@ export default defineTool({
             completionRef: it.completionRef,
             assumptions,
             force: it.force,
+            onTerminalConflict: (info) => {
+              terminalConflict = info;
+            },
           });
         if (armPlan && workItem) await commitWorkItemArm(armPlan).catch(() => {});
         // EI-19393623437103599 — the SAME cross-harness retarget warning work_items:complete
@@ -341,6 +357,18 @@ export default defineTool({
               // Ahead of the echoed `workItem` row for the same EI-15982 reason as the
               // warnings below: this is the field a caller must not lose to tail truncation.
               ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
+              // WI-2142258 — same field name/shape work_items:complete already returns
+              // (complete.ts), so a caller (or a doc) does not have to learn two spellings
+              // of "your evidence didn't win" depending on which tool it called.
+              ...(terminalConflict
+                ? {
+                    terminalConflictWarning:
+                      terminalConflict.outcome === 'attested'
+                        ? `COMPLETION RECORDED AS A SECOND ATTESTATION, NOT AS THIS ITEM'S RECORD — ${terminalConflict.note}`
+                        : `YOUR COMPLETION REPLACED AN EARLIER, THINNER ONE — ${terminalConflict.note}`,
+                    terminalConflict,
+                  }
+                : {}),
               // Ahead of the echoed `workItem` row: the per-result context door
               // truncates from the tail, and this is the field a caller must not
               // lose (EI-15982). Only when the write actually landed terminal —

@@ -80,6 +80,7 @@ describe('work_items:set_state handler (keyed-array)', () => {
       by: 'me',
       completionRef: undefined,
       force: undefined,
+      onTerminalConflict: expect.any(Function),
     });
   });
 
@@ -93,6 +94,7 @@ describe('work_items:set_state handler (keyed-array)', () => {
       by: 'me',
       completionRef: undefined,
       force: undefined,
+      onTerminalConflict: expect.any(Function),
     });
   });
 
@@ -187,6 +189,7 @@ describe('work_items:set_state handler (keyed-array)', () => {
       by: 'me',
       completionRef: undefined,
       force: undefined,
+      onTerminalConflict: expect.any(Function),
     });
   });
 
@@ -321,6 +324,68 @@ describe('work_items:set_state — aliased/requestedState/appliedState on every 
     expect(b.results[0].ok).toBe(true); // the write itself succeeded — this is exactly why `ok` alone is not enough
     expect(b.results[0].aliased).toBe(true); // but the discriminator catches the divergence
     expect(b.results[0].appliedState).not.toBe(b.results[0].requestedState);
+  });
+});
+
+// WI-2142258: setWorkItemStateWithAliasInfo already computes the full attested/upgraded
+// diagnosis for a terminal write that lands on a row a DIFFERENT actor already closed
+// (e.g. system:plan-item-reconcile racing ahead of a caller who flipped the plan item
+// first) via its `onTerminalConflict` callback, and work_items:complete already wires +
+// surfaces it. The three `toHaveBeenCalledWith(..., onTerminalConflict: expect.any(Function))`
+// assertions above only prove THIS tool passes a callback — they pass even if that callback
+// is a no-op. These prove the callback's output actually reaches the caller, end-to-end,
+// under the SAME field names/shape work_items:complete uses (deliberately, per the
+// set_state.ts comment at the wiring site) — a caller must not learn two spellings of
+// "your evidence didn't win" depending on which tool it called.
+describe('work_items:set_state — terminal conflict surfaced end-to-end (WI-2142258)', () => {
+  it('surfaces terminalConflictWarning + raw terminalConflict when the callback fires with outcome "attested"', async () => {
+    setM.mockImplementation(async (id: string, state: string, opts) => {
+      opts?.onTerminalConflict?.({
+        outcome: 'attested',
+        existingOwner: 'system:plan-item-reconcile',
+        existingAuthority: 'proposed',
+        existingEvidenceSufficient: false,
+        incomingEvidenceSufficient: true,
+        note: 'was ALREADY completed by system:plan-item-reconcile … FILED AS A SECOND ATTESTATION',
+      } as never);
+      return noAlias(id, state);
+    });
+
+    const b = await body({ id: 'WI-1', state: 'done', completionRef: 'landed in abc123', assumptions: 'none' });
+
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
+    expect(b.results[0].terminalConflictWarning).toContain('COMPLETION RECORDED AS A SECOND ATTESTATION');
+    expect(b.results[0].terminalConflictWarning).toContain('was ALREADY completed by system:plan-item-reconcile');
+    expect(b.results[0].terminalConflict).toMatchObject({
+      outcome: 'attested',
+      existingOwner: 'system:plan-item-reconcile',
+    });
+  });
+
+  it('surfaces the distinct "replaced" wording when the callback fires with outcome "upgraded"', async () => {
+    setM.mockImplementation(async (id: string, state: string, opts) => {
+      opts?.onTerminalConflict?.({
+        outcome: 'upgraded',
+        existingOwner: 'system:plan-item-reconcile',
+        existingAuthority: 'proposed',
+        existingEvidenceSufficient: false,
+        incomingEvidenceSufficient: true,
+        note: 'your record replaced the thinner reconciler stub',
+      } as never);
+      return noAlias(id, state);
+    });
+
+    const b = await body({ id: 'WI-2', state: 'done', completionRef: 'landed in abc123', assumptions: 'none' });
+
+    expect(b.results[0].terminalConflictWarning).toContain('YOUR COMPLETION REPLACED AN EARLIER, THINNER ONE');
+    expect(b.results[0].terminalConflict).toMatchObject({ outcome: 'upgraded' });
+  });
+
+  it('omits terminalConflictWarning/terminalConflict entirely when the callback never fires (the ordinary case)', async () => {
+    const b = await body({ id: 'WI-3', state: 'done', completionRef: 'landed in abc123', assumptions: 'none' });
+
+    expect(b.results[0]).not.toHaveProperty('terminalConflictWarning');
+    expect(b.results[0]).not.toHaveProperty('terminalConflict');
   });
 });
 
