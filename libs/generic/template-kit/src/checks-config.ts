@@ -81,6 +81,21 @@ export interface ChecksBootSection {
   buildTimeoutMs?: number;
   readyTimeoutMs?: number;
   shutdownGraceMs?: number;
+  /**
+   * Spawn mode only, optional. App-root-relative (or "~/") path to the
+   * embedded PG data directory the spawned sidecar boots against. When
+   * present, checked BEFORE spawning for a live `postmaster.pid` lock —
+   * i.e. a DIFFERENT already-running deployment (a portal, a prior instance)
+   * holding the same data dir. A collision here means the spawn is doomed
+   * (Postgres refuses a second postmaster against a locked data dir), so the
+   * check fails fast naming the collision and pointing at attach mode
+   * instead of spawning and burning the full `readyTimeoutMs` waiting on a
+   * health check that can never succeed (EI-22125738148136740). Omit when
+   * the app's data dir is guaranteed isolated (e.g. a fresh per-run temp
+   * dir) — the discovery-file staleness check above already covers a
+   * relaunch of the SAME app.
+   */
+  pgDataDir?: string;
 }
 
 /** Fast static inputs required before a Tauri desktop build can compile. */
@@ -442,6 +457,11 @@ export function validateChecksConfig(value: unknown): string[] {
         errors.push("boot.discoveryFile: required non-empty string");
       if (value.boot.mode === "spawn" && !isStringArray(value.boot.command))
         errors.push("boot.command: required (list of strings) in spawn mode");
+      if (
+        value.boot.pgDataDir !== undefined &&
+        !isNonEmptyString(value.boot.pgDataDir)
+      )
+        errors.push("boot.pgDataDir: must be a non-empty string when present");
     }
   }
 

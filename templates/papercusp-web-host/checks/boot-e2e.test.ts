@@ -22,6 +22,13 @@
  *     readyTimeoutMs?: number     // default 120000
  *     shutdownGraceMs?: number    // default 15000 (the shell's force-exit
  *                                 //   timer must beat this — WI-2667 lesson)
+ *     pgDataDir?: string          // spawn mode only: the embedded PG data dir
+ *                                 //   the sidecar boots against. When set, a
+ *                                 //   LIVE postmaster.pid lock there (a
+ *                                 //   DIFFERENT already-running deployment
+ *                                 //   holding it) fails the check FAST instead
+ *                                 //   of spawning a doomed sidecar and burning
+ *                                 //   the full readyTimeoutMs (EI-22125738148136740)
  *   }
  *
  * TWO MODES because the discovery file is a per-user singleton (the shell +
@@ -61,6 +68,7 @@ interface BootSection {
   buildTimeoutMs?: number;
   readyTimeoutMs?: number;
   shutdownGraceMs?: number;
+  pgDataDir?: string;
 }
 const section = config?.boot as BootSection | undefined;
 
@@ -110,6 +118,35 @@ async function healthStatus(disc: Discovery, healthPath: string): Promise<number
   }
 }
 
+/**
+ * Read `<dataDir>/postmaster.pid` and report whether it names a still-LIVE
+ * process — the ground-truth signal that a DIFFERENT deployment (a portal, a
+ * prior instance) already holds this embedded PG data directory, as opposed
+ * to a stale lockfile left by an unclean exit. Returns the locking pid, or
+ * `null` when there is no conclusive live lock (no file, unreadable,
+ * unparseable, or the named pid is dead). Deliberately independent of the
+ * app tree's own `sweepOrphanPostgres` — this file stays dependency-free of
+ * the kit per the portable-checks contract at the top of this file.
+ */
+function pgDataDirLockedBy(dataDir: string): number | null {
+  const pidFile = join(untilde(dataDir), "postmaster.pid");
+  if (!existsSync(pidFile)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(pidFile, "utf8");
+  } catch {
+    return null; // torn/unreadable — not a conclusive live lock
+  }
+  const pid = Number((raw.split("\n")[0] ?? "").trim());
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    process.kill(pid, 0); // signal 0: existence probe only, never kills
+    return pid;
+  } catch {
+    return null; // pid dead — a stale lockfile, not a live collision
+  }
+}
+
 describe.skipIf(!section)("boot-e2e", () => {
   const healthPath = section?.healthPath ?? "/api/health";
   const discoveryFile = () => untilde(section!.discoveryFile);
@@ -130,6 +167,26 @@ describe.skipIf(!section)("boot-e2e", () => {
     async () => {
       expect(section!.command?.length, "boot.command required in spawn mode").toBeTruthy();
       expect(readDiscovery(discoveryFile()), `stale discovery file at ${discoveryFile()} — another instance is (or was) running; stop it first`).toBeNull();
+
+      // A DIFFERENT deployment (e.g. a portal) can hold the SAME embedded PG
+      // data dir without ever touching THIS app's discovery file, so the
+      // check above cannot see it. Spawning against a locked data dir is
+      // doomed — Postgres refuses a second postmaster ("FATAL: lock file
+      // postmaster.pid already exists") — so without this check the test
+      // just polls a health endpoint that can never come up for the full
+      // readyTimeoutMs (up to 4min) before failing with a generic, misleading
+      // "sidecar never became healthy" message (EI-22125738148136740).
+      if (section!.pgDataDir) {
+        const lockingPid = pgDataDirLockedBy(section!.pgDataDir);
+        expect(
+          lockingPid,
+          `embedded PG data dir ${untilde(section!.pgDataDir)} is already locked by a LIVE ` +
+            `process (pid ${lockingPid}) — a different instance/deployment is running on this ` +
+            `machine and holds it. Spawning a second instance against the same data dir cannot ` +
+            `succeed. Use boot.mode:"attach" against that instance, or point boot.pgDataDir / the ` +
+            `sidecar at an isolated data dir.`,
+        ).toBeNull();
+      }
 
       if (section!.buildCommand?.length) {
         const [b, ...bArgs] = section!.buildCommand;
