@@ -26,6 +26,12 @@ vi.mock('../../rubrics', async (importOriginal) => {
     // had changed. Stub it readable; the unreadable leg is covered in
     // emit.vetting.test.ts, which is where that guard's behaviour belongs.
     readRubricPlanRevision: async () => ({ ok: true, revision: 1 }),
+    // EI-22177729599840121: the (fail-open) sibling read the new vet-before-grade
+    // check uses via acceptance-rubric-vetting.ts's default deps — previously
+    // unreached from this file, now exercised by the single acceptance-kind test
+    // below. Stub it readable (revision 1, matching readRubricPlanRevision above)
+    // rather than leaving it to fall through to the real PG-backed implementation.
+    getRubricPlanRevision: async () => 1,
   };
 });
 vi.mock('../../scorecards', async (importOriginal) => {
@@ -160,6 +166,28 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
 
   it('an acceptance-kind card is NOT stamped (it has its own grader ≠ author gate)', async () => {
     getRubric.mockResolvedValue(mkRubric('plan-x-acceptance', 'acceptance'));
+    // EI-22177729599840121: this is the first acceptance-kind case in this file to
+    // reach emitScorecard's vet-before-grade check (createdBy 'su-grader' ≠ the
+    // rubric's 'su-rubric-author') — satisfy it with a current attestation so this
+    // test stays about audit-stamp exclusion, not vetting.
+    listScorecards.mockResolvedValue([
+      {
+        issueId: 'EI-vetting',
+        createdAt: '2026-08-25T21:00:12Z',
+        createdBy: 'su-vetting-author',
+        rubricRef: 'meta-acceptance-rubric',
+        subject: { kind: 'rubric', ref: 'plan-x-acceptance' },
+        ratings: RATINGS,
+        nKeys: 1,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+        vetting: { consultId: 'conv-vet-1', rubricRevision: 1, critiquePosts: 1, critics: ['su-critic'] },
+      },
+    ]);
     const res = await emitScorecard(
       { rubricRef: 'plan-x-acceptance', ratings: RATINGS, terminal: true },
       { createdBy: 'su-grader', ctxHarness: 'papercusp' },
