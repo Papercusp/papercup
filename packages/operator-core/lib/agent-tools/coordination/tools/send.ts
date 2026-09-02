@@ -80,6 +80,7 @@ import {
   getMessageById,
   resolveMessageRef,
   getUnresolvedAudienceSelectors,
+  getUnreachableAudienceSelectors,
 } from '../messages';
 import { DIRECTIVE_EFFECT_KINDS, type DirectiveEffectSpec } from '../directive-effect';
 import { parseSlotSelector } from '../slot-selector';
@@ -1446,6 +1447,9 @@ async function sendOne(
         'verify its subscribers or live presence before assuming the whole audience received the message.';
     unresolvedAudience = { selectors: unresolvedSelectors, note };
   }
+  let unreachableAudienceWarning:
+    | { selectors: string[]; ownerIds: string[]; note: string }
+    | undefined;
   let zeroRecipients: { selectors: string[]; note: string } | undefined;
   if (audienceSelectors.length > 0 && env.to.length === 0) {
     const isFleet = audienceSelectors.some(
@@ -1481,6 +1485,63 @@ async function sendOne(
       };
     }
     zeroRecipients = { selectors: audienceSelectors, note };
+  }
+
+  // EI-22180848452883121 — the REAPED-recipient miss, which every check above is
+  // structurally blind to because they all key off cardinality ZERO.
+  //
+  // `@fleet-leader:` resolves through the durable fleet registry, deliberately NOT
+  // liveness-gated so an escalation still lands in an offline lead's inbox. But the
+  // registry pointer is not invalidated when that session is REAPED, so the selector
+  // resolved to one id, `env.to.length` was 1, and every miss-signal was bypassed:
+  // the caller got ok:true / recipients_resolved:1 for a message nobody will ever
+  // read. Worse than silence — an agent checking the result (the RIGHT habit) reads a
+  // positive integer as delivery.
+  //
+  // The line drawn here is REAPED ≡ ZERO, and merely-offline ≠ zero. An ended-but-
+  // recorded session still owns a durable inbox to come back to, which is exactly what
+  // the liveness-independent resolution is FOR; a reaped id owns nothing. So this
+  // changes no delivery — it reclassifies an outcome that was already a non-delivery.
+  const unreachableAudience = getUnreachableAudienceSelectors(env).filter((u) =>
+    audienceSelectors.includes(u.selector),
+  );
+  if (unreachableAudience.length > 0) {
+    const reapedIds = [...new Set(unreachableAudience.flatMap((u) => u.ownerIds))];
+    const reachedAnyone = env.to.some((id) => !reapedIds.includes(id));
+    const selectors = unreachableAudience.map((u) => u.selector);
+    const leader = selectors.some((s) => s.startsWith('@fleet-leader:'));
+    // The repair leads, then the evidence (P-002 preserve-the-imperative): an agent
+    // reading only the first sentence still learns the message did not land.
+    const note =
+      `coord:send audience ${selectors.join(', ')} resolved ONLY to REAPED session(s) ` +
+      `(${reapedIds.join(', ')}) — the message reached NOBODY and no inbox will ever be read. ` +
+      'This is NOT the same as an offline recipient: a reaped id has no session row at all, so ' +
+      'the durable-inbox guarantee that makes this selector liveness-independent does not apply. ' +
+      (leader
+        ? "The fleet registry's leader pointer is stale — it still names a session that has been " +
+          'reaped. Re-read the CURRENT leader with fleet:status / coord:presence (read fleetRole + ' +
+          'sessionState), address that ownerId directly, and have the live leader register with ' +
+          'fleet:take-leadership so the pointer stops naming a dead session.'
+        : 'Re-resolve the audience against coord:presence and address the live ownerIds directly.');
+    if (!reachedAnyone) {
+      // Same disposition as an explicit selector reaching zero live recipients: a hard
+      // refusal, so the caller's existing miss-handling ladder engages instead of being
+      // handed a success receipt. The row still persisted (audience history /
+      // coord:catch-up), so msg_id is returned exactly as the zero_recipients path does.
+      return {
+        ok: false,
+        to: env.to,
+        msg_id: env.msg_id,
+        ts: env.ts,
+        error: 'recipients_unreachable',
+        recipients_resolved: 0,
+        recipients_unreachable: { selectors, ownerIds: reapedIds, note },
+        message: note,
+      };
+    }
+    // Some live recipient WAS addressed, so the send stands — but a valid recipient
+    // must never hide a reaped one (the same reasoning as unresolvedAudience above).
+    unreachableAudienceWarning = { selectors, ownerIds: reapedIds, note };
   }
 
   // P-003 (fleet-lead-instrumentation-audit-2026-08-09): a PARTIAL fleet delivery used
@@ -2097,6 +2158,13 @@ async function sendOne(
           unresolvedSelectors: unresolvedAudience.selectors,
           unresolved_audience: unresolvedAudience,
         }
+      : {}),
+    // EI-22180848452883121: a selector that resolved ONLY to reaped session(s) while a
+    // DIFFERENT addressee did receive this message. Distinct from unresolved_audience
+    // (that selector matched nobody; this one matched a corpse) and invisible to
+    // recipients_resolved, which counts the reaped id as a resolved recipient.
+    ...(unreachableAudienceWarning
+      ? { recipients_unreachable: unreachableAudienceWarning }
       : {}),
     // WI-37972: the durable coord row keeps the full body, but a normal
     // recipient `coord:inbox` read may clip it before the recipient can act.
