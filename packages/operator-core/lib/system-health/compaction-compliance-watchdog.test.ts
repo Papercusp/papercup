@@ -320,7 +320,10 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
     expect(setLimitMock).toHaveBeenCalledWith('su-narrow', 400_000, { explicit: false });
   });
 
-  it('shapes the [1m] default by fleet role: member → 200k, leader/solo → 400k (owner directive 2026-07-19)', async () => {
+  // The member figure is COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP, raised 200k → 250k
+  // by owner directive 2026-09-02 (WI-2142006) as deliberate headroom alongside the
+  // claim-time brief budget going 14k → 50k chars. Leader/solo stay at 400k.
+  it('shapes the [1m] default by fleet role: member → 250k, leader/solo → 400k (owner directive 2026-09-02)', async () => {
     specMock.mockResolvedValue('sonnet[1m]:high');
     const out = await checkCompactionCompliance(
       fakeSql({
@@ -337,10 +340,10 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       }),
     );
     expect(out.seeded).toEqual(['su-member', 'su-leader', 'su-solo', 'su-spawned-member']);
-    expect(setLimitMock).toHaveBeenCalledWith('su-member', 200_000, { explicit: false });
+    expect(setLimitMock).toHaveBeenCalledWith('su-member', 250_000, { explicit: false });
     expect(setLimitMock).toHaveBeenCalledWith('su-leader', 400_000, { explicit: false });
     expect(setLimitMock).toHaveBeenCalledWith('su-solo', 400_000, { explicit: false });
-    expect(setLimitMock).toHaveBeenCalledWith('su-spawned-member', 200_000, { explicit: false });
+    expect(setLimitMock).toHaveBeenCalledWith('su-spawned-member', 250_000, { explicit: false });
   });
 
   it('honors the spawn record: explicit tier limit > recorded spec default > resolver (D-006)', async () => {
@@ -1270,7 +1273,7 @@ describe('force rung (agent-managed-compaction P-012, carry-respawn under P-022)
 });
 
 describe('live-config reach (agent-managed-compaction P-017)', () => {
-  it('lowers a stale-above-cap limit on a running MEMBER to the current shaped default (200k)', async () => {
+  it('lowers a stale-above-cap limit on a running MEMBER to the current shaped default (250k)', async () => {
     estimateMock.mockResolvedValue(40_000); // under the new limit ⇒ no force
     specMock.mockResolvedValue('sonnet[1m]:high');
     const out = await checkCompactionCompliance(
@@ -1287,9 +1290,9 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
         ],
       }),
     );
-    expect(setLimitMock).toHaveBeenCalledWith('stale', 200_000);
-    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 200_000 }]);
-    expect(out.overLimit).toEqual([]); // 40k < the corrected 200k
+    expect(setLimitMock).toHaveBeenCalledWith('stale', 250_000);
+    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 250_000 }]);
+    expect(out.overLimit).toEqual([]); // 40k < the corrected 250k
   });
 
   it('preserves an explicit 680k runtime override below the measured self-set ceiling', async () => {
@@ -1364,7 +1367,7 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
   });
 
   it('a re-limit CASCADES: a now-over session (est between old & new limit) force-compacts the same pass', async () => {
-    estimateMock.mockResolvedValue(450_000); // < old 500k (was safe) but ≥ the new 200k
+    estimateMock.mockResolvedValue(450_000); // < old 500k (was safe) but ≥ the new 250k
     specMock.mockResolvedValue('sonnet[1m]');
     findLiveHostMock.mockReturnValue({ sock: '/tmp/stale.sock', caps: ['compact'] });
     hostSupportsMock.mockReturnValue(true);
@@ -1375,8 +1378,8 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
         ],
       }),
     );
-    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 200_000 }]);
-    expect(out.overLimit).toEqual(['stale']); // 450k ≥ the corrected 200k
+    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 250_000 }]);
+    expect(out.overLimit).toEqual(['stale']); // 450k ≥ the corrected 250k
     expect(out.forceCompacted).toEqual(['stale']); // and the P-012 rung fires on the corrected limit
   });
 });
