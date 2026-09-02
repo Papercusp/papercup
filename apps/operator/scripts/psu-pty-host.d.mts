@@ -764,7 +764,28 @@ export function submitExhaustionTerminatesHost(label: any): boolean;
  * not proof that the injected turn landed, so it must remain distinguishable
  * from both success and bounded exhaustion. Pure; exported for tests. */
 export function submitVerificationFailureReason(result: any): string | null;
-export function quotaLimitBannerVisible(text: any): boolean;
+/** The banner set for one agent. An UNKNOWN agent gets [] — never another
+ *  product's copy (see the cost model above). An unset agent keeps the
+ *  historical claude behaviour, matching how the rest of this host reads
+ *  PAPERCUSP_AGENT (it only branches on an EXPLICIT non-claude value).
+ *  Pure; exported for tests. */
+export function quotaBannerPatternsForAgent(agent: any): RegExp[];
+/** The matching half of `quotaLimitBannerVisible`, returning WHICH pattern hit
+ *  and a short excerpt around it. A bare `quota-block-detected` row is what
+ *  made WI-2140984 cost a fleet leader an escalation and a full investigation:
+ *  the event recorded that a wall was seen but nothing about what was seen, so
+ *  a false positive was indistinguishable from a real wall. Pure; exported for
+ *  tests. */
+export function quotaLimitBannerMatch(text: any, agent: any): {
+    matched: boolean;
+    pattern: string;
+    excerpt: string;
+} | {
+    matched: boolean;
+    pattern: null;
+    excerpt: null;
+};
+export function quotaLimitBannerVisible(text: any, agent: any): boolean;
 /** WI-1386682 (1): quota-wall detector. Feed it the SAME raw pty bytes the
  *  activity tracker sees (child.onData); `isBlocked()` reports whether
  *  Claude Code's own usage-limit banner is currently visible in the recent
@@ -779,7 +800,7 @@ export function quotaLimitBannerVisible(text: any): boolean;
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes }?: {
+export function makeQuotaBlockDetector({ capBytes, agent }?: {
     capBytes?: number | undefined;
 }): {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
@@ -787,6 +808,14 @@ export function makeQuotaBlockDetector({ capBytes }?: {
      *  without re-deriving state on every chunk. */
     observe(chunk: any): "detected" | "cleared" | null;
     isBlocked: () => boolean;
+    /** WI-2140984: WHICH pattern last matched, and the text around it — so a
+     *  `quota-block-detected` row says what was actually on screen and a false
+     *  positive is diagnosable from the event log alone. */
+    lastMatch: () => {
+        matched: boolean;
+        pattern: null;
+        excerpt: null;
+    };
     /** Reset to a fresh, un-walled state. Call on recycle: a fresh child has
      *  no screen history and cannot inherit the old child's wall. */
     reset(): void;

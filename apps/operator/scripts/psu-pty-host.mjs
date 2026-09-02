@@ -2155,26 +2155,86 @@ export function submitVerificationFailureReason(result) {
  *  WI-1378748's fix — that item stopped a wake exhaustion from being
  *  host-fatal; it did not stop the host from reading "the pty is quiet" as
  *  "the agent is at its prompt" when the true cause is "the agent is alive
- *  but rate-limited and cannot generate at all". Deliberately loose: a false
- *  POSITIVE here costs at most one deferred wake (queue-to-next-turn,
- *  recoverable); a false NEGATIVE re-opens the exact bug this item exists to
- *  close (a wake spent into a wall that can never answer it). The exact
- *  product copy is not pinned anywhere in this repo (WI-1378748's own tests
- *  simulate the wall by withholding output, never by emitting real banner
- *  text) — these patterns are the best match available from the reported
- *  wording and should be widened the next time a real wall's raw text is
- *  captured. Matches survive ANSI styling because the caller strips it
- *  first. Pure; exported for tests. */
-const QUOTA_LIMIT_BANNER_PATTERNS = [
+ *  but rate-limited and cannot generate at all".
+ *
+ *  ⚠ THE PATTERNS ARE PER-AGENT, AND THAT IS LOAD-BEARING (WI-2140984). These
+ *  are CLAUDE CODE's copy, and the original code matched them against EVERY
+ *  pty. A codex child ships ordinary, non-wall chrome that hits them — its
+ *  slash-command list alone carries "view account usage or use a usage limit
+ *  reset", plus " Consumes usage limits faster" and "Goal hit usage limits
+ *  (/goal resume)" — so a perfectly healthy codex member was read as walled.
+ *
+ *  That also FALSIFIES the original cost model ("a false POSITIVE costs at
+ *  most one deferred wake, recoverable"). That is true only of a STATIC
+ *  banner, which is what the ring buffer below assumes. Chrome is REPAINTED,
+ *  so it refills the window as fast as it is evicted, `isBlocked()` never
+ *  clears, and every turn/reset is deferred FOREVER — the session boots
+ *  healthy, reports fresh, and can never take a single turn. Measured
+ *  2026-09-02: two headless codex fleet members logged one
+ *  quota-block-detected at boot then 110 straight turn-deferred-quota-blocked
+ *  with zero clears, ~52min unbroken, while the account read util7d 0.03 with
+ *  no 429s. So a false positive is the FAR more expensive direction here, and
+ *  an agent we have no captured wall copy for gets NO patterns rather than a
+ *  guess borrowed from a different product.
+ *
+ *  Matches survive ANSI styling because the caller strips it first. Pure;
+ *  exported for tests. */
+const CLAUDE_QUOTA_LIMIT_BANNER_PATTERNS = [
   /weekly limit/i,
   /5-hour limit/i,
   /usage limit/i,
   /\blimit\b[^\n]{0,60}\breset(?:s|ting)?\b/i,
 ];
 
-export function quotaLimitBannerVisible(text) {
+/** Codex's OWN wall copy, read off the shipped binary's strings (2026-09-02).
+ *  Anchored on WHOLE SENTENCES on purpose: codex renders the bare phrase
+ *  "usage limit" as routine chrome, so any looser pattern reproduces
+ *  WI-2140984. Widen only against captured raw text from a REAL codex wall,
+ *  and re-check the new pattern against `codex`'s own strings first. */
+const CODEX_QUOTA_LIMIT_BANNER_PATTERNS = [
+  /you'?ve hit your usage limit/i,
+  /usage limit reached/i,
+  /you'?ve reached your workspace credit limit/i,
+  /your workspace is out of credits/i,
+];
+
+/** The banner set for one agent. An UNKNOWN agent gets [] — never another
+ *  product's copy (see the cost model above). An unset agent keeps the
+ *  historical claude behaviour, matching how the rest of this host reads
+ *  PAPERCUSP_AGENT (it only branches on an EXPLICIT non-claude value).
+ *  Pure; exported for tests. */
+export function quotaBannerPatternsForAgent(agent) {
+  const a = String(agent ?? '')
+    .trim()
+    .toLowerCase();
+  if (!a || a === 'claude') return CLAUDE_QUOTA_LIMIT_BANNER_PATTERNS;
+  if (a === 'codex') return CODEX_QUOTA_LIMIT_BANNER_PATTERNS;
+  return [];
+}
+
+/** The matching half of `quotaLimitBannerVisible`, returning WHICH pattern hit
+ *  and a short excerpt around it. A bare `quota-block-detected` row is what
+ *  made WI-2140984 cost a fleet leader an escalation and a full investigation:
+ *  the event recorded that a wall was seen but nothing about what was seen, so
+ *  a false positive was indistinguishable from a real wall. Pure; exported for
+ *  tests. */
+export function quotaLimitBannerMatch(text, agent) {
   const visible = stripAnsi(String(text ?? ''));
-  return QUOTA_LIMIT_BANNER_PATTERNS.some((re) => re.test(visible));
+  for (const re of quotaBannerPatternsForAgent(agent)) {
+    const m = re.exec(visible);
+    if (!m) continue;
+    const at = m.index ?? 0;
+    return {
+      matched: true,
+      pattern: String(re),
+      excerpt: visible.slice(Math.max(0, at - 40), at + m[0].length + 40).replace(/\s+/g, ' ').trim(),
+    };
+  }
+  return { matched: false, pattern: null, excerpt: null };
+}
+
+export function quotaLimitBannerVisible(text, agent) {
+  return quotaLimitBannerMatch(text, agent).matched;
 }
 
 /** How large a recent-screen window quotaBlockDetector keeps. Bounded (like
@@ -2199,9 +2259,10 @@ const QUOTA_BLOCK_BUFFER_CHARS = 8_192;
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS } = {}) {
+export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, agent } = {}) {
   let buffer = '';
   let blocked = false;
+  let lastMatch = { matched: false, pattern: null, excerpt: null };
   return {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
      *  or null when the level didn't change, so a caller can log transitions
@@ -2209,17 +2270,23 @@ export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS } =
     observe(chunk) {
       buffer = `${buffer}${String(chunk ?? '')}`;
       if (buffer.length > capBytes) buffer = buffer.slice(-capBytes);
-      const now = quotaLimitBannerVisible(buffer);
-      if (now === blocked) return null;
-      blocked = now;
+      const hit = quotaLimitBannerMatch(buffer, agent);
+      if (hit.matched) lastMatch = hit;
+      if (hit.matched === blocked) return null;
+      blocked = hit.matched;
       return blocked ? 'detected' : 'cleared';
     },
     isBlocked: () => blocked,
+    /** WI-2140984: WHICH pattern last matched, and the text around it — so a
+     *  `quota-block-detected` row says what was actually on screen and a false
+     *  positive is diagnosable from the event log alone. */
+    lastMatch: () => lastMatch,
     /** Reset to a fresh, un-walled state. Call on recycle: a fresh child has
      *  no screen history and cannot inherit the old child's wall. */
     reset() {
       buffer = '';
       blocked = false;
+      lastMatch = { matched: false, pattern: null, excerpt: null };
     },
   };
 }
@@ -4083,7 +4150,10 @@ export function hostThroughPty(o) {
   // (wireChildData below). A stable object with its own reset() — unlike
   // childStartupOutput/childStartupReady this is not reassigned per recycle,
   // just reset in place at the same recycle site.
-  const quotaBlockDetector = makeQuotaBlockDetector();
+  // WI-2140984: scoped to THIS child's agent — the banner patterns are
+  // per-product, and matching claude's copy against a codex pty read healthy
+  // members as permanently walled.
+  const quotaBlockDetector = makeQuotaBlockDetector({ agent: env.PAPERCUSP_AGENT });
   // Output-quiet alone is not a startup-ready signal: before a backend-owned
   // marker, terminal probes can read as "quiet at prompt" even though a slow
   // TUI has not installed its editor yet (live Codex/OMP ports WI-4943/WI-4947).
@@ -5918,10 +5988,22 @@ export function hostThroughPty(o) {
       // WI-1386682 (1): feed the quota-wall detector the same raw bytes.
       const quotaTransition = quotaBlockDetector.observe(raw);
       if (quotaTransition) {
+        // WI-2140984: a bare detected/cleared row cannot distinguish a real
+        // wall from a pattern hitting ordinary chrome, which is exactly how a
+        // false positive cost a fleet leader an escalation. Carry the agent and
+        // the matched text on the DETECTED edge (the cleared edge has none by
+        // definition, and the per-deferral rows stay lean).
+        const hit = quotaTransition === 'detected' ? quotaBlockDetector.lastMatch() : null;
         appendHostEvent(
           ownerId,
           quotaTransition === 'detected' ? 'quota-block-detected' : 'quota-block-cleared',
-          {},
+          hit
+            ? {
+                agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+                matchedPattern: hit.pattern,
+                matchedExcerpt: hit.excerpt,
+              }
+            : {},
         );
       }
       activity.touchOutput();
