@@ -63,12 +63,6 @@ const EXEMPT_SEED_SCRIPTS: Record<string, string> = {
     'active is hardcoded TRUE with no --inactive flag at all, and startInProcessSweepArmReconciler ' +
     're-arms every row unconditionally on every host boot — self-arming, not the "manual seed ' +
     'script nobody ran" bug class this guard exists to catch',
-  'seed-p2p-perf-routines.ts':
-    'uses a per-ROW `activeDefault` field (both p2p-perf-tier1 and p2p-perf-tier2 currently ' +
-    'true) rather than one `const active = ...` idiom line, so the automated regex can’t ' +
-    'classify it. Both routines DO default active and are NOT currently in BESPOKE_ACTIVE_SEEDS ' +
-    '— a real, separate gap, deliberately not folded into the EI-22136759189899545 fix and ' +
-    'tracked on its own follow-up work-item instead of guessed at here',
   'seed-routine-announce.ts':
     'a shared print helper for other seed scripts, not itself a seed writer — no main(), no ' +
     'INSERT into harness_shared.routines',

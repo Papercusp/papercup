@@ -189,6 +189,14 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     name: 'work-item-durable-park-audit',
     seedScript: 'seed-work-item-durable-park-audit-routine.ts',
   },
+  // WI-2141683: found while fixing EI-22136759189899545 below. Both p2p-perf-tier1 and
+  // p2p-perf-tier2 default active per their own doc comment (owner-ratified cadence) but
+  // were left out of this registry because their writer used a per-row `activeDefault`
+  // field the automated classifier couldn't parse — the exact "seeded active, guard can't
+  // see it" gap this registry exists to close. seed-p2p-perf-routines.ts now uses the
+  // standard idiom, so both names belong here rather than in EXEMPT_SEED_SCRIPTS.
+  { name: 'p2p-perf-tier1', seedScript: 'seed-p2p-perf-routines.ts' },
+  { name: 'p2p-perf-tier2', seedScript: 'seed-p2p-perf-routines.ts' },
   // EI-22136759189899545: seedSources() in the test only ever matched `seed-*-routine.ts`
   // (singular), so every PLURAL `seed-*-routines.ts` writer was structurally invisible to
   // this whole registry — a seed script gets full exemption from the silence guard by
