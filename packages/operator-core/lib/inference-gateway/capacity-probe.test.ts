@@ -482,7 +482,7 @@ describe('probeCodexAccountCapacity (WI-38582)', () => {
     );
     expect(out.ok).toBe(true);
     expect(out.status).toBe(200);
-    expect(out.windows).toEqual({ utilization7d: 0.13, windowResetAt7d: 1787201493_000 });
+    expect(out.windows).toEqual({ utilization7d: 0.13, windowResetAt7d: 1787201493_000, bucket: 'premium' });
   });
 
   it('treats a headerless response as no-reading (never invents a window)', async () => {
