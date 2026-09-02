@@ -25,8 +25,13 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'activation-audit-test' }));
+const repairReconciliation = vi.hoisted(() => ({
+  conditionKey: 'activation-audit:papercusp/activation-target',
+  closed: 'EI-ACTIVATION-REPAIR',
+}));
 vi.mock('./agent-tools/plans/activation-audit-repair', () => ({
   ensureActivationAuditRepairFiling: vi.fn(async () => repairFiling),
+  reconcileActivationAuditRepairFiling: vi.fn(async () => repairReconciliation),
 }));
 
 import {
@@ -35,7 +40,10 @@ import {
   recordCurrentActivationAudit,
   recordPlanAudit,
 } from './plan-audits';
-import { ensureActivationAuditRepairFiling } from './agent-tools/plans/activation-audit-repair';
+import {
+  ensureActivationAuditRepairFiling,
+  reconcileActivationAuditRepairFiling,
+} from './agent-tools/plans/activation-audit-repair';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 
 let db: FreshPgDb;
