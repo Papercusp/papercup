@@ -269,6 +269,80 @@ describe('emitScorecard', () => {
     });
   });
 
+  // EI-21670417404287969 / EI-21723288985786146 (and EI-21597519978995942, filed a
+  // third time from a validator pass): the four nullable fingerprint dimensions were
+  // `.nullable()` WITHOUT `.optional()`, making each a REQUIRED key that merely accepts
+  // null. An operational/check row has no test and no fixture, so the evaluator output
+  // legitimately omits those dimensions — and the documented evaluator→emit chain could
+  // not be passed through unchanged. The three sibling call sites (get-spec-evidence,
+  // evaluate-spec-test-adequacy, bind-spec-evidence) were already `.nullable().optional()`;
+  // emit.ts was the lone straggler.
+  it('accepts a fingerprint row that OMITS the nullable dimensions it did not measure', () => {
+    const omitted = {
+      ...RERUN_RECIPE,
+      current: {
+        supplied: true,
+        fingerprints: [
+          {
+            evidenceKind: 'operational',
+            evidenceRef: 'surface:reconnect',
+            sourceFingerprint: 'git:abc',
+            // testFingerprint / fixtureFingerprint / rubricFingerprint /
+            // environmentFingerprint deliberately absent — this row measured none.
+          },
+        ],
+      },
+    };
+    expect(scorecardEmitArgs.safeParse({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rerunRecipe: omitted,
+    }).success).toBe(true);
+  });
+
+  it('still accepts the explicit-null spelling (callers already emitting nulls keep working)', () => {
+    const explicitNulls = {
+      ...RERUN_RECIPE,
+      current: {
+        supplied: true,
+        fingerprints: [
+          {
+            evidenceKind: 'operational',
+            evidenceRef: 'surface:reconnect',
+            sourceFingerprint: 'git:abc',
+            testFingerprint: null,
+            fixtureFingerprint: null,
+            rubricFingerprint: null,
+            environmentFingerprint: null,
+          },
+        ],
+      },
+    };
+    expect(scorecardEmitArgs.safeParse({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rerunRecipe: explicitNulls,
+    }).success).toBe(true);
+  });
+
+  // CONTROL — proves the loosening is SCOPED to the four nullable dimensions and did not
+  // simply make the fingerprint row permissive. Without this, both assertions above would
+  // still pass if the schema had been gutted entirely.
+  it('CONTROL: still REJECTS a fingerprint row missing the genuinely required sourceFingerprint', () => {
+    const missingRequired = {
+      ...RERUN_RECIPE,
+      current: {
+        supplied: true,
+        fingerprints: [{ evidenceKind: 'operational', evidenceRef: 'surface:reconnect' }],
+      },
+    };
+    expect(scorecardEmitArgs.safeParse({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rerunRecipe: missingRequired,
+    }).success).toBe(false);
+  });
+
   it('refuses a spec-test-adequacy card without the evaluator rerun recipe', async () => {
     getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-test-adequacy' } as Rubric);
 
