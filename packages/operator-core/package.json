@@ -59,6 +59,7 @@
     "lint:harness-arg-coverage": "tsx ../../scripts/check-harness-arg-coverage.ts",
     "lint:integration-teardown-nullsafe": "node ../../scripts/check-integration-teardown-nullsafe.mjs",
     "lint:no-agent-intent-comments": "node ../../scripts/check-no-agent-intent-comments.mjs",
+    "lint:pipefail-sigpipe": "node ../../scripts/check-pipefail-sigpipe.mjs",
     "lint:narrowing-gated-assertions": "node ../../scripts/check-narrowing-gated-assertions.mjs",
     "lint:peer-dep-conflicts": "node ../../scripts/check-peer-dep-conflicts.mjs",
     "lint:no-ungated-mug-kettle": "node ../../scripts/check-ungated-mug-kettle.mjs",

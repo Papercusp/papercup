@@ -31,6 +31,23 @@ export function selectDetectorModules(files: string[]): string[];
  * ⚠ Pass COMMENT-STRIPPED text. A commented-out import would otherwise read as usage,
  * which is a false NEGATIVE — the module looks alive while it is dead.
  *
+ * ⚠ THE GAP BEFORE THE SPECIFIER IS `\s*`, NOT `[ \t]*` — it MUST cross newlines.
+ * A long specifier is wrapped by the formatter onto its own line, which is the
+ * ORDINARY shape of a dynamic import of a workspace subpath:
+ *
+ *     const { x } = await import(
+ *       "@papercusp/operator-core/lib/release/frozen-repair-agent-routing"
+ *     );
+ *
+ * With a horizontal-only gap that edge is silently dropped while the single-line
+ * spelling of the very same import resolves — so whether a module counts as wired
+ * depended on how PRETTIER happened to wrap it. That under-counts importers, which
+ * is the direction that INVENTS dead modules (see `buildImportGraph`'s note on
+ * quietly dropped edges): three live green-checkpoint dependencies were reported
+ * `TESTED-BUT-UNWIRED`, whose documented remedy is "wire or delete". Deleting them
+ * would have removed live gate code. Regression-pinned in
+ * `packages/operator-core/lib/__tests__/module-reachability.test.ts`.
+ *
  * @param {string} text comment-stripped file contents
  * @returns {string[]} raw specifiers, in source order, deduplicated
  */

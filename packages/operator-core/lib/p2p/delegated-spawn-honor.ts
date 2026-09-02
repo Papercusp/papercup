@@ -570,7 +570,11 @@ async function defaultResolveHonorAccount(
  * projection layer's import of THIS module stays light (the agent-tools graph
  * only loads when a spawn is actually happening).
  */
-async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembersResult> {
+/** Exported for tests: the WI-2142501 guard drives this directly to assert the
+ *  headless FALLBACK greeting carries `--headless` (spawnHeadless's precondition).
+ *  Every heavy dependency below is a lazy `await import`, so a test mocks them
+ *  without pulling the console/fleet stack into an ordinary unit run. */
+export async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembersResult> {
   const { mkdirSync, writeFileSync } = await import('node:fs');
   const { join } = await import('node:path');
   const { papercuspPathForWorkspace } = await import('../papercusp-root');
@@ -620,9 +624,9 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
     operatorBaseUrl,
     skipMcpJson: true,
   });
-  const command = memberLaunchCommand({
+  const launchOpts = {
     fleetSlug: req.fleetSlug,
-    agent: isOmpLocalModel(req.launch.model) ? 'omp' : 'claude',
+    agent: isOmpLocalModel(req.launch.model) ? ('omp' as const) : ('claude' as const),
     harness: req.potHomeSlug,
     plan: req.planSlug,
     model: req.launch.model,
@@ -633,7 +637,19 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
     account: defaultMemberAccountRouting(req.launch.account ?? undefined),
     seat: req.seatRef,
     launchContext: launchContextPath,
-  });
+  };
+  const command = memberLaunchCommand(launchOpts);
+  // WI-2142501: the WI-5211 headless fallback below needs its OWN greeting — the
+  // console one is WRONG there, and silently so. spawnHeadless's contract is explicit
+  // (SpawnHeadlessOpts.envelope: "greetingCmd MUST be a `psu --headless …` command for
+  // the session to stay injectable"), because `--headless` is what makes psu-launcher
+  // take the managed-pty host despite non-TTY stdio. Reusing `command` there produced a
+  // member with NO managed pty: the kickoff turn could never be injected, the CLI fell
+  // through to `--print` with no prompt, and it exited 1 — after the seat had already
+  // been consumed. Measured live 2026-09-02 on the physical tower<->VM rig: 2 of 3
+  // delegated spawns died exactly this way, and the third only survived because
+  // spawnConsole succeeded so this fallback never fired.
+  const headlessCommand = memberLaunchCommand({ ...launchOpts, headless: true });
   const consoleResults = await Promise.all(
     Array.from({ length: req.count }, (_v, i) =>
       spawnConsole({
@@ -663,7 +679,9 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
       if (r.status === 'ok') return r;
       try {
         return await spawnHeadless({
-          envelope: { ...base, greetingCmd: command, cwd: base.cwd },
+          // headlessCommand, NOT command — see its definition above. The console
+          // greeting has no `--headless`, which leaves the member with no managed pty.
+          envelope: { ...base, greetingCmd: headlessCommand, cwd: base.cwd },
           label: `${req.fleetSlug} · delegated ${i + 1}/${req.count} (${req.requestOfferId}, headless-fallback)`,
           logDir: join(papercuspPathForWorkspace(req.workspaceId), 'fleet-logs'),
         });

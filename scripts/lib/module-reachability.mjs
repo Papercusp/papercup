@@ -83,6 +83,24 @@ const RELEASE_PATH_MENTION_RE =
   /(?:apps|packages|libs)\/[\w./-]*lib\/release\/[\w./-]+\.(?:tsx?|[cm]ts)/g;
 
 /**
+ * A WORKSPACE-relative detector path, as an npm script in that workspace's own
+ * `package.json` must spell it: `"tsx lib/release/x-cli.ts"`.
+ *
+ * `RELEASE_PATH_MENTION_RE` above requires an `apps|packages|libs` prefix, so it can
+ * NEVER match a manifest script — yet "named in an npm script" is the first case the
+ * path-mention scan exists to cover. The result was a CLI whose npm script runs it
+ * being reported as called by nothing, under a "wire or delete" remedy.
+ *
+ * The lookbehind is load-bearing: without it this also matches the TAIL of a
+ * repo-relative mention (`packages/operator-core/lib/release/x.ts`), which would then
+ * resolve against the WRONG workspace and could invent an edge to a same-named file —
+ * a false NEGATIVE, a dead module reported alive. Applied to manifests only, where the
+ * containing directory IS the workspace root that such a path is relative to.
+ */
+const WORKSPACE_RELATIVE_MENTION_RE =
+  /(?<![\w./-])lib\/release\/[\w./-]+\.(?:tsx?|[cm]ts)/g;
+
+/**
  * The instrument's own source files, repo-relative — the reacher set that must be
  * excluded so the census cannot resurrect a module merely by NAMING it in an allowlist
  * or a report. See the SELF-OBSERVATION note above.
@@ -128,17 +146,34 @@ export function selectDetectorModules(files) {
  * ⚠ Pass COMMENT-STRIPPED text. A commented-out import would otherwise read as usage,
  * which is a false NEGATIVE — the module looks alive while it is dead.
  *
+ * ⚠ THE GAP BEFORE THE SPECIFIER IS `\s*`, NOT `[ \t]*` — it MUST cross newlines.
+ * A long specifier is wrapped by the formatter onto its own line, which is the
+ * ORDINARY shape of a dynamic import of a workspace subpath:
+ *
+ *     const { x } = await import(
+ *       "@papercusp/operator-core/lib/release/frozen-repair-agent-routing"
+ *     );
+ *
+ * With a horizontal-only gap that edge is silently dropped while the single-line
+ * spelling of the very same import resolves — so whether a module counts as wired
+ * depended on how PRETTIER happened to wrap it. That under-counts importers, which
+ * is the direction that INVENTS dead modules (see `buildImportGraph`'s note on
+ * quietly dropped edges): three live green-checkpoint dependencies were reported
+ * `TESTED-BUT-UNWIRED`, whose documented remedy is "wire or delete". Deleting them
+ * would have removed live gate code. Regression-pinned in
+ * `packages/operator-core/lib/__tests__/module-reachability.test.ts`.
+ *
  * @param {string} text comment-stripped file contents
  * @returns {string[]} raw specifiers, in source order, deduplicated
  */
 export function parseImportSpecifiers(text) {
   const src = String(text);
   const out = new Set();
-  for (const m of src.matchAll(/(?:\bfrom|^[ \t]*(?:import|export))[ \t]*['"]([^'"\n]+)['"]/gm)) {
+  for (const m of src.matchAll(/(?:\bfrom|^[ \t]*(?:import|export))\s*['"]([^'"\n]+)['"]/gm)) {
     out.add(m[1]);
   }
-  for (const m of src.matchAll(/\bimport[ \t]*\([ \t]*['"]([^'"\n]+)['"]/g)) out.add(m[1]);
-  for (const m of src.matchAll(/\brequire[ \t]*\([ \t]*['"]([^'"\n]+)['"]/g)) out.add(m[1]);
+  for (const m of src.matchAll(/\bimport\s*\(\s*['"]([^'"\n]+)['"]/g)) out.add(m[1]);
+  for (const m of src.matchAll(/\brequire\s*\(\s*['"]([^'"\n]+)['"]/g)) out.add(m[1]);
   return [...out];
 }
 
