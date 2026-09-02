@@ -1,5 +1,5 @@
 /**
- * allhive-broadcast-sweep — the H5b DETECTOR for non-queen hive-wide broadcasts
+ * allpot-broadcast-sweep — the H5b DETECTOR for non-queen pot-wide broadcasts
  * (coord-authority-hardening-2026-07-11 P-010 / WI-4175, the EI-9501 class).
  *
  * PREVENTION already exists in layers: tools/send.ts down-scopes a fleeted
@@ -8,9 +8,9 @@
  * invariant (H5a) at the one seam every writer passes. But every incident is
  * a DETECTOR failure too — a path the guards miss (a new verb, a federated
  * relay, a guard regression) must still be SEEN. This sweep is that detector:
- * it finds every persisted CONSCIOUSLY-CLAIMED hive-wide broadcast (the
+ * it finds every persisted CONSCIOUSLY-CLAIMED pot-wide broadcast (the
  * `allHiveBroadcast` envelope stamp tools/send.ts persists for `allHive:true`
- * on a real `'*'` — ALLHIVE_BROADCAST_FIELD) whose sender was NOT the hive
+ * on a real `'*'` — ALLHIVE_BROADCAST_FIELD) whose sender was NOT the pot
  * queen, writes an audit row, and sends the owner a one-liner — detection +
  * visibility only, never a defang/retract (that's H5c, coord:retract).
  *
@@ -31,6 +31,10 @@
  * stamp is platform-verified). Everything else — an su (the owner sees their
  * own proxy's blasts too — accurate, cheap, self-documenting), a non-leader,
  * an unstamped sender — is flagged.
+ *
+ * (The `'hive-queen'` literal above is PERSISTED PLATFORM DATA — the
+ * cueAuthority stamp coord-schema.ts/relay-provenance.ts write — not renamed
+ * here; see scripts/lib/retired-tier-guidance.mjs's exemption for this file.)
  *
  * EXEMPT: platform principals (`from` starting with 'system') — watchdog
  * notices / reconcile sweeps are intentional platform behavior, not an agent
@@ -58,32 +62,32 @@ import type { AgentIdentity } from './identity';
 
 /** Sweep identity stamped on the audit trail + owner notices. The 'system'
  *  prefix ALSO makes it exempt from its own detection predicate. */
-export const ALLHIVE_SWEEP_OWNER = 'system:allhive-broadcast-sweep';
+export const ALLPOT_SWEEP_OWNER = 'system:allpot-broadcast-sweep';
 
 /** Coord identity for the sweep's own notice write (mirrors
  *  RECONCILE_IDENTITY in reply-deadline-sweep.ts — a system action runs
  *  in-process and attributes as a `principal`, never a real agent). */
 const SWEEP_IDENTITY: AgentIdentity = {
-  ownerId: ALLHIVE_SWEEP_OWNER,
-  ownerLabel: 'system · allhive-broadcast-sweep',
+  ownerId: ALLPOT_SWEEP_OWNER,
+  ownerLabel: 'system · allpot-broadcast-sweep',
   source: 'principal',
   workspaceId: null,
   userId: null,
 };
 
-/** Max detections handled per tick — a safety bound; genuine hive-wide
+/** Max detections handled per tick — a safety bound; genuine pot-wide
  *  blasts are expected to be rare (mirrors REPLY_DEADLINE_SWEEP_BATCH_LIMIT). */
-export const ALLHIVE_SWEEP_BATCH_LIMIT = 50;
+export const ALLPOT_SWEEP_BATCH_LIMIT = 50;
 
 /** How far back a tick looks. Bounds the index range scan AND covers detector
  *  downtime (a broadcast landing while the sweep was down is still caught for
  *  a day — after that it's history, not an actionable incident). */
-export const ALLHIVE_SWEEP_LOOKBACK_MS = 24 * 60 * 60_000;
+export const ALLPOT_SWEEP_LOOKBACK_MS = 24 * 60 * 60_000;
 
 /** Audit action name (audit:list renders {ts, actor, action, subject}). */
-export const ALLHIVE_AUDIT_ACTION = 'coord.allhive_broadcast';
+export const ALLPOT_AUDIT_ACTION = 'coord.allpot_broadcast';
 
-export interface DetectedAllHiveBroadcast {
+export interface DetectedAllPotBroadcast {
   workspaceId: string;
   msgId: string;
   from: string;
@@ -105,7 +109,7 @@ interface DetectedRow {
 }
 
 /**
- * Every CONSCIOUSLY-CLAIMED hive-wide broadcast (the allHiveBroadcast stamp)
+ * Every CONSCIOUSLY-CLAIMED pot-wide broadcast (the allHiveBroadcast stamp)
  * within the lookback window whose sender is neither hive-queen-stamped nor
  * a platform principal, and which THIS sweep has not already flagged (NOT
  * EXISTS a sibling notice from the sweep's own identity carrying
@@ -114,11 +118,11 @@ interface DetectedRow {
  * stamp but kept verbatim so the planner can use the mig-576 partial index.
  * Oldest first so a batch-limited tick drains in arrival order.
  */
-async function findUnflaggedAllHiveBroadcasts(
+async function findUnflaggedAllPotBroadcasts(
   nowMs: number,
   lookbackMs: number,
   limit: number,
-): Promise<DetectedAllHiveBroadcast[]> {
+): Promise<DetectedAllPotBroadcast[]> {
   const { sql } = getOrgPg();
   const sinceMs = nowMs - lookbackMs;
   const rows = await sql<DetectedRow[]>`
@@ -150,7 +154,7 @@ async function findUnflaggedAllHiveBroadcasts(
             -- 40,684 -> 721 buffers (56x), 156.9ms -> 8.96ms. Do not "simplify".
             AND e2.body ? 'related_msg_id'
             AND e2.body->>'related_msg_id' = e1.msg_id
-            AND e2.body->>'from' = ${ALLHIVE_SWEEP_OWNER}
+            AND e2.body->>'from' = ${ALLPOT_SWEEP_OWNER}
        )
      ORDER BY e1.ts ASC
      LIMIT ${limit}
@@ -178,14 +182,14 @@ function clampSummary(s: string | undefined, max = 140): string {
  *  surface). Actor = the OFFENDING sender (who did the thing); subject = the
  *  broadcast's msg_id. Throws on failure so the caller counts it (the notice
  *  is the idempotency marker, so a failed audit retries next tick). */
-async function writeAllHiveAuditRow(d: DetectedAllHiveBroadcast): Promise<void> {
+async function writeAllPotAuditRow(d: DetectedAllPotBroadcast): Promise<void> {
   const { sql } = getOrgPg();
   const id = `ahb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const details = {
     summary: clampSummary(d.summary),
     authority: d.authority ?? null,
     sent_at: d.sentAt ?? null,
-    detected_by: ALLHIVE_SWEEP_OWNER,
+    detected_by: ALLPOT_SWEEP_OWNER,
   };
   // ${JSON.stringify(...)}::jsonb, NOT sql.json(): the org pool runs
   // postgres-js with prepare:false, which mis-binds sql.json() ("string
@@ -195,13 +199,13 @@ async function writeAllHiveAuditRow(d: DetectedAllHiveBroadcast): Promise<void> 
   // `json: (v) => v` cannot see this.
   await sql`
     INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-    VALUES (${id}, ${Date.now()}, ${d.from}, ${ALLHIVE_AUDIT_ACTION}, ${d.msgId},
+    VALUES (${id}, ${Date.now()}, ${d.from}, ${ALLPOT_AUDIT_ACTION}, ${d.msgId},
             ${JSON.stringify(details)}::text::jsonb, ${d.workspaceId})
   `;
 }
 
-export interface AllHiveSweepResult {
-  /** Unflagged non-queen hive-wide broadcasts found this tick. */
+export interface AllPotSweepResult {
+  /** Unflagged non-queen pot-wide broadcasts found this tick. */
   detected: number;
   /** Owner notices actually sent (each doubles as the dedupe marker). */
   notified: number;
@@ -210,35 +214,35 @@ export interface AllHiveSweepResult {
 }
 
 /**
- * One sweep pass: find every unflagged non-queen hive-wide broadcast (up to
+ * One sweep pass: find every unflagged non-queen pot-wide broadcast (up to
  * the batch limit), write the audit row, and send the owner a one-liner
  * (which doubles as the idempotency marker, see module docstring). Ordered
  * audit-then-notice: if the audit write fails the notice is NOT sent, so the
  * item stays selectable and both land together on the retry. Fully fail-soft
  * per item — one failure never aborts the pass.
  */
-export async function runAllHiveBroadcastSweepOnce(
+export async function runAllPotBroadcastSweepOnce(
   opts: { nowMs?: number; lookbackMs?: number; limit?: number } = {},
-): Promise<AllHiveSweepResult> {
+): Promise<AllPotSweepResult> {
   const nowMs = opts.nowMs ?? Date.now();
-  const lookbackMs = opts.lookbackMs ?? ALLHIVE_SWEEP_LOOKBACK_MS;
-  const limit = opts.limit ?? ALLHIVE_SWEEP_BATCH_LIMIT;
-  const detected = await findUnflaggedAllHiveBroadcasts(nowMs, lookbackMs, limit + 1);
+  const lookbackMs = opts.lookbackMs ?? ALLPOT_SWEEP_LOOKBACK_MS;
+  const limit = opts.limit ?? ALLPOT_SWEEP_BATCH_LIMIT;
+  const detected = await findUnflaggedAllPotBroadcasts(nowMs, lookbackMs, limit + 1);
   const batch = detected.slice(0, limit);
 
   let notified = 0;
   for (const d of batch) {
     try {
-      await writeAllHiveAuditRow(d);
+      await writeAllPotAuditRow(d);
       await sendMessage(SWEEP_IDENTITY, {
         to: ['human'],
         summary: `📣 non-queen HIVE-WIDE broadcast by ${d.from}: "${clampSummary(d.summary)}" (${d.msgId})`,
         body:
-          `Agent ${d.from} consciously broadcast to EVERY agent in the hive (allHive:true on to:['*'])` +
+          `Agent ${d.from} consciously broadcast to EVERY agent in the pot (allHive:true on to:['*'])` +
           `${d.authority ? ` carrying a '${d.authority}' authority stamp` : ' with no hive-queen authority stamp'}` +
           `${d.sentAt ? ` at ${d.sentAt}` : ''}. Only the hive queen (or a platform principal) is expected to ` +
-          `blast the whole hive — this is the EI-9501 class the send-path guards down-scope/refuse, so either ` +
-          `it rode a path the guards don't cover or a guard regressed. Audited as ${ALLHIVE_AUDIT_ACTION} ` +
+          `blast the whole pot — this is the EI-9501 class the send-path guards down-scope/refuse, so either ` +
+          `it rode a path the guards don't cover or a guard regressed. Audited as ${ALLPOT_AUDIT_ACTION} ` +
           `(subject ${d.msgId}, actor ${d.from}). Detection-only: nothing was blocked or retracted — ` +
           `use coord:retract if the message should be withdrawn.`,
         related_msg_id: d.msgId,
@@ -248,7 +252,7 @@ export async function runAllHiveBroadcastSweepOnce(
       // One item failing must never abort the sweep — it stays unflagged (no
       // marker landed), so the next tick retries it.
       console.warn(
-        `[allhive-broadcast-sweep] flag for ${d.msgId} failed: ${e instanceof Error ? e.message : e}`,
+        `[allpot-broadcast-sweep] flag for ${d.msgId} failed: ${e instanceof Error ? e.message : e}`,
       );
     }
   }
