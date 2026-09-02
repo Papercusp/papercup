@@ -32,10 +32,12 @@
  *     harness_slug + workspace_id). A predicate moved between the two matches
  *     ZERO rows instead of erroring. `scope` here accepts a bare slug and
  *     normalises it, so the prefix cannot be forgotten.
- *  2. `severity` is a REAL COLUMN on the view; `payload->'_ei'->>'severity'`
- *     is NULL for EVERY row (measured: 0 via that path vs 34,566 via the
- *     column) — a confident wrong answer rather than an error. Callers get the
- *     column, so the bad path is unreachable.
+ *  2. `severity` is a REAL COLUMN on the view. Until migration 1096 the nested
+ *     `payload->'_ei'->>'severity'` was NULL for EVERY row (measured: 0 via that
+ *     path vs 34,566 via the column) — a confident wrong answer rather than an
+ *     error. 1096 restored the `_ei` blob, so that path now resolves and agrees
+ *     except on NULL-payload rows, where only the column reports its 'minor'
+ *     default. Callers get the column, which is the one correct on every row.
  */
 
 import { z } from 'zod';
@@ -162,7 +164,7 @@ export default defineTool({
       'rollup:"state" → { open, wip, done, … } counts. rollup:"observationKind" → counts by payload->observation->>kind. Both are computed over the whole filtered set, not the page.',
       'body is OMITTED by default: it is 76% of this read\'s bytes (measured 1607kB → 389kB with it dropped). Ask for it explicitly when you need it.',
       'Only bug|change are returned by default — `task` items are a work_item kind that the issues surface deliberately excludes; pass kinds to include them.',
-      'severity is a real column here (critical|major|minor|nit). Do NOT reach for payload->\'_ei\'->>\'severity\' against this view — it is NULL for every row.',
+      'severity is a real column here (critical|major|minor|nit) — read it. Migration 1096 restored the `_ei` blob on this view, so payload->\'_ei\'->>\'severity\' now resolves and agrees on all but NULL-payload rows, where only the column reports the \'minor\' default. Prefer the column: it is the one correct on every row.',
     ].join(' '),
     seeAlso: [
       'improvements:capture (file one)',

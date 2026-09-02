@@ -239,11 +239,13 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // The accessor is `payload->'_ei'->>'severity'` FIRST with a top-level fallback, which
   // is WI-6674's finding and matches this file's own projection at the claimable query
   // below: severity has two access paths (the TABLE keeps it under the `_ei` fold from
-  // migration 374; the VIEW explodes `_ei` into real columns and DROPS the blob), and the
-  // wrong path for a relation yields NULL for EVERY row without erroring — a query that
-  // returns a well-formed, plausible, wrong answer. Measured 2026-08-01: 0 of 13,711 open
-  // rows via the top-level path vs 13,711 via the correct one, reporting 30 genuine
-  // criticals as none. The JS evaluator (claim-spec-match.ts) resolves this field in the
+  // migration 374; the VIEW explodes `_ei` into real columns and, since migration 1096,
+  // ALSO keeps the blob — so on the VIEW both accessors resolve and agree except on
+  // NULL-payload rows, where only the `severity` column reports its 'minor' default).
+  // The wrong path for a relation yields NULL for EVERY row without erroring — a query
+  // that returns a well-formed, plausible, wrong answer. Measured 2026-08-01 against the
+  // TABLE, where it still holds: 0 of 13,711 open rows via the top-level path vs 13,711
+  // via the `_ei` path, reporting 30 genuine criticals as none. The JS evaluator (claim-spec-match.ts) resolves this field in the
   // SAME precedence order deliberately — the two admission evaluators MUST agree on one
   // field's logical source or the same spec admits an item on one family's path and
   // refuses it on the other's (WI-5781, documented on `plan` below).
