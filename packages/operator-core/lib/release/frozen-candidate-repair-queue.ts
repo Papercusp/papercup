@@ -346,27 +346,47 @@ export interface FrozenRepairDispatchInfeasibleDecision {
  * stop. This decision holds the candidate — inconclusive, no verdict recorded — until the wall
  * has genuinely persisted past `zeroAttemptStallMs`; only then does `recut-at-tip` fire.
  */
-export interface FrozenRepairDispatchPendingDecision {
+interface FrozenRepairDispatchPendingBase {
   kind: 'wait-for-dispatch-capacity';
   repairHead: string;
   attempts: number;
   ageMs: number;
-  /**
-   * `true` only on the LONG-WALL hold below: the stall window HAS elapsed, but the wall
-   * outlasts it, so retiring would buy nothing and cost the freeze. Kept distinct from the
-   * momentary-churn hold (`false`) so a reader can tell "too early to judge" from
-   * "deliberately holding for agent convergence".
-   */
-  zeroAttemptStalled: boolean;
   zeroAttemptStallMs: number;
-  /** Set on a long-wall hold: when the measured provider wall is expected to lift. */
-  capacityRetryAtMs?: number | null;
-  /** Set on a long-wall hold: the age past which the hold gives up and retires anyway. */
-  convergenceHoldMs?: number;
   gateDisposition: 'inconclusive';
   runSuite: false;
   recordVerdict: false;
 }
+
+/**
+ * DISCRIMINATED on `zeroAttemptStalled`, deliberately: the two holds carry different
+ * evidence, and making that a type-level fact is what stops a consumer rendering a
+ * long-wall field on the momentary hold (where it is genuinely absent) or hand-defaulting
+ * it to a number the decision never measured. `capacityRetryAtMs` and `convergenceHoldMs`
+ * exist EXACTLY when the hold is the long-wall one — that is not a convention to remember,
+ * it is what the union says.
+ */
+export type FrozenRepairDispatchPendingDecision =
+  | (FrozenRepairDispatchPendingBase & {
+      /**
+       * The momentary-churn hold: the stall window has NOT elapsed, so it is simply too
+       * early to judge. Nothing about a provider wall's duration has been established.
+       */
+      zeroAttemptStalled: false;
+      capacityRetryAtMs?: undefined;
+      convergenceHoldMs?: undefined;
+    })
+  | (FrozenRepairDispatchPendingBase & {
+      /**
+       * The LONG-WALL hold: the stall window HAS elapsed, but the measured wall outlasts
+       * it, so retiring would buy nothing and cost the freeze. Held for agent convergence
+       * instead — which is why both bounds below are guaranteed here and only here.
+       */
+      zeroAttemptStalled: true;
+      /** When the measured provider wall is expected to lift (null = the probe knew none). */
+      capacityRetryAtMs: number | null;
+      /** The age past which the hold gives up and retires anyway. */
+      convergenceHoldMs: number;
+    });
 
 /**
  * WI-2141347: the dispatch-infeasible retire, but for a queue whose movable `repairHead` has
