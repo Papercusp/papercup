@@ -819,3 +819,82 @@ describe('db_dump_ok readers stay tri-state and drive rollups', () => {
     expect(queries.join('\n')).toContain('db_dump_ok IS FALSE');
   });
 });
+
+// EI-22064935119941678: liveBackupSessions() is the fix for backup:snapshot_list's
+// false all-clear — it must see BOTH backup producers, not just the workspace hook
+// this class's own receipt table (list()) tracks.
+describe('liveBackupSessions (EI-22064935119941678)', () => {
+  it('queries pg_stat_activity for both application names, scoped to this database and excluding self', async () => {
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: unknown, ...values: unknown[]) => {
+      if (Array.isArray(strings)) queries.push({ text: (strings as string[]).join('?'), values });
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    (sql as unknown as { array: (v: unknown) => unknown }).array = (v) => v;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+
+    await w.liveBackupSessions();
+
+    expect(queries).toHaveLength(1);
+    const { text, values } = queries[0];
+    expect(text).toContain('pg_stat_activity');
+    expect(text).toContain('application_name = ANY(');
+    expect(text).toContain('datname = current_database()');
+    expect(text).toContain('pid <> pg_backend_pid()');
+    expect(values[0]).toEqual(['pcbackup', 'pcbackup-workspace']);
+  });
+
+  it('maps a live host-cron session even when it has no snapshot receipt', async () => {
+    const sql = ((strings: unknown) => {
+      if (Array.isArray(strings) && (strings as string[]).join('').includes('pg_stat_activity')) {
+        return Promise.resolve([{
+          pid: 3294839,
+          application_name: 'pcbackup',
+          state: 'active',
+          xact_start: null,
+          query_start: '2026-09-01T13:04:00.000Z',
+          age_sec: '369.2',
+        }]);
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    (sql as unknown as { array: (v: unknown) => unknown }).array = (v) => v;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+
+    const sessions = await w.liveBackupSessions();
+
+    expect(sessions).toEqual([{
+      pid: 3294839,
+      applicationName: 'pcbackup',
+      state: 'active',
+      xactStartedAt: null,
+      queryStartedAt: '2026-09-01T13:04:00.000Z',
+      ageSec: 369.2,
+    }]);
+  });
+
+  it('returns [] when no backup session is currently active', async () => {
+    const sql = (() => Promise.resolve([])) as unknown as Sql;
+    (sql as unknown as { array: (v: unknown) => unknown }).array = (v) => v;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+    await expect(w.liveBackupSessions()).resolves.toEqual([]);
+  });
+});
