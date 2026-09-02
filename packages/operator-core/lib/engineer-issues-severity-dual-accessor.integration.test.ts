@@ -107,11 +107,14 @@ describe('engineer_issues severity dual-accessor (migration 1096 / WI-6688)', ()
     // The INSTEAD OF UPDATE trigger strips the caller's _ei and rebuilds it, so
     // reading payload back (now WITH _ei) and writing it again must be a no-op
     // for severity rather than a way to nest _ei inside itself.
-    const [before] = await db.sql`
+    const [before] = await db.sql<{ payload: unknown }[]>`
       SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = 'WI-900'`;
+    // Bind via ::text::jsonb — the postgres-js jsonb-binding idiom this repo
+    // already uses on the engineer-issues write path.
+    const payloadText = JSON.stringify(before!.payload);
     await db.sql`
       UPDATE harness_shared.engineer_issues
-         SET payload = ${db.sql.json(before.payload as object)}
+         SET payload = ${payloadText}::text::jsonb
        WHERE issue_id = 'WI-900'`;
 
     const [after] = await db.sql`
