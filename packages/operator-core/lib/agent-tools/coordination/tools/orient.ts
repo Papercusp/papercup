@@ -459,6 +459,18 @@ export interface OrientResult {
    *  none stand. Absent ⇒ the fold was full. A monitor tick passing
    *  afterCompaction:true gets the full fold and no marker. */
   factsNarrowed?: { fold: 'never-drop'; prefixes: string[]; reason: string };
+  /** P-004 / D-006: present iff the per-selector LIMIT dropped facts this scope
+   *  actually holds — i.e. `facts` above is the NEWEST N of that scope, not its
+   *  population. Sibling of `factsNarrowed` and the same principle: a bounded read
+   *  must never render as a total. This one is the bigger of the two and fires on
+   *  every FULL fold, not only monitor ticks — measured 2026-09-02, scope
+   *  `workspace` showed 12 of 495 (2.4%) and `harness:papercusp` 12 of 366 (3.3%).
+   *  Absent ⇒ every selector's whole live population is in `facts`. */
+  factsTruncated?: {
+    limitPerSelector: number;
+    scopes: Array<{ scope: string; scopeRef: string | null; shown: number; total: number }>;
+    reason: string;
+  };
   /** EI-19485000346355077: present iff one of this fold's selectors (workspace /
    *  owner / harness) had facts CAP-EVICTED recently — so a fact you expect but
    *  don't see in `facts` above may have been evicted, not never-asserted. Never
@@ -1642,8 +1654,13 @@ export async function composeOrient(
   const factsFold: 'full' | 'never-drop' = !monitor || args.afterCompaction === true ? 'full' : 'never-drop';
   {
     try {
-      const { foldFacts, foldNeverDropFacts, NEVER_DROP_KEY_PREFIXES, listFactEvictionDisclosures } =
-        await import('../../../agent-facts/store');
+      const {
+        foldFactsWithCensus,
+        foldNeverDropFacts,
+        NEVER_DROP_KEY_PREFIXES,
+        listFactEvictionDisclosures,
+        FACTS_FOLD_LIMIT,
+      } = await import('../../../agent-facts/store');
       const selectors = [
         { scope: 'workspace' as const },
         ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
@@ -1653,8 +1670,19 @@ export async function composeOrient(
       // (audienceScope 'fleet:<slug>') folds only for that fleet's members;
       // a non-fleet caller receives only unrestricted facts.
       const foldOpts = { audiences: fleetSlug ? [`fleet:${fleetSlug}`] : [] };
-      const facts =
-        factsFold === 'full' ? await foldFacts(selectors, foldOpts) : await foldNeverDropFacts(selectors, foldOpts);
+      // P-004 / D-006: the full fold carries its per-selector CENSUS out of the same
+      // statement (a window function, evaluated before the LIMIT), so the truncation
+      // disclosure below costs no extra round-trip. The narrowed fold declares its
+      // own bound via `factsNarrowed` and needs no census.
+      let factsCensus: Awaited<ReturnType<typeof foldFactsWithCensus>>['census'] = [];
+      let facts: Awaited<ReturnType<typeof foldNeverDropFacts>>;
+      if (factsFold === 'full') {
+        const folded = await foldFactsWithCensus(selectors, foldOpts);
+        facts = folded.facts;
+        factsCensus = folded.census;
+      } else {
+        facts = await foldNeverDropFacts(selectors, foldOpts);
+      }
       // A NARROWED fold must SAY it was narrowed. Otherwise "no ordinary facts in
       // this payload" is indistinguishable from "no ordinary facts exist" — a
       // bounded read rendered as a total, which is the same class of silent
@@ -1667,6 +1695,27 @@ export async function composeOrient(
           prefixes: [...NEVER_DROP_KEY_PREFIXES],
           reason:
             "mode:'monitor' folds ONLY the never-drop slots (dead-ends + walls + guard rails) for context budget — ordinary standing facts were NOT read, so their absence here is not evidence they do not exist. Re-call coord:orient without mode:'monitor' (or with afterCompaction:true) for the full fold.",
+        };
+      }
+      // P-004 / D-006: the SAME rule as factsNarrowed above, applied to the bound
+      // that actually fires — the per-selector LIMIT, on every full fold. Without
+      // this, `facts` is the newest N of a scope rendered as the scope's standing
+      // facts, and an agent reads a fact's absence as evidence it was never
+      // asserted. Measured 2026-09-02: workspace 12 of 495, harness:papercusp 12
+      // of 366. D-006 rules the recency ORDER BY correct and this disclosure, not
+      // a re-ranking, the fix.
+      const truncatedScopes = factsCensus.filter((c) => c.truncated);
+      if (truncatedScopes.length > 0) {
+        result.factsTruncated = {
+          limitPerSelector: FACTS_FOLD_LIMIT,
+          scopes: truncatedScopes.map((c) => ({
+            scope: c.scope,
+            scopeRef: c.scopeRef,
+            shown: c.shown,
+            total: c.total,
+          })),
+          reason:
+            'The facts fold returns the most-recently-updated facts per scope, capped per selector — these scopes hold more than were returned, so `facts` is a SAMPLE, not a census. A fact you expected and do not see may simply not be among the newest; its absence here is not evidence it was never asserted. Read a scope in full with facts:list { scope, scopeRef }, which reports its own total.',
         };
       }
       // P-002 / D-001: withhold queen-loop steering facts (pauseNewWork/maxBees) from
