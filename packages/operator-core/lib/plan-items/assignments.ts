@@ -74,12 +74,42 @@ export async function planItemEffectiveStatus(
   planSlug: string,
   itemId: string,
 ): Promise<string | null> {
+  return (await planItemEffectiveStatuses(harnessSlug, planSlug, [itemId])).get(itemId) ?? null;
+}
+
+/**
+ * The bulk sibling of planItemEffectiveStatus: statuses for MANY items of ONE plan,
+ * reading the plan exactly ONCE. Same source, same resolution order, same FAIL-OPEN
+ * contract — the singular form now delegates here, so there is one implementation of
+ * "what is this item's effective status" rather than two that can drift.
+ *
+ * The bulk form exists because the natural call shape at a bulk surface is a loop, and
+ * a per-item planItemEffectiveStatus inside one is a per-slug plan read per item —
+ * the serial-read anti-pattern in /internal/docs/performance. Callers releasing N items
+ * of the same plan pay one read, not N.
+ *
+ * Items absent from the plan are simply absent from the returned map; a caller must
+ * therefore treat "no entry" and "null entry" identically (both mean undeterminable),
+ * which is what FAIL-OPEN requires anyway.
+ */
+export async function planItemEffectiveStatuses(
+  harnessSlug: string,
+  planSlug: string,
+  itemIds: readonly string[],
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  if (itemIds.length === 0) return out;
   const read = await readPlanBySlug(planSlug, { harnessSlug });
-  if (!read) return null;
-  const stage3 = read.row.items.find((i) => i.id === itemId);
-  if (stage3) return stage3.status ?? null;
-  const parsed = read.parsed.items.find((i) => i.id === itemId) as { status?: string } | undefined;
-  return parsed?.status ?? null;
+  if (!read) return out;
+  const wanted = new Set(itemIds);
+  for (const i of read.row.items) {
+    if (wanted.has(i.id)) out.set(i.id, i.status ?? null);
+  }
+  for (const raw of read.parsed.items as Array<{ id?: string; status?: string }>) {
+    // Stage-3 wins; the parsed body is only the fallback for un-normalized rows.
+    if (raw.id && wanted.has(raw.id) && !out.has(raw.id)) out.set(raw.id, raw.status ?? null);
+  }
+  return out;
 }
 
 export interface AssignOpts {
