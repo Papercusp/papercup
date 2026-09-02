@@ -10,7 +10,7 @@ import {
   configureFileLockDomainResolver,
   getDomainToHarnessSlug,
   configureFileLockHiveResolver,
-  getHarnessToHiveSlug,
+  getHarnessToPotSlug,
 } from '../file-lock-routing';
 import { __resetRemotePeersCacheForTests } from '../remote-peers-cache';
 
@@ -37,7 +37,7 @@ describe('routeFileLockOp — Hive-aware (P-009)', () => {
       { local: async () => { ran = true; return 1; } },
       {
         ...forced,
-        harnessToHiveSlug: () => 'my-hive',
+        harnessToPotSlug: () => 'my-hive',
         fetchHivePresenceRows: async (h) => { expect(h).toBe('my-hive'); return []; },
         resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }),
       },
@@ -52,7 +52,7 @@ describe('routeFileLockOp — Hive-aware (P-009)', () => {
       { local: async () => 2 },
       {
         ...forced,
-        harnessToHiveSlug: () => 'my-hive',
+        harnessToPotSlug: () => 'my-hive',
         fetchHivePresenceRows: async () => [row('aaa')], // remote aaa < self zzz
         resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }),
       },
@@ -68,7 +68,7 @@ describe('routeFileLockOp — Hive-aware (P-009)', () => {
       { local: async () => 3 },
       {
         ...forced,
-        harnessToHiveSlug: () => null,
+        harnessToPotSlug: () => null,
         fetchPresenceRows: async (h) => { expect(h).toBe('repo-a'); return [row('aaa')]; },
         resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }),
       },
@@ -84,7 +84,7 @@ describe('routeFileLockOp — Hive-aware (P-009)', () => {
       { local: async () => { ran = true; return 4; } },
       {
         domainToHarnessSlug: () => 'repo-a',
-        harnessToHiveSlug: () => 'my-hive',
+        harnessToPotSlug: () => 'my-hive',
         now: () => NOW,
         fetchHivePresenceRows: async () => [], // self-alone → no remote peers
         resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }),
@@ -121,11 +121,11 @@ describe('routeFileLockOp — global resolver seam + defaults', () => {
   });
 
   it('the global hive resolver defaults to null (harness scope) and is install/reset-able', () => {
-    expect(getHarnessToHiveSlug()('repo-a')).toBeNull();
+    expect(getHarnessToPotSlug()('repo-a')).toBeNull();
     configureFileLockHiveResolver((h) => (h === 'repo-a' ? 'my-hive' : null));
-    expect(getHarnessToHiveSlug()('repo-a')).toBe('my-hive');
+    expect(getHarnessToPotSlug()('repo-a')).toBe('my-hive');
     configureFileLockHiveResolver(null);
-    expect(getHarnessToHiveSlug()('repo-a')).toBeNull();
+    expect(getHarnessToPotSlug()('repo-a')).toBeNull();
   });
 
   it('routeFileLockOp falls back to the GLOBAL domain resolver when deps has no override (default null → local)', async () => {
@@ -143,7 +143,7 @@ describe('routeFileLockOp — global resolver seam + defaults', () => {
       {
         now: () => NOW,
         skipRemotePeersFastPath: true,
-        harnessToHiveSlug: () => null,
+        harnessToPotSlug: () => null,
         fetchPresenceRows: async (h) => { expect(h).toBe('repo-a'); return [row('aaa')]; },
         resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }),
         useHrwRendezvous: false, // fixture expects the argmin winner (aaa ≠ self)

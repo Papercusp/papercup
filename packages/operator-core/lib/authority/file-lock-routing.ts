@@ -50,10 +50,10 @@ export type DomainToHarnessSlug = (domain: string) => string | null;
 
 /** Resolve a harness slug to its home HIVE slug, or null when the harness is not a
  *  Hive member (P-009). When non-null, the file-lock authority is the HIVE's. */
-export type HarnessToHiveSlug = (harnessSlug: string) => string | null;
+export type HarnessToPotSlug = (harnessSlug: string) => string | null;
 
 let _domainResolver: DomainToHarnessSlug | null = null;
-let _hiveResolver: HarnessToHiveSlug | null = null;
+let _hiveResolver: HarnessToPotSlug | null = null;
 
 /**
  * Register the domain→harness resolver at boot. The operator wires this to its
@@ -80,25 +80,25 @@ export function getDomainToHarnessSlug(): DomainToHarnessSlug {
  * registered, the default returns null → every harness uses HARNESS-scoped authority
  * (the pre-Hive behavior, unchanged).
  */
-export function configureFileLockHiveResolver(fn: HarnessToHiveSlug | null): void {
+export function configureFileLockHiveResolver(fn: HarnessToPotSlug | null): void {
   _hiveResolver = fn;
 }
 
 /** The default: no harness is a Hive member → harness-scoped authority. */
-function defaultHarnessToHiveSlug(_harnessSlug: string): string | null {
+function defaultHarnessToPotSlug(_harnessSlug: string): string | null {
   return null;
 }
 
 /** The currently-registered harness→Hive resolver, or the non-Hive default. */
-export function getHarnessToHiveSlug(): HarnessToHiveSlug {
-  return _hiveResolver ?? defaultHarnessToHiveSlug;
+export function getHarnessToPotSlug(): HarnessToPotSlug {
+  return _hiveResolver ?? defaultHarnessToPotSlug;
 }
 
 export interface FileLockRoutingDeps extends LockAuthorityDeps, RemotePeersCacheDeps {
   /** Override the domain→harness mapping (tests). */
   domainToHarnessSlug?: DomainToHarnessSlug;
   /** Override the harness→Hive mapping (tests). */
-  harnessToHiveSlug?: HarnessToHiveSlug;
+  harnessToPotSlug?: HarnessToPotSlug;
   /** Skip the cached remote-peers fast-path (tests / force authority routing). */
   skipRemotePeersFastPath?: boolean;
 }
@@ -141,7 +141,7 @@ export async function routeFileLockOp<T>(
   // P-009: when this harness federates within a shared Hive, its file-claim locks
   // serialize at the HIVE's authority (one authority across all the Hive's Swarms),
   // not the harness's. Default resolver returns null → harness scope (unchanged).
-  const potSlug = (deps.harnessToHiveSlug ?? getHarnessToHiveSlug())(harnessSlug);
+  const potSlug = (deps.harnessToPotSlug ?? getHarnessToPotSlug())(harnessSlug);
   const scope: { kind: 'hive' | 'harness'; key: string } = potSlug
     ? { kind: 'hive', key: potSlug }
     : { kind: 'harness', key: harnessSlug };

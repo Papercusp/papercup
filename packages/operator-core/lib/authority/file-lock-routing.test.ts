@@ -13,7 +13,7 @@ import {
   configureFileLockDomainResolver,
   getDomainToHarnessSlug,
   configureFileLockHiveResolver,
-  getHarnessToHiveSlug,
+  getHarnessToPotSlug,
   _testing,
   type FileLockRoutingDeps,
 } from './file-lock-routing';
@@ -49,11 +49,11 @@ describe('resolver seams default to local-only and are swappable', () => {
   });
 
   it('the harness→hive resolver defaults to null (non-Hive → harness scope) and is swappable', () => {
-    expect(getHarnessToHiveSlug()('harness-x')).toBeNull();
+    expect(getHarnessToPotSlug()('harness-x')).toBeNull();
     configureFileLockHiveResolver((h) => (h === 'harness-x' ? 'hive-1' : null));
-    expect(getHarnessToHiveSlug()('harness-x')).toBe('hive-1');
+    expect(getHarnessToPotSlug()('harness-x')).toBe('hive-1');
     configureFileLockHiveResolver(null);
-    expect(getHarnessToHiveSlug()('harness-x')).toBeNull();
+    expect(getHarnessToPotSlug()('harness-x')).toBeNull();
   });
 });
 
@@ -78,7 +78,7 @@ describe('routeFileLockOp — D-009 scope guard + hot-path guard', () => {
     const hiveFetch = vi.fn(async () => []);
     const deps: FileLockRoutingDeps = {
       domainToHarnessSlug: () => 'harness-x',
-      harnessToHiveSlug: () => null, // harness scope
+      harnessToPotSlug: () => null, // harness scope
       fetchPresenceRows: harnessFetch,
       fetchHivePresenceRows: hiveFetch,
       resolveSelf: async () => null,
@@ -103,7 +103,7 @@ describe('routeFileLockOp — D-009 scope guard + hot-path guard', () => {
     const hiveFetch = vi.fn(async () => []);
     const deps: FileLockRoutingDeps = {
       domainToHarnessSlug: () => 'harness-x',
-      harnessToHiveSlug: () => 'hive-1', // hive scope
+      harnessToPotSlug: () => 'hive-1', // hive scope
       fetchPresenceRows: harnessFetch,
       fetchHivePresenceRows: hiveFetch,
       resolveSelf: async () => null,
