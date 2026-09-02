@@ -230,6 +230,7 @@ export default defineTool({
     since?: string;
     sinceHours?: number;
     workspace?: string;
+    harness?: string;
     rollup?: 'commit' | 'runGroup';
     latestPerFile?: boolean;
     limit?: number;
