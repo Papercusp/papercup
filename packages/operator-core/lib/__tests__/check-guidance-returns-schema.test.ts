@@ -149,6 +149,11 @@ describe('real-tree enforcement', () => {
     const out = execFileSync('node', ['scripts/check-guidance-returns-schema.mjs'], {
       cwd: ROOT,
       encoding: 'utf8',
+      // WI-41180: a SYNC spawn blocks the worker's event loop, so vitest cannot time it
+      // out, and the pure lane shares one fork across ~2,740 files — an unbounded call
+      // here wedges all of them until the batch watchdog kills the task 45 minutes on.
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
     expect(out).toContain('every tool authoring guidance.returns also registers result:');
   });
@@ -186,6 +191,10 @@ describe('the guard is reachable from the edit that introduces the violation', (
     execFileSync('node', ['scripts/affected-tests.mjs', '--changed-paths', changedPath, '--print-affected'], {
       cwd: ROOT,
       encoding: 'utf8',
+      // Bounded for the same WI-41180 reason as the CLI call above; this one walks the
+      // workspace graph, so it is the slower of the two and the likelier to hang.
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
 
   it('attaches for an edit to a tool source file', () => {
