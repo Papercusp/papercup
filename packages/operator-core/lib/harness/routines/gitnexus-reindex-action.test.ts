@@ -32,7 +32,12 @@ import {
   GITNEXUS_ANALYZE_SEMI_SPACE_MB,
   GITNEXUS_ANALYZE_STACK_KB,
   GITNEXUS_LBUG_MAX_DB_BYTES,
+  GITNEXUS_LBUG_BUFFER_POOL_BYTES,
   GITNEXUS_LBUG_DB_ALERT_RATIO,
+  readIncompleteIndexMarker,
+  describeStrandedIncompleteIndex,
+  readStrandedIncompleteIndex,
+  gitnexusMetaPath,
   measureGitnexusDbUsage,
   decideGitnexusDbHealthUpdate,
   decideReindex,
@@ -270,7 +275,11 @@ describe('runGitnexusAnalyze — scheduled task-manager isolation (WI-40213)', (
    * shell — green for whoever checks it, blocking for everyone else. The DB ceiling is scrubbed
    * for the same reason: `analyzeEnv` lets an explicit GITNEXUS_LBUG_MAX_DB_SIZE win too.
    */
-  const RUNNER_ENV_KEYS = ['NODE_OPTIONS', 'GITNEXUS_LBUG_MAX_DB_SIZE'] as const;
+  const RUNNER_ENV_KEYS = [
+    'NODE_OPTIONS',
+    'GITNEXUS_LBUG_MAX_DB_SIZE',
+    'GITNEXUS_LBUG_BUFFER_POOL_SIZE',
+  ] as const;
   let savedRunnerEnv: Array<[string, string | undefined]> = [];
   beforeEach(() => {
     savedRunnerEnv = RUNNER_ENV_KEYS.map((key) => [key, process.env[key]]);
@@ -389,6 +398,113 @@ describe('analyzeEnv — the LadybugDB ceiling pin (P-004)', () => {
     // failing -- this assertion is the tripwire that says so while it is still cheap.
     const measuredDbGib = 3.97;
     expect(GITNEXUS_LBUG_MAX_DB_BYTES / 1024 ** 3).toBeGreaterThan(measuredDbGib * 3);
+  });
+});
+
+describe('analyzeEnv — the LadybugDB BUFFER POOL pin (EI-22172147268902766)', () => {
+  it('pins the buffer pool rather than inheriting the 2 GiB default that killed the rebuild', () => {
+    expect(analyzeEnv({}).GITNEXUS_LBUG_BUFFER_POOL_SIZE).toBe(String(GITNEXUS_LBUG_BUFFER_POOL_BYTES));
+  });
+
+  it('STILL pins the buffer pool when an operator overrides the heap', () => {
+    // The pool is LadybugDB NATIVE memory: no node flag can influence it. The failing
+    // 2026-09-02 run proved the point by dying with a 193 GB heap and a 2 GiB pool, so a
+    // heap override silently dropping this pin would reproduce the exact original bug.
+    const env = analyzeEnv({ NODE_OPTIONS: '--max-old-space-size=4096' });
+    expect(env.NODE_OPTIONS).toBe('--max-old-space-size=4096');
+    expect(env.GITNEXUS_LBUG_BUFFER_POOL_SIZE).toBe(String(GITNEXUS_LBUG_BUFFER_POOL_BYTES));
+  });
+
+  it('honours an explicit caller-supplied pool size', () => {
+    expect(analyzeEnv({ GITNEXUS_LBUG_BUFFER_POOL_SIZE: '123' }).GITNEXUS_LBUG_BUFFER_POOL_SIZE).toBe('123');
+  });
+
+  it('clears the 2 GiB default the bulk COPY actually exhausted', () => {
+    // The measured wall, not a round number: gitnexus 1.6.10 defaults to min(2 GiB, 80% RAM),
+    // and the COPY of a 22,394-file / 238,521-node graph ran out inside it.
+    expect(GITNEXUS_LBUG_BUFFER_POOL_BYTES).toBeGreaterThan(2 * 1024 ** 3);
+  });
+
+  it('is NOT the 80%-of-RAM escape hatch', () => {
+    // `0` is gitnexus's pass-through sentinel for LadybugDB's native 80%-of-RAM default.
+    // On this 251 GB shared box that is a ~200 GB RESIDENT pool -- a worse failure than the
+    // one being fixed. This asserts we chose a bounded number, not the unbounded one.
+    expect(GITNEXUS_LBUG_BUFFER_POOL_BYTES).not.toBe(0);
+    expect(GITNEXUS_LBUG_BUFFER_POOL_BYTES).toBeLessThanOrEqual(32 * 1024 ** 3);
+  });
+});
+
+describe('stranded incomplete-index marker — reported, never cleared (EI-22172147268902766)', () => {
+  it('extracts the marker gitnexus actually writes', () => {
+    // Shape copied verbatim from .gitnexus/meta.json observed 2026-09-02T18:06Z.
+    const marker = readIncompleteIndexMarker({
+      incrementalInProgress: {
+        startedAt: 1788371911968,
+        updatedAt: 1788371911968,
+        phase: 'full-rebuild',
+        toWriteCount: 1201,
+      },
+    });
+    expect(marker).toEqual({ phase: 'full-rebuild', startedAt: 1788371911968, toWriteCount: 1201 });
+  });
+
+  it('reports a clean index as null', () => {
+    expect(readIncompleteIndexMarker({ lastCommit: 'abc' })).toBeNull();
+  });
+
+  it('never throws on malformed input — it runs on the failure path', () => {
+    // A throw here would replace a real analyze diagnosis with a plumbing error, losing
+    // the failure the operator is being alerted about.
+    for (const bad of [null, undefined, 42, 'nope', [], { incrementalInProgress: 'yes' }]) {
+      expect(() => readIncompleteIndexMarker(bad)).not.toThrow();
+      expect(readIncompleteIndexMarker(bad)).toBeNull();
+    }
+  });
+
+  it('tolerates a partial marker rather than inventing fields', () => {
+    expect(readIncompleteIndexMarker({ incrementalInProgress: { phase: 'full-rebuild' } })).toEqual({
+      phase: 'full-rebuild',
+      startedAt: null,
+      toWriteCount: null,
+    });
+    // NaN/Infinity are not usable numbers and must not reach a Date() or an alert body.
+    expect(
+      readIncompleteIndexMarker({ incrementalInProgress: { startedAt: NaN, toWriteCount: Infinity } }),
+    ).toEqual({ phase: null, startedAt: null, toWriteCount: null });
+  });
+
+  it('says the rebuild is FORCED and the marker deliberately kept', () => {
+    // The wording is the payload: without it the alert reads "exited 1" and an operator
+    // cannot tell a one-off failure from an index wedged into rebuild-and-fail forever.
+    const note = describeStrandedIncompleteIndex({
+      phase: 'full-rebuild',
+      startedAt: 1788371911968,
+      toWriteCount: 1201,
+    });
+    expect(note).toContain('INCOMPLETE');
+    expect(note).toContain('toWrite=1201');
+    expect(note).toContain('phase=full-rebuild');
+    expect(note).toMatch(/NOT cleared/);
+  });
+
+  it('is empty for a clean index so the alert body is unchanged', () => {
+    expect(describeStrandedIncompleteIndex(null)).toBe('');
+  });
+
+  it('reads the marker off a real meta.json, and fail-softs on an unreadable one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-meta-'));
+    mkdirSync(join(root, '.gitnexus'));
+    writeFileSync(
+      gitnexusMetaPath(root),
+      JSON.stringify({ incrementalInProgress: { phase: 'full-rebuild', toWriteCount: 7 } }),
+    );
+    expect(readStrandedIncompleteIndex(root)?.toWriteCount).toBe(7);
+
+    // meta.json is ~3 MB and can legitimately be caught mid-write; a parse failure must be
+    // in-band "unobserved", never a throw that swallows the analyze failure being reported.
+    writeFileSync(gitnexusMetaPath(root), '{ truncated mid-write');
+    expect(readStrandedIncompleteIndex(root)).toBeNull();
+    expect(readStrandedIncompleteIndex(join(root, 'does-not-exist'))).toBeNull();
   });
 });
 

@@ -140,6 +140,29 @@ export const GITNEXUS_LBUG_MAX_DB_BYTES = 16 * 1024 * 1024 * 1024;
 /** Alert before the LadybugDB mmap ceiling becomes an outage cliff. */
 export const GITNEXUS_LBUG_DB_ALERT_RATIO = 0.6;
 
+/**
+ * The LadybugDB BUFFER POOL — a different resource from GITNEXUS_LBUG_MAX_DB_BYTES above,
+ * and the distinction is the whole reason this constant exists. The max-DB-size pin is a
+ * virtual-address reservation (cheap to raise). This is RESIDENT memory, so it is sized
+ * deliberately rather than maximised.
+ *
+ * MEASURED 2026-09-02 (EI-22172147268902766): a full rebuild of this repo died ~20 minutes
+ * in with "COPY failed for File: Buffer manager exception: Unable to allocate memory! The
+ * buffer pool is full and no memory could be freed!" — gitnexus 1.6.10 defaults the pool to
+ * `min(2 GiB, 80% RAM)`, i.e. 2 GiB here, and the bulk COPY of a 22,394-file / 238,521-node
+ * graph exhausts it. Raising the NODE heap does nothing for this: the pool is LadybugDB
+ * native memory, which is why the failing run had a 193 GB heap and still died.
+ *
+ * 8 GiB, not upstream's suggested 4 GiB: the on-disk database is already 5.1 GiB and grows
+ * with the tree, and 4 GiB is the generic example from the error string rather than a number
+ * measured against this repo. 8 GiB is ~3% of host RAM — real headroom, still bounded.
+ *
+ * NOT `0`. Zero is gitnexus's escape hatch restoring LadybugDB's native 80%-of-RAM default,
+ * which on this 251 GB box means a ~200 GB RESIDENT pool on a machine shared by ~50 checkouts
+ * and the agent fleet. The failure mode it trades into is worse than the one it fixes.
+ */
+export const GITNEXUS_LBUG_BUFFER_POOL_BYTES = 8 * 1024 * 1024 * 1024;
+
 /** Skip when the box is genuinely oversubscribed — load ABOVE 1.5x cores means real run-queue
  *  queueing, and a 4-minute CPU-heavy index is exactly the wrong thing to pile on. (This box
  *  is 128 cores and idles around 0.5/core, so this defers only during a real storm.) */
@@ -317,9 +340,17 @@ export function analyzeEnv(
   // The LadybugDB ceiling is pinned on every spawn, independent of the heap branch
   // below: an operator overriding the HEAP must not silently also drop the DB pin.
   // An explicit caller-supplied value still wins.
+  //
+  // The buffer pool is pinned on the same terms and for a sharper reason: its default
+  // (2 GiB) is not a ceiling nobody reaches but a wall this repo HITS — it is what killed
+  // the 2026-09-02 rebuild. It rides in the same branch-independent object because the
+  // heap and the pool are separate resources, so an operator tuning NODE_OPTIONS must not
+  // silently drop the one that node flags cannot influence at all.
   const withDbCap: NodeJS.ProcessEnv = {
     ...base,
     GITNEXUS_LBUG_MAX_DB_SIZE: base.GITNEXUS_LBUG_MAX_DB_SIZE ?? String(GITNEXUS_LBUG_MAX_DB_BYTES),
+    GITNEXUS_LBUG_BUFFER_POOL_SIZE:
+      base.GITNEXUS_LBUG_BUFFER_POOL_SIZE ?? String(GITNEXUS_LBUG_BUFFER_POOL_BYTES),
   };
   const existing = (withDbCap.NODE_OPTIONS ?? '').trim();
   if (/--max-old-space-size/.test(existing)) return withDbCap;
@@ -452,6 +483,90 @@ export function gitnexusDbPaths(root: string): GitnexusDbPaths {
 /** PURE — killed BEFORE the promote: a shadow with no promoted database beside it. */
 export function isOrphanShadow(dbExists: boolean, shadowExists: boolean): boolean {
   return shadowExists && !dbExists;
+}
+
+/**
+ * The `incrementalInProgress` marker gitnexus writes into `.gitnexus/meta.json` while a
+ * build is mid-flight, as read back AFTER a failed analyze.
+ *
+ * ⚠ This is deliberately a REPORTER, not a repairer, and that is the whole design decision
+ * (EI-22172147268902766). The obvious "fix" — clear the stranded marker so the next tick
+ * stops being forced into a full rebuild — is actively harmful: the marker is what tells
+ * gitnexus the index is half-written, so clearing it converts a loud, correct "forcing full
+ * rebuild to restore a known-good index" into a SILENT stale/torn index served as if clean.
+ * Forcing the rebuild is the right response to a dirty index; the real defect was that the
+ * rebuild could not succeed (see GITNEXUS_LBUG_BUFFER_POOL_BYTES).
+ *
+ * What was genuinely missing is VISIBILITY. A failed analyze leaves the marker set, so every
+ * subsequent hourly tick is forced into the same ~20-minute full rebuild and fails the same
+ * way — a doom loop whose alert previously read only "exited 1", with nothing to distinguish
+ * a one-off failure from an index wedged into permanent rebuild-and-fail.
+ */
+export interface GitnexusIncompleteIndex {
+  /** The build phase gitnexus recorded (e.g. 'full-rebuild'), when it named one. */
+  phase: string | null;
+  /** When the stranded build started, epoch ms, when recorded. */
+  startedAt: number | null;
+  /** Pending writes at the moment it died — the "last dirty state: toWrite=N" figure. */
+  toWriteCount: number | null;
+}
+
+/** Path to the metadata file carrying the marker above. */
+export function gitnexusMetaPath(root: string): string {
+  return path.join(root, '.gitnexus', 'meta.json');
+}
+
+/**
+ * PURE — extract the marker from already-parsed meta.json content.
+ *
+ * Split from the read so the interesting half is testable without a filesystem, and so a
+ * malformed/absent marker is in-band `null` rather than a throw: this runs on the FAILURE
+ * path, where a second exception would replace a real diagnosis with a plumbing error.
+ */
+export function readIncompleteIndexMarker(meta: unknown): GitnexusIncompleteIndex | null {
+  if (typeof meta !== 'object' || meta === null) return null;
+  const marker = (meta as { incrementalInProgress?: unknown }).incrementalInProgress;
+  if (typeof marker !== 'object' || marker === null) return null;
+  const m = marker as Record<string, unknown>;
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  return {
+    phase: typeof m.phase === 'string' ? m.phase : null,
+    startedAt: num(m.startedAt),
+    toWriteCount: num(m.toWriteCount),
+  };
+}
+
+/**
+ * Read the marker off disk. Fail-soft in BOTH directions: an unreadable or unparseable
+ * meta.json yields `null` (unknown), never a throw, because the caller is already reporting
+ * a failure and must not lose it to a diagnostic.
+ *
+ * ⚠ `null` means "no stranded marker OBSERVED" — absence of evidence. meta.json is ~3 MB of
+ * mostly fileHashes and can legitimately be unreadable mid-write, so callers must phrase it
+ * as unobserved rather than as a positive all-clear.
+ */
+export function readStrandedIncompleteIndex(root: string): GitnexusIncompleteIndex | null {
+  try {
+    return readIncompleteIndexMarker(JSON.parse(readFileSync(gitnexusMetaPath(root), 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+/** PURE — the operator-facing one-liner for a stranded index, or '' when none was observed. */
+export function describeStrandedIncompleteIndex(marker: GitnexusIncompleteIndex | null): string {
+  if (marker === null) return '';
+  const bits = [
+    marker.phase ? `phase=${marker.phase}` : null,
+    marker.toWriteCount !== null ? `toWrite=${marker.toWriteCount}` : null,
+    marker.startedAt !== null ? `startedAt=${new Date(marker.startedAt).toISOString()}` : null,
+  ].filter(Boolean);
+  return (
+    ` ⚠ The index is left INCOMPLETE (incrementalInProgress${bits.length ? `: ${bits.join(' ')}` : ''}), ` +
+    `so every subsequent tick is forced into a fresh FULL rebuild until one succeeds — if this ` +
+    `repeats, the failure is wedged, not intermittent. The marker is deliberately NOT cleared: it ` +
+    `is what stops a half-written index being served as if it were clean.`
+  );
 }
 
 /**
@@ -1389,6 +1504,13 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   if (ranClean) await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);
   const success = ranClean && (canary == null || canary.healthy);
 
+  // Read the incomplete-index marker on the FAILURE path only: on a success it is expected
+  // to be absent, and on a failure it is the fact that separates a one-off from a wedged
+  // rebuild loop. Reported, never cleared — see readStrandedIncompleteIndex.
+  const stranded = success ? null : readStrandedIncompleteIndex(root);
+  const strandedNote = describeStrandedIncompleteIndex(stranded);
+  if (strandedNote) console.warn(`[gitnexus-reindex]${strandedNote}`);
+
   if (r.timedOut) {
     // Recover the residue HERE, not on the next tick.
     //
@@ -1463,11 +1585,16 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
           `system:gitnexus-reindex has now failed ${update.next.consecutiveFailures} consecutive time(s) on ` +
           `${ctx.installSlug}. gitnexus.query / gitnexus.context lookups may be erroring while this persists. ` +
           `Latest failure: ${r.timedOut ? `timed out after ${timeoutMs}ms` : `exited ${r.code}`} — ` +
-          `${(r.stderr || r.stdout).slice(-300)}`,
+          `${(r.stderr || r.stdout).slice(-300)}${strandedNote}`,
         importance: 'urgent',
         workspaceId: ctx.workspaceId,
         harnessSlug: ctx.installSlug,
-        data: { consecutiveFailures: update.next.consecutiveFailures, timedOut: r.timedOut, code: r.code },
+        data: {
+          consecutiveFailures: update.next.consecutiveFailures,
+          timedOut: r.timedOut,
+          code: r.code,
+          incompleteIndex: stranded,
+        },
       });
     } else if (update.shouldResolve) {
       console.log(`[gitnexus-reindex] recovered after a ${prevHealth.consecutiveFailures}-failure streak`);
