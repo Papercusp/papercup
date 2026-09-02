@@ -126,6 +126,15 @@ export function applySecretAllowances(
  * version) reported exactly 31 findings there, matching the image scan's bundled census
  * to the unit. Every one of the 31 is accounted for below.
  *
+ * RE-MEASURED 2026-09-02 for the r19 rebake (pin aea66c75), whose sidecar rebuild grew
+ * serve.mjs by 1.16MB: 32 findings, again matching the image scan's bundled census (2 + 30)
+ * to the unit. The delta was established by SET DIFFERENCE against the r18 bundle, not by
+ * re-reading a longer list — r18 scans to exactly 29, and that reproduction of the committed
+ * number is what makes the diff trustworthy. Of the 30: 28 are byte-identical to findings
+ * already justified below, one is a pure minifier renumbering ('result28=key14' →
+ * 'result27=key14', the same fragment under a new temp-var index), and exactly ONE is new.
+ * The generic-api-key entry names it and where it comes from.
+ *
  * ⛔ SHRINK-ONLY IN SPIRIT: adding an entry means a new unexplained secret appeared in content
  * we ship. That is a finding to investigate first and justify second, never a line to append
  * to make a red gate green.
@@ -147,14 +156,20 @@ export const WORKSPACE_HOST_SECRET_ALLOWANCES: readonly ImageScanSecretAllowance
   {
     rule: 'generic-api-key',
     filePattern: '*/serve.mjs',
-    maxFindings: 29,
+    maxFindings: 30,
     reason:
-      'The bundled server is a single 55MB minified file, and gitleaks\' generic-api-key rule is ' +
-      'entropy-based, so it matches high-entropy NON-secret text. All 29 were read individually: ' +
+      'The bundled server is a single ~57MB minified file, and gitleaks\' generic-api-key rule is ' +
+      'entropy-based, so it matches high-entropy NON-secret text. All 30 were read individually: ' +
       '20 are base64-encoded tokenizer vocabulary (decoding the matches gives ordinary words in ' +
       'several languages — " Canaveral", " subreddit", " richten", " gerçekle", Arabic script, ' +
-      '"UITextFiel"); 7 are minified JS source fragments (matches begin "e4.sortKey===v", ' +
-      '"EMPTY_SET3=new", "consumed=await", "this.signature"); 1 is POSTHOG_PUBLIC_DEFAULTS.projectKey ' +
+      '"UITextFiel"); 8 are minified JS source fragments (matches begin "e4.sortKey===v", ' +
+      '"EMPTY_SET3=new", "consumed=await", "this.signature", "parent=keyOfRow", "result27=key14", ' +
+      'and — the only finding r19 genuinely added — "verdictFns=await", which is the minified form ' +
+      'of `const verdictFns = await import(...)` at packages/operator-core/lib/harness/routines/' +
+      'release-actions.ts:1026. gitleaks flags it because the ADJACENT minified token ends ' +
+      '"...signWithDeviceKey,", so the rule\'s `key`-keyword proximity check captures the next ' +
+      'assignment; the captured text is an identifier and the `await` operator, carrying no value ' +
+      'at all, let alone a credential); 1 is POSTHOG_PUBLIC_DEFAULTS.projectKey ' +
       'from posthog-public-defaults.ts, a PostHog write-only ingestion key designed to ship in ' +
       'clients; and 1 is CANONICAL_INVITE_SECRET from harness/canonical-hive-invite.ts, which that ' +
       'file documents as a DISCOVERY TOKEN deliberately committed under dogfood-silent-canonical-' +

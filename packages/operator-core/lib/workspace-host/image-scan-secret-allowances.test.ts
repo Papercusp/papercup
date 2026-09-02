@@ -26,14 +26,16 @@ const BUNDLE = '/mnt/candidate/sda1/opt/papercusp/releases/0.0.18';
  * The 0.0.18 candidate's real bundled population, reproduced 2026-08-30 by running the pinned
  * gitleaks 8.30.1 over the published bundle at .papercusp/p046-r14-publication/extracted/ — the
  * same artifact baked into the candidate image, confirmed by the content-hashed filename
- * chunk-ZUYEQ4TG-50072df8.js appearing in both. 2 gcp-api-key + 29 generic-api-key = 31, which
- * matches the image scan's own bundled census to the unit.
+ * chunk-ZUYEQ4TG-50072df8.js appearing in both, and RE-MEASURED 2026-09-02 against the r19
+ * bundle (pin aea66c75) whose sidecar rebuild added one entropy match to serve.mjs:
+ * 2 gcp-api-key + 30 generic-api-key = 32, which matches the image scan's own bundled census
+ * to the unit. Both numbers are reproductions of a real scan, never a count chosen to pass.
  */
 function realBundledFindings(): ImageScanSecretFinding[] {
   return [
     { rule: 'gcp-api-key', file: `${BUNDLE}/spa/assets/chunk-ZUYEQ4TG-50072df8.js` },
     { rule: 'gcp-api-key', file: `${BUNDLE}/spa/excalidraw/chunk-ZUYEQ4TG.js` },
-    ...Array.from({ length: 29 }, () => ({ rule: 'generic-api-key', file: `${BUNDLE}/serve.mjs` })),
+    ...Array.from({ length: 30 }, () => ({ rule: 'generic-api-key', file: `${BUNDLE}/serve.mjs` })),
   ];
 }
 
@@ -59,7 +61,7 @@ function scanWith(
 }
 
 describe('workspace-host secret allowances — the real population', () => {
-  it('accounts for every one of the 31 measured findings, leaving nothing to judge', () => {
+  it('accounts for every one of the 32 measured findings, leaving nothing to judge', () => {
     const outcome = applySecretAllowances(realBundledFindings(), WORKSPACE_HOST_SECRET_ALLOWANCES);
     expect(outcome.unjustified).toEqual([]);
     expect(outcome.overflowed).toEqual([]);
@@ -103,8 +105,11 @@ describe('workspace-host secret allowances — the excusing direction', () => {
   });
 
   it('DENIES a NEW secret hiding in an already-justified file', () => {
-    // The realistic leak: serve.mjs is justified for 29 entropy matches, so a real credential
-    // bundled into it would arrive as a 30th. maxFindings is what stops it being absorbed.
+    // The realistic leak: serve.mjs is justified for 30 entropy matches, so a real credential
+    // bundled into it would arrive as a 31st. maxFindings is what stops it being absorbed.
+    // This boundary moves with the justified count and must never be raised without one:
+    // the r19 bump 29→30 was paid for by identifying the added match as the minified form of
+    // `const verdictFns = await import(...)`, not by widening the number to clear a red gate.
     const findings = [
       ...realBundledFindings(),
       { rule: 'generic-api-key', file: `${BUNDLE}/serve.mjs` },
@@ -234,8 +239,8 @@ describe('workspace-host secret allowances — scope of the mechanism', () => {
     const codes = verdict.failures.map((failure) => failure.code);
     expect(codes).toContain('secret-allowance-unusable');
     expect(codes).toContain('secret-threshold');
-    // All 31 judged — none quietly excused by a list that could not be trusted.
-    expect(verdict.policyViolatingSecrets).toBe(31);
+    // All 32 judged — none quietly excused by a list that could not be trusted.
+    expect(verdict.policyViolatingSecrets).toBe(32);
   });
 
   it('does not require a sample when the bundle is clean', () => {

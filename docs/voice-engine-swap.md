@@ -156,6 +156,25 @@ OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_BASE_URL=http://127.0.0.1:3170 \
   npx playwright test e2e/voice-live-e2e.spec.ts
 ```
 
+A third layer drives the **real settings surface inside the shipping Tauri
+shell**, which is where the swap actually happens:
+
+```bash
+VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- scripts/verify-voice-settings.sh
+```
+
+`VERIFY_TAURI_ISOLATED_DB=1` is **not optional and the script enforces it**
+(hard exit 9): the run switches an engine, which POSTs
+`/api/agent-mcp/operator-voice-prefs` — a real write that against the shared DB
+silently rewrites *your own* STT/TTS engine as a side effect of running a test.
+
+It covers four failure modes the two suites above cannot reach by construction:
+the engine pickers are Radix selects rendered through a **portal** (jsdom calls
+`onChange` directly and never opens anything); kokoro and whisper are **real
+services** every unit test mocks; the aria-live regions are fed by a
+**cross-module bus** whose hops are unit-tested individually and never together;
+and **WebKitGTK is not Chrome** (see the last troubleshooting entry).
+
 ## Troubleshooting
 
 **"Local TTS worked, then silently stopped and never came back."**
