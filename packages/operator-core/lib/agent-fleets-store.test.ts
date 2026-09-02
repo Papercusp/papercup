@@ -6,11 +6,13 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import type { Sql } from 'postgres';
+import { describe, expect, it, vi } from 'vitest';
 import {
   asFleetType,
   FLEET_TYPES,
   fleetSlugFromName,
+  getFleetControlStates,
   measureFleetProductiveHeadcount,
   projectFleetHeadcountState,
 } from './agent-fleets-store';
@@ -119,6 +121,82 @@ describe('asFleetType', () => {
     for (const input of ['paired', 'single', null, 'nonsense', 42]) {
       expect(FLEET_TYPES).toContain(asFleetType(input));
     }
+  });
+});
+
+/**
+ * EI-22072194984361823 — the bounded control-state reader behind coord:presence's
+ * `fleetControlState` / `canAcquireWork`. The `sql` parameter is the injection
+ * seam, so this needs no database.
+ */
+describe('getFleetControlStates', () => {
+  type Row = { fleet_slug: string; control_state: string | null; control_reason: string | null };
+  const fakeSql = (rows: Row[]) => {
+    const unsafe = vi.fn(async (_query: string, _params: unknown[]) => rows);
+    return { sql: { unsafe } as unknown as Sql, unsafe };
+  };
+
+  it('returns an empty map WITHOUT querying when no slugs are requested', async () => {
+    const { sql, unsafe } = fakeSql([]);
+    await expect(getFleetControlStates('ws', [], sql)).resolves.toEqual(new Map());
+    expect(unsafe).not.toHaveBeenCalled();
+  });
+
+  it('honours a stored winding-down state', async () => {
+    const { sql } = fakeSql([
+      { fleet_slug: 'windows-parity', control_state: 'winding-down', control_reason: 'all members terminal' },
+    ]);
+    const out = await getFleetControlStates('ws', ['windows-parity'], sql);
+    expect(out.get('windows-parity')).toEqual({
+      fleetSlug: 'windows-parity',
+      controlState: 'winding-down',
+      controlReason: 'all members terminal',
+    });
+  });
+
+  it.each([
+    ['active', 'the ordinary active value'],
+    [null, 'a legacy NULL'],
+    ['paused', 'a value this reader does not model'],
+    ['WINDING-DOWN', 'a case variant that must not match'],
+    ['winding-down ', 'a whitespace-padded lookalike'],
+  ])('narrows control_state %j to active (%s)', async (stored, _why) => {
+    const { sql } = fakeSql([{ fleet_slug: 'f', control_state: stored, control_reason: null }]);
+    const out = await getFleetControlStates('ws', ['f'], sql);
+    expect(out.get('f')?.controlState).toBe('active');
+  });
+
+  it('leaves an unmatched slug ABSENT so callers can apply their fail-open policy', async () => {
+    // Absent must stay absent rather than materialising as 'active': the caller
+    // distinguishes "no row" from "a row that says active" when reporting.
+    const { sql } = fakeSql([]);
+    const out = await getFleetControlStates('ws', ['gone'], sql);
+    expect(out.has('gone')).toBe(false);
+    expect(out.size).toBe(0);
+  });
+
+  it('deduplicates slugs and drops blank/non-string entries before querying', async () => {
+    const { sql, unsafe } = fakeSql([]);
+    await getFleetControlStates(
+      'ws',
+      ['a', 'a', '', 'b', undefined as unknown as string, null as unknown as string],
+      sql,
+    );
+    expect(unsafe).toHaveBeenCalledTimes(1);
+    expect(unsafe.mock.calls[0][1]).toEqual(['ws', ['a', 'b']]);
+  });
+
+  it('scopes the read to the requested workspace', async () => {
+    const { sql, unsafe } = fakeSql([]);
+    await getFleetControlStates('ws-42', ['f'], sql);
+    const [query, params] = unsafe.mock.calls[0] as [string, unknown[]];
+    expect(query).toContain('workspace_id = $1');
+    expect(params[0]).toBe('ws-42');
+  });
+
+  it('defaults a missing control_reason to null', async () => {
+    const { sql } = fakeSql([{ fleet_slug: 'f', control_state: 'winding-down', control_reason: null }]);
+    expect((await getFleetControlStates('ws', ['f'], sql)).get('f')?.controlReason).toBeNull();
   });
 });
 

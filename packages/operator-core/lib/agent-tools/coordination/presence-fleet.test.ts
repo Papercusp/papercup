@@ -35,3 +35,72 @@ describe('resolvePresenceFleet', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * EI-22072194984361823. The reported failure: `coord:presence` showed
+ * `fleet: "windows-parity"` on a live, actively-turning agent while that fleet
+ * was winding-down, so a router spent a send, a dispatch and a claim before the
+ * claim refusal (`fleet_winding_down`) revealed the agent could not take work at
+ * all. These pin the rule that now makes the disqualifier visible up front.
+ */
+describe('deriveFleetControlVisibility (EI-22072194984361823)', () => {
+  const WINDING = new Map([['windows-parity', { controlState: 'winding-down' as const }]]);
+  const ACTIVE = new Map([['ui-fleet', { controlState: 'active' as const }]]);
+
+  it('marks a MEMBER of a winding-down fleet as unable to acquire work', () => {
+    expect(
+      deriveFleetControlVisibility({ fleetSlug: 'windows-parity', fleetRole: 'member' }, WINDING),
+    ).toEqual({ fleetControlState: 'winding-down', canAcquireWork: false });
+  });
+
+  it('still reports a LEADER of that same winding-down fleet as able to acquire work', () => {
+    // The asymmetry is the load-bearing part: resolveFleetScopeContext returns
+    // null unless fleetRole === 'member', so fleetControlWindDownRefusal can
+    // never fire for a leader. Reporting canAcquireWork:false here would invent
+    // a gate the claim path does not enforce and hide a viable candidate.
+    expect(
+      deriveFleetControlVisibility({ fleetSlug: 'windows-parity', fleetRole: 'leader' }, WINDING),
+    ).toEqual({ fleetControlState: 'winding-down', canAcquireWork: true });
+  });
+
+  it('leaves a member of an active fleet unrestricted', () => {
+    expect(deriveFleetControlVisibility({ fleetSlug: 'ui-fleet', fleetRole: 'member' }, ACTIVE)).toEqual({
+      fleetControlState: 'active',
+      canAcquireWork: true,
+    });
+  });
+
+  it('FAILS OPEN for a slug with no fleet row rather than fabricating a gate', () => {
+    // A deleted fleet, or a stale hand-set coord_presence.fleet_slug label that
+    // never had a row. fleetControlWindDownRefusal refuses only on a POSITIVE
+    // winding-down read, so presence must not advertise a stricter rule.
+    expect(
+      deriveFleetControlVisibility({ fleetSlug: 'never-registered', fleetRole: 'member' }, WINDING),
+    ).toEqual({ fleetControlState: 'active', canAcquireWork: true });
+  });
+
+  it('fails open when the batched control-state read returned nothing at all', () => {
+    expect(
+      deriveFleetControlVisibility({ fleetSlug: 'windows-parity', fleetRole: 'member' }, new Map()),
+    ).toEqual({ fleetControlState: 'active', canAcquireWork: true });
+  });
+
+  it('treats an agent with no fleet as ungated', () => {
+    expect(deriveFleetControlVisibility({ fleetSlug: null, fleetRole: null }, WINDING)).toEqual({
+      fleetControlState: 'active',
+      canAcquireWork: true,
+    });
+  });
+
+  it('gates ONLY the literal member role, never an unknown/absent one', () => {
+    // fleet_role is a soft nullable label on coord_presence; only 'member' is
+    // what resolveFleetScopeContext matches, so anything else must stay ungated.
+    expect(
+      deriveFleetControlVisibility({ fleetSlug: 'windows-parity', fleetRole: null }, WINDING).canAcquireWork,
+    ).toBe(true);
+    expect(
+      deriveFleetControlVisibility({ fleetSlug: 'windows-parity', fleetRole: 'observer' }, WINDING)
+        .canAcquireWork,
+    ).toBe(true);
+  });
+});
