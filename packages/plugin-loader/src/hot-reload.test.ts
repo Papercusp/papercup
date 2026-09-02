@@ -89,6 +89,15 @@ describe('HotReloader', () => {
       hr = new HotReloader(dir, { debounceMs });
       const reloaded: unknown[] = [];
       hr.on('reloaded', (e) => reloaded.push(e));
+      // A debounce that fires MID-BURST — precisely what a stalled host causes — can read
+      // papercusp.json while a writeFile is still in flight and emit 'error' on a torn parse.
+      // HotReloader is an EventEmitter, so with no 'error' listener Node escalates that to
+      // ERR_UNHANDLED_ERROR and vitest records the file as `error` — which is in the gate's RED
+      // set just like `fail`. That turned the retryable stall this test now handles into a hard
+      // crash instead. A torn read during a burst is expected and says nothing about coalescing,
+      // so absorb it here; the dedicated manifest-error test above is what asserts that path.
+      const tornReads: unknown[] = [];
+      hr.on('error', (e) => tornReads.push(e));
       await hr.start();
 
       const burstStart = Date.now();
@@ -106,7 +115,10 @@ describe('HotReloader', () => {
         return;
       }
 
-      stalls.push(`attempt ${attempt}: a 5-write burst took ${burstMs}ms, past the ${debounceMs}ms window`);
+      stalls.push(
+        `attempt ${attempt}: a 5-write burst took ${burstMs}ms, past the ${debounceMs}ms window` +
+          ` (${tornReads.length} torn manifest read(s), ${reloaded.length} reload(s))`,
+      );
       hr.stop();
       hr = null;
       // Re-aim at the speed actually observed, capped so a pathological host cannot stretch the
