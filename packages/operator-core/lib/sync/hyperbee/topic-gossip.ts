@@ -43,6 +43,7 @@ import Protomux from 'protomux';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import c from 'compact-encoding';
 import type { HyperswarmLike } from './swarm';
+import { readWireStats } from './wire-stats';
 
 /** FAST per-topic discovery-refresh cadence — re-runs the DHT announce + lookup
  *  round so peers converge even when the first round misses (it reliably does
@@ -127,6 +128,14 @@ export interface GossipSeveredLinkInfo {
    *  stale-DHT limbo (escalated at 2× the severed threshold), not a formed
    *  link that broke. */
   neverPaired?: boolean;
+  /** P-203 / EI-22137294505377834: peer sockets this escalation DESTROYED
+   *  (no inbound activity within `socketLivenessWindowMs` — a true zombie). */
+  socketsEvicted?: number;
+  /** P-203 / EI-22137294505377834: peer sockets this escalation SPARED because
+   *  they showed inbound activity within the liveness window — they are live
+   *  for some other topic/protocol muxed over the same connection, and the
+   *  severed topic is one this peer simply no longer serves. */
+  socketsSpared?: number;
 }
 
 /**
@@ -139,6 +148,35 @@ export interface GossipSeveredLinkInfo {
  * link). `0` disables the escalation (status-quo pre-EI-13317 behavior).
  */
 export const DEFAULT_SEVERED_ESCALATION_MS = 5 * 60_000;
+
+/**
+ * P-203 / EI-22137294505377834: the severed-link escalation's SOCKET LIVENESS
+ * window. A peer socket that showed INBOUND activity — its UDX `bytesReceived`
+ * counter advanced between two refresh ticks, a gossip frame arrived on any of
+ * its channels, or it connected — within this many ms is SPARED by another
+ * topic's escalation; only a socket with NO inbound evidence for the whole
+ * window (a true zombie) is destroyed.
+ *
+ * Why the predicate exists: EI-13317/WI-5481 made the escalation evict EVERY
+ * socket unconditionally, because the old "is another topic still claiming
+ * it?" guard deadlocked on a half-open socket (every topic riding a dead socket
+ * refused to evict for the others). But "the topic is severed" is NOT "the
+ * socket is dead": on the two-machine rig the VM's two hive-directory topics
+ * stayed permanently severed (the tower no longer gossips them), so every
+ * 300s the VM destroyed its ONLY tower socket — which was busy replicating
+ * hello-world-3-pot and serving pot-git the whole time — on an exact 5-minute
+ * cadence (measured 2026-09-02 06:35–08:15Z: `[swarm-churn] close … zombie-socket
+ * eviction on severed-link escalation` every 300s, tower fetch failing with
+ * "duplex already destroyed before fetch began"). Inbound activity is the
+ * signal that separates the two cases and that the WI-5481 deadlock cannot
+ * fake: a dead socket receives nothing, so it is still evicted at the first
+ * escalation; a live one receives keepalives/replication and survives.
+ *
+ * The effective window is `min(this, severedEscalationMs)` unless the caller
+ * passes `socketLivenessWindowMs` explicitly; `0` disables the predicate
+ * (byte-identical EI-13317/WI-5481 unconditional eviction).
+ */
+export const DEFAULT_SOCKET_LIVENESS_WINDOW_MS = 120_000;
 
 export interface TopicGossipHandle<Frame> {
   /** Join a gossip topic. Opens the topic's channel on every existing
@@ -204,6 +242,15 @@ export interface CreateTopicGossipOpts<Frame> {
    */
   severedEscalationMs?: number;
   /**
+   * P-203 / EI-22137294505377834: how recently a peer socket must have shown
+   * INBOUND activity for the severed-link escalation to spare it (see
+   * `DEFAULT_SOCKET_LIVENESS_WINDOW_MS` for the forensics). Default
+   * `min(DEFAULT_SOCKET_LIVENESS_WINDOW_MS, severedEscalationMs)`. `0`
+   * disables the predicate — every socket is evicted on escalation, the
+   * EI-13317/WI-5481 behavior.
+   */
+  socketLivenessWindowMs?: number;
+  /**
    * EI-13317 observability: fires when the severed-link escalation trips
    * (see `severedEscalationMs`) — the LOUD signal a persistently-severed
    * topic requires instead of silently freezing. Best-effort; a throw is
@@ -256,6 +303,60 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
    * A↔B connection per the module header).
    */
   const socketTopics = new WeakMap<object, Set<string>>();
+
+  /**
+   * P-203 / EI-22137294505377834: per-socket INBOUND-activity ledger — the
+   * severed-link escalation's liveness predicate (see
+   * `DEFAULT_SOCKET_LIVENESS_WINDOW_MS`). `lastInboundMs` advances when the
+   * socket connects, when its UDX `bytesReceived` counter moves between two
+   * refresh ticks (any protocol muxed over the connection — hypercore
+   * replication, pot-git, another gossip family — counts, which is the point:
+   * this instance cannot see those channels, but the wire can), when a remote
+   * pairs a channel on it, or when a gossip frame arrives on any of its
+   * channels (the fallback when the raw stream exposes no counters).
+   */
+  interface SocketActivity {
+    /** Last sampled UDX `bytesReceived` (undefined = no counter exposed). */
+    lastBytesReceived: number | undefined;
+    /** Last time inbound activity was OBSERVED on this socket. */
+    lastInboundMs: number;
+  }
+  const socketActivity = new WeakMap<object, SocketActivity>();
+  const noteInbound = (socket: unknown, now: number): void => {
+    const a = socketActivity.get(socket as object);
+    if (a) a.lastInboundMs = now;
+    else {
+      socketActivity.set(socket as object, {
+        lastBytesReceived: readWireStats(socket).bytesReceived,
+        lastInboundMs: now,
+      });
+    }
+  };
+  /** One refresh tick's wire sample: a `bytesReceived` that advanced since the
+   *  last sample is inbound activity. Reads one property per socket. */
+  const sampleWireActivity = (now: number): void => {
+    for (const socket of sockets) {
+      const a = socketActivity.get(socket as object);
+      if (!a) continue;
+      const bytesReceived = readWireStats(socket).bytesReceived;
+      if (bytesReceived === undefined) continue;
+      if (a.lastBytesReceived !== undefined && bytesReceived > a.lastBytesReceived) {
+        a.lastInboundMs = now;
+      }
+      a.lastBytesReceived = bytesReceived;
+    }
+  };
+  const resolveSocketLivenessWindowMs = (severedEscalationMs: number): number =>
+    opts.socketLivenessWindowMs ?? Math.min(DEFAULT_SOCKET_LIVENESS_WINDOW_MS, severedEscalationMs);
+  /** True when the socket showed inbound activity within the liveness window.
+   *  A socket with no ledger entry (never registered through `handler`) or
+   *  none within the window is NOT proven live → evicted, exactly as
+   *  EI-13317/WI-5481 requires for the dead-socket case. */
+  const isSocketProvenLive = (socket: unknown, now: number, windowMs: number): boolean => {
+    if (windowMs <= 0) return false;
+    const a = socketActivity.get(socket as object);
+    return !!a && now - a.lastInboundMs < windowMs;
+  };
 
   /**
    * WI-5355: true when `socket` currently holds ZERO live paired channels
@@ -396,6 +497,8 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           // peer online, which the ladder should not act on).
           st.everPaired = true;
           pairedAtMs = Date.now();
+          // P-203: a remote pairing a channel is inbound activity on this socket.
+          noteInbound(socket, pairedAtMs);
           // WI-5355: record that THIS socket is live-paired on THIS topic, so
           // the severed-link escalation can tell a genuinely-idle (zombie)
           // socket apart from one still serving another shared topic.
@@ -474,6 +577,9 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
       message = channel.addMessage<Frame>({
         encoding: c.json,
         onmessage: (frame: Frame) => {
+          // P-203: any gossip frame on any channel of this socket is inbound
+          // activity — the liveness fallback when the raw stream has no counters.
+          noteInbound(socket, Date.now());
           try {
             void Promise.resolve(opts.onFrame(frame, topicHex)).catch(() => {});
           } catch {
@@ -499,12 +605,17 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
       console.warn(`[topic-gossip:${opts.protocol}] swarm connection #${connectionCount}`);
     }
     sockets.add(socket);
+    // P-203: connecting is inbound activity — a socket younger than the
+    // liveness window is never destroyed by another topic's escalation (it may
+    // be the very reconnect that escalation is trying to provoke).
+    noteInbound(socket, Date.now());
     // Unclean disconnect guard — same as joinHarnessSwarm's handler: an
     // unhandled socket 'error' (peer reset) is an uncaught exception that can
     // crash the host. Found by the P-004 swarm-chaos test.
     (socket as { on?: (ev: string, fn: (e: unknown) => void) => unknown }).on?.('error', () => {});
     (socket as { once?: (ev: string, fn: () => void) => unknown }).once?.('close', () => {
       sockets.delete(socket);
+      socketActivity.delete(socket as object);
     });
     for (const st of topics.values()) openTopicChannel(socket, st);
   };
@@ -545,6 +656,9 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
       () => {
         const now = Date.now();
         const severedEscalationMs = opts.severedEscalationMs ?? DEFAULT_SEVERED_ESCALATION_MS;
+        // P-203: sample every socket's wire counter BEFORE any topic's
+        // escalation below decides which sockets are live.
+        sampleWireActivity(now);
         for (const st of topics.values()) {
           // ── EI-13317 escalation ladder ──
           // Evaluated on EVERY tick for EVERY topic, independent of that
@@ -595,11 +709,6 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
               } catch {
                 /* diagnostic-only; swallow */
               }
-              try {
-                opts.onSeveredLink?.(info);
-              } catch {
-                /* diagnostic-only callback; swallow */
-              }
               // WI-5355 (EI-13317 downstream): a plain DHT leave()+join() alone
               // cannot heal this — traced into the installed hyperswarm's
               // `_handlePeer`, the client-side rediscovery callback: it no-ops
@@ -630,7 +739,28 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
               // rejoining, so Hyperswarm's own `_allConnections`/`this.connections`
               // bookkeeping no longer blocks `_handlePeer` on the next
               // DHT-found event.
+              //
+              // P-203 / EI-22137294505377834 (the OTHER half of that trade-off):
+              // "this topic is severed" is not "this socket is dead". A peer
+              // that legitimately stopped serving THIS topic (the rig VM's
+              // hive-directory topics — the tower no longer gossips them) keeps
+              // the SAME socket busy for every other protocol muxed over it, and
+              // unconditional eviction killed that live socket every 300s. So
+              // evict only a socket with NO inbound activity for the whole
+              // liveness window (`DEFAULT_SOCKET_LIVENESS_WINDOW_MS`): a dead
+              // socket receives nothing and is still evicted at the first
+              // escalation (the WI-5481 deadlock stays broken — the predicate
+              // never consults other topics' claims, which is what deadlocked);
+              // a socket that received bytes recently is spared, and the
+              // channel re-open + DHT rejoin below still run for this topic.
+              const livenessWindowMs = resolveSocketLivenessWindowMs(severedEscalationMs);
+              let socketsEvicted = 0;
+              let socketsSpared = 0;
               for (const socket of sockets) {
+                if (isSocketProvenLive(socket, now, livenessWindowMs)) {
+                  socketsSpared++;
+                  continue;
+                }
                 // Diagnostic-only: note when we are breaking the shared-socket
                 // deadlock (destroying a socket another topic still claims).
                 // Never let a throwing console block the eviction below (same
@@ -639,15 +769,35 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
                   try {
                     console.error(
                       `[topic-gossip:${opts.protocol}] force-evicting a peer socket still shared with ` +
-                        `other topics (topic ${topicHex.slice(0, 16)}…) — a forced rejoin means the link ` +
-                        `is proven dead for every muxed topic; breaking the shared-socket eviction ` +
-                        `deadlock (EI-13317/WI-5481).`,
+                        `other topics (topic ${topicHex.slice(0, 16)}…) — no inbound activity for ` +
+                        `${Math.round(livenessWindowMs / 1000)}s, so the link is dead for every muxed ` +
+                        `topic; breaking the shared-socket eviction deadlock (EI-13317/WI-5481).`,
                     );
                   } catch {
                     /* diagnostic-only; swallow */
                   }
                 }
                 evictIdleZombieSocket(socket);
+                socketsEvicted++;
+              }
+              if (socketsSpared > 0 && !process.env.VITEST) {
+                try {
+                  console.error(
+                    `[topic-gossip:${opts.protocol}] spared ${socketsSpared} live peer socket(s) on the ` +
+                      `severed-link escalation for topic ${topicHex.slice(0, 16)}… (inbound activity within ` +
+                      `${Math.round(livenessWindowMs / 1000)}s — the peer is live for other traffic and ` +
+                      `simply no longer serves this topic; P-203 / EI-22137294505377834); evicted ${socketsEvicted}.`,
+                  );
+                } catch {
+                  /* diagnostic-only; swallow */
+                }
+              }
+              info.socketsEvicted = socketsEvicted;
+              info.socketsSpared = socketsSpared;
+              try {
+                opts.onSeveredLink?.(info);
+              } catch {
+                /* diagnostic-only callback; swallow */
               }
               // WI-5355 iteration 3: the DHT-level leave()+join() below cannot,
               // by itself, heal a topic whose Protomux CHANNEL was already

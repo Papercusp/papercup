@@ -29,6 +29,10 @@ interface FakeChannel {
   open(): void;
   pairRemote(): void;
   fireClose(): void;
+  /** P-203: the `onmessage` handler the module registered via addMessage(). */
+  onmessage?: (frame: unknown) => void;
+  /** P-203: deliver an inbound frame on this channel (as the remote would). */
+  deliver(frame: unknown): void;
 }
 interface FakeMux {
   channels: FakeChannel[];
@@ -69,10 +73,14 @@ function makeMux(): FakeMux {
           this.closed = true;
           this.onclose?.();
         },
+        deliver(frame: unknown) {
+          this.onmessage?.(frame);
+        },
       };
       (
         ch as unknown as { addMessage: (m: { onmessage?: (f: unknown) => void }) => { send: (v: unknown) => void } }
       ).addMessage = (m) => {
+        ch.onmessage = m.onmessage;
         return { send: (v: unknown) => ch.sent.push(v) };
       };
       mux.channels.push(ch);
@@ -128,10 +136,18 @@ function fakeSwarm() {
   };
   return {
     swarm,
-    connect(): { userData?: FakeMux; destroy: (err?: Error) => void; destroyed: boolean } {
+    /** `rawStream` (P-203): optionally expose UDX-shaped wire counters, the way a
+     *  real NoiseSecretStream does via `socket.rawStream.bytesReceived`. */
+    connect(rawStream?: { bytesReceived: number }): {
+      userData?: FakeMux;
+      destroy: (err?: Error) => void;
+      destroyed: boolean;
+      rawStream?: { bytesReceived: number };
+    } {
       const socket = {
         userData: undefined as FakeMux | undefined,
         destroyed: false,
+        rawStream,
         destroy(_err?: Error) {
           socket.destroyed = true;
           connections.delete(socket);
@@ -312,12 +328,165 @@ describe('createTopicGossip severed-link escalation ladder (EI-13317)', () => {
 
     await vi.advanceTimersByTimeAsync(1100);
     expect(f.left).toHaveLength(1); // TOPIC's escalation fired
-    // EI-13317/WI-5481: evicted unconditionally even though TOPIC2 still
-    // claimed it — a real destroy() would cascade-close every muxed channel
-    // (incl. TOPIC2's), but this fake doesn't model that cascade, so we only
-    // assert the eviction decision itself here.
+    // EI-13317/WI-5481: evicted even though TOPIC2 still claimed it — a real
+    // destroy() would cascade-close every muxed channel (incl. TOPIC2's), but
+    // this fake doesn't model that cascade, so we only assert the eviction
+    // decision itself here. P-203 keeps this verdict: the socket showed NO
+    // inbound activity (no wire counters, no frames) for the whole liveness
+    // window, which is exactly the dead half-open shape WI-5481 fixed — the
+    // predicate never consults other topics' claims, so it cannot deadlock.
     expect(socket.destroyed).toBe(true);
     await g.close();
+  });
+
+  describe('P-203 / EI-22137294505377834: socket liveness predicate — a severed TOPIC is not a dead SOCKET', () => {
+    // Forensics (rig VM Lm1ABoMR, 2026-09-02 06:35–08:15Z): the VM's two
+    // hive-directory topics stayed permanently severed (the tower no longer
+    // gossips them), so every 300s the unconditional eviction destroyed the
+    // VM's ONLY tower socket — which was replicating hello-world-3-pot and
+    // serving pot-git the whole time — on an exact 5-minute cadence. Inbound
+    // activity separates "peer stopped serving this topic" (spare) from "socket
+    // is dead" (evict), and a dead socket cannot fake it.
+    const TOPIC2 = Buffer.alloc(32, 22);
+    const mk = (f: ReturnType<typeof fakeSwarm>, extra: { socketLivenessWindowMs?: number } = {}) =>
+      createTopicGossip<Frame>({
+        swarm: f.swarm,
+        protocol: 'papercusp/test-gossip',
+        onFrame: () => {},
+        getHelloFrames: () => [],
+        refreshMs: 50,
+        fastWindowMs: 200,
+        slowRefreshMs: 500,
+        severedEscalationMs: 1000,
+        ...extra,
+      });
+
+    it('SPARES a socket whose UDX bytesReceived keeps advancing (live for other traffic) — the escalation still leaves+rejoins the topic', async () => {
+      const f = fakeSwarm();
+      const onSeveredLink = vi.fn();
+      const g = createTopicGossip<Frame>({
+        swarm: f.swarm,
+        protocol: 'papercusp/test-gossip',
+        onFrame: () => {},
+        getHelloFrames: () => [],
+        refreshMs: 50,
+        fastWindowMs: 200,
+        slowRefreshMs: 500,
+        severedEscalationMs: 1000,
+        onSeveredLink,
+      });
+      g.joinTopic(TOPIC);
+      const raw = { bytesReceived: 4096 };
+      const socket = f.connect(raw);
+      const ch = socket.userData!.channels[0];
+      ch.pairRemote();
+      ch.fireClose(); // the peer stopped serving TOPIC…
+      // …but the SAME socket keeps receiving bytes (replication / pot-git /
+      // another gossip family — invisible to this instance, visible on the wire).
+      const pump = setInterval(() => {
+        raw.bytesReceived += 100;
+      }, 100);
+
+      await vi.advanceTimersByTimeAsync(1100); // cross severedEscalationMs
+      clearInterval(pump);
+      expect(f.left).toHaveLength(1); // the topic-level leave+rejoin still runs
+      expect(f.joined).toHaveLength(2);
+      expect(onSeveredLink).toHaveBeenCalledTimes(1);
+      const info = onSeveredLink.mock.calls[0]![0] as GossipSeveredLinkInfo;
+      expect(info.socketsSpared).toBe(1);
+      expect(info.socketsEvicted).toBe(0);
+      expect(socket.destroyed).toBe(false); // P-203: the live socket survives
+      expect(f.connections.has(socket)).toBe(true);
+      await g.close();
+    });
+
+    it('EVICTS a socket whose bytesReceived stopped advancing for the whole window, even while another topic still claims it (WI-5481 dead half-open shape)', async () => {
+      const f = fakeSwarm();
+      const onSeveredLink = vi.fn();
+      const g = createTopicGossip<Frame>({
+        swarm: f.swarm,
+        protocol: 'papercusp/test-gossip',
+        onFrame: () => {},
+        getHelloFrames: () => [],
+        refreshMs: 50,
+        fastWindowMs: 200,
+        slowRefreshMs: 500,
+        severedEscalationMs: 1000,
+        onSeveredLink,
+      });
+      g.joinTopic(TOPIC);
+      g.joinTopic(TOPIC2);
+      const raw = { bytesReceived: 4096 }; // counters PRESENT, then frozen
+      const socket = f.connect(raw);
+      const chs = socket.userData!.channels;
+      chs.find((c) => c.id && c.id.equals(TOPIC))!.pairRemote();
+      chs.find((c) => c.id && c.id.equals(TOPIC2))!.pairRemote();
+      chs.find((c) => c.id && c.id.equals(TOPIC))!.fireClose();
+
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(f.left).toHaveLength(1);
+      const info = onSeveredLink.mock.calls[0]![0] as GossipSeveredLinkInfo;
+      expect(info.socketsEvicted).toBe(1);
+      expect(info.socketsSpared).toBe(0);
+      expect(socket.destroyed).toBe(true);
+      await g.close();
+    });
+
+    it('counts a gossip frame on ANY channel of the socket as inbound activity (no wire counters exposed)', async () => {
+      const f = fakeSwarm();
+      const g = mk(f);
+      g.joinTopic(TOPIC);
+      g.joinTopic(TOPIC2);
+      const socket = f.connect(); // no rawStream at all — frame-level fallback
+      const chs = socket.userData!.channels;
+      const ch1 = chs.find((c) => c.id && c.id.equals(TOPIC))!;
+      const ch2 = chs.find((c) => c.id && c.id.equals(TOPIC2))!;
+      ch1.pairRemote();
+      ch2.pairRemote();
+      ch1.fireClose();
+      const pump = setInterval(() => ch2.deliver({ kind: 'hello' }), 100);
+
+      await vi.advanceTimersByTimeAsync(1100);
+      clearInterval(pump);
+      expect(f.left).toHaveLength(1);
+      expect(socket.destroyed).toBe(false);
+      await g.close();
+    });
+
+    it('a socket that connected within the window is never destroyed by another topic\'s escalation (it may be the reconnect itself)', async () => {
+      const f = fakeSwarm();
+      const g = mk(f);
+      g.joinTopic(TOPIC);
+      const old = f.connect();
+      old.userData!.channels[0].pairRemote();
+      old.userData!.channels[0].fireClose();
+      await vi.advanceTimersByTimeAsync(700);
+      const fresh = f.connect(); // arrives 300ms before the escalation, never pairs
+      await vi.advanceTimersByTimeAsync(400);
+      expect(f.left).toHaveLength(1);
+      expect(old.destroyed).toBe(true); // silent for the whole window → zombie
+      expect(fresh.destroyed).toBe(false); // younger than the window → spared
+      await g.close();
+    });
+
+    it('socketLivenessWindowMs: 0 restores unconditional eviction (EI-13317/WI-5481 behavior)', async () => {
+      const f = fakeSwarm();
+      const g = mk(f, { socketLivenessWindowMs: 0 });
+      g.joinTopic(TOPIC);
+      const raw = { bytesReceived: 4096 };
+      const socket = f.connect(raw);
+      const ch = socket.userData!.channels[0];
+      ch.pairRemote();
+      ch.fireClose();
+      const pump = setInterval(() => {
+        raw.bytesReceived += 100;
+      }, 100);
+      await vi.advanceTimersByTimeAsync(1100);
+      clearInterval(pump);
+      expect(f.left).toHaveLength(1);
+      expect(socket.destroyed).toBe(true);
+      await g.close();
+    });
   });
 
   it('WI-5355 iteration 3 (EI-13317/WI-5481 unconditional-eviction era): re-opens a CHANNEL for the topic on the next fresh connection after the forced leave+rejoin', async () => {
