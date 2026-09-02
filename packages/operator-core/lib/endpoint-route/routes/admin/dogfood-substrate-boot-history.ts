@@ -65,6 +65,7 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   announce_admitted: true,
   announce_pending: true,
   announce_rejected: true,
+  policy_drop: true,
   announce_clock_skew: true,
   announce_error: true,
   merge_error: true,

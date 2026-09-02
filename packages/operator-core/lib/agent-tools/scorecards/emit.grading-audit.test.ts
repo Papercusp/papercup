@@ -122,6 +122,16 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
     );
     expect(res.ok).toBe(true);
     expect((res as { gradingAuditPending?: boolean }).gradingAuditPending).toBe(true);
+    // EI-22068670622018218: the boolean alone told callers THAT the card was pending but
+    // not what settles it, so the mechanism got rediscovered a gate-refusal later. The
+    // stamp must ship the next step with it: a NON-AUTHOR grading-integrity audit naming
+    // THIS card, plus the two traps (self-audit refused, re-emit files a duplicate).
+    const nextStep = (res as { gradingAuditNextStep?: string }).gradingAuditNextStep ?? '';
+    expect(nextStep).toContain('NON-AUTHOR');
+    expect(nextStep).toContain('grading-integrity');
+    expect(nextStep).toContain("subject:{ kind:'scorecard'");
+    expect(nextStep).toMatch(/self-audits are refused/i);
+    expect(nextStep).toMatch(/duplicate pending card/i);
     const payload = captureImprovement.mock.calls[0][0] as {
       payloadExtra: { observation: { gradingAudit?: { state: string; metaRubricRef: string } } };
     };
@@ -139,6 +149,9 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
     );
     expect(res.ok).toBe(true);
     expect((res as { gradingAuditPending?: boolean }).gradingAuditPending).toBeUndefined();
+    // The next step is bound to the stamp that creates it: no stamp, no instruction to
+    // audit a card nothing is waiting on.
+    expect((res as { gradingAuditNextStep?: string }).gradingAuditNextStep).toBeUndefined();
     const payload = captureImprovement.mock.calls[0][0] as {
       payloadExtra: { observation: { gradingAudit?: unknown } };
     };

@@ -1312,7 +1312,21 @@ export async function emitScorecard(
       issueId: result.issue?.id ?? null,
       evidenceFingerprint,
       // P-013: surfaced loudly — this card does not enter the trend until audited.
-      ...(gradingAudit ? { gradingAuditPending: true } : {}),
+      // A bare boolean was NOT loud enough: it says THAT the card is pending but not what
+      // settles it, so callers rediscovered the mechanism a gate-refusal later
+      // (EI-22068670622018218: emitted the exact terminal cards, read `gradingAuditPending`
+      // as incidental, then read plans:start's refusal as the cards being missing) or by
+      // hand-tracing the audit contract. The next step ships WITH the stamp that creates it.
+      ...(gradingAudit
+        ? {
+            gradingAuditPending: true,
+            gradingAuditNextStep:
+              'This card does not satisfy a gate until a NON-AUTHOR audits it. A DIFFERENT agent must emit ' +
+              `{ rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ` +
+              `ref:'${result.issue?.id ?? '<this card id>'}' }, ratings:{...} }. Self-audits are refused, and ` +
+              're-emitting this card yourself files a duplicate pending card instead of settling this one.',
+          }
+        : {}),
       ...(auditSettlement
         ? {
             gradingAuditRecorded: auditSettlement.ok,
