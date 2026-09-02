@@ -4601,14 +4601,26 @@ export async function buildLeaderBrief(
             // is a discipline problem — and acting on that reading produces a fleet-wide
             // directive that cannot possibly help, which is exactly what happened in the
             // incident that filed this (EI-18680302159738037).
+            // EI-22191915292755203: the routes offered here must NOT be limited to ones
+            // that ADMIT the refused item. A claim-spec refusal is frequently the spec
+            // WORKING AS INTENDED (the item is genuinely outside this fleet's declared
+            // mission scope) — presenting only "widen the lane" / "route it to a member"
+            // biases a leader toward dissolving their own mission constraint on every
+            // refusal, even a correct one. "Leave it refused, no action needed" MUST be
+            // offered as a first-class, equally-weighted option, not an implied default
+            // the leader has to infer for themselves.
             // Front-loaded deliberately: the monitor projection CLIPS this to 220
-            // chars, so the anti-misreading ("not discipline") and the lever
-            // (set_claim_spec) must both land inside the first sentence or the
-            // clipped copy reads as a bare complaint.
+            // chars, so the anti-misreading ("not discipline"), the "maybe correct —
+            // leave it" option, and the lever (set_claim_spec) must all land inside the
+            // first ~2 sentences or the clipped copy reads as a bare complaint that
+            // omits the "do nothing" option entirely.
             admissionBlockedAction:
-              `NOT member discipline — ${admissionBlocked.length} (item, member) pair(s) were refused by THIS ` +
-              `fleet's claim spec; only YOUR spec write clears it: scheduler:set_claim_spec { fleet, … } to widen ` +
-              `the lane, or route the item to a member whose lane admits it. ` +
+              `NOT member discipline; NOT necessarily wrong either — ${admissionBlocked.length} refusal(s) may ` +
+              `be THIS fleet's claim spec working CORRECTLY. If the item is genuinely out of this fleet's ` +
+              `mission scope, the right action is to do NOTHING — leave it refused; it stays claimable for ` +
+              `whichever fleet/session's scope actually covers it. If it genuinely belongs here, only YOUR spec ` +
+              `write clears it: scheduler:set_claim_spec { fleet, … } to widen the lane, or route the item to a ` +
+              `member whose lane admits it. ` +
               (admissionDependencyEscapes.length > 0
                 ? `${admissionDependencyEscapes.length} row(s) are typed DEPENDENCY ESCAPES: each names the ` +
                   `dependency and blocked held item ids, preserves the member's ownership, and carries three ` +
@@ -4616,7 +4628,8 @@ export async function buildLeaderBrief(
                 : '') +
               `Each row names the specId + revision that refused it; after a widen the member self-claims on its ` +
               `next scheduler:get_next, with no re-dispatch. \`occurrences\` > 1 means that member is stuck in a ` +
-              `refusal LOOP, burning a wake each time.`,
+              `refusal LOOP, burning a wake each time — that still does NOT mean the refusal is wrong; widen ` +
+              `deliberately, as a judgment call, never as a reflex to a high occurrences count.`,
           }
         : {}),
       // EI-19313376980892266 item C: every alert ships its FALSIFIER beside its reason
