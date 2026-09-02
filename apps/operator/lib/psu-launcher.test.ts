@@ -4016,6 +4016,37 @@ describe("psu-launcher arg parsing", () => {
     expect(omp.PAPERCUSP_TOOLS).toBeUndefined();
   });
 
+  it("every CLI-spawn env builder stamps the context-trimming trio (WI-2140943 lane 2)", () => {
+    // roleFlow was the last uncovered spawn path: it stamped nativeCompactionEnv but NOT
+    // contextTrimmingEnv, and runWrapper's healContextTrimmingEnv only fires on the
+    // hostHandoff branch — so a role session (how a system routine launches an agent,
+    // `--launched-by=system:…`) booted with the whole catalog inline. Measured on the live
+    // consult-expiry-sweep session su-a961ddec: 753,066 first-turn tokens vs 94–150k
+    // fleet-wide. nativeCompactionEnv is the sibling marker — it is applied at exactly the
+    // same set of spawn sites, so requiring the pair keeps a NEW spawn path from shipping
+    // with only half the stamp.
+    const source = readFileSync(
+      join(__dirname, "..", "scripts", "psu-launcher.mjs"),
+      "utf8",
+    );
+    const compactionSites = [
+      ...source.matchAll(/\.\.\.nativeCompactionEnv\(/g),
+    ].length;
+    const trimmingSites = [
+      ...source.matchAll(/\.\.\.contextTrimmingEnv\(/g),
+    ].length;
+    expect(compactionSites).toBeGreaterThan(0);
+    expect(trimmingSites).toBe(compactionSites);
+
+    // ...and specifically on roleFlow, whose body must carry both stamps.
+    const roleBody = source.slice(
+      source.indexOf("async function roleFlow("),
+      source.indexOf("async function launchFreshSu("),
+    );
+    expect(roleBody).toContain("...contextTrimmingEnv(res.agent)");
+    expect(roleBody).toContain("...nativeCompactionEnv(res.agent)");
+  });
+
   it("buildResumeEnv: P-022 native-compaction retirement is re-stamped on Claude resumes only", () => {
     // A resume spawns a NEW CLI process — without the stamp a resumed Claude
     // session silently regains native auto-compact + /compact (the fresh-launch
