@@ -198,7 +198,7 @@ export default defineTool({
         .max(30000)
         .optional()
         .describe(
-          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) now fails fast around this bound instead of hanging past it.',
+          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) fails fast rather than hanging past it. ⚠ This is the SQL budget, not the wall-clock ceiling: the call deadline is timeoutMs PLUS a fixed ~3s overhead allowance (and, on the acquire path, the acquire budget too), so timeoutMs:5000 legitimately surfaces a failure at ~8000ms. Size the value by how long the QUERY may run; do not read a longer elapsed time as the bound being ignored.',
         ),
       positiveControlSql: z
         .string()
@@ -237,7 +237,7 @@ export default defineTool({
         .max(30000)
         .optional()
         .describe(
-          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) now fails fast around this bound instead of hanging past it.',
+          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) fails fast rather than hanging past it. ⚠ This is the SQL budget, not the wall-clock ceiling: the call deadline is timeoutMs PLUS a fixed ~3s overhead allowance (and, on the acquire path, the acquire budget too), so timeoutMs:5000 legitimately surfaces a failure at ~8000ms. Size the value by how long the QUERY may run; do not read a longer elapsed time as the bound being ignored.',
         ),
       positiveControlSql: z
         .never()
