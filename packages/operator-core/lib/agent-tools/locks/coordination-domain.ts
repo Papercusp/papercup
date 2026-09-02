@@ -74,7 +74,21 @@ export function resolveExplicitFileLockDomain(requested: string | undefined, fal
   if (requested === undefined) return fallback;
   const value = requested.trim();
   if (!value) throw new Error('coordination_domain must be a non-empty absolute repository root');
-  if (!isAbsolute(value)) throw new Error('coordination_domain must be an absolute repository root');
+  // EI-21104703429792156: the recurring caller mistake here is passing a HARNESS/WORKSPACE
+  // SLUG (`'papercusp'`) rather than a filesystem path, and the bare "must be an absolute
+  // repository root" neither echoed the offending value nor said what to pass instead — so
+  // the reporter's only route forward was to guess (`git rev-parse --show-toplevel`). Name
+  // the mistake, echo the input, and quote the concrete alternative. `fallback` is exactly
+  // what omitting the argument returns (see the `requested === undefined` branch above), so
+  // it is correct per-caller by construction — unlike naming a fixed domain here, which
+  // would be wrong for whichever caller passed a different one.
+  if (!isAbsolute(value)) {
+    throw new Error(
+      `coordination_domain must be an absolute repository checkout root (a filesystem path), ` +
+        `not a harness/workspace slug — received ${JSON.stringify(value)}. Omit coordination_domain ` +
+        `to use this caller's own tree (${fallback}), or pass that absolute path explicitly.`,
+    );
+  }
   let resolved: string;
   try {
     resolved = realpathSync(value);

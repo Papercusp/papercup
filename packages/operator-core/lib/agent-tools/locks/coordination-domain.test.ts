@@ -130,6 +130,19 @@ describe('resolveExplicitFileLockDomain', () => {
     expect(() => resolveExplicitFileLockDomain(dir, '/fallback')).toThrow(/repository root/);
   });
 
+  // EI-21104703429792156: the reported failure passed a harness SLUG ('papercusp'), and the
+  // bare "must be an absolute repository root" left the caller nothing to act on — it neither
+  // echoed the offending value nor said what to pass instead, so the reporter had to guess.
+  // Assert the three things that make it actionable. Deliberately NOT covered by the /absolute/
+  // case above: that assertion passed against the old uninformative message too, which is
+  // precisely why it could not catch this.
+  it('names the slug mistake, echoes the rejected value, and quotes the fallback to use instead', () => {
+    const reject = () => resolveExplicitFileLockDomain('papercusp', '/edit/tree');
+    expect(reject).toThrow(/papercusp/); // the offending value, echoed back
+    expect(reject).toThrow(/harness\/workspace slug/); // the mistake, named
+    expect(reject).toThrow(/\/edit\/tree/); // the concrete alternative — what omitting it yields
+  });
+
   it('uses the server domain when the client does not supply an override', () => {
     expect(resolveExplicitFileLockDomain(undefined, '/fallback')).toBe('/fallback');
   });
