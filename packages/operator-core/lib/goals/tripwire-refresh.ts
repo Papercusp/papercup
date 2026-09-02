@@ -232,7 +232,7 @@ export function refreshTripwireCurrents(
 ): TripwireRefreshResult {
   const input = tripwires ?? [];
   if (input.length === 0) {
-    return { next: [], outcomes: [], advanced: 0, changed: false };
+    return { next: [], outcomes: [], advanced: 0, restamped: 0, changed: false };
   }
 
   const outcomes: TripwireRefreshOutcome[] = [];

@@ -427,7 +427,12 @@ describe('declared evidence bindings', () => {
   });
 
   it('advances NOTHING when the caller supplied no value for the binding (rule 2)', () => {
-    for (const evidence of [undefined, {}, { 'work-item-count:surfaces-done': null }]) {
+    const absent: Array<Readonly<Record<string, number | null>> | undefined> = [
+      undefined,
+      {},
+      { 'work-item-count:surfaces-done': null },
+    ];
+    for (const evidence of absent) {
       const res = refreshTripwireCurrents(bound, {
         measuredSpentCents: null,
         goalAgeMs: 0,
