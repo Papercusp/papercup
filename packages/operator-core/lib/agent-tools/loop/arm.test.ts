@@ -1433,7 +1433,7 @@ describe('computeLoopOverwriteNote (pure EI-18221784742583615 decision)', () => 
     });
     const note = computeLoopOverwriteNote(prior, {
       goal: 'watch WI-5672 for the next fire',
-      intervalSec: prior.intervalSec,
+      intervalSec: prior.intervalSec ?? 1200,
       kickoff: prior.kickoff,
       harnessSlug: 'papercusp',
     });
