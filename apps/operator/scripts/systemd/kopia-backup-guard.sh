@@ -134,7 +134,13 @@ run_scheduled_command() {
   if [ -n "$runtime_abort_reason" ] && kill -0 "$child_pid" 2>/dev/null; then
     guard_log "result=stopping-during-run reason=$runtime_abort_reason child_pid=$child_pid"
     kill -TERM "$child_pid" 2>/dev/null || true
-    stop_deadline=$(awk -v now="$(date +%s.%N)" -v grace="$stop_grace" 'BEGIN { print now + grace }')
+    # printf "%.3f", NOT a bare `print`: awk's default OFMT is %.6g, so a ~1.79e9 epoch
+    # deadline prints as "1.78836e+09" — ~3700s SHORT of the real value. The deadline then
+    # lands in the past, the grace loop below exits on its first evaluation, and the child is
+    # SIGKILLed immediately no matter what KOPIA_BACKUP_STOP_GRACE_SEC says. That defeats the
+    # child's EXIT trap, which is what reaps the root-owned Kopia PID (see the header note),
+    # and it surfaces as a bash job-control notice on the guard's stderr.
+    stop_deadline=$(awk -v now="$(date +%s.%N)" -v grace="$stop_grace" 'BEGIN { printf "%.3f", now + grace }')
     while kill -0 "$child_pid" 2>/dev/null &&
       awk -v now="$(date +%s.%N)" -v deadline="$stop_deadline" 'BEGIN { exit !(now < deadline) }'; do
       sleep 0.1

@@ -2,8 +2,16 @@
  * psu-pty-discovery.test.ts — the operator's read side of the psu-hosted
  * managed-pty control socket (turn-lifecycle-control Phase 3, P-014).
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  unlinkSync,
+  existsSync,
+  readFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -23,6 +31,8 @@ import {
   selfCompactionAvailability,
   pruneDeadDiscoveryFiles,
   sanitizeKey,
+  sockOwnerIdFromPath,
+  auditInjectOwnerBinding,
   PSU_PTY_DIR,
   MAX_CONTROL_PAYLOAD_BYTES,
   type PsuPtyHost,
@@ -986,5 +996,104 @@ describe('hostCodeVersionMatches (WI-38292 — which build is this LIVE host run
 
   it('ignores surrounding whitespace rather than reporting a false mismatch', () => {
     expect(hostCodeVersionMatches({ hostCodeVersion: ` ${A} ` }, A)).toBe(true);
+  });
+});
+
+describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI-2140968)', () => {
+  const OWNER_A = 'su-aaaaaaaa-0000-0000-0000-000000000000';
+  const OWNER_B = 'su-bbbbbbbb-1111-1111-1111-111111111111';
+  let auditDir: string;
+  let auditPath: string;
+
+  beforeEach(() => {
+    auditDir = mkdtempSync(join(tmpdir(), 'inject-audit-'));
+    auditPath = join(auditDir, 'audit.jsonl');
+    process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = auditPath;
+  });
+
+  afterEach(() => {
+    delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH;
+    rmSync(auditDir, { recursive: true, force: true });
+  });
+
+  const rows = (): Array<Record<string, unknown>> =>
+    existsSync(auditPath)
+      ? readFileSync(auditPath, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+      : [];
+
+  describe('sockOwnerIdFromPath — the caller-independent witness', () => {
+    it('reads the owner out of the socket path the host actually writes', () => {
+      expect(sockOwnerIdFromPath(join(PSU_PTY_DIR, `${OWNER_A}.sock`))).toBe(OWNER_A);
+    });
+
+    it('returns null (indeterminate) rather than guessing on a non-socket path', () => {
+      for (const p of ['', '/tmp/whatever', '/tmp/x.json', '.sock']) {
+        expect(sockOwnerIdFromPath(p)).toBeNull();
+      }
+    });
+  });
+
+  it('passes a correctly-bound delivery silently', () => {
+    const verdict = auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), {
+      mode: 'turn',
+      ownerId: OWNER_A,
+    });
+    expect(verdict).toBe('match');
+    expect(rows().filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
+  });
+
+  // THE load-bearing case: the failure the receiving host's EI-153 guard structurally
+  // cannot see, because envelope ownerId and socket owner agree from ITS point of view.
+  it('catches text addressed to one owner being written to ANOTHER owner’s socket', () => {
+    const verdict = auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_B}.sock`), {
+      mode: 'turn',
+      ownerId: OWNER_A,
+      deliveryId: '314514',
+    });
+    expect(verdict).toBe('mismatch');
+
+    const hits = rows().filter((r) => r.kind === 'inject-owner-mismatch');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      mode: 'turn',
+      envelopeOwnerId: OWNER_A,
+      sockOwnerId: OWNER_B,
+      deliveryId: '314514',
+    });
+  });
+
+  it('records an unlabelled TURN-class inject — the guard’s fail-open exemption', () => {
+    // An envelope with no ownerId decodes host-side to a legacy mode:'turn' the EI-153
+    // guard abstains on entirely, so this is the one shape that reaches a pty with no
+    // identity check anywhere. It must not be silent here too.
+    const verdict = auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' });
+    expect(verdict).toBe('unlabelled');
+    expect(rows().filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(1);
+  });
+
+  it('does not itemise unlabelled CONTROL-BYTE modes, which are legitimately unaddressed', () => {
+    for (const mode of ['raw', 'osc', 'mcp-reconnect']) {
+      expect(auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode })).toBe('unlabelled');
+    }
+    expect(rows().filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(0);
+  });
+
+  it('reports indeterminate — never a mismatch — when the path carries no witness', () => {
+    // A test double or an injected absolute path is an ABSENCE of evidence. Reporting it
+    // as a mismatch would manufacture exactly the false positive that discredits a detector.
+    expect(auditInjectOwnerBinding('/tmp/not-a-socket', { mode: 'turn', ownerId: OWNER_A })).toBe(
+      'indeterminate',
+    );
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('never throws, and never blocks a delivery, on a hostile audit path', () => {
+    process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = join(auditDir, 'no', 'such', 'dir', 'a.jsonl');
+    expect(() =>
+      auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_B}.sock`), { mode: 'turn', ownerId: OWNER_A }),
+    ).not.toThrow();
   });
 });
