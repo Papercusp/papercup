@@ -873,10 +873,16 @@ async function getClient(language: LspLanguage, rootPath: string): Promise<LspCl
   return pending;
 }
 
-type IntentReadinessPreparation = 'certified' | 'canary' | 'timeout';
+type IntentReadinessPreparation = 'certified' | 'answerable' | 'canary' | 'timeout';
 
-/** What the readiness loop can conclude from ONE observation; 'wait' = poll again. */
-export type ReadinessVerdict = 'certified' | 'canary' | 'wait';
+/**
+ * What the readiness loop can conclude from ONE observation; 'wait' = poll again.
+ *
+ * `certified` and `answerable` are deliberately different (WI-2142382). Both
+ * permit the query to run; only `certified` is a COMPLETENESS proof, and only a
+ * completeness proof may bless an EMPTY answer as a real absence.
+ */
+export type ReadinessVerdict = 'certified' | 'answerable' | 'canary' | 'wait';
 
 /** The readiness-relevant state of a client at one instant. */
 export interface ReadinessObservation {
@@ -920,11 +926,27 @@ export interface ReadinessObservation {
  * `null` and NO amount of waiting can produce a completeness proof.
  *
  * The consequence is deliberate: a TypeScript EMPTY is no longer certifiable,
- * so it stays `degraded` and `lspQuery` turns it into an honest refusal. A
- * NON-EMPTY answer is unaffected in availability — it is returned, and can
- * still earn a proof through `certifyCanaryAnswer`'s answer-change plus
- * progress-boundary evidence. We give up claiming to prove absence for a
- * server that cannot tell us it is done, which we could never actually prove.
+ * so it stays `degraded` and `lspQuery` turns it into an honest refusal. We
+ * give up claiming to prove absence for a server that cannot tell us it is
+ * done, which we could never actually prove.
+ *
+ * WHY `answerable` EXISTS, and the regression that produced it: the first cut
+ * of this fix collapsed the settle window to `canary`, which routed positive
+ * answers into `certifyCanaryAnswer`'s stability guard. That guard requires
+ * BOTH a progress boundary AND an answer CHANGE between two samples — evidence
+ * a COLD server generates as it indexes, and a WARM one never generates at
+ * all, because its correct answer is stable from the first query. So every
+ * correct answer became permanently `degraded`. MEASURED on the two positive
+ * cases: `pinModuleState` (the bench's passing control) and `managedSetInterval`
+ * both returned their correct single site with health `degraded`, where before
+ * they were `healthy`. That is the same class of defect as the one being fixed,
+ * pointed the other way: a proof that can NEVER be minted is as wrong as one
+ * minted on nothing.
+ *
+ * `answerable` is therefore the settle window's honest weight: run the query,
+ * let a POSITIVE answer keep the client's health, and let an EMPTY fall through
+ * to `degraded` because no proof was minted. It mints nothing, so it can never
+ * bless an absence — which was the entire bug.
  */
 export function readinessVerdict(
   strategy: LspReadinessStrategy,
@@ -947,7 +969,7 @@ export function readinessVerdict(
       : 'wait';
   }
 
-  return observation.idleForMs >= strategy.settleMs ? 'canary' : 'wait';
+  return observation.idleForMs >= strategy.settleMs ? 'answerable' : 'wait';
 }
 
 /** Pinned module state may contain a pre-WI-41090 client until host restart. */
@@ -1019,6 +1041,12 @@ async function prepareIntentReadiness(
       proofs.add(intent);
       return 'certified';
     }
+    // Deliberately mints NO proof: `answerable` says the query may run, not
+    // that an absence can be believed. Because nothing lands in
+    // `certifiedReadiness`, `healthForAnswer` degrades an EMPTY on its own —
+    // and because this is not `canary`, `certifyCanaryAnswer` returns early and
+    // never marks a POSITIVE unproven, so a correct answer keeps its health.
+    if (verdict === 'answerable') return 'answerable';
     if (verdict === 'canary') return 'canary';
     if (Date.now() > deadline) return 'timeout';
     await new Promise((r) => setTimeout(r, 50));
@@ -1697,7 +1725,16 @@ export async function lspRenameWorkspaceEdit(
     const client = await getClient(language, project.root);
     const uri = await ensureOpen(client, query.file);
     const readiness = await prepareIntentReadiness(client, 'rename-preview');
-    if (readiness !== 'certified') {
+    // `answerable` is accepted here to hold this gate EXACTLY where it stood
+    // before WI-2142382 split the verdict: the settle window used to return
+    // `certified`, so a TypeScript rename has always rested on it. Refusing it
+    // now would silently disable rename-for-application for every TypeScript
+    // project — TS never sends `experimental/serverStatus`, so it can never
+    // reach `certified` on a warm server — which is a capability change this
+    // fix has no mandate to make. The residual risk is real and PRE-EXISTING:
+    // a settle window cannot prove the call-site set is complete, and this
+    // caller WRITES. Filed separately rather than changed silently here.
+    if (readiness !== 'certified' && readiness !== 'answerable') {
       // The same refusal `lspRenamePreview` makes, and for a stronger reason
       // here: a rename plan computed from a half-loaded program MISSES call
       // sites, and this caller WRITES. A partial rename that compiles is the

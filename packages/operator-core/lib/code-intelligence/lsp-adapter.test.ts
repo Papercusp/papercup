@@ -592,12 +592,12 @@ describe('readinessVerdict — only the server may certify; silence is never pro
     idleForMs: 5_001,
   } as const;
 
-  it('REGRESSION: the exact measured state yields canary, NOT certified', () => {
+  it('REGRESSION: the exact measured state yields answerable, NOT certified', () => {
     // Before the fix this returned 'certified', which put 'definition' into
     // certifiedReadiness, which made healthForAnswer hand an EMPTY answer the
     // client's 'healthy' — a false absence that isTrustworthyEmpty then
     // reported as fact, irrevocably for that client's life.
-    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('canary');
+    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('answerable');
   });
 
   it('DEMONSTRATES why the everSettled guard was the wrong fix — it was already true', () => {
@@ -608,9 +608,9 @@ describe('readinessVerdict — only the server may certify; silence is never pro
     // assertions pin the reason — the verdict is identical either way, so
     // everSettled is orthogonal here and cannot be the discriminator.
     expect(measuredAtFalseProof.everSettled).toBe(true);
-    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('canary');
+    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('answerable');
     expect(readinessVerdict(settleWindow(), { ...measuredAtFalseProof, everSettled: false })).toBe(
-      'canary',
+      'answerable',
     );
   });
 
@@ -661,9 +661,9 @@ describe('readinessVerdict — only the server may certify; silence is never pro
   });
 
   it('END TO END: a settle-window empty is now UNTRUSTWORTHY, a non-empty still answers', () => {
-    // 'canary' means the intent never enters certifiedReadiness, and
+    // 'answerable' means the intent never enters certifiedReadiness, and
     // certifyCanaryAnswer refuses a zero-site answer. So the empty degrades.
-    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('canary');
+    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('answerable');
     const uncertified = ts();
     expect(healthForAnswer(uncertified, 'definition', 0)).toBe('degraded');
     expect(
@@ -681,6 +681,50 @@ describe('readinessVerdict — only the server may certify; silence is never pro
 
     // Availability is NOT what we gave up: a non-empty answer is still served.
     expect(healthForAnswer(uncertified, 'definition', 1)).toBe('healthy');
+  });
+
+  it('REGRESSION #2: answerable must not degrade a CORRECT non-empty answer', () => {
+    // The first cut of this fix returned 'canary' here instead of 'answerable'.
+    // That routed positives into certifyCanaryAnswer's stability guard, which
+    // demands a progress boundary AND an answer change between samples —
+    // evidence a WARM server never produces, because its correct answer is
+    // stable from the very first query. Result: every correct answer became
+    // permanently 'degraded'.
+    //
+    // MEASURED against real language servers before this assertion existed:
+    //   pinModuleState   -> libs/generic/module-singleton/src/index.ts:106  degraded
+    //   managedSetInterval -> libs/generic/scheduled-registry/src/index.ts:315 degraded
+    // Both were 'healthy' before the change, and both are the CORRECT site.
+    //
+    // The previous suite could not catch this: it asserted healthForAnswer on a
+    // hand-built client, which never ran the certifyCanaryAnswer step that
+    // populates unprovenReadiness. So it must be asserted on the COMPOSED path.
+    const client = {
+      language: 'typescript' as const,
+      health: 'healthy' as const,
+      progressGeneration: 0,
+      certifiedReadiness: new Set<LspReadinessIntent>(),
+      canaryReadiness: new Map(),
+      unprovenReadiness: new Set<LspReadinessIntent>(),
+    };
+    const adapterClient = client as unknown as Parameters<typeof certifyCanaryAnswer>[0];
+
+    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('answerable');
+
+    // 'answerable' mints no proof AND marks nothing unproven.
+    expect(certifyCanaryAnswer(adapterClient, 'definition', 'answerable', 1)).toBe(false);
+    expect(client.unprovenReadiness.has('definition')).toBe(false);
+    expect(client.certifiedReadiness.has('definition')).toBe(false);
+
+    // The positive keeps its health; the empty still degrades. Both halves.
+    expect(healthForAnswer(client, 'definition', 1)).toBe('healthy');
+    expect(healthForAnswer(client, 'definition', 0)).toBe('degraded');
+
+    // FALSIFIABILITY CONTROL: the first cut's verdict really did degrade it.
+    // If this stops reproducing, the assertion above proves nothing.
+    expect(certifyCanaryAnswer(adapterClient, 'definition', 'canary', 1)).toBe(false);
+    expect(client.unprovenReadiness.has('definition')).toBe(true);
+    expect(healthForAnswer(client, 'definition', 1)).toBe('degraded');
   });
 
   it('CONTROL: the pre-fix rule really would have certified this state', () => {
