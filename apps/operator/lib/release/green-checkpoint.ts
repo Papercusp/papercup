@@ -9202,7 +9202,34 @@ async function runGreenCheckpointInner(
                 nowMs: Date.now(),
               })
             : null;
-        if (dispatchInfeasible) {
+        if (dispatchInfeasible && dispatchInfeasible.kind === "test-candidate") {
+          // WI-2141347: the repairHead already converged past the frozen candidate (an
+          // ancestor of staging — already vetted, never unpushed fixer content), so it is
+          // a structurally sound candidate to test even though no fixer can be dispatched.
+          // Abandon this queue's own bookkeeping (same as the recut-at-tip path below) but
+          // test the CONVERGED repairHead instead of falling all the way back to whatever
+          // staging tip is current — that would discard the convergence untested and
+          // re-admit the full last-green radius for nothing.
+          const abandonedQueue = repairQueue;
+          const testedRepairHead = dispatchInfeasible.candidate;
+          await deps.writeFrozenRepairQueue?.(null);
+          await deps
+            .cleanupFrozenRepairWorktree?.(abandonedQueue)
+            .catch((e) =>
+              deps.log(
+                `warn: dispatch-infeasible repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
+              ),
+            );
+          repairQueue = null;
+          candidate = await revParse(cfg.integrationRoot, testedRepairHead);
+          initialCandidateVerification = true;
+          deps.log(
+            `frozen candidate ${abandonedQueue.candidate.slice(0, 8)} retired after measured ` +
+              `provider-capacity infeasibility (attempts=0), but its repairHead ${testedRepairHead.slice(0, 8)} ` +
+              `had already converged past it — testing the converged repairHead instead of the ` +
+              `current staging tip`,
+          );
+        } else if (dispatchInfeasible) {
           const abandonedQueue = repairQueue;
           await deps.writeFrozenRepairQueue?.(null);
           await deps
