@@ -1741,6 +1741,45 @@ const PROMPT_PROJECTION_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-22189589517637049 — a tool authoring `guidance.returns` without a
+    // registered `result:` schema was caught ONLY by the fleet green-checkpoint,
+    // hours later and by a different agent. Measured 2026-09-02: the violation
+    // count went 0 -> 2 in a single day (`scheduler:pull_ledger` 18:51Z,
+    // `capability:bash_output` 21:45Z), each red-pinning the gate; the live guard
+    // had not changed since 08:12Z, so this was a class, not an incident.
+    //
+    // WIRED REPO-WIDE rather than left to workspace selection because the whole
+    // defect is that the signal arrives too late to teach the author. The live
+    // authority (guidance-output-schema-live-guard.test.ts) imports the ~900-module
+    // tool barrel — ~36s of import for ~24ms of assertions — so it is not something
+    // anyone runs while editing one guidance string. This static scan needs no
+    // barrel import and answers in well under a second.
+    //
+    // Safe to wire NOW on the same precedent as the entries below: measured green
+    // over the whole real tree FIRST (exit 0, "1217 tool source file(s) scanned,
+    // 2 mixed-content tool(s) exempt"), so registering it cannot red-pin the fleet
+    // on defects accrued while it slept.
+    //
+    // TRIGGER SCOPE — the subject is any tool-defining source file under the roots
+    // the guard itself enumerates (TOOL_ROOTS), plus the live guard whose
+    // NON_OBJECT_RETURN_TOOLS exemptions this one DERIVES from: exempting a tool
+    // there must re-run the scan that reads it. Keep this predicate in step with
+    // TOOL_ROOTS in scripts/check-guidance-returns-schema.mjs.
+    workspace: "@papercusp/operator-core",
+    script: "lint:guidance-returns-schema",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/check-guidance-returns-schema.mjs" ||
+      f ===
+        "packages/operator-core/lib/agent-tools/guidance-output-schema-live-guard.test.ts" ||
+      ((f.startsWith("packages/operator-core/lib/agent-tools/") ||
+        f.startsWith("packages/agent-mcp/src/")) &&
+        f.endsWith(".ts") &&
+        !f.endsWith(".d.ts") &&
+        !/\.test\.tsx?$/.test(f)),
+  },
+  {
     // EI-19324979765038953 — a comment attributing a PENDING action to an agent
     // session id (e.g. "su-37bf2 is DELETING this entry") reads as "handled" to every
     // later reader and froze `main` for hours when the named session vanished.
