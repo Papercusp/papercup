@@ -132,6 +132,13 @@ export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string
   // it never ran, because an integration test is not selected by a migration edit.
   { table: 'harness_shared.consult_state', column: 'query_embedding' },
   { table: 'harness_shared.interest_watches', column: 'embedding' },
+  // Migration 1097 (WI-2142144): the two continuity corpora — work-item
+  // checkpoints / armed-loop carry-notes, and coord thread discussion posts —
+  // were the only prose surfaces in harness_shared with neither an embedding
+  // nor a tsvector, so prior-attempt-context.ts had no alternative to greping
+  // them with keyword regexes. Refilled by the TARGETS entries below.
+  { table: 'harness_shared.carry_notes', column: 'note_embedding' },
+  { table: 'harness_shared.coord_thread_posts', column: 'body_embedding' },
 ];
 
 /**
