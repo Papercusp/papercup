@@ -55,7 +55,7 @@ interface ActiveRun {
   taskSetId: string;
   taskIds?: string[];
   startedAtMs: number;
-  hiveSlugs: Set<string>;
+  potSlugs: Set<string>;
   cancelled: boolean;
 }
 const activeRuns = new Map<string, ActiveRun>();
@@ -194,7 +194,7 @@ export async function launchBenchRun(
     taskSetId: input.taskSetId,
     taskIds: input.taskIds,
     startedAtMs: Date.now(),
-    hiveSlugs: new Set(),
+    potSlugs: new Set(),
     cancelled: false,
   };
   activeRuns.set(runId, active);
@@ -203,7 +203,7 @@ export async function launchBenchRun(
   bindDriver({
     workspaceId: ws,
     onHiveCreated: (hiveHome: string) => {
-      active.hiveSlugs.add(hiveHome);
+      active.potSlugs.add(hiveHome);
       void setBenchRunHive(runId, hiveHome, scope).catch(() => {});
     },
     onEnrolled: (e) => {
@@ -290,7 +290,7 @@ async function executeDetached(
   } finally {
     clearInterval(heartbeat);
     // ALWAYS dissolve every hive this run minted — no orphan learning loop survives.
-    for (const slug of active.hiveSlugs) {
+    for (const slug of active.potSlugs) {
       await dissolve(slug, active.workspaceId).catch(() => {});
     }
     activeRuns.delete(runId);
@@ -320,7 +320,7 @@ export async function cancelBenchRun(
   await setBenchRunStatus(runId, 'cancelled', { runError: 'cancelled by operator' }, scope);
 
   // Dissolve every known hive (the in-flight set + the persisted slug).
-  const slugs = new Set<string>(active?.hiveSlugs ?? []);
+  const slugs = new Set<string>(active?.potSlugs ?? []);
   if (row.pot_slug) slugs.add(row.pot_slug);
   for (const slug of slugs) await dissolve(slug, ws).catch(() => {});
 

@@ -727,15 +727,15 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
     // item — resolved from its scope tag (P-032) — so per-hive dispatch diagnostics
     // align with the per-hive improvement lens. Best-effort: NULL for an operator-
     // scoped item or any resolution failure; never blocks the dispatch.
-    let dispatchHiveSlug: string | null = null;
+    let dispatchPotSlug: string | null = null;
     const candidateScope = (candidate as { scope?: string }).scope;
     if (candidateScope && candidateScope.startsWith('harness:')) {
       const h = candidateScope.slice('harness:'.length);
       try {
         const { potHomeSlugForHarness } = await import('../../hive-federation');
-        dispatchHiveSlug = (await potHomeSlugForHarness(ctx.workspaceId, h)) ?? h;
+        dispatchPotSlug = (await potHomeSlugForHarness(ctx.workspaceId, h)) ?? h;
       } catch {
-        dispatchHiveSlug = h;
+        dispatchPotSlug = h;
       }
     }
     const dispatchId = await ledger.recordDispatchFired({
@@ -743,7 +743,7 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
       itemId: candidate.id,
       attempt: (candidate.attempts ?? 0) + 1,
       runnerHarness,
-      potSlug: dispatchHiveSlug,
+      potSlug: dispatchPotSlug,
     });
     try {
       const fired = await fire({ runnerHarness: runnerHarness as string, workspaceId: ctx.workspaceId, candidate, dispatchId });

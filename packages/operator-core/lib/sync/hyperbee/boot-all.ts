@@ -1160,7 +1160,7 @@ async function resolveActivationDeferrals(
       workspaceId: string;
       harnessSlug: string;
       harnessKind?: string;
-      hiveSlug?: string;
+      potSlug?: string;
     }> = [];
     for (const [wsId, slugs] of slugsByWs) {
       const reg = await loadHarnessRegistry(wsId);
@@ -1179,7 +1179,7 @@ async function resolveActivationDeferrals(
           workspaceId: wsId,
           harnessSlug: slug,
           harnessKind: pr.harness_kind,
-          hiveSlug: pr.hive_slug,
+          potSlug: pr.hive_slug,
         });
       }
     }

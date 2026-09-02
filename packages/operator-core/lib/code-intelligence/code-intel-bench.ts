@@ -616,15 +616,15 @@ export const KNOWN_COLD_START_EXCEEDANCES: readonly {
   }),
   Object.freeze({
     language: 'typescript' as LspLanguage,
-    observedMs: 11_483,
+    observedMs: 13_208,
     observedCeilingMs: 60_000,
     why:
       'tsserver must load the monorepo project graph — tsconfig resolution, ' +
       'project references, and the transitive import closure of the asking ' +
       'file — before it can answer a cross-package definition, so its ' +
       'time-to-CORRECT does not meet the 10s budget on this repo either. ' +
-      'Measured 10,306 / 10,665 / 11,483ms across bakeoff legs v1-v3 ' +
-      '(WI-2142287): over budget on 3 of 3, never by more than 15%. ' +
+      'Measured 10,306 / 10,665 / 11,483 / 13,208ms across bakeoff legs ' +
+      'v1-v3 and v5 (WI-2142287): over budget on 4 of 4, by 3-32%. ' +
       'This entry exists because the budget is REPO-SCALE, not rust-specific. ' +
       '`coldStartMsMax` was a dead field until P-018 activated it, and the ' +
       'table it feeds was populated from the only language anyone had a ' +
@@ -638,8 +638,8 @@ export const KNOWN_COLD_START_EXCEEDANCES: readonly {
       'rust earns that headroom because a cold cargo cache costs minutes of ' +
       'proc-macro BUILDING, whereas tsserver only ever parses and resolves, ' +
       'so it has no comparable multi-minute cold path to absorb. Do not ' +
-      'tighten it toward the observed number — typescript is the STABLE leg ' +
-      'here (11% spread vs rust’s 60%), but this box runs at high fleet ' +
+      'tighten it toward the observed number — typescript is the STEADIER ' +
+      'leg here (28% spread vs rust’s 60%), but this box runs at high fleet ' +
       'load and a tight ceiling would be a flake generator on the gate.',
   }),
 ]);

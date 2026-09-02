@@ -363,6 +363,57 @@ describe('engineer issues surface (real PG)', () => {
     expect(readAgentStateStamp('agB').goalRef).toBeNull();
   });
 
+  // WI-2142171: no-op lifecycle writes used to re-fan the FULL subscriber set. Claiming
+  // BY ID bypasses the claim floors on purpose, so a holder re-claiming its own item
+  // matched the UPDATE every time and emitted a fresh notify (random msg_id, so the
+  // fan-out's deterministic-msg_id dedupe never caught it). Measured across 7d before
+  // the fix: 3,148 of 5,056 claim+release notify rows (62%) were redundant repeats.
+  //
+  // Each test below pairs its suppression assertion with a POSITIVE CONTROL that a REAL
+  // claim/release still notifies. Without that control these would pass just as happily
+  // against a notify path that was dead for an unrelated reason — a suite of only
+  // "nothing happened" assertions cannot detect its own instrument being broken.
+  it('WI-2142171: a no-op re-claim by the CURRENT holder does not re-notify subscribers', async () => {
+    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
+    const before = (await inboxOf('agA')).length;
+
+    // POSITIVE CONTROL — a genuine claim MUST reach the subscriber.
+    await issues.claimIssue(id, 'agB');
+    const afterFirst = await inboxOf('agA');
+    expect(afterFirst.length).toBe(before + 1);
+    expect(afterFirst.at(-1)?.summary).toBe(`issue ${id} claimed by agB`);
+    expect(afterFirst.at(-1)?.notify_kind).toBe('issue_updated');
+
+    // THE BUG: re-claiming an item you already hold changes nothing, so it must be silent.
+    await issues.claimIssue(id, 'agB');
+    await issues.claimIssue(id, 'agB');
+    expect((await inboxOf('agA')).length).toBe(before + 1);
+
+    // ...and the suppression must not be over-broad: a real handover still notifies.
+    await issues.claimIssue(id, 'agC', { fromHolder: 'agB' });
+    const afterHandover = await inboxOf('agA');
+    expect(afterHandover.length).toBe(before + 2);
+    expect(afterHandover.at(-1)?.summary).toBe(`issue ${id} claimed by agC`);
+  });
+
+  it('WI-2142171: a no-op re-release of an already-unassigned issue does not re-notify subscribers', async () => {
+    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
+    await issues.claimIssue(id, 'agB');
+    const afterClaim = (await inboxOf('agA')).length;
+
+    // POSITIVE CONTROL — releasing a REAL holder MUST reach the subscriber.
+    await issues.releaseIssue(id);
+    const afterRelease = await inboxOf('agA');
+    expect(afterRelease.length).toBe(afterClaim + 1);
+    expect(afterRelease.at(-1)?.summary).toBe(`issue ${id} released (unassigned)`);
+
+    // THE BUG: the release UPDATE deliberately still matches an already-unassigned row
+    // (so state normalization can run), which made every repeat re-fan the subscribers.
+    await issues.releaseIssue(id);
+    await issues.releaseIssue(id);
+    expect((await inboxOf('agA')).length).toBe(afterClaim + 1);
+  });
+
   it('EI-7150: setIssueState to a non-terminal state (e.g. open) PRESERVES the claim — only resolved/closed clear it', async () => {
     const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
     const claimed = await issues.claimIssue(id, 'agB');

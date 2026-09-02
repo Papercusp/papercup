@@ -557,6 +557,67 @@ describe('renderInjection — P-008 body auto-ref hydration (coord-authority-har
   });
 });
 
+describe('renderInjection — WI-2142086 reply-handle hint (wakeOnReply)', () => {
+  it('a message stamped wakeOnReply:true surfaces its own msg_id as the reply target', () => {
+    const entry = {
+      ...e({ summary: 'can you confirm the deploy landed?' }),
+      msg_id: 'm-abc123',
+      wakeOnReply: true,
+    } as CoordLineSource;
+    const out = renderInjection([entry]);
+    expect(out).toContain('↩ reply with related_msg_id:m-abc123');
+  });
+
+  it('no wakeOnReply stamp ⇒ no hint (an FYI or a wake-off message stays plain)', () => {
+    const entry = { ...e({ summary: 'fyi, deployed' }), msg_id: 'm-xyz' } as CoordLineSource;
+    expect(renderInjection([entry])).not.toContain('↩');
+  });
+
+  it('wakeOnReply:true but no msg_id (malformed/legacy) ⇒ no hint, never throws', () => {
+    const entry = { ...e({ summary: 'weird envelope' }), wakeOnReply: true } as CoordLineSource;
+    expect(() => renderInjection([entry])).not.toThrow();
+    expect(renderInjection([entry])).not.toContain('↩');
+  });
+
+  it('acks are excluded even when wakeOnReply is stamped (nobody replies to a receipt)', () => {
+    const entry = {
+      ...e({ kind: 'ack', summary: 'ack' }),
+      msg_id: 'm-ack1',
+      wakeOnReply: true,
+    } as CoordLineSource;
+    expect(renderInjection([entry])).not.toContain('↩');
+  });
+
+  it('a truthy-but-not-`true` wakeOnReply (malformed) degrades to no hint, never throws', () => {
+    const entry = { ...e({ summary: 'odd' }), msg_id: 'm-1', wakeOnReply: 'true' } as unknown as CoordLineSource;
+    expect(renderInjection([entry])).not.toContain('↩');
+  });
+
+  it('composes LAST on the line — after body-ref, relay, reply-quote, and gate suffixes', () => {
+    const quotes = new Map([
+      ['m-orig', { ref: { kind: 'msg', id: 'm-orig' }, ok: true, label: 'msg m-orig', snippet: 'is it done?' }],
+    ]);
+    const refs = new Map<string, unknown>([
+      [
+        'WI-4173',
+        { ref: { kind: 'work-item', id: 'WI-4173' }, ok: true, label: 'WI-4173 [feature/wip]', snippet: 'D: …' },
+      ],
+    ]);
+    const entry = {
+      ...e({ summary: 'done — see WI-4173', related_msg_id: 'm-orig' }),
+      msg_id: 'm-new',
+      wakeOnReply: true,
+      gateRefs: [{ key: 'fleet:x:green', status: 'declared' }],
+    } as unknown as CoordLineSource;
+    const out = renderInjection([entry], { relatedQuotes: quotes as never, bodyRefs: refs as never });
+    const line = out.split('\n')[1];
+    const bodyRefAt = line.indexOf('↪ WI-4173');
+    const hintAt = line.indexOf('↩ reply with related_msg_id:m-new');
+    expect(bodyRefAt).toBeGreaterThan(-1);
+    expect(hintAt).toBeGreaterThan(bodyRefAt);
+  });
+});
+
 describe('renderCoordLegend + anti-desync (P-002)', () => {
   it('declares the positional grammar', () => {
     const legend = renderCoordLegend();

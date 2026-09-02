@@ -48,6 +48,25 @@ import { connectScriptPg } from './lib/pg-url.mjs';
 /** The audit surface — every CURRENT, unretracted fact (plan D-001). */
 const SURFACE = `retracted_at IS NULL AND superseded_at IS NULL`;
 
+/**
+ * The TENANT this audit is scoped to. `harness_shared.agent_facts` is MULTI-TENANT
+ * (workspace_id), and every query below used to omit that predicate — so the audit
+ * population was drawn cross-tenant and, worse, `apply`'s UPDATEs matched on bare
+ * `id = ANY(...)` and could write rows belonging to another workspace.
+ *
+ * That is not hypothetical: measured 2026-09-02T19:35Z, this script had already
+ * extended FIVE foreign rows during a papercusp apply — 4991 / 5172 / 5247 in
+ * workspace `default` and 16112 / 27584 in workspace `*` — pushing them +90d/+180d.
+ * The prior expires_at is UNRECOVERABLE: the UPDATE overwrites in place and writes no
+ * supersede row, so there is no version to read the old value back from. Extending a
+ * foreign fact is low-harm, but the same defect under a `P` verdict would have made
+ * another tenant's row PERMANENT, and nothing in the script would have reported it.
+ *
+ * Every agent_facts query in this file is therefore tenant-bound. Ids are global, so
+ * the id-keyed UPDATEs need this predicate just as much as the population SELECTs do.
+ */
+const WORKSPACE = String(arg('workspace', 'papercusp-workspace'));
+
 /** Permanent-expiry sentinel — FACT_PERMANENT_EXPIRY in agent-facts/store.ts. */
 const PERMANENT = 'infinity';
 
@@ -118,8 +137,8 @@ async function cmdDump() {
              (recheck IS NOT NULL) AS has_recheck,
              (depends_on IS NOT NULL) AS has_depends_on
         FROM harness_shared.agent_facts
-       WHERE ${SURFACE}
-       ORDER BY scope, coalesce(scope_ref,''), key, id`);
+       WHERE ${SURFACE} AND workspace_id = $1
+       ORDER BY scope, coalesce(scope_ref,''), key, id`, [WORKSPACE]);
 
     writeFileSync(
       join(outDir, 'population.jsonl'),
@@ -231,7 +250,8 @@ async function cmdApply() {
   try {
     const { rows: popRows } = await client.query(
       `SELECT id, kind, (expires_at='infinity') AS permanent, (expires_at<=now()) AS lapsed
-         FROM harness_shared.agent_facts WHERE ${SURFACE}`,
+         FROM harness_shared.agent_facts WHERE ${SURFACE} AND workspace_id = $1`,
+      [WORKSPACE],
     );
     const population = new Map(popRows.map((r) => [Number(r.id), r]));
 
@@ -319,14 +339,14 @@ async function cmdApply() {
         bucket === 'infinity'
           ? await client.query(
               `UPDATE harness_shared.agent_facts SET expires_at=$2::timestamptz, updated_at=now()
-                WHERE id = ANY($1::bigint[]) AND ${SURFACE}`,
-              [ids, PERMANENT],
+                WHERE id = ANY($1::bigint[]) AND ${SURFACE} AND workspace_id = $3`,
+              [ids, PERMANENT, WORKSPACE],
             )
           : await client.query(
               `UPDATE harness_shared.agent_facts
                   SET expires_at = now() + ($2::int * interval '1 day'), updated_at=now()
-                WHERE id = ANY($1::bigint[]) AND ${SURFACE}`,
-              [ids, Number(bucket)],
+                WHERE id = ANY($1::bigint[]) AND ${SURFACE} AND workspace_id = $3`,
+              [ids, Number(bucket), WORKSPACE],
             );
       writes += r.rowCount;
       console.log(`APPLIED_EXPIRY_${bucket}\t${r.rowCount}`);
@@ -334,8 +354,8 @@ async function cmdApply() {
     for (const [kind, ids] of kindBuckets) {
       const r = await client.query(
         `UPDATE harness_shared.agent_facts SET kind=$2, updated_at=now()
-          WHERE id = ANY($1::bigint[]) AND ${SURFACE}`,
-        [ids, kind],
+          WHERE id = ANY($1::bigint[]) AND ${SURFACE} AND workspace_id = $3`,
+        [ids, kind, WORKSPACE],
       );
       writes += r.rowCount;
       console.log(`APPLIED_KIND_${kind}\t${r.rowCount}`);
@@ -390,7 +410,7 @@ async function cmdClassVerdicts() {
                ON m.owner_id = f.scope_ref
               AND m.mode = replace(f.key, 'mode-instructions:', '')
               AND f.key LIKE 'mode-instructions:%'
-       WHERE ${SURFACE}
+       WHERE ${SURFACE} AND f.workspace_id = ${`'${WORKSPACE.replace(/'/g, "''")}'`}
          AND (f.key = 'launch-provenance' OR f.key LIKE 'mode-instructions:%')`);
 
     const verdicts = [];
@@ -466,8 +486,8 @@ async function cmdVerify() {
       if (!ids.length) return console.log(`${label}\t0\t0`);
       const { rows } = await client.query(
         `SELECT count(*) AS matched FROM harness_shared.agent_facts
-          WHERE id = ANY($1::bigint[]) AND ${predicate}`,
-        [ids],
+          WHERE id = ANY($1::bigint[]) AND workspace_id = $2 AND ${predicate}`,
+        [ids, WORKSPACE],
       );
       console.log(`${label}\t${ids.length}\t${rows[0].matched}`);
     };
@@ -481,7 +501,8 @@ async function cmdVerify() {
               count(*) FILTER (WHERE expires_at = 'infinity') AS permanent,
               count(*) FILTER (WHERE expires_at <= now()) AS lapsed,
               count(*) FILTER (WHERE kind='convention') AS conventions
-         FROM harness_shared.agent_facts WHERE ${SURFACE}`,
+         FROM harness_shared.agent_facts WHERE ${SURFACE} AND workspace_id = $1`,
+      [WORKSPACE],
     );
     console.log(`SURFACE_AFTER\t${JSON.stringify(sum[0])}`);
   } finally {

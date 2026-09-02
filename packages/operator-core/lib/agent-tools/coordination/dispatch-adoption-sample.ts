@@ -63,11 +63,20 @@ export const LIVE_SEED_LIST_NAMES = [
  * LIVE? This is the precondition the falsifier's `retire` branch asserts about
  * itself, lifted out to where it can be checked.
  *
- * MEASURED 2026-09-02 (WI-2142095): **false**. `coord:dispatch` appears exactly
- * once in `libs/papercusp/packages/orchestrator/src/invoke.ts`, at line 809,
- * inside `QUEEN_MCP_TOOL_NAMES` (783–885) — the retired mug tier. It is in none
- * of {@link LIVE_SEED_LIST_NAMES}, so no live role is seeded with it and no live
- * agent can reach the verb without already knowing its name.
+ * MEASURED 2026-09-02 (WI-2142095): **true**, as of the P-011 delivery fix landed
+ * the same day. `coord:dispatch` is now in `CORE_MCP_TOOL_NAMES`, so every live
+ * role seeds it and an agent meets the verb without already knowing its name.
+ *
+ * It was **false** until that fix: the verb appeared exactly once in
+ * `libs/papercusp/packages/orchestrator/src/invoke.ts`, inside
+ * `QUEEN_MCP_TOOL_NAMES` — the retired mug tier — and in none of
+ * {@link LIVE_SEED_LIST_NAMES}. That gap is why the falsifier's re-evaluation
+ * date moved to 2026-09-16 (`DISPATCH_ADOPTION_FLOOR.reEvaluateAfter`, the
+ * authority — do not restate the date elsewhere): a read must NOT count call
+ * rate from before 2026-09-02 as demand evidence, because for that
+ * whole window the verb was unreachable, so a low rate measures ABSENCE, not
+ * rejection. Retiring on it would be the zero-call-count error this plan exists
+ * to prevent.
  *
  * ⚠ WHY A PINNED CONSTANT AND NOT A RUNTIME IMPORT. Deriving this at runtime
  * means importing the orchestrator's seed lists into the sampler, and the only
@@ -82,7 +91,7 @@ export const LIVE_SEED_LIST_NAMES = [
  * FALSIFIER: `coord:dispatch` appearing in any of {@link LIVE_SEED_LIST_NAMES}.
  * When seeding lands, that test goes red and tells you to set this to `true`.
  */
-export const DISPATCH_INTERVENTION_REACHABLE = false;
+export const DISPATCH_INTERVENTION_REACHABLE = true;
 
 /** How much of the requested window the retained data could actually support. */
 export interface DispatchAdoptionCoverage {

@@ -205,7 +205,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       workspaceId: 'ws',
       queryContext: 'why is the recall empty',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: ['hivey'],
+      potSlugs: ['hivey'],
     });
     expect(backend.search).toHaveBeenCalledTimes(1);
     expect(optsOf(backend, 0).fusionMode).toBe('cosine-gated');
@@ -246,7 +246,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
         },
       },
       harnessSlugs: ['papercusp'],
-      hiveSlugs: [],
+      potSlugs: [],
     });
     const [query, opts] = backend.search.mock.calls[0]! as [string, { lexicalQuery?: string }];
     expect(query).toBe('continue where you left off');
@@ -264,7 +264,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       workspaceId: 'ws',
       queryContext: 'why is the recall empty',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: [],
+      potSlugs: [],
     });
     expect(backend.search.mock.calls[0]![1]).not.toHaveProperty('lexicalQuery');
   });
@@ -290,7 +290,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       workspaceId: 'ws',
       queryContext: 'why is the recall empty',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: [],
+      potSlugs: [],
     });
     expect(optsOf(backend, 0).minScore).toBe(MEMORY_INJECTION_COSINE_FLOOR);
   });
@@ -304,7 +304,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
     useBackend(backend);
     await buildMemoryContextBlock({
       userId: 'u1', workspaceId: 'ws', queryContext: 'why is the recall empty',
-      harnessSlugs: ['papercusp'], hiveSlugs: [],
+      harnessSlugs: ['papercusp'], potSlugs: [],
     });
     expect(diversifyOf(backend, 0)).toEqual({ lambda: 0.7 });
   });
@@ -317,7 +317,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       useBackend(backend);
       await buildMemoryContextBlock({
         userId: 'u1', workspaceId: 'ws', queryContext: 'why is the recall empty',
-        harnessSlugs: ['papercusp'], hiveSlugs: [],
+        harnessSlugs: ['papercusp'], potSlugs: [],
       });
       expect(diversifyOf(backend, 0)).toBeUndefined();
     } finally {
@@ -333,7 +333,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       workspaceId: 'ws',
       queryContext: 'a query nothing is relevant to',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: [],
+      potSlugs: [],
     });
     expect(block).toBeNull();
   });
@@ -349,7 +349,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
       });
       expect(optsOf(backend, 0).fusionMode).toBe('floored-union');
     } finally {
@@ -421,7 +421,7 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       workspaceId: 'ws',
       queryContext: 'q',
       harnessSlugs: ['papercusp', 'other'],
-      hiveSlugs: ['hivey'],
+      potSlugs: ['hivey'],
     });
     expect(backend.search).toHaveBeenCalledTimes(1);
     const opts = backend.search.mock.calls[0]![1] as { scope: string[]; limit: number };
@@ -454,7 +454,7 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       workspaceId: 'ws',
       queryContext: 'deploy pipeline',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: [],
+      potSlugs: [],
     });
     // All 8 render: the old PER_HARNESS_LIMIT=3 would have capped this at 3.
     for (let i = 0; i < 8; i++) expect(block).toContain(`harness fact number ${i}`);
@@ -479,7 +479,7 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       workspaceId: 'ws',
       queryContext: 'q',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: [],
+      potSlugs: [],
     });
     expect(block!.indexOf('the most relevant fact')).toBeLessThan(
       block!.indexOf('a less relevant personal note'),
@@ -509,7 +509,7 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       workspaceId: 'ws',
       queryContext: 'q',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: ['hivey'],
+      potSlugs: ['hivey'],
     });
     expect(block!.indexOf('an organic harness fact')).toBeLessThan(
       block!.indexOf('a seeded pack learning'),
@@ -524,7 +524,7 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       workspaceId: 'ws',
       queryContext: 'q',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: ['hivey'],
+      potSlugs: ['hivey'],
       limit: 3,
     });
     expect(
@@ -568,7 +568,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       workspaceId: 'ws',
       queryContext: 'why is the recall empty',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: ['hivey'],
+      potSlugs: ['hivey'],
     });
     await flush();
 
@@ -599,7 +599,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       workspaceId: 'ws',
       queryContext: 'mug brief',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: ['hivey'],
+      potSlugs: ['hivey'],
     });
     await flush();
 
@@ -617,7 +617,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       workspaceId: 'ws',
       queryContext: 'why is the recall empty',
       harnessSlugs: [],
-      hiveSlugs: [],
+      potSlugs: [],
     });
     await flush();
 
@@ -634,7 +634,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       workspaceId: 'ws',
       queryContext: 'why is the recall empty',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: ['hivey'],
+      potSlugs: ['hivey'],
       limit: 6,
     });
     await flush();
@@ -667,7 +667,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       workspaceId: 'ws',
       queryContext: 'why is the recall empty',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: [],
+      potSlugs: [],
     });
     await flush();
 
@@ -686,7 +686,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       workspaceId: 'ws-42',
       queryContext: 'why is the recall empty',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: [],
+      potSlugs: [],
     });
     await flush();
     expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({
@@ -717,7 +717,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
         budgetChars: 60,
       });
       await flush();
@@ -772,7 +772,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
         budgetChars: 200,
       });
       await flush();
@@ -793,7 +793,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
         budgetChars: 200,
       });
       await flush();
@@ -855,7 +855,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
         budgetChars: 4000,
       });
       await flush();
@@ -885,7 +885,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
         budgetChars: 4000,
       });
       await flush();
@@ -915,7 +915,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
         budgetChars: 50,
       });
       await flush();
@@ -937,7 +937,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
       });
       await flush();
       const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
@@ -970,7 +970,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
       });
       await flush();
       const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
@@ -990,7 +990,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
       });
       await flush();
       expect(block).toBeNull();
@@ -1007,7 +1007,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
       });
       await flush();
       expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
@@ -1031,7 +1031,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
         harnessSlugs: ['papercusp'],
-        hiveSlugs: [],
+        potSlugs: [],
         budgetChars: 60,
       });
       await flush();
@@ -1041,7 +1041,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       };
       // Sum over whatever pools were actually recorded — EI-19920080383279759
       // omits a pool key entirely when it was never queried (e.g. `hive` here,
-      // since hiveSlugs: [] suppresses it), so this must not assume all three
+      // since potSlugs: [] suppresses it), so this must not assume all three
       // keys are present.
       const pooled = Object.values(input.pools).reduce((sum, p) => sum + p.entries.length, 0);
       // `pools` is the PRE-filter view and must agree with the funnel's
@@ -1401,7 +1401,7 @@ describe('buildMemoryContextBlock', () => {
       };
       useBackend(mockBackend([organic, packed]));
       const block = await buildMemoryContextBlock({
-        userId: null, workspaceId: 'ws', hiveSlugs: ['h'], queryContext: 'testing?',
+        userId: null, workspaceId: 'ws', potSlugs: ['h'], queryContext: 'testing?',
       });
       expect(block).toContain('make test'); // organic admitted first
       expect(block).not.toContain('Tests ship with the feature'); // pack row dropped by the cap
@@ -1412,19 +1412,19 @@ describe('buildMemoryContextBlock', () => {
     }
   });
 
-  it('explicit hiveSlugs: [] suppresses the hive pull; explicit slugs skip resolution', async () => {
+  it('explicit potSlugs: [] suppresses the hive pull; explicit slugs skip resolution', async () => {
     registryProjects = [{ slug: 'member-a', hive_slug: 'my-hive' }];
     const suppressed = mockBackend([{ id: 'x', text: 'x', kind: 'project' }]);
     useBackend(suppressed);
     await buildMemoryContextBlock({
-      userId: null, workspaceId: 'ws', harnessSlugs: ['member-a'], hiveSlugs: [], queryContext: 'q',
+      userId: null, workspaceId: 'ws', harnessSlugs: ['member-a'], potSlugs: [], queryContext: 'q',
     });
     expect(suppressed.search.mock.calls.map((c) => c[1].scope)).toEqual([['harness:member-a']]);
 
     const pinned = mockBackend([{ id: 'y', text: 'y', kind: 'feedback' }]);
     useBackend(pinned);
     const block = await buildMemoryContextBlock({
-      userId: null, workspaceId: 'ws', hiveSlugs: ['other-hive'], queryContext: 'q',
+      userId: null, workspaceId: 'ws', potSlugs: ['other-hive'], queryContext: 'q',
     });
     expect(pinned.search.mock.calls.map((c) => c[1].scope)).toEqual([['hive:other-hive']]);
     expect(block).toContain('@ hive:other-hive');

@@ -405,6 +405,15 @@ export default defineTool({
     // into the correction instead of a dead end.
     argRedirects: {
       linkTo: 'observation.linkTo',
+      // EI-21119949290826530: `evidence` is the most natural name for the very thing
+      // this tool asks for — the `when` guidance above literally says "evidence in the
+      // top-level body" — but it is not a top-level ARG, and the bare rejection listed
+      // 22 accepted keys without saying which of them carries it. The caller cannot
+      // infer it from the list either, because two OTHER evidence homes genuinely
+      // exist (`observation.ratings[].evidence` for a scorecard, `toolFailure.message`
+      // for a tool-call failure), so the right answer looks like a guess between three.
+      // Routes at zero prompt weight, exactly like `linkTo` above.
+      evidence: 'body',
     },
     returns:
       'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, hint, alreadyDecided? }. The check-only `hint` states whether this was title-only or bound to the exact supplied body; changing the body can change semantic matches, so rerun with the final body before treating [] as clean.\n\n' +

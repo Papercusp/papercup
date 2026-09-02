@@ -51,7 +51,7 @@ import {
   currentSessionEpoch,
   stampSurfaced,
 } from './session-epoch-ledger';
-import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
+import { hiveScopeKey, potSlugFromScope, resolvePotSlugsForHarnesses } from './hive-scope';
 import {
   lexicalQueryText,
   retrievalQueryText,
@@ -115,7 +115,7 @@ export interface MemoryInjectionInput {
    * explicitly to skip that lookup or to recall a hive with no harness in
    * scope; pass `[]` to suppress the hive pull entirely.
    */
-  hiveSlugs?: readonly string[];
+  potSlugs?: readonly string[];
   /**
    * What to recall against. A bare string is the recent user-turn content
    * concatenated — the historical form, still correct for any caller that has
@@ -1069,25 +1069,25 @@ async function buildBlockInner(
   // Hive pools (knowledge-packs P-004): resolve the owning hives from the
   // harness slugs unless the caller pinned them. Best-effort — a registry
   // hiccup degrades to "no hive pull", never blocks the turn.
-  let hiveSlugs: string[] = [];
-  if (input.hiveSlugs !== undefined) {
-    hiveSlugs = input.hiveSlugs.filter((s) => typeof s === 'string' && s.length > 0);
+  let potSlugs: string[] = [];
+  if (input.potSlugs !== undefined) {
+    potSlugs = input.potSlugs.filter((s) => typeof s === 'string' && s.length > 0);
   } else if (harnessSlugs.length > 0) {
     const tHive = Date.now();
     try {
-      hiveSlugs = await withMemoryTimeout(
-        resolveHiveSlugsForHarnesses(input.workspaceId, harnessSlugs),
+      potSlugs = await withMemoryTimeout(
+        resolvePotSlugsForHarnesses(input.workspaceId, harnessSlugs),
         'hive-resolve',
         MEMORY_INJECT_TIMEOUT_MS,
       );
     } catch (err) {
       noteMemoryFailure(err);
-      hiveSlugs = [];
+      potSlugs = [];
     } finally {
       mark('hiveResolveMs', Date.now() - tHive);
     }
   }
-  if (hiveSlugs.length > MAX_HARNESS_FANOUT) hiveSlugs = hiveSlugs.slice(0, MAX_HARNESS_FANOUT);
+  if (potSlugs.length > MAX_HARNESS_FANOUT) potSlugs = potSlugs.slice(0, MAX_HARNESS_FANOUT);
 
   // The store holds only STABLE facts now — user + harness + hive scopes
   // (D-005: the deprecated `workspace:`/`shared` scope is drained, so there is
@@ -1152,7 +1152,7 @@ async function buildBlockInner(
     const scopes = [
       ...(input.userId ? [input.userId] : []),
       ...harnessSlugs.map((slug) => `harness:${slug}`),
-      ...hiveSlugs.map(hiveScopeKey),
+      ...potSlugs.map(hiveScopeKey),
     ];
     const doSearch = async (): Promise<MemoryEntry[]> =>
       scopes.length === 0
@@ -1190,11 +1190,11 @@ async function buildBlockInner(
     // Partition the ONE ranked result by pool, by each entry's own scope. The
     // entries are shared by reference with `ranked`, so the filters below shrink
     // both views together and the relevance order is recoverable at render time.
-    const hiveScopeSet = new Set(hiveSlugs.map(hiveScopeKey));
+    const hiveScopeSet = new Set(potSlugs.map(hiveScopeKey));
     for (const hit of ranked) {
       const scope = hit.scope ?? '';
       if (hiveScopeSet.has(scope)) {
-        hiveHits.push({ hit, slug: hiveSlugFromScope(scope) ?? scope });
+        hiveHits.push({ hit, slug: potSlugFromScope(scope) ?? scope });
       } else if (scope.startsWith('harness:')) {
         harnessHits.push({ hit, slug: scope.slice('harness:'.length) });
       } else {
@@ -1283,7 +1283,7 @@ async function buildBlockInner(
     statsWritten = true;
     const userScopes = input.userId ? [input.userId] : [];
     const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
-    const hiveScopes = hiveSlugs.map(hiveScopeKey);
+    const hiveScopes = potSlugs.map(hiveScopeKey);
     void (async () => {
       try {
         // P-009: the corpus search was already started beside this mem0 leg.
@@ -1359,7 +1359,7 @@ async function buildBlockInner(
           // and userScopes/harnessScopes/hiveScopes are each `[]` exactly when
           // their caller structurally has nothing to key on (no userId — several
           // surfaces are deliberately non-user, e.g. the Mug's 'brief' brief:
-          // "the Mug is not a user" — or `harnessSlugs`/`hiveSlugs` explicitly
+          // "the Mug is not a user" — or `harnessSlugs`/`potSlugs` explicitly
           // omitted to "skip the pool entirely", per their own doc comments
           // above). Recording that non-call as a pool row is indistinguishable,
           // downstream, from a pool that WAS asked and genuinely found nothing —

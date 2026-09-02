@@ -13,12 +13,32 @@ import {
   type DispatchAdoptionSample,
 } from './dispatch-adoption-falsifier';
 
+/**
+ * A day past the re-evaluation gate, DERIVED from the floor rather than pinned.
+ *
+ * These cases are about the rate and agent logic, so the default sample has to
+ * clear the date guard first — and when it does not, `evaluateDispatchAdoption`
+ * returns `undetermined` for the WRONG REASON. That is invisible in the two
+ * cases that expect `undetermined` anyway: they keep passing while asserting
+ * nothing about reachability. Measured 2026-09-02 (WI-2142095), when
+ * `reEvaluateAfter` moved 09-08 -> 09-16 and this was a hardcoded 2026-09-10:
+ * seven cases went red and one — "returns UNDETERMINED when it was NOT
+ * reachable" — was only caught because it matches on the `why` TEXT rather than
+ * the verdict alone. Deriving the date means a future move of the gate cannot
+ * quietly hollow these out.
+ */
+const AFTER_REEVALUATION_GATE = new Date(
+  new Date(`${DISPATCH_ADOPTION_FLOOR.reEvaluateAfter}T00:00:00Z`).getTime() + 86_400_000,
+)
+  .toISOString()
+  .slice(0, 10);
+
 const sample = (over: Partial<DispatchAdoptionSample> = {}): DispatchAdoptionSample => ({
   dispatchCalls: 40,
   dispatchAgents: 8,
   sendCalls: 4_000,
   windowDays: 30,
-  asOf: '2026-09-10',
+  asOf: AFTER_REEVALUATION_GATE,
   interventionReachable: true,
   ...over,
 });

@@ -5118,19 +5118,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // sessions structurally satisfy ScopedSessionLike.
           scopeRegistry = new ScopeCoreRegistry(scopedStore as unknown as ScopedStoreLike);
         }
-        const rosterHiveSlug = hiveHomeProjectionSlug ?? opts.harnessSlug;
+        const rosterPotSlug = hiveHomeProjectionSlug ?? opts.harnessSlug;
         // P-101: the fleet directory widens the scope roster from owner-only to
         // owner ∪ publisher-set, and seeds this peer's participating scopes from
         // its directory records (owner or publisher of a live fleet ⇒ participant).
         const fleetDirectory = new PgFleetDirectory({
           workspaceId: opts.workspaceId,
-          potSlug: rosterHiveSlug,
+          potSlug: rosterPotSlug,
         });
         scopeFederation = new ScopeFederation({
           registry: scopeRegistry,
           roster: getScopeRoster({
             workspaceId: opts.workspaceId,
-            potSlug: rosterHiveSlug,
+            potSlug: rosterPotSlug,
             directory: fleetDirectory,
           }),
           selfGithubUserId: identity.githubUserId,
@@ -5150,7 +5150,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_rejected', reason);
             void bumpRefusedOpCounter({
               workspaceId: opts.workspaceId,
-              potSlug: rosterHiveSlug,
+              potSlug: rosterPotSlug,
               reason,
             }).catch(() => {});
           },

@@ -95,25 +95,25 @@ process.env.PAPERCUSP_OPERATOR_BASE ??= 'http://localhost:3170';
 // This run's temporary hive slug (a random `xbench-su-<nanoid>`), captured via the driver's onHiveCreated
 // hook so a signal-kill — which exits BEFORE the driver's finalize/dissolveHive runs — can still retire
 // THIS run's work-items. The retire is SCOPED to the slug, so it can NEVER touch a concurrent peer run.
-let runHiveSlug: string | null = null;
+let runPotSlug: string | null = null;
 let debrisRetired = false;
 
 /**
- * Retire THIS run's benchmark work-items (→ `deprecated`, scoped to {@link runHiveSlug}) so a kill or exit
+ * Retire THIS run's benchmark work-items (→ `deprecated`, scoped to {@link runPotSlug}) so a kill or exit
  * never leaves frontier debris for the papercup-hive's workspace-wide survey to trip on (the ~13k-aging-
  * escalation-storm recurrence fix). Idempotent + best-effort; scoped → safe under concurrent peer runs.
  */
 async function retireRunDebris(reason: string): Promise<void> {
   if (debrisRetired) return;
-  if (!runHiveSlug) {
+  if (!runPotSlug) {
     console.warn(`[su-independent] debris retire (${reason}): no hive created yet — nothing to retire.`);
     return;
   }
   debrisRetired = true;
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
-    const n = await retireBenchDebris(getOrgPg().sql as unknown as DebrisSql, Date.now(), { slugPrefix: runHiveSlug });
-    console.warn(`[su-independent] retired ${n} work-item(s) for hive '${runHiveSlug}' at ${reason} (scoped frontier-debris guard).`);
+    const n = await retireBenchDebris(getOrgPg().sql as unknown as DebrisSql, Date.now(), { slugPrefix: runPotSlug });
+    console.warn(`[su-independent] retired ${n} work-item(s) for hive '${runPotSlug}' at ${reason} (scoped frontier-debris guard).`);
   } catch (e) {
     console.warn(`[su-independent] debris retire (${reason}) failed (best-effort): ${e instanceof Error ? e.message : e}`);
   }
@@ -274,7 +274,7 @@ async function main() {
     fleetTimeoutMs: Number(process.env.XBENCH_FLEET_TIMEOUT_MS ?? 120 * 60 * 1000),
     sampleIntervalMs: Number(process.env.XBENCH_SAMPLE_MS ?? 5_000),
     // Capture the run's hive slug so a signal-kill can scope its debris retire to THIS run (never a peer's).
-    onHiveCreated: (slug) => { runHiveSlug = slug; },
+    onHiveCreated: (slug) => { runPotSlug = slug; },
     onEnrolled: (e) => {
       const row = {
         arm: ARM,

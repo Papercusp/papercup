@@ -63,7 +63,7 @@ export interface WirePresenceOpts {
   intervalMs?: number;
   // ── test / wiring seams ──
   resolveIdentity?: () => Promise<PresenceIdentity | null>;
-  resolveHiveSlug?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
+  resolvePotSlug?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
   /** EI-18761517980514694 test seam — override the runner-capability resolver
    *  stamped onto each announce (default: nodeRunsCadenceLoops for this harness). */
   resolveRunsRoutines?: () => Promise<boolean | null>;
@@ -198,7 +198,7 @@ export async function wirePresenceAnnounceForHarness(
   // the projection WRITE scope (boot.ts resolveHiveHomeProjectionSlug → joinerPotHomeSlug,
   // also canonicalized) or the joiner writes pot_members under one slug and admits under
   // another — see canonicalHiveHomeSlug. Unchanged for an owned hive.
-  const resolveHive = opts.resolveHiveSlug ?? canonicalHiveHomeSlug;
+  const resolveHive = opts.resolvePotSlug ?? canonicalHiveHomeSlug;
   let potSlug: string | null = null;
   try {
     potSlug = await resolveHive(handle.workspaceId, handle.harnessSlug);

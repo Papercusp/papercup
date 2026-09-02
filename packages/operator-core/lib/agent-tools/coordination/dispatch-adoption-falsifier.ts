@@ -88,8 +88,35 @@ export const DISPATCH_ADOPTION_FLOOR = {
   distinctAgents: 3,
   /** Do not judge on a window this thin — say UNDETERMINED instead. */
   minSendCalls: 500,
-  /** Earliest honest read: the interventions must be deployed for a full window. */
-  reEvaluateAfter: '2026-09-08',
+  /**
+   * Earliest honest read: the interventions must be deployed for a full window.
+   *
+   * ⚠ MOVED 2026-09-08 -> 2026-09-16 ON 2026-09-02 (WI-2142095). This is the
+   * SAME correction-of-the-label discipline as {@link DISPATCH_BASELINE}'s
+   * window, NOT a moved goalpost — and the distinction is the whole point:
+   * the BAR is untouched (`ratePerThousand` 3.0 and `distinctAgents` 3 are
+   * pre-committed and stay exactly as agreed). What moved is this
+   * PRECONDITION, whose contract is stated in the line above: deployed for a
+   * FULL window.
+   *
+   * 2026-09-08 was chosen assuming both interventions landed together in late
+   * August. P-012's handles did. P-011's seeding did NOT — `coord:dispatch`
+   * sat only in the retired mug tier until it was seeded on 2026-09-02. A
+   * 14-day window (`windowDays`) ending 2026-09-08 therefore spans 08-25 ->
+   * 09-08, of which 8 of 14 days had the verb on no live surface at all.
+   * Reading it then would divide real demand by a denominator that is mostly
+   * pre-intervention and call the diluted result rejection — the exact
+   * zero-call-count retirement this plan exists to prevent, reintroduced one
+   * layer up from the gap it just fixed.
+   *
+   * 2026-09-02 + `windowDays` = 2026-09-16 is the first date on which the
+   * window sits entirely after the intervention, which is what the contract
+   * above already required. Note this guard is now load-bearing ALONE:
+   * `DISPATCH_INTERVENTION_REACHABLE` flipped true the same day, so the
+   * `!interventionReachable` branch below no longer fires and this date is the
+   * only thing standing between a low rate and a `retire` verdict.
+   */
+  reEvaluateAfter: '2026-09-16',
 } as const;
 
 export interface DispatchAdoptionSample {

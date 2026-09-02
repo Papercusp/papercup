@@ -30,7 +30,7 @@ export interface ActivationRegistryEntry {
   /** Registry `harness_kind` — 'hive' marks a Hive HOME (repo-less state dir). */
   harnessKind?: string;
   /** Registry `hive_slug` — present ⇒ this harness is a member of that Hive. */
-  hiveSlug?: string;
+  potSlug?: string;
 }
 
 /** Injected I/O, so the gatherer unit-tests without PG. */
@@ -54,7 +54,7 @@ function factsKey(workspaceId: string, harnessSlug: string): string {
  * non-federating (and therefore deferrable) would be exactly the wrong call.
  */
 export function isFederatingEntry(entry: ActivationRegistryEntry): boolean {
-  return entry.harnessKind === 'hive' || (entry.hiveSlug != null && entry.hiveSlug !== '');
+  return entry.harnessKind === 'hive' || (entry.potSlug != null && entry.potSlug !== '');
 }
 
 /**

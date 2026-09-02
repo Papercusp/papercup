@@ -2715,6 +2715,25 @@ export async function claimIssue(
     opts.selfFiledFalloutAdmission.workspaceId === ws
       ? opts.selfFiledFalloutAdmission
       : null;
+  // WI-2142171: capture the prior holder BEFORE the UPDATE, so a NO-OP re-claim does not
+  // re-notify every subscriber. Claiming BY ID deliberately bypasses the claim floors (the
+  // WI-5826 escape hatch below), and the `assignee = ${assignee}` disjunct in the predicate
+  // means an agent re-claiming an item it ALREADY holds matches this UPDATE on every call.
+  // Each such no-op then fanned a fresh notify to the FULL subscriber set — and because this
+  // path mints a random msg_id (unlike the substrate fan-out's deterministic
+  // `fan-<outboxId>-<subscriber>`), the idempotent-delivery dedupe never saw it.
+  // Measured over 7d before this guard: 2,888 claim notify rows, 1,712 of them (59%) redundant
+  // repeats; worst single item re-claimed 56x over 17h, costing 448 inbox rows against a
+  // fleet mean of ~3 per action.
+  // Mirrors releaseIssue's identical pre-read of the BASE work_items table (which sidesteps
+  // the engineer_issues view's harness_slug encoding split).
+  const priorRows = await sql<{ taken_by: string | null }[]>`
+    SELECT taken_by
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${ws}
+       AND feature_id = ${id}
+       AND item_kind IN ('bug', 'change', 'task')`;
+  const priorAssignee = priorRows[0]?.taken_by ?? null;
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
@@ -2786,7 +2805,15 @@ export async function claimIssue(
     delivery_mode: 'full',
     created_ts: nowIso(),
   });
-  await deliver(issue, 'updated', `issue ${id} claimed by ${assignee}`, assignee);
+  // WI-2142171: notify ONLY when the claim actually changed the holder (see the pre-read
+  // above). A re-claim by the current holder is a no-op for every subscriber — and for the
+  // claimer itself, whose own action it is, `deliver` already excludes the actor. The test
+  // is exact equality, matching the SQL disjunct that admits the re-claim; a claim that
+  // rewrites a NULL/blank/'unassigned' sentinel, or self-heals a truncated id, still differs
+  // and still notifies.
+  if (priorAssignee !== assignee) {
+    await deliver(issue, 'updated', `issue ${id} claimed by ${assignee}`, assignee);
+  }
   return issue;
 }
 
@@ -2928,7 +2955,21 @@ export async function releaseIssue(
       .then((m) => m.releaseIssueClaimLease({ workItemId: id, owner: formerAssignee }))
       .catch(() => {});
   }
-  await deliver(issue, 'updated', `issue ${id} released (unassigned)`);
+  // WI-2142171: notify ONLY when a real holder was actually released. The UPDATE above
+  // deliberately matches an already-unassigned row (`assignee IS NULL` is permitted so the
+  // state normalization can still run), so a repeated release re-fanned the full subscriber
+  // set for a change that did not happen — measured at 233 notify rows for ONE item over
+  // 37.6h, and 1,436 of 2,168 release notify rows (66%) redundant across 7d. Every other
+  // side-effect above is already guarded on `formerAssignee` for exactly this reason; this
+  // was the one that was not. The blank/'unassigned' normalization mirrors the claim
+  // predicate's "not taken" sentinels (EI-15027) so both guards agree on what "held" means.
+  const releasedARealHolder =
+    formerAssignee != null &&
+    formerAssignee.trim() !== '' &&
+    formerAssignee.trim().toLowerCase() !== 'unassigned';
+  if (releasedARealHolder) {
+    await deliver(issue, 'updated', `issue ${id} released (unassigned)`);
+  }
   return issue;
 }
 

@@ -58,7 +58,7 @@ describe('wirePresenceAnnounceForHarness (P-008 publisher wiring)', () => {
     const { handle, closeHooks } = mockHandle();
     const loop = await wirePresenceAnnounceForHarness(handle, {
       resolveIdentity: async () => identity,
-      resolveHiveSlug: async () => 'my-hive',
+      resolvePotSlug: async () => 'my-hive',
       setIntervalFn: noTick,
     });
     expect(loop).not.toBeNull();
@@ -69,7 +69,7 @@ describe('wirePresenceAnnounceForHarness (P-008 publisher wiring)', () => {
     const { handle, appended } = mockHandle();
     const loop = await wirePresenceAnnounceForHarness(handle, {
       resolveIdentity: async () => identity,
-      resolveHiveSlug: async (ws, slug) => {
+      resolvePotSlug: async (ws, slug) => {
         expect([ws, slug]).toEqual(['ws', 'repo-a']);
         return 'my-hive';
       },
@@ -86,7 +86,7 @@ describe('wirePresenceAnnounceForHarness (P-008 publisher wiring)', () => {
     const { handle, appended } = mockHandle();
     const loop = await wirePresenceAnnounceForHarness(handle, {
       resolveIdentity: async () => identity,
-      resolveHiveSlug: async () => null,
+      resolvePotSlug: async () => null,
       setIntervalFn: noTick,
       now: () => 1000,
     });
@@ -103,7 +103,7 @@ describe('wirePresenceAnnounceForHarness (P-008 publisher wiring)', () => {
     try {
       const loop = await wirePresenceAnnounceForHarness(handle, {
         resolveIdentity: async () => null,
-        resolveHiveSlug: async () => 'my-hive',
+        resolvePotSlug: async () => 'my-hive',
         setIntervalFn: noTick,
       });
       await loop!.tickOnce();
@@ -121,7 +121,7 @@ describe('wirePresenceAnnounceForHarness (P-008 publisher wiring)', () => {
     const { handle, appended } = mockHandle();
     const loop = await wirePresenceAnnounceForHarness(handle, {
       resolveIdentity: async () => identity,
-      resolveHiveSlug: async () => {
+      resolvePotSlug: async () => {
         throw new Error('registry unavailable');
       },
       setIntervalFn: noTick,

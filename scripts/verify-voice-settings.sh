@@ -249,36 +249,87 @@ say "6. switching the STT engine persists across a full reload"
 "$POLL" --require '.h-select-item' --require-min 2 --eval '
   document.querySelectorAll(".h-select-item").length >= 2'
 
-# Radix Items select on a pointer sequence, and a bare .click() does not always
-# drive them. Try the strategies in order and let the OUTCOME decide — asserting
-# the trigger's value changed, not that any particular strategy fired.
+# HOW RADIX 2.2.6 ACTUALLY SELECTS, because guessing this costs a boot per guess.
+# SelectItem (node_modules/@radix-ui/react-select/dist/index.js, the block around
+# the onPointerUp at ~:931) has TWO MUTUALLY EXCLUSIVE selection paths, chosen by
+# a `pointerTypeRef` that DEFAULTS TO "touch":
+#
+#   onPointerDown / onPointerMove → pointerTypeRef.current = event.pointerType
+#   onPointerUp                   → handleSelect() ONLY IF ref === "mouse"
+#   onClick                       → handleSelect() ONLY IF ref !== "mouse"
+#
+# A synthetic `new PointerEvent(...)` with no `pointerType` sets that ref to the
+# empty string, which is the one value that lands cleanly in NEITHER path. That
+# is why the obvious pointerdown/pointerup/click burst silently selects nothing.
+# There are no isTrusted guards (grepped: 0), so a properly-shaped synthetic
+# event is enough.
+#
+# So: drive the mouse path explicitly with pointerType "mouse", and keep the bare
+# click as the fallback for a webview with no PointerEvent constructor (where the
+# ref stays "touch" and the click path is the live one). The two paths are
+# mutually exclusive BY CONSTRUCTION, so running both cannot double-select.
 "$TAT" eval --pid "$PID" '
   (() => {
     const trig = document.querySelector("button.h-select-trigger[aria-label=\"STT engine\"]");
     const before = (trig.textContent || "").trim();
-    window.__sttBefore = before;
     const items = [...document.querySelectorAll(".h-select-item")];
-    const target = items.find(i => (i.textContent || "").trim() !== before
-                                && !(i.getAttribute("aria-disabled") === "true"));
-    if (!target) { window.__sttPick = null; return "no-alternative"; }
-    window.__sttPick = (target.textContent || "").trim();
-    const opts = { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true };
-    try { target.dispatchEvent(new PointerEvent("pointerdown", opts)); } catch {}
-    try { target.dispatchEvent(new PointerEvent("pointermove", opts)); } catch {}
-    try { target.dispatchEvent(new PointerEvent("pointerup", opts)); } catch {}
-    try { target.click(); } catch {}
-    return window.__sttPick;
+    // Pick by RADIX STATE, never by text. Radix stamps data-state="checked" on
+    // the selected item (SelectItem: `"data-state": isSelected ? "checked" :
+    // "unchecked"`), so "an option that is not the current one" is exact.
+    // Comparing item text against the trigger text does NOT give that: the
+    // trigger renders RS.Value alone while the item renders ItemText PLUS an
+    // ItemIndicator, so the CURRENTLY-SELECTED item can compare as "different"
+    // and get re-picked — clicking it selects the value that was already set,
+    // the trigger never changes, and the run reds as though selection is broken.
+    // aria-selected is no substitute: Radix sets it to `isSelected && isFocused`,
+    // so it is false for the selected item whenever focus is elsewhere.
+    const target = items.find(i => i.getAttribute("data-state") === "unchecked"
+                                && i.getAttribute("aria-disabled") !== "true");
+    window.__stt = {
+      before,
+      pickedItemText: target ? (target.textContent || "").trim() : null,
+      pointerCtor: typeof PointerEvent === "function",
+      itemStates: items.map(i => ({ t: (i.textContent || "").trim().slice(0, 40),
+                                    s: i.getAttribute("data-state") })),
+    };
+    if (!target) return "no-alternative";
+    const o = { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true,
+                pointerType: "mouse", button: 0 };
+    try {
+      target.dispatchEvent(new PointerEvent("pointerdown", o));
+      target.dispatchEvent(new PointerEvent("pointermove", o));
+      target.dispatchEvent(new PointerEvent("pointerup", o));
+    } catch (e) { window.__stt.pointerErr = String(e); }
+    try { target.click(); } catch (e) { window.__stt.clickErr = String(e); }
+    return "dispatched";
   })()' >/dev/null
 
-# It actually changed in the UI first — if this fails, the picker is broken and
-# the reload check below would be measuring nothing.
+# Assert the TRIGGER'S VALUE CHANGED — deliberately NOT that it equals the item's
+# text. The trigger renders RS.Value while the item renders ItemText PLUS an
+# ItemIndicator, so the two strings can differ for reasons that have nothing to
+# do with whether selection worked. An earlier revision of this script required
+# that equality and failed on a run whose selection may well have succeeded,
+# which is a false red — and worse, an undiagnosable one.
+# NARRATE BEFORE ASSERTING. The dump has to happen in its own call ahead of the
+# POLL, because POLL exits nonzero under `set -e` and would kill the script
+# before any diagnostic placed after it could run — so the one run that needs
+# the evidence is precisely the run that prints none. (Learned the expensive
+# way: two boots produced a bare red with no way to tell whether the picker
+# found no alternative or the click failed to take.)
+"$TAT" eval --pid "$PID" '
+  (() => {
+    const trig = document.querySelector("button.h-select-trigger[aria-label=\"STT engine\"]");
+    window.__stt.after = (trig.textContent || "").trim();
+    return JSON.stringify(window.__stt);
+  })()' 2>/dev/null | tail -1
+
 "$POLL" --require 'button.h-select-trigger[aria-label="STT engine"]' --eval '
   (() => {
     const trig = document.querySelector("button.h-select-trigger[aria-label=\"STT engine\"]");
     const now = (trig.textContent || "").trim();
-    return !!window.__sttPick && now !== window.__sttBefore && now === window.__sttPick;
+    window.__stt.after = now;
+    return !!window.__stt.pickedItemText && now !== window.__stt.before;
   })()'
-echo "picked: $("$TAT" eval --pid "$PID" 'window.__sttPick' 2>/dev/null | tail -1)"
 
 # Carry the expected value across the reload in sessionStorage — it survives a
 # reload, where a JS global does not. Deliberately NOT interpolated through the
@@ -287,7 +338,8 @@ echo "picked: $("$TAT" eval --pid "$PID" 'window.__sttPick' 2>/dev/null | tail -
 # sessionStorage is written by THIS harness, never by the app, so it carries the
 # expectation without weakening what is being proved: the trigger's value after
 # reload still has to come from the server round trip.
-"$TAT" eval --pid "$PID" 'sessionStorage.setItem("__sttExpected", window.__sttPick || "")' >/dev/null
+"$TAT" eval --pid "$PID" '
+  sessionStorage.setItem("__sttExpected", (window.__stt && window.__stt.after) || "")' >/dev/null
 "$TAT" eval --pid "$PID" 'window.location.reload()' >/dev/null 2>&1 || true
 "$TAT" wait --pid "$PID" --selector 'button.h-select-trigger[aria-label="STT engine"]' --timeout 60000 \
   >/dev/null 2>&1 || echo "DIAG: page did not come back after reload"

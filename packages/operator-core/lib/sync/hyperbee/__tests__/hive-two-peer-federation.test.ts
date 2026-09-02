@@ -344,7 +344,7 @@ describe('Shared Hive federation — Track B presence federates over the Hive to
         machineLabel: 'machine-A',
         devicePubkey: idA.devicePubkey,
       }),
-      resolveHiveSlug: async () => potSlug,
+      resolvePotSlug: async () => potSlug,
       setIntervalFn: () => 0 as unknown as ReturnType<typeof setInterval>,
       // This leg pins the LOG-APPEND path (the PRESENCE_GOSSIP rollback path):
       // the assertion below reads applyB's log-merge calls, which gossip frames

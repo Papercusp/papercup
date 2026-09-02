@@ -164,6 +164,17 @@ export interface CoordLineSource {
    *  Read ONLY by the P-005 reply-quote hydration — guarded at use, so a
    *  malformed value degrades to "no quote", never throws. */
   related_msg_id?: string;
+  /** The envelope's OWN id (present on every real message — inbox.ts reads it
+   *  at `entry.msg_id` throughout). Read ONLY by the WI-2142086 reply-handle
+   *  hint below, to surface the exact value a reply should set as
+   *  `related_msg_id` to thread onto THIS line. */
+  msg_id?: string;
+  /** send.ts's wakeOnReply stamp: `true` only when a reply to THIS message
+   *  will wake its sender (gated there on directed + `expects !== 'none'`).
+   *  Read ONLY by the WI-2142086 reply-handle hint, to decide whether the
+   *  hint is worth rendering; `unknown` so a malformed/legacy value degrades
+   *  to "no hint", never throws. */
+  wakeOnReply?: unknown;
   // digest-notify coalescing fields
   subject?: string;
   digest?: boolean;
@@ -475,9 +486,25 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     const blockedOnSuffix = renderBlockedOnStatusSuffix(
       (e as unknown as Record<string, unknown>)[BLOCKED_ON_STATUS_FIELD],
     );
+    // WI-2142086: 29.6% of answered directed messages come back as a fresh
+    // standalone send instead of a threaded `related_msg_id` reply (measured
+    // via coord_event_log), so wakeOnReply silently never fires for the asker
+    // even though the right answer arrived — correct content, missing
+    // linkage. Borrowed from the METR/Redwood incident-report board: the
+    // reply ADDRESS travels INSIDE the message being answered (their
+    // self-describing `REPLY_<token>`), so threading becomes the path of
+    // least resistance instead of something the replier has to remember. A
+    // line stamped `wakeOnReply:true` at send (send.ts, gated on directed +
+    // `expects !== 'none'`) is exactly the population whose reply would
+    // otherwise silently miss the wake — surface its own msg_id as the reply
+    // target. Acks are excluded (nobody composes a fresh reply to a receipt).
+    const replyHintSuffix =
+      e.wakeOnReply === true && e.kind !== 'ack' && typeof e.msg_id === 'string' && e.msg_id.length > 0
+        ? ` ↩ reply with related_msg_id:${e.msg_id}`
+        : '';
     const text = tag ? `[${tag}] ${body}` : body;
     lines.push(
-      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}`,
+      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}${replyHintSuffix}`,
     );
   }
   return lines.join('\n');

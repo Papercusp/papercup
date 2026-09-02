@@ -2635,6 +2635,112 @@ describe("reconcileLoopRoutines — a 'suppressed-redundant' wake waits for the 
   });
 });
 
+// EI-22177872501023528 — a WARM suppressed-redundant wake must not wait 30 min for a lifecycle
+// 'ended' that never comes.
+//
+// The defect these pin: the EI-22127560919383327 leg above holds the fire until a lifecycle
+// 'ended' newer than the wake. That marker "in practice only fires at a genuine session restart"
+// (this module's own layer-1 note), so a WARM session that never restarts never produces one —
+// and the stacked prompt only carries turn_origin='loop-fire' when the LOOP's wake opens the next
+// turn, so when a watchdog/wake-pump/coord wake opens it first the strict loop-turn clock never
+// advances either. Both hold together for exactly one population, measured 2026-09-02 on
+// papercusp-workspace: warm + suppressed-redundant = 8 parked loops, 8/8 with zero post-fire
+// loop-fire turns, averaging 17.5x their own interval (every other parked group: 1.8-5.2x).
+// Only the layer-3 stuck-park backstop could rescue them — a flat 30-min floor, i.e. 30x cadence
+// for a 60s loop.
+//
+// FALSIFIABILITY: the two CONTROLs drive the identical row with presence STILL BUSY and with
+// presence that never advanced past the fire, and both must keep the pre-existing awaiting-turn
+// hold — proving the new branch reads the quiet-gap and the did-work-after-the-fire predicates
+// rather than simply abandoning the leg.
+describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles on presence quiet, not on a lifecycle 'ended' that never arrives (EI-22177872501023528)", () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  /** WARM loop, fired at T0 mid-turn; wake settled 'suppressed-redundant' 1s later. No loop-origin
+   *  turn and no lifecycle 'ended' will EVER arrive (warm session, never restarts). */
+  const warmSuppressedRow = (over: Record<string, unknown> = {}) => ({
+    id: 'rt-warm-suppressed',
+    target_owner_id: 'su-warm-suppressed',
+    interval_sec: 60,
+    parked: true,
+    is_cron: false,
+    install_slug: 'papercusp',
+    name: 'loop-su-warm-suppressed',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    fire_state_last_fired_at: pgString(T0 + 500),
+    fire_state_last_withheld_at: null,
+    last_wake_at: pgString(T0 + 1_000),
+    last_wake_status: 'delivered',
+    last_wake_channel: 'suppressed-redundant',
+    last_loop_turn_at: null,
+    lifecycle_completed_at: null,
+    turn_journal_completed_at: null,
+    lifecycle_started_at: null,
+    carry: null, // WARM
+    armed_at: null,
+    note_updated_ts: null,
+    // Worked until +40s (the stacked prompt's turn), then went quiet.
+    presence_last_active_at: pgString(T0 + 40_000),
+    last_assistant_text_after_fire: null,
+    turns_ingest_watermark: null,
+    payload_template: null,
+    monitor_delta_at: null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('settles via presence-quiescence once the session goes quiet — WITHOUT waiting for the 30-min stuck-park dwell', async () => {
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([warmSuppressedRow()], []),
+      nowMs: T0 + 110_000, // 70s of quiet — far short of the 30-min dwell
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('presence-quiescence');
+    // A wake that was never spent must never feed the fire-circuit (EI-22127560919383327).
+    expect(recordFire).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      'error',
+    );
+  });
+
+  it('CONTROL — while the session is STILL BUSY (presence beat 20s old) it keeps waiting, unchanged', async () => {
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([warmSuppressedRow({ presence_last_active_at: pgString(T0 + 90_000) })], []),
+      nowMs: T0 + 110_000, // only 20s quiet — under FALLBACK_QUIET_MS
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(0);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL — presence that never advanced past the fire is no evidence a turn ran, so it keeps waiting', async () => {
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([warmSuppressedRow({ presence_last_active_at: pgString(T0 - 5_000) })], []),
+      nowMs: T0 + 110_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(0);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * P-004 (anti-babysitting-monitor-enforcement-2026-08-25) — the MONITOR settlement branch.
  *

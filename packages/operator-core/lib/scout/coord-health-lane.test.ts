@@ -6,7 +6,10 @@ import {
   type CoordAuthoredAdoption,
   type CoordDispatchAdoption,
 } from './coord-health-lane';
-import { evaluateDispatchAdoption } from '../agent-tools/coordination/dispatch-adoption-falsifier';
+import {
+  DISPATCH_ADOPTION_FLOOR,
+  evaluateDispatchAdoption,
+} from '../agent-tools/coordination/dispatch-adoption-falsifier';
 import { buildEnforcementTierCensus } from './enforcement-tier-census';
 import type { PremiseRefKind } from '../agent-tools/coordination/message-fields';
 import type { PremiseStatus } from '../agent-tools/coordination/premise-resolve';
@@ -731,11 +734,21 @@ describe('buildCoordHealthPatterns — the coord:dispatch retirement falsifier (
       dispatchAgents: 8,
       sendCalls: 4_000,
       windowDays: 14,
-      asOf: '2026-09-10',
+      // DERIVED from the gate, never pinned: these cases assert KEEP/RETIRE, and
+      // a sample dated before `reEvaluateAfter` returns UNDETERMINED instead — so
+      // a hardcoded date silently converts them into assertions about the date
+      // guard. That is exactly what happened on 2026-09-02 (WI-2142095) when the
+      // gate moved 09-08 -> 09-16 and this read '2026-09-10'.
+      asOf: new Date(
+        new Date(`${DISPATCH_ADOPTION_FLOOR.reEvaluateAfter}T00:00:00Z`).getTime() + 86_400_000,
+      )
+        .toISOString()
+        .slice(0, 10),
       // Default TRUE so these lane tests keep exercising the real keep/retire
       // bar. The production sampler supplies the measured value
-      // (DISPATCH_INTERVENTION_REACHABLE, currently false); the precondition
-      // itself is covered in dispatch-adoption-falsifier.test.ts.
+      // (DISPATCH_INTERVENTION_REACHABLE, true since the P-011 seeding landed on
+      // 2026-09-02); the precondition itself is covered in
+      // dispatch-adoption-falsifier.test.ts.
       interventionReachable: true,
       ...over,
     };
