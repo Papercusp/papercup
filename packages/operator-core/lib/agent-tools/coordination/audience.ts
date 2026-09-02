@@ -47,6 +47,21 @@ export interface FleetAudienceOmission {
   heartbeatAt?: string | null;
 }
 
+/**
+ * A selector that DID resolve, but every recipient it resolved to is absent from
+ * the roster ENTIRELY — a reaped session.
+ *
+ * Deliberately a separate field from `unresolvedSelectors`, because the failure it
+ * names is invisible to a count: the audience resolved to N≥1 recipients and still
+ * reaches nobody, ever. Every miss-signal on the send path keys off cardinality
+ * ZERO, so before this existed a reaped recipient produced `recipients_resolved: 1`
+ * and the full success shape (EI-22180848452883121).
+ */
+export interface UnreachableAudience {
+  selector: string;
+  ownerIds: string[];
+}
+
 /** An active (fresh-heartbeat, non-revoked) agent + what it is working on. */
 export interface ActivePresence {
   ownerId: string;
@@ -74,8 +89,29 @@ export interface AudienceResolvers {
    */
   explainFleetAudience?(fleetSlug: string): Promise<FleetAudienceOmission[]>;
   /** The named fleet's current leader → ownerId(s) (0 or 1; the durable registry,
-   *  liveness-independent). Backs the `@fleet-leader:` selector. */
+   *  liveness-independent). Backs the `@fleet-leader:` selector.
+   *
+   *  Liveness-independence is DELIBERATE: an escalation must reach the lead even
+   *  while they are offline, landing in their durable inbox for when they return.
+   *  That justification holds for an ended-but-recorded session and NOT for a
+   *  reaped one — see `listUnreachableRecipients`, which draws exactly that line
+   *  without touching who is delivered to. */
   listFleetLeader(fleetSlug: string): Promise<string[]>;
+  /**
+   * Which of these ownerIds are absent from the roster ENTIRELY — no local presence
+   * row, no recorded session, no federated peer: a REAPED id whose inbox nobody will
+   * ever read. OPTIONAL and purely DIAGNOSTIC: it never changes who is delivered to.
+   * A host that cannot answer omits it (or returns []), and the send reports nothing
+   * unreachable — so callers must read an empty result as UNKNOWN, never as "every
+   * recipient is reachable".
+   *
+   * NOT a liveness or "is it awake" test, and deliberately not interchangeable with
+   * one. An ended-but-recorded leader still has a durable inbox to come back to,
+   * which is precisely why `listFleetLeader` above is liveness-independent; a reaped
+   * one does not. Reaped ≡ zero recipients for delivery purposes; merely offline is
+   * not.
+   */
+  listUnreachableRecipients?(ids: readonly string[]): Promise<string[]>;
   /**
    * Agents on a repo-relative path per the LOCK plane — holders of a live
    * (unexpired) file-lock ∪ agents queued waiting for one. The automatic half of
@@ -92,6 +128,13 @@ export type AudienceMode = 'scoped' | 'broadcast';
 export interface AudienceExpansion {
   resolved: string[];
   unresolvedSelectors: string[];
+  /**
+   * Selectors that resolved to recipients who are ALL reaped (see
+   * {@link UnreachableAudience}). EMPTY means "none KNOWN" — a host without the
+   * probe, or a roster read that threw, both land here — never proof that every
+   * recipient is reachable.
+   */
+  unreachableSelectors: UnreachableAudience[];
 }
 
 const SELECTOR_PREFIX = '@';
@@ -163,7 +206,55 @@ export async function expandAudienceDetailed(
     if (expansion.unresolved) unresolved.add(expansion.selector);
     for (const id of expansion.resolved) out.add(id);
   }
-  return { resolved: [...out], unresolvedSelectors: [...unresolved] };
+  return {
+    resolved: [...out],
+    unresolvedSelectors: [...unresolved],
+    unreachableSelectors: await findUnreachableSelectors(expansions, resolvers),
+  };
+}
+
+/**
+ * Which selectors resolved ONLY to reaped recipients (EI-22180848452883121).
+ *
+ * Scoped to a selector's WHOLE resolved set on purpose. A `@fleet:` audience that
+ * loses one of six members had a PARTIAL delivery — that is `explainFleetAudience`'s
+ * job, and folding it in here would make one field mean two things. A selector whose
+ * every recipient is reaped is a different event: it reached NOBODY, the same outcome
+ * as a zero-cardinality miss, arriving with the success shape instead.
+ *
+ * Pass-through entries (a plain ownerId the caller typed) are excluded because they
+ * already get the `unknown_recipient` roster refusal — this closes the gap where the
+ * SAME id, reached via a selector, skips that check entirely.
+ *
+ * Fail-soft throughout: no probe, or a probe that throws, yields [] — which the field's
+ * contract defines as "none known", never as "all reachable".
+ */
+async function findUnreachableSelectors(
+  expansions: readonly { selector: string; resolved: string[]; unresolved: boolean }[],
+  resolvers: AudienceResolvers,
+): Promise<UnreachableAudience[]> {
+  const probe = resolvers.listUnreachableRecipients;
+  if (!probe) return [];
+  const candidates = expansions.filter(
+    (e) => e.selector.startsWith(SELECTOR_PREFIX) && e.resolved.length > 0,
+  );
+  if (candidates.length === 0) return [];
+  // `*`/`human` are delivery channels, not sessions — they have no roster row to
+  // miss, so probing them would report the broadcast kill-switch as unreachable.
+  const ids = [
+    ...new Set(candidates.flatMap((e) => e.resolved).filter((id) => id !== '*' && id !== 'human')),
+  ];
+  if (ids.length === 0) return [];
+  let unreachable: ReadonlySet<string>;
+  try {
+    unreachable = new Set(await probe(ids));
+  } catch {
+    return [];
+  }
+  if (unreachable.size === 0) return [];
+  return candidates
+    .filter((e) => e.resolved.every((id) => unreachable.has(id)))
+    .map((e) => ({ selector: e.selector, ownerIds: e.resolved.filter((id) => unreachable.has(id)) }));
 }
 
 async function resolveSelector(

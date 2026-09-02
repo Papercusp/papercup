@@ -1,0 +1,858 @@
+<title>Inventory Seam Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+
+<style>
+  :root {
+    --ground:      #f5f7f9;
+    --surface:     #ffffff;
+    --surface-alt: #eef1f5;
+    --ink:         #131920;
+    --ink-soft:    #3d4753;
+    --muted:       #626d7c;
+    --rule:        #dde2e9;
+    --rule-strong: #c3ccd7;
+
+    --old:         #9d6524;
+    --old-tint:    #f6efe4;
+    --new:         #14757a;
+    --new-tint:    #e3f1f1;
+    --critical:    #ab3527;
+    --critical-tint:#f9eae8;
+
+    --shadow: 0 1px 2px rgba(19,25,32,.05), 0 6px 18px -12px rgba(19,25,32,.22);
+
+    --display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+    --body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    --measure: 68ch;
+    --wide: 1120px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0d1218;
+      --surface:     #151c25;
+      --surface-alt: #1b242f;
+      --ink:         #e7ebf1;
+      --ink-soft:    #c2cad5;
+      --muted:       #94a0af;
+      --rule:        #26303c;
+      --rule-strong: #3a4655;
+
+      --old:         #d9a05c;
+      --old-tint:    #2a2115;
+      --new:         #4bbdb3;
+      --new-tint:    #10292b;
+      --critical:    #ea8175;
+      --critical-tint:#2d1a18;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0d1218;
+    --surface:     #151c25;
+    --surface-alt: #1b242f;
+    --ink:         #e7ebf1;
+    --ink-soft:    #c2cad5;
+    --muted:       #94a0af;
+    --rule:        #26303c;
+    --rule-strong: #3a4655;
+
+    --old:         #d9a05c;
+    --old-tint:    #2a2115;
+    --new:         #4bbdb3;
+    --new-tint:    #10292b;
+    --critical:    #ea8175;
+    --critical-tint:#2d1a18;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.62;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: var(--wide); margin: 0 auto; padding: 0 28px 96px; }
+  .col  { max-width: var(--measure); }
+
+  a { color: var(--new); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--new); outline-offset: 3px; border-radius: 3px; }
+
+  code, .mono { font-family: var(--mono); font-size: .87em; font-variant-ligatures: none; }
+  code {
+    background: var(--surface-alt);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .08em .34em;
+    color: var(--ink-soft);
+    word-break: break-word;
+  }
+
+  /* ── masthead ─────────────────────────────────────────── */
+  .masthead {
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface);
+    padding: 52px 0 40px;
+    margin-bottom: 56px;
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(2.1rem, 4.6vw, 3.15rem);
+    line-height: 1.04;
+    letter-spacing: -.022em;
+    margin: 0 0 20px;
+    text-wrap: balance;
+    max-width: 20ch;
+  }
+  .standfirst {
+    font-size: 1.14rem;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 62ch;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 30px; }
+  .legend-item {
+    display: flex; align-items: baseline; gap: 9px;
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+  }
+  .swatch { width: 11px; height: 11px; border-radius: 2px; flex: none; transform: translateY(1px); }
+  .swatch.old { background: var(--old); }
+  .swatch.new { background: var(--new); }
+  .swatch.cut { background: var(--critical); }
+  .legend-item b { color: var(--ink); font-weight: 600; }
+
+  /* ── sections ─────────────────────────────────────────── */
+  section { margin-bottom: 60px; }
+
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.62rem;
+    letter-spacing: -.012em;
+    line-height: 1.2;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  h2 .num {
+    font-family: var(--mono);
+    font-size: .72em;
+    font-weight: 500;
+    color: var(--muted);
+    margin-right: .7em;
+    letter-spacing: 0;
+  }
+  .section-note {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 26px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.06rem;
+    letter-spacing: -.004em;
+    margin: 34px 0 10px;
+  }
+
+  p { margin: 0 0 16px; }
+  .col p, .col ul, .col ol { max-width: var(--measure); }
+
+  ul, ol { margin: 0 0 16px; padding-left: 1.25em; }
+  li { margin-bottom: 8px; }
+  li::marker { color: var(--muted); }
+
+  /* ── system-attributed blocks ─────────────────────────── */
+  .sys {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left-width: 3px;
+    border-radius: 0 5px 5px 0;
+    padding: 22px 24px;
+  }
+  .sys.old { border-left-color: var(--old); }
+  .sys.new { border-left-color: var(--new); }
+  .sys h3 { margin-top: 0; }
+  .sys > :last-child { margin-bottom: 0; }
+
+  .chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+    margin-bottom: 12px;
+  }
+  .chip.old { background: var(--old-tint); color: var(--old); border: 1px solid var(--old); }
+  .chip.new { background: var(--new-tint); color: var(--new); border: 1px solid var(--new); }
+
+  .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 800px) { .duo { grid-template-columns: 1fr; } }
+
+  /* ── the finding callout ──────────────────────────────── */
+  .finding {
+    background: var(--critical-tint);
+    border: 1px solid var(--critical);
+    border-radius: 5px;
+    padding: 24px 26px;
+    margin-bottom: 34px;
+  }
+  .finding .chip {
+    background: transparent;
+    color: var(--critical);
+    border: 1px solid var(--critical);
+  }
+  .finding p { max-width: 64ch; }
+  .finding > :last-child { margin-bottom: 0; }
+  .finding strong { font-weight: 600; }
+
+  /* ── evidence tables ──────────────────────────────────── */
+  .scroll { overflow-x: auto; margin: 0 0 20px; border: 1px solid var(--rule); border-radius: 5px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 11px 15px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  thead th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    background: var(--surface-alt);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono, th.mono { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  td .path { color: var(--ink-soft); }
+  .num-col { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+
+  .tag {
+    font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 3px; white-space: nowrap;
+  }
+  .tag.ok    { color: var(--new); background: var(--new-tint); }
+  .tag.gap   { color: var(--critical); background: var(--critical-tint); }
+  .tag.old   { color: var(--old); background: var(--old-tint); }
+
+  /* ── figure ───────────────────────────────────────────── */
+  figure { margin: 0 0 24px; }
+  .figframe {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 26px 24px 18px;
+    overflow-x: auto;
+  }
+  figure svg { display: block; width: 100%; min-width: 720px; max-width: 100%; height: auto; color: var(--ink-soft); }
+  figcaption {
+    font-size: 13.5px;
+    color: var(--muted);
+    margin-top: 14px;
+    max-width: 76ch;
+    line-height: 1.55;
+  }
+  figcaption b { color: var(--ink-soft); font-weight: 600; }
+
+  /* ── phase plan ───────────────────────────────────────── */
+  .phases { display: flex; flex-direction: column; gap: 0; margin-top: 8px; }
+  .phase {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 26px;
+    padding: 24px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .phase:last-child { border-bottom: 1px solid var(--rule); }
+  @media (max-width: 720px) { .phase { grid-template-columns: 1fr; gap: 10px; } }
+  .phase-id {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-top: 3px;
+  }
+  .phase h3 { margin: 0 0 8px; font-size: 1.08rem; }
+  .phase p, .phase ul { max-width: 66ch; }
+  .phase > div > :last-child { margin-bottom: 0; }
+  .phase-meta {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+  }
+  .phase-meta span b { color: var(--ink-soft); font-weight: 600; }
+
+  /* ── decisions ────────────────────────────────────────── */
+  .decision {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 20px 22px;
+    margin-bottom: 14px;
+  }
+  .decision h3 { margin: 0 0 8px; font-size: 1rem; }
+  .decision p { margin-bottom: 0; max-width: 66ch; font-size: 15px; }
+  .decision .q {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--critical);
+    display: block;
+    margin-bottom: 8px;
+  }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 22px;
+    margin-top: 8px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a { transition: color .15s ease; }
+  }
+</style>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="kicker">Systems audit &middot; 2 September 2026</p>
+    <h1>Where inventory stops and file generation begins</h1>
+    <p class="standfirst">
+      Restart and storewolf-central-server are coupled at the <strong>data</strong> layer, not the
+      service layer. The marketplace file pipeline never calls the inventory service &mdash; it reads
+      the Mongo <code>inventory</code> collection directly, at <strong>three call sites</strong>
+      through <strong>one ten-field projection</strong>. That is the whole seam, and it is why the
+      split you want is cheap on the file-generation side and expensive on the other.
+    </p>
+    <div class="legend">
+      <span class="legend-item"><span class="swatch old"></span><b>storewolf-central-server</b> &mdash; Mongo, COM service bus, Node CJS</span>
+      <span class="legend-item"><span class="swatch new"></span><b>Restart</b> &mdash; Postgres, Drizzle, NestJS, shop.buyrestart.com</span>
+      <span class="legend-item"><span class="swatch cut"></span><b>the cut</b></span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ══ 1 ══════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="num">01</span>The finding that changes the answer</h2>
+    <p class="section-note">Read this before the plan &mdash; it reframes the size of the job</p>
+
+    <div class="finding">
+      <span class="chip">Load-bearing</span>
+      <p>
+        <strong>Restart does not have an inventory management system. It has an inventory
+        mirror.</strong> The <code>inventory_item</code> table has exactly one write path in the
+        entire repository &mdash; <code>TRUNCATE TABLE inventory_item</code> followed by a batched
+        <code>INSERT</code> of whatever storewolf's <code>InventoryManager</code> hands over
+        (<code>inventory.service.ts:27,37</code>). The only other write anywhere is a single
+        <code>odooProductId</code> write-back (<code>inventory-sync.service.ts:216</code>).
+      </p>
+      <p>
+        There is no receive, no adjust, no move, no reserve, no sell, no serial-scan path. Nothing in
+        Restart can change what you own &mdash; it can only be told. So &ldquo;move inventory management
+        to Restart&rdquo; is not a re-pointing exercise. The management half has to be
+        <strong>built</strong>, and it is the large part of this project. Everything else here is small.
+      </p>
+    </div>
+
+    <div class="col">
+      <p>
+        The good news is the inverse: because file generation reads the collection and not the service,
+        the pipeline you want to keep does not care where the rows came from. You can move the system
+        of record without the feed generator noticing, provided the rows keep their shape.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══ 2 ══════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="num">02</span>What each side actually is</h2>
+    <p class="section-note">Verified against source, not documentation</p>
+
+    <div class="duo">
+      <div class="sys old">
+        <span class="chip old">Old &middot; storewolf-central-server</span>
+        <h3>The real system of record</h3>
+        <p>
+          <code>Services/InventoryManager/</code> &mdash; 84&nbsp;KB of TypeScript behind a
+          <strong>47-method</strong> COM interface. This is genuine warehouse operations:
+          <code>createSkuOrder</code>, <code>createBinOrder</code>, <code>updateSkuQuantity</code>,
+          <code>sellOrderItemsForReserve</code>, <code>unsellOrders</code>,
+          <code>associateScanData</code>, <code>getOrderFromSerial</code>,
+          <code>updateInventoryLocations</code>, <code>reparseInventory</code>.
+        </p>
+        <p>
+          Its store is the Mongo <code>inventory</code> collection, where one document is one physical
+          unit &mdash; order id, service tags, location, leads, reserves, parsed specs.
+        </p>
+      </div>
+
+      <div class="sys new">
+        <span class="chip new">New &middot; Restart</span>
+        <h3>A strong storefront, a hollow warehouse</h3>
+        <p>
+          65 Drizzle migrations. <code>storefront_product</code> is genuinely authoritative for
+          selling: it owns <code>qty</code>, <code>reserved_qty</code> and <code>price_cents</code>
+          directly, with <code>availableQty</code> as a <code>GENERATED STORED</code> column
+          (<code>GREATEST(0, qty - reserved_qty)</code>) and database triggers aggregating
+          reservations from order and quote lines (migration&nbsp;0028).
+        </p>
+        <p>
+          <code>inventory_item</code>, by contrast, is a ~70-column replica of the Mongo document,
+          refilled wholesale on each sync.
+        </p>
+      </div>
+    </div>
+
+    <h3>The pipeline you are keeping</h3>
+    <div class="col">
+      <p>
+        <code>MarketplaceStuff.generateUploads()</code> is the file generator. It calls
+        <code>Synchronizer.generateUpdatesTwo</code> to build the update list, reads it back out of
+        <code>DataStore</code> by run id, joins it against series details, combined specs, marketplace
+        report data and SKU specs, and writes per-marketplace upload files. Between the inventory read
+        and the file sits the part that would be genuinely painful to reproduce:
+      </p>
+      <ul>
+        <li>stock reduction and custom-condition grading</li>
+        <li>lead association across site, dellcom and Amazon sources</li>
+        <li>listing generation, then pricing per marketplace</li>
+        <li>marketplace fee application, ad-cost markups, score markups</li>
+        <li>inferior-listing removal, zero-out of delisted SKUs, prior-SKU reconciliation</li>
+      </ul>
+      <p>
+        That is roughly 270&nbsp;KB of pricing and listing logic across <code>SyncPipeline.ts</code>
+        and <code>Synchronizer.ts</code>, and it is the reason keeping file generation where it is
+        happens to be the right call and not merely the conservative one.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══ 3 ══════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="num">03</span>The seam</h2>
+    <p class="section-note">Three call sites, ten fields, two queries</p>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Live inventory read</th>
+            <th class="mono">Site</th>
+            <th>Mongo query</th>
+            <th>Feeds</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>pipelineLoadLocalStock</code></td>
+            <td class="mono path">Synchronizer.ts:3889</td>
+            <td class="mono">status:&nbsp;active, items:&nbsp;$size&nbsp;1, type&nbsp;≠&nbsp;sku</td>
+            <td>Serialized single-unit stock</td>
+          </tr>
+          <tr>
+            <td><code>pipelineLoadLocalSkuStockFromInventory</code></td>
+            <td class="mono path">Synchronizer.ts:3921</td>
+            <td class="mono">status:&nbsp;active, type:&nbsp;sku</td>
+            <td>BIN / multi-unit SKU stock</td>
+          </tr>
+          <tr>
+            <td><code>loadCustomConditionStock</code></td>
+            <td class="mono path">Synchronizer.ts:790</td>
+            <td class="mono">…&nbsp;+ items.0.tag&nbsp;∈&nbsp;graded&nbsp;tags</td>
+            <td>Manually graded condition stock</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <p>
+        All three share <code>INVENTORY_PROJECTION</code> &mdash; ten fields, and no more:
+        <code>price</code>, <code>items</code>, <code>leads</code>, <code>reserves</code>,
+        <code>location</code>, <code>specs.model</code>, <code>specs.family</code>,
+        <code>specs.type</code>, <code>skuSpecs.category</code>, <code>skuSpecs.condition</code>.
+        Every one of them is then flattened by <code>standardizeInventoryItem</code> into a
+        <code>StandardItem</code> and never touched again.
+      </p>
+      <p>
+        That is the entire contract the file-generation pipeline has with inventory. It is small enough
+        to serve from anywhere.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figframe">
+        <svg viewBox="0 0 960 400" role="img" aria-label="The three Synchronizer inventory reads are replaced by one InventorySource port. Today Mongo feeds it; after migration Restart Postgres feeds it. Everything downstream of the port — SyncPipeline, the full update list, MarketplaceStuff file generation and the Restart storefront push — is unchanged.">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" fill="currentColor"></polygon>
+            </marker>
+            <marker id="ar-cut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" fill="#ab3527"></polygon>
+            </marker>
+          </defs>
+
+          <!-- unchanged band -->
+          <rect x="576" y="18" width="368" height="356" rx="6" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 4" opacity=".38"></rect>
+          <text x="760" y="392" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity=".72" letter-spacing="1.4">UNCHANGED BY THIS MIGRATION</text>
+
+          <!-- source: today -->
+          <rect x="16" y="52" width="252" height="82" rx="5" fill="none" stroke="#9d6524" stroke-width="2"></rect>
+          <text x="32" y="76" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#9d6524" letter-spacing="1.3">TODAY</text>
+          <text x="32" y="98" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="currentColor">InventoryManager</text>
+          <text x="32" y="119" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="currentColor" opacity=".78">writes → Mongo `inventory`</text>
+
+          <!-- source: after -->
+          <rect x="16" y="232" width="252" height="82" rx="5" fill="none" stroke="#14757a" stroke-width="2"></rect>
+          <text x="32" y="256" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#14757a" letter-spacing="1.3">AFTER</text>
+          <text x="32" y="278" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="currentColor">Restart Postgres</text>
+          <text x="32" y="299" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="currentColor" opacity=".78">inventory_item (authoritative)</text>
+
+          <!-- arrows into port -->
+          <polyline points="268,93 302,93 302,176 341,176" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"></polyline>
+          <polyline points="268,273 302,273 302,214 341,214" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ar)"></polyline>
+
+          <!-- the port -->
+          <rect x="343" y="140" width="180" height="110" rx="5" fill="#f9eae8" stroke="#ab3527" stroke-width="2"></rect>
+          <text x="433" y="167" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#ab3527" letter-spacing="1.3">THE CUT</text>
+          <text x="433" y="190" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="#7c2418">InventorySource</text>
+          <text x="433" y="213" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="#ab3527">3 call sites</text>
+          <text x="433" y="231" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="#ab3527">10 fields</text>
+
+          <!-- port to pipeline -->
+          <polyline points="523,195 552,195 552,71 596,71" fill="none" stroke="#ab3527" stroke-width="1.5" marker-end="url(#ar-cut)"></polyline>
+
+          <!-- downstream: SyncPipeline -->
+          <rect x="596" y="40" width="328" height="62" rx="5" fill="none" stroke="#9d6524" stroke-width="1.5"></rect>
+          <text x="616" y="65" font-family="Archivo, sans-serif" font-size="13.5" font-weight="600" fill="currentColor">SyncPipeline</text>
+          <text x="616" y="85" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity=".78">leads · pricing · fees · markups · filters</text>
+
+          <line x1="760" y1="102" x2="760" y2="134" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"></line>
+
+          <!-- downstream: update list -->
+          <rect x="596" y="136" width="328" height="62" rx="5" fill="none" stroke="#9d6524" stroke-width="1.5"></rect>
+          <text x="616" y="161" font-family="Archivo, sans-serif" font-size="13.5" font-weight="600" fill="currentColor">fullUpdateList</text>
+          <text x="616" y="181" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity=".78">DataStore, by marketplace × region</text>
+
+          <!-- split -->
+          <polyline points="760,198 760,220" fill="none" stroke="currentColor" stroke-width="1.5"></polyline>
+          <polyline points="676,220 848,220" fill="none" stroke="currentColor" stroke-width="1.5"></polyline>
+          <line x1="676" y1="220" x2="676" y2="246" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"></line>
+          <line x1="848" y1="220" x2="848" y2="246" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"></line>
+
+          <!-- outputs -->
+          <rect x="596" y="248" width="160" height="88" rx="5" fill="none" stroke="#9d6524" stroke-width="1.5"></rect>
+          <text x="676" y="276" text-anchor="middle" font-family="Archivo, sans-serif" font-size="13" font-weight="600" fill="currentColor">MarketplaceStuff</text>
+          <text x="676" y="296" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity=".78">generateUploads</text>
+          <text x="676" y="318" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="#9d6524">→ marketplace files</text>
+
+          <rect x="768" y="248" width="160" height="88" rx="5" fill="none" stroke="#14757a" stroke-width="1.5"></rect>
+          <text x="848" y="276" text-anchor="middle" font-family="Archivo, sans-serif" font-size="13" font-weight="600" fill="currentColor">Restart shop</text>
+          <text x="848" y="296" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity=".78">/inventory/update-stock</text>
+          <text x="848" y="318" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="#14757a">→ storefront_product</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>One port replaces three direct collection reads.</b> The solid arrow is today's Mongo
+        source; the dashed arrow is the Restart source that replaces it. Everything to the right of
+        the cut &mdash; the pricing pipeline, the update list, the file generator and the storefront
+        push &mdash; is untouched, because none of it ever knew where inventory came from.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ══ 4 ══════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="num">04</span>What is already wired, and what is broken</h2>
+    <p class="section-note">Current state of the bridge between the two systems</p>
+
+    <div class="col">
+      <p>
+        There are two bridges today. Both are half-built, and knowing that changes where you start.
+      </p>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Bridge</th>
+            <th>Direction</th>
+            <th>State</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">updateFromExternal</td>
+            <td>storewolf&nbsp;→&nbsp;Restart</td>
+            <td><span class="tag ok">Works</span></td>
+            <td>
+              <code>com('InventoryManager','loadActiveInventory',{locationFilter:'ELI-'})</code>,
+              then full-table replace. Hard-coded to one location prefix.
+            </td>
+          </tr>
+          <tr>
+            <td class="mono">Restart.js updateToSite</td>
+            <td>storewolf&nbsp;→&nbsp;Restart</td>
+            <td><span class="tag gap">Disabled</span></td>
+            <td>
+              Builds the WEBSITE&nbsp;/&nbsp;US update list correctly, then the <code>fetch</code> is
+              commented out &mdash; it writes <code>updateToSite_body.json</code> to disk instead. It
+              also posts a bare array where the controller expects <code>{ records: [...] }</code>,
+              so it would 400 if simply uncommented.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The contract is already agreed, which is the useful part</h3>
+    <div class="col">
+      <p>
+        Restart's <code>updates</code> table is a fully flattened relational mirror of storewolf's
+        <code>ProductUpdate</code> wire format &mdash; including the pricing internals:
+        <code>sw_cost</code>, <code>sw_initial_min_price_markup</code>, <code>sw_score_markup</code>,
+        <code>sw_marketplace_fee</code>, the <code>sw_tr_*</code> transform block and the
+        <code>sw_asin_*</code> median block, keyed by <code>(sku, marketplace, region)</code>.
+        Someone has already done the schema work to accept this pipeline's output verbatim. Do not
+        redesign it.
+      </p>
+    </div>
+
+    <h3>Field gaps that will bite</h3>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Field needed by the pipeline</th>
+            <th>In <code>inventory_item</code>?</th>
+            <th>Consequence if missing</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">type</td>
+            <td><span class="tag gap">Missing</span></td>
+            <td>The <code>sku</code> / non-<code>sku</code> split is the entire difference between the two find-params. Without it you cannot separate BIN stock from serialized stock.</td>
+          </tr>
+          <tr>
+            <td class="mono">manualPrice</td>
+            <td><span class="tag gap">Missing</span></td>
+            <td>Custom-condition graded pricing silently drops to the default price path.</td>
+          </tr>
+          <tr>
+            <td class="mono">manual_handling</td>
+            <td><span class="tag gap">Missing</span></td>
+            <td>Handling-day banding (0&nbsp;/&nbsp;3&nbsp;/&nbsp;5&nbsp;/&nbsp;8) is lost; listings ship with wrong lag time.</td>
+          </tr>
+          <tr>
+            <td class="mono">specs</td>
+            <td><span class="tag gap">Missing</span></td>
+            <td>Projected as <code>specs.model</code>&nbsp;/&nbsp;<code>family</code>&nbsp;/&nbsp;<code>type</code>. Restart has <code>parsedSpecs</code>, <code>skuSpecs</code>, <code>listSpecs</code>, <code>predictiveSpecs</code> — confirm which one is the true equivalent before mapping.</td>
+          </tr>
+          <tr>
+            <td class="mono">price, items, leads, reserves, location, skuSpecs</td>
+            <td><span class="tag ok">Present</span></td>
+            <td>Direct column equivalents already exist.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══ 5 ══════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="num">05</span>The migration</h2>
+    <p class="section-note">Ordered so that nothing is irreversible until the shadow run is clean</p>
+
+    <div class="phases">
+
+      <div class="phase">
+        <div class="phase-id">Phase 0</div>
+        <div>
+          <h3>Repair the bridge and close the field gaps</h3>
+          <p>
+            Restore the <code>fetch</code> in <code>Restart.js::updateToSite</code> with the
+            <code>{ records: [...] }</code> envelope the controller actually expects. Add the four
+            missing columns to <code>inventory_item</code> and resolve which Restart specs column is
+            the real counterpart of Mongo's <code>specs</code>.
+          </p>
+          <div class="phase-meta">
+            <span><b>Touches</b> Restart.js, one migration</span>
+            <span><b>Risk</b> low</span>
+            <span><b>Reversible</b> yes</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-id">Phase 1</div>
+        <div>
+          <h3>Introduce the <code>InventorySource</code> port &mdash; behaviour unchanged</h3>
+          <p>
+            Extract the three direct <code>db.collection('inventory').find(...)</code> calls behind one
+            interface with three methods: <code>loadLocalStock()</code>, <code>loadSkuStock()</code>,
+            <code>loadCustomConditionStock(tags)</code>. Ship the Mongo implementation as the only
+            implementation and prove the generated update list is byte-identical to today's.
+          </p>
+          <p>
+            This phase changes no behaviour on purpose. It is what makes every later phase a
+            one-line switch rather than a rewrite.
+          </p>
+          <div class="phase-meta">
+            <span><b>Touches</b> Synchronizer.ts, SyncPipeline.ts</span>
+            <span><b>Risk</b> low</span>
+            <span><b>Gate</b> identical update list</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-id">Phase 2</div>
+        <div>
+          <h3>Build the write side in Restart &mdash; the actual work</h3>
+          <p>
+            Of <code>InventoryManager</code>'s 47 methods, most are reads, derivations and enrichment
+            that can stay where they are indefinitely. What has to move is the stateful core:
+            receive a unit, adjust quantity, sell, reserve and unsell, associate a serial or barcode
+            scan, move a location, reparse. Roughly a dozen operations.
+          </p>
+          <p>
+            In the same phase, <code>inventory_item</code> stops being a mirror: drop the
+            truncate-and-refill, add real upserts, and give it the audit trail a system of record
+            needs. This is the phase that is measured in weeks, not days.
+          </p>
+          <div class="phase-meta">
+            <span><b>Touches</b> new Restart module, schema, admin UI</span>
+            <span><b>Risk</b> high</span>
+            <span><b>Gate</b> parity on warehouse operations</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-id">Phase 3</div>
+        <div>
+          <h3>Flip the source behind a shadow run</h3>
+          <p>
+            Add the Postgres implementation of the port &mdash; ideally a
+            <code>GET /inventory/stock-feed</code> endpoint serving exactly the ten-field projection
+            shape, so the pipeline keeps one transport rather than gaining a second database
+            connection. Then run both implementations on every cycle and diff the resulting update
+            lists per marketplace and region until the diff is empty.
+          </p>
+          <p>
+            Flip a config flag. The file generator is not modified in this phase, or in any phase.
+          </p>
+          <div class="phase-meta">
+            <span><b>Touches</b> one config flag</span>
+            <span><b>Risk</b> medium</span>
+            <span><b>Gate</b> zero-diff shadow run</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-id">Phase 4</div>
+        <div>
+          <h3>Retire the Mongo write path</h3>
+          <p>
+            The <code>inventory</code> collection becomes derived and read-only, then goes away.
+            <code>InventoryManager</code>'s write methods are removed; its read and enrichment
+            methods either follow or stay, on their own schedule. Nothing here blocks anything.
+          </p>
+          <div class="phase-meta">
+            <span><b>Risk</b> low once Phase 3 holds</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ══ 6 ══════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="num">06</span>Two things to decide before Phase 2</h2>
+    <p class="section-note">Both are cheap now and expensive later</p>
+
+    <div class="decision">
+      <span class="q">Decision 1</span>
+      <h3>Port the reads, or reverse-replicate into Mongo?</h3>
+      <p>
+        The plan above ports the reads. The alternative is to make Restart authoritative and have it
+        project rows back into the Mongo <code>inventory</code> collection, so storewolf reads exactly
+        as it does today and Phase&nbsp;1 and Phase&nbsp;3 disappear entirely. That is meaningfully
+        lower risk and keeps a second copy of inventory alive indefinitely &mdash; which is the thing
+        this migration exists to end. Worth taking deliberately rather than by default.
+      </p>
+    </div>
+
+    <div class="decision">
+      <span class="q">Decision 2</span>
+      <h3>What happens to <code>libs/marketplace-adapters</code>?</h3>
+      <p>
+        Restart already contains a second, independently built marketplace mapping layer &mdash; Amazon,
+        eBay, Walmart, Newegg, Back Market, Best Buy Canada and Google Shopping, each with its own
+        computer-category mapping. If file generation stays on MarketplaceStuff, this library is a
+        fork of listing truth that will drift. Freeze it, scope it explicitly to something
+        MarketplaceStuff does not do, or delete it &mdash; but do not leave two systems quietly
+        disagreeing about how a SKU becomes a listing.
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    Audit performed against working trees at <span class="mono">~/Restart</span> (branch
+    <span class="mono">feat/scout-unify</span>) and <span class="mono">~/storewolf-central-server</span>.
+    Every claim above was checked against source; line references are to the TypeScript originals, not
+    the compiled <span class="mono">.js</span> siblings. Field-presence claims were verified column by
+    column rather than inferred from naming.
+  </footer>
+
+</div>

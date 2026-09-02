@@ -171,8 +171,13 @@ export function roleAddressingGuidance(
   const namedFleet = fleetSlug?.trim();
   const fleetRoute = namedFleet
     ? ` If you are escalating within fleet \`${namedFleet}\`, address its current leader directly: ` +
-      `\`@fleet-leader:${namedFleet}\`. That selector resolves the fleet registry's live leader ` +
-      'and survives this leader session ending or being replaced.'
+      `\`@fleet-leader:${namedFleet}\`. That selector resolves the fleet REGISTRY's leader pointer ` +
+      'rather than one session id, so it follows leadership rotation and still reaches a leader who ' +
+      'is merely offline (their durable inbox keeps the escalation). It is NOT liveness-gated, so it ' +
+      'is only as current as the pointer: if that pointer still names a REAPED session the send now ' +
+      'refuses with `recipients_unreachable` naming the dead id — read that refusal as "re-resolve ' +
+      'the leader", never as "the fleet is unreachable". It used to return ok:true instead ' +
+      '(EI-22180848452883121).'
     : '';
 
   return (

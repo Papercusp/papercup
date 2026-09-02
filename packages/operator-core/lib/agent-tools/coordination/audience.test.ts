@@ -24,6 +24,9 @@ function makeResolvers(opts: {
   fleetLeaders?: Record<string, string>;
   /** repo-relative path → ownerIds holding/awaiting a live file-lock on it. */
   lockAgents?: Record<string, string[]>;
+  /** ownerIds absent from the roster ENTIRELY (reaped). Omit to model a host with
+   *  no probe at all, which must report nothing unreachable. */
+  reaped?: string[];
 }): AudienceResolvers {
   return {
     async listTargetSubscribers(kind, ref) {
@@ -45,6 +48,13 @@ function makeResolvers(opts: {
     async listPathLockAgents(path) {
       return opts.lockAgents?.[path] ?? [];
     },
+    ...(opts.reaped
+      ? {
+          async listUnreachableRecipients(ids: readonly string[]) {
+            return ids.filter((id) => opts.reaped!.includes(id));
+          },
+        }
+      : {}),
   };
 }
 
@@ -217,6 +227,96 @@ describe('expandAudience', () => {
     ).resolves.toEqual({
       resolved: ['alice'],
       unresolvedSelectors: ['@fleet-leader:backend'],
+      unreachableSelectors: [],
+    });
+  });
+
+  // EI-22180848452883121. The registry leader pointer is deliberately NOT
+  // liveness-gated, so a REAPED leader resolves to exactly one id — cardinality 1,
+  // which every cardinality-zero miss-signal is structurally blind to. Before this,
+  // the caller got the full success shape for a message nobody would ever read.
+  describe('reaped recipients (EI-22180848452883121)', () => {
+    it('flags a @fleet-leader selector that resolved ONLY to a reaped session', async () => {
+      const r = makeResolvers({
+        fleets: { backend: ['bob'] },
+        fleetLeaders: { backend: 'ghost' },
+        reaped: ['ghost'],
+      });
+      const out = await expandAudienceDetailed(['@fleet-leader:backend'], r);
+      // Delivery is UNCHANGED — this is a diagnostic, not a filter.
+      expect(out.resolved).toEqual(['ghost']);
+      // ...and critically NOT reported as unresolved: it did resolve, to a corpse.
+      expect(out.unresolvedSelectors).toEqual([]);
+      expect(out.unreachableSelectors).toEqual([
+        { selector: '@fleet-leader:backend', ownerIds: ['ghost'] },
+      ]);
+    });
+
+    it('does NOT flag a leader who is merely offline but still in the roster', async () => {
+      // The distinction the whole fix rests on: an ended-but-recorded session still
+      // owns a durable inbox, which is exactly what liveness-independent resolution
+      // is FOR. Only a reaped id owns nothing.
+      const r = makeResolvers({
+        fleetLeaders: { backend: 'offline-but-recorded' },
+        reaped: ['some-other-corpse'],
+      });
+      const out = await expandAudienceDetailed(['@fleet-leader:backend'], r);
+      expect(out.resolved).toEqual(['offline-but-recorded']);
+      expect(out.unreachableSelectors).toEqual([]);
+    });
+
+    it('does NOT flag a selector that reached at least one live recipient', async () => {
+      // A partial fleet loss is explainFleetAudience's job; folding it in here would
+      // make one field mean two different things.
+      const r = makeResolvers({ fleets: { backend: ['alive', 'ghost'] }, reaped: ['ghost'] });
+      const out = await expandAudienceDetailed(['@fleet:backend'], r);
+      expect(out.unreachableSelectors).toEqual([]);
+    });
+
+    it('reports nothing unreachable when the host has no probe at all', async () => {
+      // Fail-soft contract: absent means UNKNOWN, never "everyone is reachable".
+      const r = makeResolvers({ fleetLeaders: { backend: 'ghost' } });
+      expect(r.listUnreachableRecipients).toBeUndefined();
+      const out = await expandAudienceDetailed(['@fleet-leader:backend'], r);
+      expect(out.unreachableSelectors).toEqual([]);
+    });
+
+    it('reports nothing unreachable when the probe THROWS, and never fails the send', async () => {
+      const r: AudienceResolvers = {
+        ...makeResolvers({ fleetLeaders: { backend: 'ghost' } }),
+        async listUnreachableRecipients() {
+          throw new Error('roster read exploded');
+        },
+      };
+      const out = await expandAudienceDetailed(['@fleet-leader:backend'], r);
+      expect(out.resolved).toEqual(['ghost']);
+      expect(out.unreachableSelectors).toEqual([]);
+    });
+
+    it('never probes * or human — they are channels, not sessions', async () => {
+      const probed: string[][] = [];
+      const r: AudienceResolvers = {
+        ...makeResolvers({}),
+        async listUnreachableRecipients(ids) {
+          probed.push([...ids]);
+          return [...ids];
+        },
+      };
+      // Broadcast mode collapses every selector to '*'; probing it would report the
+      // kill-switch itself as unreachable.
+      const out = await expandAudienceDetailed(['@fleet-leader:backend'], r, 'broadcast');
+      expect(out.resolved).toEqual(['*']);
+      expect(out.unreachableSelectors).toEqual([]);
+      expect(probed.flat()).not.toContain('*');
+    });
+
+    it('does not flag a plain ownerId the caller typed — that path has its own refusal', async () => {
+      // A literal reaped id is already refused with unknown_recipient by the roster
+      // check; double-reporting it here would blur which addressing form failed.
+      const r = makeResolvers({ reaped: ['ghost'] });
+      const out = await expandAudienceDetailed(['ghost'], r);
+      expect(out.resolved).toEqual(['ghost']);
+      expect(out.unreachableSelectors).toEqual([]);
     });
   });
 

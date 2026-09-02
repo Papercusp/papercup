@@ -20,7 +20,7 @@ import {
   type InboxOptions,
 } from '@papercusp/coordination/core';
 import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
-import { expandAudienceDetailed, hasAudienceSelector } from './audience';
+import { expandAudienceDetailed, hasAudienceSelector, type UnreachableAudience } from './audience';
 import { hostAudienceResolvers, audienceMode, deriveAudienceKey } from './audience-host';
 import { deliverFleetDigests } from './fleet-delivery';
 import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
@@ -53,9 +53,21 @@ export type { InboxOptions };
 // inbox/federation shape; the envelope object returned by sendMessage is the
 // short-lived hand-off to the tool layer.
 const unresolvedAudienceByEnvelope = new WeakMap<object, readonly string[]>();
+const unreachableAudienceByEnvelope = new WeakMap<object, readonly UnreachableAudience[]>();
 
 export function getUnresolvedAudienceSelectors(env: CoordEnvelope): readonly string[] {
   return unresolvedAudienceByEnvelope.get(env) ?? [];
+}
+
+/**
+ * Selectors that resolved to recipients who are ALL reaped (EI-22180848452883121).
+ * An empty result means "none KNOWN" — never proof that every recipient is
+ * reachable; see {@link UnreachableAudience}.
+ */
+export function getUnreachableAudienceSelectors(
+  env: CoordEnvelope,
+): readonly UnreachableAudience[] {
+  return unreachableAudienceByEnvelope.get(env) ?? [];
 }
 
 /** Options for sendMessage / generalised coord append. */
@@ -188,10 +200,12 @@ export async function sendMessage(
     : opts.to;
   let toExpanded: string[] = liveAddrs;
   let unresolvedAudienceSelectors: string[] = [];
+  let unreachableAudienceSelectors: UnreachableAudience[] = [];
   if (hasAudienceSelector(liveAddrs)) {
     const expansion = await expandAudienceDetailed(liveAddrs, hostAudienceResolvers, audienceMode());
     toExpanded = expansion.resolved;
     unresolvedAudienceSelectors = expansion.unresolvedSelectors;
+    unreachableAudienceSelectors = expansion.unreachableSelectors;
   }
   // owner-2026-06-17: resolve short ownerId PREFIXES to full ids so inbox delivery
   // + any inbox-wake hit the right recipient. Best-effort + fail-soft; an
@@ -491,6 +505,7 @@ export async function sendMessage(
     await deliverFleetDigests(opts.to, persistedEnv, persistedEnv.to).catch(() => {});
   }
   unresolvedAudienceByEnvelope.set(persistedEnv, unresolvedAudienceSelectors);
+  unreachableAudienceByEnvelope.set(persistedEnv, unreachableAudienceSelectors);
   return persistedEnv;
 }
 

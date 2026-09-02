@@ -12,6 +12,9 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { PgEntitySubscriptionStore, PgLinkStore } from '@papercusp/coordination/capabilities';
 import { listPresence } from './presence';
+// The SAME roster oracle the direct-id path refuses on, so the selector path cannot
+// accept an address the literal id would have been refused for (EI-22180848452883121).
+import { knownOwnerIdSet } from './recipient-resolve';
 import { coordWorkspaceId } from './log';
 // The locks shim (NOT `@papercusp/locks` directly) — it imports ./configure for its
 // side effect, so the package's host seam is wired before the first store call.
@@ -230,6 +233,31 @@ export const hostAudienceResolvers: AudienceResolvers = {
       }
     }
     return [];
+  },
+  // EI-22180848452883121: the reaped-recipient probe behind `unreachableSelectors`.
+  //
+  // Reuses the SAME roster oracle the direct-id path already refuses on
+  // (`unknown_recipient` — recipient-resolve.ts calls its miss set "typos /
+  // dead-and-swept"), so a selector can no longer launder an address that the
+  // identical literal id would have been refused for. That asymmetry WAS the bug:
+  // `coord:send { to: ['su-98873d1c…'] }` refused, while an `@fleet-leader:` selector
+  // resolving to that very id returned ok:true / recipients_resolved:1.
+  //
+  // Diagnostic only — it never changes who is delivered to, so the deliberate
+  // liveness-independence of `listFleetLeader` above is untouched: an ended-but-
+  // recorded leader is still IN the roster and still gets its durable inbox.
+  //
+  // Fail-soft in the direction that cannot manufacture a false refusal: a null
+  // roster (read unavailable) reports NOTHING unreachable rather than declaring
+  // every recipient dead.
+  async listUnreachableRecipients(ids) {
+    try {
+      const known = await knownOwnerIdSet(coordWorkspaceId());
+      if (!known) return [];
+      return ids.filter((id) => !known.has(id));
+    } catch {
+      return [];
+    }
   },
 };
 
