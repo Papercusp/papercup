@@ -168,3 +168,81 @@ describe('auto-route session affinity — gateway routing over a 3-account pool'
     expect(s.cache.affinity.hits + s.cache.affinity.cold).toBe(1); // only the unpinned warm-up turn counted
   });
 });
+
+/** CODEX PARITY (owner directive 2026-09-02: "make sure codex works the same way"). The live codex lane is
+ *  the ChatGPT-subscription CLI/OAuth pool (`codexCliPool`), not the bearer pool — so the same per-caller
+ *  stickiness must hold there: an identified caller's `/v1/responses` turns all land on the subscription
+ *  account that served its first one, and an unidentifiable caller keeps per-request rotation. */
+describe('auto-route session affinity — codex CLI/OAuth pool parity', () => {
+  const cliAccounts = [
+    { accountId: 'chatgpt-a', home: '/tmp/chatgpt-a' },
+    { accountId: 'chatgpt-b', home: '/tmp/chatgpt-b' },
+    { accountId: 'chatgpt-c', home: '/tmp/chatgpt-c' },
+  ];
+
+  /** Boot a gateway whose ONLY codex route is the 3-account CLI pool (no bearer pool) → port + the
+   *  `home` of every bridge invocation, in order. */
+  async function bootCodexGateway(): Promise<{ port: number; homes: string[] }> {
+    const homes: string[] = [];
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexCliRun: async (opts) => {
+        homes.push(opts.home);
+        return { text: `served by ${opts.home}`, inputTokens: 5, outputTokens: 3 };
+      },
+      selfHeal: { enabled: false },
+    });
+    const port = await gw.listen(0);
+    return { port, homes };
+  }
+
+  async function codexTurn(port: number, owner?: string): Promise<string | null> {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (owner) headers[OWNER_HEADER] = owner;
+    const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model: 'gpt-5.5', input: 'hi', stream: false }),
+    });
+    await res.arrayBuffer();
+    expect(res.status).toBe(200);
+    return res.headers.get(ROUTED_ACCOUNT_HEADER);
+  }
+
+  it('an UNIDENTIFIABLE codex caller keeps per-request rotation over the CLI pool (control)', async () => {
+    const { port } = await bootCodexGateway();
+    const routed: string[] = [];
+    for (let i = 0; i < 3; i++) routed.push((await codexTurn(port)) ?? '?');
+    expect(new Set(routed).size).toBeGreaterThanOrEqual(2);
+    const s = await stats(port);
+    expect(s.cache.affinity.nokey).toBe(3);
+    expect(s.cache.affinity.hits).toBe(0);
+  });
+
+  it('an IDENTIFIED unpinned codex caller sticks to the subscription account that served its first turn', async () => {
+    const { port, homes } = await bootCodexGateway();
+    const routed: string[] = [];
+    for (let i = 0; i < 5; i++) routed.push((await codexTurn(port, 'su-codex-session')) ?? '?');
+    expect(routed[0]).toMatch(/^chatgpt-[abc]$/);
+    expect(new Set(routed).size).toBe(1);
+    expect(homes).toHaveLength(5);
+    expect(new Set(homes).size).toBe(1); // every bridge invocation ran in the SAME account home
+    const s = await stats(port);
+    expect(s.cache.affinity.cold).toBe(1);
+    expect(s.cache.affinity.hits).toBe(4);
+    expect(s.cache.affinity.nokey).toBe(0);
+  });
+
+  it('two DIFFERENT identified codex callers each keep their own subscription account', async () => {
+    const { port } = await bootCodexGateway();
+    const a1 = await codexTurn(port, 'su-codex-one');
+    const b1 = await codexTurn(port, 'su-codex-two');
+    for (let i = 0; i < 3; i++) {
+      expect(await codexTurn(port, 'su-codex-one')).toBe(a1);
+      expect(await codexTurn(port, 'su-codex-two')).toBe(b1);
+    }
+  });
+});

@@ -2729,6 +2729,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     lastRouteByOwner.set(ownerId, { account: accountId, model, at: Date.now() });
   }
+  /** AUTO-ROUTE SESSION AFFINITY (WI-2140943): the account that last served `key`, when it is still a usable
+   *  SOFT-pin candidate — remembered within AUTO_AFFINITY_TTL_MS, and NOT from before an explicit dynamic
+   *  `auto` route for this owner (accounts:pin … auto = "return this session to fresh selection"; routes
+   *  remembered BEFORE it was set do not count, so affinity cannot re-pin the caller to the account it was
+   *  just told to leave — WI-4402. Picks made AFTER the override stick.) ONE helper for every provider lane
+   *  (Anthropic, codex bearer, codex CLI/OAuth) so the semantics cannot drift between them (owner directive
+   *  2026-09-02: "make sure codex works the same way"). Returns the remembered account id or null; the caller
+   *  still resolves it against its own pool (`select`) so an account that left the pool is a cold pick. */
+  function affinityPriorAccount(
+    key: string | undefined,
+    dynPin: { setAt: number } | undefined,
+    wantAccount: string | undefined,
+  ): string | null {
+    if (!key || !AUTO_AFFINITY_ENABLED) return null;
+    const prior = lastRouteByOwner.get(key);
+    if (prior === undefined || Date.now() - prior.at > AUTO_AFFINITY_TTL_MS) return null;
+    if (dynPin !== undefined && wantAccount === undefined && prior.at <= dynPin.setAt) return null;
+    return prior.account;
+  }
 
   // PER-OWNER OUTCOME LEDGER (gateway-rayobyte-hardening P-008): bounded per-owner counters + a short
   // recent-event ring, so "agent su-X is erroring — why?" reads from ONE query (GET /admin/owner-report,
@@ -3726,15 +3745,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       headerPinned === null && AUTO_AFFINITY_ENABLED ? autoAffinityKey(wantOwner, bodyMetaUserId) : undefined;
     let affinityPinned: ActiveAccount | null = null;
     if (affinityKey) {
-      const prior = lastRouteByOwner.get(affinityKey);
-      // An explicit dynamic `auto` route (accounts:pin … auto) means "return this session to fresh
-      // selection" — routes remembered from BEFORE it was set do not count, so affinity cannot re-pin the
-      // caller to the account it was just told to leave (WI-4402). Picks made AFTER the override stick.
-      const priorUsable =
-        prior !== undefined &&
-        Date.now() - prior.at <= AUTO_AFFINITY_TTL_MS &&
-        !(dynPin !== undefined && wantAccount === undefined && prior.at <= dynPin.setAt);
-      if (priorUsable) affinityPinned = pool.select?.(prior.account) ?? null;
+      // TTL + the WI-4402 dynamic-`auto` guard live in affinityPriorAccount (shared with the codex lanes).
+      const priorAccount = affinityPriorAccount(affinityKey, dynPin, wantAccount);
+      if (priorAccount) affinityPinned = pool.select?.(priorAccount) ?? null;
       autoAffinityTally[affinityPinned ? 'hits' : 'cold']++;
     } else if (headerPinned === null) {
       autoAffinityTally.nokey++;
@@ -6719,6 +6732,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ? undefined
         : dynPin.accountId
       : wantAccountHeader;
+    // AUTO-ROUTE SESSION AFFINITY (WI-2140943) — codex CLI/OAuth-pool parity: an unpinned request from an
+    // identifiable caller prefers the ChatGPT-subscription account that last served it (OpenAI's prompt
+    // cache is per-org too), when the CLI pool still considers it selectable. SOFT: the bridge's yield-to-
+    // next-account and the OAuth kernel's rotate-don't-surface failover both still move off it on a
+    // failure. `tally` is true on the primary (no-bearer-pool) path only — the bearer→CLI fallback path has
+    // already counted this request in the bearer block.
+    const codexCliAffinityId = (tally: boolean): string | null => {
+      if (!wantOwner || !AUTO_AFFINITY_ENABLED) {
+        if (tally) autoAffinityTally.nokey++;
+        return null;
+      }
+      const priorAccount = affinityPriorAccount(wantOwner, dynPin, wantAccount);
+      const usable = priorAccount && codexCliPool?.select?.(priorAccount) ? priorAccount : null;
+      if (tally) autoAffinityTally[usable ? 'hits' : 'cold']++;
+      return usable;
+    };
     // ChatGPT-subscription bridge resolution (codex-cli-bridge.ts): an explicit pin to a
     // CLI account wins; otherwise the CLI list is the FALLBACK when there is no bearer
     // pool at all, or the bearer pool momentarily resolves no available account. Bearer
@@ -6732,11 +6761,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let active!: ActiveAccount;
     if (!cli) {
       if (!adapter.pool || !adapter.upstreamBase) {
-        let selectedId: string | undefined;
-        try {
-          selectedId = codexCliPool?.active().accountId;
-        } catch {
-          /* unavailable pool; fall back to list */
+        let selectedId: string | undefined = codexCliAffinityId(true) ?? undefined;
+        if (!selectedId) {
+          try {
+            selectedId = codexCliPool?.active().accountId;
+          } catch {
+            /* unavailable pool; fall back to list */
+          }
         }
         cli = (selectedId ? cliList.find((a) => a.accountId === selectedId) : undefined) ?? cliList[0] ?? null;
         if (!cli) {
@@ -6759,21 +6790,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // per-org too). Soft: the kernel's rotate-don't-surface failover still moves off it on a 429.
           let affinityBearer: ActiveAccount | null = null;
           if (!pinnedBearer && wantOwner && AUTO_AFFINITY_ENABLED) {
-            const prior = lastRouteByOwner.get(wantOwner);
-            if (prior && Date.now() - prior.at <= AUTO_AFFINITY_TTL_MS) {
-              affinityBearer = adapter.pool.select?.(prior.account) ?? null;
-            }
+            const priorAccount = affinityPriorAccount(wantOwner, dynPin, wantAccount);
+            if (priorAccount) affinityBearer = adapter.pool.select?.(priorAccount) ?? null;
             autoAffinityTally[affinityBearer ? 'hits' : 'cold']++;
           } else if (!pinnedBearer) {
             autoAffinityTally.nokey++;
           }
           active = pinnedBearer ?? affinityBearer ?? adapter.pool.active();
         } catch (e) {
-          let selectedId: string | undefined;
-          try {
-            selectedId = codexCliPool?.active().accountId;
-          } catch {
-            /* unavailable pool; fall back to list */
+          let selectedId: string | undefined = codexCliAffinityId(false) ?? undefined;
+          if (!selectedId) {
+            try {
+              selectedId = codexCliPool?.active().accountId;
+            } catch {
+              /* unavailable pool; fall back to list */
+            }
           }
           cli = (selectedId ? cliList.find((a) => a.accountId === selectedId) : undefined) ?? cliList[0] ?? null;
           if (!cli) {
