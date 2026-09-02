@@ -58,6 +58,102 @@ describe('shapePlansItems — coverageDivergence -> diverged', () => {
   });
 });
 
+describe('shapePlansItems — citedTerminalRefs / citedWorkItems (EI-22173576329267385)', () => {
+  it('trimmed tier surfaces citedTerminalRefs as a count, but never the detail list', () => {
+    const out = shapePlansItems(
+      {
+        items: [
+          row({
+            citedWorkItems: [
+              { ref: 'WI-1', state: 'done', terminal: true },
+              { ref: 'WI-2', state: 'open', terminal: false },
+            ],
+          }),
+        ],
+      },
+      'trimmed',
+    ) as { items: Record<string, unknown>[] };
+    expect(out.items[0].citedTerminalRefs).toBe(1);
+    expect(out.items[0].citedWorkItems).toBeUndefined();
+  });
+
+  it('standard tier surfaces both the count and the joined ref:state detail', () => {
+    const out = shapePlansItems(
+      {
+        items: [
+          row({
+            citedWorkItems: [
+              { ref: 'WI-1', state: 'done', terminal: true },
+              { ref: 'WI-2', state: 'open', terminal: false },
+            ],
+          }),
+        ],
+      },
+      'standard',
+    ) as { items: Record<string, unknown>[] };
+    expect(out.items[0].citedTerminalRefs).toBe(1);
+    expect(out.items[0].citedWorkItems).toBe('WI-1:done,WI-2:open');
+  });
+
+  it('an unresolved ref (state:null) renders as "unknown" in the joined detail', () => {
+    const out = shapePlansItems(
+      { items: [row({ citedWorkItems: [{ ref: 'WI-9', state: null, terminal: false }] })] },
+      'standard',
+    ) as { items: Record<string, unknown>[] };
+    expect(out.items[0].citedWorkItems).toBe('WI-9:unknown');
+    expect(out.items[0].citedTerminalRefs).toBe(0);
+  });
+
+  it('a row with no citedWorkItems key shapes to citedTerminalRefs:0 and citedWorkItems:null', () => {
+    const clean = row();
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapePlansItems({ items: [clean] }, tier) as { items: Record<string, unknown>[] };
+      expect(out.items[0].citedTerminalRefs).toBe(0);
+      if (tier === 'standard') expect(out.items[0].citedWorkItems).toBeNull();
+    }
+  });
+
+  it('a row with an empty citedWorkItems array shapes the same as absent (0 / null)', () => {
+    const out = shapePlansItems(
+      { items: [row({ citedWorkItems: [] })] },
+      'standard',
+    ) as { items: Record<string, unknown>[] };
+    expect(out.items[0].citedTerminalRefs).toBe(0);
+    expect(out.items[0].citedWorkItems).toBeNull();
+  });
+
+  it('all cited refs terminal counts every one, not just the first', () => {
+    const out = shapePlansItems(
+      {
+        items: [
+          row({
+            citedWorkItems: [
+              { ref: 'WI-1', state: 'done', terminal: true },
+              { ref: 'WI-2', state: 'dropped', terminal: true },
+              { ref: 'WI-3', state: 'deprecated', terminal: true },
+            ],
+          }),
+        ],
+      },
+      'trimmed',
+    ) as { items: Record<string, unknown>[] };
+    expect(out.items[0].citedTerminalRefs).toBe(3);
+  });
+
+  it('the truncation placeholder row never claims a nonzero citedTerminalRefs', () => {
+    const rows = Array.from({ length: PLANS_ITEMS_TIER_CAPS.trimmed.rows + 5 }, (_, i) =>
+      row({
+        item: { id: `P-${i}`, effectiveStatus: 'todo', importance: 'normal', text: 'x' },
+        citedWorkItems: [{ ref: 'WI-1', state: 'done', terminal: true }],
+      }),
+    );
+    const out = shapePlansItems({ items: rows }, 'trimmed') as { items: Record<string, unknown>[] };
+    const placeholder = out.items[out.items.length - 1];
+    expect(placeholder.plan).toBe('(truncated)');
+    expect(placeholder.citedTerminalRefs).toBe(0);
+  });
+});
+
 describe('shapePlansItems — text_truncated marker (EI-18762253154342502)', () => {
   it('stamps text_truncated:true when the trimmed-tier cap actually clips item.text', () => {
     const longText = 'x'.repeat(PLANS_ITEMS_TIER_CAPS.trimmed.text + 50);
