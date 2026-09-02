@@ -67,8 +67,28 @@ export interface EpisodicEiDeps<Sev extends IssueSeverity = IssueSeverity> {
    * escalator out (byte-identical to pre-WI-5762 behavior). Optional so
    * every existing hand-rolled `deps` object (tests, other escalators)
    * keeps compiling without change.
+   *
+   * WI-2142025: rows now carry `id` too (previously `{ title, createdAt }`
+   * only), so a suppression can name — and comment on — the specific EI it
+   * is standing in for. Existing callers that construct this array need no
+   * change beyond adding the field; the type widened, not replaced.
    */
-  listRecentByTopic?(topic: string): Promise<Array<{ title: string; createdAt: string }>>;
+  listRecentByTopic?(topic: string): Promise<Array<{ id: string; title: string; createdAt: string }>>;
+  /**
+   * WI-2142025: post a recurrence note on an EXISTING EI instead of filing a
+   * duplicate — the same pattern already proven in
+   * `sync/hyperbee/run-drain-reconcile.ts`'s `commentOnRecurrence`. Called
+   * from the standing-cooldown suppression path (never from the open-only
+   * dedup path, which has no id to comment on) so a condition the cooldown
+   * is silencing still leaves a durable, QUERYABLE trail on the EI it is
+   * being folded into — findable via `work_items:get`/`issues:list`, not
+   * only by grepping the process-local console.warn this pairs with.
+   * Optional + best-effort: a comment failure must never block or throw
+   * back into the merge/detector pass that called `file()`. Omit to keep an
+   * escalator's behaviour byte-identical to pre-WI-2142025 (no comment is
+   * ever posted; only the console.warn fires).
+   */
+  commentOnRecurrence?(id: string, body: string): Promise<unknown>;
 }
 
 export interface EpisodicEscalatorConfig<E, R, Sev extends IssueSeverity> {
@@ -406,6 +426,16 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
       resolve: async (id, note) => {
         await m.setIssueState(id, 'resolved', recoveryOwner, note);
       },
+      // WI-2142025: best-effort, mirrors run-drain-reconcile.ts's
+      // commentOnRecurrence — never let a comment failure propagate into the
+      // merge/detector pass that called file().
+      commentOnRecurrence: async (id, body) => {
+        try {
+          await m.commentIssue(id, body, recoveryOwner);
+        } catch {
+          /* best-effort — see the JSDoc on the deps field */
+        }
+      },
       // WI-5762: deliberately NO `state` filter — the cooldown must see a
       // recently-RESOLVED title too, that being exactly the case open-only
       // dedup misses. `listIssues` orders created_at DESC; 100 is ample for
@@ -438,7 +468,7 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
           topic,
           config.titlePrefix,
         );
-        return rows.map((r) => ({ title: r.title, createdAt: r.createdAt }));
+        return rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.createdAt }));
       },
     };
   }
@@ -501,8 +531,8 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
         if (config.standingCooldownMs != null && d.listRecentByTopic) {
           try {
             const recent = await d.listRecentByTopic(config.topic);
-            const lastFiledAt = recent
-              .filter((i) => i.title === title)
+            const matching = recent.filter((i) => i.title === title);
+            const lastFiledAt = matching
               .map((i) => Date.parse(i.createdAt))
               .filter((ms) => Number.isFinite(ms))
               .reduce((max, ms) => Math.max(max, ms), -Infinity);
@@ -524,6 +554,38 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
                   );
                 } catch {
                   /* diagnostic-only — never let logging break the gate */
+                }
+              }
+              // WI-2142025 fault 2b: the console.warn above is process-local and
+              // vanishes with the process/log-rotation — findable only by whoever
+              // happens to grep the right host at the right time. Also post a
+              // durable, QUERYABLE trail on the EI this suppression is standing in
+              // for (the most-recently-created matching row), so the recurrence
+              // survives a restart and is visible via work_items:get/issues:list
+              // without shell access to this specific machine. Best-effort and
+              // POLICY-NEUTRAL: this never files a new EI and never changes what
+              // gets suppressed — it only makes an already-suppressed recurrence
+              // legible on the row it was folded into, so it carries zero risk of
+              // reintroducing WI-5762's 57-duplicate storm.
+              const top = matching.find((i) => Date.parse(i.createdAt) === lastFiledAt);
+              if (top && d.commentOnRecurrence) {
+                const ageS = Math.round((Date.now() - lastFiledAt) / 1000);
+                try {
+                  await d.commentOnRecurrence(
+                    top.id,
+                    `Recurred: this condition (${title}) was detected again ${ageS}s after this EI's ` +
+                      `most recent filing — within the ${Math.round(
+                        config.standingCooldownMs / 1000,
+                      )}s standing-cooldown (WI-5762), so no duplicate EI was filed. This is suppressed ` +
+                      `recurrence #${swallowed} since the last real filing for this (harness, log, kind) ` +
+                      `(WI-2142025 fault 2b). This EI may already be RESOLVED — the cooldown gate cannot ` +
+                      `see EI state, so a genuinely NEW, distinct episode is indistinguishable here from ` +
+                      `this one continuing to flap; if this keeps recurring well past when this EI was ` +
+                      `closed, treat it as a possible standing/unresolved condition, not confirmation this ` +
+                      `EI's fix held.\n\nLatest episode detail:\n${config.buildBody(episode)}`,
+                  );
+                } catch {
+                  /* best-effort — never let a comment failure break the gate */
                 }
               }
               return null; // standing condition recently reported (open or since-closed) — suppress

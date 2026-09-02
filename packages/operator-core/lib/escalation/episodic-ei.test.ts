@@ -44,7 +44,8 @@ const title = (x: Ep | Rec) => `[demo] key=${x.key}`;
 
 function fakeDeps(
   open: Array<{ id?: string; title: string }>,
-  recent?: Array<{ title: string; createdAt: string }>,
+  recent?: Array<{ id?: string; title: string; createdAt: string }>,
+  extra?: { commentOnRecurrence?: EpisodicEiDeps<'major'>['commentOnRecurrence'] },
 ): {
   deps: EpisodicEiDeps<'major'>;
   created: Array<Parameters<EpisodicEiDeps<'major'>['create']>[0]>;
@@ -64,7 +65,13 @@ function fakeDeps(
       resolve: async (id, note) => {
         resolved.push({ id, note });
       },
-      ...(recent ? { listRecentByTopic: async () => recent } : {}),
+      ...(recent
+        ? {
+            listRecentByTopic: async () =>
+              recent.map((r) => ({ id: r.id ?? 'EI-RECENT', title: r.title, createdAt: r.createdAt })),
+          }
+        : {}),
+      ...(extra?.commentOnRecurrence ? { commentOnRecurrence: extra.commentOnRecurrence } : {}),
     },
   };
 }
@@ -285,6 +292,57 @@ describe('createEpisodicEscalator config plumbing', () => {
         } finally {
           warn.mockRestore();
         }
+      });
+
+      it('WI-2142025 fault 2b: posts a durable recurrence comment on the SUPPRESSING EI, id-correct', async () => {
+        const escalator = make({ standingCooldownMs: 24 * 60 * 60_000 });
+        const comments: Array<{ id: string; body: string }> = [];
+        const { deps } = fakeDeps(
+          [],
+          [{ id: 'EI-999', title: title({ key: 'k1', detail: '' }), createdAt: new Date(Date.now() - 1000).toISOString() }],
+          { commentOnRecurrence: async (id, body) => void comments.push({ id, body }) },
+        );
+        const id = await escalator.file({ key: 'k1', detail: 'd1' }, deps);
+        expect(id).toBeNull();
+        expect(comments).toHaveLength(1);
+        expect(comments[0].id).toBe('EI-999'); // the EXACT suppressing row, not a placeholder
+        expect(comments[0].body).toContain('Recurred:');
+        expect(comments[0].body).toContain('WI-5762');
+        expect(comments[0].body).toContain('body for k1: d1'); // buildBody(episode) inlined
+      });
+
+      it('calibration: a non-suppressed (fresh) filing posts NO recurrence comment', async () => {
+        const escalator = make({ standingCooldownMs: 24 * 60 * 60_000 });
+        const comments: Array<{ id: string; body: string }> = [];
+        const { deps } = fakeDeps([], [], {
+          commentOnRecurrence: async (id, body) => void comments.push({ id, body }),
+        });
+        const id = await escalator.file({ key: 'k1', detail: 'd1' }, deps);
+        expect(id).toBe('EI-777');
+        expect(comments).toHaveLength(0);
+      });
+
+      it('a comment failure never throws back into file() — best-effort', async () => {
+        const escalator = make({ standingCooldownMs: 24 * 60 * 60_000 });
+        const { deps } = fakeDeps(
+          [],
+          [{ id: 'EI-999', title: title({ key: 'k1', detail: '' }), createdAt: new Date(Date.now() - 1000).toISOString() }],
+          {
+            commentOnRecurrence: async () => {
+              throw new Error('pg down');
+            },
+          },
+        );
+        await expect(escalator.file({ key: 'k1', detail: 'd1' }, deps)).resolves.toBeNull();
+      });
+
+      it('is skipped when deps omits commentOnRecurrence, even while suppressing', async () => {
+        const escalator = make({ standingCooldownMs: 24 * 60 * 60_000 });
+        const { deps } = fakeDeps(
+          [],
+          [{ id: 'EI-999', title: title({ key: 'k1', detail: '' }), createdAt: new Date(Date.now() - 1000).toISOString() }],
+        );
+        await expect(escalator.file({ key: 'k1', detail: 'd1' }, deps)).resolves.toBeNull();
       });
 
       it('a real filing ends the run, so the next suppression speaks again from 1', async () => {
