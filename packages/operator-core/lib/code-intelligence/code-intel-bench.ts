@@ -894,9 +894,25 @@ export function pollStopDecision(args: {
  * different project. That is the false direction to be wrong in — a cold start
  * mislabelled warm escapes `coldStartMsMax` entirely and is instead graded
  * against `warmQueryMsMax`, which it will always blow, so the reader is sent
- * to the wrong budget with the wrong number. MEASURED in leg v6/v7:
- * `shadowed-symbol-no-cross-contamination` reported `warm-start` while opening
- * `libs/generic/scheduled-registry` against a `packages/operator-core` anchor.
+ * to the wrong budget with the wrong number.
+ *
+ * ⚠ RETRACTION (WI-2142383). This docstring previously cited leg v6/v7 as
+ * having MEASURED that failure — `shadowed-symbol-no-cross-contamination`
+ * reported `warm-start` "while opening `libs/generic/scheduled-registry`". That
+ * was an INFERENCE from the case's missing-site path, never an observation, and
+ * it is false. `resolveProjectRoot` returns `fallbackRoot` unchanged for every
+ * non-rust language, so ALL position-addressed TypeScript probes share one
+ * client rooted at the caller's workspace: the second `.ts` probe is genuinely
+ * warm, and `warm-start` was the correct label all along. Leg v8 confirms it —
+ * with `serverWasCold` now READ from the inventory rather than guessed, every
+ * label is byte-identical to v7.
+ *
+ * So the defect this function fixes is LATENT, not observed: no probe in the
+ * current corpus cold-opens a second root, and the extension-keyed guess agrees
+ * with the truth here by luck of corpus shape. It stops agreeing the moment a
+ * probe anchors under a different `rootPath`, or a server crashes and restarts
+ * at the same one. Keep the observation anyway — the point of rung 1 of the
+ * derived-truth ladder is that you no longer have to know which case you are in.
  *
  * `taskId` is in the key deliberately: a server that CRASHED and was restarted
  * at the same root is a new process that paid a new cold start, and the probe
