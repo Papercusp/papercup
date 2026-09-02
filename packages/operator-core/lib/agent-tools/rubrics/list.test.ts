@@ -71,3 +71,48 @@ describe('rubrics:list — criteriaCount truthfulness', () => {
     expect(b.rubrics[0].criteriaCount).toBe(0);
   });
 });
+
+// EI-22084090899431625 — a recurring tool-call failure: many agent sessions independently
+// guessed subjectPlan/plan/harness/ref as a way to scope rubrics:list to "the acceptance
+// rubric for the plan I'm working on" (harness_shared.tool_invocations shows 20+ distinct
+// occurrences over ~36h). subjectPlan is now a real filter; harness stays unsupported (rubrics
+// are workspace-global) and is documented as such directly on the tool.
+describe('rubrics:list — subjectPlan filter (EI-22084090899431625)', () => {
+  it('threads subjectPlan through to listRubrics and infers kind:"acceptance" when kind is omitted', async () => {
+    listM.mockResolvedValue([]);
+    await bodyOf({ subjectPlan: 'my-plan-2026-09-01' });
+    expect(listM).toHaveBeenCalledWith(
+      expect.objectContaining({ subjectPlan: 'my-plan-2026-09-01', kind: 'acceptance' }),
+    );
+  });
+
+  it('respects an explicit kind:"any" alongside subjectPlan instead of overriding it', async () => {
+    listM.mockResolvedValue([]);
+    await bodyOf({ subjectPlan: 'my-plan-2026-09-01', kind: 'any' });
+    expect(listM).toHaveBeenCalledWith(expect.objectContaining({ subjectPlan: 'my-plan-2026-09-01', kind: 'any' }));
+  });
+
+  it('omits kind from the listRubrics call when neither kind nor subjectPlan is given (preserves the default)', async () => {
+    listM.mockResolvedValue([]);
+    await bodyOf({});
+    const call = listM.mock.calls[0]?.[0];
+    expect(call).not.toHaveProperty('kind');
+  });
+
+  it('schema: refuses subjectPlan combined with an explicit kind:"standard" — the only contradictory combination', () => {
+    const parsed = listTool.args.safeParse({ subjectPlan: 'my-plan', kind: 'standard' });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues[0]?.message).toMatch(/subjectPlan filters ACCEPTANCE rubrics only/);
+    }
+  });
+
+  it('schema: accepts subjectPlan with kind omitted (inference happens in the handler, not the schema)', () => {
+    expect(listTool.args.safeParse({ subjectPlan: 'my-plan' }).success).toBe(true);
+  });
+
+  it('schema: still refuses an unrecognized `harness` key — rubrics are workspace-global, not harness-scoped', () => {
+    const parsed = listTool.args.safeParse({ harness: 'papercusp' });
+    expect(parsed.success).toBe(false);
+  });
+});

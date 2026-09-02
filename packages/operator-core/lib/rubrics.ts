@@ -651,15 +651,26 @@ export interface ListRubricsFilter {
    * 'acceptance' or 'any' to opt into per-plan acceptance rubrics explicitly.
    */
   kind?: RubricKindFilter;
+  /**
+   * Filter to the acceptance rubric(s) whose subjectPlan equals this plan slug
+   * (EI-22084090899431625 — a recurring tool-call failure: many agent sessions
+   * independently guessed `subjectPlan`/`plan`/`harness`/`ref` as a way to scope
+   * rubrics:list to "the acceptance rubric for the plan I'm working on", which the
+   * tool had no way to express even though every Rubric row already carries
+   * `subjectPlan`). Only meaningful when `kind` is 'acceptance' or 'any' — standard
+   * rubrics never carry a subjectPlan, so this is a no-op filter against them.
+   */
+  subjectPlan?: string;
 }
 
 /** List rubrics (active first, then proposed, then retired), optionally filtered by
- *  status / characteristic. Reads rubric-template plans (P-006/P-007). Standard-kind
- *  only unless `kind` opts in (see ListRubricsFilter.kind). */
+ *  status / characteristic / subjectPlan. Reads rubric-template plans (P-006/P-007).
+ *  Standard-kind only unless `kind` opts in (see ListRubricsFilter.kind). */
 export async function listRubrics(filter: ListRubricsFilter = {}): Promise<Rubric[]> {
   let rubrics = await loadAllRubrics(filter.kind ?? 'standard');
   if (filter.status) rubrics = rubrics.filter((r) => r.status === filter.status);
   if (filter.characteristic) rubrics = rubrics.filter((r) => r.characteristic === filter.characteristic);
+  if (filter.subjectPlan) rubrics = rubrics.filter((r) => r.subjectPlan === filter.subjectPlan);
   return sortRubrics(rubrics).slice(0, Math.min(filter.limit ?? 100, 500));
 }
 
