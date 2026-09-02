@@ -148,6 +148,40 @@ describe('citationDeploymentForPaths', () => {
     expect(result.paths[0]?.positionsNewerCommit).toEqual(['deployed']);
   });
 
+  it('calibration: the pre-fix predicate DOES misreport that same fixture', async () => {
+    // Falsifiability control for the two assertions above. Those tests are only
+    // meaningful if this fixture actually discriminates between the old rule and the
+    // new one — a fixture both rules answer identically would make them pass while
+    // proving nothing. The subject is an imported module, so the deliberately-wrong
+    // implementation lives here permanently rather than being spliced into the tree
+    // (mutating a shared, continuously-swept checkout to prove a point is how a mutant
+    // gets committed).
+    const fixture = {
+      path: 'src/peer-commit.ts',
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      positionsUnknown: [] as string[],
+      positionsNewerCommit: ['deployed'],
+    };
+
+    const preFixPredicate = (entry: typeof fixture) =>
+      entry.positions.deployed === false && !entry.positionsUnknown.includes('deployed');
+
+    // The old rule calls this path "measured not live". It was not measured at all:
+    // the probe had already flagged the leg as being about a newer commit.
+    expect(preFixPredicate(fixture)).toBe(true);
+
+    gitPipelinePosition.mockImplementation(({ path }: { path: string }) =>
+      position(path, {
+        positions: fixture.positions,
+        positionsNewerCommit: fixture.positionsNewerCommit,
+      }),
+    );
+    const result = await citationDeploymentForPaths([fixture.path]);
+
+    // Same fixture, opposite verdicts — which is what makes the tests above real.
+    expect(result.undeployedPaths).toEqual([]);
+  });
+
   it('suppresses only the DEPLOYED leg, not any newer-commit flag (control)', async () => {
     gitPipelinePosition.mockImplementation(({ path }: { path: string }) =>
       position(path, {

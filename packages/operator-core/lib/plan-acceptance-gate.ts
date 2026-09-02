@@ -148,6 +148,12 @@ export interface PlanAcceptanceGateVerdict {
    *
    * Read `undeployedPaths` as the direct answer to "was this graded against code that
    * is not live?", and `unknownPaths` as "the probe could not say" — never as a pass.
+   *
+   * `newerCommitPaths` is the THIRD state and is neither of those: the probe measured
+   * `deployed:false` but disclaimed it, because on this whole-tree-swept checkout the
+   * newest commit touching a cited file is routinely a PEER'S, so the `false` is about
+   * that commit rather than about the cited change. It is not evidence in either
+   * direction; settling one needs a marker literal the cited change introduced.
    */
   citationDeployment?: CitationDeployment;
   /**
