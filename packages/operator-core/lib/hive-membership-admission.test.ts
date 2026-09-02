@@ -7,7 +7,7 @@
  * with the captured devices) while deny never does. The pure decision itself is covered
  * by hive-membership-policy.test.ts; this guards the WIRING + side effects.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { HivePolicy } from './hive-policy-schema';
 import {
   evaluateJoinAdmission,
@@ -15,6 +15,7 @@ import {
   denyPendingJoin,
   ownerAdmitOrPend,
   admitAnnouncedPeerAsOwner,
+  __resetReconnectRegrantMemoForTests,
   type MembershipAdmissionDeps,
   type AdmitAnnouncedPeerDeps,
 } from './hive-membership-admission';
@@ -197,17 +198,68 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
     bindingStatus: 'verified',
   };
 
-  it('ALREADY a member ⇒ refresh (re-upsert), policy gate is NOT consulted even under approval', async () => {
-    // approval policy + an already-member peer: must refresh, NOT re-open a pending request.
-    const { deps, upsertHiveMember, recordPendingJoin } = depsWith(
+  // WI-2141185 M1: the re-grant memo is process-lifetime state, so a stale entry from a
+  // prior case would silently suppress the re-grant a later case asserts. Clear it.
+  beforeEach(() => {
+    __resetReconnectRegrantMemoForTests();
+  });
+
+  it('ALREADY a member ⇒ admitted, policy gate is NOT consulted even under approval', async () => {
+    // approval policy + an already-member peer: must admit, NOT re-open a pending request.
+    const { deps, recordPendingJoin } = depsWith(
       { membership: 'approval' },
       { getHiveMember: (async () => memberRow) as never },
     );
     const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
-    expect(upsertHiveMember).toHaveBeenCalledTimes(1);
-    expect(upsertHiveMember.mock.calls[0][0]).toMatchObject({ githubUserId: 1001, bindingStatus: 'verified' });
     expect(recordPendingJoin).not.toHaveBeenCalled();
+  });
+
+  it('WI-2141185 M1: an UNCHANGED re-announce does NOT re-write pot_members (no no-op federation)', async () => {
+    // memberRow is byte-identical to `joiner`, i.e. the steady-state re-announce that
+    // arrives for EVERY drained announce. The pre-fix upsert rewrote the row regardless,
+    // and the capture trigger federated the no-op write: 2,408 pot_members puts/min.
+    const { deps, upsertHiveMember } = depsWith(
+      { membership: 'approval' },
+      { getHiveMember: (async () => memberRow) as never },
+    );
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
+    expect(upsertHiveMember).not.toHaveBeenCalled();
+    // The stored row IS what the upsert would have produced, so the caller still gets it.
+    expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
+    expect((out as { member: typeof memberRow }).member).toEqual(memberRow);
+  });
+
+  it('WI-2141185 M1: a CHANGED re-announce (new device) still writes — the skip is content-aware', async () => {
+    const { deps, upsertHiveMember } = depsWith(
+      { membership: 'approval' },
+      { getHiveMember: (async () => memberRow) as never },
+    );
+    const withSecondDevice = {
+      ...joiner,
+      deviceAttestations: [
+        ...joiner.deviceAttestations,
+        { device_pubkey: 'devB', gist_url: 'g2', signature: 's2' },
+      ] as never[],
+    };
+    await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner: withSecondDevice }, deps);
+    expect(upsertHiveMember).toHaveBeenCalledTimes(1);
+    expect(upsertHiveMember.mock.calls[0][0]).toMatchObject({
+      githubUserId: 1001,
+      bindingStatus: 'verified',
+    });
+  });
+
+  it('WI-2141185 M1: a changed SCALAR (renamed github login) still writes', async () => {
+    const { deps, upsertHiveMember } = depsWith(
+      { membership: 'approval' },
+      { getHiveMember: (async () => memberRow) as never },
+    );
+    await ownerAdmitOrPend(
+      { workspaceId: 'w', potHomeSlug: H, joiner: { ...joiner, githubUsername: 'alice-renamed' } },
+      deps,
+    );
+    expect(upsertHiveMember).toHaveBeenCalledTimes(1);
   });
 
   it('BUG B (D-028): ALREADY a member ⇒ refederating epoch-key re-grant fires for THIS member device on reconnect', async () => {
@@ -238,6 +290,66 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
     );
     const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
+  });
+
+  it('WI-2141185 M1: REPEAT announces re-grant ONCE per device — not once per announce', async () => {
+    // The federation storm: admitAnnouncedPeerAsOwner runs for EVERY drained announce, and
+    // refederate=true re-stamps the wrapped_key row so the capture trigger re-federates
+    // identical content. Measured 1,924 pot_epoch_keys puts/min from TWO rows.
+    const { deps, refederateMemberEpochKeys } = depsWith(
+      { membership: 'approval' },
+      { getHiveMember: (async () => memberRow) as never },
+    );
+    for (let i = 0; i < 25; i++) {
+      await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
+    }
+    expect(refederateMemberEpochKeys).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-2141185 M1: a NEW device is still healed after an earlier device was memoised', async () => {
+    const { deps, refederateMemberEpochKeys } = depsWith(
+      { membership: 'approval' },
+      { getHiveMember: (async () => memberRow) as never },
+    );
+    await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
+    await ownerAdmitOrPend(
+      {
+        workspaceId: 'w',
+        potHomeSlug: H,
+        joiner: {
+          ...joiner,
+          deviceAttestations: [
+            ...joiner.deviceAttestations,
+            { device_pubkey: 'devB', gist_url: 'g2', signature: 's2' },
+          ] as never[],
+        },
+      },
+      deps,
+    );
+    expect(refederateMemberEpochKeys).toHaveBeenCalledTimes(2);
+    // Only the UNHEALED device is re-sent — devA is not re-federated a second time.
+    expect(refederateMemberEpochKeys.mock.calls[1][0]).toEqual({
+      workspaceId: 'w',
+      potHomeSlug: H,
+      memberDevicePubkeys: ['devB'],
+    });
+  });
+
+  it('WI-2141185 M1: a FAILED re-grant is retried on the next announce (not memoised)', async () => {
+    let calls = 0;
+    const { deps } = depsWith(
+      { membership: 'approval' },
+      {
+        getHiveMember: (async () => memberRow) as never,
+        refederateMemberEpochKeys: (async () => {
+          calls++;
+          throw new Error('boundary-wiring blew up');
+        }) as never,
+      },
+    );
+    await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
+    await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
+    expect(calls).toBe(2);
   });
 
   it('NOT a member + open/null policy ⇒ trust-admit (upsert), no pending, NO refederate re-grant', async () => {
