@@ -20,6 +20,8 @@ import {
   isSettingsDirty,
   settingsSummary,
   settingsToForm,
+  COMPACTION_LIMIT_MAX,
+  COMPACTION_LIMIT_MIN,
   GOAL_LAUNCH_ROLE_OPTIONS,
   PROFILE_CHOICE_FIELDS,
   PROFILE_FIELDS,
@@ -125,6 +127,40 @@ describe('formToSettings', () => {
   it('parses ceilings as numbers', () => {
     const r = formToSettings(form({ maxAgents: '3', maxPerFleet: '2' }));
     expect(r.settings).toEqual({ maxAgents: 3, maxPerFleet: 2 });
+  });
+
+  it('stores the compaction ceiling as a number and reads it back as a string (WI-2140338)', () => {
+    // The second non-string profile key: an integer in the document, a string
+    // in the form. Both directions, so a one-sided conversion cannot pass.
+    const r = formToSettings(form({ defaults: { ...form().defaults, compactionLimit: ' 1000000 ' } }));
+    expect(r.problems).toEqual([]);
+    expect(r.settings).toEqual({ defaults: { compactionLimit: 1_000_000 } });
+    expect(settingsToForm(r.settings).defaults.compactionLimit).toBe('1000000');
+    expect(settingsToForm({ roles: { goal: { compactionLimit: 400_000 } } }).roles[0]!.compactionLimit).toBe(
+      '400000',
+    );
+  });
+
+  it('refuses a compaction ceiling the schema would refuse, naming the field and the bounds', () => {
+    for (const bad of ['lots', '1.5', String(COMPACTION_LIMIT_MIN - 1), String(COMPACTION_LIMIT_MAX + 1)]) {
+      const r = formToSettings(form({ defaults: { ...form().defaults, compactionLimit: bad } }));
+      expect(r.settings, bad).toBeNull();
+      expect(r.problems, bad).toHaveLength(1);
+      expect(r.problems[0], bad).toMatch(/token ceiling/i);
+    }
+    const role = formToSettings(form({ roles: [{ ...emptyRoleForm(), role: 'goal', compactionLimit: '1' }] }));
+    expect(role.problems).toHaveLength(1);
+    expect(role.problems[0]).toContain('goal');
+  });
+
+  it('pins the client bounds to what launchProfileSchema actually accepts', () => {
+    // The bounds are restated on the client so the refusal above can be a
+    // sentence; this is the guard that keeps the restatement honest.
+    const accepts = (compactionLimit: number) => launchProfileSchema.safeParse({ compactionLimit }).success;
+    expect(accepts(COMPACTION_LIMIT_MIN)).toBe(true);
+    expect(accepts(COMPACTION_LIMIT_MAX)).toBe(true);
+    expect(accepts(COMPACTION_LIMIT_MIN - 1)).toBe(false);
+    expect(accepts(COMPACTION_LIMIT_MAX + 1)).toBe(false);
   });
 
   it('refuses a non-numeric ceiling, and names the one word that IS allowed', () => {

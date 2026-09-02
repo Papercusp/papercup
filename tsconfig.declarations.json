@@ -106,6 +106,15 @@
     "scripts/lib/vitest-summary.mjs",
     "scripts/lib/test-runner-classes.mjs",
     "scripts/proc-guard.mjs",
+    // EI-22066972653982768 — the pc-heavy admission-record reader + identity-verified
+    // kill, sibling of proc-guard.mjs above. Registered for this list's FIRST reason:
+    // it is imported directly by pc-heavy-jobs.test.ts, which is what makes the
+    // reuse-safety REFUSAL falsifiable (a recycled pid must never be signalled).
+    // Unregistered it cost that file a TS7016 whose `any` then cascaded into a TS7006
+    // implicit-any callback param — operator-core lint:tsc 0 -> 2 against a baseline of
+    // 0, one missing declaration surfacing as two errors, exactly the absorption this
+    // list exists to prevent.
+    "scripts/pc-heavy-jobs.mjs",
     "scripts/lib/tsc-baseline-gate.mjs",
     "scripts/lib/identity-leak-patterns.mjs",
     "scripts/lib/agent-intent-comment-patterns.mjs",

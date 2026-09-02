@@ -65,6 +65,12 @@ export interface LaunchProfileForm {
    */
   headless: string;
   contextSize: string;
+  /**
+   * WI-2140338: the compaction ceiling in tokens, held as a STRING like every
+   * other field (blank = unpinned) and parsed at the boundary by
+   * formToProfile — the second key the document stores as a non-string.
+   */
+  compactionLimit: string;
 }
 
 export interface LaunchRoleForm extends LaunchProfileForm {
@@ -88,6 +94,7 @@ export const EMPTY_PROFILE_FORM: LaunchProfileForm = {
   carry: '',
   headless: '',
   contextSize: '',
+  compactionLimit: '',
 };
 
 /** The profile keys, in the order the form renders them. */
@@ -99,7 +106,18 @@ export const PROFILE_FIELDS = [
   'carry',
   'headless',
   'contextSize',
+  'compactionLimit',
 ] as const;
+
+/**
+ * The schema's bounds on `compactionLimit`, restated here so the form can refuse
+ * an out-of-range value with a sentence instead of a zod path. PINNED, not
+ * derived: `goal-launch-settings-model.test.ts` probes `launchProfileSchema` at
+ * each edge, so a bound moved on the server fails there rather than shipping a
+ * form that accepts what the save refuses.
+ */
+export const COMPACTION_LIMIT_MIN = 50_000;
+export const COMPACTION_LIMIT_MAX = 2_000_000;
 export type ProfileField = (typeof PROFILE_FIELDS)[number];
 
 /** Which profile fields are closed sets (rendered as a select) vs free text. */
@@ -118,6 +136,7 @@ export const PROFILE_FIELD_LABEL: Record<ProfileField, string> = {
   carry: 'Carry',
   headless: 'Window',
   contextSize: 'Context',
+  compactionLimit: 'Token ceiling',
 };
 
 /**
@@ -180,6 +199,7 @@ function profileToForm(p: GoalDetailLaunchProfile | null | undefined): LaunchPro
     // visibly three.
     headless: p?.headless == null ? '' : p.headless ? 'headless' : 'headed',
     contextSize: p?.contextSize ?? '',
+    compactionLimit: p?.compactionLimit == null ? '' : String(p.compactionLimit),
   };
 }
 
@@ -208,13 +228,47 @@ export function settingsToForm(s: GoalDetailLaunchSettings | null | undefined): 
   };
 }
 
-function formToProfile(f: LaunchProfileForm): GoalDetailLaunchProfile | null {
-  const out: Record<string, string | boolean> = {};
+/**
+ * The compaction ceiling, parsed the way `launchProfileSchema` will judge it:
+ * blank omits the key; anything else must be a whole number of tokens inside
+ * the schema's bounds, or it comes back as a PROBLEM the owner can act on.
+ */
+function parseCompactionLimit(raw: string, label: string): { value?: number; problem?: string } {
+  const t = raw.trim();
+  if (!t) return {};
+  if (!/^\d+$/.test(t)) return { problem: `${label} must be a whole number of tokens.` };
+  const n = Number(t);
+  if (n < COMPACTION_LIMIT_MIN || n > COMPACTION_LIMIT_MAX) {
+    return {
+      problem: `${label} must be between ${COMPACTION_LIMIT_MIN} and ${COMPACTION_LIMIT_MAX} tokens.`,
+    };
+  }
+  return { value: n };
+}
+
+interface ProfileResult {
+  profile: GoalDetailLaunchProfile | null;
+  /** Non-empty means the profile is unsaveable as typed; shown verbatim. */
+  problems: string[];
+}
+
+function formToProfile(f: LaunchProfileForm, label: string): ProfileResult {
+  const out: Record<string, string | boolean | number> = {};
+  const problems: string[] = [];
   for (const k of PROFILE_FIELDS) {
     const v = f[k].trim();
     // Blank emits NO KEY — see the file docblock. `{ model: '' }` would read
     // back as a pinned value while pinning nothing.
     if (!v) continue;
+    if (k === 'compactionLimit') {
+      // The second non-string key: an integer in the document. Refused here
+      // for the cases the owner can fix by looking at the field, so the save
+      // never fails with a zod path the owner has to decode.
+      const parsed = parseCompactionLimit(v, `${label} ${PROFILE_FIELD_LABEL[k].toLowerCase()}`);
+      if (parsed.problem) problems.push(parsed.problem);
+      else if (parsed.value !== undefined) out[k] = parsed.value;
+      continue;
+    }
     // `headless` is the one key stored as a boolean (it matches the fleet
     // layer's spelling). Emitting the STRING here would be the worst outcome
     // available: `.strict()` rejects the save outright, or — if it ever slipped
@@ -222,7 +276,10 @@ function formToProfile(f: LaunchProfileForm): GoalDetailLaunchProfile | null {
     // as headless and mean the exact opposite of what the owner picked.
     out[k] = k === 'headless' ? v === 'headless' : v;
   }
-  return Object.keys(out).length ? (out as GoalDetailLaunchProfile) : null;
+  return {
+    profile: Object.keys(out).length ? (out as GoalDetailLaunchProfile) : null,
+    problems,
+  };
 }
 
 /**
@@ -303,14 +360,17 @@ export function formToSettings(form: LaunchSettingsForm): SettingsDocumentResult
   if (maxPerFleet.problem) problems.push(maxPerFleet.problem);
   else if (maxPerFleet.value !== undefined) doc.maxPerFleet = maxPerFleet.value;
 
-  const defaults = formToProfile(form.defaults);
-  if (defaults) doc.defaults = defaults;
+  const defaults = formToProfile(form.defaults, 'Default');
+  problems.push(...defaults.problems);
+  if (defaults.profile) doc.defaults = defaults.profile;
 
   const roles: Record<string, GoalDetailLaunchProfile> = {};
   const seen = new Set<string>();
   for (const r of form.roles) {
     const role = r.role.trim();
-    const profile = formToProfile(r);
+    const parsedProfile = formToProfile(r, role ? `Role “${role}”` : 'Role');
+    problems.push(...parsedProfile.problems);
+    const profile = parsedProfile.profile;
     // A row the owner started and abandoned is not an error — it is nothing.
     if (!role && !profile) continue;
     if (!role) {
@@ -318,6 +378,10 @@ export function formToSettings(form: LaunchSettingsForm): SettingsDocumentResult
       continue;
     }
     if (!profile) {
+      // A row whose only filled field was REFUSED already has its problem
+      // listed; "pins no settings" on top would tell the owner to fill a field
+      // they just filled.
+      if (parsedProfile.problems.length) continue;
       // Named but pinning nothing. Silently dropping it would leave the owner
       // looking at a row that vanishes on save with no explanation.
       problems.push(`Role “${role}” pins no settings — fill a field or remove the row.`);
