@@ -29,7 +29,7 @@ import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
 import { persistDedupEdges } from './dedup-edges';
 import type { DedupCandidateStamp } from './dedup-candidates-stamp';
-import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
+import { resolvePotScope, POT_REQUIRED_DETAIL } from '../_pot-scope';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getOrgPg } from '@papercusp/db-org';
 // The goal-provenance stamp is SHARED with improvements:capture (WI-2140701 (b)):
@@ -790,14 +790,14 @@ export async function createOneWorkItem(
     // (bug/change) are NOT gated — they may stay workspace-global (D-020).
     let harnessForItem = args.harness;
     if (HIVE_GATED_KINDS.has(args.kind)) {
-      const hiveScope = await resolveHiveScope(args.pot, {
+      const potScope = await resolvePotScope(args.pot, {
         workspaceId: ctx.workspaceId,
         harnessSlug: args.harness ?? ctx.harnessSlug,
       });
-      if (hiveScope.kind === 'none') {
-        return { ok: false, error: 'hive_required', message: HIVE_REQUIRED_DETAIL };
+      if (potScope.kind === 'none') {
+        return { ok: false, error: 'hive_required', message: POT_REQUIRED_DETAIL };
       }
-      harnessForItem = args.harness ?? hiveScope.slug;
+      harnessForItem = args.harness ?? potScope.slug;
     }
     // EI-8809 (routing-gate hint at dispatch): a cheap, non-blocking keyword match
     // against the papercusp-way trigger rows — the item's claimer sees the

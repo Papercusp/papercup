@@ -1015,7 +1015,17 @@ const searchTranscripts = defineTool({
     // that resolves null (no embedder available) rejects the lazy call — the
     // engine's existing catch degrades to BM25-only, exactly as before.
     const embedBudgetMs = Number(process.env.PAPERCUSP_TRANSCRIPT_EMBED_BUDGET_MS) || 4000;
-    const embedderReadyP = acquireEmbedderWithin(buildQueryEmbedder, embedBudgetMs, signal);
+    // WI-3923: while OpenAI embed is in cooldown AND the local pipeline is cold
+    // (not yet warm), don't even attempt local acquisition — it just burns the
+    // whole budget above then degrades anyway, paid on EVERY interactive query.
+    // Skip straight to BM25 here while the acquisition still fires in the
+    // background to warm the pipeline for a later query (same orphaned-warm
+    // contract as a budget timeout, above).
+    const embedderReadyP = acquireEmbedderWithin(
+      () => buildQueryEmbedder({ skipAcquisitionWhenCold: true }),
+      embedBudgetMs,
+      signal,
+    );
     embedderReadyP.catch(() => {}); // consumed lazily below; never unhandled
     const embedder = async (text: string): Promise<number[]> => {
       const e = await embedderReadyP;

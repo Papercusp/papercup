@@ -26,7 +26,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { hiveArg } from '../_hive-scope';
+import { potArg } from '../_pot-scope';
 import {
   createOneWorkItem,
   type CreateOneWorkItemArgs,
@@ -195,7 +195,7 @@ const itemSpec = z.object({
   // names it `body`, so a caller who learned that name used to have it silently dropped here.
   body: hardText(8000).optional().describe('alias for `summary` — the item body text (work_items:update names it `body`). Pass either; both-with-different-values is rejected (WI-4492).'),
   harness: z.string().max(80).optional().describe('harness slug — required for feature/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
-  pot: hiveArg,
+  pot: potArg,
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
   parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
   topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
@@ -287,7 +287,7 @@ export default defineTool({
       summary: hardText(8000).optional().describe('body / summary text'),
       body: hardText(8000).optional().describe('alias for `summary` — the item body text (work_items:update names it `body`). Pass either; both-with-different-values is rejected (WI-4492).'),
       harness: z.string().max(80).optional().describe('harness slug — required for feature; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
-      pot: hiveArg,
+      pot: potArg,
       severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
       parent: z.string().max(80).optional().describe('parent work-item id (historical feature-family compatibility)'),
       topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),

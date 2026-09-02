@@ -953,6 +953,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/check-optional-seam-strands.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/check-pipefail-sigpipe.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-pipefail-sigpipe.mjs: its single `git ls-files -z '*.sh'` enumeration of tracked shell scripts is bounded and awaited, creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
+  },
+  {
     path: "scripts/check-required-field-strands.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1448,6 +1455,37 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         "git ls-tree — cheap metadata read over one commit, awaited, exits immediately",
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/work_items/fabricated-paths.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "git log -1 --format=%H --all over one path — cheap metadata read proving a cited path ever existed, awaited, exits immediately",
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/work_items/untouched-paths.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "git status --porcelain and git log -1 --format=%ct over one path, each capped at a 5s timeout — cheap metadata reads, awaited, exit immediately",
+    },
+  ],
+  [
+    // NOT a git plumbing read, and deliberately not dispositioned as one: this
+    // starts a node child running scripts/affected-tests.mjs. It is bypassed on
+    // BOUNDEDNESS rather than cheapness — the start is awaited inside a single
+    // Promise, carries an explicit timeout (AFFECTED_PLAN_TIMEOUT_MS), an 8MB
+    // maxBuffer, and an optional AbortSignal, and the child prints its plan and
+    // exits. It spawns no worker and leaves no resident queue, so it cannot
+    // materially increase residency; the plan path deliberately RUNS NO TESTS.
+    "packages/operator-core/lib/agent-tools/testing/affected-plan.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "node scripts/affected-tests.mjs --print-affected — bounded awaited child with an explicit timeout, maxBuffer and abort signal; prints the affected-test plan and exits, starting no worker and no resident queue",
     },
   ],
   [

@@ -38,6 +38,10 @@ vi.mock('../../voice-prefs', () => ({ loadVoicePrefs: vi.fn() }));
 // presence like the previous (now-stale) dynamic-import assumption did.
 vi.mock('../../memory/embed-sidecar-wiring', () => ({
   buildSidecarAwareEmbedder: vi.fn().mockRejectedValue(new Error('local pipeline unavailable (mocked)')),
+  // WI-3923: defaults to "cheap" (warm/no-sidecar) so every pre-existing test
+  // above is unaffected — only the skipAcquisitionWhenCold suite below flips
+  // this to false to exercise the cold-pipeline short-circuit.
+  isLocalEmbedAcquisitionCheap: vi.fn().mockReturnValue(true),
 }));
 
 import { buildQueryEmbedder, withAcquireBudget, _clearQueryEmbedCacheForTests } from './embedder';
@@ -47,7 +51,8 @@ import { buildQueryEmbedder, withAcquireBudget, _clearQueryEmbedCacheForTests } 
 import { PROSE_VECTOR_DIMS } from '../../search/prose-vector-dims';
 import { readCredentials } from '../../credentials';
 import { loadVoicePrefs } from '../../voice-prefs';
-import { buildSidecarAwareEmbedder } from '../../memory/embed-sidecar-wiring';
+import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap } from '../../memory/embed-sidecar-wiring';
+import { markOpenAiEmbedFailure, __resetOpenAiEmbedCooldownForTest } from '../../memory/configure';
 
 const savedKey = process.env.OPENAI_API_KEY;
 
@@ -352,5 +357,64 @@ describe('query-embed memo (WI-4734 — facet/window re-queries must not re-pay 
     // Once complete, the deterministic vector is safe to share again.
     await expect(embed!('same query', new AbortController().signal)).resolves.toEqual([0.4, 0.5]);
     expect(inner).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('buildQueryEmbedder — skipAcquisitionWhenCold (WI-3923)', () => {
+  afterEach(() => {
+    // Cooldown is real module state on `../../memory/configure` (not mocked,
+    // since the 'openai'/'local' explicit-mode branches this file exercises
+    // don't depend on it) — reset it so one test's cooldown can't leak into
+    // the next.
+    __resetOpenAiEmbedCooldownForTest();
+  });
+
+  it('OpenAI cooldown + local acquisition cold + opt-in → resolves null immediately (BM25 degrade), never touches the cascade', async () => {
+    markOpenAiEmbedFailure();
+    vi.mocked(isLocalEmbedAcquisitionCheap).mockReturnValue(false);
+    // Deliberately NOT stubbing fetch/readCredentials/loadVoicePrefs beyond the
+    // defaults: the short-circuit must fire BEFORE the cascade is ever awaited,
+    // so what it would otherwise have resolved to is moot — if this test needed
+    // those mocks to pass, the short-circuit would not actually be short.
+    const embedder = await buildQueryEmbedder({ skipAcquisitionWhenCold: true });
+    expect(embedder).toBeNull();
+  });
+
+  it('not in cooldown → opt-in has no effect; normal cascade still resolves an embedder', async () => {
+    vi.mocked(isLocalEmbedAcquisitionCheap).mockReturnValue(false); // cold, but irrelevant here
+    vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
+    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [{ embedding: [0.9] }] }) })),
+    );
+    const embedder = await buildQueryEmbedder({ skipAcquisitionWhenCold: true });
+    await expect(embedder!('x')).resolves.toEqual([0.9]);
+  });
+
+  it('in cooldown but local acquisition is CHEAP (warm) → does not skip; cascade still resolves', async () => {
+    markOpenAiEmbedFailure();
+    vi.mocked(isLocalEmbedAcquisitionCheap).mockReturnValue(true);
+    vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
+    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [{ embedding: [0.7] }] }) })),
+    );
+    const embedder = await buildQueryEmbedder({ skipAcquisitionWhenCold: true });
+    await expect(embedder!('x')).resolves.toEqual([0.7]);
+  });
+
+  it('opt-in omitted (default) → unaffected even while in cooldown + cold (background/batch callers keep waiting)', async () => {
+    markOpenAiEmbedFailure();
+    vi.mocked(isLocalEmbedAcquisitionCheap).mockReturnValue(false);
+    vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
+    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [{ embedding: [0.3] }] }) })),
+    );
+    const embedder = await buildQueryEmbedder(); // no opts at all
+    await expect(embedder!('x')).resolves.toEqual([0.3]);
   });
 });
