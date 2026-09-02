@@ -311,11 +311,15 @@ describe('outbox-drain (Stage 3, real PG)', () => {
     const { handle, appends } = makeFakeHandle();
     const drainedThisPass = await drainOutboxOnce(handle, db.sql, { batch: 5 });
 
-    // The starvation guard: the backlog table did not consume the whole
-    // batch — it shares capacity with every other known table, so this one
-    // pass drained fewer rows than the batch limit.
-    expect(drainedThisPass).toBeLessThan(5);
-    expect(drainedThisPass).toBeGreaterThan(0);
+    // The starvation guard: priority rows claim guaranteed capacity FIRST
+    // (their own independently-LIMIT-ed scan), so the backlog's OWN share of
+    // this pass is less than the full batch — 2 backlog rows, not 5. The
+    // pass as a whole still uses the full batch (nothing is held back): 3
+    // priority + 2 backlog = 5. (An earlier per-table-fair design instead
+    // capped every table's share and left throughput on the table — removed,
+    // see the "Deliberately NOT per-non-priority-table-fair" comment on
+    // drainOutboxOnce.)
+    expect(drainedThisPass).toBe(5);
 
     // The priority lane: every coord_event_log row drained in THIS SAME
     // pass, despite being the numerically newest ids in the table.
