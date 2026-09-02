@@ -508,4 +508,111 @@ describe('work_items:set_blocker', () => {
       expect.objectContaining({ by: 'su-a' }),
     );
   });
+
+  // WI-2141488 — a bare work-item id as a blocker ref is inert: no event key,
+  // nothing to await, nothing to clear. 22 papercusp rows waited forever on one.
+  describe('bare work-item id as a blocker ref', () => {
+    const openItem = {
+      id: 'WI-1',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercup',
+      payload: {},
+    };
+
+    it('refuses the write and names both repairs', async () => {
+      getWorkItem.mockResolvedValue(openItem);
+
+      const out = await one({ id: 'WI-1', kind: 'gate', ref: 'WI-40086' });
+
+      expect(out).toMatchObject({ ok: false, id: 'WI-1', code: 'work_item_ref_as_external_blocker' });
+      expect(out.error).toContain("work_items:link { rel:'blocks'");
+      expect(out.error).toContain('WI-40086');
+      // Nothing may be persisted by a refused write.
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('refuses every kind, not just the one the reporter happened to hit', async () => {
+      getWorkItem.mockResolvedValue(openItem);
+      for (const kind of ['event', 'gate', 'runtime', 'human'] as const) {
+        vi.clearAllMocks();
+        getWorkItem.mockResolvedValue(openItem);
+        const out = await one({
+          id: 'WI-1',
+          kind,
+          ref: 'EI-21330406073681578',
+          ...(kind === 'human' ? { summary: 'q', nextVerb: 'v' } : {}),
+        });
+        expect(out).toMatchObject({ ok: false, code: 'work_item_ref_as_external_blocker' });
+        expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      }
+    });
+
+    // CALIBRATION — must hold before and after the guard exists. If these ever
+    // fail, the guard has become over-broad and is refusing legitimate writes.
+    it('still accepts a gate condition that merely QUALIFIES with an item id', async () => {
+      getWorkItem.mockResolvedValue(openItem);
+      mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+        ...openItem,
+        payload: { ...openItem.payload, ...patch },
+      }));
+
+      const out = await one({ id: 'WI-1', kind: 'gate', ref: 'gate-red-streak:papercusp / WI-212675' });
+
+      expect(out.ok).toBe(true);
+      expect(out.activeBlockers).toEqual([
+        expect.objectContaining({ status: 'active', ref: 'gate-red-streak:papercusp / WI-212675' }),
+      ]);
+    });
+
+    it('still accepts the live work-item:done await key', async () => {
+      getWorkItem.mockResolvedValue(openItem);
+      mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+        ...openItem,
+        payload: { ...openItem.payload, ...patch },
+      }));
+
+      const out = await one({ id: 'WI-1', kind: 'event', ref: 'work-item:done:WI-40509' });
+
+      expect(out.ok).toBe(true);
+      expect(out.await).toEqual({ event: 'work-item:done:WI-40509' });
+    });
+
+    // The load-bearing one: rows already carrying a bad ref must stay clearable,
+    // or this guard would strand the exact population it exists to prevent.
+    it('still CLEARS an already-written bare work-item blocker', async () => {
+      const blocked = {
+        ...openItem,
+        state: 'blocked',
+        payload: {
+          externalBlockers: [
+            {
+              kind: 'gate',
+              ref: 'WI-40086',
+              summary: 'waiting on WI-40086',
+              status: 'active',
+              capability: 'live-dependency',
+              capabilitySource: 'explicit',
+              createdAt: '2026-08-01T00:00:00.000Z',
+              createdBy: 'su-old',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            },
+          ],
+        },
+      };
+      getWorkItem.mockResolvedValue(blocked);
+      mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+        ...blocked,
+        payload: { ...blocked.payload, ...patch },
+      }));
+
+      const out = await one({ id: 'WI-1', ref: 'WI-40086', clear: true, evidence: 'WI-40086 is done' });
+
+      expect(out.ok).toBe(true);
+      expect(out.activeBlockers).toEqual([]);
+      expect(mergeWorkItemPayload).toHaveBeenCalled();
+    });
+  });
 });

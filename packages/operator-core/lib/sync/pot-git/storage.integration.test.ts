@@ -25,6 +25,7 @@ import {
   listNamespaceRefs,
   pathExists,
   sweepStalePackTmpFiles,
+  noteFetchInFlight,
   FETCH_CEILING_MS_MIRROR,
   STALE_PACK_TMP_MAX_AGE_MS,
   STALE_SHALLOW_LOCK_MAX_AGE_MS,
@@ -330,5 +331,63 @@ describe('sweepStalePackTmpFiles (EI-18745600910177355: leaked partial packs)', 
   it('is a no-op — never a throw — on a repo with no pack directory at all', async () => {
     const res = await sweepStalePackTmpFiles(join(root, 'does-not-exist'));
     expect(res).toEqual({ removed: [], bytesReclaimed: 0 });
+  });
+
+  /**
+   * WI-2141452, live-caught on the two-machine rig: a `git fetch` killed
+   * mid-stream while writing `fetchPeerNamespace`'s wildcard refspec
+   * (`+refs/namespaces/<hex>/*:refs/namespaces/<hex>/*`) can strand PER-REF
+   * lock files nested under `refs/namespaces/<ns>/refs/**` — not just the
+   * single root-level `shallow.lock` above. From then on EVERY fetch that
+   * would touch that specific ref fails instantly with
+   * "cannot lock ref … File exists", so these must be reclaimed too, and
+   * kept namespace-distinct (two namespaces can each strand their own
+   * `heads/staging.lock` with the identical basename — a basename-only sweep
+   * would either miss one or misreport which namespace it came from).
+   */
+  it('clears STRANDED refs/namespaces/**/*.lock files, distinguishing namespaces, but leaves a live one alone', async () => {
+    const nsA = 'aaaa1111';
+    const nsB = 'bbbb2222';
+    const lockA = join(repo, 'refs', 'namespaces', nsA, 'refs', 'heads', 'staging.lock');
+    const lockB = join(repo, 'refs', 'namespaces', nsB, 'refs', 'heads', 'staging.lock');
+    const liveLock = join(repo, 'refs', 'namespaces', nsA, 'refs', 'rad', 'sigrefs.lock');
+    const write = async (p: string, ageMs: number): Promise<void> => {
+      await mkdir(join(p, '..'), { recursive: true });
+      await writeFile(p, 'deadbeef\n');
+      const when = new Date(Date.now() - ageMs);
+      await utimes(p, when, when);
+    };
+
+    await write(lockA, 60 * 60_000); // an hour dead
+    await write(lockB, 60 * 60_000);
+    await write(liveLock, 5_000); // a fetch may still be holding it
+
+    const swept = await sweepStalePackTmpFiles(repo);
+
+    expect(swept.removed).toContain(join('refs', 'namespaces', nsA, 'refs', 'heads', 'staging.lock'));
+    expect(swept.removed).toContain(join('refs', 'namespaces', nsB, 'refs', 'heads', 'staging.lock'));
+    expect(swept.removed).not.toContain(join('refs', 'namespaces', nsA, 'refs', 'rad', 'sigrefs.lock'));
+    expect(await pathExists(lockA)).toBe(false);
+    expect(await pathExists(lockB)).toBe(false);
+    expect(await pathExists(liveLock)).toBe(true);
+    await rm(join(repo, 'refs', 'namespaces'), { recursive: true, force: true });
+  });
+
+  it('never touches a refs/namespaces lock while a fetch is in flight on this repo, no matter how old', async () => {
+    const lockPath = join(repo, 'refs', 'namespaces', 'ccccc333', 'refs', 'heads', 'work.lock');
+    await mkdir(join(lockPath, '..'), { recursive: true });
+    await writeFile(lockPath, 'deadbeef\n');
+    const hourAgo = new Date(Date.now() - 60 * 60_000);
+    await utimes(lockPath, hourAgo, hourAgo);
+
+    const release = noteFetchInFlight(repo);
+    try {
+      const swept = await sweepStalePackTmpFiles(repo);
+      expect(swept.removed).not.toContain(join('refs', 'namespaces', 'ccccc333', 'refs', 'heads', 'work.lock'));
+      expect(await pathExists(lockPath)).toBe(true);
+    } finally {
+      release();
+      await rm(join(repo, 'refs', 'namespaces'), { recursive: true, force: true });
+    }
   });
 });

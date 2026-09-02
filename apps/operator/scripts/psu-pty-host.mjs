@@ -3375,7 +3375,10 @@ export async function runMcpReconnectMacro({
  *  passes the HOST's own ownerId, so same-host keys are unaffected) and
  *  guarantees two different owners' pending turns can never fold into one
  *  another even if their sockets ever did collide.
- *  Pure — exported for tests. */
+ *  Pure — exported for tests.
+ *  @param {string} [data]
+ *  @param {string} [routineId]
+ *  @param {string} [ownerId] */
 export function turnCoalesceKey(data, routineId, ownerId) {
   const ownerPrefix = String(ownerId ?? '').trim() ? `owner:${String(ownerId).trim()}|` : '';
   const loopId = String(routineId ?? '').trim();

@@ -1242,8 +1242,11 @@ export function runMcpReconnectMacro({ serverName, write, readTap, resetTap, sle
  *  passes the HOST's own ownerId, so same-host keys are unaffected) and
  *  guarantees two different owners' pending turns can never fold into one
  *  another even if their sockets ever did collide.
- *  Pure — exported for tests. */
-export function turnCoalesceKey(data: any, routineId: any, ownerId: any): string;
+ *  Pure — exported for tests.
+ *  @param {string} [data]
+ *  @param {string} [routineId]
+ *  @param {string} [ownerId] */
+export function turnCoalesceKey(data?: string, routineId?: string, ownerId?: string): string;
 /** Render the delivered turn text, annotating how many duplicates folded in.
  *  Pure — exported for tests. */
 export function renderCoalescedTurn(data: any, folded: any): any;

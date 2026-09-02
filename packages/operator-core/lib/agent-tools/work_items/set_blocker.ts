@@ -29,6 +29,7 @@ import {
 } from '../../external-blockers';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
 import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
+import { workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
 
 const BLOCKER_KIND = z.enum(['event', 'gate', 'runtime', 'human']);
 const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
@@ -154,6 +155,19 @@ export default defineTool({
           };
         }
         if (!input.clear) {
+          // WI-2141488: a bare work-item id here is inert — no event key, nothing
+          // to await, nothing to clear — so the row would wait forever. Refuse at
+          // the write; `clear` is deliberately exempt so rows already carrying a
+          // bad ref stay clearable.
+          const workItemRef = workItemRefBlockerProblem({ itemId: input.id, ref: input.ref });
+          if (workItemRef) {
+            return {
+              ok: false as const,
+              id: input.id,
+              error: `${workItemRef.detail} Blocker was not written.`,
+              code: workItemRef.code,
+            };
+          }
           const stagingFirst = stagingFirstBlockerProblem({
             itemId: input.id,
             itemText: `${workItem.title ?? ''}\n${workItem.summary ?? ''}`,
