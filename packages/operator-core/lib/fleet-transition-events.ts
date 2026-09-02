@@ -142,6 +142,36 @@ export interface FleetTransitionEdge {
   from: string | null;
 }
 
+/**
+ * How long a member must be CONTINUOUSLY observed non-dead before `member-dead`
+ * re-arms for it (see the latch note on `detectFleetTransitions`).
+ *
+ * 30 minutes = 3× PRESENCE_STALE_MS, the same dwell `presence-wakeability.ts`
+ * already uses for the "is this thing really alive" question (it matches the
+ * parked-claim reclaim grace). Chosen against the measured data rather than by
+ * feel: the spurious live windows are ~one liveTurn window each (~10 min), while
+ * a member doing real work emits activity continuously (measured 105–236 rows an
+ * hour, versus the 2–7/hour trickle a dead one keeps emitting). A dwell of three
+ * liveTurn windows clears the trickle without delaying a genuine relaunch's
+ * second death by more than one notice.
+ */
+export const MEMBER_DEAD_REARM_DWELL_MS = 30 * 60 * 1000;
+
+/**
+ * How long a latch entry survives with no re-arm. Bounds the map for members
+ * that leave the fleet or are reaped, and caps the worst case at one member-dead
+ * notice per member per day rather than suppressing forever.
+ */
+export const MEMBER_DEAD_LATCH_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Per-member state for the member-dead latch. Caller-owned so the detector stays pure. */
+export interface FleetDeadLatchEntry {
+  /** When `member-dead` last fired for this member. */
+  firedAtMs: number;
+  /** When the member was FIRST observed non-dead since that fire; null while it still reads dead. */
+  aliveSinceMs: number | null;
+}
+
 /** A fleet-level admission-block crossing, ready to emit. */
 export interface FleetAdmissionTransitionEdge {
   kind: 'admission-blocked';
@@ -187,6 +217,32 @@ export function indexObservations(
  *      `ended` and `critical` are both absorbing-ish states that persist for many
  *      sweeps; re-firing would turn one event into a wake storm.
  *
+ *   3. A member-dead edge LATCHES: once fired for a member, it does not fire
+ *      again until that member has been CONTINUOUSLY observed non-dead for
+ *      MEMBER_DEAD_REARM_DWELL_MS. Rules 1 and 2 are both edge rules, and both
+ *      assume the verdict, once `ended`, STAYS `ended` — which it does not.
+ *      `sessionState` is derived, and its `liveTurn` leg is satisfied by ANY
+ *      recent `agent_activity` row; a dead session keeps drawing a low-rate
+ *      trickle of those long after it stops working, so the verdict oscillates
+ *      ended→live→ended indefinitely and rule 2 never engages. Measured on
+ *      EI-22125312396899848: one agent (ONE `adv_sessions` row — a single
+ *      session, a single death) fired member-dead in 42 distinct minutes over
+ *      ~10h, its activity having dropped from 105–236 rows/hour while working to
+ *      a 2–7/hour trickle afterwards; bursts reached 14–15 agents across 5
+ *      fleets in a single minute. Each one woke every leader awaiting that fleet.
+ *
+ *      This is the SAME failure the context-pressure branch below already guards
+ *      (its rule on an unknown prior bucket, EI-21968977558564590). It needs a
+ *      different shape here because the lapse is not laundered into `null` — the
+ *      oracle degrades to a CONCRETE optimistic verdict (`live`/`parked`), which
+ *      is indistinguishable from real liveness at this boundary. So the guard
+ *      cannot be "ignore unknown priors"; it has to be "don't believe a
+ *      resurrection until it holds".
+ *
+ *      The latch is caller-owned (passed in, mutated here) for the same reason
+ *      `prev` is: this function stays pure and clock-free, and the sweep keeps
+ *      the state. Omit it and the behaviour is exactly as before.
+ *
  * A member that DISAPPEARS between sweeps is deliberately NOT a death signal: the
  * row could equally have been reaped on its TTL, or the member could have left the
  * fleet, and those are indistinguishable here. Disappearance-as-death would be a
@@ -197,15 +253,43 @@ export function indexObservations(
 export function detectFleetTransitions(
   prev: ReadonlyMap<string, FleetMemberObservation>,
   next: readonly FleetMemberObservation[],
+  opts: {
+    /** Caller-owned member-dead latch (rule 3). Mutated in place; omit to disable latching. */
+    deadLatch?: Map<string, FleetDeadLatchEntry>;
+    /** Observation time. Required for the latch; the detector never reads a clock itself. */
+    nowMs?: number;
+    /** Override the re-arm dwell (tests). */
+    rearmDwellMs?: number;
+  } = {},
 ): FleetTransitionEdge[] {
+  const { deadLatch, rearmDwellMs = MEMBER_DEAD_REARM_DWELL_MS } = opts;
+  const nowMs = opts.nowMs ?? 0;
   const edges: FleetTransitionEdge[] = [];
   for (const o of next) {
-    const before = prev.get(observationKey(o));
+    const key = observationKey(o);
+    const before = prev.get(key);
+
+    const isDead = CONFIRMED_DEAD_SESSION_STATES.has(o.sessionState ?? '');
+
+    // Rule 3 bookkeeping runs on EVERY observation, including a first sighting —
+    // the dwell that re-arms a latched member must keep accruing across a gap in
+    // `prev` (e.g. the snapshot reset after a restart), or a member could never
+    // re-arm at all.
+    const latched = deadLatch?.get(key);
+    if (latched) {
+      if (isDead) {
+        latched.aliveSinceMs = null; // still dead — the dwell restarts from scratch
+      } else if (latched.aliveSinceMs === null) {
+        latched.aliveSinceMs = nowMs; // first non-dead sighting since the fire
+      } else if (nowMs - latched.aliveSinceMs >= rearmDwellMs) {
+        deadLatch?.delete(key); // sustained liveness — a later death is a real new edge
+      }
+    }
+
     if (!before) continue; // rule 1 — a first sighting is not a crossing
 
     const wasDead = CONFIRMED_DEAD_SESSION_STATES.has(before.sessionState ?? '');
-    const isDead = CONFIRMED_DEAD_SESSION_STATES.has(o.sessionState ?? '');
-    if (isDead && !wasDead) {
+    if (isDead && !wasDead && !deadLatch?.has(key)) {
       edges.push({
         kind: 'member-dead',
         fleetSlug: o.fleetSlug,
@@ -213,6 +297,7 @@ export function detectFleetTransitions(
         to: o.sessionState ?? 'ended',
         from: before.sessionState,
       });
+      deadLatch?.set(key, { firedAtMs: nowMs, aliveSinceMs: null });
     }
 
     // Rule 3 — an UNKNOWN previous bucket is not a crossing. `null` means the
@@ -257,6 +342,16 @@ export function detectFleetTransitions(
         to: 'stalled',
         from: before.stalled ? 'stalled' : 'clear',
       });
+    }
+  }
+  // Bound the latch. Entries are dropped by AGE, never by absence from this
+  // sweep: `isActionableFleetObservation` legitimately filters a member out for a
+  // sweep or two, and pruning on absence would hand back the exact re-fire rule 3
+  // exists to stop. Past the TTL the member is long gone and one fresh notice is
+  // cheaper than holding the key forever.
+  if (deadLatch) {
+    for (const [k, entry] of deadLatch) {
+      if (nowMs - entry.firedAtMs > MEMBER_DEAD_LATCH_TTL_MS) deadLatch.delete(k);
     }
   }
   edges.sort(

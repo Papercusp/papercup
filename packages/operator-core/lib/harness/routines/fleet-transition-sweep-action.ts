@@ -47,6 +47,7 @@ import {
   indexObservations,
   isActionableFleetObservation,
   type FleetAdmissionObservation,
+  type FleetDeadLatchEntry,
   type FleetMemberObservation,
   type FleetTransitionEventsDeps,
 } from '../../fleet-transition-events';
@@ -67,10 +68,22 @@ let previousObservations = new Map<string, FleetMemberObservation>();
 /** The previous sweep's fleet-level admission-block counts. */
 let previousAdmissionObservations = new Map<string, number>();
 
+/**
+ * The member-dead latch (detector rule 3) — which members have already had a
+ * member-dead edge fired, and how long they have read non-dead since.
+ *
+ * Module-scoped for the same reason the snapshot above is, and losing it is
+ * cheaper than losing the snapshot: a restart costs at most ONE duplicate notice
+ * per already-dead member, where the flap it suppresses was measured at dozens
+ * per member per day (EI-22125312396899848).
+ */
+let memberDeadLatch = new Map<string, FleetDeadLatchEntry>();
+
 /** Test-only: forget the previous snapshot so cases don't cross-contaminate. */
 export function __resetFleetTransitionSnapshotForTests(): void {
   previousObservations = new Map();
   previousAdmissionObservations = new Map();
+  memberDeadLatch = new Map();
 }
 
 /**
@@ -208,7 +221,10 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   const gatherAdmissions = deps.gatherAdmissions ?? (deps.gather ? async () => [] : gatherFleetAdmissionObservations);
   const [rawObservations, admissionObservations] = await Promise.all([gather(), gatherAdmissions()]);
   const observations = rawObservations.filter(isActionableFleetObservation);
-  const edges = detectFleetTransitions(previousObservations, observations);
+  const edges = detectFleetTransitions(previousObservations, observations, {
+    deadLatch: memberDeadLatch,
+    nowMs: Date.now(),
+  });
   const admissionEdges = detectFleetAdmissionTransitions(previousAdmissionObservations, admissionObservations);
   previousObservations = indexObservations(observations);
   // Merge measured values into the prior snapshot rather than replacing it.

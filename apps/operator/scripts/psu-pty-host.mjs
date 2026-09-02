@@ -708,6 +708,35 @@ const RECYCLE_CARRY_RETRY_BACKOFF_MS =
 const STARTUP_MARKER_FALLBACK_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS) || 15_000;
 
+/** EI-22123519641932348: bounded watchdog on the inject-mutex hold itself
+ *  (makeInjectMutex — EI-8822). Every individual gate/verify step downstream
+ *  of acquire() (idle/composer/busy gates, submit verifier, recycleChild's
+ *  kill+respawn+carry sequence) is independently bounded — confirmed by
+ *  reading each one — but `acquire()`'s own `await prev` has NO bound: if any
+ *  holder's critical section fails to reach its `finally` release for a
+ *  reason none of those bounds cover, every later gated inject (a wake
+ *  `turn`, a recycle, a session:request-compaction carry-respawn) queues
+ *  BEHIND it silently and forever — observed live as a ~6h TOTAL SILENCE in
+ *  one host's event log (zero rows of any kind, vs a ~3.5/hr baseline),
+ *  spanning 4 stacked wake fires that all reported `delivered` yet started no
+ *  turn. WARN_MS must clear the legitimate worst case with real margin: the
+ *  slowest single hold is a `carry-respawn` recycle — kill (RECYCLE_KILL_
+ *  TIMEOUT_MS) + force-kill wait (RECYCLE_FORCE_KILL_WAIT_MS) + the carry
+ *  inject's own budget (RECYCLE_CARRY_INJECT_BUDGET_MS, 10min by design) +
+ *  submit verification (~SUBMIT_VERIFY_POLLS × SUBMIT_VERIFY_POLL_MS) ≈ ~11min
+ *  — so WARN_MS sits well above that (loud, cheap, no side effect beyond a
+ *  host-event + stderr line) and FORCE_RELEASE_MS sits far above WARN_MS (a
+ *  force-release lets the NEXT waiter's acquire() proceed as though the
+ *  wedged holder had released; the wedged holder's own eventual/never release
+ *  call becomes a harmless no-op on an already-superseded tail promise — see
+ *  makeInjectMutex's doc comment). Any real force-release is still a rare,
+ *  loud, diagnosable event — a session dark for tens of minutes instead of
+ *  hours (or forever) is the trade this makes. */
+const INJECT_MUTEX_WARN_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_INJECT_MUTEX_WARN_MS) || 900_000; // 15min
+const INJECT_MUTEX_FORCE_RELEASE_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_INJECT_MUTEX_FORCE_RELEASE_MS) || 2_700_000; // 45min
+
 /** EI-18109211232286833: max age a `carry-respawn` control message may reach
  *  before delivery, measured from the moment this host first received it
  *  (`msg.receivedAtMs`, stamped in `conn.on('end')`) to the instant it is
