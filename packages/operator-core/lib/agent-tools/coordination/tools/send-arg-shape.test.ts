@@ -546,3 +546,74 @@ describe('EI-19295149246007753 — single-form schema mirrors every itemSpec fie
     expect(Object.keys(itemSpec.shape).length).toBeGreaterThan(10);
   });
 });
+
+/**
+ * EI-21656724796029687 — the conditional `forYouBecause` requirement must be
+ * SIGNPOSTED where it is keyed, not only taught by the refusal.
+ *
+ * The reporter filed this a MONTH after the refusal text landed (2026-07-28,
+ * acf32dfb): they received the full diagnostic — which names the requirement, the
+ * shape, the 'other' escape hatch and the exemptions — and still filed, because the
+ * complaint is not about the refusal. It is that nothing in the ARG SCHEMA says the
+ * field is conditionally required, so the first a caller learns of it is a dropped
+ * send. A rejected coord:send is a dropped message (see this file's header), so the
+ * cost is one silent coordination loss per agent that meets it.
+ *
+ * This guard COUPLES the two halves: the enforcement and its signpost. Either one
+ * disappearing reds this test, which is the point — a signpost that drifts away from
+ * the rule it describes is worse than none, and enforcement with no signpost is the
+ * defect this row reported.
+ */
+describe('EI-21656724796029687 — forYouBecause is signposted on `expects`, not only in the refusal', () => {
+  const bareSection = { text: 'x' };
+
+  it('ENFORCES it: a directed action/answer with no forYouBecause on any section is refused', () => {
+    for (const expects of ['action', 'answer'] as const) {
+      const parsed = sendTool.args.safeParse({
+        to: ['peer'],
+        summary: 'hi',
+        expects,
+        body: [bareSection],
+      });
+      expect(parsed.success, `expects:'${expects}' with no forYouBecause must be refused`).toBe(false);
+    }
+  });
+
+  it('SIGNPOSTS it: the `expects` arg description names forYouBecause and its exemptions', () => {
+    const schema = z.toJSONSchema(sendTool.args) as {
+      properties?: { expects?: { description?: string } };
+    };
+    const expectsDescription = schema.properties?.expects?.description ?? '';
+    expect(
+      expectsDescription,
+      'the `expects` arg description must name `forYouBecause` — the requirement is keyed on ' +
+        'expects, so this is where a caller composing the call will look. Without it the rule is ' +
+        'discoverable only by getting a message dropped.',
+    ).toContain('forYouBecause');
+    // The exemptions matter as much as the rule: an agent who reads "required" without
+    // them over-applies it to broadcasts and FYIs, which is a different wrong call.
+    expect(expectsDescription.toLowerCase()).toContain('exempt');
+  });
+
+  it('still ACCEPTS a directed action carrying forYouBecause (the rule is conditional, not blanket)', () => {
+    const parsed = sendTool.args.safeParse({
+      to: ['peer'],
+      summary: 'hi',
+      expects: 'action',
+      body: [{ text: 'x', forYouBecause: { relation: 'other', note: 'y' } }],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('does NOT require it for the exempt dispositions — expects:none and ack parse without it', () => {
+    for (const expects of ['none', 'ack'] as const) {
+      const parsed = sendTool.args.safeParse({
+        to: ['peer'],
+        summary: 'hi',
+        expects,
+        body: [bareSection],
+      });
+      expect(parsed.success, `expects:'${expects}' is exempt and must parse`).toBe(true);
+    }
+  });
+});

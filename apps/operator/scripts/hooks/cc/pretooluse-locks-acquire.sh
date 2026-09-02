@@ -1309,6 +1309,119 @@ def _best_effort_tool(name, arguments, timeout=3):
     return inner, rpc_error, phase, None
 
 
+# EI-22176521893516708 — orphaned-claim reconcile.
+#
+# Several PreToolUse hooks share this hook's matcher (control-bytes, secrets,
+# content-lint, the migration/generated-file guards). We claim the lock; one of
+# THEM can then DENY the call. A denied tool call never reaches PostToolUse, so
+# the release that would have run does not, and the lock we just took is held
+# for its full TTL (20min) over a write that never happened. git-sync excludes
+# every actively-locked path from its sweep, so that path silently misses every
+# tick until the TTL lapses — which can leave a change half-landed (a committed
+# test importing a module still sitting untracked). The guards are working as
+# designed and a refusal is an expected outcome; the INTERACTION is the defect.
+#
+# A hook cannot observe another hook's verdict, so we do not try to detect the
+# deny. We reconcile instead: on every run, sweep cache entries whose PostToolUse
+# demonstrably never arrived. That covers the whole class — any guard, any deny
+# reason, any tool — and self-heals the reported case, where the agent's own
+# retry was blocked by the orphan its blocked attempt had just created.
+ORPHAN_GRACE_SEC = float(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_GRACE_SEC') or 180)
+# Past the lock's own TTL the row is gone server-side; only the cache litter is
+# left, so those are pruned from disk WITHOUT an API call.
+ORPHAN_EXPIRED_SEC = float(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_EXPIRED_SEC') or 1500)
+ORPHAN_RELEASE_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_RELEASE_MAX') or 25)
+ORPHAN_PRUNE_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_PRUNE_MAX') or 200)
+ORPHAN_SCAN_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_SCAN_MAX') or 2000)
+_ORPHAN_SUFFIXES = ('.lock', '.paths', '.domain', '.owner', '.batch',
+                    '.edited', '.files', '.done', '.checked')
+
+
+def _orphan_sidecar(base, suffix):
+    try:
+        with open(os.path.join(cache_dir, base + suffix)) as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
+def _orphan_drop_files(base):
+    for suffix in _ORPHAN_SUFFIXES:
+        try:
+            os.remove(os.path.join(cache_dir, base + suffix))
+        except Exception:
+            pass
+
+
+def _sweep_orphaned_claims():
+    """Release locks whose edit never happened, and prune dead cache entries.
+
+    Bounded and best-effort in both directions: it never raises, never changes
+    this call's decision, and issues at most ONE operator call, so an operator
+    that is down costs one timeout rather than one per orphan.
+    """
+    attempted, released, pruned, scanned = [], [], 0, 0
+    try:
+        now = time.time()
+        candidates = []
+        with os.scandir(cache_dir) as entries:
+            for entry in entries:
+                if not entry.name.endswith('.lock'):
+                    continue
+                scanned += 1
+                if scanned > ORPHAN_SCAN_MAX:
+                    break
+                try:
+                    age = now - entry.stat().st_mtime
+                except Exception:
+                    continue
+                # Inside the grace window this may be the edit currently in
+                # flight — its PostToolUse simply has not run YET.
+                if age >= ORPHAN_GRACE_SEC:
+                    candidates.append((age, entry.name[:-len('.lock')]))
+        candidates.sort(reverse=True)  # oldest (longest-held) first
+        for age, base in candidates:
+            if age >= ORPHAN_EXPIRED_SEC:
+                if pruned < ORPHAN_PRUNE_MAX:
+                    _orphan_drop_files(base)
+                    pruned += 1
+                continue
+            # A batch defers its release to the one PostToolBatch cleanup hook,
+            # which owns that lifecycle — never race it.
+            if os.path.exists(os.path.join(cache_dir, base + '.batch')):
+                continue
+            # Only the owning session can release its own lock, and this cache
+            # is shared by every agent on the box. A peer's live orphan is
+            # theirs to sweep on their next edit.
+            if _orphan_sidecar(base, '.owner') != owner:
+                continue
+            if len(attempted) >= ORPHAN_RELEASE_MAX:
+                break
+            lock_id = _orphan_sidecar(base, '.lock')
+            if lock_id:
+                attempted.append((base, lock_id))
+        if attempted:
+            inner, rpc_error, _phase, exc = _best_effort_tool(
+                'locks:release', {'lock_ids': [lid for _base, lid in attempted]})
+            # Only drop the cache entry once the release actually landed —
+            # otherwise keep it and retry on the next edit.
+            if exc is None and rpc_error is None and isinstance(inner, dict) \
+                    and inner.get('ok') is not False:
+                for base, lock_id in attempted:
+                    _orphan_drop_files(base)
+                    released.append(lock_id)
+        if attempted or pruned:
+            # Never silent: a reconcile that runs invisibly cannot be audited,
+            # and this one releases locks nobody asked it to touch.
+            write_marker('last-orphan-sweep.json', {
+                'ts': now_iso(), 'owner': owner,
+                'attempted': len(attempted), 'released': released[:25],
+                'released_count': len(released), 'pruned': pruned,
+            })
+    except Exception as exc:
+        mark_error('orphan-sweep', exc)
+
+
 def _locks_acquire_once(request):
     """One locks:acquire POST → the parsed inner tool result (a dict).
     Fail-open (allow → exit 0) on any transport or parse failure — identical
@@ -1618,6 +1731,11 @@ def _batch_allow_fail_open(result):
     allow()
     return True
 
+
+# Reconcile BEFORE acquiring, not after: the reported failure is an agent whose
+# retry of the very edit that was blocked is then refused by the orphan its own
+# blocked attempt left behind. Sweeping first is what makes that self-heal.
+_sweep_orphaned_claims()
 
 request = req
 inner = _locks_acquire_once(request)

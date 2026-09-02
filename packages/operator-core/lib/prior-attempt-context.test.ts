@@ -164,6 +164,11 @@ describe('buildBoundedPriorAttemptBrief omission drill-down (P-017)', () => {
         workItemId: 'WI-7',
         specId: undefined,
         at: '2026-08-20T12:00:00.000Z',
+        // effort-scoped-continuity P-015/D-010: WHY it is not inline. `budget` says
+        // "raise the budget to see this"; `empty-at-depth` says "there is nothing to
+        // see at this resolution". A ref without the distinction sends a reader to
+        // re-fetch a record that has nothing more to give.
+        reason: 'budget',
       },
     ]);
   });
@@ -281,7 +286,14 @@ describe('collectPriorAttempts', () => {
     expect(result.records.map((record) => record.authority)).toEqual([
       'current-spec', 'plan-decision', 'retraction', 'verified-completion', 'checkpoint',
     ]);
-    expect(result.records.filter((record) => record.workItemId === 'WI-9').every((record) => record.scope === 'same-spec')).toBe(true);
+    // effort-scoped-continuity P-018: WI-9 IS the requested ref, so its own records sit
+    // at `self` — distance zero — rather than borrowing the `same-spec` label from the
+    // spec edge it happens to share. This used to read `same-spec` because the ladder
+    // was plan-anchored and had no word for "the item you are actually claiming"; that
+    // absence is why the whole surface returned null for the 94% of items with no plan.
+    expect(result.records.filter((record) => record.workItemId === 'WI-9').every((record) => record.scope === 'self')).toBe(true);
+    // The SPEC record still carries `same-spec` — it is about the clause, not the item.
+    expect(result.records.find((record) => record.authority === 'current-spec')?.scope).toBe('same-spec');
     expect(result.records.find((record) => record.authority === 'retraction')?.rawRef).toBe('WI-9#comment:7');
   });
 });

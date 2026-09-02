@@ -21,6 +21,7 @@ import {
   resolveWindowIdForTitleFragment,
 } from '../../../adv-session-windows';
 import {
+  advSessionRowCaveats,
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
   getAdvSessionInWorkspace,
@@ -35,6 +36,7 @@ import {
   setAdvSessionWindowId,
   updateAdvSessionPortStatus,
 } from '../../../adv-sessions';
+import { withFieldReliability } from '../../../field-reliability';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import {
   mergeRosterWithAssignments,
@@ -489,13 +491,20 @@ const list = defineTool({
       // row entirely loses the row from the user's session history.
       return true;
     });
-    const responseRows = filtered.map(({ row, summary }) => ({
-      ...row,
-      summary,
-      // true ⇒ this session has a live OS window on screen right now (and is
-      // hard-exempt from the idle-session reaper).
-      onDesktop: onDesktopIds.has(row.id),
-    }));
+    const responseRows = filtered.map(({ row, summary }) =>
+      withFieldReliability(
+        {
+          ...row,
+          summary,
+          // true ⇒ this session has a live OS window on screen right now (and is
+          // hard-exempt from the idle-session reaper).
+          onDesktop: onDesktopIds.has(row.id),
+        },
+        // EI-22176001691325872: `endedAt`/`exitCode` are a sweeper's NOTICE, not an
+        // observation, whenever the row's endedBy says so — see advSessionRowCaveats.
+        advSessionRowCaveats(row),
+      ),
+    );
     return new Response(JSON.stringify({ rows: responseRows }), {
       status: 200,
       headers: JSON_HEADERS,
@@ -803,9 +812,14 @@ const ended = defineTool({
     const rows = await listEndedAdvSessions({ workspaceId, before, limit: limit + 1 });
     const page = rows.slice(0, limit);
     const hasMore = rows.length > limit;
+    // Computed from the raw page, BEFORE field-reliability wrapping — the cursor is an
+    // internal pagination detail, not a value read out of the JSON a caller receives.
     const nextBefore = hasMore && page.length > 0 ? page[page.length - 1].endedAt : null;
+    // EI-22176001691325872: every row on this feed IS an ended session, so this is the
+    // single highest-density surface for the endedAt/exitCode caveats to reach a reader.
+    const sessions = page.map((row) => withFieldReliability(row, advSessionRowCaveats(row)));
     return new Response(
-      JSON.stringify({ ok: true, sessions: page, hasMore, nextBefore }),
+      JSON.stringify({ ok: true, sessions, hasMore, nextBefore }),
       { status: 200, headers: JSON_HEADERS },
     );
   },
