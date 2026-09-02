@@ -603,6 +603,16 @@ function runChild(
     let firstTurnStarted = false;
     let firstTurnTimer: ReturnType<typeof setTimeout> | null = null;
     const launchedAt = Date.now();
+    // EI-22174354183651399: this seam wrote agent-session ledger rows with NO
+    // coordOwnerId — the only field that answers "which row is ME" (launched_by
+    // holds whoever SPAWNED it, a different agent for any fleet member). A
+    // coordOwnerId-keyed filter then silently returned zero rows for ~28-30% of
+    // live agent sessions, reading as "unenrolled" when the row existed all
+    // along. Same derivation as `libs/papercusp/packages/orchestrator/src/
+    // invoke.ts:3509` (the CHILD reads its OWN process.env there); this is the
+    // PARENT building that child's env, so read it off the constructed `env`
+    // map this function is about to spawn with, not `process.env`.
+    const coordOwnerId = (env.PAPERCUSP_SPAWN_ID ?? '').trim() || null;
     // task-manager-no-escape-2026-07-27 P-009: this is the single biggest subtree
     // on the box — an agent CLI plus everything it goes on to run — so it is the
     // spawn most worth naming. The scope was already isolated (WI-1499); what
@@ -695,6 +705,7 @@ function runChild(
           role,
           scopeRequested: useScope,
           ...(taskSpawnId ? { spawnRecordId: taskSpawnId } : {}),
+          ...(coordOwnerId ? { coordOwnerId } : {}),
         },
       },
       child.pid ?? null,

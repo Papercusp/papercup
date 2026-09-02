@@ -4,20 +4,22 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Named resource locks with drain
-description: Shared/exclusive locks on registered named resources (the dev server, the DB schema) with a writer-priority drain, broadcasts, and a defineTool-level enforcement path — for coordinating destructive shared actions across the agent fleet.
+title: "Named resource locks with drain"
+description: "Shared/exclusive locks on registered named resources (the dev server, the DB schema) with a writer-priority drain, broadcasts, and a defineTool-level enforcement path — for coordinating destructive shared actions across the agent fleet."
+type: Insight
+discovered: 2026-09-02
+status: active
+documents:
+  - "packages/operator-core/lib/agent-tools/locks/acquire_resource.ts"
+  - "packages/operator-core/lib/agent-tools/locks/release_resource.ts"
+  - "packages/operator-core/lib/agent-tools/locks/resource-lock-guard.ts"
+  - "packages/operator-core/lib/agent-tools/locks/resource-acquire-wait.ts"
+  - "packages/operator-core/lib/agent-tools/locks/resource-broadcast.ts"
+  - "packages/operator-core/lib/agent-tools/locks/resource-command-match.ts"
+plans:
+  - "named-resource-locks-drain-2026-06-02"
 sidebar:
   order: 8
-plans:
-  - named-resource-locks-drain-2026-06-02
-  - git-sync-auto-commit-2026-06-03
-documents:
-  - packages/operator-core/lib/agent-tools/locks/acquire_resource.ts
-  - packages/operator-core/lib/agent-tools/locks/release_resource.ts
-  - packages/operator-core/lib/agent-tools/locks/resource-lock-guard.ts
-  - packages/operator-core/lib/agent-tools/locks/resource-acquire-wait.ts
-  - packages/operator-core/lib/agent-tools/locks/resource-broadcast.ts
-  - packages/operator-core/lib/agent-tools/locks/resource-command-match.ts
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -43,9 +45,21 @@ long hold alive); `max_drain_sec` caps the wait, after which the requester gets
 `drain_timeout` and decides force-proceed or escalate.
 
 **Bounds the tools enforce:** the lease TTL defaults to **1200s** (20 min) and
-caps at **3600s**; `max_drain_sec` caps at **300s**. The blessed wrappers drain
-for their own defaults — `dev:restart` 120s, `db:migrate` 60s — both bumpable up
-to the 300s cap.
+caps at **3600s**.
+
+⚠ **`max_drain_sec` is ONE ARG NAME WITH TWO DIFFERENT CAPS — and the tool most
+callers reach for is the SMALLER one.** `locks:acquire_resource` caps
+`wait.max_drain_sec` at **45s** (`MAX_LOCK_WAIT_SEC` in
+`packages/operator-core/lib/agent-tools/locks/lock-config.ts`), and an over-cap
+value is **REJECTED** (`Too big expected <=45`), not clamped — unlike
+`locks:acquire`, whose `wait.max_sec` silently clamps to that same 45. The
+**300s** cap belongs only to the blessed wrappers `dev:restart` and `db:migrate`,
+which declare their own `MAX_DRAIN_SEC = 300` and drain for their own defaults —
+`dev:restart` 120s, `db:migrate` 60s — both bumpable up to that 300s cap.
+
+So a 120s drain copied from a `dev:restart` recipe into `locks:acquire_resource`
+fails every time. This doc previously stated the 300s figure as though it were
+the only cap, which is exactly how that happened (EI-21673430317554145).
 
 ```text
 B,C hold SHARED ───────────────┐ (working)

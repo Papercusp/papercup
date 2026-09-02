@@ -56,7 +56,8 @@ import {
   readRunnerCodeCommittedAtMs,
 } from '../../release/in-flight-retriage';
 import { readInFlightCandidate } from '../../release/in-flight-candidate';
-import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
+import { describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
+import { caveatForSite } from '../../field-reliability-registry';
 import {
   readGateOwnership,
   shouldStandDownForLivePeer,
@@ -1623,17 +1624,12 @@ export default defineTool({
       // the only hint available. What changes is that it can no longer be read as an observation.
       const candidateCaveats =
         candidateIsInferred && a.candidate
-          ? [
-              caveat({
-                field: 'candidate',
-                reliability: 'inferred',
-                cannotAnswer: 'Which sha is this run judging?',
-                insteadRead:
-                  "in_flight_retriage.refiring_candidate, or gate_health->'inFlightRetriage'/'inFlightCandidate' in harness_shared.routines",
-                because:
-                  "read from the checkpoint checkout's live HEAD at release-checkpoint-launch.ts:686, not from the running process",
-              }),
-            ]
+          ? // The caveat's TEXT lives in the (surface, field) registry, not inline here — so a
+            // coverage test can assert this site really attaches it, and so a seventh ad-hoc
+            // spelling cannot be invented at a call site (`caveatForSite` throws on an
+            // unregistered pair). See field-reliability-registry.ts; plan
+            // silent-wrong-answers-2026-08-01 D-104.
+            [caveatForSite('release:checkpoint-run', 'candidate')]
           : [];
       const containment = candidateIsInferred
         ? refuseAnswer({

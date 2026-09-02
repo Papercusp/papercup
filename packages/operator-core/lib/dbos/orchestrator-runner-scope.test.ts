@@ -218,6 +218,42 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     });
   });
 
+  // EI-22174354183651399 regression guard: this seam used to write agent-session
+  // ledger rows with NO coordOwnerId at all (launched_by holds the SPAWNER, a
+  // different agent for any fleet member) — a coordOwnerId-keyed filter then
+  // silently returned zero rows for ~28-30% of live agent sessions. The value
+  // is threaded to the child as PAPERCUSP_SPAWN_ID (same derivation as
+  // libs/papercusp/packages/orchestrator/src/invoke.ts:3509, which the CHILD
+  // reads from its own process.env); this seam is the PARENT and must read it
+  // off the constructed child `env` it is about to spawn with.
+  it('records coordOwnerId on the agent-session ledger row from the child env PAPERCUSP_SPAWN_ID (EI-22174354183651399)', async () => {
+    spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
+    H.cmd = {
+      command: '/x/invoke-once',
+      args: ['--role', 'cup'],
+      env: { ...process.env, PAPERCUSP_SPAWN_ID: 's-1788-abc123' },
+    };
+
+    await spawnInvokeOnce(process.cwd(), 'cup', [], {});
+
+    expect(E.completeCalls).toHaveLength(1);
+    const spec = E.completeCalls[0]?.[1] as { detail?: Record<string, unknown> };
+    expect(spec.detail).toMatchObject({ coordOwnerId: 's-1788-abc123' });
+  });
+
+  it('omits coordOwnerId (never writes an empty string) when the child env has no PAPERCUSP_SPAWN_ID', async () => {
+    spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
+    const envWithoutSpawnId = { ...process.env };
+    delete envWithoutSpawnId.PAPERCUSP_SPAWN_ID;
+    H.cmd = { command: '/x/invoke-once', args: ['--role', 'cup'], env: envWithoutSpawnId };
+
+    await spawnInvokeOnce(process.cwd(), 'cup', [], {});
+
+    expect(E.completeCalls).toHaveLength(1);
+    const spec = E.completeCalls[0]?.[1] as { detail?: Record<string, unknown> };
+    expect(spec.detail).not.toHaveProperty('coordOwnerId');
+  });
+
   // The other half of the enrolment contract (task-manager-no-escape P-009). Confinement
   // is gated on a CACHED probe, so there are two legitimate ways to get an UNCONFINED
   // spawn — the probe has not landed yet (first turn after boot), or this host cannot

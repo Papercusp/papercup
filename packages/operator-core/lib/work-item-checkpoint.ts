@@ -259,9 +259,39 @@ export async function setWorkItemCheckpointWithPrior(
     }
   }
 
-  // journal:false — the bee checkpoint is a pure note (no trajectory ring): a
-  // clear DELETES the row (the next invocation re-derives from the dossier —
-  // graceful degradation, mig 281 semantics), byte-identical to the pre-P-001 store.
+  // journal:TRUE since effort-scoped-continuity-2026-09-02 P-003 (was `false`).
+  //
+  // WHAT THIS FIXES. A work-item checkpoint was a pure replace-on-write slot, so
+  // week 3's agent silently DESTROYED week 1's reasoning. Measured 2026-09-02:
+  // 10,326 `workitem`-scoped rows in harness_shared.carry_notes, ZERO carrying a
+  // journal entry — while the `loop` scope, on the SAME substrate, had already
+  // accumulated 29,377 entries. The ring was never missing; it was switched off
+  // here. It is the destruction failure mode of that plan's Background section, and
+  // it is the only item touching 100% of work-items rather than the ~6% that carry
+  // a plan.
+  //
+  // WHY IT IS SAFE TO TURN ON. `appendCarryJournal` is PURE and already bounded on
+  // all three axes (CARRY_JOURNAL_MAX_ENTRIES 15, 600 chars/entry, 6_000 total), so
+  // the ring cannot grow without limit and adds no query — it rides the row this
+  // transaction has already SELECTed FOR UPDATE. The `bounded: true` fail-fast
+  // contract below is therefore UNCHANGED: no extra lock, no extra round-trip, and
+  // the same single INSERT ... ON CONFLICT (its payload grows by at most the ring's
+  // 6KB bound).
+  //
+  // WHAT IT COSTS A READER: nothing. Claim-time delivery reads
+  // `ClaimTimeCheckpointHint`, which is exactly { checkpoint, checkpointAgeMs }, and
+  // NOTHING at claim time reads the ring — so this changes what is STORED, not what
+  // is delivered. The ring's reader is the briefing (prior-attempt-context), which
+  // spends it against an explicit budget.
+  //
+  // THE ONE BEHAVIOUR CHANGE, stated because it is easy to miss: with journaling on,
+  // CLEARING a checkpoint no longer DELETES the row when the ring is non-empty (see
+  // setCarryNoteWithPrior). `note` still reads back null, so every existing reader is
+  // unaffected — but a surviving row would otherwise carry the CLEARED note's
+  // freshness `deps` forward, which is why getWorkItemCheckpointDeps now refuses to
+  // report a declaration for a blank note (a verdict about a checkpoint that no
+  // longer exists is worse than no verdict).
+  //
   // The scope harness is CANONICALIZED (EI-8805) so a harness-null item keys under
   // one namespace on every write/read seam.
   //
