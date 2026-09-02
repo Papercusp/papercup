@@ -418,7 +418,17 @@ describe('fileFindings host-contention gate (EI-8843)', () => {
           { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick1000Ms', baseline: 146.982, current: 1068.699, relChange: 6.27 },
         ],
         sloViolations: [{ scenario: 'churn.reconnect-storm', paramsKey: 'historySize=10000,readers=4,seed=1234,winners=3710', p95Ms: 812, limitMs: 500 }],
-        hostLoad: { loadavg1m: 150, cpus: 128, ratio1m: 1.17, oversubscribed: true },
+        hostLoad: {
+          loadavg1m: 150,
+          cpus: 128,
+          ratio1m: 1.17,
+          oversubscribed: true,
+          swapPagesDelta: null,
+          memoryContended: false,
+          memoryContendedReason: null,
+          psiMemSome60: null,
+          psiCpuSome60: null,
+        },
       }),
       'nightly Tier-1',
     );
@@ -435,7 +445,17 @@ describe('fileFindings host-contention gate (EI-8843)', () => {
         regressions: [
           { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick1000Ms', baseline: 146.982, current: 1068.699, relChange: 6.27 },
         ],
-        hostLoad: { loadavg1m: 20, cpus: 128, ratio1m: 0.16, oversubscribed: false },
+        hostLoad: {
+          loadavg1m: 20,
+          cpus: 128,
+          ratio1m: 0.16,
+          oversubscribed: false,
+          swapPagesDelta: null,
+          memoryContended: false,
+          memoryContendedReason: null,
+          psiMemSome60: null,
+          psiCpuSome60: null,
+        },
       }),
       'nightly Tier-1',
     );
@@ -462,7 +482,17 @@ describe('fileFindings host-contention gate (EI-8843)', () => {
     await fileFindings(
       summaryWith({
         scenarioFailures: ['replication.sustained: proc mesh: writer never became ready'],
-        hostLoad: { loadavg1m: 150, cpus: 128, ratio1m: 1.17, oversubscribed: true },
+        hostLoad: {
+          loadavg1m: 150,
+          cpus: 128,
+          ratio1m: 1.17,
+          oversubscribed: true,
+          swapPagesDelta: null,
+          memoryContended: false,
+          memoryContendedReason: null,
+          psiMemSome60: null,
+          psiCpuSome60: null,
+        },
       }),
       'nightly Tier-1',
     );
@@ -477,7 +507,17 @@ describe('fileFindings host-contention gate (EI-8843)', () => {
     await fileFindings(
       summaryWith({
         scenarioFailures: ['replication.sustained: proc mesh: writer never became ready'],
-        hostLoad: { loadavg1m: 20, cpus: 128, ratio1m: 0.16, oversubscribed: false },
+        hostLoad: {
+          loadavg1m: 20,
+          cpus: 128,
+          ratio1m: 0.16,
+          oversubscribed: false,
+          swapPagesDelta: null,
+          memoryContended: false,
+          memoryContendedReason: null,
+          psiMemSome60: null,
+          psiCpuSome60: null,
+        },
       }),
       'nightly Tier-1',
     );
