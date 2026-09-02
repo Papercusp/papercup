@@ -255,7 +255,26 @@ async function openIssueExistsForKeys(keys: readonly string[]): Promise<Set<stri
  * bug). Skip auto-filing entirely on an oversubscribed run: the artifacts +
  * report.md are written regardless (a human auditing a noisy night still
  * sees the real numbers, flagged uncertain in the report), only the
- * auto-implement/auto-review backlog noise is suppressed. */
+ * auto-implement/auto-review backlog noise is suppressed.
+ *
+ * `scenarioFailures` (a proc-mesh scenario that threw instead of measuring)
+ * is gated the SAME way (EI-22042363019140442/EI-22130724058668873 et al.,
+ * 2026-09-01/02): every observed failure to date is `MeshFormationError`'s
+ * `proc mesh: writer never became ready` / `proc mesh: reader N never
+ * admitted the writer` — a wall-clock wait (`meshTimeoutMs`, default 120s)
+ * on a real OS-process swarm join, exactly the kind of timing-sensitive
+ * measurement this gate exists for. 20 consecutive clean nightly runs
+ * (2026-08-17..31) then TWO consecutive nights of the identical failure
+ * signature, both independently flagged `hostLoad.oversubscribed`, with a
+ * same-HEAD manual repro passing (meshFormationMs elevated ~2x but nowhere
+ * near the 120s budget) — the contention signature, not a code regression.
+ * Also given a stable watchdogKey (previously none), matching the fix
+ * EI-7254 already applied to the other three finding types below — without
+ * one, a STANDING crash re-filed as a fresh near-duplicate every night
+ * instead of deduping (the exact failure mode EI-3909/EI-7254 fixed for
+ * regressions/SLO violations; two full-signature duplicate EIs from the two
+ * nights above are the same bug recurring in the one finding type that
+ * hadn't been fixed yet). */
 /**
  * The denominator that must travel with every rendered regression count
  * (WI-39359). A metric whose baseline sits under the absolute floor is never
