@@ -118,6 +118,7 @@ import {
   buildLoopWakePrompt,
   detectDrivenWorkItemId,
   readActiveLoopFacts,
+  type PriorLoopFacts,
 } from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem, type WorkItem } from '../../work-items';
 import { admitWorkItemForFleetTarget, admitWorkItemForLoopTarget } from '../../scheduler/fleet-scope-admission';
@@ -1716,11 +1717,17 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
   });
 });
 describe('loop:arm — carry-only retune inherits interval/goal (EI-21476896242465605)', () => {
-  const ACTIVE_PRIOR = {
+  // Typed, not `as never`: the cast used to hide that this fixture had gone STALE —
+  // PriorLoopFacts gained required `continuation` and `mode`, and nothing failed until
+  // mockResolvedTyped checked it against readActiveLoopFacts' real return type. Values
+  // are the ordinary active work loop this test describes (the arm-time defaults).
+  const ACTIVE_PRIOR: PriorLoopFacts = {
     active: true,
     goal: 'drain the lane',
     intervalSec: 300,
     carry: 'warm',
+    continuation: 'settle',
+    mode: 'work',
     harnessSlug: 'papercusp',
     kickoff: 'kickoff-prompt',
     fireCount: 3,
