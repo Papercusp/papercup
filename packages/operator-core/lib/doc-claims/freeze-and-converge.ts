@@ -38,7 +38,11 @@ export interface FreezeAndConvergeVerdict {
  * specifically (rather than any `candidate:` key) because constructing a NEW queue with a
  * candidate is exactly how a first freeze is supposed to work.
  */
-const CANDIDATE_MUTATION_RE = /\.\.\.\s*(?:\w+)\s*,\s*(?:[^}]*?,\s*)?candidate\s*:/g;
+// `...identity` is excluded: the queue module's report/projection objects spread a queue
+// IDENTITY (workspace/install/worktree — no candidate) and then COPY `candidate` through
+// unchanged. That is not a queue being fast-forwarded; flagging it reddened the gate on
+// candidate 27961812 (2026-09-02) with a false "retracted design returning" verdict.
+const CANDIDATE_MUTATION_RE = /\.\.\.\s*(?!identity\b)(?:\w+)\s*,\s*(?:[^}]*?,\s*)?candidate\s*:/g;
 const REPAIR_HEAD_MUTATION_RE = /\.\.\.\s*(?:\w+)\s*,\s*(?:[^}]*?,\s*)?repairHead\s*:/g;
 
 export function judgeFreezeAndConverge(source: string): FreezeAndConvergeVerdict {

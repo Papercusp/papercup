@@ -122,6 +122,7 @@ describe('scenario registry', () => {
       'su-S31b-asymmetry-prose',
       'su-S31c-asymmetry-field',
       'su-S31d-asymmetry-provenance',
+      'su-S32-audit-mode-whole-picture',
       // pui-loop — the owned loop's su-derived prompt profile (D-034)
       'pui-loop-P01-owned-door-read',
       // onboarding-tutor scenario suite (onboarding-tutor target)

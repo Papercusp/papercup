@@ -43,8 +43,8 @@
  *
  * ── The envelope, read from the tool, not assumed ────────────────────────────
  * `build:typecheck` (lib/agent-tools/build/typecheck.ts) takes
- * `{ project: string(1..400), files?: string[0..50], maxErrors?, timeoutMs?,
- * incremental?, scopeToFiles? }`. Consequences that decide coverage below:
+ * `{ project: string(1..400), files?: string[0..50], dirs?: string[0..20], maxErrors?,
+ * timeoutMs?, incremental?, scopeToFiles? }`. Consequences that decide coverage below:
  *  • `scopeToFiles` (EI-19297428004790873) compiles only `files` + their import
  *    graph, under a generated config that EXTENDS the project's. It does NOT
  *    widen this family: no plain-tsc command asks for "the project's

@@ -58,6 +58,13 @@ describe('fixture controls (the detector must be able to FAIL)', () => {
 });
 
 describe('the live claim', () => {
+  it('does not count a projection that spreads a queue IDENTITY and copies candidate through', () => {
+    const verdict = judgeFreezeAndConverge(
+      'return { ...identity, candidate: queue.candidate, repairHead: queue.repairHead };',
+    );
+    expect(verdict.candidateWriteSites).toHaveLength(0);
+  });
+
   it('the queue module advances repairHead and never rewrites candidate', () => {
     const verdict = judgeFreezeAndConverge(readFileSync(QUEUE, 'utf8'));
     expect(verdict.violations).toEqual([]);

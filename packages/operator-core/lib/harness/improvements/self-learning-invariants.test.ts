@@ -253,14 +253,16 @@ describe('P-060.2 — the matcher dedups across rephrasings (stable signature)',
     expect(sigs.size).toBe(1);
   });
 
-  it('a rephrased capture of an OPEN friction is DECLINED as a likely duplicate', async () => {
+  it('a rephrased capture of an OPEN friction still FILES (P-002 D-001) but names the open twin', async () => {
     const open = issue({ id: 'EI-7', title: PHRASINGS[0], state: 'open' });
     const d = captureDeps([open]);
     const res = await captureImprovement({ title: PHRASINGS[1], kind: 'bug' }, d);
-    expect(res.created).toBe(false);
-    expect(res.reason).toBe('likely-duplicate');
+    // P-002 (D-001): the search-first DECLINE is retired — a duplicate-classified filing now
+    // CREATES, and the 'likely-duplicate' verdict rides payload.dedupVerdict as an annotation,
+    // never as a created:false gate. The twin is still surfaced so the caller can link/coalesce.
+    expect(res.created).toBe(true);
+    expect(res.reason).not.toBe('likely-duplicate');
     expect(res.possibleDuplicates[0].id).toBe('EI-7');
-    expect(d.createdTitles).toHaveLength(0);
   });
 
   it('near-rephrasings (an extra filler word) still match above the capture threshold', () => {

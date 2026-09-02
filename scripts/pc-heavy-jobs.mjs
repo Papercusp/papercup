@@ -55,6 +55,7 @@
  */
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 
 export const DEFAULT_PROC_ROOT = "/proc";
 export const DEFAULT_GRACE_MS = 5000;
@@ -432,9 +433,7 @@ export async function main(argv) {
   process.exit(2);
 }
 
-const isMain =
-  process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
+if (isCliEntry(import.meta.url)) {
   main(process.argv.slice(2)).catch((e) => {
     console.error(`pc-heavy-jobs: ${e?.message ?? e}`);
     process.exit(2);
