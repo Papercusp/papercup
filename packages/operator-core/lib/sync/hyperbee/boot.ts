@@ -4363,6 +4363,58 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     );
   };
 
+  /**
+   * P-504 / WI-2141185 — IDEMPOTENT RE-ADMISSION.
+   *
+   * A peer re-sends its signed announce on every writer-progress tick
+   * (`refreshAnnounce`, 25 ms debounce) and on every re-pair, and the shared
+   * swarm socket fans each received frame out to EVERY local harness entry on
+   * the topic (~38 on the tower). Running the full admission path again for a
+   * peer that is ALREADY admitted under the SAME identity costs, per harness
+   * per frame: a hive-members PG read (`loadHiveMembers`), a boot-history PG
+   * insert + mirrored log line (`announce_admitted … same_hive_member`), and a
+   * merge poke. Measured 2026-09-02 on the tower: 35k announce_admitted lines/min,
+   * PG pool starvation, +100 MB RSS/min and three V8 OOM aborts.
+   *
+   * Such a frame is a presence/progress poke, not a new admission: once the
+   * signature verifies (cheap, in-process) it is answered `admit` without
+   * touching PG, the boot history, or the merge gate. Remote appends still
+   * reach us via hypercore replication + the periodic merge poll, and
+   * revocation still lands via `revoke()` (explicit, immediate) and the
+   * periodic `reverifyAdmitted` sweep — the incidental per-announce membership
+   * re-read this replaces was never the designed revocation path. ANY identity
+   * change (device, login, user id, attestation) or a revoked device falls
+   * through to the full path, which is what decides what to do about it.
+   */
+  function isSameIdentityReannounce(frame: SignedAnnounce): boolean {
+    if (!admitted.has(frame.log_core_key)) return false;
+    const prior = admittedIdentities.get(frame.log_core_key);
+    if (!prior) return false;
+    if (revoked.has(frame.device_pubkey)) return false;
+    return (
+      prior.devicePubkey === frame.device_pubkey &&
+      prior.githubLogin === frame.github_login &&
+      prior.githubUserId === frame.github_user_id &&
+      prior.attestationGistId === frame.attestation_gist_id
+    );
+  }
+  let reannouncesSuppressed = 0;
+  const REANNOUNCE_SUPPRESSION_LOG_EVERY = 5000;
+  function noteSuppressedReannounce(frame: SignedAnnounce): void {
+    reannouncesSuppressed++;
+    // Bounded observability: one line on the first suppression and one per
+    // 5,000 thereafter — never one per frame (a per-frame line IS the flood).
+    if (
+      reannouncesSuppressed === 1 ||
+      reannouncesSuppressed % REANNOUNCE_SUPPRESSION_LOG_EVERY === 0
+    ) {
+      console.log(
+        `[boot] re-announce suppressed (already admitted, same identity; P-504) harness=${opts.harnessSlug} ` +
+          `count=${reannouncesSuppressed} ${peerLabel(frame.log_core_key)}`,
+      );
+    }
+  }
+
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
     let channel2Verified = true;
@@ -4379,6 +4431,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           'announce_clock_skew',
           `peer clock >5min off this machine — check clock/NTP ${peerLabel(frame.log_core_key)}`,
         );
+      }
+      // P-504: a same-identity re-announce from an already-admitted peer is a
+      // poke, not an admission — answer it without PG, boot history, or a merge.
+      if (sigValid && isSameIdentityReannounce(frame)) {
+        noteSuppressedReannounce(frame);
+        return { admit: true };
       }
       const input: AdmissionInput = {
         device_pubkey: frame.device_pubkey,
