@@ -24,6 +24,7 @@
 import { spawn } from 'node:child_process';
 import { connect } from 'node:net';
 import { existsSync } from 'node:fs';
+import { collectChildOutput } from '../../child-output';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 
 /** The oddsmith harness slug these routines are scoped to (override for tests). */
@@ -116,8 +117,9 @@ export function runBounded(
 ): Promise<RunResult> {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, { cwd: opts.cwd, env: opts.env, detached: true });
-    let stdout = '';
-    let stderr = '';
+    // Boundary-safe accumulation: a multi-byte UTF-8 character split across two
+    // 'data' events decodes to replacement characters under `d.toString()`.
+    const out = collectChildOutput(child);
     let timedOut = false;
     let escalate: NodeJS.Timeout | null = null;
     const killTree = (sig: NodeJS.Signals): void => {
@@ -142,10 +144,17 @@ export function runBounded(
       if (escalate) clearTimeout(escalate);
       resolvePromise(res);
     };
-    child.stdout?.on('data', (d) => (stdout += d.toString()));
-    child.stderr?.on('data', (d) => (stderr += d.toString()));
-    child.on('error', (e) => finish({ code: 1, stdout, stderr: stderr + String(e), timedOut }));
-    child.on('close', (code) => finish({ code: code ?? 1, stdout, stderr, timedOut }));
+    child.on('error', (e) =>
+      finish({
+        code: 1,
+        stdout: out.stdout.text(),
+        stderr: out.stderr.text() + String(e),
+        timedOut,
+      }),
+    );
+    child.on('close', (code) =>
+      finish({ code: code ?? 1, stdout: out.stdout.text(), stderr: out.stderr.text(), timedOut }),
+    );
   });
 }
 
