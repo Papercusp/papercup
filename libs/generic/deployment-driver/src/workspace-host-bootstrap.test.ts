@@ -107,7 +107,8 @@ function attestation(
       runtimeRoot: WORKSPACE_HOST_RUNTIME_ROOT,
       stateRoot: WORKSPACE_HOST_STATE_ROOT,
       workspaceRoot: WORKSPACE_HOST_DATA_ROOT,
-      runtimeReadableByWorkspaceUser: false,
+      runtimeReadableByWorkspaceUser: true,
+      runtimeWritableByWorkspaceUser: false,
       workspaceWritableByService: true,
       workspaceWritableBySshUser: true,
       sudo: false,
@@ -225,6 +226,95 @@ describe('buildWorkspaceHostBootstrap', () => {
    * that quietly serves nothing, which is why all five are pinned rather than just the one
    * that failed loudly.
    */
+  it('lets the workspace account execute the agents it holds credentials for, without granting write or the service group (D-246)', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+
+    // The defect: the account that receives Claude/Codex/OMP credentials could not traverse
+    // /opt/papercusp, so all three probes died with `env: 'claude': Permission denied` (exit 126)
+    // six steps into a live canary. The grant is a named-user ACL on the runtime root AND across
+    // the extracted release — the agent CLIs are wrappers that re-exec the bundled node and read
+    // scripts/psu.mjs, so the entrypoints alone are not enough.
+    expect(script).toContain(
+      'setfacl -m "u:$WORKSPACE_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
+    );
+    expect(script).toContain('setfacl -R -m "u:$WORKSPACE_USER:rX" "$RELEASE_DIR"');
+
+    // Ordering guard. NOT because the current sequence would otherwise break: measured over this
+    // exact chmod set, the resulting mask is `r-x` either way, since `g-w`/`g+rx`/`g+r` are all
+    // additive. It is pinned because chmod's group bits address the ACL MASK once an ACL exists,
+    // so changing any of them to an assigning form (`chmod g=r`) with the ACL applied first would
+    // clamp execute away — a failure invisible until an agent CLI refuses to run on a real host.
+    expect(script.indexOf('find "$RELEASE_DIR" -type f -exec chmod g+r {} +')).toBeLessThan(
+      script.indexOf('setfacl -R -m "u:$WORKSPACE_USER:rX" "$RELEASE_DIR"'),
+    );
+
+    // The recurrence guard: prove executability as the workspace user at bootstrap time, which
+    // is where this should have failed instead of inside a live canary.
+    expect(script).toContain(
+      'for agent_entrypoint in "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT"; do',
+    );
+    expect(script).toContain(
+      'die "workspace SSH user cannot execute agent entrypoint: $agent_entrypoint"',
+    );
+
+    // Confinement is unchanged. Read access to a signed release the account must execute is not
+    // the boundary; these are.
+    expect(script).toContain('die "workspace SSH user can write the Papercusp runtime"');
+    expect(script).toContain('die "workspace SSH user can read the runtime state root"');
+    expect(script).toContain('die "runtime release tree must not be world-readable"');
+    expect(script).toContain(
+      'die "workspace SSH user belongs to the runtime service group"',
+    );
+    expect(script).toContain('die "workspace SSH user belongs to sudo"');
+    expect(script).toContain('usermod --lock --gid "$WORKSPACE_GROUP" --groups ""');
+
+    // The inverted assertion must not come back: it REQUIRED the agents to be unrunnable, and
+    // passed on every host for exactly that reason.
+    expect(script).not.toContain('die "workspace SSH user can read the Papercusp runtime"');
+  });
+
+  it('attests the runtime as workspace-readable but never workspace-writable (D-246)', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    expect(script).toContain(
+      'runtimeReadableByWorkspaceUser:true,runtimeWritableByWorkspaceUser:false',
+    );
+
+    // The validator must reject a host attesting the pre-D-246 shape: an attestation claiming
+    // the runtime is unreadable now describes a host whose agents cannot run.
+    const stale = validateWorkspaceHostBootstrapAttestation(
+      attestation({
+        isolation: {
+          ...attestation().isolation,
+          runtimeReadableByWorkspaceUser: false as true,
+        },
+      }),
+      input(),
+    );
+    expect(stale.ok).toBe(false);
+    expect(stale.errors).toContain(
+      'workspace SSH user cannot read the runtime it must execute agents from',
+    );
+
+    const writable = validateWorkspaceHostBootstrapAttestation(
+      attestation({
+        isolation: {
+          ...attestation().isolation,
+          runtimeWritableByWorkspaceUser: true as false,
+        },
+      }),
+      input(),
+    );
+    expect(writable.ok).toBe(false);
+    expect(writable.errors).toContain('workspace SSH user can write the runtime');
+
+    // A correctly-attesting host must not trip either check.
+    expect(
+      validateWorkspaceHostBootstrapAttestation(attestation(), input()).errors,
+    ).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/runtime it must execute|can write the runtime/)]),
+    );
+  });
+
   it('pins every content root to the release rather than the working directory', () => {
     const unit = buildWorkspaceHostBootstrap(input());
 
@@ -681,7 +771,9 @@ describe('workspace-host bootstrap attestation', () => {
       },
       isolation: {
         ...attestation().isolation,
-        runtimeReadableByWorkspaceUser: true as false,
+        // Post-D-246 the violating shape is INVERTED: unreadable means the agents cannot run.
+        runtimeReadableByWorkspaceUser: false as true,
+        runtimeWritableByWorkspaceUser: true as false,
         sudo: true as false,
       },
       checks: WORKSPACE_HOST_BOOTSTRAP_CHECKS.slice(1).map((name) => ({
@@ -698,7 +790,8 @@ describe('workspace-host bootstrap attestation', () => {
         'Node runtime is below the requested floor',
         'service user mismatch',
         'operator must bind to loopback',
-        'workspace SSH user can read the runtime',
+        'workspace SSH user cannot read the runtime it must execute agents from',
+        'workspace SSH user can write the runtime',
         'workspace SSH user has privileged runtime membership',
         "required bootstrap check 'ubuntu-24.04' did not pass",
       ]),

@@ -442,7 +442,13 @@ export interface WorkspaceHostBootstrapAttestation {
     runtimeRoot: typeof WORKSPACE_HOST_RUNTIME_ROOT;
     stateRoot: typeof WORKSPACE_HOST_STATE_ROOT;
     workspaceRoot: typeof WORKSPACE_HOST_DATA_ROOT;
-    runtimeReadableByWorkspaceUser: false;
+    // TRUE since D-246, and deliberately so: the workspace account executes the bundled agent
+    // CLIs, so it must read the runtime. This was attested `false` while the agents were in fact
+    // unrunnable — the attestation was accurate about the permission and wrong about the product.
+    // The confinement that actually does the work is the WRITE property below, which is what the
+    // old read assertion was standing in for.
+    runtimeReadableByWorkspaceUser: true;
+    runtimeWritableByWorkspaceUser: false;
     workspaceWritableByService: true;
     workspaceWritableBySshUser: true;
     sudo: false;
@@ -848,6 +854,21 @@ export function buildWorkspaceHostBootstrap(
     'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "workspace SSH user must not belong to the runtime service group"; fi',
     'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/embedded-pg"',
     'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
+    // The workspace account must TRAVERSE the runtime root, because it is the account that runs
+    // the bundled agent CLIs: `bind-credential` delivers Claude/Codex/OMP material into its 0700
+    // home, and the agent probes execute `$RUNTIME_ROOT/current/bin/{claude,codex,omp}` as this
+    // very user. Shipping the runtime root as 0750 root:$SERVICE_GROUP while the account is
+    // created with `--groups ""` made those two facts contradictory, and every agent failed
+    // identically with `env: 'claude': Permission denied` (exit 126) six steps into a live
+    // canary — read as three independent credential faults, which is what made it expensive
+    // (D-246, measured on p046-canary-05).
+    //
+    // A NAMED-USER ACL, not group membership and not a world-readable tree: `:848` below asserts
+    // this account is NOT in $SERVICE_GROUP and the verify phase re-asserts it, because that
+    // group also gates $STATE_ROOT (embedded PG, delivered credentials) and /etc/papercusp.
+    // Traverse-and-read is the entire grant; root stays sole owner and sole writer, so the
+    // immutability the 0750 was reaching for is carried by ownership, not by the read bits.
+    'setfacl -m "u:$WORKSPACE_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
     "install -d -o root -g root -m 0711 /srv/papercusp",
     'install -d -o root -g root -m 0770 "$WORKSPACE_ROOT"',
     'setfacl --remove-all "$WORKSPACE_ROOT"',
@@ -934,6 +955,21 @@ export function buildWorkspaceHostBootstrap(
     'chmod -R g-w,o-rwx "$RELEASE_DIR"',
     'find "$RELEASE_DIR" -type d -exec chmod g+rx {} +',
     'find "$RELEASE_DIR" -type f -exec chmod g+r {} +',
+    // Extend the runtime-root grant across the extracted release (D-246). Ordered after the chmod
+    // pass deliberately: on a file that carries an ACL, chmod's group bits address the ACL MASK
+    // rather than the group entry, so a mask-narrowing chmod landing after this line would clamp
+    // the grant away. MEASURED (2026-09-02, /tmp probe over this exact sequence): with the three
+    // chmods above as written the mask is `r-x` in EITHER order, because `g-w`, `g+rx` and `g+r`
+    // are all additive — so this ordering is not load-bearing TODAY and no live bug depends on
+    // it. It is kept because a later edit to an assigning form (`chmod g=r`) would silently clamp
+    // execute, and the resulting failure is invisible until an agent CLI refuses to run.
+    //
+    // `X` (capital) grants execute only on directories and on files that already carry an
+    // execute bit, so this reproduces the group grant for one named user without making data
+    // files executable. The agent CLIs are thin wrappers that re-exec `$BIN/node` and read
+    // `$ROOT/scripts/psu.mjs`, so the grant has to span the tree rather than the three
+    // entrypoints; the group already has exactly this access, and root stays the only writer.
+    'setfacl -R -m "u:$WORKSPACE_USER:rX" "$RELEASE_DIR"',
     'for entrypoint in "$INSTALL_ENTRYPOINT" "$ROLLBACK_ENTRYPOINT" "$NODE_ENTRYPOINT" "$MIGRATE_ENTRYPOINT" "$OPERATOR_ENTRYPOINT" "$HEALTH_ENTRYPOINT" "$PSU_ENTRYPOINT" "$PUI_ENTRYPOINT" "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT" "$REMOTE_INITIALIZER_ENTRYPOINT" "$CREDENTIAL_DELIVERY_ENTRYPOINT"; do',
     '  [[ -x "$RELEASE_DIR/$entrypoint" ]] || die "missing executable release entrypoint: $entrypoint"',
     "done",
@@ -1131,7 +1167,26 @@ export function buildWorkspaceHostBootstrap(
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property Group --value)" == "$SERVICE_GROUP" ]] || die "workspace service is not running under the dedicated service group"',
     '[[ "$(stat -c %U "$RUNTIME_ROOT")" == "root" ]] || die "runtime root must be owned by root"',
     '[[ -z "$(find "$RUNTIME_ROOT/releases" -xdev \\( -type f -o -type d \\) -perm -0004 -print -quit)" ]] || die "runtime release tree must not be world-readable"',
-    'runuser -u "$WORKSPACE_USER" -- test ! -r "$RUNTIME_ROOT/current/$OPERATOR_ENTRYPOINT" || die "workspace SSH user can read the Papercusp runtime"',
+    // This assertion used to read `test ! -r … || die "workspace SSH user can read the Papercusp
+    // runtime"` — it REQUIRED the workspace account to be locked out of the runtime tree. That is
+    // the codified half of the contradiction D-246 diagnoses: the same account is the one that
+    // runs the bundled agents, so the property this asserted is one the product cannot hold. It
+    // passed on every host precisely because the agents were unrunnable, and the cost surfaced
+    // six steps into a live canary as three identical `Permission denied` readiness failures.
+    //
+    // Inverted into the property that is actually wanted, and that the old assertion would have
+    // caught had it been written this way from the start: the workspace account must be able to
+    // EXECUTE each agent CLI it holds credentials for. Confinement is unchanged and still
+    // asserted around this line — root remains sole writer, the release tree is still not
+    // world-readable (the check above), the state and credential roots stay closed, the account
+    // is still outside $SERVICE_GROUP and sudo, and the only privilege seam is the two pinned
+    // conduits. Read access to a signed release the account must execute anyway was never the
+    // boundary doing that work.
+    'for agent_entrypoint in "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT"; do',
+    '  runuser -u "$WORKSPACE_USER" -- test -x "$RUNTIME_ROOT/current/$agent_entrypoint" || die "workspace SSH user cannot execute agent entrypoint: $agent_entrypoint"',
+    "done",
+    'runuser -u "$WORKSPACE_USER" -- test ! -r "$STATE_ROOT" || die "workspace SSH user can read the runtime state root"',
+    'runuser -u "$WORKSPACE_USER" -- test ! -w "$RUNTIME_ROOT/current" || die "workspace SSH user can write the Papercusp runtime"',
     'runuser -u "$WORKSPACE_USER" -- test -w "$WORKSPACE_ROOT" || die "workspace SSH user cannot write the scoped workspace root"',
     'runuser -u "$SERVICE_USER" -- test -w "$WORKSPACE_ROOT" || die "runtime service cannot write the scoped workspace root"',
     'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "workspace SSH user belongs to the runtime service group"; fi',
@@ -1159,7 +1214,7 @@ export function buildWorkspaceHostBootstrap(
     `CHECKS_JSON=${shellQuote(checksJson)}`,
     'ATTESTATION_PATH="$STATE_ROOT/bootstrap-attestation.json"',
     'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" --argjson checks "$CHECKS_JSON" \\',
-    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,claude:true,codex:true,omp:true},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
+    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,claude:true,codex:true,omp:true},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:true,runtimeWritableByWorkspaceUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
     'chown "$SERVICE_USER:$SERVICE_GROUP" "$ATTESTATION_PATH"',
     'chmod 0640 "$ATTESTATION_PATH"',
     `printf '${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}%s\\n' "$(base64 --wrap=0 < \"$ATTESTATION_PATH\")"`,
@@ -1375,8 +1430,13 @@ export function validateWorkspaceHostBootstrapAttestation(
   );
   addMismatch(
     errors,
-    candidate.isolation.runtimeReadableByWorkspaceUser === false,
-    'workspace SSH user can read the runtime',
+    candidate.isolation.runtimeReadableByWorkspaceUser === true,
+    'workspace SSH user cannot read the runtime it must execute agents from',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.runtimeWritableByWorkspaceUser === false,
+    'workspace SSH user can write the runtime',
   );
   addMismatch(
     errors,
