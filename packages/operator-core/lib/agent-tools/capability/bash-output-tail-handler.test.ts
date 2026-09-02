@@ -33,7 +33,9 @@ const bashOutput = bashOutputTool as unknown as Tool;
 function liveJob(overrides: Partial<BashJob> = {}): BashJob {
   return {
     id: 'bash-tail-1',
-    taskId: null,
+    // `BashJob.taskId` is `?: string` (bash-jobs.ts), not nullable — an
+    // unenrolled job simply has no task id. `null` typechecks nowhere.
+    taskId: undefined,
     command: 'echo multi-line',
     cwd: '/repo',
     child: {} as BashJob['child'],

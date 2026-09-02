@@ -44,6 +44,20 @@ const tool = (await import('./list')).default;
 type Out = {
   data: {
     ok: boolean;
+    // EI-22073686775053989: `resources[]` rows are DENORMALIZED with their own
+    // `holders` + `held`. This local mirror of the handler's `{data}` envelope
+    // must carry it — omitting it is not a lax annotation but a false one: the
+    // describe block below reads `b.data.resources`, so a missing key here is a
+    // TS2339 that reads as "the tool does not return resources" when the tool
+    // very much does (list.ts builds `resourcesWithHolders`).
+    resources: Array<{
+      resource: string;
+      description: string;
+      rule_text: string;
+      enforcement: string;
+      holders: unknown[];
+      held: boolean;
+    }>;
     holders: unknown[];
     draining: boolean;
     plane: string;
