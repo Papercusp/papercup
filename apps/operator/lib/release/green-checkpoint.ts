@@ -14273,6 +14273,51 @@ export async function runPostSuiteLegs(
   return legs;
 }
 
+/**
+ * EI-22062873162576188: choose the account rows a release-fixer dispatch will ACTUALLY
+ * authenticate as, out of the provider pool `accountStatus()` reports.
+ *
+ * WI-606293 added the capacity preflight but measured the POOL, and the dispatch does not
+ * use the pool. A blueprint-launched fixer sets neither PAPERCUSP_CODEX_GATEWAY nor
+ * PAPERCUSP_ACCOUNT_ID (launch-blueprint.ts carries no account plumbing), and
+ * writeSignedSpawnCodexHome then symlinks ~/.codex/auth.json into the per-spawn
+ * CODEX_HOME (orchestrator/spawn-mcp.ts) — so it egresses DIRECTLY on the local CLI
+ * credential and never reaches a gateway pool account.
+ *
+ * Consequence measured 2026-09-02: one of seven codex rows had headroom, the preflight
+ * passed on THAT row, and three consecutive dispatches died at turn 1 on the walled local
+ * credential — each burning a frozen-repair-queue attempt on a guaranteed failure.
+ *
+ * Narrowing is by `credentialRef`, which is measured rather than assumed. When it does not
+ * resolve we deliberately fall back to the whole pool: an unknown must keep failing OPEN
+ * (never withhold), the same rule the stale-reading branch follows.
+ *
+ * Pure + exported because the call site's own tests stub `checkFixerProviderCapacity`
+ * wholesale and therefore cannot observe this selection at all.
+ */
+export function selectFixerCapacityRows<
+  T extends { credentialRef?: string | null },
+>(input: {
+  rows: readonly T[];
+  provider: string;
+  gatewayRouted: boolean;
+  localCodexHome: string;
+}): { measured: readonly T[]; scope: string; narrowed: boolean } {
+  const { rows, provider, gatewayRouted, localCodexHome } = input;
+  const localRows =
+    !gatewayRouted && provider === "codex"
+      ? rows.filter((r) => r.credentialRef === `codex-cli:${localCodexHome}`)
+      : [];
+  if (localRows.length > 0) {
+    return {
+      measured: localRows,
+      scope: `the credential the fixer actually uses (${localCodexHome})`,
+      narrowed: true,
+    };
+  }
+  return { measured: rows, scope: `the ${provider} pool`, narrowed: false };
+}
+
 export function realCheckpointDeps(
   cfg: ReleaseConfig,
   execRaw: CheckpointExec = runCmd,
@@ -14756,15 +14801,43 @@ export function realCheckpointDeps(
           summary: `no ${provider} accounts in the pool to measure; not withholding on an unknown`,
         };
       }
+      // EI-22062873162576188: WI-606293 measured the POOL, but the DISPATCH does not use
+      // the pool, and they are not the same population. A blueprint-launched fixer sets
+      // neither PAPERCUSP_CODEX_GATEWAY nor PAPERCUSP_ACCOUNT_ID (launch-blueprint.ts has
+      // no account plumbing at all), and writeSignedSpawnCodexHome then symlinks
+      // ~/.codex/auth.json into the per-spawn CODEX_HOME (orchestrator/spawn-mcp.ts), so
+      // the agent egresses DIRECTLY on the LOCAL CLI credential and never reaches a
+      // gateway pool account. "Some pool account has headroom" is therefore not evidence
+      // that THIS fixer can run.
+      //
+      // Measured 2026-09-02: exactly one of seven codex rows (aviynw5_codex) had headroom,
+      // this preflight passed on it, and three consecutive dispatches died at turn 1 on
+      // the walled LOCAL credential ("You've hit your usage limit ... Sep 8th") — each one
+      // burning a frozen-repair-queue attempt on a guaranteed failure, which is the exact
+      // waste WI-606293 added this preflight to prevent.
+      //
+      // So narrow to the row the fixer will actually authenticate as whenever we can
+      // identify it. Identification is by credentialRef, which is measured, not assumed;
+      // when it does not resolve we fall back to the pool, because an unknown must keep
+      // failing OPEN rather than withhold (same rule as the stale-reading branch below).
+      const { measured, scope } = selectFixerCapacityRows({
+        rows,
+        provider,
+        gatewayRouted:
+          !!process.env.PAPERCUSP_CODEX_GATEWAY ||
+          !!process.env.PAPERCUSP_ACCOUNT_ID?.trim(),
+        localCodexHome:
+          process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"),
+      });
       // `usageWalled` is the exhausted-window meter, deliberately NOT the `available`
       // boolean — that one reads true on a weekly-exhausted account whose bounded rate
       // pause has lapsed (WI-3310), which is exactly the false "go" this preflight exists
       // to catch.
-      const notWalled = rows.filter((r) => !r.usageWalled);
+      const notWalled = measured.filter((r) => !r.usageWalled);
       if (notWalled.length > 0) {
         return {
           ok: true,
-          summary: `${notWalled.length}/${rows.length} ${provider} account(s) have usage headroom (${notWalled
+          summary: `${notWalled.length}/${measured.length} ${provider} account(s) in ${scope} have usage headroom (${notWalled
             .map((r) => r.id)
             .join(", ")})`,
         };
@@ -14772,18 +14845,18 @@ export function realCheckpointDeps(
       // Every row is walled. Withhold only if at least one of those readings is FRESH —
       // a stale or never-observed reading is an unknown, and an unknown must never
       // masquerade as a measured wall (EI-18809949582687481).
-      const fresh = rows.filter((r) => r.readingStatus === "fresh");
+      const fresh = measured.filter((r) => r.readingStatus === "fresh");
       if (fresh.length === 0) {
         return {
           ok: true,
-          summary: `all ${rows.length} ${provider} account(s) read walled, but no reading is fresh (${rows
+          summary: `all ${measured.length} ${provider} account(s) in ${scope} read walled, but no reading is fresh (${measured
             .map((r) => `${r.id}:${r.readingStatus}`)
             .join(
               ", ",
             )}); dispatching rather than withholding on a stale reading`,
         };
       }
-      const resets = rows
+      const resets = measured
         .map((r) => r.usageResetAt)
         .filter(
           (v): v is number => typeof v === "number" && Number.isFinite(v),
@@ -14793,8 +14866,8 @@ export function realCheckpointDeps(
         ok: false,
         retryAtMs,
         summary:
-          `all ${rows.length} ${provider} account(s) are usage-walled ` +
-          `(${rows.map((r) => r.id).join(", ")}; ${fresh.length} fresh reading(s))` +
+          `all ${measured.length} ${provider} account(s) in ${scope} are usage-walled ` +
+          `(${measured.map((r) => r.id).join(", ")}; ${fresh.length} fresh reading(s))` +
           (retryAtMs
             ? `; earliest window reset ${new Date(retryAtMs).toISOString()}`
             : "; no window reset reported"),
