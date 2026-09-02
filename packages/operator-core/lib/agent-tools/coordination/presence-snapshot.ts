@@ -28,7 +28,7 @@ import {
   type NurseryAliasRow,
 } from './nursery-alias-liveness';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
-import { fetchPresenceFleet, type FleetMembership } from './presence-fleet';
+import { deriveFleetControlVisibility, fetchPresenceFleet, type FleetMembership } from './presence-fleet';
 import { createHash } from 'node:crypto';
 import { toStableRosterRow, deltaEligibleProjection, type RosterRow } from './presence-payload';
 import {
@@ -701,19 +701,14 @@ export async function assemblePresenceSnapshot(
   const withFleet = (r: RosterRow): RosterRow => {
     const f = fleet.get(r.ownerId);
     if (!f) return r;
-    // EI-22072194984361823: absent from fleetControl ⇒ fail-open 'active', the
-    // SAME policy fleetControlWindDownRefusal applies to an unresolvable fleet.
-    const controlState = f.fleetSlug ? fleetControl.get(f.fleetSlug)?.controlState ?? 'active' : 'active';
-    // The winding-down gate is MEMBER-only (resolveFleetScopeContext never
-    // resolves a leader's scope) — a leader reads canAcquireWork:true even on
-    // a winding-down fleet, because nothing actually blocks its own claims.
-    const canAcquireWork = !(f.fleetRole === 'member' && controlState === 'winding-down');
+    // EI-22072194984361823: fail-open on an unresolved slug, and the gate is
+    // MEMBER-only — both policies live in deriveFleetControlVisibility, which
+    // documents why and is unit-tested against them directly.
     return {
       ...r,
       fleetSlug: f.fleetSlug,
       fleetRole: f.fleetRole,
-      fleetControlState: controlState,
-      canAcquireWork,
+      ...deriveFleetControlVisibility(f, fleetControl),
     };
   };
 
