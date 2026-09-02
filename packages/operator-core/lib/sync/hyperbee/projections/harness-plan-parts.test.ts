@@ -8,7 +8,12 @@
 import { describe, it, expect } from 'vitest';
 import type postgres from 'postgres';
 import { InMemoryPlanPartsStore } from '../../../plan-parts/store';
-import { buildHarnessPlanPartsProjection, _testing, type PlanPartWireRow } from './harness-plan-parts';
+import {
+  buildHarnessPlanPartsProjection,
+  createPlanPartsRecomposeBatch,
+  _testing,
+  type PlanPartWireRow,
+} from './harness-plan-parts';
 import { stampForcedPastWaiver, summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
 
 function part(planSlug: string, partKey: string, body: string, overrides: Partial<PlanPartWireRow> = {}): PlanPartWireRow {

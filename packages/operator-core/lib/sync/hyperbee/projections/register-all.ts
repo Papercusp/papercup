@@ -63,7 +63,7 @@ import { buildP2pReceiptsProjection } from './p2p-receipts';
 import { buildHiveMembersProjection } from './hive-members';
 import { buildHiveEpochKeysProjection } from './hive-epoch-keys';
 import { buildEngineerIssuesProjection } from './engineer-issues';
-import { buildHarnessPlanPartsProjection } from './harness-plan-parts';
+import { buildHarnessPlanPartsProjection, type PlanPartsRecomposeBatch } from './harness-plan-parts';
 
 export interface RegisterAllOpts {
   workspaceId: string;
@@ -175,6 +175,13 @@ export interface RegisterAllOpts {
    * `opts`; hive_members receives it via the `hiveScoped` spread.
    */
   pendingMemberContent?: PendingMembershipContent;
+  /**
+   * WI-2142064: plan-parts recompose coalescing. When boot threads a batch here it
+   * flows straight through `guardScoped` into `buildHarnessPlanPartsProjection`
+   * (same field name — see HarnessPlanPartsProjectionOpts.recomposeBatch), and every
+   * OTHER projection ignores the extra field. Undefined ⇒ today's per-op recompose.
+   */
+  recomposeBatch?: PlanPartsRecomposeBatch;
 }
 
 /**

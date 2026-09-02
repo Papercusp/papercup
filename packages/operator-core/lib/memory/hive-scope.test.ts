@@ -5,8 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   hiveScopeKey,
-  hiveSlugFromScope,
-  hiveSlugsForHarnesses,
+  potSlugFromScope,
+  potSlugsForHarnesses,
   narrowHarnessSlugsToSessionHive,
 } from './hive-scope';
 
@@ -19,39 +19,39 @@ const entries = [
   { slug: 'joined-view', harness_kind: 'hive', remote_hive: true },
 ];
 
-describe('hiveScopeKey / hiveSlugFromScope', () => {
+describe('hiveScopeKey / potSlugFromScope', () => {
   it('round-trips', () => {
     expect(hiveScopeKey('my-hive')).toBe('hive:my-hive');
-    expect(hiveSlugFromScope('hive:my-hive')).toBe('my-hive');
-    expect(hiveSlugFromScope('harness:my-hive')).toBeNull();
-    expect(hiveSlugFromScope('user-123')).toBeNull();
+    expect(potSlugFromScope('hive:my-hive')).toBe('my-hive');
+    expect(potSlugFromScope('harness:my-hive')).toBeNull();
+    expect(potSlugFromScope('user-123')).toBeNull();
   });
 });
 
-describe('hiveSlugsForHarnesses', () => {
+describe('potSlugsForHarnesses', () => {
   it('member harness resolves to its hive_slug', () => {
-    expect(hiveSlugsForHarnesses(entries, ['member-a'])).toEqual(['my-hive']);
+    expect(potSlugsForHarnesses(entries, ['member-a'])).toEqual(['my-hive']);
   });
 
   it('hive home resolves to its own slug (incl. remote joiner views)', () => {
-    expect(hiveSlugsForHarnesses(entries, ['my-hive'])).toEqual(['my-hive']);
-    expect(hiveSlugsForHarnesses(entries, ['joined-view'])).toEqual(['joined-view']);
+    expect(potSlugsForHarnesses(entries, ['my-hive'])).toEqual(['my-hive']);
+    expect(potSlugsForHarnesses(entries, ['joined-view'])).toEqual(['joined-view']);
   });
 
   it('standalone + unknown slugs resolve to nothing (D-008: hives only)', () => {
-    expect(hiveSlugsForHarnesses(entries, ['standalone'])).toEqual([]);
-    expect(hiveSlugsForHarnesses(entries, ['nope'])).toEqual([]);
+    expect(potSlugsForHarnesses(entries, ['standalone'])).toEqual([]);
+    expect(potSlugsForHarnesses(entries, ['nope'])).toEqual([]);
   });
 
   it('de-dupes members of the same hive, preserves order across hives', () => {
-    expect(hiveSlugsForHarnesses(entries, ['member-a', 'member-b', 'other-hive'])).toEqual([
+    expect(potSlugsForHarnesses(entries, ['member-a', 'member-b', 'other-hive'])).toEqual([
       'my-hive',
       'other-hive',
     ]);
   });
 
   it('empty input → empty output', () => {
-    expect(hiveSlugsForHarnesses(entries, [])).toEqual([]);
+    expect(potSlugsForHarnesses(entries, [])).toEqual([]);
   });
 });
 
