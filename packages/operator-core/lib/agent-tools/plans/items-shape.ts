@@ -99,6 +99,21 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
        *  cause, which is exactly the shape of a silent freeze. Null for every
        *  plan predating the requirement, i.e. almost always. */
       specTriadMissing: joined(r.specTriadMissing),
+      /** EI-22173576329267385: count of WI-/EI- refs cited in this item's text
+       *  whose CURRENT state is terminal (done/dropped/...) — a work-item's
+       *  title is frozen at report time and never rewritten on closure, so a
+       *  nonzero count here means re-check the cited ref(s) before trusting
+       *  this item's premise as live. Carried in EVERY tier (cheap scalar,
+       *  same rationale as `specTriadMissing`); the full ref/state detail is
+       *  standard-tier-and-up (`citedWorkItems` below). Never itself a
+       *  verdict — the load-bearing-vs-background judgment stays a reading
+       *  task for the picking agent. 0 when no refs are cited or none
+       *  resolved. */
+      citedTerminalRefs: Array.isArray(r.citedWorkItems)
+        ? (r.citedWorkItems as Array<{ terminal?: unknown }>).filter(
+            (c) => c.terminal === true,
+          ).length
+        : 0,
     };
     if (tier === "trimmed") return base;
     const holder = coverage?.holder ?? null;
@@ -107,6 +122,16 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
       blockedBy: joined(item.blockedBy),
       blockedByIssues: joined(r.blockedByIssues),
       workers: joined(coverage?.workers),
+      /** EI-22173576329267385: `ref:state` pairs for every cited WI-/EI- ref
+       *  that resolved (an unresolved/typo'd ref is omitted here but still
+       *  counts toward nothing — `citedTerminalRefs` above is authoritative
+       *  for "should I re-check something"). Null when no refs cited or none
+       *  resolved. */
+      citedWorkItems: Array.isArray(r.citedWorkItems) && r.citedWorkItems.length > 0
+        ? (r.citedWorkItems as Array<{ ref?: unknown; state?: unknown }>)
+            .map((c) => `${String(c.ref)}:${c.state == null ? "unknown" : String(c.state)}`)
+            .join(",")
+        : null,
       /** P-029/D-060: WHY the holder took it — the whole point of the item is
        *  that a reader should not have to attempt a claim to learn this. Clipped
        *  like `text`, since a flattened tier is a scalar table; the unclipped goal

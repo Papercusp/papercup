@@ -83,5 +83,13 @@ export async function getWorkItemRefStates(
       terminal: state != null && (ANY_FAMILY_TERMINAL_STATES as readonly string[]).includes(state),
     });
   }
+  // A ref with no matching row (typo'd id, or one from another workspace) does
+  // not resolve — per the interface doc above, that is surfaced AS a null-state
+  // entry, not silently dropped: the caller's null-check already renders it
+  // "unknown" (see items-shape.ts), and hiding it would suppress exactly the
+  // "this citation may be wrong" signal the field exists to carry.
+  for (const ref of refs) {
+    if (!out.has(ref)) out.set(ref, { ref, state: null, terminal: false });
+  }
   return out;
 }
