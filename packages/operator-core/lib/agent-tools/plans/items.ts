@@ -48,6 +48,7 @@ import {
   getAllPlanItemCoverage,
   compactCoverage,
   isCoverageDivergent,
+  isLiveHeldCoverage,
   type CompactCoverage,
   type PlanItemCoverage,
 } from "../../plan-item-coverage";
@@ -541,9 +542,25 @@ export default defineTool({
     // Linked work-item state is live coverage, so apply this claimability floor
     // after refreshing coverage; otherwise a todo plan item linked to a blocked
     // work-item is returned by actionable=true before the coverage overlay exists.
+    // EI-22174704695369849: an item a LIVE peer is holding is not "pickable right
+    // now". Counted, not just dropped — see `withheldLiveHeld` below.
+    let withheldLiveHeld = 0;
     const rows = cached.rows.flatMap((row, i) => {
       const cov = coverage.get(planItemRef(row.plan, row.item.id));
       if (args.actionable && cov?.links.some((link) => link.blocked === true)) return [];
+      // EI-22174704695369849: `actionable` asserted pickability off effectiveStatus
+      // alone while the coverage computed three lines up — and returned to the
+      // caller as `working` — already said a live agent held it. The refuting data
+      // was never elsewhere or expensive; the filter simply did not consult it.
+      // Same placement and same reason as the blocked-link floor directly above:
+      // this is live state, so it must be applied after the coverage refresh, not
+      // against the plan-content cache. Only the live-held bands are withheld —
+      // `isLiveHeldCoverage` documents why held-not-live/held-stalled/complete
+      // deliberately stay offerable.
+      if (args.actionable && isLiveHeldCoverage(cov?.level)) {
+        withheldLiveHeld += 1;
+        return [];
+      }
       const freshRow = { ...row };
       delete freshRow.coverage;
       delete freshRow.coverageDivergence;
@@ -570,6 +587,7 @@ export default defineTool({
       actionable: !!args.actionable,
       needsHuman: !!args.needsHuman,
       scope: args.slug ?? "all",
+      ...(withheldLiveHeld > 0 ? { withheldLiveHeld } : {}),
       ...(cached.unknownHarnesses.length > 0
         ? { unknownHarnesses: cached.unknownHarnesses }
         : {}),
@@ -582,6 +600,16 @@ export default defineTool({
       data: {
         items: limitedRows,
         ...(truncated ? { truncated: true } : {}),
+        // EI-22174704695369849: how many `todo` items this `actionable` query
+        // withheld because a LIVE holder is on them. Returned to the CALLER, not
+        // just telemetry, and deliberately so: silently dropping rows converts
+        // this bug into its worse inverse, where a short (or empty) list reads as
+        // a drained plan and stands a fleet member down (EI-20043747805764486).
+        // A caller seeing `actionable: []` beside a nonzero count here knows the
+        // plan has work and that the move is to coordinate, not to conclude it is
+        // finished. Absent when nothing was withheld, so the common path is
+        // unchanged.
+        ...(withheldLiveHeld > 0 ? { withheldLiveHeld } : {}),
       },
     };
   },

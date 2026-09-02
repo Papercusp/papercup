@@ -172,6 +172,57 @@ export const COVERAGE_LEVELS = [
 
 export type CoverageLevel = (typeof COVERAGE_LEVELS)[number];
 
+/**
+ * The bands where a LIVE holder is on the item RIGHT NOW — exactly the bands
+ * `classifyCoverage` reaches once its `anyLive` test passes. Nothing else.
+ *
+ * EI-22174704695369849: `plans:items { actionable: true }` advertises "pickable
+ * right now" off `effectiveStatus === 'todo'` alone, so it offered an item that
+ * the SAME result object reported as `working: 'partial'` — held and actively
+ * edited by a live peer. The refuting data was already computed and already
+ * returned beside the claim; this predicate is what lets the filter consult it.
+ *
+ * The narrowness is the design, not an oversight. Every band left OUT is one a
+ * caller may legitimately pick, and hiding it would trade this bug for the
+ * strictly worse inverse (EI-20043747805764486: `actionable` returning `[]`
+ * while items were pickable, which reads as a drained plan and stands a fleet
+ * member down). The cost asymmetry is lopsided — a false POSITIVE here costs one
+ * claim round-trip and is caught by `coord:declare-intent`'s `claims.conflicts`,
+ * while a false NEGATIVE silently hides work from everyone — so this errs
+ * toward offering:
+ *   • `none` / `unclaimed` — nobody is on it.
+ *   • `held-not-live`      — documented as the reclaimable band (holder dead or
+ *                            liveness unknown); the claim outlived its holder.
+ *   • `held-stalled`       — a live holder with no item progress. Deliberately
+ *                            still offered: `isReclaimable()` in item-activity.ts
+ *                            counts `'stalled'` as auto-freeable, so the reaper
+ *                            re-surfaces these; withholding them would suppress
+ *                            work the system is itself in the middle of freeing.
+ *                            ⚠ The word "reclaimable" has OPPOSITE polarity on the
+ *                            two surfaces and the two are consistent, not in
+ *                            conflict: item-activity's `isReclaimable` licenses the
+ *                            REAPER to free the claim, while this module's "never
+ *                            auto-reclaim" tells a READER not to jump ahead of it.
+ *                            Offering the item is the reader-side move that stays
+ *                            correct either way.
+ *   • `complete`           — linked work is done, but auto-hiding it is the
+ *                            auto-heal `isCoverageDivergent` deliberately refuses
+ *                            to perform, and a deliberately REOPENED item must
+ *                            stay pickable. It is already flagged `diverged`.
+ *
+ * Pure and exhaustively pinned by test against COVERAGE_LEVELS, so a newly added
+ * band must be classified explicitly rather than defaulting into "pickable".
+ */
+export const LIVE_HELD_COVERAGE_LEVELS: readonly CoverageLevel[] = ['partial', 'full'];
+
+/**
+ * Is a live holder on this item right now, making it NOT pickable by self-select?
+ * See {@link LIVE_HELD_COVERAGE_LEVELS} for why the other bands stay offerable.
+ */
+export function isLiveHeldCoverage(level: CoverageLevel | null | undefined): boolean {
+  return level != null && LIVE_HELD_COVERAGE_LEVELS.includes(level);
+}
+
 export interface CoverageWorkLink {
   /** WI-/EI-/F- id of the linked work-item. */
   workItemId: string;

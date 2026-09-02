@@ -13,6 +13,10 @@ import {
   coverageCollisions,
   duplicateCoverage,
   isCoverageDivergent,
+  isLiveHeldCoverage,
+  COVERAGE_LEVELS,
+  LIVE_HELD_COVERAGE_LEVELS,
+  type CoverageLevel,
   type CoverageWorkLink,
   type PlanItemCoverage,
 } from './plan-item-coverage';
@@ -386,5 +390,98 @@ describe('duplicateCoverage (EI-21188799646985672)', () => {
         }),
       ]),
     ).toEqual([]);
+  });
+});
+
+/**
+ * EI-22174704695369849 — `plans:items { actionable: true }` offered an item that
+ * the SAME result object reported as `working: 'partial'`: held and actively
+ * edited by a live peer (measured 2026-09-02, plan silent-wrong-answers-2026-08-01,
+ * item P-023, holder su-da016d95 `sessionState: live`).
+ *
+ * The filter is deliberately NARROW. Every band it does not withhold is one a
+ * caller may legitimately pick, and over-withholding trades this bug for the
+ * strictly worse inverse — EI-20043747805764486, where `actionable` returned `[]`
+ * while items were pickable, reading as a drained plan. So the exhaustive map
+ * below is the real assertion: a NEW coverage band cannot silently default into
+ * "pickable" (or into "withheld"); adding one fails this test until it is
+ * classified on purpose.
+ */
+describe('isLiveHeldCoverage — the actionable floor', () => {
+  /** Every band, classified explicitly. Keys are pinned to COVERAGE_LEVELS below. */
+  const EXPECTED: Record<CoverageLevel, boolean> = {
+    none: false, // nobody ever took it
+    unclaimed: false, // filed, never taken
+    'held-not-live': false, // holder dead/unknown — documented as THE reclaimable band
+    'held-stalled': false, // live holder, no progress; item-activity's reaper auto-frees these
+    partial: true, // ← the measured incident
+    full: true, // every open link live-held
+    complete: false, // work is done; hiding it would be the auto-heal isCoverageDivergent refuses
+  };
+
+  it('classifies EVERY band in COVERAGE_LEVELS — a new band must be decided, not defaulted', () => {
+    // Both directions: no band missing from the map, and no stale key left in it.
+    expect(Object.keys(EXPECTED).sort()).toEqual([...COVERAGE_LEVELS].sort());
+  });
+
+  for (const level of COVERAGE_LEVELS) {
+    it(`${level} → ${EXPECTED[level] ? 'WITHHELD from actionable' : 'still offered'}`, () => {
+      expect(isLiveHeldCoverage(level)).toBe(EXPECTED[level]);
+    });
+  }
+
+  /**
+   * Calibration control, kept permanently: a predicate that is accidentally
+   * always-false (the pre-fix behaviour — the filter consulted nothing) or
+   * always-true (which would drain every plan) would satisfy a suite that only
+   * ever asserted one polarity. This states the requirement directly, so these
+   * tests cannot quietly degrade into asserting a constant.
+   */
+  it('is not a constant — it both withholds and offers at least one real band', () => {
+    const withheld = COVERAGE_LEVELS.filter((l) => isLiveHeldCoverage(l));
+    const offered = COVERAGE_LEVELS.filter((l) => !isLiveHeldCoverage(l));
+    expect(withheld.length).toBeGreaterThan(0);
+    expect(offered.length).toBeGreaterThan(0);
+    expect(withheld).toEqual([...LIVE_HELD_COVERAGE_LEVELS]);
+  });
+
+  it('treats a missing coverage entry as offerable — no coverage is not a claim', () => {
+    // An item with no coverage row at all is the ordinary unworked case. Failing
+    // this open is what keeps a coverage-read outage from draining every plan
+    // (getAllPlanItemCoverage is non-fatal in items.ts and degrades to no overlay).
+    expect(isLiveHeldCoverage(null)).toBe(false);
+    expect(isLiveHeldCoverage(undefined)).toBe(false);
+  });
+
+  it('withholds the measured incident: a live-held link beside an open one (P-023)', () => {
+    // One open link held by a live peer + one open link nobody is on → 'partial'.
+    const level = classifyCoverage([link(false, 'progressing'), link(false, 'free')], false);
+    expect(level).toBe('partial');
+    expect(isLiveHeldCoverage(level)).toBe(true);
+  });
+
+  it('withholds a bare direct plan-item claim by a live holder', () => {
+    const level = classifyCoverage([], true);
+    expect(level).toBe('full');
+    expect(isLiveHeldCoverage(level)).toBe(true);
+  });
+
+  it('KEEPS offering an item whose holder died — the reclaimable band', () => {
+    const level = classifyCoverage([link(false, 'dead')], false);
+    expect(level).toBe('held-not-live');
+    expect(isLiveHeldCoverage(level)).toBe(false);
+  });
+
+  it('KEEPS offering a stalled holder — the claim reaper re-surfaces these', () => {
+    // item-activity's isReclaimable() counts 'stalled' as auto-freeable, so
+    // withholding it would suppress work the system is in the middle of freeing.
+    const level = classifyCoverage([link(false, 'stalled')], false);
+    expect(level).toBe('held-stalled');
+    expect(isLiveHeldCoverage(level)).toBe(false);
+  });
+
+  it('KEEPS offering an untouched item — the ordinary pickable case', () => {
+    expect(isLiveHeldCoverage(classifyCoverage([], false))).toBe(false);
+    expect(isLiveHeldCoverage(classifyCoverage([link(false, 'free')], false))).toBe(false);
   });
 });
