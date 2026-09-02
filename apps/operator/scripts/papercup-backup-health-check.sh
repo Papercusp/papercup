@@ -133,6 +133,19 @@ BACKUP_MAX_FAILS="${BACKUP_MAX_FAILS:-3}"
 BACKUP_STALE_TMP_MAX_H="${BACKUP_STALE_TMP_MAX_H:-2}"
 BACKUP_DB_DATA_DIR="${BACKUP_DB_DATA_DIR:-/var/lib/postgresql/18/main}"
 BACKUP_DISK_WARN_PCT="${BACKUP_DISK_WARN_PCT:-90}"
+# WI-2141004: the alert names the CURRENT top consumers, read at alert time.
+# These bound that read so a slow or unreachable database can never delay the alarm.
+BACKUP_DB_NAME="${BACKUP_DB_NAME:-papercusp}"
+BACKUP_DB_PORT="${BACKUP_DB_PORT:-5432}"
+BACKUP_CONSUMERS_TIMEOUT_S="${BACKUP_CONSUMERS_TIMEOUT_S:-10}"
+# TOAST-bloat signature. A high-churn large-bytea table ratchets its TOAST relation
+# upward forever because plain VACUUM marks TOAST pages reusable but never returns
+# them to the OS. The discriminator is TOAST BYTES PER LIVE ROW, which separates bloat
+# from a legitimately large table without detoasting anything: measured 2026-09-02,
+# gateway_payload_blobs was 51 MiB/row (60.59 GiB of TOAST over 1,176 rows, ~98.7%
+# bloat) while session_archive_files — genuine stored content — was 0.23 MiB/row.
+BACKUP_BLOAT_MIN_TOAST_GIB="${BACKUP_BLOAT_MIN_TOAST_GIB:-5}"
+BACKUP_BLOAT_MIB_PER_ROW="${BACKUP_BLOAT_MIB_PER_ROW:-8}"
 # The logical dumps and Kopia repository share /mnt/data on this host. This is
 # a separate capacity domain from PGDATA/root and therefore needs its own level
 # and derivative. Alert with 8% free so there is a 6%-of-volume intervention
@@ -258,6 +271,50 @@ disk_trend_line() { # <avail_kb> [history-name] [floor-kb] [floor-label]
   ' "$hist" 2>/dev/null || echo "trend: unavailable"
 }
 
+top_db_consumers() {
+  # Echoes a DERIVED block naming the current largest relations, plus a TOAST-bloat
+  # verdict for any that carry the signature. Never fails, never blocks the alarm —
+  # an unreachable database degrades to one explanatory line, exactly like
+  # disk_trend_line() degrades to "no baseline".
+  #
+  # WHY THIS IS DERIVED AND NOT WRITTEN DOWN (WI-2141004). This block replaced a
+  # hand-written sentence that read "Measured on this box: PGDATA was 34 GiB of a
+  # 1.9 TiB volume (1.8%), while VM disk images were 566 GiB (37%)". Both numbers were
+  # true when written on 2026-08-14 and false by 2026-09-02 — PGDATA had grown to
+  # 154 GiB and the Windows VM had been moved off the volume entirely — but the probe
+  # kept asserting them as current guidance on every fire, and every issue it filed
+  # inherited them. Three work-items (WI-38831, WI-39344, WI-40173) chased the owner's
+  # VM images for three weeks on the strength of that sentence while the actual
+  # consumer, a 60.59 GiB bloated TOAST relation, went unexamined. A measurement
+  # embedded in generated prose is invisible to every typecheck and test in the repo,
+  # so the only safe form is the one that cannot go stale: read it at alert time.
+  local sql out
+  sql="SELECT round(pg_total_relation_size(c.oid)/1073741824.0,2)||' GiB  '||n.nspname||'.'||c.relname||
+              CASE WHEN COALESCE(pg_total_relation_size(c.reltoastrelid),0) > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824
+                        AND COALESCE(s.n_live_tup,0) > 0
+                        AND (pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup > ${BACKUP_BLOAT_MIB_PER_ROW}
+                   THEN '   <<< LIKELY TOAST BLOAT: '||round(pg_total_relation_size(c.reltoastrelid)/1073741824.0,2)
+                        ||' GiB of TOAST over only '||s.n_live_tup||' live rows ('
+                        ||round((pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup,1)
+                        ||' MiB/row). Plain VACUUM cannot return TOAST pages to the OS; only a rewrite can.'
+                   ELSE '' END
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+        WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')
+        ORDER BY pg_total_relation_size(c.oid) DESC
+        LIMIT 6"
+  out="$(timeout "${BACKUP_CONSUMERS_TIMEOUT_S}s" sudo -n -u postgres psql \
+           -p "$BACKUP_DB_PORT" -d "$BACKUP_DB_NAME" -tA -c "$sql" 2>/dev/null)" || true
+  if [ -z "$out" ]; then
+    echo "  (could not read live relation sizes: psql unavailable, unreachable, or timed out after ${BACKUP_CONSUMERS_TIMEOUT_S}s.
+   Read them by hand before blaming anything: SELECT relname, pg_size_pretty(pg_total_relation_size(oid))
+   FROM pg_class ORDER BY pg_total_relation_size(oid) DESC LIMIT 10;)"
+    return 0
+  fi
+  printf '%s\n' "$out" | sed 's/^/  /'
+}
+
 check_db_disk_headroom() {
   local df_line="" disk_pct="" red_marker="" avail_kb="" trend=""
   if [ -e "$BACKUP_DB_DATA_DIR" ]; then
@@ -283,8 +340,10 @@ check_db_disk_headroom() {
   log "Postgres data-volume usage at $BACKUP_DB_DATA_DIR: ${disk_pct}% (warn threshold ${BACKUP_DISK_WARN_PCT}%) | ${trend}"
   red_marker="$STATE_DIR/db-disk-red-ei-filed"
   if [ "$disk_pct" -ge "$BACKUP_DISK_WARN_PCT" ]; then
-    local host
+    local host consumers
     host="$(hostname 2>/dev/null || echo unknown-host)"
+    # Read at ALERT TIME, so the filed issue names the consumer that exists now.
+    consumers="$(top_db_consumers)"
     local title="Postgres data-volume disk usage ${disk_pct}% (>= ${BACKUP_DISK_WARN_PCT}% threshold) on ${host}"
     # Real newlines, not literal "\n": the body is JSON-encoded by jstr(), so a
     # backslash-n survived into the stored summary and rendered as the two
@@ -298,8 +357,22 @@ ACTION: inspect current filesystem consumers and free space before starting disk
 df output:
 ${df_line}
 
-INVESTIGATION RECIPE (verified while working WI-38595, 2026-08-14 — each of these four traps cost real time):
-1. PostgreSQL is usually NOT the consumer, despite this alarm's title. The probe watches the VOLUME holding PGDATA, and that volume is shared with \$HOME. Measured on this box: PGDATA was 34 GiB of a 1.9 TiB volume (1.8%), while VM disk images were 566 GiB (37%). Size PGDATA with 'sudo -n du -xsh $BACKUP_DB_DATA_DIR' — an unprivileged du prints a SILENT '4.0K' (permission denied) rather than an error, which reads as 'Postgres is tiny' for the wrong reason.
+LARGEST RELATIONS RIGHT NOW (read at alert time, not written down — see below):
+${consumers}
+
+A relation flagged LIKELY TOAST BLOAT is the cheapest win available and needs no owner
+decision: its bytes are almost entirely dead TOAST pages that plain VACUUM can never
+return to the OS. Confirm by comparing pg_total_relation_size(reltoastrelid) against the
+live payload (sum a denormalized length column, or sample pg_column_size), then reclaim
+with a rewrite. ALWAYS bound the lock, because a rewrite takes ACCESS EXCLUSIVE and a
+blocked one queues AHEAD of every later lock request on that table:
+  sudo -n -u postgres env PGOPTIONS='-c lock_timeout=10000' psql -p $BACKUP_DB_PORT -d $BACKUP_DB_NAME \\
+    -c 'VACUUM (FULL, VERBOSE, ANALYZE) <schema>.<relation>'
+Measured 2026-09-02 (WI-2140986): that reclaimed 60.89 GiB from gateway_payload_blobs in
+55s with no contention and no data loss.
+
+INVESTIGATION RECIPE (traps verified while working WI-38595, 2026-08-14, and WI-2141004, 2026-09-02):
+1. PostgreSQL is usually NOT the consumer, despite this alarm's title — but "not PostgreSQL" is a HYPOTHESIS TO TEST, never a conclusion to inherit. The probe watches the VOLUME holding PGDATA, and that volume is shared with \$HOME. Size PGDATA with 'sudo -n du -xsh $BACKUP_DB_DATA_DIR' — an unprivileged du prints a SILENT '4.0K' (permission denied) rather than an error, which reads as 'Postgres is tiny' for the wrong reason. Start from the LARGEST RELATIONS block above and from a fresh directory scan; do not start from any remembered figure, including one quoted in an older issue. This step used to carry a measured example here, and it went stale and misdirected three work-items for three weeks.
 2. CONFIRM WHICH VOLUME a directory is on before reclaiming anything: 'findmnt -T <path>' or 'stat -c %d <path>'. On this box /tmp is a BIND MOUNT from a second physical disk, so deleting 136 GiB of stale /tmp scratch frees exactly nothing on the volume this alarm is about.
 3. Enumerate consumers in ONE bounded backgrounded pass: 'nice -n 19 ionice -c3 du -x -d3 / | sort -hr > /tmp/scan-1.txt' (~7 min here). Re-run it later into scan-2.txt and DIFF the two — a diff of two snapshots is the only reliable attribution of NET growth per directory.
 4. Do NOT attribute growth by mtime ('find -newermt'). It counts a file's WHOLE size when the file is merely touched, so a single live VM image reads as hundreds of GiB 'written' in 26h. Note also that qcow2 images grow monotonically and never return space the guest frees — and the .img suffix lies, so check the magic ('QFI\\373' = qcow2)."
@@ -321,6 +394,83 @@ INVESTIGATION RECIPE (verified while working WI-38595, 2026-08-14 — each of th
 # health tick, retained as a bounded history. The derivative counts down to the
 # admission floor rather than ENOSPC, so the alarm names the last safe action
 # boundary instead of the later catastrophe.
+check_db_relation_bloat() {
+  # Fires on the SIGNATURE, not on the disk level (WI-2141004 / P-004).
+  #
+  # check_db_disk_headroom() only speaks once the volume is already >= its warn
+  # threshold, which is far too late for this failure: a bloated TOAST relation grows
+  # quietly for weeks and is only noticed as a full disk. Measured 2026-09-02,
+  # gateway_payload_blobs reached 60.59 GiB of TOAST holding 0.78 GiB of live payload
+  # before anything said a word, and the volume it sat on came within ~20 minutes of
+  # tripping the green-checkpoint disk floor and freezing every agent's deploys.
+  #
+  # The reason autovacuum cannot save you here, and why this needs its own detector:
+  # plain VACUUM marks TOAST pages reusable but never returns them to the OS. A table
+  # that continuously writes and deletes large bytea rows therefore ratchets its TOAST
+  # relation upward permanently, and a HIGH autovacuum_count is evidence of that
+  # treadmill rather than of health. Only a rewrite reclaims the space.
+  local bloated red_marker sql host title body
+  sql="SELECT n.nspname||'.'||c.relname||'  '
+              ||round(pg_total_relation_size(c.reltoastrelid)/1073741824.0,2)||' GiB of TOAST over '
+              ||s.n_live_tup||' live rows ('
+              ||round((pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup,1)||' MiB/row)'
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_stat_user_tables s ON s.relid = c.oid
+        WHERE c.relkind IN ('r','p')
+          AND n.nspname NOT IN ('pg_catalog','information_schema')
+          AND COALESCE(pg_total_relation_size(c.reltoastrelid),0) > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824
+          AND s.n_live_tup > 0
+          AND (pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup > ${BACKUP_BLOAT_MIB_PER_ROW}
+        ORDER BY pg_total_relation_size(c.reltoastrelid) DESC
+        LIMIT 5"
+  bloated="$(timeout "${BACKUP_CONSUMERS_TIMEOUT_S}s" sudo -n -u postgres psql \
+               -p "$BACKUP_DB_PORT" -d "$BACKUP_DB_NAME" -tA -c "$sql" 2>/dev/null)" || true
+  red_marker="$STATE_DIR/db-relation-bloat-ei-filed"
+  if [ -z "$bloated" ]; then
+    # Unreachable and clean are deliberately treated alike: this probe must never
+    # invent a red, and check_db_disk_headroom remains the backstop for a full volume.
+    rm -f "$red_marker"
+    return 0
+  fi
+  log "TOAST-bloat signature detected on $(printf '%s\n' "$bloated" | grep -c .) relation(s) (threshold: >${BACKUP_BLOAT_MIN_TOAST_GIB} GiB TOAST and >${BACKUP_BLOAT_MIB_PER_ROW} MiB/row)."
+  host="$(hostname 2>/dev/null || echo unknown-host)"
+  title="Postgres TOAST bloat: $(printf '%s\n' "$bloated" | head -1 | awk '{print $1}') is mostly dead TOAST pages on ${host}"
+  body="Relations carrying the TOAST-bloat signature (>${BACKUP_BLOAT_MIN_TOAST_GIB} GiB of TOAST AND >${BACKUP_BLOAT_MIB_PER_ROW} MiB of TOAST per live row):
+
+${bloated}
+
+WHY THIS IS ALMOST CERTAINLY RECLAIMABLE, NOT DATA: TOAST bytes per live row is the
+discriminator. A legitimately large table holds a plausible amount per row; a bloated
+one holds an absurd amount, because the rows it is charged for are long deleted. Plain
+VACUUM marks TOAST pages reusable but never hands them back to the OS, so a high-churn
+large-bytea table ratchets upward forever and a high autovacuum_count means the
+treadmill is running, not that the table is healthy.
+
+CONFIRM before reclaiming — compare the TOAST size against the live payload:
+  SELECT pg_size_pretty(pg_total_relation_size(reltoastrelid)) FROM pg_class c
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+   WHERE n.nspname='<schema>' AND c.relname='<relation>';
+  -- then sum a denormalized length column if the table has one, else sample:
+  SELECT round(avg(pg_column_size(t.*))/1024.0,1) AS avg_kib
+    FROM (SELECT * FROM <schema>.<relation> LIMIT 400) t;
+
+RECLAIM with a rewrite, and ALWAYS bound the lock. A rewrite takes ACCESS EXCLUSIVE, and
+a blocked ACCESS EXCLUSIVE request queues AHEAD of every later lock request on that
+relation — so an unbounded rewrite of a table on a hot path can stall every caller of it.
+With lock_timeout the failure mode is a clean abort instead:
+  sudo -n -u postgres env PGOPTIONS='-c lock_timeout=10000' psql -p $BACKUP_DB_PORT -d $BACKUP_DB_NAME \\
+    -c 'VACUUM (FULL, VERBOSE, ANALYZE) <schema>.<relation>'
+
+This probe is detection-only; it never rewrites, deletes, or restarts anything."
+  if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
+    log "RED already tracked (TOAST bloat, filed $(age_h "$red_marker")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
+  else
+    file_ei "$title" "$body"
+    mark_red "$red_marker"
+  fi
+}
+
 check_backup_volume_headroom() {
   local df_line="" disk_pct="" total_kb="" avail_kb="" floor_kb="" trend="" red_marker=""
   if [ -e "$BACKUP_VOLUME_PATH" ]; then
@@ -889,6 +1039,50 @@ $(trend_seed 7200 10485760)" \
   check_trend "trend with a 6-minute baseline: refuses to extrapolate" \
         "$(trend_seed 360 10485760)" \
         "baseline too recent"
+  # ── WI-2141004 recurrence guard: the alert must MEASURE, never REMEMBER ──────
+  # The defect here was not a crash. check_db_disk_headroom() had a measured example
+  # hand-written into the prose it files ("PGDATA was 34 GiB ... VM disk images were
+  # 566 GiB"). Both figures went stale, the probe kept asserting them as current
+  # guidance on every fire, and three work-items chased the owner's VM images for
+  # three weeks while a 60.59 GiB bloated TOAST relation went unexamined. A stale
+  # sentence inside generated output is invisible to every other check in this repo —
+  # no typecheck or unit test can see prose drift — so it needs its own guard.
+  guard_body() { awk '/^check_db_disk_headroom\(\)/,/^}/' "$self"; }
+
+  # 19. The filed body must SPLICE THE DERIVED READING rather than a written-down list.
+  if guard_body | grep -q '\${consumers}'; then
+    printf '  ok    alert body splices the derived top-consumers reading\n'; p=$((p+1))
+  else
+    printf '  FAIL  alert body no longer references ${consumers} — the consumer list is not being derived at alert time\n'; f=$((f+1))
+  fi
+
+  # 20. THE CLASS GUARD: no past-tense measured quantity may be asserted in that body.
+  #     "was/were N GiB" is the shape of a remembered measurement, and a remembered
+  #     measurement is exactly what went stale. Derived values interpolate at runtime
+  #     and never match this, so a correct implementation cannot trip it.
+  if guard_body | grep -qE '(was|were) [0-9]+(\.[0-9]+)? ?(GiB|TiB|GB|TB)\b'; then
+    printf '  FAIL  a remembered measurement is back in the alert body: ...%s...\n' \
+      "$(guard_body | grep -oE '.{0,45}(was|were) [0-9]+(\.[0-9]+)? ?(GiB|TiB|GB|TB)\b.{0,25}' | head -1)"; f=$((f+1))
+  else
+    printf '  ok    alert body asserts no remembered measurement\n'; p=$((p+1))
+  fi
+
+  # 21. The reading must degrade to an explanatory line — never to silence, and never
+  #     to a nonzero exit — when the database cannot be reached. The alarm's whole job
+  #     is to fire on a full disk, and a full disk is precisely when a database is
+  #     most likely to be unreachable, so this helper must never be able to block it.
+  consumers_out="$( ( BACKUP_DB_PORT=1
+                      BACKUP_DB_NAME=nonexistent_db_for_selftest
+                      BACKUP_CONSUMERS_TIMEOUT_S=2
+                      top_db_consumers ) 2>/dev/null )"
+  consumers_rc=$?
+  if [ "$consumers_rc" = 0 ] && [ -n "$consumers_out" ]; then
+    printf '  ok    unreachable database degrades to an explanatory line, never blocks the alarm\n'; p=$((p+1))
+  else
+    printf '  FAIL  top_db_consumers with an unreachable database: rc=%s, output=%q\n' \
+      "$consumers_rc" "$consumers_out"; f=$((f+1))
+  fi
+
   printf '  ---- %d passed, %d failed (post disk-headroom block)\n' "$p" "$f"
 
   # ── WI-39596 recurrence guard: backup-volume level + ETA to admission floor
@@ -1039,6 +1233,7 @@ fi
 # Check the PostgreSQL data filesystem before the artifact probes. A shared root
 # volume can take PostgreSQL down even while every backup artifact is still fresh.
 check_db_disk_headroom
+check_db_relation_bloat
 check_backup_volume_headroom
 check_tmpdir_entry_count
 check_workspace_dump_transactions
