@@ -975,8 +975,23 @@ export function applyCheckpointProcessAuthority(
     },
     candidate: null,
     startedAtMs: authority.startedAtMs,
-    progressAtMs: authority.startedAtMs,
-    currentPhase: 'materializing',
+    // EI-22129511435526580: `'materializing'` + `progressAtMs === startedAtMs` is the
+    // correct reading ONLY when this is genuinely the pre-lock "just started, no candidate
+    // yet" transition — the case every existing caller exercises (`activeRun` was idle, so
+    // it has no phase/progress of its own to lose). But this same overlay ALSO fires later,
+    // whenever the systemd-unit probe's OWN tracking goes stale (its `loadState` reads
+    // "not-found" once systemd forgets a long-running manual unit) while `activeRun` is
+    // otherwise still describing the SAME live run — `mapActiveRun` (called just before this,
+    // against the same resolved root) already carries the real `currentPhase`/`progressAtMs`
+    // whenever the underlying probe reported them. Unconditionally overwriting those with the
+    // startup placeholder threw away a genuine "deep in the affected-test sweep, log mtime
+    // seconds old" signal and reported it back as "stuck materializing for 53 minutes" — the
+    // exact false-positive-for-a-stall / false-negative-for-a-real-wedge failure mode the
+    // ticket describes. Prefer whatever `activeRun` already knows; fall back to the pre-lock
+    // placeholder only when it has nothing better (activeRun was null/idle, matching every
+    // existing caller/test unchanged).
+    progressAtMs: activeRun?.progressAtMs ?? authority.startedAtMs,
+    currentPhase: activeRun?.currentPhase ?? 'materializing',
     elapsedSec: authority.elapsedSec,
   };
 }

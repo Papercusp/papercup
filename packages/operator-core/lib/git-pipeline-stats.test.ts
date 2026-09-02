@@ -642,6 +642,43 @@ describe('applyCheckpointProcessAuthority (P-009 pre-lock liveness)', () => {
   ])('leaves the systemd reading unchanged when the process signal is %s', (_label, authority) => {
     expect(applyCheckpointProcessAuthority(idle, authority)).toBe(idle);
   });
+
+  it('EI-22129511435526580: preserves genuine sweep progress instead of resetting it to the pre-lock placeholder', () => {
+    // The systemd-tracked probe already found a run deep in the affected-test sweep — this
+    // is what `activeRun` looks like once the primary probe (called just before this overlay,
+    // against the same resolved root) has real progress_at/current_phase to report.
+    const midSweep = mapActiveRun({
+      active: true,
+      started_at: '2026-09-02T05:23:30.985Z',
+      progress_at: '2026-09-02T06:17:26.000Z',
+      current_phase: 'affected-sweep',
+    });
+    // The systemd UNIT lookup has since gone stale (its loadState reads "not-found" for a
+    // long-running manual run) and the pre-lock cheap-procfs authority is the only thing
+    // that still confirms the process is alive — this must NOT reset the phase/progress
+    // `activeRun` already knows back to the "just started" placeholder.
+    const result = applyCheckpointProcessAuthority(midSweep, {
+      active: true,
+      probeFailed: false,
+      pid: 3718680,
+      startedAtMs: Date.parse('2026-09-02T05:23:30.985Z'),
+      elapsedSec: 3210,
+      cgroupPath: '/user.slice/run-u42.scope',
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+    });
+    expect(result?.currentPhase).toBe('affected-sweep');
+    expect(result?.progressAtMs).toBe(Date.parse('2026-09-02T06:17:26.000Z'));
+    expect(result?.progressAtMs).not.toBe(result?.startedAtMs);
+    // The pre-lock authority fields the overlay exists to add are still applied normally.
+    expect(result?.startedAtMs).toBe(Date.parse('2026-09-02T05:23:30.985Z'));
+    expect(result?.preLockAuthority).toEqual({
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+      cgroupPath: '/user.slice/run-u42.scope',
+      pid: 3718680,
+    });
+  });
 });
 
 describe('selectActiveCheckpointRoot', () => {
