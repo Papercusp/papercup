@@ -134,10 +134,12 @@ import {
   readPendingSessionEndWitness,
   NO_LIVE_CODEX_WRITER_EVIDENCE,
   NO_LIVE_CLAUDE_PROCESS_EVIDENCE,
+  NO_LIVE_OMP_PROCESS_EVIDENCE,
+  argvProbeSessionId,
   normalizeResumeLocalLivenessEvidence,
   normalizeCodexResumeLocalLivenessEvidence,
-  normalizeClaudeResumeLocalLivenessEvidence,
-  claudeSessionProcessHolder,
+  normalizeArgvProbeResumeLocalLivenessEvidence,
+  sessionProcessHolder,
   reportSessionResumed,
   acquireSessionResumeWithRecovery,
   reportSessionResumeFinalized,
@@ -9245,7 +9247,7 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
   });
 
   it("reports a live holder when another process carries the session id", () => {
-    const holder = claudeSessionProcessHolder("sess-abc", {
+    const holder = sessionProcessHolder("sess-abc", {
       ...fakeProc({
         pids: [10, 11],
         cmdlines: { 10: "claude --resume sess-abc", 11: "unrelated" },
@@ -9269,13 +9271,13 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
       parents: { 12: 11, 11: 10, 10: 1 },
     });
     expect(
-      claudeSessionProcessHolder("sess-abc", { ...proc, selfPid: 12 }),
+      sessionProcessHolder("sess-abc", { ...proc, selfPid: 12 }),
     ).toMatchObject({ held: false, reason: "clean-scan" });
 
     // POSITIVE CONTROL — without the ancestor walk the very same scan reports a
     // holder, so the assertion above is not passing for a trivial reason.
     expect(
-      claudeSessionProcessHolder("sess-abc", {
+      sessionProcessHolder("sess-abc", {
         ...proc,
         readStat: () => {
           throw new Error("no chain");
@@ -9288,25 +9290,25 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
   it("fails CLOSED on every probe failure — an unknown scan is not an absence", () => {
     // The opposite of the codex writer-lock probe: that one may only improve a
     // message, this one RELAXES a guard, so it may never guess.
-    expect(claudeSessionProcessHolder("", {})).toMatchObject({
+    expect(sessionProcessHolder("", {})).toMatchObject({
       held: false,
       reason: "no-session-id",
     });
     expect(
-      claudeSessionProcessHolder("sess-abc", {
+      sessionProcessHolder("sess-abc", {
         listProcPids: () => {
           throw new Error("no /proc");
         },
       }),
     ).toMatchObject({ held: false, reason: "no-proc" });
     expect(
-      claudeSessionProcessHolder("sess-abc", { listProcPids: () => [] }),
+      sessionProcessHolder("sess-abc", { listProcPids: () => [] }),
     ).toMatchObject({ held: false, reason: "scan-empty" });
 
     // Only "clean-scan" is a witness; the other three false results are unknown.
     for (const reason of ["no-session-id", "no-proc", "scan-empty"]) {
       expect(
-        normalizeClaudeResumeLocalLivenessEvidence({
+        normalizeArgvProbeResumeLocalLivenessEvidence({
           agent: "claude",
           liveHost: null,
           processHolder: { held: false, reason },
@@ -9319,7 +9321,7 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
     // A read error on one pid must not make the witness unobtainable on a busy
     // box — that pid is gone, which is the opposite of holding the session.
     expect(
-      claudeSessionProcessHolder("sess-abc", {
+      sessionProcessHolder("sess-abc", {
         ...fakeProc({ pids: [10, 11], cmdlines: { 11: "unrelated" } }),
         selfPid: 99,
       }),
@@ -9328,7 +9330,7 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
 
   it("emits the witness only for a non-fork Claude with both positive oracles", () => {
     expect(
-      normalizeClaudeResumeLocalLivenessEvidence({
+      normalizeArgvProbeResumeLocalLivenessEvidence({
         agent: "claude",
         fork: false,
         forceResume: undefined,
@@ -9356,7 +9358,7 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
       { agent: "claude", liveHost: null, processHolder: null },
       { agent: "claude", liveHost: null, processHolder: [] },
     ]) {
-      expect(normalizeClaudeResumeLocalLivenessEvidence(value)).toBeNull();
+      expect(normalizeArgvProbeResumeLocalLivenessEvidence(value)).toBeNull();
     }
   });
 
@@ -9423,6 +9425,88 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
     });
     expect(calls).toBe(1);
     expect(outcome).toMatchObject({ claimed: false, reason: "http" });
+  });
+
+  it("WI-2142101 — mints the OMP witness off omp_thread_id, kept distinct from claude's", () => {
+    // resumeArgsFor emits `omp -r <ompThreadId>`, so the id IS on the command
+    // line exactly like claude's `--resume <uuid>`; the probe was never
+    // claude-specific, only claude-NAMED.
+    expect(NO_LIVE_OMP_PROCESS_EVIDENCE).toEqual({
+      version: 1,
+      kind: "no-live-omp-process",
+    });
+    expect(
+      normalizeArgvProbeResumeLocalLivenessEvidence({
+        agent: "omp",
+        fork: false,
+        forceResume: undefined,
+        liveHost: null,
+        processHolder: { held: false, reason: "clean-scan" },
+      }),
+    ).toEqual({ version: 1, kind: "no-live-omp-process" });
+
+    // Each backend mints only ITS OWN kind — the server refuses a cross-applied
+    // one, but the launcher must not produce it in the first place.
+    expect(
+      normalizeArgvProbeResumeLocalLivenessEvidence({
+        agent: "claude",
+        liveHost: null,
+        processHolder: { held: false, reason: "clean-scan" },
+      }),
+    ).toEqual({ version: 1, kind: "no-live-claude-process" });
+
+    // codex is deliberately NOT an argv-probe backend: it has a better oracle.
+    expect(
+      normalizeArgvProbeResumeLocalLivenessEvidence({
+        agent: "codex",
+        liveHost: null,
+        processHolder: { held: false, reason: "clean-scan" },
+      }),
+    ).toBeNull();
+  });
+
+  it("reads each backend's id from the column its own resume puts in argv", () => {
+    expect(
+      argvProbeSessionId({ agent: "claude", sessionId: "sess-1", ompThreadId: "thread-1" }),
+    ).toBe("sess-1");
+    expect(
+      argvProbeSessionId({ agent: "omp", sessionId: "sess-1", ompThreadId: "thread-1" }),
+    ).toBe("thread-1");
+    // No id recorded ⇒ psu resumes with `--continue` / `-c`, which names nothing
+    // to scan for, so the probe must get null and fail closed rather than
+    // scanning for an empty string (which matches every process).
+    expect(argvProbeSessionId({ agent: "omp", ompThreadId: null })).toBeNull();
+    expect(argvProbeSessionId({ agent: "claude", sessionId: "" })).toBeNull();
+    expect(argvProbeSessionId({ agent: "codex", sessionId: "sess-1" })).toBeNull();
+    expect(argvProbeSessionId({ agent: null })).toBeNull();
+  });
+
+  it("WI-2142101 — the omp refusal reports the probe instead of asserting an unmade check", () => {
+    const live = { status: "live" } as const;
+    // REGRESSION GUARD. The old omp branch asserted "No live managed-PTY host was
+    // found before this database check" unconditionally — a claim about a check
+    // that had not run. Once claude and codex reported real observations, omp was
+    // the only backend whose message could be false.
+    const notProbed = describeResumeClaimRefusal(live, { agent: "omp" });
+    expect(notProbed).toContain("did not run");
+    expect(notProbed).not.toContain("No live managed-PTY host was found");
+
+    // With a real probe result it reports what was actually observed.
+    expect(
+      describeResumeClaimRefusal(live, {
+        agent: "omp",
+        processHolder: { held: true, pid: 77, reason: "argv-match" },
+      }),
+    ).toContain("pid 77");
+    expect(
+      describeResumeClaimRefusal(live, {
+        agent: "omp",
+        processHolder: { held: false, reason: "no-proc" },
+      }),
+    ).toContain("no-proc");
+
+    // Claude takes the same branch, so the two stay consistent by construction.
+    expect(describeResumeClaimRefusal(live, { agent: "claude" })).toContain("did not run");
   });
 
   it("names a route in the refusal instead of only --fork", () => {
@@ -10061,21 +10145,33 @@ describe("describeResumeClaimRefusal — four causes must not share one sentence
     expect(describeResumeClaimRefusal(live, { agent: "codex" })).toContain(
       "native writer-lock guard",
     );
-    // WI-2141892: with no probe result supplied, claude falls back to the
-    // could-not-determine branch rather than asserting anything about a host it
-    // did not observe. The probe-aware branches are covered in the
-    // "Claude resume local-liveness evidence" block below.
+    // WI-2141892 / WI-2142101: with no probe result supplied, claude and omp both
+    // fall back to the did-not-run branch rather than asserting anything about a
+    // host nothing observed. The probe-aware branches are covered in the
+    // local-liveness blocks below.
     expect(describeResumeClaimRefusal(live, { agent: "claude" })).toContain(
-      "No live managed-PTY host was found",
+      "did not run",
     );
     expect(describeResumeClaimRefusal(live, { agent: "omp" })).toContain(
-      "OMP host/process",
+      "did not run",
     );
-    // Each backend still gets its OWN sentence — the point of this test.
-    const perBackend = (["codex", "claude", "omp"] as const).map((agent) =>
-      describeResumeClaimRefusal(live, { agent }),
+
+    // The grouping that matters is by ORACLE, not by backend name: codex has its
+    // own writer-lock sentence, while claude and omp share the argv-probe branch
+    // because they genuinely share the mechanism. They are then distinguished by
+    // what the probe REPORTED, which is the honest axis.
+    expect(describeResumeClaimRefusal(live, { agent: "codex" })).not.toEqual(
+      describeResumeClaimRefusal(live, { agent: "claude" }),
     );
-    expect(new Set(perBackend).size).toBe(3);
+    const probed = (holder: { held: boolean; pid?: number; reason: string }) =>
+      new Set(
+        (["claude", "omp"] as const).map((agent) =>
+          describeResumeClaimRefusal(live, { agent, processHolder: holder }),
+        ),
+      );
+    expect(probed({ held: true, pid: 9, reason: "argv-match" })).not.toEqual(
+      probed({ held: false, reason: "no-proc" }),
+    );
   });
 
   it("renders a DISTINCT sentence per reason, and surfaces the detail", () => {

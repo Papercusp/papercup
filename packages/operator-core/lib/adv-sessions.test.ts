@@ -314,7 +314,16 @@ describe('Claude resume local-liveness evidence (WI-2141892)', () => {
     expect(ADV_SESSION_LIVENESS_EVIDENCE_AGENT).toEqual({
       'no-live-codex-writer': 'codex',
       'no-live-claude-process': 'claude',
+      'no-live-omp-process': 'omp',
     });
+    // WI-2142101: omp joins on the same terms. claude and omp share one PROBE
+    // (both resumes name the session in argv) but NOT one witness kind — a kind
+    // names the oracle AND the row it may speak for, so sharing a mechanism must
+    // not become sharing an identity.
+    expect(isAdvSessionLocalLivenessEvidence({ version: 1, kind: 'no-live-omp-process' })).toBe(true);
+    expect(advSessionLivenessEvidenceCoversAgent('omp', { version: 1, kind: 'no-live-omp-process' })).toBe(true);
+    expect(advSessionLivenessEvidenceCoversAgent('claude', { version: 1, kind: 'no-live-omp-process' })).toBe(false);
+    expect(advSessionLivenessEvidenceCoversAgent('omp', { version: 1, kind: 'no-live-claude-process' })).toBe(false);
     const claudeWitness = { version: 1, kind: 'no-live-claude-process' };
     const codexWitness = { version: 1, kind: 'no-live-codex-writer' };
     expect(advSessionLivenessEvidenceCoversAgent('claude', claudeWitness)).toBe(true);

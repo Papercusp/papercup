@@ -1161,7 +1161,8 @@ export const RESUME_RESERVATION_LEASE_SEC = 60;
  */
 export type AdvSessionLocalLivenessEvidenceKind =
   | 'no-live-codex-writer'
-  | 'no-live-claude-process';
+  | 'no-live-claude-process'
+  | 'no-live-omp-process';
 
 export type AdvSessionLocalLivenessEvidence = {
   version: 1;
@@ -1174,6 +1175,7 @@ export const ADV_SESSION_LIVENESS_EVIDENCE_AGENT: Readonly<
 > = Object.freeze({
   'no-live-codex-writer': 'codex',
   'no-live-claude-process': 'claude',
+  'no-live-omp-process': 'omp',
 });
 
 /** Strict runtime validation for the local-liveness trust-boundary payload. */
