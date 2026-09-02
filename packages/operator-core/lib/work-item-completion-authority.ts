@@ -437,7 +437,37 @@ export type InsufficientEvidenceReason =
   | 'no-evidence'
   | 'no-verified-how'
   | 'no-test-run-or-result'
-  | 'added-tests-without-path';
+  | 'added-tests-without-path'
+  | 'files-changed-never-existed';
+
+/**
+ * Impurely-derived findings about a completion, computed by the CALLER and handed in.
+ *
+ * P-001 (design-to-code-coverage-seam-2026-09-02) needs the grade to depend on whether
+ * `filesChanged` resolves against the real tree — a question no pure function can answer.
+ * Rather than make {@link insufficientEvidenceReason} async and impure (which would break
+ * every caller AND forfeit the computed-once property this module's shape exists to
+ * guarantee), the impure work stays at the call site and its VERDICT arrives here.
+ *
+ * Every field is optional and absence means "not judged", never "judged clean" — so a
+ * caller that cannot run the probe, or chooses not to, gets exactly today's behaviour.
+ * That is what keeps this fail-open by construction rather than by remembering to be.
+ */
+export interface CompletionEvidenceFindings {
+  /**
+   * Declared `filesChanged` paths proven NEVER to have existed in this tree — absent from
+   * disk AND unknown to git history.
+   *
+   * D-016: this is deliberately NOT "paths that do not exist". Non-existence has three
+   * causes and only one is a defect — the file was FABRICATED, the file was DELETED by
+   * this very change, or the question is unjudgeable (glob, submodule, no repo root, fs
+   * error). Grading on bare absence would penalise honest refactor and cleanup closes
+   * hardest, which is why `unresolvedPathsInCompletion` (complete.ts) is warn-only by
+   * design and stays that way. Git history is the discriminator that separates cause 1
+   * from cause 2, and only cause 1 belongs here.
+   */
+  filesChangedNeverExisted?: readonly string[];
+}
 
 /**
  * WHY the evidence falls short, or `undefined` when it does not.
@@ -454,6 +484,7 @@ export type InsufficientEvidenceReason =
  */
 export function insufficientEvidenceReason(
   evidence: CompletionVerificationEvidence | null | undefined,
+  findings?: CompletionEvidenceFindings,
 ): InsufficientEvidenceReason | undefined {
   if (!evidence) return 'no-evidence';
   if (!evidence.verifiedHow) return 'no-verified-how';
@@ -464,11 +495,23 @@ export function insufficientEvidenceReason(
   if (evidence.addedTests === true && !evidence.filesChanged?.some((f) => f.trim())) {
     return 'added-tests-without-path';
   }
+  // P-001 / D-016. LAST deliberately: the four checks above name a MISSING field, whose
+  // remedy is "supply it". This one names a field that is present and wrong, whose remedy
+  // is "correct it" — so a close failing both should hear about the missing field first,
+  // because supplying it is the cheaper and more basic repair.
+  //
+  // Reaching this line means the caller ran the probe AND it returned a confident verdict.
+  // An unrun or unjudgeable probe leaves `findings` (or the field) undefined and falls
+  // through to `undefined` below — today's grade, unchanged.
+  if (findings?.filesChangedNeverExisted?.length) return 'files-changed-never-existed';
   return undefined;
 }
 
-export function isSufficientEvidence(evidence: CompletionVerificationEvidence | null | undefined): boolean {
-  return insufficientEvidenceReason(evidence) === undefined;
+export function isSufficientEvidence(
+  evidence: CompletionVerificationEvidence | null | undefined,
+  findings?: CompletionEvidenceFindings,
+): boolean {
+  return insufficientEvidenceReason(evidence, findings) === undefined;
 }
 
 /**
@@ -481,6 +524,7 @@ export function isSufficientEvidence(evidence: CompletionVerificationEvidence | 
  */
 export function authorityForCompletion(
   evidence: CompletionVerificationEvidence | null | undefined,
+  findings?: CompletionEvidenceFindings,
 ): Extract<WorkItemCompletionAuthority, 'committed' | 'proposed'> {
-  return isSufficientEvidence(evidence) ? 'committed' : 'proposed';
+  return isSufficientEvidence(evidence, findings) ? 'committed' : 'proposed';
 }
