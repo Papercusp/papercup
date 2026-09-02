@@ -122,6 +122,26 @@ export default defineTool({
       'locks:acquire_resource (a named shared resource — dev server, db schema)',
       'locks:release (drop the lock after committing)',
     ],
+    // EI-21988514956470475: `mode` is the THIRD documented-looking key rejected here
+    // with no pointer to the remedy (after `coordination_domain`, EI-21104703429792156).
+    // `seeAlso` already names both sibling tools, but it is guidance-surface only — the
+    // caller who needs it is on the FAILURE path, where they saw just "this tool accepts
+    // ONLY: …". That reads as "exclusivity is not selectable here", and the filed item
+    // called `mode` "documented" although no doc pairs it with locks:acquire: the shape
+    // comes from locks:acquire_resource, whose `mode: 'exclusive'` appears verbatim in
+    // CLAUDE.md's mutation-probe recipe. Zero prompt weight (argRedirects is excluded
+    // from describeFromGuidance), paid for only on the rejection that needs it.
+    argRedirects: {
+      // A plain string, not a corrective call: the remedy is to DROP the key, not to
+      // switch tools — the caller already picked the right one (recipes:get's `harness`
+      // redirect is the same shape).
+      mode: 'file locks have NO mode — they are ALWAYS exclusive-per-path, so there is nothing for `mode` to select: drop the key and the lock you get IS the exclusive one you were asking for. `mode` belongs to the sibling lock families — locks:acquire_resource { resource, mode: shared|exclusive } for a NAMED resource (dev server, db schema), and locks:acquire_granular { path, mode: IS|IX|S|SIX|X } for a directory/subtree intention lock.',
+      resource: {
+        tool: 'locks:acquire_resource',
+        args: { resource: '<registered resource>', mode: 'exclusive', reason: '<why>' },
+        note: 'locks:acquire takes repo-relative `paths` (files), never a named `resource`. A named resource must be registered first (locks:register_resource) and is listed by locks:list',
+      },
+    },
   },
   capability: 'locks:write',
   // Framework default per-tool timeoutSec is 60s. wait.max_sec can
