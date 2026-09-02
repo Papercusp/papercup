@@ -12,7 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { releaseWorkItem, setWorkItemClaimHold, getWorkItem, commentWorkItem } from '../../work-items';
-import { runBulk, bulkContent } from '../_bulk';
+import { runBulk, bulkContent, bulkEnvelopeSchema } from '../_bulk';
 import {
   assessForceRelease,
   forceRefusalHint,
@@ -313,6 +313,13 @@ export default defineTool({
         }
       }
     }),
+  // The `returns` prose above INTERPRETS this result; the structural shape comes
+  // from here (guidance-output-schema-live-guard). Shared, not hand-rolled: the
+  // handler returns `bulkContent(env)` straight from `runBulk`, so the envelope
+  // is `_bulk`'s to describe — see bulkEnvelopeSchema. Per-item stays open
+  // because this tool spreads delta / stranding / completion / claimHoldFailure /
+  // reasonDisclosure onto each result.
+  result: bulkEnvelopeSchema(),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const list = args.items?.length
