@@ -477,6 +477,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed upstream disposition for packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts: this scheduled routine child is launched under the surrounding durable scheduler/operation, which owns admission, cancellation, and release; adding a second local receipt would double-count the same work.",
   },
   {
+    path: "packages/operator-core/lib/harness/routines/oddsmith-cron-shared.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for packages/operator-core/lib/harness/routines/oddsmith-cron-shared.ts: runBounded is the shared bounded-spawn helper for the oddsmith routine actions (oddsmith-paper-cycle-action.ts, oddsmith-error-triage-autofix-action.ts), so every start it makes is launched under the surrounding durable scheduler/operation, which owns admission, cancellation, and release; the child is awaited, hard-bounded by timeoutMs with SIGTERM then SIGKILL across the whole process group, and leaves no independent resident queue, so adding a second local receipt would double-count the same work.",
+  },
+  {
     path: "packages/operator-core/lib/harness/routines/p2p-perf-actions.ts",
     code: "resource-start-outside-admission",
     disposition: "upstream",

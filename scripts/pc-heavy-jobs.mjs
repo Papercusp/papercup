@@ -387,9 +387,15 @@ export async function main(argv) {
     const jobs = listJobs({ admissionDir }).filter(
       (j) => all || j.status === "live",
     );
+    // `list` is the command that gets piped, and both of its payloads are
+    // data-derived and unbounded (a JSON dump, or one line per job). process.exit()
+    // tears the process down without waiting for a pipe's async stdout write to
+    // flush, so a large list silently arrives truncated to its reader. Returning
+    // instead lets the program end naturally with the same status 0 — the CLI
+    // entry below does not force an exit on success.
     if (flags.json === true) {
       console.log(JSON.stringify(jobs.map(({ record, ...j }) => j), null, 2));
-      process.exit(0);
+      return;
     }
     if (jobs.length === 0) {
       console.log(
@@ -397,11 +403,11 @@ export async function main(argv) {
           ? "pc-heavy-jobs: no admission records found."
           : "pc-heavy-jobs: no live admitted jobs (use --all to see stale records).",
       );
-      process.exit(0);
+      return;
     }
     console.log(`pc-heavy-jobs: ${jobs.length} job(s):`);
     for (const job of jobs) console.log(formatJob(job));
-    process.exit(0);
+    return;
   }
 
   if (cmd === "kill") {
