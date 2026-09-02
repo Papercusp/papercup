@@ -669,6 +669,28 @@ export const OWNER_HEADER = 'x-papercusp-owner';
  * the gateway select/fail over per request. Distinct from clearing the owner route, which restores
  * the launch-time header. `auto` is already reserved by every launcher account-routing contract. */
 export const OWNER_AUTO_ACCOUNT_ROUTE = 'auto';
+/** AUTO-ROUTE SESSION AFFINITY (WI-2140943, 2026-09-02). Anthropic's prompt cache is scoped PER
+ *  ACCOUNT, and an UNPINNED (`--account=auto`) request used to be routed by per-request round-robin —
+ *  so a session's consecutive turns landed on different accounts and RE-CREATED its whole prefix cache
+ *  (billed 1.25× input) instead of READING it (0.1×). Measured 2026-09-02 on a 7-account pool: ~88% of
+ *  input spend was cache CREATE, per-account hit rates 0.45–0.65 where a warm session reads >0.9.
+ *  Fix: an unpinned request whose caller is identifiable (x-papercusp-owner, else the Claude CLI's
+ *  per-session metadata.user_id) is treated as SOFT-pinned to the account that last served that caller
+ *  (within this TTL) — the existing soft-pin failover still yields the moment that account is
+ *  UNSERVICEABLE, and a caller with no prior route still gets the least-loaded health pick.
+ *  Kill-switch PAPERCUSP_GATEWAY_AUTO_AFFINITY=0 restores per-request round-robin. */
+export const AUTO_AFFINITY_ENABLED = process.env.PAPERCUSP_GATEWAY_AUTO_AFFINITY !== '0';
+export const AUTO_AFFINITY_TTL_MS = Number(process.env.PAPERCUSP_GATEWAY_AUTO_AFFINITY_TTL_MS) || 60 * 60 * 1000;
+/** Affinity key for an unpinned request: the coord owner id when the caller sent one, else the Claude
+ *  CLI's `metadata.user_id` — accepted ONLY when it visibly carries a per-SESSION component, so a
+ *  per-user-only id can never collapse every headerless session onto one account. Pure; exported for tests. */
+export function autoAffinityKey(ownerId: string | undefined, metaUserId: unknown): string | undefined {
+  if (ownerId) return ownerId;
+  if (typeof metaUserId === 'string' && metaUserId.length > 0 && metaUserId.length <= 512 && /session/i.test(metaUserId)) {
+    return `meta:${metaUserId}`;
+  }
+  return undefined;
+}
 const ANTHROPIC_VERSION = '2023-06-01';
 
 /** The request's effective priority label: the explicit `x-papercusp-priority` header when present,
@@ -1308,6 +1330,9 @@ export interface GatewayStats {
       string,
       { read: number; create: number; hits: number; misses: number; failoverMisses: number; hitRate: number }
     >;
+    /** AUTO-ROUTE SESSION AFFINITY (WI-2140943): how unpinned requests were routed since boot. `nokey` is
+     *  the population still on per-request round-robin (no owner header, no per-session metadata). */
+    affinity: { hits: number; cold: number; nokey: number; yields: number; enabled: boolean; ttlMs: number };
   };
   /** DURABLE-PATH health (EI-19303809952284205). The gateway's DB-touching side-paths (usage-window
    *  projection, pool reload, rate hints, scale observer) are all fire-and-forget by design, so when
@@ -2800,6 +2825,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const newTally = (): CacheTally => ({ read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0 });
   const cacheByAccount = new Map<string, CacheTally>();
   const cacheTotal = newTally();
+  /** AUTO-ROUTE SESSION AFFINITY counters (WI-2140943), surfaced on /stats `cache.affinity`: `hits` =
+   *  unpinned requests routed to the caller's warm account · `cold` = identifiable caller with no usable
+   *  prior route (first turn / TTL lapsed / account left the pool) · `nokey` = unpinned AND unidentifiable
+   *  (no owner header, no per-session metadata) — the residual per-request round-robin population ·
+   *  `yields` = affinity pins that had to fail over because the warm account was unserviceable. */
+  const autoAffinityTally = { hits: 0, cold: 0, nokey: 0, yields: 0 };
   function recordCacheUsage(
     accountId: string,
     input: number,
@@ -2955,6 +2986,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       failoverMisses: cacheTotal.failoverMisses,
       hitRate: cacheRate(cacheTotal),
       byAccount,
+      affinity: { ...autoAffinityTally, enabled: AUTO_AFFINITY_ENABLED, ttlMs: AUTO_AFFINITY_TTL_MS },
     };
   }
 
@@ -3625,6 +3657,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // generous one (headers only after the full generation). Default false → generous, so an unparseable
     // body never gets the short clip.
     let isStream = false;
+    /** Claude CLI `metadata.user_id` from the body — the auto-affinity fallback key (WI-2140943). */
+    let bodyMetaUserId: string | undefined;
     if (url.startsWith('/v1/messages') && bodyBuf.length) {
       const normalized = normalizeGatewayRequestBody(bodyBuf);
       bodyBuf = normalized.body;
@@ -3644,9 +3678,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
       }
       try {
-        const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string; stream?: boolean };
+        const j = JSON.parse(bodyBuf.toString('utf8')) as {
+          model?: string;
+          stream?: boolean;
+          metadata?: { user_id?: unknown };
+        };
         if (typeof j.model === 'string') model = j.model;
         if (j.stream === true) isStream = true;
+        // Claude CLI per-session caller id — the auto-affinity fallback key when no x-papercusp-owner
+        // header is present (WI-2140943). Read-only; the body is forwarded unchanged.
+        if (typeof j.metadata?.user_id === 'string') bodyMetaUserId = j.metadata.user_id;
         est = estimateTokens(j);
       } catch {
         /* non-JSON body (e.g. a count_tokens variant) — keep defaults */
@@ -3671,7 +3712,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ? undefined
         : dynPin.accountId
       : wantAccountHeader;
-    const pinned = (wantAccount && pool.select?.(wantAccount)) || null;
+    const headerPinned = (wantAccount && pool.select?.(wantAccount)) || null;
+    // AUTO-ROUTE SESSION AFFINITY (WI-2140943, 2026-09-02): an UNPINNED request from an identifiable caller
+    // prefers the account that last served it (`lastRouteByOwner`, written on the served-response chokepoint)
+    // as a SOFT pin, so its per-account prompt cache is READ (0.1×) instead of RE-CREATED (1.25×). Soft ⇒ the
+    // soft-pin failover below still yields the moment that account is UNSERVICEABLE; a caller with no prior
+    // route (or none within AUTO_AFFINITY_TTL_MS, or whose account left the pool) takes the health-aware pick
+    // exactly as before. Never overrides an explicit pin (header / dynamic), and is never HARD.
+    const affinityKey =
+      headerPinned === null && AUTO_AFFINITY_ENABLED ? autoAffinityKey(wantOwner, bodyMetaUserId) : undefined;
+    let affinityPinned: ActiveAccount | null = null;
+    if (affinityKey) {
+      const prior = lastRouteByOwner.get(affinityKey);
+      if (prior && Date.now() - prior.at <= AUTO_AFFINITY_TTL_MS) affinityPinned = pool.select?.(prior.account) ?? null;
+      autoAffinityTally[affinityPinned ? 'hits' : 'cold']++;
+    } else if (headerPinned === null) {
+      autoAffinityTally.nokey++;
+    }
+    const pinned: ActiveAccount | null = headerPinned ?? affinityPinned;
     // HARD PIN (account-hard-pin-2026-06-29): an operator / PSU-utility pin that must NEVER fail over.
     // When set (only honored once the pin resolved to a live pool account), every "cache-affinity yields
     // to liveness/load/stall" branch below is suppressed AND the upstream retry loop never rotates off the
@@ -3679,7 +3737,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // this account and accepts its latency/limits. Soft (bee) pins are unaffected: hardPin stays false for
     // them, so all guards below are no-ops and their behavior is byte-identical to before.
     const hardPin =
-      pinned !== null &&
+      headerPinned !== null &&
       (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
     const poolActive = pool.active();
     // Fault #3 — pinned-but-paced failover. The spawn-side drain selector pins a bee to an account by
@@ -3831,6 +3889,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           );
           active = bestCand;
           gov = bestGov;
+          if (affinityPinned) autoAffinityTally.yields++;
         }
       }
     }
@@ -4022,7 +4081,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (process.env.PAPERCUSP_GATEWAY_ROUTE_LOG === '1') {
       log(
         'info',
-        `gw-route: client=${req.socket?.remotePort ?? '?'} want=${wantAccount ?? '-'} picked=${active.accountId} model=${model}`,
+        `gw-route: client=${req.socket?.remotePort ?? '?'} want=${wantAccount ?? '-'} aff=${affinityPinned ? 'hit' : affinityKey ? 'cold' : headerPinned ? 'pin' : 'nokey'} picked=${active.accountId} model=${model}`,
       );
     }
 
@@ -5014,7 +5073,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     detail: outHeaders[PIN_YIELDED_HEADER],
                   });
                 }
-                recordRoute(wantOwner, metadata.accountId, model);
+                recordRoute(affinityKey ?? wantOwner, metadata.accountId, model);
                 recordOwnerOutcome(
                   wantOwner,
                   status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
@@ -6685,7 +6744,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
       } else {
         try {
           pinnedBearer = (wantAccount && adapter.pool.select?.(wantAccount)) || null;
-          active = pinnedBearer ?? adapter.pool.active();
+          // AUTO-ROUTE SESSION AFFINITY (WI-2140943) — codex parity: an unpinned request from an
+          // identifiable caller prefers the bearer account that last served it (OpenAI's prompt cache is
+          // per-org too). Soft: the kernel's rotate-don't-surface failover still moves off it on a 429.
+          let affinityBearer: ActiveAccount | null = null;
+          if (!pinnedBearer && wantOwner && AUTO_AFFINITY_ENABLED) {
+            const prior = lastRouteByOwner.get(wantOwner);
+            if (prior && Date.now() - prior.at <= AUTO_AFFINITY_TTL_MS) {
+              affinityBearer = adapter.pool.select?.(prior.account) ?? null;
+            }
+            autoAffinityTally[affinityBearer ? 'hits' : 'cold']++;
+          } else if (!pinnedBearer) {
+            autoAffinityTally.nokey++;
+          }
+          active = pinnedBearer ?? affinityBearer ?? adapter.pool.active();
         } catch (e) {
           let selectedId: string | undefined;
           try {
