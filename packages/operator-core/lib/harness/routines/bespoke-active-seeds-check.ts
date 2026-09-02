@@ -97,6 +97,13 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'consult-expiry-sweep', seedScript: 'seed-consult-expiry-routine.ts' },
   { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
+  // WI-2142447. Registered in the SAME change as the action and its seed script, for the
+  // reason the dead-citation-sweep entry below records: an always-on sweep that nobody ever
+  // seeded is exactly the instrument-that-never-fires this registry exists to catch.
+  {
+    name: 'completion-claim-recheck',
+    seedScript: 'seed-completion-claim-recheck-routine.ts',
+  },
   { name: 'coverage-census', seedScript: 'seed-coverage-census-routine.ts' },
   { name: 'cross-hive-outbox-drain', seedScript: 'seed-cross-hive-drain-routine.ts' },
   // EI-21894865709918325. Landed defaulting ACTIVE (its own header: "the always-on
