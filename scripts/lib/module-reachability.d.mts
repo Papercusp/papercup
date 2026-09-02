@@ -63,6 +63,15 @@ export function parseImportSpecifiers(text: string): string[];
  */
 export function parseReleasePathMentions(text: string): string[];
 /**
+ * Workspace-relative `lib/release/**` paths spelled literally in `text` — the npm-script
+ * spelling of an executed entry point. The caller resolves each against the workspace
+ * root; see `WORKSPACE_RELATIVE_MENTION_RE` for why that caller must be a manifest.
+ *
+ * @param {string} text comment-stripped file contents
+ * @returns {string[]} deduplicated workspace-relative paths
+ */
+export function parseWorkspaceRelativeMentions(text: string): string[];
+/**
  * Resolve one specifier to a repo-relative file, or null when it points outside the
  * repo (a node_modules package, a node: builtin).
  *

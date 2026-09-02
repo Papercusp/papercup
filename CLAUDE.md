@@ -304,7 +304,7 @@ This is not a paperwork nicety — it changes outcomes.
 6. **The implementer records the acceptance call.** After reading the independent card, the rubric author re-emits the complete ratings with `acceptance:{ verdict, reasoning }`. The implementer owns the passing bar; there is no universal numeric threshold. A latest `reject` blocks ship until addressed and superseded.
 7. **Ship** — `plans:set-plan-status { slug, status:'shipped' }`; the rubric auto-retires.
 
-`force:{ reason }` on the ship write waives ONLY the four code-truth checks, and permanently marks the plan with every check it waived, who waived it and why. It NEVER waives rubric existence, vetting, independent grading, or the implementer's verdict.
+`force:{ reason }` on the ship write waives ONLY the code-truth checks, and permanently marks the plan with every check it waived, who waived it and why. It NEVER waives rubric existence, vetting, independent grading, or the implementer's verdict.
 
 Do NOT author the acceptance rubric at plan creation or maintain it mid-implementation; it is deliberately authored against as-built reality. Each refusal code names its own repair in the runbook — that, the full payloads and the citation-root rules: [Plan completion — code-truth audit, acceptance grading, and ship verdict](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook). Vetting detail: [Acceptance rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
 

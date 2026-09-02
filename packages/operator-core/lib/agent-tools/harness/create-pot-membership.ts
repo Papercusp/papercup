@@ -1,10 +1,10 @@
 /**
- * resolveCreateHiveMembership — validate a `harness:create { hive }` request and
+ * resolveCreatePotMembership — validate a `harness:create { hive }` request and
  * return the `hive_slug` to stamp on the new harness at CREATE time
  * (shared-hive-federation-2026-06-08, D-010 membership-producer gap, the
  * create-time half).
  *
- * `pot:add-member` (hive/_add-member.ts) makes an EXISTING harness a Hive
+ * `pot:add-member` (pot/_add-member.ts) makes an EXISTING harness a Hive
  * member; this is the complementary producer that lets a NEW harness be born
  * directly into a Hive — the case the harnesses-tab "add into hive" creation
  * fork + the cross-machine member E2E (P-011) need, without a create →
@@ -24,11 +24,11 @@
 import type { HarnessRegistry } from '../../harness-registry';
 import { isPotProject } from '../pot/_resolve';
 
-export type CreateHiveMembershipError = 'hive_not_found' | 'not_a_hive';
+export type CreatePotMembershipError = 'hive_not_found' | 'not_a_hive';
 
-export type CreateHiveMembershipResult =
+export type CreatePotMembershipResult =
   | { ok: true; hive_slug: string }
-  | { ok: false; error: CreateHiveMembershipError; message: string };
+  | { ok: false; error: CreatePotMembershipError; message: string };
 
 /**
  * Resolve the `hive_slug` to set on a harness being created into `potHomeSlug`.
@@ -37,10 +37,10 @@ export type CreateHiveMembershipResult =
  * @param reg          the workspace harness registry (loaded by the caller).
  * @param potHomeSlug the requested Hive home slug (the `hive` create arg).
  */
-export function resolveCreateHiveMembership(
+export function resolveCreatePotMembership(
   reg: HarnessRegistry,
   potHomeSlug: string,
-): CreateHiveMembershipResult {
+): CreatePotMembershipResult {
   const target = reg.projects.find((p) => p.slug === potHomeSlug);
   if (!target) {
     return {

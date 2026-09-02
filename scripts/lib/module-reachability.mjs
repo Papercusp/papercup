@@ -190,6 +190,18 @@ export function parseReleasePathMentions(text) {
   return [...new Set(String(text).match(RELEASE_PATH_MENTION_RE) ?? [])];
 }
 
+/**
+ * Workspace-relative `lib/release/**` paths spelled literally in `text` — the npm-script
+ * spelling of an executed entry point. The caller resolves each against the workspace
+ * root; see `WORKSPACE_RELATIVE_MENTION_RE` for why that caller must be a manifest.
+ *
+ * @param {string} text comment-stripped file contents
+ * @returns {string[]} deduplicated workspace-relative paths
+ */
+export function parseWorkspaceRelativeMentions(text) {
+  return [...new Set(String(text).match(WORKSPACE_RELATIVE_MENTION_RE) ?? [])];
+}
+
 /** Normalize a POSIX-ish path, resolving `.` and `..` segments. */
 function normalizePath(p) {
   const out = [];
@@ -330,6 +342,16 @@ export function buildImportGraph({
 
     for (const mentioned of parseReleasePathMentions(text)) {
       if (fileSet.has(mentioned)) add(pathMentions, mentioned, file);
+    }
+
+    // A manifest's own npm scripts spell detector paths relative to the workspace root,
+    // which for a package.json is exactly its own directory. See
+    // WORKSPACE_RELATIVE_MENTION_RE for why this is restricted to manifests.
+    if (/(?:^|\/)package\.json$/.test(file)) {
+      for (const rel of parseWorkspaceRelativeMentions(text)) {
+        const resolved = normalizePath(`${dirOf(file)}/${rel}`);
+        if (fileSet.has(resolved)) add(pathMentions, resolved, file);
+      }
     }
   }
 

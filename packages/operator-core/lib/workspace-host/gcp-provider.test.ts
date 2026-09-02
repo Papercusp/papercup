@@ -105,16 +105,19 @@ function desired(network: 'managed' | 'existing' = 'managed'): WorkspaceHostDesi
       bootDiskType: 'pd-balanced',
       dataDiskType: 'pd-ssd',
       kmsKeyName: 'projects/papercusp-dev-123/locations/us-central1/keyRings/workspaces/cryptoKeys/workspace-disks',
-      startupScript: '#!/bin/sh\necho papercusp-bootstrap\n',
       metadata: { 'papercusp-bootstrap-version': 'v1' },
     },
   };
 }
 
-function context(provider: Readonly<Record<string, unknown>> = {}): WorkspaceHostProviderContext {
+function context(
+  provider: Readonly<Record<string, unknown>> = {},
+  hostBootstrapScript?: string,
+): WorkspaceHostProviderContext {
   return {
     workspaceId: 'workspace-gcp-1',
     requestId: 'request-gcp-1',
+    ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     connection: {
       target: 'gcp',
       cloudCredentialRef: { kind: 'cloud', ref: 'adc://authorized_user' },
