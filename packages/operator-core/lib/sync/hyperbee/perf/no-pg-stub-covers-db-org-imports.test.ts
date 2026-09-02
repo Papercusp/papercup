@@ -22,11 +22,35 @@
  * import fails HERE, in milliseconds, with the missing name — instead of hours later in the gate
  * as a nameless timeout.
  *
- * SCOPE: `packages/operator-core/lib`, which is the substrate the peer-child boots and the source
- * of the measured break. Over-inclusion is the safe direction — an extra stub binding is inert
+ * SCOPE: `packages/`. Over-inclusion is the safe direction — an extra stub binding is inert
  * (tsx erases type-only imports, and an unused runtime binding is never called), while a missing
  * one is fatal — so this deliberately does not try to narrow the scan to the child's exact
  * transitive graph.
+ *
+ * MEASURED AGAIN (WI-2141194, 2026-09-02): this guard was GREEN AND BLIND while the child was
+ * dying. It scanned only `packages/operator-core/lib`, and its in-scope set was fully covered —
+ * but `packages/agent-mcp/src/auth.ts` binds `getOrgPgListener`, which the stub did not export,
+ * so every peer-child died at link time and `child-driver.test.ts` sat red on the gate with the
+ * same nameless 30s timeout this guard was written to abolish. A guard derived from a scope
+ * NARROWER than the child's real module graph reports a clean bill of health for the exact break
+ * it exists to catch. Widening the root to `packages/` closes that, at ~365 extra files (~3%).
+ *
+ * FALSIFIABILITY of that widening was proven out-of-tree, NOT by watching this test go red: by
+ * the time the scope was widened a peer had already fixed the stub, so the red was no longer
+ * reproducible here. Instead this file's scan logic was replayed in a scratch script against two
+ * stubs — the PRE-FIX one from `git HEAD` (mutant arm) and the fixed one (control). The mutant arm
+ * named exactly the five then-missing killers — `explainOnConflictSkew`, `getOrgPgListener`,
+ * `goalsForPot`, `linkPot`, `unlinkPot`, all in `agent-mcp/src` — and the control arm named none.
+ * That is a RECONSTRUCTION of this assertion, not this assertion executing; re-derive it before
+ * treating the widened scope as load-bearing.
+ *
+ * ON THE ROOT (measured 2026-09-02, not reasoned): scanning every root-package.json workspace
+ * instead of `packages/` adds exactly TWO names — `createInsertSchema` (db-org's own
+ * `schema/zod.ts`) and `restoreRawJsonbSerializer` (an `apps/operator` script) — and both are
+ * already exported, so a workspace-wide root would pass today too. The two roots are therefore
+ * near-equivalent in practice; `packages/` is kept because it is where the child's graph actually
+ * reaches and it excludes db-org's own source on principle. `dist/` is skipped because build
+ * output only duplicates source truth already scanned.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -34,7 +58,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-const OPERATOR_CORE_LIB = fileURLToPath(new URL('../../../', import.meta.url));
+/** `packages/` — see the SCOPE note above for why the root is here and not narrower/wider. */
+const PACKAGES_ROOT = fileURLToPath(new URL('../../../../../', import.meta.url));
 
 /** Every `{ … }` clause bound against '@papercusp/db-org', import or re-export. */
 const DB_ORG_CLAUSE =
@@ -43,7 +68,7 @@ const DB_ORG_CLAUSE =
 function tsFilesUnder(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+    if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.')) continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) out.push(...tsFilesUnder(full));
     else if (entry.name.endsWith('.ts') || entry.name.endsWith('.mts')) out.push(full);
@@ -70,7 +95,7 @@ describe('no-pg-stub covers every @papercusp/db-org named import in the peer-chi
 
     const required = new Map<string, string[]>();
 
-    for (const file of tsFilesUnder(OPERATOR_CORE_LIB)) {
+    for (const file of tsFilesUnder(PACKAGES_ROOT)) {
       const text = readFileSync(file, 'utf8');
       if (!text.includes('@papercusp/db-org')) continue;
       for (const match of text.matchAll(DB_ORG_CLAUSE)) {
@@ -78,7 +103,7 @@ describe('no-pg-stub covers every @papercusp/db-org named import in the peer-chi
           const name = importedName(item);
           if (!name) continue;
           const seen = required.get(name) ?? [];
-          if (seen.length < 3) seen.push(file.slice(OPERATOR_CORE_LIB.length));
+          if (seen.length < 3) seen.push(file.slice(PACKAGES_ROOT.length));
           required.set(name, seen);
         }
       }
