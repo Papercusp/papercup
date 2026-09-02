@@ -966,6 +966,8 @@ export default defineTool({
       'For a foreground command — its output is in the capability:bash result directly. A miss WITH a log tail means the job\'s in-memory tracking is gone while its log survived; three DISTINCT reason codes say what is known, never conflate them. `"tracking_lost_process_alive"` = CONFIRMED running (task-ledger pid re-probe) — do NOT re-run, keep polling. `"job_process_gone"` = CONFIRMED ended (the ledger observed a terminal state) — safe to re-run. `"job_liveness_unknown"` = only a whole-operator restart was ruled out; liveness is UNKNOWN and the job is most often alive but QUEUED behind pc-heavy\'s slot clamp — check `ps` for your command before re-running, or you add load to the very queue that is delaying it.',
     chaining:
       'capability:bash { run_in_background:true } → capability:bash_output { task_id } after carry (or { bash_id } in the launching context) → processes:kill { taskId } to stop early.',
+    returns:
+      'When `tracking_lost` is true, check `output_recoverable`: false means the spill log cannot be found on disk anywhere — the job may still be CONFIRMED alive (see `liveness_proof`), but polling will never return more output and `log_path` is omitted rather than handed back unverified; wait for a terminal status or verify another way instead of expecting a tail.',
     // EI-21543657511391052: `processes:kill`, not capability:bash_kill — the latter is
     // absent from trimmed surfaces (su) and refuses some principals, so it was a dead-end
     // pointer for exactly the callers most likely to need it.
