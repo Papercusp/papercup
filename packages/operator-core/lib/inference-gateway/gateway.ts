@@ -435,6 +435,30 @@ const SERVICEABLE_CLAMP_ON = process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP !==
 export type ServiceableClampMode = 'auto' | 'off';
 const PER_ACCOUNT_ADMISSION = Number(process.env.PAPERCUSP_GATEWAY_PER_ACCOUNT_ADMISSION) || 4;
 const MIN_SERVICEABLE_ADMISSION = Number(process.env.PAPERCUSP_GATEWAY_MIN_ADMISSION) || 2;
+
+/**
+ * How many concurrent admission slots a pool of `accountCount` accounts can actually serve.
+ *
+ * ONE FORMULA, TWO CONSUMERS — do not re-derive it at a call site. It is (a) the
+ * serviceable-clamp RECOMMENDATION published on `GET /stats` as `clamp.recommendation`, and
+ * (b) the COLD-START SEED for the capless admission lifecycle (`launch.ts`).
+ *
+ * WHY (b) EXISTS — measured outage 2026-09-02, WI-2140943. The seed was the hard-coded
+ * `INITIAL_PROVIDER_ADMISSION_WINDOW` (8) no matter how large the pool was, because
+ * `sidecar-main.ts` deliberately passes no `concurrency` under P-010 ("admission concurrency is
+ * learned, never configured"). Learned is right for the LIVE window and wrong for where a cold
+ * lane STARTS: with 7 healthy Claude accounts (recommendation 28) the gateway restarted into a
+ * window of 8, and since AIMD recovery is additive (+1 per N successes) at a rate proportional
+ * to the window itself, climbing back cost hours of fleet-wide queueing. Seeding from real pool
+ * size removes the artificial cold-start bottleneck without reinstating a cap.
+ *
+ * This is a SEED and a RECOMMENDATION — never a maximum. The AIMD still owns the live window and
+ * may grow past this under clean traffic or contract below it under genuine upstream throttling.
+ * P-007 retired the clamp as an admission AUTHORITY and that stays retired.
+ */
+export function serviceableAdmissionFor(accountCount: number): number {
+  return Math.max(MIN_SERVICEABLE_ADMISSION, Math.floor(accountCount) * PER_ACCOUNT_ADMISSION);
+}
 const SERVICEABLE_CLAMP_TICK_MS = Number(process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP_TICK_MS) || 2000;
 const SERVICEABLE_CLAMP_MODEL = process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP_MODEL || 'claude-opus-4';
 /** Max requests allowed to WAIT for an admission slot before the gateway sheds load (429 + retry-after)
@@ -2033,7 +2057,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // productive-capacity formula, so even zero/unknown observations never feed
     // a minimum or maximum into the admission queue.
     if (serviceable == null) return Number.POSITIVE_INFINITY;
-    return Math.max(MIN_SERVICEABLE_ADMISSION, serviceable * PER_ACCOUNT_ADMISSION);
+    return serviceableAdmissionFor(serviceable);
   };
   serviceableAccountsFn = () => serviceableHealthyCount() ?? null;
   // Apply the controller once now that the serviceability observer is wired. The
@@ -8267,6 +8291,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
      */
     const runProviderLaneTask = <TResult>(task: () => Promise<TResult>): Promise<TResult> => {
       stageSpan?.admissionQueued('provider', providerAdmissionObservation());
+      // TELL THE QUEUE WHEN THE CALLER IS GONE (WI-2140943). Without this the admission queue has no
+      // way to learn that a request it is holding has no client left, so an abandoned waiter ages in
+      // place, outranks live traffic, and eventually spends a real slot on nobody — the ratchet that
+      // put 1,206 dead entries in front of the owner's desktop sessions on 2026-09-02.
+      //
+      // `res.on('close')` also fires on NORMAL completion, which is safe here for two independent
+      // reasons: by then the waiter has been admitted, and the queue's abort handler no-ops for any
+      // waiter it can no longer find; plus the `writableEnded` guard skips a cleanly finished
+      // response. Aborting is only ever meaningful while the request is still WAITING.
+      const abandoned = new AbortController();
+      const onCallerGone = () => {
+        if (!res.writableEnded) abandoned.abort();
+      };
+      req.on('aborted', onCallerGone);
+      res.on('close', onCallerGone);
+      const detach = () => {
+        req.off('aborted', onCallerGone);
+        res.off('close', onCallerGone);
+      };
       return admissionQueue.run(
         pri,
         async () => {
@@ -8305,8 +8348,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
           }
         },
-        tier !== undefined ? { tier } : undefined,
-      );
+        { signal: abandoned.signal, ...(tier !== undefined ? { tier } : {}) },
+      ).finally(detach);
     };
     const providerLaneAdmission: GatewayLaneAdmission = {
       run: async (_context, initialTask) => {

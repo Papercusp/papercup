@@ -26,6 +26,7 @@ import {
   createInferenceGateway,
   parseUnifiedWindow,
   parseUnified7dWindow,
+  serviceableAdmissionFor,
   type InferenceGateway,
 } from './gateway';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
@@ -833,12 +834,28 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // The seed matters here only because the priority-tier reserve has to be sized to
   // SOMETHING at construction time; the lifecycle re-sheds and re-grows those caps
   // against each lane's own high-water mark as soon as traffic starts.
+  // SEED FROM REAL POOL SIZE, not a constant (WI-2140943, measured outage 2026-09-02).
+  //
+  // `sidecar-main.ts` passes no `concurrency` on purpose (P-010: admission concurrency is LEARNED,
+  // never configured), so this fell through to the flat `INITIAL_PROVIDER_ADMISSION_WINDOW` of 8 —
+  // for a 1-account pool and a 7-account pool alike. "Learned" is the right policy for the LIVE
+  // window and the wrong one for where a cold lane STARTS: the AIMD's increase is ADDITIVE at a
+  // rate proportional to the window itself, so a cold start far below real capacity takes hours to
+  // climb out of, and every gateway restart re-entered that hole. Measured: 7 healthy Claude
+  // accounts (serviceable recommendation 28) restarting into a window of 8, with ~90 agents plus
+  // the owner's desktop sessions queueing behind it until requests timed out.
+  //
+  // `serviceableAdmissionFor` is the SAME formula already published as `clamp.recommendation` on
+  // GET /stats — previously computed every tick and, per capacity-inventory.ts, "reports and does
+  // not bind". This gives it exactly one binding use: the cold-start seed. It stays a SEED, never a
+  // cap — the capless lifecycle still grows past it under clean traffic and contracts below it
+  // under genuine throttling, so P-007's retirement of the clamp-as-authority is untouched.
   const admissionSeedWindow = Math.max(
     1,
     Math.floor(
       opts.concurrency !== undefined && Number.isFinite(opts.concurrency) && opts.concurrency > 0
         ? opts.concurrency
-        : INITIAL_PROVIDER_ADMISSION_WINDOW,
+        : Math.max(INITIAL_PROVIDER_ADMISSION_WINDOW, serviceableAdmissionFor(accounts.length)),
     ),
   );
   const resolveTiers = async (slots: number, lane: 'Claude' | 'Codex') =>
