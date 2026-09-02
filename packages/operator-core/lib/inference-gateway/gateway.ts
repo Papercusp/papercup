@@ -691,6 +691,61 @@ export function autoAffinityKey(ownerId: string | undefined, metaUserId: unknown
   }
   return undefined;
 }
+
+/** The Claude CLI's NATIVE session id, read from the request body's `metadata.user_id` — a JSON string
+ *  `{"device_id":…,"account_uuid":…,"session_id":"<uuid>"}` (CC 2.1.x; a legacy `…_session_<uuid>`
+ *  suffix form is also accepted). It is the transcript's own id, so a per-owner reading recorded under
+ *  it can be BOUND to one native session by the compaction watchdog: a carry-respawn successor (same
+ *  owner, new native id) never inherits its dead predecessor's usage or window (WI-2140943 lane 2). */
+export function nativeSessionIdFromMetaUserId(metaUserId: unknown): string | null {
+  if (typeof metaUserId !== 'string' || !metaUserId || metaUserId.length > 2048) return null;
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (metaUserId.startsWith('{')) {
+    try {
+      const j = JSON.parse(metaUserId) as { session_id?: unknown };
+      return typeof j.session_id === 'string' && UUID.test(j.session_id) ? j.session_id.toLowerCase() : null;
+    } catch {
+      return null;
+    }
+  }
+  const m = /_session_([0-9a-f-]{36})$/i.exec(metaUserId);
+  return m && UUID.test(m[1]) ? m[1].toLowerCase() : null;
+}
+
+/** Models the gateway will RESTORE the 1M-context beta onto: the `[1m]`-alias targets (the CLI's own
+ *  `opus[1m]`/`sonnet[1m]`/`fable[1m]` resolve to exactly these ids) plus any dated id of those families
+ *  the caller itself was already served at 1M. Deliberately NOT haiku and NOT the sonnet-4.x last-resort
+ *  downgrade target — a beta the model rejects is a 400, no better than the overflow it would prevent. */
+export function supportsContext1m(model: string, priorContext1mModel?: string | null): boolean {
+  if (priorContext1mModel && model === priorContext1mModel) return true;
+  return Object.values(ONE_MILLION_MODEL_ALIASES).includes(model);
+}
+
+/** Below this many (bytes/4-estimated) input tokens a 200k window is not in danger, so a caller that
+ *  dropped its `[1m]` marker on purpose (its own rate-limit fallback) is left alone. Above it the drop
+ *  is lethal — measured 2026-09-02 (da701a71): the CLI fell from `claude-fable-5-1[1m]` to a bare
+ *  `claude-opus-5` after one gateway 429 while holding 248,703 real tokens, and every later turn died
+ *  ("does not support effort level 'xhigh'" on the sonnet downgrade, then "Prompt is too long"). The
+ *  estimate under-reads real usage by ~28% on code-heavy bodies (720KB ⇒ 180k est vs 248,703 real), so
+ *  the floor sits well under 200k. */
+export const CONTEXT_1M_STICKY_MIN_EST_TOKENS = Number(process.env.PAPERCUSP_GATEWAY_CONTEXT_1M_STICKY_MIN_EST) || 120_000;
+
+/** STICKY 1M WINDOW (WI-2140943 lane 2). A caller whose recent requests were served at 1M, now sending
+ *  the same family WITHOUT the marker while carrying a body too large for 200k, gets the beta restored:
+ *  the alternative is a certain "Prompt is too long" that kills the session outright, whereas a 1M
+ *  request that the account cannot serve right now is a 429 the CLI retries. Pure; the caller applies. */
+export function shouldRestoreContext1m(
+  prior: { model: string; context1m: boolean; at: number } | undefined,
+  model: string,
+  estInTok: number,
+  nowMs: number,
+  opts: { ttlMs?: number; minEstTokens?: number } = {},
+): boolean {
+  if (!prior?.context1m) return false;
+  if (nowMs - prior.at > (opts.ttlMs ?? AUTO_AFFINITY_TTL_MS)) return false;
+  if (estInTok < (opts.minEstTokens ?? CONTEXT_1M_STICKY_MIN_EST_TOKENS)) return false;
+  return supportsContext1m(model, prior.model);
+}
 const ANTHROPIC_VERSION = '2023-06-01';
 
 /** The request's effective priority label: the explicit `x-papercusp-priority` header when present,
@@ -2687,9 +2742,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // already strips the routing headers, so the caller never sees the response header directly). Updated on the
   // served-response chokepoint; a bounded Map keyed by ownerId (delete-oldest over the cap). Read-only on
   // GET /admin/route?owner=<id>. Cheap: one Map.set on the hot path.
+  /** Exact per-request input usage read from the upstream `message_start` (WI-2140943 lane 2): the
+   *  real context size the model just held — `inputTotal` = input + cache_read + cache_creation. */
+  interface RouteUsage {
+    inputTotal: number;
+    inputTokens: number;
+    cacheRead: number;
+    cacheCreate: number;
+    at: number;
+  }
   interface RouteEntry {
     account: string;
+    /** The model AS FORWARDED (after `[1m]` normalization and any WI-1073 downgrade) — the SERVED model. */
     model: string;
+    /** Whether the forwarded request carried the 1M-context beta — with `model`, the served WINDOW. */
+    context1m: boolean;
+    /** The caller's native session id from `metadata.user_id` (null for non-CLI callers). */
+    nativeSessionId: string | null;
+    /** Latest exact usage for this route's native session; null until the first `message_start`. */
+    usage: RouteUsage | null;
     at: number;
   }
   const ROUTE_MAP_MAX = 4096;
@@ -2721,13 +2792,38 @@ export function createInferenceGateway(deps: GatewayDeps) {
       windowResetAt7d?: number;
     }
   >();
-  function recordRoute(ownerId: string | undefined, accountId: string, model: string): void {
+  function recordRoute(
+    ownerId: string | undefined,
+    accountId: string,
+    model: string,
+    served: { context1m?: boolean; nativeSessionId?: string | null } = {},
+  ): void {
     if (!ownerId) return; // only identified callers (x-papercusp-owner present) are addressable
-    if (!lastRouteByOwner.has(ownerId) && lastRouteByOwner.size >= ROUTE_MAP_MAX) {
+    const prior = lastRouteByOwner.get(ownerId);
+    if (!prior && lastRouteByOwner.size >= ROUTE_MAP_MAX) {
       const oldest = lastRouteByOwner.keys().next().value; // Map preserves insertion order → oldest first
       if (oldest !== undefined) lastRouteByOwner.delete(oldest);
     }
-    lastRouteByOwner.set(ownerId, { account: accountId, model, at: Date.now() });
+    const nativeSessionId = served.nativeSessionId ?? null;
+    lastRouteByOwner.set(ownerId, {
+      account: accountId,
+      model,
+      context1m: served.context1m ?? false,
+      nativeSessionId,
+      // A usage reading belongs to ONE native session: keep it across requests of the same session
+      // (the next message_start overwrites it), drop it the moment the caller's native id changes.
+      usage: prior && prior.nativeSessionId === nativeSessionId ? prior.usage : null,
+      at: Date.now(),
+    });
+  }
+  /** Attach the exact `message_start` usage to the caller's current route entry (WI-2140943 lane 2).
+   *  The entry is written by `recordRoute` synchronously on the response headers, BEFORE the stream's
+   *  first data event, so this always finds it unless the map evicted it in between (then: no-op). */
+  function recordOwnerUsage(ownerId: string | undefined, usage: Omit<RouteUsage, 'at'>): void {
+    if (!ownerId) return;
+    const e = lastRouteByOwner.get(ownerId);
+    if (!e) return;
+    e.usage = { ...usage, at: Date.now() };
   }
   /** AUTO-ROUTE SESSION AFFINITY (WI-2140943): the account that last served `key`, when it is still a usable
    *  SOFT-pin candidate — remembered within AUTO_AFFINITY_TTL_MS, and NOT from before an explicit dynamic
@@ -2878,7 +2974,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // Attach a bounded, passive 'data' observer that captures the message_start usage then detaches. Runs
   // ALONGSIDE the client pipe (never in it), so it adds zero client-visible latency and can never break the
   // stream (all parsing is wrapped + best-effort).
-  function observeCacheUsage(stream: Readable, accountId: string, didFailover: boolean): void {
+  function observeCacheUsage(
+    stream: Readable,
+    accountId: string,
+    didFailover: boolean,
+    /** The route key (`affinityKey ?? wantOwner`) whose entry receives the exact usage reading. */
+    routeKey?: string,
+  ): void {
     let buf = '';
     let done = false;
     const onData = (chunk: Buffer) => {
@@ -2900,14 +3002,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
               };
             }
           ).message?.usage;
-          if (u)
-            recordCacheUsage(
-              accountId,
-              u.input_tokens ?? 0,
-              u.cache_read_input_tokens ?? 0,
-              u.cache_creation_input_tokens ?? 0,
-              didFailover,
-            );
+          if (u) {
+            const inputTokens = u.input_tokens ?? 0;
+            const cacheRead = u.cache_read_input_tokens ?? 0;
+            const cacheCreate = u.cache_creation_input_tokens ?? 0;
+            recordCacheUsage(accountId, inputTokens, cacheRead, cacheCreate, didFailover);
+            recordOwnerUsage(routeKey, {
+              inputTotal: inputTokens + cacheRead + cacheCreate,
+              inputTokens,
+              cacheRead,
+              cacheCreate,
+            });
+          }
         } catch {
           /* malformed message_start — ignore; never break the stream */
         }
@@ -3717,6 +3823,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     stageSpan?.setModel(model);
     stageSpan?.setStreaming(isStream);
+    /** The caller's native session id — what a per-owner served-route reading is bound to. */
+    const nativeSessionId = nativeSessionIdFromMetaUserId(bodyMetaUserId);
     // Cache-affinity routing (P-002/P-003): a spawn pins its requests to one account via the
     // x-papercusp-account header so its per-credential conversation cache survives; an unknown id
     // (or no header / a single-account pool) falls back to the active account — today's behavior.
@@ -4192,6 +4300,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
       for (const [k, v] of Object.entries(req.headers)) {
         if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
         baseHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
+      }
+      // STICKY 1M WINDOW (WI-2140943 lane 2): the caller was served at 1M moments ago, now asks for a
+      // 1M-capable model WITHOUT the marker while carrying a body a 200k window cannot hold. Forwarding
+      // it as-is is a certain "Prompt is too long" — the CLI's own silent 1M→200k fallback is how
+      // da701a71 died at 248,703 tokens on 2026-09-02. Restore the beta; a 1M request the account
+      // cannot serve right now is a 429 the CLI retries, which is strictly better than a dead session.
+      if (!context1m && url.startsWith('/v1/messages')) {
+        const prior = lastRouteByOwner.get(affinityKey ?? wantOwner ?? '');
+        if (shouldRestoreContext1m(prior, model, est.inTok, Date.now())) {
+          context1m = true;
+          recordOwnerOutcome(wantOwner, 'context_1m_restored', {
+            account: null,
+            detail: `${model} est≈${est.inTok} (prior ${prior?.model}@1M)`,
+          });
+          log(
+            'warn',
+            `inference-gateway: restoring the 1M-context beta for '${wantOwner ?? affinityKey ?? 'unpinned'}' — ` +
+              `request names '${model}' without [1m] at est≈${est.inTok} tokens, but the caller was served ` +
+              `'${prior?.model}' at 1M ${Math.round((Date.now() - (prior?.at ?? 0)) / 1000)}s ago; a 200k ` +
+              `forward would die on "Prompt is too long" (WI-2140943)`,
+          );
+        }
       }
       baseHeaders['anthropic-beta'] = withOAuthBeta(
         baseHeaders['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined),
@@ -5077,7 +5207,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   cacheProbe = new PassThrough();
                   cacheProbe.on('data', () => undefined);
                   cacheProbe.on('error', () => undefined);
-                  observeCacheUsage(cacheProbe, metadata.accountId, attemptsUsed > 1);
+                  observeCacheUsage(cacheProbe, metadata.accountId, attemptsUsed > 1, affinityKey ?? wantOwner);
                 } else if (status === 429 || status === 529) {
                   // The DOMINANT "nothing goes through" exit. Record a stall so the
                   // stall-waker re-wakes an IDENTIFIED bee when this account recovers
@@ -5096,7 +5226,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     detail: outHeaders[PIN_YIELDED_HEADER],
                   });
                 }
-                recordRoute(affinityKey ?? wantOwner, metadata.accountId, model);
+                recordRoute(affinityKey ?? wantOwner, metadata.accountId, model, { context1m, nativeSessionId });
                 recordOwnerOutcome(
                   wantOwner,
                   status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
@@ -5309,7 +5439,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // An absorb that gave up still routed and still owes its outcome
               // record; a downgrade-rung forward never recorded one.
               if (absorbGaveUp) {
-                recordRoute(affinityKey ?? wantOwner, active.accountId, model);
+                recordRoute(affinityKey ?? wantOwner, active.accountId, model, { context1m, nativeSessionId });
                 recordOwnerOutcome(
                   wantOwner,
                   taken.status < 400 ? 'ok' : taken.status === 429 ? 'upstream_429' : 'upstream_error',
@@ -7706,12 +7836,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // session's statusline can show "my turn → <account>". `{account:null}` when that owner hasn't been seen.
       const owner = decodeURIComponent(url.match(/[?&]owner=([^&]+)/)?.[1] ?? '');
       const e = owner ? lastRouteByOwner.get(owner) : undefined;
+      // WI-2140943 lane 2: the SERVED route is also the compaction watchdog's source for the effective
+      // window (`model` + `context1m`) and the exact context size (`usage`) — both bound to
+      // `nativeSessionId` so a successor session never inherits a predecessor's reading.
       sendJson(res, 200, {
         ok: true,
         now: Date.now(),
         owner: owner || null,
         account: e?.account ?? null,
         model: e?.model ?? null,
+        context1m: e?.context1m ?? null,
+        nativeSessionId: e?.nativeSessionId ?? null,
+        usage: e?.usage ?? null,
         at: e?.at ?? null,
       });
       return;
