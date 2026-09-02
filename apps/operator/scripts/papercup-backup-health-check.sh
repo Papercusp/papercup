@@ -290,7 +290,7 @@ top_db_consumers() {
   # so the only safe form is the one that cannot go stale: read it at alert time.
   local sql out
   sql="SELECT round(pg_total_relation_size(c.oid)/1073741824.0,2)||' GiB  '||n.nspname||'.'||c.relname||
-              CASE WHEN COALESCE(pg_total_relation_size(c.reltoastrelid),0) > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824
+              CASE WHEN COALESCE(pg_total_relation_size(c.reltoastrelid),0) > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824::bigint
                         AND COALESCE(s.n_live_tup,0) > 0
                         AND (pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup > ${BACKUP_BLOAT_MIB_PER_ROW}
                    THEN '   <<< LIKELY TOAST BLOAT: '||round(pg_total_relation_size(c.reltoastrelid)/1073741824.0,2)
@@ -304,8 +304,18 @@ top_db_consumers() {
         WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')
         ORDER BY pg_total_relation_size(c.oid) DESC
         LIMIT 6"
+  # 2>&1, deliberately. Sending stderr to /dev/null makes a BROKEN QUERY indistinguishable
+  # from an empty result, so the detector reads as "nothing to report" while being dead.
+  # That is not hypothetical: the first version of this query multiplied two int4 literals
+  # (5*1073741824), overflowed, and returned "ERROR: integer out of range" on every call.
+  # The self-tests still passed, because a silent failure is exactly what they asserted was
+  # safe. A query that cannot run must be LOUD.
   out="$(timeout "${BACKUP_CONSUMERS_TIMEOUT_S}s" sudo -n -u postgres psql \
-           -p "$BACKUP_DB_PORT" -d "$BACKUP_DB_NAME" -tA -c "$sql" 2>/dev/null)" || true
+           -p "$BACKUP_DB_PORT" -d "$BACKUP_DB_NAME" -tA -c "$sql" 2>&1)" || true
+  if printf '%s' "$out" | grep -qE '^(ERROR|FATAL|psql):'; then
+    log "WARN top-consumers query FAILED (the alert will not name a consumer): $(printf '%s' "$out" | head -1)"
+    out=""
+  fi
   if [ -z "$out" ]; then
     echo "  (could not read live relation sizes: psql unavailable, unreachable, or timed out after ${BACKUP_CONSUMERS_TIMEOUT_S}s.
    Read them by hand before blaming anything: SELECT relname, pg_size_pretty(pg_total_relation_size(oid))
@@ -419,13 +429,19 @@ check_db_relation_bloat() {
          JOIN pg_stat_user_tables s ON s.relid = c.oid
         WHERE c.relkind IN ('r','p')
           AND n.nspname NOT IN ('pg_catalog','information_schema')
-          AND COALESCE(pg_total_relation_size(c.reltoastrelid),0) > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824
+          AND COALESCE(pg_total_relation_size(c.reltoastrelid),0) > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824::bigint
           AND s.n_live_tup > 0
           AND (pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup > ${BACKUP_BLOAT_MIB_PER_ROW}
         ORDER BY pg_total_relation_size(c.reltoastrelid) DESC
         LIMIT 5"
+  # 2>&1 for the same reason as top_db_consumers: a detector whose query errors must say
+  # so, not fall silent. A silent detector is indistinguishable from a healthy database.
   bloated="$(timeout "${BACKUP_CONSUMERS_TIMEOUT_S}s" sudo -n -u postgres psql \
-               -p "$BACKUP_DB_PORT" -d "$BACKUP_DB_NAME" -tA -c "$sql" 2>/dev/null)" || true
+               -p "$BACKUP_DB_PORT" -d "$BACKUP_DB_NAME" -tA -c "$sql" 2>&1)" || true
+  if printf '%s' "$bloated" | grep -qE '^(ERROR|FATAL|psql):'; then
+    log "WARN TOAST-bloat query FAILED (this detector is BLIND until fixed): $(printf '%s' "$bloated" | head -1)"
+    bloated=""
+  fi
   red_marker="$STATE_DIR/db-relation-bloat-ei-filed"
   if [ -z "$bloated" ]; then
     # Unreachable and clean are deliberately treated alike: this probe must never
@@ -1081,6 +1097,26 @@ $(trend_seed 7200 10485760)" \
   else
     printf '  FAIL  top_db_consumers with an unreachable database: rc=%s, output=%q\n' \
       "$consumers_rc" "$consumers_out"; f=$((f+1))
+  fi
+
+  # 22. Neither database helper may discard psql's stderr. This guards the class that
+  #     actually bit during development: the first version of the bloat query multiplied
+  #     two int4 literals (5*1073741824), overflowed, and returned "ERROR: integer out of
+  #     range" on EVERY call — but stderr went to /dev/null, so an empty result was
+  #     indistinguishable from a healthy database and the detector was silently dead.
+  #     Tests 19-21 all still passed, because a silent failure is precisely what test 21
+  #     asserts is safe. Only a positive control caught it. So: stderr must be captured
+  #     and screened, and a query that cannot run must log loudly.
+  db_helpers() { awk '/^top_db_consumers\(\)/,/^}/' "$self"; awk '/^check_db_relation_bloat\(\)/,/^}/' "$self"; }
+  # Assert the REDIRECT ITSELF, on the line that carries it. An earlier version of this
+  # test matched /psql.*2>\/dev\/null/ and a mutation probe walked straight past it: the
+  # psql invocation is split across continuation lines, so the word "psql" and the
+  # redirect are never on the same line and a line-based grep can never see both.
+  if [ "$(db_helpers | grep -c -- '-c "\$sql" 2>&1')" -lt 2 ] || \
+     [ "$(db_helpers | grep -c "grep -qE '\^(ERROR|FATAL|psql):'")" -lt 2 ]; then
+    printf '  FAIL  a database helper discards psql stderr or no longer screens for ERROR/FATAL — a failing query would read as a healthy database\n'; f=$((f+1))
+  else
+    printf '  ok    database helpers capture and screen psql errors instead of falling silent\n'; p=$((p+1))
   fi
 
   printf '  ---- %d passed, %d failed (post disk-headroom block)\n' "$p" "$f"
