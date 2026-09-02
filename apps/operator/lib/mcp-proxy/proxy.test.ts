@@ -2549,6 +2549,69 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isCriticalContinuationCall(Buffer.from("{bad json"))).toBe(false);
   });
 
+  it("EI-21564741982937381 — loop:checkpoint's read:true snapshot skips the critical lane but stays reserved", () => {
+    const directRead = Buffer.from(
+      JSON.stringify({
+        method: "tools/call",
+        params: { name: "loop:checkpoint", arguments: { read: true } },
+      }),
+    );
+    expect(isCriticalContinuationCall(directRead)).toBe(false);
+    expect(criticalContinuationToolNames(directRead)).toEqual([]);
+    // The read is excluded from the scarce one-socket critical lane but must not fall all the
+    // way to unreserved ordinary traffic: loop:checkpoint is also RESERVED_CONTROL_PLANE_TOOLS.
+    expect(isReservedControlPlaneCall(directRead)).toBe(true);
+
+    const invokedRead = Buffer.from(
+      JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "loop:checkpoint", args: { read: true } },
+        },
+      }),
+    );
+    expect(isCriticalContinuationCall(invokedRead)).toBe(false);
+    expect(criticalContinuationToolNames(invokedRead)).toEqual([]);
+    expect(isReservedControlPlaneCall(invokedRead)).toBe(true);
+
+    // Exact-shape only: a non-boolean read value, a plain write, and a bare (implicitly
+    // mutating) call must all keep the critical lane unchanged.
+    expect(
+      isCriticalContinuationCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: { name: "loop:checkpoint", arguments: { read: "true" } },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isCriticalContinuationCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "loop:checkpoint",
+              arguments: { checkpoint: "did/left/insight/next" },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isCriticalContinuationCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: { name: "loop:checkpoint" },
+          }),
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it("recognizes PUI identity and psu lifecycle REST paths while leaving the repeating heartbeat unreserved", () => {
     const ordinaryBody = Buffer.from(JSON.stringify({ ownerId: "su-test" }));
     expect(isReservedControlPlanePath("/api/adv/sessions/resumable")).toBe(
@@ -5299,6 +5362,95 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
 
     releaseFirst();
     expect((await first).status).toBe(200);
+  });
+
+  it("EI-22090638969690024: names the holder that head-of-line blocked a dwell shed", async () => {
+    let releaseHolder: () => void = () => {};
+    const holderGate = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    let noteHolderStarted: () => void = () => {};
+    const holderStarted = new Promise<void>((resolve) => {
+      noteHolderStarted = resolve;
+    });
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        if (client === "slow-loop-end") {
+          noteHolderStarted();
+          void holderGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"captured":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 4,
+        improvementsCaptureQueueWaitMs: 25,
+        criticalContinuationQueueWaitLogMs: 10,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    // `loop:end` is non-expiring, so it holds the single durability socket until it answers.
+    const holder = request(
+      port(proxy),
+      body(1, "loop:end"),
+      "/api/mcp?client=slow-loop-end",
+    );
+    await holderStarted;
+
+    // Only `improvements:capture` carries a finite dwell, so it is the one write that can be
+    // shed here — and the shed must attribute itself to the holder, not to queue depth.
+    const capture = request(
+      port(proxy),
+      body(2, "improvements:capture"),
+      "/api/mcp?client=blocked-capture",
+    );
+    await waitFor(() =>
+      logs.some((line) =>
+        line.includes("queued critical-continuation request"),
+      ),
+    );
+
+    const expired = await capture;
+    expect(expired.status).toBe(429);
+    const shed = JSON.parse(expired.body) as {
+      error: string;
+      detail: string;
+      blockedBy?: { tools: string[]; ageMs: number; traceId: string };
+    };
+    expect(shed.error).toBe("mcp_proxy_critical_continuation_queue_dwell");
+    // The FIFO was empty behind this waiter: without the holder identity the shed would read
+    // as "nothing was in the way", which is what made this class look like a broken transport.
+    expect(shed.detail).toContain("0 other waiter(s)");
+    expect(shed.blockedBy?.tools).toEqual(["loop:end"]);
+    expect(shed.blockedBy?.ageMs).toBeGreaterThanOrEqual(0);
+    expect(typeof shed.blockedBy?.traceId).toBe("string");
+    expect(shed.detail).toContain("head-of-line blocked by loop:end");
+
+    releaseHolder();
+    expect((await holder).status).toBe(200);
   });
 
   it("WI-950869: honors an explicit zero improvements:capture dwell override", async () => {

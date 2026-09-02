@@ -1402,6 +1402,24 @@ const RESERVED_CONTROL_PLANE_METHODS = new Set([
 ]);
 const TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
 const COORD_SEND_TOOL_NAME = normalizeMcpName("coord:send");
+// EI-21564741982937381 — loop:checkpoint's own `{ read: true }` mode is a pure snapshot: it
+// writes nothing, so it never needs the single critical-continuation socket's durability
+// guarantee. Routing it through that one-socket bulkhead anyway meant a read could be shed
+// behind an in-flight WRITE checkpoint even though the two never contend for anything real
+// ("proxy critical-continuation class still reported one in-flight request and shed the
+// read"). Excluding only this exact shape leaves every other loop:checkpoint call (the
+// default, mutating one) on the critical lane unchanged; a read still lands on the ordinary
+// RESERVED_CONTROL_PLANE_TOOLS slot (loop:checkpoint is listed there too), so it is not shed
+// merely because it now skips the critical queue.
+const LOOP_CHECKPOINT_TOOL_NAME = normalizeMcpName("loop:checkpoint");
+function isLoopCheckpointReadOnlyContinuationArgs(
+  toolName: string,
+  args: unknown,
+): boolean {
+  if (toolName !== LOOP_CHECKPOINT_TOOL_NAME) return false;
+  if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+  return (args as { read?: unknown }).read === true;
+}
 
 /**
  * Whether the complete JSON-RPC batch is a write-free session handshake. `prepareForward`
@@ -1599,6 +1617,13 @@ function classifyCriticalContinuationCall(
           return false;
         const calledTool = normalizeMcpName(call.params.name);
         if (CRITICAL_CONTINUATION_TOOLS.has(calledTool)) {
+          if (
+            isLoopCheckpointReadOnlyContinuationArgs(
+              calledTool,
+              call.params?.arguments,
+            )
+          )
+            return false;
           tools.push(
             CRITICAL_CONTINUATION_DISPLAY_NAMES.get(calledTool) ?? calledTool,
           );
@@ -1616,6 +1641,13 @@ function classifyCriticalContinuationCall(
         if (typeof target !== "string") return false;
         const normalizedTarget = normalizeMcpName(target);
         if (!CRITICAL_CONTINUATION_TOOLS.has(normalizedTarget)) return false;
+        if (
+          isLoopCheckpointReadOnlyContinuationArgs(
+            normalizedTarget,
+            (invokeArgs as { args?: unknown }).args,
+          )
+        )
+          return false;
         tools.push(
           CRITICAL_CONTINUATION_DISPLAY_NAMES.get(normalizedTarget) ??
             normalizedTarget,
@@ -1905,6 +1937,33 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       if (oldest == null || startedAt < oldest) oldest = startedAt;
     }
     return oldest == null ? null : Math.max(0, now - oldest);
+  };
+
+  /**
+   * EI-22090638969690024 — identity of the request currently HOLDING the single durability
+   * socket. A dwell shed is head-of-line blocking far more often than queue congestion:
+   * measured 2026-09-02T05:55Z, an `improvements:capture` was shed at its 20s dwell while
+   * `queueLength` was 0 and ONE `loop:end` had held the socket for 30s (heartbeat
+   * `oldestAgeMs: 30001`, `admissionClass: "critical-continuation"`). The shed named neither
+   * the holder nor its age, so "0 waiting" read as "nothing was in the way" and a
+   * working-as-designed backpressure signal was filed as a broken transport.
+   */
+  const criticalContinuationBlocker = (
+    now = Date.now(),
+  ): { tools: string[]; ageMs: number; traceId: string } | null => {
+    let oldest: ContinuationRequestDetails | null = null;
+    for (const details of criticalContinuationRequests.values()) {
+      if (oldest == null || details.startedAtMs < oldest.startedAtMs) {
+        oldest = details;
+      }
+    }
+    return oldest == null
+      ? null
+      : {
+          tools: oldest.tools,
+          ageMs: Math.max(0, now - oldest.startedAtMs),
+          traceId: oldest.traceId,
+        };
   };
 
   const recordForwardCompletion = (completedAtMs: number): void => {
@@ -3005,6 +3064,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             } else if (queuedCriticalContinuation.expired && !clientGone) {
               const waitedMs =
                 Date.now() - queuedCriticalContinuation.enqueuedAtMs;
+              // EI-22090638969690024 — name the HOLDER. Without it a shed reporting
+              // `queueLength: 0` is indistinguishable from "the transport dropped my write",
+              // and the honest cause (one slow durability write owning the single socket) is
+              // unrecoverable from the response.
+              const blocker = criticalContinuationBlocker();
+              const blockedByDetail = blocker
+                ? ` — head-of-line blocked by ${blocker.tools.join(",") || "an unnamed continuation"} in flight ${blocker.ageMs}ms (trace ${blocker.traceId})`
+                : " — no continuation was in flight; the slot was released before the retry";
               res.writeHead(429, {
                 "content-type": "application/json",
                 "retry-after": "2",
@@ -3015,9 +3082,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   error: "mcp_proxy_critical_continuation_queue_dwell",
                   retryable: true,
                   forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
-                  detail: `critical-continuation write waited ${waitedMs}ms in the FIFO (max ${queuedCriticalContinuation.maxWaitMs}ms)`,
+                  detail: `critical-continuation write waited ${waitedMs}ms in the FIFO (max ${queuedCriticalContinuation.maxWaitMs}ms, ${criticalContinuationQueueLength()} other waiter(s))${blockedByDetail}`,
                   retryAfterSec: 2,
                   traceId: requestTraceId,
+                  ...(blocker ? { blockedBy: blocker } : {}),
                 }),
               );
               record({
@@ -3031,6 +3099,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 queueLength: criticalContinuationQueueLength(),
                 maxCriticalContinuationQueueWaitMs:
                   queuedCriticalContinuation.maxWaitMs,
+                blockedByTools: blocker?.tools ?? [],
+                blockedByAgeMs: blocker?.ageMs ?? null,
+                blockedByTraceId: blocker?.traceId ?? null,
                 forwardingResult: "not_forwarded",
               });
             }
