@@ -389,4 +389,64 @@ describe('cross-surface liveness parity (P-001)', () => {
     expect(v.sessionState).toBe('recorded');
     expect(v.wakeable).toBe(false);
   });
+
+  it('resolveSessionStates (bare-id hydration) rescues a claims-held holder once agentRole reaches the subject — EI-22177969873560474', async () => {
+    // Regression for the exact call shape gate-ownership.ts's readGateOwnership
+    // and fleet/respawn-member.ts's readMemberSessionState both use: bare
+    // `{ ownerId, claimsHeld }` subjects with `hydratePerId: true` +
+    // `psuHostPositiveAuthority: true`/`psuHostAuthority: true`. Before this
+    // fix, `hydratePerId`'s per-subject store hydration never copied
+    // `agentRole` from the fetched presence row, so `deriveVerdict`'s
+    // `psuHostKnownRole` check (`agentRole != null && agentRole !== 'cup'`)
+    // silently disabled the psu-host rescue leg for EVERY bare-id caller —
+    // even with a confirmed-live psu host — which is exactly how the same
+    // agent read `suspect` from gate-ownership and `parked, wakeable` from
+    // coord:presence (whose own subjects already carry `agentRole` and never
+    // hit this hydration path) at the same instant.
+    const holder = 'su-claim-holder';
+    const hardStaleHeartbeat = iso(PRESENCE_DEAD_MS + 60_000); // > the hardStale ceiling
+    const baseOpts = {
+      hydratePerId: true as const,
+      psuHostPositiveAuthority: true as const,
+      fetchWakeabilityFn: async () => new Map([[holder, { wakeable: true, liveTurn: false }]]),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      probePidFn: () => null, // ambiguous — never an affirmative confirmed-dead
+      findHostFn: (ownerId: string) => (ownerId === holder ? { ownerId } : null),
+    };
+
+    // Pre-fix shape: a hydrated presence row carrying no `agentRole` at all.
+    // The rescue leg must stay a documented no-op here — this is the graceful
+    // degrade the fix's own comment promises, not a second regression.
+    const withoutRole = await resolveSessionStates([{ ownerId: holder, claimsHeld: true }], {
+      ...baseOpts,
+      getPresenceFn: async () => ({
+        heartbeatAt: hardStaleHeartbeat,
+        stale: true,
+        host: 'fixture-host',
+        pid: 20_001,
+        source: 'psu',
+      }),
+    });
+    expect(withoutRole.get(holder)?.sessionState).toBe('suspect');
+
+    // Fixed shape: getPresenceFn's row carries `agentRole`, exactly like the
+    // real coord_presence row already did — `hydratePerId` must now copy it
+    // through so the live psu-host witness can rescue the verdict.
+    const withRole = await resolveSessionStates([{ ownerId: holder, claimsHeld: true }], {
+      ...baseOpts,
+      getPresenceFn: async () => ({
+        heartbeatAt: hardStaleHeartbeat,
+        stale: true,
+        host: 'fixture-host',
+        pid: 20_001,
+        source: 'psu',
+        agentRole: 'su',
+      }),
+    });
+    // Rescued off `suspect` by the live psu-host witness — the same
+    // disagreement gate-ownership vs coord:presence reported for one agent at
+    // one instant is gone once agentRole actually reaches the subject.
+    expect(withRole.get(holder)?.sessionState).not.toBe('suspect');
+    expect(withRole.get(holder)?.sessionState).toBe('draining');
+  });
 });
