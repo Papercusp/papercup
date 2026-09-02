@@ -150,9 +150,15 @@ describe('WI-2003 — incremental merge read-throw recovery (no permanent wedge)
     }
     expect(cursor.positions.get('A') ?? 0).toBe(0);
     expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('WI-2003 quarantine'), expect.anything());
-    // WI-2141796: an unavailable read is REPORTED (once, throttled) and counted
-    // every pass — the retry stayed unbounded, it just stopped being invisible.
-    expect(warnSpy.mock.calls.filter((c) => String(c[0]).includes('read stall'))).toHaveLength(1);
+    // WI-2141796: an unavailable read is REPORTED (throttled on a doubling
+    // schedule — 4 passes announce at 1,2,4) and counted every pass. The retry
+    // stayed unbounded; it just stopped being invisible. Asserted as a RANGE
+    // because this test's contract is "the stall is reported and not quarantined",
+    // not the throttle schedule itself — that is pinned in
+    // read-merge-read-stall.test.ts, which is where a schedule change should fail.
+    const stallLines = warnSpy.mock.calls.filter((c) => String(c[0]).includes('read stall'));
+    expect(stallLines.length).toBeGreaterThan(0);
+    expect(stallLines.length).toBeLessThanOrEqual(4);
     expect(cursor.readStalls?.get('A:0')).toBe(4);
     errSpy.mockRestore();
     warnSpy.mockRestore();
