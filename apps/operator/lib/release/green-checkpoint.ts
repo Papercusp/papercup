@@ -9200,6 +9200,10 @@ async function runGreenCheckpointInner(
           !repairQueue.dispatchReservation
             ? decideFrozenRepairDispatchInfeasible(repairQueue, {
                 nowMs: Date.now(),
+                // WI-2141736: hand the decision the wall's own reset time. Without it every
+                // wall looks momentary, the zero-attempt stall fires after 15 minutes, and a
+                // multi-day wall retires every queue it ever opens.
+                capacityRetryAtMs: dispatch.capacityHold.retryAtMs ?? null,
               })
             : null;
         if (dispatchInfeasible && dispatchInfeasible.kind === "test-candidate") {
@@ -9229,6 +9233,44 @@ async function runGreenCheckpointInner(
               `had already converged past it — testing the converged repairHead instead of the ` +
               `current staging tip`,
           );
+        } else if (dispatchInfeasible && dispatchInfeasible.kind === "wait-for-dispatch-capacity") {
+          // WI-2141736 Layer 2: the wall hasn't persisted long enough yet to treat this
+          // zero-attempt queue as a structural dead end (see decideFrozenRepairDispatchInfeasible).
+          // Hold the frozen candidate exactly like an already-attempted queue's capacity hold
+          // below — no suite run, no verdict recorded, no queue mutation — and let the next
+          // tick re-measure.
+          const summary = frozenRepairCapacityHoldSummary(
+            repairQueue.repairHead,
+            dispatch.capacityHold,
+          );
+          deps.log(
+            dispatchInfeasible.zeroAttemptStalled
+              ? // The LONG-WALL hold: the stall window HAS elapsed, but the measured wall
+                // outlasts it, so retiring would only re-open a queue that hits the same
+                // wall again. Held for agent/human convergence instead, bounded by
+                // convergenceHoldMs. Saying "before this queue is retired" here would be
+                // false — nothing is counting down toward a retire on that window.
+                `${summary} (zero-attempt, HELD FOR CONVERGENCE: the provider wall outlasts the ` +
+                  `${dispatchInfeasible.zeroAttemptStallMs}ms stall window` +
+                  `${
+                    dispatchInfeasible.capacityRetryAtMs
+                      ? ` (retry at ${new Date(dispatchInfeasible.capacityRetryAtMs).toISOString()})`
+                      : ""
+                  }, so the freeze is kept and agent/human convergence is the repair path; ` +
+                  `${dispatchInfeasible.ageMs}ms of ${dispatchInfeasible.convergenceHoldMs}ms ` +
+                  `before the hold gives up and retires)`
+              : `${summary} (zero-attempt, not yet stalled: ${dispatchInfeasible.ageMs}ms of ` +
+                  `${dispatchInfeasible.zeroAttemptStallMs}ms before this queue is retired)`,
+          );
+          return withFossilAbandonment({
+            advanced: false,
+            candidate: repairQueue.repairHead,
+            from: lastReady,
+            green: null,
+            reason: "repair-in-progress",
+            summary,
+            repairQueue,
+          });
         } else if (dispatchInfeasible) {
           const abandonedQueue = repairQueue;
           await deps.writeFrozenRepairQueue?.(null);

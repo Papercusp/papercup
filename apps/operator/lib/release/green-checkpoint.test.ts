@@ -13117,6 +13117,59 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     });
   });
 
+  it("WI-2141736 Layer 2: holds a FRESH unassigned zero-attempt queue instead of retiring on the first wall", async () => {
+    // Falsifiability control for "retires an unassigned zero-attempt queue" above: the ONLY
+    // difference is the queue's age (1 minute old here vs 16 minutes there, straddling the
+    // FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS=15min gate) — a fresh queue must be held, not retired,
+    // on its very first measured capacity wall.
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    let queue: FrozenCandidateRepairQueue | null = {
+      ...unassignedQueue(frozen, ready),
+      attempts: 0,
+      openedAtMs: Date.now() - 60_000,
+      updatedAtMs: Date.now() - 30_000,
+    };
+    const { deps } = stubDeps(true);
+    const cleaned: string[] = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.cleanupFrozenRepairWorktree = async (oldQueue) => {
+      cleaned.push(oldQueue.candidate);
+    };
+    deps.prepareFrozenRepairWorktree = async () => {
+      throw new Error(
+        "dispatch-infeasible-but-not-stalled queue must not prepare a fixer worktree",
+      );
+    };
+    deps.dispatchFrozenRepairFixer = async () => {
+      throw new Error(
+        "dispatch-infeasible-but-not-stalled queue must not launch a fixer",
+      );
+    };
+    deps.checkFixerProviderCapacity = async () => ({
+      ok: false,
+      summary: "all codex accounts are usage-walled",
+      retryAtMs: RESET_AT,
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    // The frozen candidate survives untouched: no worktree cleanup, no queue abandonment.
+    expect(cleaned).toEqual([]);
+    expect(queue).toMatchObject({ candidate: frozen, attempts: 0 });
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate: frozen,
+      green: null,
+      reason: "repair-in-progress",
+    });
+    expect(result.summary).toContain("not yet stalled");
+  });
+
   it("dispatches rather than freezing when the capacity probe itself throws", async () => {
     // Fail OPEN, unlike disk-headroom: an unmeasurable pool must never become a silent,
     // permanent freeze of the repair arm. Guessing wrong here costs one attempt.
