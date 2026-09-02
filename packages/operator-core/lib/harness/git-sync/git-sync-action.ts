@@ -946,6 +946,51 @@ function startLockHeartbeat(
 // git-sync-action suite keeps importing acquireWithContentionRetry from here.
 export { acquireWithContentionRetry } from '../../agent-tools/locks/contention-retry';
 
+/**
+ * WI-2140647: the orphan class documented at {@link gitSyncLockState} — a fire
+ * that acquired a lease and then stopped existing while its host process kept
+ * running (a cancelled/reaped DBOS workflow, or any abort between the acquire
+ * and the `finally` that releases) — is already reclaimed for EXCLUSIVE
+ * holders, but only reactively: the reclaim in the acquire loop below runs
+ * only when a later acquire on the SAME resource is refused `held_exclusive`,
+ * and even then it explicitly skips non-exclusive holders. A SHARED acquire
+ * (the workspace-wide `GIT_SYNC_RESTART_BARRIER_RESOURCE`) almost never gets
+ * refused that way — shared coalesces with shared — so a stale self-owned
+ * SHARED hold is never swept by this process's own later ticks; it just sits
+ * until its `LOCK_TTL_SEC` (600s) expiry. Meanwhile every stale SHARED holder
+ * blocks dev:restart's exclusive drain (its 45s budget) and, once dev:restart
+ * queues, can starve sibling ticks acquiring the same barrier.
+ *
+ * Proactive, unconditional (not gated on a refusal): every SHARED acquire
+ * first sweeps that resource's live holders for ones this same PID owns but
+ * has no in-flight fire for (per {@link isOrphanedSelfOwner}), and releases
+ * them. Releasing also promotes any queued exclusive request on the resource
+ * (`tryReleaseResource` → `promoteResourceExclusiveQueue`), which is what lets
+ * a blocked dev:restart drain actually proceed instead of waiting out the TTL.
+ * Cheap — one indexed SELECT plus, in the common case, zero releases.
+ */
+async function reclaimOrphanedSelfSharedHolds(
+  tx: Parameters<typeof readResourceQueue>[0],
+  coordinationDomain: string,
+  resource: string,
+): Promise<void> {
+  const { holders } = await readResourceQueue(tx, { coordinationDomain, resource });
+  for (const holder of holders) {
+    if (holder.mode !== 'shared' || !isOrphanedSelfOwner(holder.owner)) continue;
+    const released = await tryReleaseResource(tx, {
+      coordinationDomain,
+      owner: holder.owner,
+      lockId: holder.lock_id,
+    }).catch(() => null);
+    if (released && released.released > 0) {
+      console.error(
+        `[git-sync] ORPHANED SELF SHARED-LEASE RECLAIMED — ${resource} holder ${holder.owner} ` +
+          '(this process, but no fire here still holds it)',
+      );
+    }
+  }
+}
+
 /** Acquire `git-sync:<slug>` (auto-registered) + every extra resource exclusively,
  *  or signal held/error (releasing partials). */
 async function acquireLocks(
@@ -965,6 +1010,9 @@ async function acquireLocks(
         // the extras are human-registered, and they are exactly the ones a
         // reader used to mis-resolve to the caller tree (WI-562584).
         await stampWorkspaceDomainKind(tx as SqlTag, slug, resource);
+        // WI-2140647: sweep this SAME resource for orphaned self-owned SHARED
+        // holds before acquiring — see reclaimOrphanedSelfSharedHolds' docstring.
+        if (mode === 'shared') await reclaimOrphanedSelfSharedHolds(tx, cd, resource);
         const purgedOwners = await clearQueuedGitSyncOwners(tx, cd, resource);
         if (purgedOwners.length > 0) {
           console.error(
