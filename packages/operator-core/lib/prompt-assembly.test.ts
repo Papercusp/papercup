@@ -44,6 +44,13 @@ const mockTools: Array<{
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   listAllProjectedTools: () => mockTools,
+  // Admission must answer from the SAME fixture as the tool list above. The real
+  // implementation resolves `lookupByMcpName` against the live registry, so leaving
+  // it unmocked reintroduces exactly the module-load dependency this mock exists to
+  // remove: a fixture tool absent from (or not role-admitted by) the real registry
+  // silently renders without its corrective calls.
+  projectedToolAdmitted: (name: string) =>
+    mockTools.some((candidate) => candidate.expose.mcp.name === name),
   projectedToolCorrectiveCalls: (name: string) => {
     const tool = mockTools.find((candidate) => candidate.expose.mcp.name === name);
     return Object.entries(tool?.guidance?.argRedirects ?? {}).flatMap(([rejectedArg, redirect]) =>
