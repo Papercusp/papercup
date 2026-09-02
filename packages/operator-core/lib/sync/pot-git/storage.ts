@@ -458,7 +458,10 @@ export function isFetchInFlight(repoPath: string): boolean {
 }
 
 /**
- * EI-18745600910177355: reclaim orphaned `index-pack` temp files.
+ * EI-18745600910177355: reclaim orphaned `index-pack` temp files (plus two
+ * other SIGKILL-stranded artifacts of the same failure — see the inline
+ * comments below: WI-6189's `shallow.lock`, and WI-2141452's per-ref
+ * `refs/namespaces/**\/*.lock` files).
  *
  * `git index-pack` (inside `git fetch`) streams an incoming pack to
  * `objects/pack/tmp_pack_XXXXXX` and only renames it to its final
@@ -519,6 +522,59 @@ export async function sweepStalePackTmpFiles(
       }
     } catch {
       // absent (the normal case) or unreadable — nothing to do
+    }
+  }
+
+  // WI-2141452, live-caught on the two-machine rig: the SAME SIGKILL that
+  // strands `shallow.lock` (above) also strands per-ref lock files under
+  // `refs/namespaces/<ns>/refs/**` — `fetchPeerNamespace`'s wildcard refspec
+  // (`+refs/namespaces/<hex>/*:refs/namespaces/<hex>/*`, fetch-transport.ts)
+  // writes potentially many refs in one `git fetch`, and a kill mid-transaction
+  // (idle/absolute ceiling, or the duplex 'error' handler) leaves behind
+  // whichever `<ref>.lock` files git had open — e.g.
+  // `refs/namespaces/<ns>/refs/heads/staging.lock`, `heads/work.lock`,
+  // `rad/sigrefs.lock`, `rad/handoff.lock`. From then on EVERY fetch that would
+  // touch that SPECIFIC ref fails instantly with
+  //   error: cannot lock ref 'refs/namespaces/…': File exists
+  // and nothing else clears it — `git gc` does not touch ref locks, and unlike
+  // `shallow.lock` there is no bound on how many of these can accumulate (one
+  // per ref in the wildcard, per killed rung). Reuses the EXACT SAME gates as
+  // `shallow.lock` on purpose: both are stranded by the same kill, during the
+  // same fetch, so `isFetchInFlight` (never touch a namespace a live fetch
+  // might still be writing) and `shallowLockMaxAgeMs` (no live fetch of ours
+  // can outlive its own ceiling, so anything older is stranded by construction)
+  // apply unchanged — no new parameter, no new caller wiring.
+  if (!isFetchInFlight(repoPath)) {
+    const nsDir = join(repoPath, 'refs', 'namespaces');
+    // No explicit array type here on purpose: `readdir`'s overloads make
+    // `Awaited<ReturnType<typeof readdir>>` resolve to the Buffer-dirent
+    // variant rather than the string one this call actually returns —
+    // inferring from the call (via .catch, mirroring this file's existing
+    // `.catch(() => null)` idiom) sidesteps that mismatch entirely.
+    const nsEntries = await readdir(nsDir, { recursive: true, withFileTypes: true }).catch(() => []);
+    for (const entry of nsEntries) {
+      if (!entry.isFile() || !entry.name.endsWith('.lock')) continue;
+      // Node's recursive readdir gives each dirent the SUBDIRECTORY it was
+      // found in via `parentPath` (not `nsDir` itself) — join is required to
+      // recover the real path; `entry.name` alone would collide across
+      // namespaces/refs sharing a basename (every namespace has its own
+      // `heads/staging.lock`).
+      const parentPath = (entry as { parentPath?: string; path?: string }).parentPath ?? entry.path;
+      const full = join(parentPath, entry.name);
+      try {
+        const st = await stat(full);
+        if (now - st.mtimeMs < shallowLockMaxAgeMs) continue; // possibly still in flight
+        await unlink(full);
+        // Reported relative to repoPath (e.g.
+        // `refs/namespaces/<hex>/refs/heads/staging.lock`) — still ends in
+        // `.lock`, so callers that split on `.endsWith('.lock')` (the
+        // "unwedged" vs "packs" split in git-sync-action.ts's runBootstrapLeg)
+        // classify it correctly with no caller change.
+        removed.push(full.slice(repoPath.length + 1));
+        bytesReclaimed += st.size;
+      } catch {
+        // vanished under us, or unreadable — either way not ours to worry about
+      }
     }
   }
 
