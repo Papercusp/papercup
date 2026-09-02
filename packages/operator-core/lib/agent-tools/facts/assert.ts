@@ -436,7 +436,7 @@ export default defineTool({
     when:
       'A durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "this harness\'s tests need Docker". Scope as narrowly as true: workspace (global), role, owner, harness, or work_item.',
     notWhen:
-      `Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form docs (agent-insights), or fuzzy recall (memory:remember). Body cap ${FACT_BODY_MAX_CHARS} chars; per-scope cap ${FACTS_PER_SCOPE_CAP}. A fact is not a measurement: never pin a changing count/status — store the invariant conclusion plus a pointer to the live source. A moving sample needs measuredAt (subjectVolatile, ≤15-min SNAPSHOT); label history as historical.`,
+      `Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form docs (agent-insights), or fuzzy recall (memory:remember). Body cap ${FACT_BODY_MAX_CHARS} chars; per-scope cap ${FACTS_PER_SCOPE_CAP}. A fact is not a live measurement: never pin a changing count/status — store the invariant conclusion plus where to remeasure. A moving sample needs measuredAt (subjectVolatile, ≤15-min SNAPSHOT); label history as historical.`,
     chaining:
       'facts:list { scope } for what stands (re-assert refreshes, never duplicates); dryRun:true before a saturated write; facts:retract the moment one stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
