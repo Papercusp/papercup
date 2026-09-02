@@ -15,6 +15,7 @@
  */
 
 import { withPlanLock as realWithPlanLock } from '../agent-tools/plans/with-plan-lock';
+import { stampPlanGoalProvenance as realStampPlanGoalProvenance } from '../modes/goal-context';
 import { recordPlanRevision, type PlanSessionRef } from '../agent-tools/plans/revisions';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { SCOUT_DRAFT_LOOP_NOTE } from './feedback-loop-prompt';
@@ -100,9 +101,14 @@ export interface CreateScoutPlanDraftInput {
 export interface ScoutPlanDraftDeps {
   withPlanLock: typeof realWithPlanLock;
   recordPlanRevision?: typeof recordPlanRevision;
+  stampPlanGoalProvenance?: typeof realStampPlanGoalProvenance;
 }
 
-const defaultDeps: ScoutPlanDraftDeps = { withPlanLock: realWithPlanLock, recordPlanRevision };
+const defaultDeps: ScoutPlanDraftDeps = {
+  withPlanLock: realWithPlanLock,
+  recordPlanRevision,
+  stampPlanGoalProvenance: realStampPlanGoalProvenance,
+};
 
 /**
  * Create a DRAFT plan from the Scout loop (system-side). Returns the (dated) slug
@@ -147,6 +153,47 @@ export async function createScoutPlanDraft(
           sessionId: input.revisionSession?.sessionId ?? null,
           sessionKind: input.revisionSession?.sessionKind ?? null,
         });
+
+        // Goal attribution, at the SAME point plans:new stamps it (migration 791,
+        // goal-mode-design-intent-hardening-2026-08-16 P-003). This rail is a THIRD
+        // plan-creation path beside plans:new and plans:launch, and it reached neither
+        // stamp — so every draft routed through `blender:route-idea` landed with
+        // `harness_plans.goal_id` NULL and was invisible on the goal page and
+        // uncountable in goal-scoped stewardship instruments (WI-2142649: 4 of 4
+        // routed origins over 48h). A goal steward whose posture is *route, never
+        // implement* does most of its placement through exactly this rail, so the work
+        // it routes was the work least attributable back to the goal that produced it.
+        //
+        // Fires only on a real create: withPlanLock calls afterWrite only when
+        // `writtenBody !== null`, and the mutator below returns `newBody: null` on the
+        // idempotent already-exists path — so a replayed routine step cannot stamp a
+        // plan it did not author.
+        //
+        // `scope` is the RESOLVED pair withPlanLock actually wrote the row with
+        // (resolvePlanScope collapses a member harness to its pot home). Using
+        // `input.harnessSlug` here would miss pot-scoped plans SILENTLY — a zero-row
+        // UPDATE — the exact trap new.ts and launch.goal-stamp.test.ts both document.
+        //
+        // `ownerId` is the caller's resolved identity, never the `scout:route-idea`
+        // static fallback above: the helper derives the goal from the OWNER's context,
+        // so a system `scout-cycle` step (no revisionIdentity) correctly stamps
+        // nothing rather than attributing a routine's draft to some agent's goal.
+        //
+        // Best-effort BY DESIGN, and swallowed here rather than merely un-awaited: a
+        // plan that was successfully created must not be failed retroactively because
+        // its provenance stamp could not be written, and afterWrite rejecting WOULD
+        // fail it (with-plan-lock.ts awaits this hook). The helper itself writes
+        // `WHERE goal_id IS NULL`, so first attribution still wins.
+        try {
+          await (deps.stampPlanGoalProvenance ?? realStampPlanGoalProvenance)({
+            workspaceId: scope.workspaceId,
+            harnessSlug: scope.harnessSlug,
+            planSlug: slug,
+            ownerId: input.revisionIdentity?.ownerId,
+          });
+        } catch {
+          // provenance is metadata — never fail a created plan on it
+        }
       },
     },
     async (current) => {
