@@ -966,6 +966,12 @@ const KNOWN_FLAGS = [
   "--related",
   "--el-suite",
   "--exclude",
+  // P-009 (design-to-code-coverage-seam-2026-09-02) part (a): the Vitest coverage
+  // passthrough. It is EXTENDED here rather than bypassing the unknown-flag refusal
+  // below, because that refusal is the reason the flag could not simply be appended
+  // to the nightly's `--all --integration` step — see coverageArgsFor() for what it
+  // forwards and, deliberately, what it does not.
+  "--coverage",
 ];
 function editDistance(a, b) {
   const dp = Array.from({ length: a.length + 1 }, (_, i) => [
@@ -1334,10 +1340,16 @@ function formatGuardCommand(guard) {
  * corrupt every name in the gate's own set. `AFFECTED_WS_CMD\t` does not match a
  * `startsWith("AFFECTED_WS\t")` filter, so every existing consumer is unaffected.
  */
-function formatWorkspaceCommand(ws, script) {
-  const argv = ws.standalone
-    ? ["npm", "--prefix", ws.dir, "run", "--silent", script]
-    : ["npm", "run", "--silent", "--workspace", ws.dir, script];
+function formatWorkspaceCommand(ws, script, extraArgs = []) {
+  const argv = [
+    ...(ws.standalone
+      ? ["npm", "--prefix", ws.dir, "run", "--silent", script]
+      : ["npm", "run", "--silent", "--workspace", ws.dir, script]),
+    // P-009 part (a): a task that will be instrumented must PRINT as instrumented.
+    // A printed command that omits a flag the real spawn adds is the same drift
+    // this function's doc-comment exists to prevent, one flag further down.
+    ...(extraArgs.length ? ["--", ...extraArgs] : []),
+  ];
   return argv.map(shellQuote).join(" ");
 }
 
@@ -4025,6 +4037,13 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   tasks.push({
     ws,
     script: guard.script,
+    // P-009 part (a): a repo-wide invariant guard is a NARROW re-run of one lint,
+    // and it writes to the SAME <ws>/coverage directory as that workspace's real
+    // suite. Instrumenting it would let a sub-second guard finish last and clobber
+    // the full run's lcov with a near-empty one — under-reporting coverage, which
+    // the patch gate then reports as uncovered changed lines. A false RED is not a
+    // safer failure than a false green; both are wrong. coverageArgsFor() reads this.
+    isInvariantGuard: true,
     notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating),
     ...(guard.forwardBase
       ? {
@@ -4956,9 +4975,40 @@ const recordLeg = (task, ms) => {
   if (phaseLastEndMs === null || end > phaseLastEndMs) phaseLastEndMs = end;
   taskLegs.push({ name: `${task.ws.name} :: ${task.script}`, ms });
 };
+// ── P-009 part (a): the `--coverage` passthrough ───────────────────────────────
+//
+// Plan design-to-code-coverage-seam-2026-09-02, decision D-028. Until this landed,
+// NOTHING automated ever passed `--coverage`: the shared Vitest provider block in
+// libs/test-config/src/vitest-config.ts was complete and functional but INERT, and
+// this runner hard-rejected the flag, so `--all --integration` could not be fixed by
+// appending it. That is why P-009's stated premise ("fed by the lcov P-007 emits")
+// was false and why the item is three parts — (a) here, (b) scripts/merge-coverage.ts,
+// (c) scripts/patch-coverage.ts.
+//
+// FORWARDED ONLY TO TASKS THAT ACTUALLY RUN VITEST. A workspace script that is a
+// composite shell line (`npm run a && npm run b`, how standalone packages aggregate)
+// receives `-- --coverage` appended to the LAST sub-command only, which is neither
+// what the caller asked for nor detectable from the exit code. Requiring the script
+// text to invoke vitest directly excludes those, and excludes every non-vitest lint
+// guard, instead of producing a partial report nobody can tell is partial.
+const coverageRequested = has("--coverage");
+
+/** Does this workspace script invoke vitest directly (not via a composite line)? */
+function scriptRunsVitestDirectly(scriptText) {
+  return /(^|[\s;&|])vitest(\s|$)/.test(scriptText ?? "");
+}
+
+/** The coverage args to append for ONE task — empty unless `--coverage` applies. */
+function coverageArgsFor(t) {
+  if (!coverageRequested) return [];
+  if (t.isInvariantGuard) return [];
+  return scriptRunsVitestDirectly(t.ws.scripts?.[t.script]) ? ["--coverage"] : [];
+}
+
 const taskContexts = tasks.map((t) => ({
   t,
   isQuarantined: quarantined.has(t.ws.name),
+  coverageArgs: coverageArgsFor(t),
   // EI-11132: when this script declares --passWithNoTests AND the workspace genuinely
   // has matching test files on disk, disable passWithNoTests for THIS task.
   // A guard that diffs git must see the same base this runner used to select it;
@@ -5032,6 +5082,11 @@ function runCapturedTask(
     // gets a distinct identity and can never be replayed as a full-suite pass.)
   } = spawnSpecFor(spawnTask, [
     ...context.guardArgs,
+    // P-009 part (a). Ahead of extraArgs because a targeted retry's extraArgs are
+    // positional FILE paths, and vitest reads anything after them as more paths.
+    // A retry therefore stays instrumented, which is what makes the merged report
+    // describe the run that actually produced the verdicts.
+    ...(context.coverageArgs ?? []),
     ...extraArgs,
     ...(extraArgs.length === 0 ? (spawnTask.relatedFiles ?? []) : []),
   ]);
