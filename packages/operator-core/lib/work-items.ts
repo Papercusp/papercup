@@ -29,6 +29,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { healOrphanedRemoteOriginIfAuthorEnded } from './work-items-orphan-author';
+import { selfHealTerminalOwnerOriginIfStranded } from './work-items-terminal-owner-origin-heal';
 import type { TransactionSql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -1593,6 +1594,14 @@ export {
   healOrphanedRemoteOriginIfAuthorEnded,
   type OrphanAuthorCloseReason,
 } from './work-items-orphan-author';
+// EI-22189521072988065: same LEAF-module rule as the block above, re-exported here
+// so it stays discoverable beside `selfHealAuthorOriginIfStranded` — the sibling
+// stranding for a row whose closer (terminal_owner) is not its original creator.
+export {
+  decideTerminalOwnerOriginHeal,
+  selfHealTerminalOwnerOriginIfStranded,
+  type TerminalOwnerOriginHealReason,
+} from './work-items-terminal-owner-origin-heal';
 import { trackDetached } from './detached-imports';
 
 /**
@@ -3653,6 +3662,22 @@ export async function setWorkItemState(
     // write that follows.
     if (wi.origin === 'remote' && opts.by && wi.createdBy && opts.by === wi.createdBy) {
       const healed = await selfHealAuthorOriginIfStranded(id, opts.by);
+      if (healed) wi.origin = 'local';
+    }
+    // EI-22189521072988065: a THIRD stranding, sibling to the two below — the caller
+    // is not the row's original creator but IS its recorded `terminal_owner`,
+    // re-affirming/upgrading completion evidence on a row that was ALREADY
+    // terminal BEFORE this call (`wasAlreadySettled`, computed from `wi.state` as
+    // read above — never from the requested `state`, so this can never widen into
+    // a fresh-completion bypass). This is exactly the re-send work_items:complete's
+    // own advisory instructs after a content-mismatch `proposed` close; the origin
+    // flip must not revoke the only repair path the close itself named.
+    if (wi.origin === 'remote' && opts.by && wi.terminalOwner && opts.by === wi.terminalOwner) {
+      const healed = await selfHealTerminalOwnerOriginIfStranded(id, opts.by, {
+        origin: wi.origin,
+        wasAlreadySettled: isSettledWorkItemState(wi.state),
+        terminalOwner: wi.terminalOwner,
+      });
       if (healed) wi.origin = 'local';
     }
     // EI-21919769900781478: the OTHER stranding — the recorded author is a different
