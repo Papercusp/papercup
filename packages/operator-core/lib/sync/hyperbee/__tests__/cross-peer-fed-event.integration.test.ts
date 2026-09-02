@@ -66,8 +66,9 @@ afterEach(rigAfterEach);
 // FAITHFUL to migrations 163 + 175 (once/min_sleep_sec/urgency/coalesced_count) +
 // 387 (source) + 533 (payload_filter, EI-8998) + 572 (root_id — registerAwait's
 // exact-one-shot retire path filters on `root_id IS NULL`, so it's load-bearing
-// even though this suite never composes a tree) + 825 (producer_health —
-// registerAwait's INSERT always lists this column, boundTo or not) — the same
+// even though this suite never composes a tree; also superseded_at, filtered by
+// the same retire path) + 825 (producer_health — registerAwait's INSERT always
+// lists this column, boundTo or not) — the same
 // hand-rolled subset store.integration.test.ts stands up (no RLS/grants; a
 // throwaway test DB has no harness_app/harness_zero roles). This is a MINIMAL
 // subset, not a schema mirror: harness_shared.event_awaits carries 34 columns
@@ -85,7 +86,7 @@ const EVENT_AWAITS_DDL = `
     expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
     fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
     once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
-    payload_filter jsonb, root_id bigint, producer_health jsonb
+    payload_filter jsonb, root_id bigint, producer_health jsonb, superseded_at timestamptz
   );
   CREATE TABLE IF NOT EXISTS harness_shared.event_wake_deliveries (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
