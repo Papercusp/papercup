@@ -147,6 +147,44 @@ export async function authorHivePolicy(
  * unknown keys it leaves on the object are preserved + re-signed. Same authority +
  * federation as {@link authorHivePolicy}.
  */
+export type MutateHivePolicyIfChangedResult =
+  | AuthorHivePolicyResult
+  | { ok: true; unchanged: true; policy: ResolvedHivePolicy };
+
+/**
+ * Idempotent variant of {@link mutateHivePolicy} (WI-2039866): read the current signed
+ * policy, derive the next one, and SKIP the re-sign when the canonical JSON is
+ * byte-identical. Every re-sign bumps `policy_version` and federates a policy op to
+ * every peer, so a caller that runs on EVERY BOOT (the canonical-hive share path) must
+ * use this — the tower's policy had reached version 8081 from boot churn alone, one
+ * signed op per restart, each carrying the same bytes.
+ *
+ * Returns `{ ok: true, unchanged: true, policy }` (the CURRENT row) when skipped; the
+ * ordinary {@link AuthorHivePolicyResult} otherwise. A missing current policy always
+ * authors (there is nothing to compare against).
+ */
+export async function mutateHivePolicyIfChanged(
+  input: {
+    workspaceId: string;
+    potHomeSlug: string;
+    mutate: (current: HivePolicy) => HivePolicy;
+  },
+  seams: AuthorHivePolicySeams = {},
+): Promise<MutateHivePolicyIfChangedResult> {
+  const resolveWorkspaceId = seams.resolveWorkspaceId ?? resolveHiveWorkspaceId;
+  const workspaceId = await resolveWorkspaceId(input.workspaceId, input.potHomeSlug);
+  const readCurrent = seams.readCurrent ?? getHivePolicy;
+  const current = await readCurrent(workspaceId, input.potHomeSlug);
+  const nextPolicy = input.mutate(current?.policy ?? {});
+  if (current && canonicalizeHivePolicy(nextPolicy) === current.policyJson) {
+    return { ok: true, unchanged: true, policy: current };
+  }
+  return authorHivePolicy(
+    { workspaceId, potHomeSlug: input.potHomeSlug, policy: nextPolicy },
+    seams,
+  );
+}
+
 export async function mutateHivePolicy(
   input: {
     workspaceId: string;

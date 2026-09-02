@@ -11,7 +11,9 @@ vi.mock('./canonical-hive-team-allowlist', () => ({ CANONICAL_HIVE_TEAM_ALLOWLIS
 
 import {
   adoptSharedHiveIdentity,
+  authorBootPolicy,
   goSharedHive,
+  mergeBootPolicy,
   shareExistingHive,
   type SharedHiveState,
 } from './papercusp-hive-share';
@@ -372,5 +374,88 @@ describe('shareExistingHive (enable-later / re-boot path)', () => {
       setListing,
     });
     expect(setListing).not.toHaveBeenCalled();
+  });
+});
+
+describe('WI-2039866: the boot re-author is a DEFAULTS + allowlist-UNION pass, never a strip', () => {
+  const DESIRED = { membership: 'allowlist' as const, allowlist: ['papercupai'], comms: { defaultTier: 'steer' as const } };
+  const signedRow = (policy: Record<string, unknown>, policyVersion: number) => ({
+    workspaceId: 'ws',
+    potHomeSlug: 'papercusp',
+    policy,
+    // canonical form = sorted keys (hive-policy-schema.canonicalizeHivePolicy)
+    policyJson: JSON.stringify(Object.fromEntries(Object.entries(policy).sort(([a], [b]) => (a < b ? -1 : 1)))),
+    policyVersion,
+    ownerPubkey: 'pk',
+    signature: 'sig',
+    fedHlc: null,
+    updatedAt: 0,
+  });
+
+  it('mergeBootPolicy: owner-added logins survive a boot (union) and every other owner key rides through', () => {
+    const current = {
+      membership: 'allowlist',
+      allowlist: ['papercupai', 'aviynw'],
+      comms: { defaultTier: 'message' },
+      moderation: { bannedGithubIds: ['42'] },
+      rate: { ops: 5 },
+    } as Record<string, unknown>;
+    const next = mergeBootPolicy(current, DESIRED);
+    expect(next.allowlist).toEqual(['papercupai', 'aviynw']); // the tower's live lockout: boot alone wrote ['papercupai']
+    expect(next.comms).toEqual({ defaultTier: 'message' }); // the owner's explicit signed choice wins over the boot default
+    expect(next.moderation).toEqual({ bannedGithubIds: ['42'] });
+    expect(next.rate).toEqual({ ops: 5 });
+    expect(next.membership).toBe('allowlist');
+  });
+
+  it('mergeBootPolicy: fills defaults on an empty current policy (the first-boot shape, byte-identical to the old author)', () => {
+    expect(mergeBootPolicy({}, { ...DESIRED, contentWriteAuthority: 'author-scoped' })).toEqual({
+      membership: 'allowlist',
+      allowlist: ['papercupai'],
+      comms: { defaultTier: 'steer' },
+      contentWriteAuthority: 'author-scoped',
+    });
+    expect(mergeBootPolicy({}, DESIRED)).toEqual({ membership: 'allowlist', allowlist: ['papercupai'], comms: { defaultTier: 'steer' } });
+  });
+
+  it('authorBootPolicy: skips the re-sign when the merged policy is byte-identical (no one-version-per-restart churn)', async () => {
+    const current = signedRow({ allowlist: ['papercupai', 'aviynw'], comms: { defaultTier: 'steer' }, membership: 'allowlist' }, 8082);
+    let signed = 0;
+    const res = await authorBootPolicy(
+      { workspaceId: 'ws', potHomeSlug: 'papercusp', policy: DESIRED },
+      {
+        resolveWorkspaceId: async (w) => w,
+        readCurrent: async () => current,
+        loadOwnerPubkey: async () => 'pk',
+        sign: async () => {
+          signed++;
+          return Buffer.alloc(64);
+        },
+        write: async (i) => ({ ...current, policyJson: i.policyJson, policyVersion: i.policyVersion }),
+      },
+    );
+    expect(res).toMatchObject({ ok: true, unchanged: true, policy: { policyVersion: 8082 } });
+    expect(signed).toBe(0);
+  });
+
+  it('authorBootPolicy: re-signs with the UNION when this boot alone would have stripped a signed login', async () => {
+    const current = signedRow({ allowlist: ['aviynw'], comms: { defaultTier: 'steer' }, membership: 'allowlist' }, 1);
+    let written: string | undefined;
+    const res = await authorBootPolicy(
+      { workspaceId: 'ws', potHomeSlug: 'papercusp', policy: DESIRED },
+      {
+        resolveWorkspaceId: async (w) => w,
+        readCurrent: async () => current,
+        loadOwnerPubkey: async () => 'pk',
+        sign: async () => Buffer.alloc(64),
+        write: async (i) => {
+          written = i.policyJson;
+          return { ...current, policyJson: i.policyJson, policyVersion: i.policyVersion };
+        },
+      },
+    );
+    expect(res.ok).toBe(true);
+    expect(res).not.toHaveProperty('unchanged');
+    expect(JSON.parse(written!)).toEqual({ allowlist: ['papercupai', 'aviynw'], comms: { defaultTier: 'steer' }, membership: 'allowlist' });
   });
 });

@@ -185,27 +185,35 @@ export interface PolicyDecisionDeps {
  *   3. taken-down content          → policy_takendown
  *   4. content rule violated       → policy_content
  * An author-dependent rule with a null author fails CLOSED.
+ *
+ * `ownerExempt` (see the module header): the op comes from the pot OWNER's own
+ * device, so the membership layers (1, 2, and the unresolved-author drop) are
+ * skipped — the owner cannot be banned from, or left off the allowlist of, their
+ * own pot. Layers 3 and 4 still apply.
  */
 export function decidePolicyOp(
   op: OpEnvelope,
   policy: HivePolicy,
   author: AuthorIdentity | null,
   deps?: PolicyDecisionDeps,
+  ownerExempt = false,
 ): PolicyVerdict {
-  if (needsAuthor(policy) && author === null) {
-    return { admit: false, reason: 'policy_unresolved_author' };
-  }
+  if (!ownerExempt) {
+    if (needsAuthor(policy) && author === null) {
+      return { admit: false, reason: 'policy_unresolved_author' };
+    }
 
-  // 1 — ban (every mode). EN-3 `isBannedGithubId` (matches the stable numeric id).
-  if (author !== null && isBannedGithubId(policy, author.githubUserId)) {
-    return { admit: false, reason: 'policy_banned' };
-  }
+    // 1 — ban (every mode). EN-3 `isBannedGithubId` (matches the stable numeric id).
+    if (author !== null && isBannedGithubId(policy, author.githubUserId)) {
+      return { admit: false, reason: 'policy_banned' };
+    }
 
-  // 2 — allowlist mode (EN-3 `isAllowlisted`, case-insensitive login). `approval`
-  // is NOT decided here (the join gate owns it — see the module header).
-  if (policy.membership === 'allowlist') {
-    if (author === null || !isAllowlisted(policy, author.githubUsername)) {
-      return { admit: false, reason: 'policy_not_allowlisted' };
+    // 2 — allowlist mode (EN-3 `isAllowlisted`, case-insensitive login). `approval`
+    // is NOT decided here (the join gate owns it — see the module header).
+    if (policy.membership === 'allowlist') {
+      if (author === null || !isAllowlisted(policy, author.githubUsername)) {
+        return { admit: false, reason: 'policy_not_allowlisted' };
+      }
     }
   }
 
@@ -249,7 +257,20 @@ export interface PolicyEnforcedApplyDeps {
   apply: (op: OpEnvelope) => Promise<boolean>;
   /** Optional EN-3 takedown predicate (P-MOD); wired when `hive-moderation.ts` lands. */
   isContentTakenDown?: (policy: HivePolicy, op: OpEnvelope) => boolean;
-  /** Best-effort drop observer (boot-history / owner GUI). Must not throw. */
+  /**
+   * Owner exemption (module header): is this remote op's source log one of the pot
+   * OWNER's own devices? True ⇒ the membership layers (ban / allowlist / the
+   * unresolved-author drop) are skipped for it. Boot resolves it from the admitted
+   * identity of the source log (device == the vouching owner device on a joiner, or
+   * GitHub identity == the identity this peer itself announces as on the owner box).
+   * Absent ⇒ no exemption (the pre-WI-2039866 behavior).
+   */
+  isOwnerSourceLog?: (sourceLogKeyHex: string, author: AuthorIdentity | null) => boolean;
+  /**
+   * Drop observer. NOT optional in spirit (module header): boot wires it into the
+   * refused-op counters + boot-history so a policy drop is never a silent cursor
+   * advance. Left optional in the type only for hermetic unit tests. Must not throw.
+   */
   onDrop?: (info: PolicyEnforcedDropInfo) => void;
 }
 
@@ -263,7 +284,8 @@ export interface PolicyEnforcedApplyDeps {
 export function makePolicyEnforcedApply(
   deps: PolicyEnforcedApplyDeps,
 ): (op: OpEnvelope) => Promise<boolean> {
-  const { currentPolicy, resolveAuthor, ownLogKeyHex, apply, isContentTakenDown, onDrop } = deps;
+  const { currentPolicy, resolveAuthor, ownLogKeyHex, apply, isContentTakenDown, isOwnerSourceLog, onDrop } =
+    deps;
   const decisionDeps: PolicyDecisionDeps | undefined = isContentTakenDown
     ? { isContentTakenDown }
     : undefined;
@@ -283,7 +305,15 @@ export function makePolicyEnforcedApply(
     if (originOf(op, ownLogKeyHex) === 'local') return apply(op); // own writes never enforced
 
     const author = op.sourceLogKeyHex != null ? resolveAuthor(op.sourceLogKeyHex) : null;
-    const verdict = decidePolicyOp(op, policy, author, decisionDeps);
+    let ownerExempt = false;
+    if (isOwnerSourceLog && op.sourceLogKeyHex != null) {
+      try {
+        ownerExempt = isOwnerSourceLog(op.sourceLogKeyHex, author) === true;
+      } catch {
+        ownerExempt = false; // a resolver fault never widens admission
+      }
+    }
+    const verdict = decidePolicyOp(op, policy, author, decisionDeps, ownerExempt);
     if (!verdict.admit) {
       safeOnDrop({
         reason: verdict.reason,

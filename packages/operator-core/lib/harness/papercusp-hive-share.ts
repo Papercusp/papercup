@@ -35,7 +35,13 @@ import { keychainStore, keychainLoad } from '../identity/keychain';
 import { hiveKeychainId, HIVE_KEYPAIR_SERVICE, loadHiveKeyStatus, type HiveKeyStatus } from '../identity/hive-keypair';
 import { pubkeyBase64FromDer } from '../identity/ed25519';
 import { setHiveListing } from '../hive-set-listing';
-import { authorHivePolicy } from '../hive-policy-author';
+import {
+  mutateHivePolicyIfChanged,
+  type AuthorHivePolicyInput,
+  type AuthorHivePolicySeams,
+  type MutateHivePolicyIfChangedResult,
+} from '../hive-policy-author';
+import type { HivePolicy } from '../hive-policy-schema';
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
 import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import {
@@ -64,7 +70,12 @@ export interface HiveShareDeps {
   storeKey?: (keychainId: string, value: Buffer, service: string) => Promise<unknown>;
   loadKey?: (keychainId: string, service: string) => Promise<{ kind: 'ok'; value: Buffer } | { kind: 'error' }>;
   setListing?: typeof setHiveListing;
-  authorPolicy?: typeof authorHivePolicy;
+  /** The policy writer. Default: {@link authorBootPolicy} — a DEFAULTS + allowlist-UNION
+   *  pass over the current signed policy that skips the re-sign when nothing changed
+   *  (WI-2039866). Tests inject a capture; it receives the DESIRED boot policy. */
+  authorPolicy?: (input: AuthorHivePolicyInput) => Promise<MutateHivePolicyIfChangedResult>;
+  /** Seams for the default {@link authorBootPolicy} (read-current / sign / write). */
+  policySeams?: AuthorHivePolicySeams;
   randomSecret?: () => string;
   /** The canonical invite secret baked into the public build (so every one of the
    *  owner's devices announces on the SAME invite topic that fresh installs listen on
@@ -133,6 +144,68 @@ export async function adoptSharedHiveIdentity(deps: HiveShareDeps = {}): Promise
 }
 
 /**
+ * The boot-time DESIRED policy keys (what {@link goSharedHive} computes each boot).
+ */
+// A type alias (not an interface) so it is assignable to `HivePolicy`'s open record.
+export type BootPolicyDesired = {
+  membership: 'open' | 'approval' | 'allowlist';
+  allowlist: string[];
+  contentWriteAuthority?: 'author-scoped';
+  comms: { defaultTier: 'steer' };
+};
+
+/**
+ * Merge the boot-time desired keys over the CURRENT signed policy (pure). WI-2039866:
+ * the old path REPLACED the whole signed policy on every boot with whatever this boot
+ * could compute, which (a) stripped every allowlist entry the owner had added through
+ * the API — on the tower the gh-CLI login (papercupai) differs from the identity the
+ * owner's devices are attested under (aviynw), so each restart re-authored an allowlist
+ * that excluded the owner's own devices and both legs of the tower↔VM rig went dark —
+ * and (b) wiped every other owner-authored key (bans, rate caps, comms tweaks). Boot is
+ * a DEFAULTS pass, not the owner's control surface:
+ *   - `allowlist` is the UNION of what this boot computes and what is already signed;
+ *     boot never removes a login (removal is an explicit API/UI act).
+ *   - `membership` / `comms` / `contentWriteAuthority` are filled in only when the
+ *     current policy does not already state them.
+ *   - every other key rides through untouched.
+ */
+export function mergeBootPolicy(current: HivePolicy, desired: BootPolicyDesired): HivePolicy {
+  const signed = Array.isArray(current.allowlist)
+    ? current.allowlist.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    : [];
+  const next: HivePolicy = {
+    ...current,
+    membership: current.membership ?? desired.membership,
+    allowlist: Array.from(new Set([...desired.allowlist, ...signed])),
+    comms: current.comms ?? desired.comms,
+  };
+  if (next.contentWriteAuthority === undefined) {
+    if (desired.contentWriteAuthority) next.contentWriteAuthority = desired.contentWriteAuthority;
+    else delete next.contentWriteAuthority;
+  }
+  return next;
+}
+
+/**
+ * The default boot policy writer: {@link mergeBootPolicy} over the current signed row,
+ * re-signed ONLY when the canonical bytes change (no more one-version-per-restart churn).
+ */
+export async function authorBootPolicy(
+  input: AuthorHivePolicyInput,
+  seams: AuthorHivePolicySeams = {},
+): Promise<MutateHivePolicyIfChangedResult> {
+  const desired = input.policy as unknown as BootPolicyDesired;
+  return mutateHivePolicyIfChanged(
+    {
+      workspaceId: input.workspaceId,
+      potHomeSlug: input.potHomeSlug,
+      mutate: (current) => mergeBootPolicy(current, desired),
+    },
+    seams,
+  );
+}
+
+/**
  * AFTER the hive is created + homed: publish the identity gist (first device only),
  * then announce (invite) + set the owner-only allowlist policy. No-op when `state`
  * is null. Best-effort; never throws.
@@ -143,7 +216,8 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
   const publishIdentity = deps.publishIdentity ?? publishOwnerHiveIdentity;
   const loadKey = deps.loadKey ?? ((id, service) => keychainLoad(id, service));
   const setListing = deps.setListing ?? setHiveListing;
-  const authorPolicy = deps.authorPolicy ?? authorHivePolicy;
+  const authorPolicy =
+    deps.authorPolicy ?? ((input: AuthorHivePolicyInput) => authorBootPolicy(input, deps.policySeams));
   const randomSecret = deps.randomSecret ?? (() => randomBytes(32).toString('hex'));
   const canonicalSecret = deps.canonicalSecret ?? (() => bakedCanonicalHiveInvite()?.inviteSecret ?? null);
   const derivePubkey = deps.derivePubkey ?? pubkeyBase64FromDer;
@@ -199,21 +273,25 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
     // private allowlist/approval hive keeps the owner+team gate and 'member' writes (today).
     const contentWriteAuthority =
       deps.contentWriteAuthority ?? (membershipMode === 'open' ? 'author-scoped' : 'member');
+    // What THIS boot can compute. The default writer (authorBootPolicy) merges it OVER
+    // the current signed policy — union on the allowlist, fill-in-defaults elsewhere —
+    // so a boot can only ever ADD admission, never strip what the owner signed (WI-2039866).
+    const desired: BootPolicyDesired = {
+      membership: membershipMode,
+      // The allowlist is only consulted under 'allowlist' mode, but we always carry the owner+team
+      // set so flipping modes later doesn't lose it; it is inert under 'open'/'approval'.
+      allowlist: Array.from(new Set([state.githubLogin, ...teamAllowlist])),
+      ...(contentWriteAuthority === 'author-scoped' ? { contentWriteAuthority } : {}),
+      // P-013 (cross-machine-coord-parity-and-trust-2026-07-01): the per-owner
+      // dogfood hive is the SAME human's devices — full comms parity by default
+      // (steer). Without this, the conservative fallback ('message') would
+      // suppress cross-machine wakes between the owner's own machines.
+      comms: { defaultTier: 'steer' },
+    };
     await authorPolicy({
       workspaceId: PAPERCUSP_WORKSPACE_ID,
       potHomeSlug: PAPERCUSP_HIVE_SLUG,
-      policy: {
-        membership: membershipMode,
-        // The allowlist is only consulted under 'allowlist' mode, but we always carry the owner+team
-        // set so flipping modes later doesn't lose it; it is inert under 'open'/'approval'.
-        allowlist: Array.from(new Set([state.githubLogin, ...teamAllowlist])),
-        ...(contentWriteAuthority === 'author-scoped' ? { contentWriteAuthority } : {}),
-        // P-013 (cross-machine-coord-parity-and-trust-2026-07-01): the per-owner
-        // dogfood hive is the SAME human's devices — full comms parity by default
-        // (steer). Without this, the conservative fallback ('message') would
-        // suppress cross-machine wakes between the owner's own machines.
-        comms: { defaultTier: 'steer' },
-      },
+      policy: desired,
     });
   } catch {
     // best-effort — a failed announce / policy author retries on the next boot.

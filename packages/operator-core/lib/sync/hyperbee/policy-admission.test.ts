@@ -192,3 +192,62 @@ describe('makePolicyEnforcedApply — the applyImpl decorator', () => {
     expect(h.writes.length).toBe(1);
   });
 });
+
+describe('owner exemption (WI-2039866) — the pot owner is never locked out of their own pot', () => {
+  // The exact live shape that darkened the tower↔VM rig: an allowlist the owner's
+  // boot re-author wrote WITHOUT the login the owner's own devices are attested under.
+  const ALLOWLIST_WITHOUT_OWNER: HivePolicy = { membership: 'allowlist', allowlist: ['teammate'] };
+  const OWNER: AuthorIdentity = { githubUserId: 7, githubUsername: 'owner' };
+
+  it('decidePolicyOp: ownerExempt skips ban / allowlist / the unresolved-author drop', () => {
+    // controls — the same inputs WITHOUT the exemption still drop
+    expect(decidePolicyOp(op(), ALLOWLIST_WITHOUT_OWNER, OWNER)).toEqual({ admit: false, reason: 'policy_not_allowlisted' });
+    expect(decidePolicyOp(op(), ALLOWLIST_WITHOUT_OWNER, null)).toEqual({ admit: false, reason: 'policy_unresolved_author' });
+    const banned: HivePolicy = { moderation: { bannedGithubIds: ['7'] } };
+    expect(decidePolicyOp(op(), banned, OWNER)).toEqual({ admit: false, reason: 'policy_banned' });
+    // exempt
+    expect(decidePolicyOp(op(), ALLOWLIST_WITHOUT_OWNER, OWNER, undefined, true)).toEqual({ admit: true });
+    expect(decidePolicyOp(op(), ALLOWLIST_WITHOUT_OWNER, null, undefined, true)).toEqual({ admit: true });
+    expect(decidePolicyOp(op(), banned, OWNER, undefined, true)).toEqual({ admit: true });
+  });
+
+  it('decidePolicyOp: ownerExempt does NOT skip takedown or content rules', () => {
+    const policy: HivePolicy = { membership: 'allowlist', allowlist: [], content: { maxPayloadBytes: 1 } };
+    expect(decidePolicyOp(op(), policy, OWNER, undefined, true)).toEqual({ admit: false, reason: 'policy_content' });
+    const takedown = { isContentTakenDown: () => true };
+    expect(decidePolicyOp(op(), ALLOWLIST_WITHOUT_OWNER, OWNER, takedown, true)).toEqual({ admit: false, reason: 'policy_takendown' });
+  });
+
+  it('makePolicyEnforcedApply: isOwnerSourceLog admits an unlisted owner-device op with NO onDrop; a stranger still drops', async () => {
+    const writes: OpEnvelope[] = [];
+    const drops: string[] = [];
+    const apply = makePolicyEnforcedApply({
+      currentPolicy: () => ALLOWLIST_WITHOUT_OWNER,
+      resolveAuthor: (k) => (k === 'owner-device-log' ? OWNER : { githubUserId: 99, githubUsername: 'stranger' }),
+      ownLogKeyHex: OWN,
+      isOwnerSourceLog: (k) => k === 'owner-device-log',
+      apply: async (o) => {
+        writes.push(o);
+        return true;
+      },
+      onDrop: (i) => drops.push(i.reason),
+    });
+    expect(await apply(op({ sourceLogKeyHex: 'owner-device-log' }))).toBe(true);
+    expect(await apply(op({ sourceLogKeyHex: 'stranger-log' }))).toBe(false);
+    expect(writes.length).toBe(1);
+    expect(drops).toEqual(['policy_not_allowlisted']);
+  });
+
+  it('makePolicyEnforcedApply: a throwing isOwnerSourceLog never widens admission', async () => {
+    const apply = makePolicyEnforcedApply({
+      currentPolicy: () => ALLOWLIST_WITHOUT_OWNER,
+      resolveAuthor: () => OWNER,
+      ownLogKeyHex: OWN,
+      isOwnerSourceLog: () => {
+        throw new Error('resolver fault');
+      },
+      apply: async () => true,
+    });
+    expect(await apply(op())).toBe(false);
+  });
+});

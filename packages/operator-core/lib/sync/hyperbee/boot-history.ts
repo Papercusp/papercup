@@ -134,6 +134,11 @@ export type BootHistoryKind =
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'
+  // WI-2039866: a REMOTE op the EN-4 owner-policy seam dropped (policy-admission.ts
+  // makePolicyEnforcedApply onDrop) — reason + author + table, deduped per merge pass.
+  // Before this kind existed such drops were invisible: the merge cursor advanced,
+  // "replication live" read green, and the tower↔VM rig sat dark for weeks.
+  | 'policy_drop'
   // WI-1662: recorded alongside 'announce_rejected' when the rejection reason is
   // SPECIFICALLY clock skew (stale_ts) rather than a bad/forged signature — see the
   // doc comment above.
