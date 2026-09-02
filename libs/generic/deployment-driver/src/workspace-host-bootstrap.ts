@@ -768,6 +768,12 @@ export function buildWorkspaceHostBootstrap(
     assignment("SERVICE_USER", serviceUser),
     assignment("SERVICE_GROUP", serviceGroup),
     assignment("WORKSPACE_USER", workspaceUser),
+    // Base64 so the key material cannot interact with shell quoting, and so a comment
+    // containing spaces or quotes round-trips byte-for-byte into authorized_keys.
+    assignment(
+      "WORKSPACE_AUTHORIZED_KEYS_B64",
+      base64(`${workspaceAuthorizedKeys.join("\n")}\n`),
+    ),
     assignment("WORKSPACE_GROUP", workspaceGroup),
     assignment("RUNTIME_ROOT", WORKSPACE_HOST_RUNTIME_ROOT),
     assignment("STATE_ROOT", WORKSPACE_HOST_STATE_ROOT),

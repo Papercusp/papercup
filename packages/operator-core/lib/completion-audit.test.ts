@@ -46,6 +46,10 @@ import {
 } from './completion-audit';
 import { WORK_ITEM_COMPLETION_AUTHORITIES } from './work-item-completion-authority';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
+import {
+  COMPLETION_CLAIM_RECHECK_KEY,
+  COMPLETION_CLAIM_RECHECK_REGRESSED,
+} from './completion-claim-recheck';
 
 /**
  * A postgres.js-shaped tagged template that records the SQL text + bound params
@@ -279,6 +283,40 @@ describe('completion-audit predicates (EI-10867)', () => {
       const plain = frag(auditPredicateSql(recordingSql(), 'reconciler-sourced'));
       const aliased = frag(auditPredicateSqlFor(recordingSql(), 'reconciler-sourced', 'ei'));
       expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+    });
+  });
+
+  /**
+   * WI-2142447 — the one bucket whose finding is NOT decidable from the row. Re-evaluating
+   * an AST claim is not expressible as a WHERE clause, and the finding is a TRANSITION that
+   * even a perfect view of the current tree could not distinguish from a claim that was
+   * already false at close. So the sweep judges in process and STAMPS the row, and this
+   * predicate selects that stamp.
+   */
+  describe("'claim-since-falsified' selects the sweep's stamp (WI-2142447)", () => {
+    it('reads the recheck key, not the close evidence the sweep must never mutate', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'claim-since-falsified'));
+      expect(f.text).toContain(COMPLETION_CLAIM_RECHECK_KEY);
+      expect(f.text).toContain("->>'verdict'");
+      expect(f.text).not.toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
+    });
+
+    it('matches the SAME constant the sweep writes — not a re-typed string literal', () => {
+      // A predicate keyed on a value nothing writes returns zero rows forever, with no
+      // error. This is the pairing that stops the read and the write drifting apart.
+      const f = frag(auditPredicateSql(recordingSql(), 'claim-since-falsified'));
+      expect(f.params).toEqual([COMPLETION_CLAIM_RECHECK_REGRESSED]);
+    });
+
+    it('the aliased form matches the unaliased twin (modulo alias)', () => {
+      const plain = frag(auditPredicateSql(recordingSql(), 'claim-since-falsified'));
+      const aliased = frag(auditPredicateSqlFor(recordingSql(), 'claim-since-falsified', 'ei'));
+      expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+      expect(aliased.params).toEqual(plain.params);
+    });
+
+    it('is a TERMINAL-scope bucket — an open row has no close whose claims could go stale', () => {
+      expect(auditStateScope('claim-since-falsified')).toBe('terminal');
     });
   });
 
