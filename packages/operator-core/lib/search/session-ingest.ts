@@ -52,7 +52,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
-import { blockPayloadText, codexToolCallArgsRaw } from '../transcript-wire';
+import { blockPayloadText, codexToolCallArgsRaw, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../transcript-wire';
 import { classifyRecordedTurn, OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
 import {
   MACHINE_SURFACE_CATALOGUE_VERSION,
@@ -226,8 +226,10 @@ const BOILERPLATE_PREFIXES = [
 
 /** Re-exported for back-compat — the definition moved to transcript-wire.ts
  *  (EI-22171324436610992) so turn-provenance/turn-ref.ts can share it too
- *  without a circular import (this module already imports FROM turn-ref.ts). */
-export { CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../transcript-wire';
+ *  without a circular import (this module already imports FROM turn-ref.ts).
+ *  Re-exporting the IMPORTED binding (not `export … from`) so it's also
+ *  bound locally for use inside this file's own parseClaudeLine, below. */
+export { CLAUDE_OWNER_DIALOG_RESULT_PREFIXES };
 
 /** Exported for the archive fall-through reader (session-archive-read.ts,
  *  P-009): archived bytes are VERBATIM, so anything surfaced to agents must
