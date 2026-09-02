@@ -229,19 +229,18 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
       -- WI-971 gap 1 fixture (mig 140 real DDL shape, trimmed to the columns the
       -- backfill's SELECT / to_jsonb touch — fed_key is the GENERATED key column the
       -- live capture trigger (mig 145) also keys on).
-      CREATE TABLE harness_shared.plan_item_assignments (
-        workspace_id     TEXT NOT NULL,
-        harness_slug     TEXT NOT NULL,
-        plan_slug        TEXT NOT NULL,
-        item_id          TEXT NOT NULL,
-        assignee_name    TEXT,
-        assigned_by_user TEXT,
-        origin           TEXT NOT NULL DEFAULT 'local',
-        fed_ts           BIGINT,
-        fed_hlc          TEXT,
-        fed_key          TEXT GENERATED ALWAYS AS ((plan_slug || ':') || item_id) STORED,
-        PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
-      );
+      --
+      -- COMPOSE, do not re-CREATE — same WI-3192 collision the harness_plans block
+      -- above records, recurring on a new table. HARNESS_FEATURES_CONSOLIDATED_DDL
+      -- (applied just above) gained its own plan_item_assignments in
+      -- EI-22040912157347872, so a bare CREATE TABLE here 42P07s
+      -- ("relation already exists") inside this one multi-statement unsafe() block.
+      -- That throws in beforeAll, which Vitest reports as 14 SKIPPED tests and a
+      -- failed FILE — a silently dead suite, not a visible failure. It supplies
+      -- every column except fed_ts/fed_hlc, so add exactly those two.
+      ALTER TABLE harness_shared.plan_item_assignments
+        ADD COLUMN IF NOT EXISTS fed_ts  BIGINT,
+        ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
       -- engineer_issues is the unified ei compat VIEW (created by the helper above); the
       -- backfill's issue block reads it + derives the federation slug from scope (operator
       -- resolves via hives).
@@ -585,7 +584,18 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     // An UNSTAMPED local row (fed_hlc NULL) — pre-federation baseline, no stamp.
     await seedFeature(db.sql, 'F-UNSTAMPED');
 
-    const res = await backfillLocalState(fakeHandle(), db.sql, { now: BOOT });
+    // WI-2141185: `resyncFederated` is REQUIRED to reach this behaviour now, and no
+    // assertion below is relaxed — the guard is routed, not weakened. A STAMPED row
+    // has fed_ts set, and the default predicate deliberately skips already-federated
+    // rows, so re-sending one is exactly what resyncFederated means. That makes this
+    // invariant MORE load-bearing than before, not less: a deliberate re-anchor is
+    // now the only way a stamped row goes back on the wire, so it is the only
+    // remaining path that could re-stamp an old row with a later clock and clobber a
+    // newer peer under LWW — the WI-1433 bug this test exists to catch.
+    const res = await backfillLocalState(fakeHandle(), db.sql, {
+      now: BOOT,
+      resyncFederated: true,
+    });
     expect(res.skipped).toBe(false);
 
     const rows = await outboxRows(db.sql);
