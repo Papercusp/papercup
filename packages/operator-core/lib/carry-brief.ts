@@ -31,6 +31,7 @@ import { ANY_FAMILY_TERMINAL_STATES, FEATURE_TERMINAL_STATES } from './work-item
 import {
   getLoopCarryNoteWithMeta,
   renderCheckLine,
+  shortCarryHash,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
   type CheckEntry,
@@ -1317,6 +1318,64 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
   }
   parts.push('drop resolved tool output and superseded state');
   return cap(parts.join('; ') + '.', max);
+}
+
+/** {@link unverifiedFocusRefs}'s findings: WI-/EI-/F- ids and 12-hex carry-note
+ *  short-hashes (shortCarryHash format) named in a text that do NOT correspond
+ *  to anything in the owner's own brief. */
+export interface UnverifiedFocusRefs {
+  workItemIds: string[];
+  carryHashes: string[];
+}
+
+const FOCUS_WORK_ITEM_ID_RE = /\b(?:WI|EI|F)-\d+\b/g;
+const FOCUS_CARRY_HASH_RE = /\(([0-9a-f]{8,16})\)/g;
+
+/**
+ * EI-22131227584499489: `focus` / `continueNote` are free text an agent writes
+ * itself (session:request-compaction's `args.focus`/`args.continueNote`) —
+ * nothing previously verified the text actually named the CALLING owner's own
+ * state before it became a confident "resume: <text>" instruction handed to
+ * its successor. Observed: a judge-role successor's first prompt named another
+ * live owner's held work-item (WI-2140920) and loop carry-note short-hash,
+ * apparently carried over from ambient context (a broadcast / memory-search
+ * hit) the judge session read but never held. This scans `text` for WI-/EI-/
+ * F-NNN ids and parenthesized 8-16 hex carry-note hashes and reports any that
+ * are NOT in `brief.heldItems` / do not match `brief.loop`'s own carry-note
+ * hash. `renderCarryBriefFocus`'s OWN output is always self-consistent by
+ * construction (it only ever names ids drawn FROM `brief`, and never prints a
+ * hash literal), so this never false-positives against the system-derived
+ * default focus — it exists for the caller-supplied path, where nothing else
+ * validates the free text before it ships.
+ */
+export function unverifiedFocusRefs(text: string, brief: CarryBrief | null): UnverifiedFocusRefs {
+  const heldIds = new Set((brief?.heldItems ?? []).map((h) => h.id));
+  const ownHash = brief?.loop?.carryNote ? shortCarryHash(brief.loop.carryNote) : null;
+  const workItemIds = Array.from(new Set(text.match(FOCUS_WORK_ITEM_ID_RE) ?? [])).filter(
+    (id) => !heldIds.has(id),
+  );
+  const carryHashes = Array.from(
+    new Set(Array.from(text.matchAll(FOCUS_CARRY_HASH_RE), (m) => m[1])),
+  ).filter((h) => h !== ownHash);
+  return { workItemIds, carryHashes };
+}
+
+/** Render {@link unverifiedFocusRefs}'s findings as a standalone warning line,
+ *  or '' when nothing was flagged (the overwhelmingly common case — safe to
+ *  call unconditionally). Fail-open by design: a false positive (e.g. the
+ *  owner citing a WI it just completed) only ADDS a "verify before acting"
+ *  caution, never blocks or rewrites the caller's text. */
+export function renderFocusIntegrityWarning(refs: UnverifiedFocusRefs): string {
+  if (refs.workItemIds.length === 0 && refs.carryHashes.length === 0) return '';
+  const named = [...refs.workItemIds, ...refs.carryHashes.map((h) => `carry-note ${h}`)].join(', ');
+  return (
+    `⚠ FOCUS INTEGRITY: this focus/continuation text names ${named}, which do NOT appear ` +
+    'among your own held work-items or your own loop carry-note (checked against THIS ' +
+    "owner's brief at request time). It may have been copied from a broadcast, another " +
+    'owner\'s carry state, or ambient context rather than reflecting what you actually ' +
+    'hold — verify (coord:presence / work_items:get) before acting on it; do not claim or ' +
+    'progress any work-item it names on trust alone.'
+  );
 }
 
 export interface RenderCarryBriefColdExtrasOpts {

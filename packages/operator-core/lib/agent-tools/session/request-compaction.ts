@@ -52,6 +52,7 @@ import {
   type PriorLoopFacts,
 } from '../../harness/routines/loop';
 import { getLoopCarryNoteWithMeta, setLoopCarryNoteWithPrior, shortCarryHash } from '../../carry-note';
+import { renderFocusIntegrityWarning, unverifiedFocusRefs } from '../../carry-brief';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../coordination/compaction-recovery';
 import {
   readLiveNativeBgTasks,
@@ -675,11 +676,21 @@ export default defineTool({
     const firstPrompt =
       spec.firstPrompt ??
       (() => {
+        // EI-22131227584499489: `focus`/`continueNote` are free text the
+        // CALLING owner wrote itself — nothing else verifies it actually names
+        // that owner's own state before it becomes a confident "resume: <text>"
+        // instruction. Flag a WI-/EI-/F- id or carry-note hash this owner does
+        // not itself hold (fail-open: a hit only PREPENDS a caution, never
+        // rewrites or blocks the caller's text).
+        const integrityWarning = renderFocusIntegrityWarning(
+          unverifiedFocusRefs([focus, args.continueNote ?? ''].join('\n'), brief),
+        );
+        const rawNote = (args.continueNote ?? defaultContinueNote(focus)).trim();
         // WI-2140968: address the note to the owner it was written for BEFORE
         // tagging, so the line is inside the payload the ledger hashes and
         // travels with the text down whichever path delivers it.
         const note = addressContinuationToOwner(
-          (args.continueNote ?? defaultContinueNote(focus)).trim(),
+          integrityWarning ? `${integrityWarning}\n\n${rawNote}` : rawNote,
           identity.ownerId,
         );
         try {
