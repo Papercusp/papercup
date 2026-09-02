@@ -249,16 +249,28 @@ export function getNextContentionResult(error: OrgTxnTimeoutError): {
   error: 'timeout';
   retryable: true;
   pgCode: string;
+  timeoutSource: 'pg' | 'caller-budget';
   message: string;
 } {
+  // EI-21831306274538775: `pgCode: '57014'` here does NOT prove PostgreSQL timed out. The
+  // claim ladder SYNTHESIZES the same typed error when its own wall-clock budget expires,
+  // so that an abandoned claim can never be misread as "nothing matched" — deliberate, but
+  // it made the two causes indistinguishable to whoever triages the result. This item was
+  // filed as reproduced PG contention on the strength of that code alone, pointing triage
+  // at the connection pool for a budget that ran out inside the scheduler. Both remain
+  // retryable and keep the same code; they no longer claim the same cause.
+  const callerBudget = error.timeoutSource === 'caller-budget';
   return {
     ok: false,
     error: 'timeout',
     retryable: true,
     pgCode: error.pgCode,
-    message:
-      `scheduler:get_next claim hit transient PostgreSQL contention (${error.pgCode}): ${error.message}. ` +
-      'Retry now; the failed transaction was rolled back and no claim was returned.',
+    timeoutSource: error.timeoutSource,
+    message: callerBudget
+      ? `scheduler:get_next abandoned its claim after exhausting the scheduler's OWN budget (reported as ${error.pgCode}; PostgreSQL did not time out): ${error.message}. ` +
+        'Retry now; no claim was returned. Repeated occurrences point at claim-ladder cost or backlog shape — NOT at PG pool saturation.'
+      : `scheduler:get_next claim hit transient PostgreSQL contention (${error.pgCode}): ${error.message}. ` +
+        'Retry now; the failed transaction was rolled back and no claim was returned.',
   };
 }
 

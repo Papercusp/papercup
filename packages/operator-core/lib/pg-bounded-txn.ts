@@ -58,16 +58,42 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 export class OrgTxnTimeoutError extends Error {
   readonly pgCode: string;
   readonly blockerHint?: string;
-  constructor(pgCode: string, cause: unknown, blockerHint?: string) {
+  /**
+   * EI-21831306274538775 — did PostgreSQL actually raise this SQLSTATE (`'pg'`), or did a
+   * caller SYNTHESIZE the same typed error to report exhausting its own wall-clock budget
+   * (`'caller-budget'`)?
+   *
+   * Callers deliberately synthesize a 57014 so an expired budget cannot be mistaken for
+   * "nothing matched" — correct, but it left the two causes INDISTINGUISHABLE downstream
+   * while the message asserted "the database stalled", which for a synthesized one is
+   * simply untrue. Measured cost: `scheduler:get_next`'s claim ladder raises exactly this,
+   * and the resulting `pgCode: '57014'` was reported twice as reproduced PostgreSQL
+   * contention — sending triage to the connection pool for a budget that ran out inside the
+   * scheduler. A retryable-timeout contract for the caller does not require lying about
+   * which clock expired.
+   *
+   * Defaults to `'pg'` so every existing raise site keeps its meaning; only a caller that
+   * knows it is synthesizing passes `'caller-budget'`.
+   */
+  readonly timeoutSource: 'pg' | 'caller-budget';
+  constructor(
+    pgCode: string,
+    cause: unknown,
+    blockerHint?: string,
+    timeoutSource: 'pg' | 'caller-budget' = 'pg',
+  ) {
     const base =
-      pgCode === '55P03'
-        ? 'operator write timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly'
-        : 'operator write exceeded its time budget (pg 57014 statement_timeout) — the database stalled; retry shortly';
+      timeoutSource === 'caller-budget'
+        ? `operator write was abandoned after exceeding the CALLER's own time budget (reported as pg ${pgCode} so it is never mistaken for "nothing matched"; PostgreSQL itself did not time out) — retry shortly`
+        : pgCode === '55P03'
+          ? 'operator write timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly'
+          : 'operator write exceeded its time budget (pg 57014 statement_timeout) — the database stalled; retry shortly';
     super(blockerHint ? `${base} — ${blockerHint}` : base);
     this.name = 'OrgTxnTimeoutError';
     this.pgCode = pgCode;
     this.cause = cause;
     this.blockerHint = blockerHint;
+    this.timeoutSource = timeoutSource;
   }
 }
 

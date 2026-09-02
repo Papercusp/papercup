@@ -2788,7 +2788,12 @@ export async function getNextWorkItem(
     if (remainingMs <= 0) {
       // The budget is gone. Report it as the same typed contention error a per-statement
       // timeout raises — the caller must never mistake this for "nothing matched".
-      throw new OrgTxnTimeoutError('57014', new Error('claim ladder budget exhausted'));
+      throw new OrgTxnTimeoutError(
+        '57014',
+        new Error('claim ladder budget exhausted'),
+        'the scheduler claim ladder ran out of its own wall-clock budget',
+        'caller-budget',
+      );
     }
     const rows = await boundedOrgTxn(
       async (tx) => {
@@ -2930,7 +2935,12 @@ export async function getNextWorkItem(
     // rescued (JS cannot cancel an in-flight postgres-js query). Tracked separately — see the
     // residual noted on this item; do not read this line as the issue-family path being bounded.
     if (Date.now() >= ladderDeadline) {
-      throw new OrgTxnTimeoutError('57014', new Error('claim ladder budget exhausted before tier 3'));
+      throw new OrgTxnTimeoutError(
+        '57014',
+        new Error('claim ladder budget exhausted before tier 3'),
+        'the scheduler claim ladder ran out of its own wall-clock budget before tier 3',
+        'caller-budget',
+      );
     }
     const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
     // EI-19497592871345016: thread the spec's compiled RANK down too, not just its filter.
