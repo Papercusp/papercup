@@ -249,6 +249,10 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     upgrade: false,
     repair: true,
     confirmedDestroy: true,
+    // P-030: the AWS launch path does not yet attach a controller-rendered bootstrap. Declaring
+    // false keeps the controller from rendering (and fail-closed refusing) for a provider that
+    // would discard the result; flip it in the same change that consumes hostBootstrapScript.
+    hostBootstrap: false,
   },
   transportKinds: AWS_WORKSPACE_HOST_TRANSPORTS,
   constraints: [

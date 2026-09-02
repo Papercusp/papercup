@@ -146,6 +146,17 @@ export interface WorkspaceHostLifecycleCapabilities {
   repair: boolean;
   /** Destroy is confirmed by a fresh provider read, never only by request acceptance. */
   confirmedDestroy: boolean;
+  /**
+   * The provider attaches `WorkspaceHostProviderContext.hostBootstrapScript` to a newly created
+   * instance's startup metadata.
+   *
+   * Declared by the provider rather than inferred from its target so the controller has one
+   * place to read it: rendering the bootstrap is expensive and FAILS CLOSED when the controller
+   * is unconfigured, so a runner that guessed wrong would either refuse a provision that never
+   * needed a bootstrap, or silently skip one that did. `false` means the provider ignores the
+   * field today and its hosts must be bootstrapped some other way.
+   */
+  hostBootstrap: boolean;
 }
 export interface WorkspaceHostProviderCapabilities {
   discovery: WorkspaceHostDiscoveryCapabilities;

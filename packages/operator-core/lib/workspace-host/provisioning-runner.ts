@@ -52,9 +52,19 @@ import {
   upsertWorkspaceHost,
   upsertWorkspaceHostResourceCheckpoint,
 } from './observability-store';
+import {
+  renderWorkspaceHostProvisionBootstrap,
+  resolveWorkspaceHostProvisionBootstrapProfile,
+} from './provision-bootstrap';
 
 const DEFAULT_RETRY_AFTER_MS = 2_000;
 const MAX_CONTROLLER_TRANSITIONS_PER_REQUEST = 256;
+
+/** Production host-bootstrap render: the controller's own trusted release and SSH public key. */
+async function defaultRenderHostBootstrap(hostId: string): Promise<string> {
+  const profile = await resolveWorkspaceHostProvisionBootstrapProfile();
+  return renderWorkspaceHostProvisionBootstrap(hostId, profile);
+}
 
 export class WorkspaceHostProvisioningRequestError extends Error {
   readonly problems: readonly string[];
@@ -149,6 +159,12 @@ export interface RunWorkspaceHostProvisioningInput {
   actorId?: string;
   signal?: AbortSignal;
   store?: WorkspaceHostProvisioningStore;
+  /**
+   * Test seam for the controller-authored host bootstrap. Production resolves the controller's
+   * own trusted release and SSH public key; see `provision-bootstrap.ts`. Consulted only when the
+   * provider declares `capabilities.lifecycle.hostBootstrap`.
+   */
+  renderHostBootstrap?: (hostId: string) => Promise<string>;
 }
 
 export interface WorkspaceHostProvisioningResult {
@@ -659,10 +675,33 @@ export async function runWorkspaceHostProvisioning(
   }
   if (requestProblems.length > 0) throw new WorkspaceHostProvisioningRequestError(requestProblems);
 
+  // Render the controller-authored host bootstrap BEFORE anything is created.
+  //
+  // Order is the whole point: this is the last cheap moment to refuse. The bootstrap installs the
+  // privileged conduits, the `papercusp-workspace` service and the SSH key the controller will
+  // later connect with, so a host provisioned without one is unreachable by construction — and
+  // provisioning still reports success, which is how that failure stayed invisible for two days
+  // (D-237/D-238). Failing here costs a rejected request; failing after the first `apply` costs a
+  // billing brick and a destroy.
+  //
+  // Only for providers that declare they consume it; the others would discard the value, so
+  // rendering for them would convert a controller misconfiguration into a refusal of a provision
+  // that never needed the render at all.
+  let hostBootstrapScript: string | undefined;
+  if (input.provider.capabilities.lifecycle.hostBootstrap) {
+    const render = input.renderHostBootstrap ?? defaultRenderHostBootstrap;
+    try {
+      hostBootstrapScript = await render(hostId);
+    } catch (error) {
+      throw new WorkspaceHostProvisioningRequestError([message(error)]);
+    }
+  }
+
   const context: WorkspaceHostProviderContext = {
     workspaceId,
     requestId: operationId,
     connection: input.connection,
+    ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   };

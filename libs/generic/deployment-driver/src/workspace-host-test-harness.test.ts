@@ -139,6 +139,7 @@ function fakeProvider(): WorkspaceHostProvider {
         upgrade: true,
         repair: true,
         confirmedDestroy: true,
+        hostBootstrap: false,
       },
       transportKinds: ["fake-ssh"],
     },

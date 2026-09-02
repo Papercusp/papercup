@@ -21,7 +21,7 @@ function fakeProvider(target: string): WorkspaceHostProvider {
     target,
     capabilities: {
       discovery: { scopes: true, regions: true, sizes: true, images: true, priceEstimates: true },
-      lifecycle: { start: true, stop: true, restart: true, snapshot: true, restore: true, upgrade: true, repair: true, confirmedDestroy: true },
+      lifecycle: { start: true, stop: true, restart: true, snapshot: true, restore: true, upgrade: true, repair: true, confirmedDestroy: true, hostBootstrap: false },
       transportKinds: ['ssh'],
     },
     async validateConnection() { return { ok: true, checkedAt: '2026-08-22T00:00:00Z', warnings: [], errors: [] }; },

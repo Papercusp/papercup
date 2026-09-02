@@ -248,6 +248,8 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     upgrade: false,
     repair: true,
     confirmedDestroy: true,
+    // P-035: same as AWS — no controller-rendered bootstrap is attached yet. See aws-provider.
+    hostBootstrap: false,
   },
   transportKinds: AZURE_WORKSPACE_HOST_TRANSPORTS,
   constraints: [

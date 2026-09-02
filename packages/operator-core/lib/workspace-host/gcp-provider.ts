@@ -540,6 +540,7 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     upgrade: true,
     repair: true,
     confirmedDestroy: true,
+    hostBootstrap: true,
   },
   transportKinds: [...GCP_WORKSPACE_HOST_TRANSPORTS],
   constraints: [
