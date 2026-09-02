@@ -621,6 +621,18 @@ export async function evaluatePlanAcceptanceGate(
       // should be sent to realize them, not to author a rubric. `force`-waivable like
       // the rest of the family — it is an evidence-truth check, not the separate owner
       // ruling the rubric family encodes.
+      //
+      // KNOWN LIMIT, stated rather than left to be discovered later:
+      // getLatestActivationAudit swallows read errors and returns null, so "no
+      // activation audit exists" — common and legitimate, since plans predating the
+      // activation-audit regime have none — is indistinguishable here from "the
+      // activation audit could not be READ". Both skip the join, so this is a
+      // fail-OPEN. It is accepted only because it exactly preserves pre-P-014
+      // behaviour: a plan with no readable activation audit was already shippable, so
+      // the join can never make a plan LESS safe than it was. Tightening it means
+      // giving that reader a distinguishable failure result — the same repair the
+      // rubric family already made with `acceptance_rubric_revision_unreadable`
+      // (EI-21827040531672903) — which is a separate item, not this one.
       const activationAudit = await getLatestActivationAudit(planSlug);
       const activationMappings = activationAudit?.activation?.mappings ?? [];
       if (activationMappings.length > 0) {
