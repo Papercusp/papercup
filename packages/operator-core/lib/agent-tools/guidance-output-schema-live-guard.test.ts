@@ -30,11 +30,22 @@ type CatalogTool = {
   outputJsonSchema?: JsonSchema;
 };
 
-// This tool deliberately returns mixed MCP content (a ledger text line plus an
-// accessibility tree or image), not a JSON object. Advertising an object-rooted
-// output schema would make structured MCP callers require structuredContent
-// that the handler cannot truthfully provide.
-const NON_OBJECT_RETURN_TOOLS = new Set(['capability:computer']);
+// These tools deliberately return mixed MCP content, not a JSON object. Advertising
+// an object-rooted output schema would make structured MCP callers require
+// structuredContent that the handler cannot truthfully provide.
+//
+//  - capability:computer — a ledger text line plus an accessibility tree or image.
+//  - fleet:supersede — every fleet_registry verb answers through the local `json()`
+//    helper (fleet_registry/_shared.ts:70), which returns
+//    `{ content:[{ type:'text', text: JSON.stringify(payload) }], isError }`. The
+//    payload is a STRINGIFIED text block, so there is no `data` for a `result:`
+//    schema to describe or for output validation to check; declaring one would
+//    advertise a structuredContent shape the handler never emits. It is caught here
+//    and not elsewhere in fleet_registry only because it is the verb that also
+//    authored `guidance.returns` — and that prose documents REFUSAL SEMANTICS (when
+//    the successor is missing or leaderless), with no `{…}` shape clause at all,
+//    which is why the violation reports an empty promised-field list.
+const NON_OBJECT_RETURN_TOOLS = new Set(['capability:computer', 'fleet:supersede']);
 
 export interface ReturnSchemaViolation {
   tool: string;

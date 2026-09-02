@@ -147,6 +147,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // the reason this registry exists — a detector for silently-halted agents that is itself
   // never seeded would be the exact failure it was built to find.
   { name: 'reconcile-silent-halts', seedScript: 'seed-silent-halt-routine.ts' },
+  { name: 'resolver-whole-corpus', seedScript: 'seed-resolver-whole-corpus-routine.ts' },
   { name: 'sql-read-census', seedScript: 'seed-sql-read-census-routine.ts' },
   { name: 'supervision-reconcile', seedScript: 'seed-supervision-reconcile-routine.ts' },
   { name: 'sweep-stalled-loops', seedScript: 'seed-stalled-loops-routine.ts' },

@@ -396,6 +396,63 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     ]);
   });
 
+  // ── WI-2141185 / EI-12727 — force must not re-send ALREADY-FEDERATED rows ──
+  // This backfill exists to rescue rows that predate the capture trigger and so
+  // never fired it (see the plan_item_assignments note in BACKFILL_TARGETS). That
+  // condition is `fed_ts IS NULL`, and the enqueue SELECTs never expressed it — so
+  // the per-target `backfill_done` marker was the ONLY idempotence guard, and
+  // `force` bypasses exactly that marker. The nightly release seed cut runs
+  // force:true + maxOpsPerAuthor:0, so it re-enqueued the WHOLE projection every
+  // night (2026-09-02: 153,797 in-scope engineer_issues rows, of which 0 were
+  // unfederated) and then blocked waiting to drain the flood it had just created.
+  // Each drained row is an append to an append-only log — EI-12727's monotonic
+  // corestore ratchet — so the cost never came back.
+  //
+  // NB the force test above stays green either way: its fixtures never set fed_ts,
+  // so every row it seeds genuinely needs enqueueing. That is the coverage gap that
+  // let this ship — it proved force re-enqueues rows, using rows that should be.
+  it('force does NOT re-enqueue already-federated rows, only ones that never federated (WI-2141185 / EI-12727)', async () => {
+    // F-1 / EI-1: already federated. F-2 / EI-2: predate federation — the real target.
+    await seedFeature(db.sql, 'F-1', { fed_ts: 1_700_000_000_000, fed_hlc: 'hlc-f1' });
+    await seedFeature(db.sql, 'F-2');
+    await seedEngineerIssue(db.sql, 'EI-1', { fed_ts: 1_700_000_000_000, fed_hlc: 'hlc-ei1' });
+    await seedEngineerIssue(db.sql, 'EI-2');
+
+    const forced = await backfillLocalState(fakeHandle(), db.sql, {
+      force: true,
+      maxOpsPerAuthor: 0,
+    });
+    expect(forced).toMatchObject({ skipped: false, enqueued: 2, dropped: 0 });
+
+    const rows = await outboxRows(db.sql);
+    expect(
+      rows.filter((r) => r.table_name === 'harness_features_consolidated').map((r) => r.key),
+    ).toEqual(['F-2']);
+    expect(rows.filter((r) => r.table_name === 'engineer_issues').map((r) => r.key)).toEqual([
+      'EI-2',
+    ]);
+  });
+
+  it('resyncFederated re-sends federated rows — the deliberate re-anchor escape hatch (WI-2141185)', async () => {
+    await seedFeature(db.sql, 'F-1', { fed_ts: 1_700_000_000_000, fed_hlc: 'hlc-f1' });
+    await seedEngineerIssue(db.sql, 'EI-1', { fed_ts: 1_700_000_000_000, fed_hlc: 'hlc-ei1' });
+
+    const resync = await backfillLocalState(fakeHandle(), db.sql, {
+      force: true,
+      resyncFederated: true,
+      maxOpsPerAuthor: 0,
+    });
+    expect(resync).toMatchObject({ skipped: false, enqueued: 2, dropped: 0 });
+
+    const rows = await outboxRows(db.sql);
+    expect(
+      rows.filter((r) => r.table_name === 'harness_features_consolidated').map((r) => r.key),
+    ).toEqual(['F-1']);
+    expect(rows.filter((r) => r.table_name === 'engineer_issues').map((r) => r.key)).toEqual([
+      'EI-1',
+    ]);
+  });
+
   it('per-author cap (maxOpsPerAuthor): enqueues up to the cap and warns about the rest', async () => {
     // 5 local features; cap of 3.
     await seedFeature(db.sql, 'F-1');
