@@ -945,7 +945,13 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     openaiUpstreamBase: process.env.OPENAI_BASE_URL_UPSTREAM || undefined,
     // Seed only (P-010): the gateway's capless lifecycle owns the live window for
     // BOTH lanes from here on, so there is no separate Codex size to hand down.
-    concurrency: opts.concurrency,
+    // Pass the POOL-SIZED seed computed above (WI-2140943), not the raw `opts.concurrency`:
+    // `createInferenceGateway` falls back to the flat INITIAL_PROVIDER_ADMISSION_WINDOW (8) when
+    // this is undefined, which is exactly the cold-start hole the seed exists to close — measured
+    // 2026-09-02 05:06Z: 7 accounts, recommendation 28, gateway restarted into a window of 8 while
+    // the tier caps (sized from the same seed) already said 28. `admissionSeedWindow` already
+    // honours an explicit `opts.concurrency` when one is configured, so this changes nothing there.
+    concurrency: admissionSeedWindow,
     // Smooth each per-account RPM allowance into an even pace so the fleet can't fire a sub-minute BURST
     // that trips Anthropic's burst limit (the bare-burst 429 storm, 2026-06-23). Throughput-neutral (the
     // per-minute count gate still caps the rate). On by default in production; set PAPERCUSP_GATEWAY_RPM_SMOOTH=0
