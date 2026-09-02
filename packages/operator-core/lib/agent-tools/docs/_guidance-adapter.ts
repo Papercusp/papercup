@@ -112,6 +112,14 @@ export interface GuidanceCensus {
   registryRevision: string | null;
   correctiveCallsChecked: number;
   /**
+   * Tool names whose guidance page was SKIPPED because building it failed —
+   * the skip-and-warn set (EI-22187811297314993: a single non-conforming
+   * tool used to `return []` the WHOLE corpus instead of dropping just its
+   * own page). Empty in the healthy case; a regression names the offending
+   * tool here instead of forcing a bisect of the whole catalog.
+   */
+  toolGuidanceSkipped: string[];
+  /**
    * Non-fatal conditions that make the census an UNDER-count. Non-empty means a
    * downstream "no overlaps found" verdict is INCONCLUSIVE, not clean.
    */
@@ -129,6 +137,7 @@ function emptyCensus(): GuidanceCensus {
     registrySource: null,
     registryRevision: null,
     correctiveCallsChecked: 0,
+    toolGuidanceSkipped: [],
     warnings: [],
   };
 }
@@ -265,21 +274,47 @@ async function loadToolGuidancePages(
         registryRevision: string;
         correctiveCallsChecked: number;
       };
+      PROJECTED_TOOL_REGISTRY_SOURCE?: string;
+      projectedToolRegistryRevision?: () => string;
     };
     if (
       typeof mod.listAllProjectedTools !== 'function' ||
       typeof mod.projectedToolCorrectiveCalls !== 'function' ||
-      typeof mod.assertProjectedToolGuidanceConformance !== 'function'
+      typeof mod.assertProjectedToolGuidanceConformance !== 'function' ||
+      typeof mod.projectedToolRegistryRevision !== 'function' ||
+      typeof mod.PROJECTED_TOOL_REGISTRY_SOURCE !== 'string'
     ) {
       census.warnings.push('tooldef registry/conformance accessor missing — tool guidance NOT indexed');
       return [];
     }
     tools = mod.listAllProjectedTools();
     resolveCorrectiveCalls = mod.projectedToolCorrectiveCalls;
-    const conformance = mod.assertProjectedToolGuidanceConformance();
-    census.registrySource = conformance.source;
-    census.registryRevision = conformance.registryRevision;
-    census.correctiveCallsChecked = conformance.correctiveCallsChecked;
+
+    // Registry identity is independent of whether every redirect passes the
+    // EXHAUSTIVE role×profile×modality rail below — derive it directly so a
+    // single bad redirect elsewhere in the registry can't blank out metadata
+    // that describes the registry itself (EI-22187811297314993).
+    census.registrySource = mod.PROJECTED_TOOL_REGISTRY_SOURCE;
+    census.registryRevision = mod.projectedToolRegistryRevision();
+
+    // The exhaustive conformance rail. THIS is the call that amplified ONE
+    // non-conforming tool/profile combo into wiping ALL ~835 pages
+    // (EI-22187811297314993): it throws on the FIRST failure it finds,
+    // across the WHOLE registry. Isolate its failure from corpus building —
+    // a broken rail means "this diagnostic could not finish", never "no
+    // guidance exists". The per-tool loop below still builds every page it
+    // legitimately can.
+    try {
+      mod.assertProjectedToolGuidanceConformance();
+    } catch (err) {
+      const message = (err as Error).message;
+      const offender = /tool contract unavailable: ([^\s(]+)/.exec(message)?.[1];
+      census.warnings.push(
+        offender
+          ? `conformance rail did not complete — first blocker: ${offender} (${message})`
+          : `conformance rail did not complete: ${message}`,
+      );
+    }
   } catch (err) {
     census.warnings.push(`tooldef registry unreadable (${(err as Error).message}) — tool guidance NOT indexed`);
     return [];
@@ -299,7 +334,19 @@ async function loadToolGuidancePages(
   for (const tool of tools) {
     const name = tool.expose?.mcp?.name;
     if (!name) continue;
-    const body = renderToolGuidancePage(name, tool, resolveCorrectiveCalls(name));
+    // Skip-and-warn (EI-22187811297314993): a single tool's malformed remedy
+    // must drop only ITS page, never the other ~834. Name the offender so the
+    // next agent doesn't have to bisect the whole catalog to find it.
+    let correctiveCalls: Array<{ rejectedArg: string; rendered: string; note?: string }>;
+    try {
+      correctiveCalls = resolveCorrectiveCalls(name);
+    } catch (err) {
+      census.toolGuidanceSkipped.push(name);
+      census.warnings.push(`tool guidance skipped: ${name} (${(err as Error).message})`);
+      continue;
+    }
+    census.correctiveCallsChecked += correctiveCalls.length;
+    const body = renderToolGuidancePage(name, tool, correctiveCalls);
     if (body === null) continue;
     out.push({ slug: `tool-guidance/${toolSlug(name)}`, title: `Tool guidance: ${name}`, body });
   }

@@ -692,3 +692,47 @@ export function probeStringLiteralBlindness(detector, tokenInProse) {
       : 'no phantom for token-in-prose (string, template, comment)',
   };
 }
+
+/**
+ * Strip a trailing `#` comment from ONE SHELL line, respecting quotes.
+ *
+ * The shell arm of this module. `#` opens a comment only at the START OF A WORD, so it is
+ * comment-initiating at position 0 or after whitespace or one of `;`, `&`, `|`, `(` — and is
+ * ordinary data anywhere else. That distinction is the whole point: `grep -q '#define'` must
+ * not be truncated into a different pipeline, and neither must a `#` in `sed 's/#//'`.
+ *
+ * ⚠ THIS RETURNS A TRUNCATED LINE, unlike every other export here, which BLANKS its ranges to
+ * keep offsets and line numbers true. That is deliberate and is why it is a separate function
+ * rather than a `ScriptKind` on the others: its callers split the surviving text into pipeline
+ * stages and never map a match back to a column, so truncation is the honest shape for them.
+ * If you ever need shell offsets preserved, add a blanking variant — do not "fix" this one.
+ *
+ * WHY IT LIVES HERE. Until 2026-09-02 the shell arm was a private copy inside
+ * `check-assert-integrity.mjs`, and the BASELINE in `guard-string-literal-blindness` listed it
+ * under "Entries that are NOT JS/TS and so cannot use the shared module". That reason expired
+ * the moment a SECOND copy appeared (`check-pipefail-sigpipe.mjs`, landed the same day with a
+ * NARROWER `/\s/` predecessor class that missed `;`, `&`, `|` and `(`) — which is the exact
+ * copy-paste-then-drift the module exists to prevent, and is how "SQL cannot use the shared
+ * module" had already died on 2026-08-10. Both callers now delegate here, and the shared
+ * implementation keeps the WIDER, correct class.
+ *
+ * @param {string} line  a single shell line
+ * @returns {string}     the line up to its first live `#`, or the line unchanged
+ */
+export function stripShellTrailingComment(line) {
+  let sq = false;
+  let dq = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '\\' && dq) {
+      i++;
+      continue;
+    }
+    if (c === "'" && !dq) sq = !sq;
+    else if (c === '"' && !sq) dq = !dq;
+    else if (c === '#' && !sq && !dq && (i === 0 || /[\s;&|(]/.test(line[i - 1]))) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}

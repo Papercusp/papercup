@@ -22,7 +22,7 @@
  * hand, one at a time, months apart. Measured on the live DB with EXPLAIN (ANALYZE, BUFFERS):
  *
  *   reply-deadline-sweep      40,684 ->   721 buffers    (56x)     156.9ms ->  8.96ms
- *   allhive-broadcast-sweep 4,731,095 -> 3,341 buffers (1,416x)  13,312ms -> 25.9ms  (514x)
+ *   allpot-broadcast-sweep  4,731,095 -> 3,341 buffers (1,416x)  13,312ms -> 25.9ms  (514x)
  *   task_ledger bash-job lookup   197 ->     1 buffer   (197x)      4.93ms ->  0.042ms
  *
  * The first two returned ZERO rows while reading all 86,722 rows of the table. The third

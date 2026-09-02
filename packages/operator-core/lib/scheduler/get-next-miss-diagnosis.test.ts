@@ -124,17 +124,36 @@ describe('WI-4413 — floor-attribution DRIFT GUARD', () => {
       expect(attribution, `floor "${reason}" must have an operator-facing explanation`).toContain(reason);
     }
 
-    // And each floor predicate must actually be REFERENCED inside explainIssueClaimFloors —
-    // an explanation string with no predicate behind it is decoration, not a diagnosis.
+    // And each floor predicate must actually be EVALUATED on the diagnosis path — an
+    // explanation string with no predicate behind it is decoration, not a diagnosis.
+    //
+    // ⚠ THIS IS A TWO-HOP CHECK ON PURPOSE, and the second hop is the load-bearing one.
+    // It used to slice explainIssueClaimFloors' own body and grep it for each floor name.
+    // WI-37356 then extracted the floor column set into issueClaimBarFloorColumnsSql —
+    // precisely so the SET could not be hand-maintained in two places — and the slice went
+    // red on a refactor that made the code STRICTER, because the names now live one
+    // indirection away. A guard that fails when its subject improves teaches agents to
+    // route around it, so it follows the indirection instead: assert the delegation, then
+    // assert the delegate is complete. Re-inlining the fragments would fail the first leg.
     const explainBody = src.slice(
       src.indexOf('export async function explainIssueClaimFloors'),
       src.indexOf('The ISSUE-family half of self-selection'),
     );
+    expect(
+      explainBody,
+      'explainIssueClaimFloors must build its floor columns from the SHARED ' +
+        'issueClaimBarFloorColumnsSql helper, so the diagnosis and the claim path cannot drift apart',
+    ).toContain('issueClaimBarFloorColumnsSql(');
+
+    const floorColumnsBody = src.slice(
+      src.indexOf('export function issueClaimBarFloorColumnsSql'),
+      src.indexOf('export async function explainIssueClaimFloors'),
+    );
     for (const floor of CLAIM_PATH_FLOORS) {
       expect(
-        explainBody,
-        `explainIssueClaimFloors must EVALUATE ${floor} (the same fragment the claim ANDs in), ` +
-          `not re-implement or omit it`,
+        floorColumnsBody,
+        `issueClaimBarFloorColumnsSql must EVALUATE ${floor} (the same fragment the claim ANDs in), ` +
+          `not re-implement or omit it — explainIssueClaimFloors reads its floors from here`,
       ).toContain(floor);
     }
   });

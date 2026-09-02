@@ -2090,6 +2090,15 @@ For "files modified since T", use `git status --porcelain` or `TZ=UTC stat -c '%
 or an ISO-8601-like timestamp with `Z`/a numeric offset, keep stderr visible, and
 corroborate the result with a positive control.
 
+⚠ **A bare `find` also SILENTLY OMITS symlinked sibling hives — a second false-absence trap,
+distinct from the one above.** Some sibling "checkouts" under `~/papercupai-workspace/` (e.g.
+`sidestage`) are symlinks into `~/.papercusp/hives/`, not real directories, and `find` does not
+descend a symlinked directory without `-L`. Measured: a bare workspace-wide `find -name '<file>'`
+returned hits for the real checkouts and silently omitted `sidestage`'s copy of the same file —
+output that looked complete. For any cross-checkout search, add `-L`, or prefer `git ls-files` /
+`grep -rl` (both follow the symlink correctly here); and — the same rule as the `| head`
+truncation trap above — never act on a `find` EMPTY (or seemingly-complete) result without a
+positive control.
 
 
 ⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this one
