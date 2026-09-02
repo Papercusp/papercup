@@ -520,8 +520,30 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: assessDeployedSha({ deployedSha: 'abc', servingStartedSinceCodeChange: false, verdictUnknownLegs: [] }),
     },
     {
-      label: 'the serving process could not be probed',
-      expect: assessDeployedSha({ deployedSha: 'abc', servingStartedSinceCodeChange: null, verdictUnknownLegs: [] }),
+      label: 'the serving probe was attempted and did not answer',
+      expect: assessDeployedSha({
+        deployedSha: 'abc',
+        servingStartedSinceCodeChange: null,
+        servingUnknownCode: 'resolver-failed',
+        verdictUnknownLegs: [],
+      }),
+    },
+    /**
+     * WI-2141716. The row above and this one both have a null serving boolean, and they
+     * are NOT the same state: there the probe ran and failed, so retrying is the lever;
+     * here no probe was attempted and none can be (a sha-only read names no path), so
+     * retrying is futile forever. They earn separate codes because they earn separate
+     * ACTIONS — collapsing them shipped a "re-probe" instruction for an unanswerable
+     * question and cost one agent session a day of re-reads.
+     */
+    {
+      label: 'no serving process can be identified, so no probe was attempted',
+      expect: assessDeployedSha({
+        deployedSha: 'abc',
+        servingStartedSinceCodeChange: null,
+        servingUnknownCode: 'not-applicable',
+        verdictUnknownLegs: [],
+      }),
     },
     /**
      * ⚠ A null sha is a FAILED READ of the release checkout's HEAD, never "nothing is
@@ -781,7 +803,13 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'inspect-terminal-evidence',
     'read-release-control',
   ],
-  'deploy.3070.sha': ['executing', 'restart-required', 'process-unverified', null],
+  'deploy.3070.sha': [
+    'executing',
+    'restart-required',
+    'process-unverified',
+    'serving-not-probeable',
+    null,
+  ],
   'git.mainBehindStaging': ['caught-up', 'normal-buffer', 'gate-stalled', null],
   // `portfolioAssessmentFor` maps the resolver's verdict REASON onto the cell's code
   // vocabulary, and the two are deliberately not the same words: reason `idle` codes as

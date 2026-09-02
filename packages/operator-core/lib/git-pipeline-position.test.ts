@@ -3637,6 +3637,27 @@ describe('evaluateServing: process truth, never a git inference', () => {
   });
 
   /**
+   * WI-2141716 — the recurrence guard, and it deliberately spans BOTH functions.
+   * The test above proved `evaluateServing` records `not-applicable`; the unit cases
+   * for `assessDeployedSha` prove it honours that code. Neither one alone catches the
+   * regression that actually shipped: the two agreed in isolation while the WIRING
+   * between them dropped the code on the floor, so `state:read { cell:'deploy.3070.sha' }`
+   * told every caller to "re-probe the serving runtime" for a question no probe can
+   * answer. One ended session (su-bf563dcb, 2026-09-01) rode that loop for a day.
+   */
+  it('a sha-only probe never yields a retry-shaped deployed-sha verdict (WI-2141716)', () => {
+    const sv = evaluateServing({ runtime: null, process: null, codeAsOfMs: null, codeAsOfSource: null });
+    const assessment = assessDeployedSha({
+      deployedSha: 'abc1234567',
+      servingStartedSinceCodeChange: sv.startedSinceCodeChange,
+      servingUnknownCode: sv.unknownReason?.code ?? null,
+      verdictUnknownLegs: [],
+    });
+    expect(assessment).toBe('serving-not-probeable');
+    expect(assessment).not.toBe('process-unverified');
+  });
+
+  /**
    * The case that earns the enum its keep (D-038 axis 2 corollary). All three
    * unknowns above render as prose a human reads the same way — "we don't know"
    * — but they demand THREE different responses, and only the code says which:
@@ -7210,6 +7231,50 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
     {
       name: 'process-unverified',
       input: { deployedSha: 'abc1234567', servingStartedSinceCodeChange: null, verdictUnknownLegs: [] },
+      expected: 'process-unverified',
+    },
+    // WI-2141716. A null `servingStartedSinceCodeChange` is two conditions with OPPOSITE
+    // levers; these four pin the split. The two retry-shaped codes must keep saying
+    // "re-probe" (that action can still succeed), and the structural one must NOT
+    // (re-probing it can never change the answer — the retry-forever loop this fixed).
+    {
+      name: 'probe RAN and failed → stays retry-shaped',
+      input: {
+        deployedSha: 'abc1234567',
+        servingStartedSinceCodeChange: null,
+        servingUnknownCode: 'resolver-failed',
+        verdictUnknownLegs: [],
+      },
+      expected: 'process-unverified',
+    },
+    {
+      name: 'probe ran, one operand missing → stays retry-shaped',
+      input: {
+        deployedSha: 'abc1234567',
+        servingStartedSinceCodeChange: null,
+        servingUnknownCode: 'insufficient-data',
+        verdictUnknownLegs: [],
+      },
+      expected: 'process-unverified',
+    },
+    {
+      name: 'no probe was attempted and none can be → serving-not-probeable',
+      input: {
+        deployedSha: 'abc1234567',
+        servingStartedSinceCodeChange: null,
+        servingUnknownCode: 'not-applicable',
+        verdictUnknownLegs: [],
+      },
+      expected: 'serving-not-probeable',
+    },
+    {
+      name: 'unknown reason unavailable → keeps the weaker retry verdict, never the stronger claim',
+      input: {
+        deployedSha: 'abc1234567',
+        servingStartedSinceCodeChange: null,
+        servingUnknownCode: null,
+        verdictUnknownLegs: [],
+      },
       expected: 'process-unverified',
     },
     {
