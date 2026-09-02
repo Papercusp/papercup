@@ -102,10 +102,18 @@ jobs:
           reporter: java-junit
           fail-on-error: false
 
-      - name: Upload coverage artifacts (if produced)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: '**/coverage/**'
-          if-no-files-found: ignore
+      # (The "Upload coverage artifacts (if produced)" step was removed
+      # 2026-09-02 — P-007, design-to-code-coverage-seam-2026-09-02. It could
+      # never fire: the test step above is `affected-tests.mjs --all
+      # --integration`, and that runner has no Vitest-flag passthrough and
+      # hard-rejects unrecognized flags, so no workspace has ever run with
+      # `--coverage` and no ./coverage dir has ever existed in CI. With
+      # `if-no-files-found: ignore` the step uploaded nothing, silently, every
+      # night. Worse, it made the arrangement look wired from both ends: the
+      # provider config in libs/test-config/src/vitest-config.ts cited "the
+      # nightly job" as its consumer while this step implied that config as its
+      # producer, so each artifact corroborated the other and the missing link
+      # in the middle stayed invisible. Re-adding an upload step is only honest
+      # alongside a real producer (a passthrough in affected-tests.mjs) and a
+      # merge step; lib/doc-claims/coverage-wiring.test.ts fails if an upload
+      # step comes back without one.)

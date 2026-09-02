@@ -139,7 +139,9 @@ describe('buildFleetDrainStamp', () => {
   });
 
   it('a fully-unfloored lane warns wind-down may be premature (claimable work may remain)', async () => {
-    aggM.mockResolvedValue(breakdown({}, 12));
+    // A lane with 12 matched rows and ZERO floors has 12 survivors by construction —
+    // the fixture must say so, or it encodes an impossible breakdown (EI-22185555381915875).
+    aggM.mockResolvedValue(breakdown({}, 12, 12));
     const s = await buildFleetDrainStamp({
       fleetSlug: 'x',
       ownerId: 'su-leader',
@@ -147,7 +149,80 @@ describe('buildFleetDrainStamp', () => {
       harnessCandidates: ['papercusp'],
     });
     expect(s!.summary).toContain('none floored');
-    expect(s!.summary).toContain('premature');
+    expect(s!.summary).toContain('may be premature');
+  });
+
+  // EI-22185555381915875 — the reported contradiction, reproduced with its own numbers:
+  // floors are non-empty AND 583 rows survive all of them. The verdict must follow
+  // `claimable`, never `top.length`, because control-core persists this string verbatim
+  // into the durable control_reason.
+  it('never claims "0 surviving ALL floors" while its own breakdown reports survivors', async () => {
+    aggM.mockResolvedValue(
+      breakdown(
+        { federationDetector: 186, claimHold: 116, observationLane: 57, agentReview: 42 },
+        1004,
+        583,
+      ),
+    );
+    const s = await buildFleetDrainStamp({
+      fleetSlug: 'buyrestart-zero-auth-2026-09-02',
+      ownerId: 'su-leader',
+      workspaceId: 'ws-1',
+      harnessCandidates: ['papercusp'],
+    });
+    // anchored on the "; " that only the floor-gated branch emits — a bare
+    // '0 surviving ALL floors' would false-pass on a survivor count like 1000.
+    expect(s!.summary).not.toContain('; 0 surviving ALL floors');
+    expect(s!.summary).not.toContain('genuinely floor-gated');
+    // it reports the real survivor count and warns the wind-down may be premature
+    expect(s!.summary).toContain('583 surviving ALL floors');
+    // NOT a bare 'premature': the buggy string ends "not premature", so a substring
+    // check on 'premature' passes on the defect it is meant to catch.
+    expect(s!.summary).toContain('may be premature');
+    // the floor breakdown is still reported — it is context, not the verdict
+    expect(s!.summary).toContain('federationDetector=186');
+  });
+
+  // Falsifiability control (the imported-module tier: a deliberately-wrong
+  // implementation kept permanently beside the real one). It reproduces the PRE-FIX
+  // discriminator — `top.length > 0` instead of `breakdown.claimable > 0` — and proves
+  // the assertions above actually discriminate rather than holding for any string.
+  it('control: the pre-fix top.length discriminator DOES emit the false justification', () => {
+    const b = breakdown(
+      { federationDetector: 186, claimHold: 116, observationLane: 57, agentReview: 42 },
+      1004,
+      583,
+    );
+    const top = Object.entries(b.excluded)
+      .filter(([, n]) => (n as number) > 0)
+      .sort((a, z) => (z[1] as number) - (a[1] as number));
+    const legacy =
+      b.matchedByFilter === 0
+        ? ' — the SPEC matches nothing (not a floor story)'
+        : top.length > 0
+          ? `; stranded by: ${top.map(([k, n]) => `${k}=${n}`).join(', ')} (buckets independent; 0 surviving ALL floors ⇒ the lane is genuinely floor-gated, not premature)`
+          : ' — none floored (claimable work may remain; wind-down may be premature)';
+    // the exact contradiction reported in EI-22185555381915875: 583 survivors, yet the
+    // string asserts none — and it does so while the breakdown says otherwise.
+    expect(b.claimable).toBe(583);
+    expect(legacy).toContain('; 0 surviving ALL floors');
+    expect(legacy).toContain('genuinely floor-gated');
+    expect(legacy).not.toContain('583 surviving ALL floors');
+    expect(legacy).not.toContain('may be premature');
+    // and the trap that made a naive assertion vacuous: it contains 'premature' anyway.
+    expect(legacy).toContain('premature');
+  });
+
+  it('still calls a genuinely floor-gated lane floor-gated (0 survivors, floors non-empty)', async () => {
+    aggM.mockResolvedValue(breakdown({ federationDetector: 186, claimHold: 116 }, 1004, 0));
+    const s = await buildFleetDrainStamp({
+      fleetSlug: 'x',
+      ownerId: 'su-leader',
+      workspaceId: 'ws-1',
+      harnessCandidates: ['papercusp'],
+    });
+    expect(s!.summary).toContain('0 surviving ALL floors');
+    expect(s!.summary).toContain('genuinely floor-gated, not premature');
   });
 
   it('fails soft to null when the oracle throws — never blocks the wind-down', async () => {

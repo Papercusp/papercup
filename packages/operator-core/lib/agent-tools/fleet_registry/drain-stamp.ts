@@ -89,14 +89,29 @@ export async function buildFleetDrainStamp(args: {
       .filter(([, n]) => (n as number) > 0)
       .sort((a, b) => (b[1] as number) - (a[1] as number));
     const specLabel = rec?.spec ? formatSpecRef(rec.spec.specId, rec.spec.revision) : 'default';
+    // EI-22185555381915875: the drained/floor-gated VERDICT is `breakdown.claimable` —
+    // the count that survives spec_match AND every floor — and NOTHING else. The floor
+    // buckets OVERLAP by construction, so a non-empty `top` says only "some rows were
+    // floored", never "none got through". Deriving the verdict from `top.length` (as
+    // this summary once did) asserts "0 surviving ALL floors" while the same object
+    // reports claimable=583, and because control-core concatenates this string into the
+    // durable control_reason, that false justification is persisted permanently. The
+    // sibling diagnosis in scheduler/fleet-scope-admission.ts already discriminates on
+    // `breakdown.claimable > 0` (its `survivorsReported`); this is the same guard.
+    const strandedClause =
+      top.length > 0
+        ? `; stranded by: ${top.map(([k, n]) => `${k}=${n}`).join(', ')} (buckets independent — a row can count under more than one)`
+        : ' — none floored';
     const summary =
       `[auto-drain-stamp ${new Date().toISOString()} · spec ${specLabel}] ` +
       `${breakdown.matchedByFilter} in-lane issue-family row(s) matched the fleet spec's filter` +
       (breakdown.matchedByFilter === 0
         ? ' — the SPEC matches nothing (not a floor story)'
-        : top.length > 0
-          ? `; stranded by: ${top.map(([k, n]) => `${k}=${n}`).join(', ')} (buckets independent; 0 surviving ALL floors ⇒ the lane is genuinely floor-gated, not premature)`
-          : ' — none floored (claimable work may remain; wind-down may be premature)') +
+        : breakdown.claimable > 0
+          ? `${strandedClause}; BUT ${breakdown.claimable} surviving ALL floors ⇒ claimable work REMAINS, the lane is NOT floor-gated, and this wind-down may be premature`
+          : top.length > 0
+            ? `${strandedClause}; 0 surviving ALL floors ⇒ the lane is genuinely floor-gated, not premature`
+            : `${strandedClause}, yet 0 surviving ALL floors — the buckets do not account for the gap, so treat "drained" as UNPROVEN`) +
       `. Re-verify against the authoritative oracle (no hand-rolled SQL): ${reVerifyCommand}.`;
 
     return {
