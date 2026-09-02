@@ -291,6 +291,110 @@ export function isCommitNotAttemptableStatus(
   return status === 'nothing' || status === 'skipped' || status === 'skipped-locked';
 }
 
+/**
+ * EI-1835: the bits of one git-sync routine the ELIGIBILITY-LOSS verdict is computed from — a
+ * separate, sibling detector to the stall verdict above. THE GAP: `evaluateGitSyncStall`'s own
+ * commit-staleness signal deliberately EXEMPTS an eligibility-gate 'skipped' tick
+ * (isCommitNotAttemptableStatus) — a frozen HEAD across skips is definitional, not a stall — so a
+ * previously-active repo that goes ineligible (a registry flag flip, a moved/vanished path, a
+ * hive-home reclassification) freezes origin/staging SILENTLY: no signal here ever fires for it
+ * (the 2026-06-20 incident this whole file's header incident narrative describes — ~1h of blocked
+ * fleet deploys before three agents pieced it together by hand). This closes exactly that gap.
+ */
+export interface GitSyncEligibilityLossSnapshot {
+  /** true iff the LAST recorded tick was a P-008 eligibility-gate skip — `last_status === 'skipped'`
+   *  AND `last_skip_reason` is one of the six ELIGIBILITY_SKIP_REASONS (never a lock/IO skip, which
+   *  are a different, already-covered signal). */
+  currentlyIneligible: boolean;
+  /** "prior-active" evidence (per the design this closes): has this routine EVER actually landed a
+   *  commit (`head_sha`/`local_sync_head_sha` non-null, sticky once set)? A routine that never had
+   *  a chance to commit going ineligible is not a regression — nothing to page about. */
+  everActive: boolean;
+  /** consecutive sweeps (INCLUDING this one) this routine has been observed ineligible
+   *  (watchdog-tracked `wd_ineligible_sweeps`) — resets to 0 the instant it's eligible again. */
+  ineligibleSweeps: number;
+  /** the watchdog's own dedup flag for THIS alert class (`eligibility_alerted`) — a separate flag
+   *  from the stall detector's `watchdog_alerted`, so the two alarm classes never clobber each
+   *  other's one-shot-until-recovery state. */
+  eligibilityAlerted: boolean;
+}
+
+export interface GitSyncEligibilityLossVerdict {
+  /** fire the eligibility-loss alarm THIS sweep: ineligible, prior-active, sustained across
+   *  `minSustainSweeps` consecutive sweeps, and not already alerted (one-shot until recovery). */
+  shouldAlarm: boolean;
+  /** the routine is eligible again AND a prior alarm for it is still flagged — resolve/supersede it. */
+  shouldResolve: boolean;
+}
+
+/**
+ * Pure: EI-1835 eligibility-loss edge detector. Mirrors the stall detector's shape deliberately
+ * (sustain-gated, dedup-flagged, edge-triggered) — reusing a mechanism this codebase has already
+ * hardened against false alarms three times (2026-07-02, 2026-07-03, EI-9030b) is safer than
+ * inventing a fourth alerting shape for a class of change the original 2026-07-18 triage flagged
+ * as "delicate, false-alarm-sensitive" for fleet-wide observability.
+ *
+ * "No per-tick spam": callers persist `ineligibleSweeps`/`eligibilityAlerted` once per sweep and
+ * flip the dedup flag on the SAME cross-process exactly-once UPDATE...WHERE pattern the stall
+ * detector uses (see checkGitSyncStall) — this function only decides, never persists.
+ */
+export function evaluateGitSyncEligibilityLoss(
+  s: GitSyncEligibilityLossSnapshot,
+  minSustainSweeps: number = DEFAULT_ELIGIBILITY_SUSTAIN_MIN_SWEEPS,
+): GitSyncEligibilityLossVerdict {
+  if (!s.currentlyIneligible) {
+    // Eligible again: resolve iff WE alarmed before (nothing to supersede otherwise).
+    return { shouldAlarm: false, shouldResolve: s.eligibilityAlerted };
+  }
+  if (!s.everActive) return { shouldAlarm: false, shouldResolve: false }; // never committed — not a regression
+  if (s.eligibilityAlerted) return { shouldAlarm: false, shouldResolve: false }; // one-shot until recovery
+  if (s.ineligibleSweeps < minSustainSweeps) return { shouldAlarm: false, shouldResolve: false }; // not sustained yet
+  return { shouldAlarm: true, shouldResolve: false };
+}
+
+/** Pure: reader-facing diagnosis for an eligibility-loss alarm — single source for the fleet
+ *  broadcast, the owner notification, and the escalation row (mirrors gitSyncStallDiagnosis). */
+export function gitSyncEligibilityLossDiagnosis(
+  installSlug: string,
+  skipReason: string | null,
+): { summary: string; title: string; why: string } {
+  const reasonText = skipReason ?? 'unknown reason';
+  return {
+    summary:
+      `git-sync went INELIGIBLE on ${installSlug} (${reasonText}) after previously committing — ` +
+      `origin/staging will freeze SILENTLY unless this is intentional.`,
+    title: 'git-sync ELIGIBILITY LOST — a previously-active repo stopped syncing',
+    why:
+      `Why it matters: this routine landed commits before, then the P-008 eligibility gate started ` +
+      `skipping every tick (reason: ${reasonText}) — origin freezes exactly like the 2026-06-20 ` +
+      `incident (EI-1835) and nothing else pages for it (the stall detector deliberately exempts ` +
+      `gated 'skipped' ticks). Claim it: confirm whether this is INTENTIONAL (the repo was ` +
+      `retired/merged/moved — clear this git-sync routine) or a REGRESSION (a registry flag flipped ` +
+      `unexpectedly, e.g. hive_home/remote_hive_view/no_path/not_a_git_repo — inspect the ` +
+      `harness_registry entry for ${installSlug} and restore eligibility before the tree strands).`,
+  };
+}
+
+/** Pure: the `harness_escalations` body for a watchdog-detected eligibility-loss (mirrors
+ *  gitSyncStallEscalationBody — a separate phase/kind, never confused with a stall escalation). */
+export function gitSyncEligibilityLossEscalationBody(opts: {
+  installSlug: string;
+  skipReason: string | null;
+  ineligibleSweeps: number;
+  nowMs: number;
+}): string {
+  return JSON.stringify({
+    kind: ELIGIBILITY_WATCHDOG_KIND,
+    harness_slug: opts.installSlug,
+    skipReason: opts.skipReason,
+    ineligibleSweeps: opts.ineligibleSweeps,
+    emitted_at: opts.nowMs,
+    detail: `git-sync eligibility lost (watchdog): ${
+      gitSyncEligibilityLossDiagnosis(opts.installSlug, opts.skipReason).why
+    }`,
+  });
+}
+
 /** One sweep's pure head-movement-clock decision (WI-41567): whether to (re)write
  *  `wd_head_sha`/`wd_head_since_ms` and what `headUnchangedMs` this sweep should judge. */
 export interface HeadClockDecision {
@@ -499,6 +603,12 @@ export function gitSyncStallEscalationBody(opts: {
 export interface GitSyncStallWatchdogResult {
   alarmed: string[];
   recovered: string[];
+  /** EI-1835: install_slugs the eligibility-loss detector alarmed on THIS sweep — a separate alert
+   *  class from `alarmed` (stall), additive so existing readers of `alarmed`/`recovered` alone are
+   *  unaffected. */
+  eligibilityAlarmed: string[];
+  /** EI-1835: install_slugs whose eligibility-loss alarm RESOLVED (eligible again) this sweep. */
+  eligibilityRecovered: string[];
 }
 
 /**
@@ -510,7 +620,12 @@ export async function checkGitSyncStall(
   sql: Sql,
   opts: GitSyncStallThresholds = {},
 ): Promise<GitSyncStallWatchdogResult> {
-  const out: GitSyncStallWatchdogResult = { alarmed: [], recovered: [] };
+  const out: GitSyncStallWatchdogResult = {
+    alarmed: [],
+    recovered: [],
+    eligibilityAlarmed: [],
+    eligibilityRecovered: [],
+  };
   try {
     const rows = await sql<
       {
@@ -523,10 +638,13 @@ export async function checkGitSyncStall(
         last_status: string | null;
         local_sync_status: string | null;
         last_error: string | null;
+        last_skip_reason: string | null;
         watchdog_alerted: boolean | null;
         reaped_count: number | null;
         wd_error_sweeps: number | null;
         wd_stall_sweeps: number | null;
+        wd_ineligible_sweeps: number | null;
+        eligibility_alerted: boolean | null;
         git_sync_activity: unknown;
       }[]
     >`
@@ -539,10 +657,13 @@ export async function checkGitSyncStall(
              metadata->>'last_status' AS last_status,
              metadata->>'local_sync_status' AS local_sync_status,
              metadata->>'last_error' AS last_error,
+             metadata->>'last_skip_reason' AS last_skip_reason,
              COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted,
              COALESCE((metadata->>'reaped_count')::int, 0) AS reaped_count,
              COALESCE((metadata->>'wd_error_sweeps')::int, 0) AS wd_error_sweeps,
              COALESCE((metadata->>'wd_stall_sweeps')::int, 0) AS wd_stall_sweeps,
+             COALESCE((metadata->>'wd_ineligible_sweeps')::int, 0) AS wd_ineligible_sweeps,
+             COALESCE((metadata->>'eligibility_alerted')::boolean, false) AS eligibility_alerted,
              metadata->'git_sync_activity' AS git_sync_activity
         FROM harness_shared.routines
        WHERE target_role = 'system:git-sync'
@@ -551,9 +672,13 @@ export async function checkGitSyncStall(
     const now = Date.now();
     const routineEngine = await readRoutineEngineLiveness(sql, { nowMs: now });
     const stallSustainMinSweeps = opts.stallSustainMinSweeps ?? DEFAULT_STALL_SUSTAIN_MIN_SWEEPS;
+    const eligibilitySustainMinSweeps =
+      opts.eligibilitySustainMinSweeps ?? DEFAULT_ELIGIBILITY_SUSTAIN_MIN_SWEEPS;
     // EI-9030b: harnesses that recovered from OUR alarm THIS sweep — broadcast ONE
     // coalesced all-clear after the loop instead of one message per harness.
     const recoveredForBroadcast: string[] = [];
+    // EI-1835: same coalescing, for the separate eligibility-loss alert class.
+    const eligibilityRecoveredForBroadcast: string[] = [];
     for (const row of rows) {
       const lastFiredMs = row.last_fired_ms != null ? Number(row.last_fired_ms) : null;
       const wdHeadSinceMs = row.wd_head_since_ms != null ? Number(row.wd_head_since_ms) : null;
@@ -637,6 +762,117 @@ export async function checkGitSyncStall(
                  updated_at = now()
            WHERE install_slug = ${row.install_slug}
              AND target_role = 'system:git-sync'`;
+      }
+
+      // ── EI-1835: eligibility-loss edge detector — a SIBLING signal to the stall verdict above,
+      // not a branch of it. Placed BEFORE the stall block's `continue`s below so it always runs
+      // for every row regardless of which path the (independent) stall verdict takes this sweep.
+      const currentlyIneligible =
+        row.last_status === 'skipped' &&
+        typeof row.last_skip_reason === 'string' &&
+        ELIGIBILITY_SKIP_REASONS.has(row.last_skip_reason);
+      const everActive = row.head_sha != null;
+      const prevIneligibleSweeps = row.wd_ineligible_sweeps != null ? Number(row.wd_ineligible_sweeps) : 0;
+      const ineligibleSweeps = currentlyIneligible ? prevIneligibleSweeps + 1 : 0;
+      if (ineligibleSweeps !== prevIneligibleSweeps) {
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object('wd_ineligible_sweeps', ${ineligibleSweeps}::int),
+                 updated_at = now()
+           WHERE install_slug = ${row.install_slug}
+             AND target_role = 'system:git-sync'`;
+      }
+      const eligibilityAlerted = row.eligibility_alerted ?? false;
+      const eligVerdict = evaluateGitSyncEligibilityLoss(
+        { currentlyIneligible, everActive, ineligibleSweeps, eligibilityAlerted },
+        eligibilitySustainMinSweeps,
+      );
+      if (currentlyIneligible) {
+        if (eligVerdict.shouldAlarm) {
+          // Cross-process exactly-once: only the writer that flips eligibility_alerted false→true alarms.
+          const eligFlip = await sql`
+            UPDATE harness_shared.routines
+               SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"eligibility_alerted":true}'::jsonb,
+                   updated_at = now()
+             WHERE install_slug = ${row.install_slug}
+               AND target_role = 'system:git-sync'
+               AND COALESCE((metadata->>'eligibility_alerted')::boolean, false) = false`;
+          if (eligFlip.count === 1) {
+            const diagnosis = gitSyncEligibilityLossDiagnosis(row.install_slug, row.last_skip_reason);
+            try {
+              const { notifyAttention } = await import('../attention-notify');
+              await notifyAttention({
+                kind: 'intervention',
+                title: diagnosis.title,
+                body: `git-sync (${row.install_slug}): ${diagnosis.summary}`,
+                importance: 'urgent',
+                workspaceId: row.workspace_id,
+                data: { skipReason: row.last_skip_reason, ineligibleSweeps },
+              });
+            } catch (e) {
+              console.warn(
+                `[git-sync-stall-watchdog] eligibility-loss notify failed: ${e instanceof Error ? e.message : e}`,
+              );
+            }
+            // Same fleet-broadcast shape as the stall alarm: inject-only (wake=false), one-shot
+            // until the paired recovery below (our silence is deliberate, never evidence it re-admitted).
+            await broadcastSevereEvent({
+              summary: diagnosis.summary,
+              body: diagnosis.why,
+              category: 'severe-event',
+              conditionKey: `git-sync-eligibility-loss:${row.install_slug}`,
+              oneShot: true,
+            });
+            try {
+              await sql`
+                INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+                VALUES (${row.install_slug}, ${ELIGIBILITY_WATCHDOG_PHASE}, ${gitSyncEligibilityLossEscalationBody({
+                  installSlug: row.install_slug,
+                  skipReason: row.last_skip_reason,
+                  ineligibleSweeps,
+                  nowMs: now,
+                })}, ${now}, ${row.workspace_id})
+                ON CONFLICT (harness_slug, phase)
+                DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+            } catch (e) {
+              console.warn(
+                `[git-sync-stall-watchdog] eligibility-loss escalation write failed: ${e instanceof Error ? e.message : e}`,
+              );
+            }
+            out.eligibilityAlarmed.push(row.install_slug);
+            console.warn(
+              `[git-sync-stall-watchdog] ELIGIBILITY-LOSS ALARM ${row.install_slug}: ${row.last_skip_reason}`,
+            );
+          }
+        }
+        // else: ineligible but not (yet) alarming — never active, already alerted, or not yet
+        // sustained across eligibilitySustainMinSweeps. Deliberately touches NOTHING else: while
+        // an alarm is live (eligibilityAlerted:true) the escalation row must stay in place, so the
+        // convergence step below is scoped to the ELIGIBLE branch only (mirrors the stall detector).
+      } else {
+        // Eligible this sweep — converge the escalation row unconditionally (not only when OUR
+        // flag is set), same multi-host-race defense the stall detector uses above.
+        const eligCleared = await sql`
+          UPDATE harness_shared.harness_escalations
+             SET escalation = NULL, mtime_ms = ${now}
+           WHERE harness_slug = ${row.install_slug}
+             AND phase = ${ELIGIBILITY_WATCHDOG_PHASE}
+             AND escalation IS NOT NULL`;
+        if (eligVerdict.shouldResolve) {
+          await sql`
+            UPDATE harness_shared.routines
+               SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"eligibility_alerted":false}'::jsonb,
+                   updated_at = now()
+             WHERE install_slug = ${row.install_slug}
+               AND target_role = 'system:git-sync'`;
+          eligibilityRecoveredForBroadcast.push(row.install_slug);
+          out.eligibilityRecovered.push(row.install_slug);
+        } else if (eligCleared.count > 0) {
+          console.warn(
+            `[git-sync-stall-watchdog] cleared a STRANDED eligibility-loss escalation for ${row.install_slug} (alerted flag was already false — flag/escalation divergence, likely a multi-host race)`,
+          );
+        }
       }
 
       if (verdict.stalled) {
@@ -752,6 +988,19 @@ export async function checkGitSyncStall(
           recoveredForBroadcast.length === 1
             ? `git-sync RECOVERED on ${list} — commits are landing again; the earlier stall alarm is stale.`
             : `git-sync RECOVERED on ${recoveredForBroadcast.length} harnesses (${list}) — commits are landing again; the earlier stall alarms are stale.`,
+      });
+    }
+    // EI-1835: ONE coalesced all-clear for every harness whose eligibility-loss alarm resolved
+    // this sweep — the sibling of the stall coalesced broadcast above, separate condition-key
+    // namespace so it never supersedes/confuses a stall alarm.
+    if (eligibilityRecoveredForBroadcast.length > 0) {
+      const list = eligibilityRecoveredForBroadcast.join(', ');
+      await broadcastSevereEventResolvedMany({
+        conditionKeys: eligibilityRecoveredForBroadcast.map((slug) => `git-sync-eligibility-loss:${slug}`),
+        summary:
+          eligibilityRecoveredForBroadcast.length === 1
+            ? `git-sync ELIGIBILITY RESTORED on ${list} — syncing again; the earlier eligibility-loss alarm is stale.`
+            : `git-sync ELIGIBILITY RESTORED on ${eligibilityRecoveredForBroadcast.length} harnesses (${list}) — syncing again; the earlier eligibility-loss alarms are stale.`,
       });
     }
     return out;
