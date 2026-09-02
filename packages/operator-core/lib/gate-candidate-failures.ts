@@ -252,6 +252,14 @@ async function movesBetween(
   candidateSha: string,
   repairHeadSha: string,
 ): Promise<ElsewhereMoves> {
+  // EI-22131981911313887: a ref cannot differ from ITSELF, so on a queue whose repairHead has
+  // not advanced this is knowable without asking git at all. Answering it structurally matters
+  // because the tree-id branch below is fail-SOFT: if either `rev-parse` returns null (an
+  // unreadable repo, a pruned object) the result degrades to `unknown`, and `unknown` is what
+  // `stillBrokenNeedsRunCount` treats as "a fix may be riding a non-test file that moved" —
+  // presuming a carrier that cannot exist. Short-circuiting keeps the invariant true even when
+  // git answers nothing, and saves two pointless subprocesses on the common fresh-queue path.
+  if (candidateSha === repairHeadSha) return { kind: 'none' };
   const [candTree, headTree] = await Promise.all([
     git(root, ['rev-parse', `${candidateSha}^{tree}`]),
     git(root, ['rev-parse', `${repairHeadSha}^{tree}`]),
@@ -298,6 +306,36 @@ async function compareOne(
   subs: readonly string[],
   moves: ElsewhereMoves,
 ): Promise<Pick<GateCandidateFailingFile, 'fixInRepairHead' | 'comparison' | 'candidateBlob' | 'repairHeadBlob' | 'reading'>> {
+  // EI-22131981911313887: `repairHead` starts EQUAL to the candidate and stays there until a
+  // fixer commits (see frozen-candidate-repair-queue.ts — "starts equal to `candidate` and stays
+  // there"), so this is the ordinary state of every freshly-frozen queue, not a resolver fault.
+  // Without this branch both `rev-parse` calls resolve the SAME ref, `movesBetween` diffs a ref
+  // against itself and returns `none`, and the generic path below then renders a two-ref
+  // comparison (`X:<path> vs X:<path>`) plus "nothing else moved between the two refs" — prose
+  // describing a measurement nobody performed. That dead-ended string reads as an implementation
+  // bug and was filed as one; the reporter compared a pre-converge cell reading against a
+  // post-converge queue reading and concluded the cell compared a blob against itself.
+  //
+  // The VERDICT deliberately stays `false`, NOT `null`: nothing can have landed on a head that
+  // has not moved, so every failing file here is genuinely unrepaired and the caller's
+  // "fix the files whose fixInRepairHead is false" advice is exactly right. Downgrading these to
+  // `null` would collapse `stillBrokenCount` to 0 and flip the assessment to `unmeasured`
+  // precisely when a fresh queue's advice is most actionable — the reassuring-degradation
+  // failure this cell was filed to end. Only the EXPLANATION changes.
+  if (candidateSha === repairHeadSha) {
+    return {
+      fixInRepairHead: false,
+      comparison:
+        `not compared — repairHead is still the frozen candidate ${candidateSha.slice(0, 12)}, ` +
+        `so there are not two refs to compare`,
+      candidateBlob: null,
+      repairHeadBlob: null,
+      reading:
+        'STILL BROKEN — repairHead has not advanced from the frozen candidate, so no fixer has ' +
+        'committed yet and no fix can have landed for ANY file on this queue. This one is real ' +
+        'work. (Nothing was blob-compared: with a single ref there is nothing to compare.)',
+    };
+  }
   const sub = submoduleFor(path, subs);
   if (sub) {
     // Compare the GITLINK, not the file. `git diff --raw` emits mode 160000 rows for

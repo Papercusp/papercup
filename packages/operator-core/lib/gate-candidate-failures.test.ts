@@ -347,4 +347,74 @@ describe('readGateCandidateFailures', () => {
     expect(res.stillBrokenNeedsRunCount).toBe(1);
     expect(res.changedBetweenRefs).toBeNull();
   });
+
+  describe('when repairHead has not advanced from the candidate (EI-22131981911313887)', () => {
+    /**
+     * The ordinary state of a freshly-frozen queue: `repairHead` starts equal to `candidate`
+     * and stays there until a fixer commits. Measured 2026-09-02, ALL THREE live installs
+     * (papercusp / oddsmith / hello-world-3) sat in exactly this state.
+     */
+    const sameShaResult = () =>
+      readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: CANDIDATE,
+        root: '/repo',
+        sql: fakeSql({
+          filesJudged: 5550,
+          failing: [{ file_path: 'packages/operator-core/lib/kopia-backup-guard.test.ts', status: 'fail', attempts: 4 }],
+        }),
+        // Deliberately EMPTY: with one ref there is nothing to compare, so a correct
+        // implementation must not need a single blob lookup to answer.
+        git: fakeGit({}),
+      });
+
+    it('does not render a self-comparison that reads as an implementation bug', async () => {
+      // The WRONG reading first: `git rev-parse <sha>:<path> vs <sha>:<path>` names the same
+      // sha twice. It was filed as "the cell compares the candidate blob against ITSELF",
+      // costing a reporter's investigation and this one — the comparison string is the only
+      // thing a reader has, and it described a two-ref measurement that never happened.
+      const res = await sameShaResult();
+      const { comparison } = res.distinctFailingFiles[0];
+
+      expect(comparison).not.toMatch(
+        new RegExp(`${CANDIDATE.slice(0, 12)}:[^\\s]+\\s+vs\\s+${CANDIDATE.slice(0, 12)}:`),
+      );
+      expect(comparison).toMatch(/not compared/i);
+      expect(comparison).toMatch(/repairHead is still the frozen candidate/i);
+    });
+
+    it('does not claim "nothing else moved between the two refs" when there is only one ref', async () => {
+      // `movesBetween` diffs a ref against itself and honestly returns `none`, which used to
+      // feed the STRONGEST hedge-free reading. True by luck, but derived from a vacuous
+      // comparison and phrased as though two refs had been examined.
+      const res = await sameShaResult();
+      const { reading } = res.distinctFailingFiles[0];
+
+      expect(reading).not.toMatch(/nothing else moved between/i);
+      expect(reading).toMatch(/repairHead has not advanced/i);
+      expect(reading).toMatch(/no fixer has committed/i);
+    });
+
+    it('KEEPS the still-broken verdict — the fix must not be an over-correction to null', async () => {
+      // Guards the deliberate call made when this was fixed. Nothing can have landed on a head
+      // that has not moved, so these files ARE genuinely unrepaired and "go fix them" is right.
+      // Downgrading them to `null` would zero `stillBrokenCount` and flip the assessment to
+      // `unmeasured` exactly when a fresh queue's advice is most actionable — the
+      // reassuring-degradation failure this cell exists to prevent.
+      const res = await sameShaResult();
+
+      expect(res.distinctFailingFiles[0].fixInRepairHead).toBe(false);
+      expect(res.stillBrokenCount).toBe(1);
+      expect(res.alreadyFixedCount).toBe(0);
+      expect(res.assessment).toBe('repairs-outstanding');
+    });
+
+    it('does not presume a hidden non-test carrier when the refs are identical', async () => {
+      // `stillBrokenNeedsRunCount` flags rows whose fix might ride a non-test file that moved.
+      // With one ref nothing moved at all, so nothing is merely PRESUMED broken.
+      const res = await sameShaResult();
+
+      expect(res.stillBrokenNeedsRunCount).toBe(0);
+    });
+  });
 });
