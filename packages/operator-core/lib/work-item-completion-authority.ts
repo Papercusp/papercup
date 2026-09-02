@@ -438,6 +438,7 @@ export type InsufficientEvidenceReason =
   | 'no-verified-how'
   | 'no-test-run-or-result'
   | 'added-tests-without-path'
+  | 'test-result-contradicted-by-run'
   | 'files-changed-never-existed';
 
 /**
@@ -467,6 +468,27 @@ export interface CompletionEvidenceFindings {
    * from cause 2, and only cause 1 belongs here.
    */
   filesChangedNeverExisted?: readonly string[];
+
+  /**
+   * The closing agent's own most recent `testing:run` went RED in the `test_runs` ledger,
+   * so the declared `testsRun`/`testResult` is contradicted by a ledgered verdict.
+   *
+   * P-002 / D-017: today any non-empty test string satisfies the gate, so the literal
+   * `"3 failed"` earns `committed` — the check reads that a field is PRESENT, never that
+   * it says anything true. This field carries the falsifiable half: a run group id and the
+   * files that failed in it, so the refusal can CITE the run rather than assert a verdict.
+   *
+   * Resolution lives in `agent-tools/work_items/test-result-binding.ts` and is generous by
+   * construction — only the agent's most recent run is judged (fixing a red and re-running
+   * green is normal good work), a window resolving to more than one run group is refused
+   * outright (that is the concurrent-peer case, and no column says which group is ours),
+   * and only `fail`/`error` count. Absence means "not judged", never "judged clean".
+   */
+  testRunContradictedByLedger?: {
+    runGroupId: string;
+    failingFiles: readonly string[];
+    filesInRun: number;
+  };
 }
 
 /**
@@ -494,6 +516,18 @@ export function insufficientEvidenceReason(
   // EI-20093150500083378); this one refuses the record that names none at all.
   if (evidence.addedTests === true && !evidence.filesChanged?.some((f) => f.trim())) {
     return 'added-tests-without-path';
+  }
+  // P-002 / D-017. FIRST of the two present-and-wrong checks, deliberately: a red test run
+  // means the WORK is not finished, while a fabricated path means the RECORD is wrong about
+  // finished work. A close failing both should hear the blocking one first — "your own last
+  // test run failed" is what has to change before the close is legitimate at all, and being
+  // told to fix a path list instead would send the agent to repair the smaller problem.
+  //
+  // Reaching this line means the caller ran the ledger probe AND it resolved a run group
+  // with a red row in it. Every ambiguity upstream (no run, a stale run, a window spanning
+  // two groups, an unstamped row, any throw) leaves the field undefined and falls through.
+  if (findings?.testRunContradictedByLedger?.failingFiles?.length) {
+    return 'test-result-contradicted-by-run';
   }
   // P-001 / D-016. LAST deliberately: the four checks above name a MISSING field, whose
   // remedy is "supply it". This one names a field that is present and wrong, whose remedy

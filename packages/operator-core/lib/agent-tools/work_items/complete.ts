@@ -107,6 +107,12 @@ import {
   type CompletionEvidenceFindings,
 } from '../../work-item-completion-authority';
 import { fabricatedPathsInCompletion } from './fabricated-paths';
+import {
+  MAX_TEST_BINDING_LOOKBACK_MS,
+  testResultContradictedByRun,
+  type TestRunLedgerRow,
+  type TestingRunInvocation,
+} from './test-result-binding';
 import { gateRedCompletionClaimWarning } from '../../release/gate-red-completion-claim';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
@@ -1987,6 +1993,81 @@ export async function synchronizeFinishWork(
  */
 const SELF_REVIEW_UNCLAIMED_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * P-002 / D-017: the closing agent's most recent `testing:run`, or `null` when there is
+ * none in the lookback window.
+ *
+ * This is the ATTRIBUTION half of the ledger binding, and it is the only reason the
+ * binding is safe. Neither `test_runs` nor `testing_run_snapshots` records which agent ran
+ * a suite, so "the newest row for this file" is somebody else's result on a tree ~100
+ * agents test against concurrently. `tool_invocations.coord_owner_id` is the column that
+ * does say whose run it was; the partial index `(coord_owner_id, invoked_at DESC)` is what
+ * makes asking cheap enough to do on every close.
+ *
+ * Fails soft to `undefined` ("cannot judge"), never to `null` ("looked, found none") — the
+ * two are the same silence downstream, but conflating them here would let a database error
+ * masquerade as a positive finding of no runs.
+ */
+async function latestTestingRunForOwner(
+  ownerId: string,
+  workspaceId: string | null,
+  harnessSlug: string | null,
+): Promise<TestingRunInvocation | null | undefined> {
+  try {
+    if (!ownerId) return null;
+    const { sql } = getOrgPg();
+    const cutoff = new Date(Date.now() - MAX_TEST_BINDING_LOOKBACK_MS);
+    const rows = await sql<Array<{ invoked_at: Date; duration_ms: number | null; files: unknown }>>`
+      SELECT invoked_at, duration_ms, args_json->'files' AS files
+        FROM harness_shared.tool_invocations
+       WHERE coord_owner_id = ${ownerId}
+         AND invoked_at >= ${cutoff}
+         AND tool_name = 'testing:run'
+         AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
+         AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
+       ORDER BY invoked_at DESC
+       LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    const files = Array.isArray(row.files) ? row.files.filter((f): f is string => typeof f === 'string') : [];
+    return { invokedAt: new Date(row.invoked_at), durationMs: row.duration_ms ?? null, files };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * P-002 / D-017: `test_runs` rows for `paths` finishing inside the invocation window.
+ *
+ * Deliberately NOT scoped by workspace/harness: those columns are NULL on exactly the
+ * high-volume vitest reporter path unless the run was harness-stamped, so predicating on
+ * them would return zero rows for most real runs — silence that reads as "no ledger",
+ * which is the failure mode that makes a detector quietly inert. The `(file_path,
+ * finished_at DESC)` index carries the query, and the caller's single-run-group rule
+ * supplies the attribution that scoping would not have added anyway.
+ */
+async function testRunLedgerRowsInWindow(
+  paths: readonly string[],
+  from: Date,
+  to: Date,
+): Promise<readonly TestRunLedgerRow[] | undefined> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ file_path: string; status: string; run_group_id: string | null }>>`
+      SELECT file_path, status, run_group_id
+        FROM harness_shared.test_runs
+       WHERE file_path = ANY(${paths as string[]})
+         AND finished_at >= ${from}
+         AND finished_at <= ${to}
+       LIMIT 200
+    `;
+    return rows.map((r) => ({ filePath: r.file_path, status: r.status, runGroupId: r.run_group_id }));
+  } catch {
+    return undefined;
+  }
+}
+
 async function completeOne(
   it: CompleteItem,
   ident: { ownerId: string; ownerLabel?: string; adoptedName?: string | null },
@@ -2589,9 +2670,29 @@ async function completeOne(
   const fabricatedPaths = initialUnresolvedPaths
     ? fabricatedPathsInCompletion(completionEvidenceForGate, { repoRoots: registeredRepoRoots ?? [] })
     : undefined;
-  const completionEvidenceFindings: CompletionEvidenceFindings | undefined = fabricatedPaths
-    ? { filesChangedNeverExisted: fabricatedPaths.neverExisted }
-    : undefined;
+
+  // P-002 / D-017: make `testResult` FALSIFIABLE against the run ledger.
+  //
+  // Gated on `authorityByEvidence === 'committed'` so the two queries are paid ONLY on a
+  // close that would otherwise EARN the top grade — a close already landing `proposed`
+  // cannot be lowered further, so spending a database round-trip on it buys nothing. Same
+  // gating discipline as the fabricated-path probe above.
+  const testRunContradiction =
+    authorityByEvidence === 'committed'
+      ? await testResultContradictedByRun(completionEvidenceForGate, {
+          latestTestingRun: () =>
+            latestTestingRunForOwner(ident.ownerId, ctx.workspaceId ?? null, it.harness ?? existing.harness ?? null),
+          ledgerRowsInWindow: (paths, from, to) => testRunLedgerRowsInWindow(paths, from, to),
+        })
+      : undefined;
+
+  const completionEvidenceFindings: CompletionEvidenceFindings | undefined =
+    fabricatedPaths || testRunContradiction
+      ? {
+          ...(fabricatedPaths ? { filesChangedNeverExisted: fabricatedPaths.neverExisted } : {}),
+          ...(testRunContradiction ? { testRunContradictedByLedger: testRunContradiction } : {}),
+        }
+      : undefined;
   // Re-run the SAME single decision point with the findings folded in, rather than overriding
   // its verdict afterwards — so the grade and its explanation stay computed once and cannot
   // disagree, which is the property work-item-completion-authority.ts exists to guarantee.
@@ -2615,6 +2716,24 @@ async function completeOne(
         `verify the paths on disk and re-call work_items:complete with an ARRAY of bare repo-relative ` +
         `paths that actually exist, for example \`filesChanged: ["path/to/file.ts"]\`.`
       : undefined;
+
+  // Same anti-refusal-loop obligation as above, and the reason this message CITES the run
+  // group: an agent told only "your evidence was insufficient" cannot tell which gate fired
+  // and re-sends the fields it already sent. Naming the run id and the failing files makes
+  // the verdict checkable — the agent can re-read that exact run rather than take the
+  // server's word — and naming what is silent stops it reading as a general accusation.
+  const testRunContradictionWarning = testRunContradiction
+    ? `completion for ${it.id} landed authority:'proposed' rather than 'committed': your most recent ` +
+      `\`testing:run\` (run group ${testRunContradiction.runGroupId}) is recorded in the test_runs ledger ` +
+      `with ${testRunContradiction.failingFiles.length} of ${testRunContradiction.filesInRun} file(s) ` +
+      `FAILING: ${testRunContradiction.failingFiles.join(', ')}. The declared \`testResult\` is therefore ` +
+      `contradicted by a real run — before this check, any non-empty string satisfied the gate, so the ` +
+      `literal "3 failed" earned 'committed'. This is NOT triggered by an earlier red you already fixed ` +
+      `(only your LATEST run is read), by a run another agent made (a window resolving to more than one ` +
+      `run group is refused outright), or by \`skip\`/\`cancelled\`/\`running\` rows, all of which are ` +
+      `silent. To fix: make those files pass, re-run them with testing:run, and re-call ` +
+      `work_items:complete — the newer green run then supersedes this one.`
+    : undefined;
 
   // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed
   // against. Applied to the PERSISTED object only — never to `completionEvidenceForGate`
@@ -3392,6 +3511,7 @@ async function completeOne(
     ...(liveDriveEvidenceWarning ? { liveDriveEvidenceWarning } : {}),
     ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
     ...(fabricatedPathsWarning ? { fabricatedPathsWarning } : {}),
+    ...(testRunContradictionWarning ? { testRunContradictionWarning } : {}),
     ...(gateRedClaimWarning
       ? {
           gateRedClaimWarning,

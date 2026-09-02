@@ -197,6 +197,69 @@ describe('the evidence minimum for `committed`', () => {
   });
 });
 
+describe('a ledgered red run refuses `committed` (P-002 / D-017)', () => {
+  const GREEN_ON_ITS_FACE = { verifiedHow: 'unit', testsRun: 'testing:run', testResult: 'passed' } as const;
+
+  it('accepts any non-empty test string when NOTHING was judged — today’s grade, unchanged', () => {
+    // The fail-open property, asserted from this side too: the whole binding is opt-in on
+    // the caller running the probe, so an absent finding must never move the grade. This is
+    // also the exact hole P-002 closes — "3 failed" is a non-empty string.
+    expect(authorityForCompletion({ verifiedHow: 'unit', testResult: '3 failed' })).toBe('committed');
+    expect(authorityForCompletion(GREEN_ON_ITS_FACE, {})).toBe('committed');
+    expect(authorityForCompletion(GREEN_ON_ITS_FACE, undefined)).toBe('committed');
+  });
+
+  it('downgrades to `proposed` when the ledger contradicts the declared result', () => {
+    expect(
+      authorityForCompletion(GREEN_ON_ITS_FACE, {
+        testRunContradictedByLedger: { runGroupId: 'g1', failingFiles: ['a.test.ts'], filesInRun: 3 },
+      }),
+    ).toBe('proposed');
+  });
+
+  it('names its own reason rather than borrowing another gate’s remedy', () => {
+    // The enum is per-reason precisely because a caller told the wrong remedy re-submits
+    // the fields it already sent. "Your last run was red" and "you named no test" have
+    // nothing in common as repairs.
+    expect(
+      insufficientEvidenceReason(GREEN_ON_ITS_FACE, {
+        testRunContradictedByLedger: { runGroupId: 'g1', failingFiles: ['a.test.ts'], filesInRun: 1 },
+      }),
+    ).toBe('test-result-contradicted-by-run');
+  });
+
+  it('an EMPTY failing list is not a finding — a green run must stay silent', () => {
+    expect(
+      authorityForCompletion(GREEN_ON_ITS_FACE, {
+        testRunContradictedByLedger: { runGroupId: 'g1', failingFiles: [], filesInRun: 3 },
+      }),
+    ).toBe('committed');
+  });
+
+  it('reports the RED RUN before a fabricated path when both fire', () => {
+    // Ordering is load-bearing, not cosmetic: a red run means the WORK is unfinished, a bad
+    // path means the RECORD is wrong about finished work. Told the path first, the agent
+    // repairs the smaller problem and re-closes on a suite that is still failing.
+    expect(
+      insufficientEvidenceReason(GREEN_ON_ITS_FACE, {
+        filesChangedNeverExisted: ['imaginary/file.ts'],
+        testRunContradictedByLedger: { runGroupId: 'g1', failingFiles: ['a.test.ts'], filesInRun: 1 },
+      }),
+    ).toBe('test-result-contradicted-by-run');
+  });
+
+  it('still reports a MISSING field ahead of either present-and-wrong check', () => {
+    // Supplying an absent field is the cheaper, more basic repair, so the four
+    // missing-field reasons keep precedence over both findings.
+    expect(
+      insufficientEvidenceReason(
+        { testsRun: 'testing:run', testResult: 'passed' },
+        { testRunContradictedByLedger: { runGroupId: 'g1', failingFiles: ['a.test.ts'], filesInRun: 1 } },
+      ),
+    ).toBe('no-verified-how');
+  });
+});
+
 describe('`addedTests: true` makes a path necessary (EI-18685043434033870)', () => {
   // The owner's complaint was a close that was "entirely true, but unverifiable until I
   // asked for a path". A path is not required unconditionally — see the calibration note
