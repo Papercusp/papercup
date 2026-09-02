@@ -1131,9 +1131,11 @@ export const CC_HOOK_FILES = [
   // specifier-line suppression anchor, which is the whole of shape 2.
   'posttooluse-mjs-import-declaration-nudge.mjs',
   // EI-22085994981415983: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an
-  // edit introduces a hand-rolled ESM CLI-entry guard — `import.meta.url ===
-  // pathToFileURL(process.argv[1]).href` and its `file://${process.argv[1]}` /
-  // `fileURLToPath(import.meta.url) === process.argv[1]` spellings. Correct unbundled and a
+  // edit introduces a hand-rolled ESM CLI-entry guard — comparing `import.meta.url` against
+  // `pathToFileURL(process.argv[1]).href` or against `file://${process.argv[1]}`, or comparing
+  // `fileURLToPath(import.meta.url)` against `process.argv[1]` (the three naive spellings; this
+  // comment deliberately does not spell any of them out verbatim, because cli-entry.test.ts's
+  // detector regex would otherwise match the prose). Correct unbundled and a
   // BOOT-TIME LANDMINE once esbuild inlines the module into the desktop sidecar: every inlined
   // module inherits the bundle entry's import.meta.url, so the comparison is true for every
   // imported CLI and runs its main()/process.exit() during host boot (EI-650 — the sidecar
