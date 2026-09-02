@@ -53,7 +53,18 @@ function fixture(memory = 0, io = 0) {
       KOPIA_BACKUP_MEM_FULL_AVG10_MAX: '5',
       KOPIA_BACKUP_IO_FULL_AVG10_MAX: '10',
       KOPIA_BACKUP_MONITOR_INTERVAL_SEC: '0.05',
-      KOPIA_BACKUP_STOP_GRACE_SEC: '2',
+      // The guard's OWN production default (20s), not a shortened test value. This was '2',
+      // which made the runtime-pressure test a bet on host scheduling latency: the grace is
+      // how long a TERM'd child has to run its trap, and on a loaded box (this one carries
+      // ~76 agents) a bash child is not always scheduled within 2s. Past the deadline the
+      // guard escalates to `kill -KILL`, and bash then writes its own job-control notice —
+      // `kopia-backup-guard.sh: line NNN: <pid> Killed "$@"` — to the script's stderr, which
+      // `expect(stderr).toBe('')` reads as a failure. Measured on the gate: 8 CI failures
+      // across candidates 8e567cf5 and 8b151666 (2026-09-02), passing locally every time.
+      // Raising it costs NOTHING in the happy path: `stop_grace` is a DEADLINE, not a sleep —
+      // the guard polls `kill -0` every 0.1s and breaks the moment the child exits. No test
+      // asserts the `killing-after-grace` escalation, so nothing depends on the short value.
+      KOPIA_BACKUP_STOP_GRACE_SEC: '20',
     },
   };
 }
@@ -230,7 +241,13 @@ describe('Kopia global backup guard', () => {
     expect(stdout).toContain('result=stopping-during-run reason=memory-pressure');
     expect(stdout).toContain('result=deferred-during-run reason=memory-pressure');
     expect(stdout).not.toContain('result=finished mode=scheduled');
-  });
+    // 30s, deliberately WIDER than the fixture's 20s KOPIA_BACKUP_STOP_GRACE_SEC. There is no
+    // testTimeout in either vitest config, so the default is 5s — narrower than the grace the
+    // guard is configured to honour. A child slow to be scheduled would then blow the test
+    // timeout before the guard ever reached its deadline, and the grace could never actually
+    // be exercised. Costs nothing normally: this test completes in well under a second when
+    // the child handles TERM promptly.
+  }, 30_000);
 
   it('defers a scheduled contender while a backup holds the lock', () => {
     const { dir, env } = fixture();
