@@ -375,12 +375,45 @@ function isLikelyCatastrophicRegex(re: string): boolean {
 }
 
 /**
+ * EI-22076120901648689: agents routinely write filters in the PCRE/Perl/Go
+ * convention of a bare inline-flag prefix — `(?i)word`, `(?im)^err` — to mean
+ * "apply these flags to the rest of the pattern". JavaScript's RegExp has no
+ * such bare form (its 2023 modifiers proposal only recognizes the wrapping
+ * `(?i:...)` group form), so `new RegExp('(?i)word')` always throws
+ * `SyntaxError: Invalid group`. Since this tool's own schema says it "mirrors
+ * the native BashOutput filter", that throw reads as a server mismatch rather
+ * than a caller mistake. Recognized letters are lifted onto JS's RegExp
+ * flags instead of being rejected; an unrecognized letter (e.g. PCRE `x` for
+ * free-spacing mode, which JS has no equivalent for) is left alone so the
+ * normal invalid-regex fallback below still applies.
+ */
+const PCRE_INLINE_FLAGS_PREFIX = /^\(\?([a-zA-Z]+)\)/;
+const SUPPORTED_JS_FLAG_CHARS = new Set(['i', 'm', 's']);
+
+/**
+ * Strip a leading PCRE-style bare inline-flag group (`(?i)`, `(?im)`, …) off
+ * `pattern` and translate it to JS RegExp flags, when every flag letter has a
+ * JS equivalent. Otherwise returns `pattern` unchanged with no flags, so the
+ * caller's normal `new RegExp` attempt (and its error-fallback path) runs
+ * exactly as before.
+ */
+function stripPcreInlineFlags(pattern: string): { pattern: string; flags: string } {
+  const m = pattern.match(PCRE_INLINE_FLAGS_PREFIX);
+  if (!m) return { pattern, flags: '' };
+  const chars = m[1].split('');
+  if (chars.length === 0 || !chars.every((c) => SUPPORTED_JS_FLAG_CHARS.has(c))) return { pattern, flags: '' };
+  return { pattern: pattern.slice(m[0].length), flags: Array.from(new Set(chars)).join('') };
+}
+
+/**
  * Apply the native-BashOutput `filter` regex to an output chunk: keep only the
  * LINES matching `filter` (the caller advances the cursor over the full chunk
  * regardless, so non-matching lines aren't re-shown). Never throws or hangs: an
  * invalid OR ReDoS-prone OR over-long regex returns the unfiltered chunk plus an
  * `error` note (the filter runs in the shared operator process, so an
- * agent-supplied pattern must not be able to wedge it). Exported pure for
+ * agent-supplied pattern must not be able to wedge it). A leading PCRE-style
+ * bare inline-flag prefix (`(?i)`, `(?im)`, `(?is)`) is honored rather than
+ * treated as invalid — see `stripPcreInlineFlags`. Exported pure for
  * deterministic unit testing (no subprocess).
  */
 export function filterOutputLines(chunk: string, filter: string | undefined): { output: string; error?: string } {
@@ -395,7 +428,8 @@ export function filterOutputLines(chunk: string, filter: string | undefined): { 
     };
   }
   try {
-    const re = new RegExp(filter);
+    const { pattern, flags } = stripPcreInlineFlags(filter);
+    const re = new RegExp(pattern, flags);
     return {
       output: chunk
         .split('\n')
@@ -964,7 +998,7 @@ export default defineTool({
         .string()
         .optional()
         .describe(
-          'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter.',
+          'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter. A leading bare PCRE-style inline-flag prefix — (?i), (?im), (?is) — is honored as JS case-insensitive/multiline/dotAll flags rather than rejected as invalid.',
         ),
       peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
       tail: z

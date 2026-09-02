@@ -50,6 +50,50 @@ describe('filterOutputLines', () => {
     expect(filterOutputLines(chunk, 'a(pp|pr)').error).toBeUndefined();
     expect(filterOutputLines(chunk, 'err|warn|fail').error).toBeUndefined();
   });
+
+  describe('leading PCRE-style bare inline-flag prefix (EI-22076120901648689)', () => {
+    it('(?i) applies case-insensitive matching instead of throwing "Invalid group"', () => {
+      const r = filterOutputLines(chunk, '(?i)APPLE');
+      expect(r.error).toBeUndefined();
+      expect(r.output).toBe('apple');
+    });
+
+    it('(?im) composes case-insensitive with multiline anchors', () => {
+      const multiline = 'Line One\nline two\nLINE THREE';
+      const r = filterOutputLines(multiline, '(?im)^line');
+      expect(r.error).toBeUndefined();
+      expect(r.output).toBe(multiline); // every line matches case-insensitively
+    });
+
+    it('a bare (?i) with nothing after it matches every line (empty pattern, i flag applied)', () => {
+      const r = filterOutputLines(chunk, '(?i)');
+      expect(r.error).toBeUndefined();
+      expect(r.output).toBe(chunk);
+    });
+
+    it('an unsupported PCRE flag letter (e.g. x) falls through to the ordinary invalid-regex path', () => {
+      const r = filterOutputLines(chunk, '(?x)apple');
+      // JS has no `x` (free-spacing) flag and no bare-group syntax either way,
+      // so this must still degrade gracefully rather than throw uncaught.
+      expect(r.output).toBe(chunk);
+      expect(r.error).toMatch(/invalid filter regex/);
+    });
+
+    it('a mid-pattern (?i:...) group (not a leading bare prefix) is left untouched — never crashes the tool', () => {
+      // Not the reported failure shape; only a LEADING bare `(?i)` prefix is special-cased,
+      // since PCRE_INLINE_FLAGS_PREFIX requires ')' immediately after the flag letters.
+      // Whether the runtime's RegExp engine accepts the `(?i:...)` group form varies by
+      // Node version — the contract this asserts is only that filterOutputLines still
+      // never throws, per its documented "never throws or hangs" guarantee.
+      expect(() => filterOutputLines(chunk, 'a(?i:PP)le')).not.toThrow();
+    });
+
+    it('is still subject to the ReDoS/length guards ahead of flag stripping', () => {
+      const r = filterOutputLines(chunk, '(?i)' + 'a'.repeat(201));
+      expect(r.output).toBe(chunk);
+      expect(r.error).toMatch(/too long/);
+    });
+  });
 });
 
 describe('stranded job log recovery (EI-20230176152308336)', () => {
