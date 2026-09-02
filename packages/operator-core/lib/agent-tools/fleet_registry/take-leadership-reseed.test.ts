@@ -38,6 +38,11 @@ const OWNER = 'su-bob';
 // drifts when the fleet-member default changes (e.g. owner 2026-07-19: 300k→200k).
 const MEMBER_CAP = COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP;
 const LEADER_CAP = 400_000; // COMPACTION_LIMIT_DEFAULT_1M_CAP
+/** A limit that is provably NEITHER cap — the midpoint cannot equal either
+ *  endpoint while MEMBER_CAP < LEADER_CAP, so a future cap move cannot silently
+ *  turn this fixture into an exact member-seed match (which is what happened to
+ *  the hardcoded 250_000 it replaced). */
+const CUSTOM_LIMIT = Math.round((MEMBER_CAP + LEADER_CAP) / 2);
 
 function presenceWithLimit(limit: number | null) {
   return { compactionLimit: limit } as never;
@@ -65,10 +70,18 @@ describe('reseedLeaderCompactionLimit (P-009 become-a-leader cap re-seed)', () =
   });
 
   it('leaves a deliberately-tuned custom limit untouched (only the EXACT member seed lifts)', async () => {
-    getPresence.mockResolvedValue(presenceWithLimit(250_000));
+    // DERIVED, never a literal: this fixture must be a value that is neither cap,
+    // or it stops testing what it names. It was hardcoded 250_000 — custom while
+    // the member cap was 200k, and exactly the cap after owner 2026-09-02 raised
+    // it to 250k, at which point the re-seed correctly fired and this test failed
+    // for the right reason. The midpoint can never equal either endpoint while
+    // MEMBER_CAP < LEADER_CAP, so the next cap move cannot re-break it.
+    expect(CUSTOM_LIMIT).not.toBe(MEMBER_CAP);
+    expect(CUSTOM_LIMIT).not.toBe(LEADER_CAP);
+    getPresence.mockResolvedValue(presenceWithLimit(CUSTOM_LIMIT));
     const out = await reseedLeaderCompactionLimit(OWNER);
     expect(setCompactionLimit).not.toHaveBeenCalled();
-    expect(out).toMatchObject({ reason: 'already-leader-grade', from: 250_000 });
+    expect(out).toMatchObject({ reason: 'already-leader-grade', from: CUSTOM_LIMIT });
   });
 
   it('does not auto-lift an explicit member-cap override when taking leadership', async () => {

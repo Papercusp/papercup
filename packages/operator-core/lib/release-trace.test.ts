@@ -117,6 +117,10 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       codeAsOfSource: null,
       startedSinceCodeChange: null,
       behindMin: null,
+      // WI-2141731: nothing was probed, so NEITHER evidence source produced a
+      // verdict — same reasoning as `unknownReason` above.
+      evidence: null,
+      reportedSha: null,
       restartLever: null,
       restartSupersededBy: null,
       unknownReason: { code: 'not-measured', detail: 'fixture: no serving probe (lineage-only test)' },

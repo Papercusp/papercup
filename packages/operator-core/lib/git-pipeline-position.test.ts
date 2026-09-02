@@ -90,6 +90,10 @@ const HEALTHY_SERVING: ServingTruth = {
   codeAsOfSource: 'deploy',
   startedSinceCodeChange: true,
   behindMin: null,
+  // This fixture's verdict comes from its two timestamps above, so `start-time`
+  // is what actually produced it (WI-2141731).
+  evidence: 'start-time',
+  reportedSha: null,
   restartLever: 'PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute',
   restartSupersededBy: null,
   unknownReason: null,
@@ -3637,6 +3641,139 @@ describe('evaluateServing: process truth, never a git inference', () => {
   });
 
   /**
+   * WI-2141731 — the serving process's OWN sha, when it reports one, outranks the
+   * start-time inference. These pin the property that matters: the direct
+   * evidence is used when present, and its ABSENCE changes nothing at all.
+   */
+  describe('WI-2141731: the health sha is direct evidence, the inference is the fallback', () => {
+    const DEPLOYED = '6e898b6cf88316fcf1574f049554a6caf16318f0';
+
+    it('a matching health sha proves the process is executing the deployed code', () => {
+      const sv = evaluateServing({
+        runtime: releaseRuntime,
+        // Timestamps that would infer STALE on their own — the direct evidence must win.
+        process: { pid: 7, startedAtMs: 1_000 },
+        codeAsOfMs: 9_000,
+        codeAsOfSource: 'deploy',
+        servingHealthSha: '6e898b6cf8',
+        deployedSha: DEPLOYED,
+      });
+      expect(sv.startedSinceCodeChange).toBe(true);
+      expect(sv.evidence).toBe('health-sha');
+      expect(sv.reportedSha).toBe('6e898b6cf8');
+      // A duration is NOT derivable from two shas; claiming one would be invented.
+      expect(sv.behindMin).toBeNull();
+    });
+
+    it('a SHORT health sha still matches the full deployed sha (prefix, not equality)', () => {
+      // The regression this pins: `===` reports a MISMATCH for every healthy
+      // deploy, because /api/health reports `rev-parse --short` and the deployed
+      // sha is the full 40 — a confident false "restart required".
+      const sv = evaluateServing({
+        runtime: releaseRuntime,
+        process: { pid: 7, startedAtMs: 9_000 },
+        codeAsOfMs: 1_000,
+        codeAsOfSource: 'deploy',
+        servingHealthSha: '6E898B6', // 7 chars + upper case: both must normalize
+        deployedSha: DEPLOYED,
+      });
+      expect(sv.startedSinceCodeChange).toBe(true);
+      expect(sv.evidence).toBe('health-sha');
+    });
+
+    it('a DIFFERING health sha reports stale and keeps the restart lever', () => {
+      const sv = evaluateServing({
+        runtime: releaseRuntime,
+        // Timestamps that would infer LIVE on their own. This is the case the
+        // inference structurally cannot catch: the process did restart after the
+        // code changed, but it loaded DIFFERENT code than expected.
+        process: { pid: 7, startedAtMs: 9_000 },
+        codeAsOfMs: 1_000,
+        codeAsOfSource: 'deploy',
+        servingHealthSha: 'deadbeef12',
+        deployedSha: DEPLOYED,
+      });
+      expect(sv.startedSinceCodeChange).toBe(false);
+      expect(sv.evidence).toBe('health-sha');
+      expect(sv.restartLever).toBeTruthy();
+    });
+
+    it('a sha-only probe becomes ANSWERABLE once the process reports its sha', () => {
+      // Before this, a sha-only read was structurally not-applicable: the
+      // inference needs a path to find a host. The health sha needs neither.
+      const sv = evaluateServing({
+        runtime: null,
+        process: null,
+        codeAsOfMs: null,
+        codeAsOfSource: null,
+        servingHealthSha: '6e898b6cf8',
+        deployedSha: DEPLOYED,
+      });
+      expect(sv.startedSinceCodeChange).toBe(true);
+      expect(sv.evidence).toBe('health-sha');
+      expect(sv.unknownReason).toBeNull();
+    });
+
+    it('NO health answer falls through to the start-time inference, unchanged', () => {
+      const args = {
+        runtime: releaseRuntime,
+        process: { pid: 7, startedAtMs: 9_000 },
+        codeAsOfMs: 1_000,
+        codeAsOfSource: 'deploy' as const,
+      };
+      const withoutProbe = evaluateServing(args);
+      const probeTimedOut = evaluateServing({ ...args, servingHealthSha: null, deployedSha: DEPLOYED });
+      // Byte-identical: a wedged :3070 must cost the caller nothing but latency.
+      expect(probeTimedOut).toEqual(withoutProbe);
+      expect(probeTimedOut.evidence).toBe('start-time');
+      expect(probeTimedOut.startedSinceCodeChange).toBe(true);
+    });
+
+    it('refuses to conclude from a sha prefix too short to be unique', () => {
+      // A 4-char prefix collides with unrelated commits, and the failure
+      // direction is the bad one (a false "it's live"). Fall back instead.
+      const sv = evaluateServing({
+        runtime: releaseRuntime,
+        process: { pid: 7, startedAtMs: 1_000 },
+        codeAsOfMs: 9_000,
+        codeAsOfSource: 'deploy',
+        servingHealthSha: '6e89',
+        deployedSha: DEPLOYED,
+      });
+      expect(sv.evidence).toBe('start-time');
+      expect(sv.startedSinceCodeChange).toBe(false);
+    });
+
+    it('a non-hex health body is ignored rather than compared', () => {
+      const sv = evaluateServing({
+        runtime: releaseRuntime,
+        process: { pid: 7, startedAtMs: 9_000 },
+        codeAsOfMs: 1_000,
+        codeAsOfSource: 'deploy',
+        servingHealthSha: 'not-a-sha',
+        deployedSha: DEPLOYED,
+      });
+      expect(sv.evidence).toBe('start-time');
+      expect(sv.reportedSha).toBeNull();
+    });
+
+    it('tauri-desktop stays structurally not-applicable (WI-2141716 not regressed)', () => {
+      const desktop = classifyRuntimeOwner('papercusp-desktop/src-tauri/src/main.rs');
+      if (!desktop || desktop.host !== 'tauri-desktop') return;
+      const sv = evaluateServing({
+        runtime: desktop,
+        process: null,
+        codeAsOfMs: 1_000,
+        codeAsOfSource: 'file-mtime',
+        servingHealthSha: null,
+        deployedSha: DEPLOYED,
+      });
+      expect(sv.unknownReason?.code).toBe('not-applicable');
+      expect(sv.evidence).toBeNull();
+    });
+  });
+
+  /**
    * WI-2141716 — the recurrence guard, and it deliberately spans BOTH functions.
    * The test above proved `evaluateServing` records `not-applicable`; the unit cases
    * for `assessDeployedSha` prove it honours that code. Neither one alone catches the
@@ -3823,6 +3960,8 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       startedAtMs: null,
       pid: null,
       startedSinceCodeChange: null,
+      // Nothing was concluded, so no evidence produced it.
+      evidence: null,
       unknownReason: { code: 'resolver-failed', detail: 'could not read the unit' },
     };
     const s = computeStages(base(unknown));

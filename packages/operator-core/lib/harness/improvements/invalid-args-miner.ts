@@ -93,14 +93,32 @@ export const DEFAULT_INVALID_ARGS_MAX_PER_TICK = 5;
  * than lumped into a per-tool catch-all bucket that could mask a real signal
  * behind noise.
  */
+/**
+ * EI-22170146677569151: known error-CODE tokens that some message shapes
+ * (define-tool.ts's dispatch-stack path: `` `invalid_args: ${formatIssues(...)}` ``)
+ * embed as a literal prefix on the message TEXT itself, ahead of the real
+ * per-issue path list. Such a prefix has the same "identifier followed by
+ * ': '" shape as a genuine zod-issue path, so without stripping it first the
+ * path-prefixed branch below extracts the CODE and mistakes it for the
+ * offending FIELD (measured: 9 of the top 12 mined pairs were this pseudo-key).
+ */
+const CODE_PREFIX_KEYS: ReadonlySet<string> = new Set(['invalid_args', 'invalid_input']);
+
 export function extractOffendingKey(errorMessage: string | null | undefined): string | null {
   if (!errorMessage) return null;
-  const msg = errorMessage.trim();
+  let msg = errorMessage.trim();
   const unrecognized = msg.match(/Unrecognized key\(?s?\)?[^:]*:\s*['"]([a-zA-Z0-9_]+)['"]/i);
   if (unrecognized) return unrecognized[1];
+  for (const codeKey of CODE_PREFIX_KEYS) {
+    const prefix = `${codeKey}: `;
+    if (msg.startsWith(prefix)) {
+      msg = msg.slice(prefix.length);
+      break;
+    }
+  }
   const firstClause = msg.split('; ')[0] ?? '';
   const pathMatch = firstClause.match(/^([a-zA-Z0-9_]+)(?:\.[a-zA-Z0-9_[\]]+)*:\s/);
-  if (pathMatch) return pathMatch[1];
+  if (pathMatch && !CODE_PREFIX_KEYS.has(pathMatch[1])) return pathMatch[1];
   return null;
 }
 

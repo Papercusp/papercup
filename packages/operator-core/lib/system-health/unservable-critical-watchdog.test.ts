@@ -12,7 +12,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   scanUnservableCritical,
   runUnservableCriticalSweepOnce,
-  UNSERVABLE_CRITICAL_MIN_AGE_MS,
+  UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS,
   UNSERVABLE_REPORTED_SEVERITIES,
   type UnservableItemRow,
 } from './unservable-critical-watchdog';
@@ -26,52 +26,90 @@ function row(over: Partial<UnservableItemRow> & Pick<UnservableItemRow, 'itemId'
     harnessSlug: 'papercusp',
     title: 'a stranded thing',
     severity: 'critical',
-    floor: 'needs-human',
+    // An oracle `refusedBy` label, not a locally-invented name (WI-2141964).
+    floor: 'needs-owner-action',
     createdAtMs: NOW - 30 * DAY,
+    lastWriteAtMs: NOW - 30 * DAY,
     ...over,
   };
 }
 
 describe('scanUnservableCritical — what is reported', () => {
-  it('flags an aged critical in the needs-human floor', () => {
+  it('flags a stranded, untouched critical and reports both clocks', () => {
     const alerts = scanUnservableCritical([row({ itemId: 'WI-1' })], NOW);
     expect(alerts.map((a) => a.itemId)).toEqual(['WI-1']);
-    expect(alerts[0].floor).toBe('needs-human');
-    expect(alerts[0].ageMs).toBe(30 * DAY);
+    expect(alerts[0].floor).toBe('needs-owner-action');
+    expect(alerts[0].untouchedMs).toBe(30 * DAY);
+    expect(alerts[0].itemAgeMs).toBe(30 * DAY);
   });
 
-  it('flags an aged critical in the observation lane', () => {
-    const alerts = scanUnservableCritical(
-      [row({ itemId: 'EI-2', floor: 'observation-lane' })],
-      NOW,
-    );
-    expect(alerts.map((a) => a.itemId)).toEqual(['EI-2']);
-    expect(alerts[0].floor).toBe('observation-lane');
-  });
-
-  it('reports oldest first — the longest-stranded item is the likeliest real blocker', () => {
+  it('flags a stranded critical on any structural floor, not just the two once hard-coded', () => {
+    // The whole of WI-2141964: `claim-hold` and `not-claimable-status` were invisible to
+    // the old `lane='observation' OR state='needs-human'` predicate, and accounted for
+    // most of the 26 genuinely-stranded aged criticals it could not see.
     const alerts = scanUnservableCritical(
       [
-        row({ itemId: 'newer', createdAtMs: NOW - 8 * DAY }),
-        row({ itemId: 'oldest', createdAtMs: NOW - 60 * DAY }),
-        row({ itemId: 'middle', createdAtMs: NOW - 20 * DAY }),
+        row({ itemId: 'EI-2', floor: 'observation-lane' }),
+        row({ itemId: 'EI-3', floor: 'claim-hold' }),
+        row({ itemId: 'EI-4', floor: 'not-claimable-status' }),
       ],
       NOW,
     );
-    expect(alerts.map((a) => a.itemId)).toEqual(['oldest', 'middle', 'newer']);
+    expect(alerts.map((a) => a.floor).sort()).toEqual([
+      'claim-hold',
+      'not-claimable-status',
+      'observation-lane',
+    ]);
   });
 
-  it('CALIBRATION: a critical YOUNGER than the age floor is not reported', () => {
+  it('reports longest-UNTOUCHED first — the most abandoned item is the likeliest real blocker', () => {
+    const alerts = scanUnservableCritical(
+      [
+        row({ itemId: 'newer', lastWriteAtMs: NOW - 8 * DAY }),
+        row({ itemId: 'stalest', lastWriteAtMs: NOW - 60 * DAY }),
+        row({ itemId: 'middle', lastWriteAtMs: NOW - 20 * DAY }),
+      ],
+      NOW,
+    );
+    expect(alerts.map((a) => a.itemId)).toEqual(['stalest', 'middle', 'newer']);
+  });
+
+  it('REGRESSION (WI-2141964): an ANCIENT item written to recently is NOT reported', () => {
+    // The creation basis this replaced would alarm on this row — it is 200 days old — even
+    // though somebody wrote to it yesterday, i.e. it is actively being handled. That false
+    // positive is half of why the live alert volume had drifted to 24 from the 5 this
+    // watchdog was tuned for. The stranding signal is ABANDONMENT, which is what this
+    // file's own header always claimed ("NOBODY EVER WROTE TO IT AGAIN").
+    const ancientButActive = row({
+      itemId: 'being-worked',
+      createdAtMs: NOW - 200 * DAY,
+      lastWriteAtMs: NOW - 1 * DAY,
+    });
+    expect(scanUnservableCritical([ancientButActive], NOW)).toEqual([]);
+
+    // CALIBRATION: the same row, abandoned, IS reported — so the empty result above is the
+    // last-write basis discriminating, not the classifier being inert.
+    const ancientAndAbandoned = row({
+      itemId: 'being-worked',
+      createdAtMs: NOW - 200 * DAY,
+      lastWriteAtMs: NOW - 30 * DAY,
+    });
+    expect(scanUnservableCritical([ancientAndAbandoned], NOW).map((a) => a.itemId)).toEqual([
+      'being-worked',
+    ]);
+  });
+
+  it('CALIBRATION: a critical touched more recently than the floor is not reported', () => {
     const justUnder = row({
       itemId: 'fresh',
-      createdAtMs: NOW - (UNSERVABLE_CRITICAL_MIN_AGE_MS - 1),
+      lastWriteAtMs: NOW - (UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS - 1),
     });
     expect(scanUnservableCritical([justUnder], NOW)).toEqual([]);
-    // ...and the SAME row one millisecond older is reported, so the empty result
-    // above is the age floor working rather than the classifier being inert.
+    // ...and the SAME row one millisecond staler is reported, so the empty result
+    // above is the threshold working rather than the classifier being inert.
     const justOver = row({
       itemId: 'fresh',
-      createdAtMs: NOW - UNSERVABLE_CRITICAL_MIN_AGE_MS,
+      lastWriteAtMs: NOW - UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS,
     });
     expect(scanUnservableCritical([justOver], NOW).map((a) => a.itemId)).toEqual(['fresh']);
   });
@@ -108,9 +146,14 @@ describe('scanUnservableCritical — what is reported', () => {
     // would make every assertion above pass while the watchdog never fired in
     // production. Pin both against a row that MUST be reported.
     expect(UNSERVABLE_REPORTED_SEVERITIES.length).toBeGreaterThan(0);
-    expect(UNSERVABLE_CRITICAL_MIN_AGE_MS).toBeGreaterThan(0);
-    expect(UNSERVABLE_CRITICAL_MIN_AGE_MS).toBeLessThan(30 * DAY);
-    const realistic = row({ itemId: 'real', createdAtMs: NOW - 19 * DAY });
+    expect(UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS).toBeGreaterThan(0);
+    expect(UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS).toBeLessThan(30 * DAY);
+    // 19 days untouched — the filed instance's own shape (cup:spawn, hidden 19 days).
+    const realistic = row({
+      itemId: 'real',
+      createdAtMs: NOW - 19 * DAY,
+      lastWriteAtMs: NOW - 19 * DAY,
+    });
     expect(scanUnservableCritical([realistic], NOW)).toHaveLength(1);
   });
 });
@@ -178,7 +221,7 @@ describe('runUnservableCriticalSweepOnce', () => {
     const res = await runUnservableCriticalSweepOnce(sql, {
       flagEnabled: async () => true,
       readRows: async () => [
-        row({ itemId: 'young', createdAtMs: NOW - 1 * DAY }),
+        row({ itemId: 'recently-touched', createdAtMs: NOW - 1 * DAY, lastWriteAtMs: NOW - 1 * DAY }),
         row({ itemId: 'major', severity: 'major' }),
       ],
       escalate: async () => {

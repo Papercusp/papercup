@@ -12,7 +12,7 @@ vi.mock('../harness-registry', async (importOriginal) => {
   return { ...actual, loadHarnessRegistry: h.loadHarnessRegistry };
 });
 
-const { resolveCurrentTokens } = await import('./resolvers');
+const { resolveCurrentTokens, findFileInSiblingCheckouts, describeUnresolvedFileDep } = await import('./resolvers');
 
 let tempRoot: string | undefined;
 let canonicalRoot: string | undefined;
@@ -126,5 +126,70 @@ describe('file dependency resolution', () => {
 
     expect(tokens.get(preferredDep)).toMatch(/^sha256:[0-9a-f]{16}$/);
     expect(tokens.get(canonicalDep)).toBeNull();
+  });
+});
+
+describe('sibling-checkout hint for an unresolvable file: dep (EI-22169368425533789)', () => {
+  let workspaceRoot: string | undefined;
+
+  afterEach(async () => {
+    if (workspaceRoot) await rm(workspaceRoot, { recursive: true, force: true });
+    workspaceRoot = undefined;
+  });
+
+  it('finds a ref that exists in a DIFFERENT top-level checkout under the workspace root', async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'freshness-workspace-root-'));
+    await mkdir(join(workspaceRoot, 'portal', 'packages', 'ui', 'src'), { recursive: true });
+    await writeFile(join(workspaceRoot, 'portal', 'packages', 'ui', 'src', 'shell.tsx'), 'export {};');
+    await mkdir(join(workspaceRoot, 'papercusp'), { recursive: true }); // sibling with no hit
+
+    const hit = findFileInSiblingCheckouts('packages/ui/src/shell.tsx', { workspaceRoot });
+
+    expect(hit).toBe('portal');
+  });
+
+  it('returns null when no sibling checkout has the ref either', async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'freshness-workspace-root-'));
+    await mkdir(join(workspaceRoot, 'portal'), { recursive: true });
+    await mkdir(join(workspaceRoot, 'papercusp'), { recursive: true });
+
+    expect(findFileInSiblingCheckouts('packages/ui/src/shell.tsx', { workspaceRoot })).toBeNull();
+  });
+
+  it('never escapes a sibling root via an absolute or ../-escaping ref', async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'freshness-workspace-root-'));
+    await mkdir(join(workspaceRoot, 'portal'), { recursive: true });
+
+    expect(findFileInSiblingCheckouts('/etc/passwd', { workspaceRoot })).toBeNull();
+    expect(findFileInSiblingCheckouts('../../../../etc/passwd', { workspaceRoot })).toBeNull();
+  });
+
+  it('never throws when the workspace root itself does not exist', () => {
+    expect(findFileInSiblingCheckouts('any/path.ts', { workspaceRoot: '/no/such/workspace-root' })).toBeNull();
+  });
+
+  it('describeUnresolvedFileDep names the sibling and repo-qualification hint on a hit', async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'freshness-workspace-root-'));
+    await mkdir(join(workspaceRoot, 'portal', 'packages', 'ui', 'src'), { recursive: true });
+    await writeFile(join(workspaceRoot, 'portal', 'packages', 'ui', 'src', 'shell.tsx'), 'export {};');
+
+    const msg = describeUnresolvedFileDep('file:packages/ui/src/shell.tsx', {
+      workspaceRoot,
+      harness: 'papercusp',
+    });
+
+    expect(msg).toContain('"file:packages/ui/src/shell.tsx"');
+    expect(msg).toContain('harness "papercusp"');
+    expect(msg).toContain('sibling checkout "portal"');
+    expect(msg).not.toContain('could not be resolved right now');
+  });
+
+  it('describeUnresolvedFileDep falls back to the original bare message on a true miss', async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'freshness-workspace-root-'));
+    await mkdir(join(workspaceRoot, 'portal'), { recursive: true });
+
+    const msg = describeUnresolvedFileDep('file:no/such/file.ts', { workspaceRoot, harness: 'papercusp' });
+
+    expect(msg).toBe('"file:no/such/file.ts" could not be resolved right now and was not stamped');
   });
 });

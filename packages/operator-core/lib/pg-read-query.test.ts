@@ -1221,54 +1221,46 @@ describe('buildDerivedColumnRedirect (EI-18801042715296007 — the derived-verdi
 });
 
 describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', () => {
-  // engineer_issues explodes _ei into real columns and then drops the blob
-  // (`payload - '_ei'`), so payload->'_ei'->>'…' is legal SQL that evaluates to
-  // NULL for every row: the query succeeds and returns a plausible WRONG answer.
-  // Measured 2026-08-01: 0 of 13,711 open rows via the payload path, 13,711 via
-  // the severity column, 30 genuine criticals reported as none.
+  // ── engineer_issues `payload->'_ei'` — RETIRED 2026-09-02 by migration 1096.
+  //
+  // This registry used to flag the nested path on the engineer_issues VIEW,
+  // which exploded `_ei` into real columns and then subtracted the blob
+  // (`payload - '_ei'`), making the path NULL for every row. P-003 of plan
+  // silent-wrong-answers-2026-08-01 removed the subtraction, so the path now
+  // resolves: measured on the live view, the two accessors agree on 166,795 of
+  // 166,802 rows, and the 7 exceptions carry a NULL payload entirely (the
+  // `severity` COLUMN reports its COALESCE default of 'minor'; the nested path
+  // honestly reports NULL). Keeping the advisory would assert "NULL for EVERY
+  // row" against a view where the path resolves — the confidently-wrong answer
+  // this registry exists to prevent.
+  //
+  // ⚠ These tests assert the SILENCE. They CANNOT assert that the silence is
+  // correct: this suite never touches Postgres, so it has no way to know what
+  // the live view projects. That half is pinned against pg_get_viewdef in
+  // pg-read-query-engineer-issues-ei-pin.integration.test.ts. Asserting silence
+  // here and calling it verified would repeat the exact mistake being fixed —
+  // a guard pinned to the claim rather than to the world.
   const CRITICAL_AUDIT =
     "SELECT count(*) FROM harness_shared.engineer_issues WHERE payload->'_ei'->>'severity' = 'critical'";
 
-  it('flags the audit shape that actually bit — a critical count that reads as "none"', () => {
-    const advisory = buildSilentNullPathAdvisory(CRITICAL_AUDIT);
-    expect(advisory).toContain('always-NULL accessor');
-    expect(advisory).toContain('engineer_issues');
-    expect(advisory).toContain('ZERO rows');
+  it('no longer flags the engineer_issues nested path — migration 1096 made it resolve', () => {
+    expect(buildSilentNullPathAdvisory(CRITICAL_AUDIT)).toBeNull();
   });
 
-  it('names the columns to use instead, so the advisory is actionable', () => {
-    const advisory = buildSilentNullPathAdvisory(CRITICAL_AUDIT) ?? '';
-    expect(advisory).toContain('severity');
-    expect(advisory).toContain('work_items:claimable');
-  });
-
-  it('fires WITHOUT a WHERE clause — a bare projection is just as wrong', () => {
+  it('stays SILENT on a bare projection and inside an aggregate FILTER', () => {
     expect(
       buildSilentNullPathAdvisory(
         "SELECT payload->'_ei'->>'severity' FROM harness_shared.engineer_issues",
       ),
-    ).toContain('always-NULL accessor');
-  });
-
-  it('fires inside an aggregate FILTER — the shape that reports 0 instead of returning none', () => {
+    ).toBeNull();
     expect(
       buildSilentNullPathAdvisory(
         "SELECT count(*) FILTER (WHERE payload->'_ei'->>'severity' IS NOT NULL) FROM harness_shared.engineer_issues",
       ),
-    ).toContain('always-NULL accessor');
+    ).toBeNull();
   });
 
-  it('tolerates spacing and double-quoted keys', () => {
-    expect(
-      buildSilentNullPathAdvisory(
-        'SELECT * FROM harness_shared.engineer_issues WHERE payload -> "_ei" ->> \'severity\' IS NULL',
-      ),
-    ).toContain('always-NULL accessor');
-  });
-
-  it('stays SILENT on the work_items TABLE — there the same path is CORRECT', () => {
-    // The accessor is not wrong in general; it is wrong for one relation. An
-    // advisory that fired on both would train agents to ignore it.
+  it('stays SILENT on the work_items TABLE — there the same path was always CORRECT', () => {
     expect(
       buildSilentNullPathAdvisory(
         "SELECT count(*) FROM harness_shared.work_items WHERE payload->'_ei'->>'severity' = 'critical'",
@@ -1282,6 +1274,18 @@ describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', (
         "SELECT severity FROM harness_shared.engineer_issues WHERE state = 'open'",
       ),
     ).toBeNull();
+  });
+
+  it('CALIBRATION: still flags a different relation trap, so the silence above is not just a broken scan', () => {
+    // Without this control every toBeNull() above would also pass if removing
+    // the engineer_issues entry had broken buildSilentNullPathAdvisory itself —
+    // four green assertions for entirely the wrong reason. `_ei->>'lane'` on the
+    // work_items TABLE is a live trap and must still fire.
+    expect(
+      buildSilentNullPathAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE payload->'_ei'->>'lane' <> 'observation'",
+      ),
+    ).toContain('always-NULL accessor');
   });
 
   // ── work_items.kind — effectively dead (3 of 28,255 rows non-null, measured
@@ -1406,20 +1410,34 @@ describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', (
     });
   });
 
-  it('stays SILENT on an unrelated payload path — only the _ei blob is subtracted', () => {
+  it('stays SILENT on an unrelated payload path on a trapped relation', () => {
+    // Deliberately on work_items, which STILL carries a live `_ei->>'lane'`
+    // trap. Asserting this against engineer_issues would pass trivially now
+    // that its entry is retired — a test that cannot fail proves nothing.
     expect(
       buildSilentNullPathAdvisory(
-        "SELECT payload->'paths' FROM harness_shared.engineer_issues WHERE state = 'open'",
+        "SELECT payload->'paths' FROM harness_shared.work_items WHERE status = 'open'",
       ),
     ).toBeNull();
   });
 
   it('does not match the path inside a string literal', () => {
+    // Also repointed to the live work_items lane trap. The engineer_issues form
+    // this used to assert would now return null because the trap is gone rather
+    // than because literal-masking works, silently retiring the real coverage.
     expect(
       buildSilentNullPathAdvisory(
-        "SELECT title FROM harness_shared.engineer_issues WHERE title = 'payload->''_ei''->>severity'",
+        "SELECT title FROM harness_shared.work_items WHERE title = 'payload->''_ei''->>lane'",
       ),
     ).toBeNull();
+
+    // Control: the same path OUTSIDE a literal must still fire, or the
+    // assertion above would pass even if masking swallowed everything.
+    expect(
+      buildSilentNullPathAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE payload->'_ei'->>'lane' = 'observation'",
+      ),
+    ).toContain('always-NULL accessor');
   });
 });
 

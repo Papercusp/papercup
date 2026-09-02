@@ -54,6 +54,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemPriority, getWorkItemPriority, bumpWorkItemPriority, explainIssueClaimFloors } from '../../work-items';
+import { isStructurallyUnclaimable } from '../../claim-floor-classification';
 import { planWorkItemArm, commitWorkItemArm } from './arm-reversible-work-item';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 
@@ -106,24 +107,20 @@ type Spec = z.infer<typeof itemSpec>;
  * and a lookup failure (or a feature-family id, which the oracle doesn't cover) silently
  * yields no warning rather than failing the priority write itself.
  */
-const STRUCTURALLY_UNCLAIMABLE_FLOORS = new Set([
-  'not-claimable-status',
-  'observation-lane',
-  'needs-owner-action',
-  'external-blocker',
-  'claim-hold',
-  'plan-lane-reserved',
-  'federation-detector',
-  'loop-noise',
-  'already-completed',
-  'cross-machine-rig',
-]);
+// WI-2141964: the floor list that used to sit here is now the shared
+// `STRUCTURAL_CLAIM_FLOORS` (claim-floor-classification.ts). It was one of THREE
+// hand-rolled copies of one rule that had already diverged, and this copy classified
+// NOTHING for 6 of the oracle's floors — so a steer on a row refused by any of those
+// returned no warning at all, which is the "silently ineffective steering lever" symptom
+// EI-19932455002723461 was filed for, still live for those 6. The shared set also adds
+// `origin` (a true-peer federated row is never self-selectable from this node). A totality
+// guard now fails when a floor is added to the claim path and left unclassified.
 
 async function structuralClaimabilityWarning(harness: string | null, id: string): Promise<string | undefined> {
   if (!harness) return undefined;
   try {
     const [floor] = await explainIssueClaimFloors(harness, [id]);
-    if (!floor || !floor.refusedBy || !STRUCTURALLY_UNCLAIMABLE_FLOORS.has(floor.refusedBy)) return undefined;
+    if (!floor || !isStructurallyUnclaimable(floor.refusedBy)) return undefined;
     const remediation =
       floor.refusedBy === 'needs-owner-action'
         ? ' Clear it with work_items:update { id, needsHuman:false } if it should actually be worked.'

@@ -150,3 +150,43 @@ describe('resolveBuildInfo', () => {
     });
   });
 });
+
+/**
+ * WI-2141731 — THE BOOT-WARM INVARIANT.
+ *
+ * `git-pipeline-position`'s serving verdict now treats the sha `/api/health`
+ * reports as DIRECT EVIDENCE of the code the process is executing. On :3070 that
+ * sha comes from the `git rev-parse HEAD` fallback, which is NOT by itself a
+ * loaded-code identity — a live checkout read would report whatever the tree has
+ * advanced to, which on this git-sync-swept repo is a sha the process is NOT
+ * running.
+ *
+ * What makes it sound is exclusively WHEN it is read: once, at process boot,
+ * cached for the process's life. Both halves of that were load-bearing and
+ * neither was guarded, so a later "just resolve it lazily" refactor would have
+ * silently downgraded the evidence while every test stayed green — and the
+ * failure direction is the bad one (a confident false "it is live").
+ */
+describe('WI-2141731: the boot-warm invariant that makes health.sha a loaded-code identity', () => {
+  it('resolves the sha ONCE and caches it — never re-reads the checkout per request', async () => {
+    const { getBuildInfo, _resetBuildInfoForTest } = await import('./build-info');
+    _resetBuildInfoForTest();
+    const first = getBuildInfo();
+    const second = getBuildInfo();
+    // Same object identity: the second call did no work, so the value cannot
+    // drift to a newer checkout state between two reads of /api/health.
+    expect(second).toBe(first);
+    _resetBuildInfoForTest();
+  });
+
+  it('the operator entrypoint warms the cache at MODULE LOAD, not inside a handler', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const servePath = fileURLToPath(new URL('../../../apps/operator/bin/serve.ts', import.meta.url));
+    const src = await readFile(servePath, 'utf8');
+    // A top-level `const X = getBuildInfo()...` — column 0, so it is module
+    // scope. Indented (inside a function/handler) would be the lazy-at-request
+    // regression this guard exists to catch.
+    expect(src).toMatch(/^const \w+ = getBuildInfo\(\)/m);
+  });
+});

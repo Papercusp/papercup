@@ -872,7 +872,10 @@ export const DEAD_END_DEFAULT_TTL_SEC = WALL_DEFAULT_TTL_SEC;
 /** The shape {@link validateFactLifetime} and {@link resolveFactLifetime} both read. */
 export interface FactLifetimeInput {
   key: string;
-  kind?: string | null;
+  // FactKind, not a bare string: this value is forwarded to isFactCapExempt, which
+  // takes Pick<AssertFactInput,'key'|'kind'>. Widening it here re-opens a TS2322 at
+  // that call and, worse, would let a typo'd kind silently miss the 'convention' test.
+  kind?: FactKind | null;
   ttlSec?: number | null;
   permanent?: boolean;
   confidence?: FactConfidence | null;

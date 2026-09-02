@@ -340,6 +340,24 @@ citation fabricated after the family-correct lookup and a nearby-id sanity
 check both support genuine absence.
 
 
+When citing a repo-relative file path in a work-item comment or checkpoint that
+may be read from a DIFFERENT harness — this workspace holds ~50 independent
+checkouts side by side under `~/papercupai-workspace/` (portal, calendar,
+zero-harness, several papercup*/papercusp* trees, …) — REPO-QUALIFY the path:
+prefix it with the checkout directory name, e.g. `portal/packages/ui/src/shell.tsx`,
+not bare `packages/ui/src/shell.tsx`. A repo-relative path is only meaningful
+WITH its repo; an unqualified one that happens to live in a sibling checkout
+fails every same-repo probe (`ls`, `find`, `grep`) exactly like a fabricated
+path would, and reads as a hallucination to the next agent even when it is
+entirely accurate (EI-22169368425533789).
+
+`work_items:checkpoint { dependsOn: ['file:<path>'] }` now probes sibling
+checkouts automatically when a `file:` ref cannot be resolved in the item's own
+harness, and names the repo it actually lives in when it finds a hit — but that
+detector only fires for a `dependsOn` declaration, never for a plain path
+quoted in prose. Qualify it yourself; do not rely on the detector to catch it.
+
+
 ## Branch discipline: the shared tree stays on `staging`; `main` is automation-only
 
 - The canonical shared checkout (the repo root you are working in) **always has

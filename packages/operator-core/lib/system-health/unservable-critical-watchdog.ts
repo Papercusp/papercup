@@ -53,13 +53,24 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { isStructurallyUnclaimable } from '../claim-floor-classification';
 
 export const UNSERVABLE_CRITICAL_SWEEP_INTERVAL_MS = 30 * 60_000;
 
-/** How long a critical item may sit in an unservable lane before it is reported.
- *  Long enough that a deliberate short park (triage in progress, a mis-file being
- *  corrected) never alarms; short enough that nothing repeats the 19-day hide. */
-export const UNSERVABLE_CRITICAL_MIN_AGE_MS = 7 * 24 * 60 * 60_000;
+/** How long a stranded critical item may go WITHOUT ANYONE WRITING TO IT before it is
+ *  reported. Long enough that a deliberate short park (triage in progress, a mis-file
+ *  being corrected) never alarms; short enough that nothing repeats the 19-day hide.
+ *
+ *  ⚠ THE BASIS IS LAST-WRITE, NOT CREATION (WI-2141964). It used to be `created_at`,
+ *  which measures the wrong thing in both directions: an item created 8 days ago and
+ *  actively worked today alarms (a false positive that someone is already handling),
+ *  while the basis says nothing about whether the item is actually abandoned. Last-write
+ *  is this watchdog's OWN stated signal — its header describes the filed instance as an
+ *  item that "NOBODY EVER WROTE TO IT AGAIN" — so the predicate now matches the rationale
+ *  it always claimed. Measured 2026-09-02 on papercusp-workspace, non-terminal criticals:
+ *  the creation basis matched 55 rows, the last-write basis 34, while ALSO covering the
+ *  26 genuinely-stranded rows the old two-floor predicate could not see at all. */
+export const UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS = 7 * 24 * 60 * 60_000;
 
 /** Severities this watchdog reports. See the header: `major` is EXCLUDED on
  *  measurement, not on taste — it turns 5 alerts into 57. */
@@ -73,10 +84,18 @@ const WATCHDOG_IDENTITY: AgentIdentity = {
   userId: null,
 };
 
-/** Which structural floor makes the row unclaimable. Named for the floor the
- *  claim oracle itself reports, so the escalation's remedy matches what
- *  `work_items:claimable`'s `excludedBreakdown` calls the same bucket. */
-export type UnservableFloor = 'observation-lane' | 'needs-human';
+/** Which structural floor makes the row unclaimable — a `refusedBy` label straight from
+ *  the claim oracle (`explainIssueClaimFloors`), so the escalation names the same bucket
+ *  every other claimability surface does.
+ *
+ *  ⚠ This used to be the two-member union `'observation-lane' | 'needs-human'`, hard-coded
+ *  here and in this file's SQL. That was a THIRD hand-rolled copy of the structural-floor
+ *  rule (WI-2141964) and it was blind to 26 aged `critical` items on this workspace that
+ *  were genuinely structurally stranded — mostly `claim-hold` (a durable park) and
+ *  `not-claimable-status` (state='blocked'). The set now comes from
+ *  `STRUCTURAL_CLAIM_FLOORS`, which a totality guard pins against the oracle's own
+ *  vocabulary, so a floor added to the claim path can never again be silently unwatched. */
+export type UnservableFloor = string;
 
 export interface UnservableItemRow {
   itemId: string;
@@ -86,6 +105,10 @@ export interface UnservableItemRow {
   severity: string;
   floor: UnservableFloor;
   createdAtMs: number;
+  /** When anyone last WROTE to this row (max of updated_at / last_progress_at). This —
+   *  not `createdAtMs` — is what the age floor is measured against; see
+   *  {@link UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS}. */
+  lastWriteAtMs: number;
 }
 
 export interface UnservableAlert {
@@ -95,7 +118,12 @@ export interface UnservableAlert {
   title: string;
   severity: string;
   floor: UnservableFloor;
-  ageMs: number;
+  /** How long the row has gone untouched — the stranding signal, and what the threshold
+   *  is applied to. */
+  untouchedMs: number;
+  /** How long the row has EXISTED. Reported for context only; deliberately not a filter,
+   *  because an old item somebody is actively working is not stranded. */
+  itemAgeMs: number;
 }
 
 /**
@@ -109,15 +137,18 @@ export interface UnservableAlert {
 export function scanUnservableCritical(
   rows: readonly UnservableItemRow[],
   nowMs: number,
-  opts: { minAgeMs?: number; severities?: readonly string[] } = {},
+  opts: { minUntouchedMs?: number; severities?: readonly string[] } = {},
 ): UnservableAlert[] {
-  const minAgeMs = opts.minAgeMs ?? UNSERVABLE_CRITICAL_MIN_AGE_MS;
+  const minUntouchedMs = opts.minUntouchedMs ?? UNSERVABLE_CRITICAL_MIN_UNTOUCHED_MS;
   const severities = opts.severities ?? UNSERVABLE_REPORTED_SEVERITIES;
   const alerts: UnservableAlert[] = [];
   for (const row of rows) {
     if (!severities.includes(row.severity)) continue;
-    const ageMs = nowMs - row.createdAtMs;
-    if (ageMs < minAgeMs) continue;
+    // The floor set is NOT re-derived here: `readRows` has already kept only rows the
+    // claim oracle refuses on a STRUCTURAL floor. Re-testing it here would be a fourth
+    // copy of the very rule this change consolidated.
+    const untouchedMs = nowMs - row.lastWriteAtMs;
+    if (untouchedMs < minUntouchedMs) continue;
     alerts.push({
       itemId: row.itemId,
       workspaceId: row.workspaceId,
@@ -125,12 +156,13 @@ export function scanUnservableCritical(
       title: row.title,
       severity: row.severity,
       floor: row.floor,
-      ageMs,
+      untouchedMs,
+      itemAgeMs: nowMs - row.createdAtMs,
     });
   }
-  // Oldest first: the longest-stranded item is the one most likely to be a real
+  // Longest-untouched first: the most-abandoned item is the one most likely to be a real
   // hidden blocker rather than an in-flight triage.
-  return alerts.sort((a, b) => b.ageMs - a.ageMs);
+  return alerts.sort((a, b) => b.untouchedMs - a.untouchedMs);
 }
 
 export interface UnservableSweepDeps {
@@ -156,13 +188,31 @@ async function defaultFlagEnabled(): Promise<boolean> {
 /**
  * ⚠ Reads the `harness_shared.engineer_issues` VIEW, not the underlying
  * `work_items` TABLE, and that is load-bearing: severity is a real column on the
- * view, while on the table it lives at `payload->'_ei'->>'severity'`. The view
- * SUBTRACTS the `_ei` blob after exploding it into columns, so the payload path
- * resolves to NULL for every row there — a silent wrong answer, not an error
- * (P-018 / WI-6674). Query the view, read the column.
+ * view, while on the table it lives at `payload->'_ei'->>'severity'`. Query the
+ * view, read the COLUMN — which is what the SQL below does.
+ *
+ * ⚠ CORRECTED 2026-09-02. This comment used to add that the view "SUBTRACTS the
+ * `_ei` blob ... so the payload path resolves to NULL for every row". That was
+ * true when written and is now false: migration 1096 (P-003 of plan
+ * silent-wrong-answers-2026-08-01) stopped the subtraction, and the two
+ * accessors now agree on 166,795 of 166,802 rows. The code here was always
+ * correct — it reads the column — so only the rationale was wrong. It is
+ * corrected rather than deleted because the column remains the right accessor:
+ * it COALESCEs to 'minor', so it is defined for the 7 rows carrying a NULL
+ * payload, where the nested path yields NULL and would drop them from
+ * `severity = ANY (...)` entirely.
  */
 function makeReadRows(sql: Sql): UnservableSweepDeps['readRows'] {
   return async () => {
+    // Deliberately NO floor predicate here. The SQL selects the whole candidate
+    // population (non-terminal + reported severity — ~55 rows on this workspace) and the
+    // CLAIM ORACLE decides which are stranded. That is the entire point of WI-2141964:
+    // the previous `AND (lane='observation' OR state='needs-human')` was this file's own
+    // private theory of unclaimability, and it was wrong by 26 items.
+    //
+    // The age threshold is deliberately NOT applied here either — `scanUnservableCritical`
+    // owns it, so the constant lives in exactly one place. The candidate set is small
+    // enough that filtering it in SQL would buy nothing but a second copy of a threshold.
     const rows = await sql<
       {
         issue_id: string;
@@ -170,8 +220,8 @@ function makeReadRows(sql: Sql): UnservableSweepDeps['readRows'] {
         harness_slug: string | null;
         title: string | null;
         severity: string;
-        floor: string;
         created_ms: string;
+        last_write_ms: string;
       }[]
     >`
       SELECT issue_id,
@@ -179,21 +229,65 @@ function makeReadRows(sql: Sql): UnservableSweepDeps['readRows'] {
              replace(scope, 'harness:', '') AS harness_slug,
              title,
              severity,
-             CASE WHEN lane = 'observation' THEN 'observation-lane' ELSE 'needs-human' END AS floor,
-             (extract(epoch FROM created_at) * 1000)::bigint AS created_ms
+             (extract(epoch FROM created_at) * 1000)::bigint AS created_ms,
+             (extract(epoch FROM greatest(updated_at, coalesce(last_progress_at, updated_at)))
+               * 1000)::bigint AS last_write_ms
         FROM harness_shared.engineer_issues
        WHERE state NOT IN ('done', 'passed', 'resolved', 'closed', 'deprecated', 'dropped')
-         AND (lane = 'observation' OR state = 'needs-human')
          AND severity = ANY (${UNSERVABLE_REPORTED_SEVERITIES as string[]})`;
-    return rows.map((r) => ({
-      itemId: r.issue_id,
-      workspaceId: r.workspace_id,
-      harnessSlug: r.harness_slug ?? 'unknown',
-      title: r.title ?? '(untitled)',
-      severity: r.severity,
-      floor: r.floor === 'observation-lane' ? 'observation-lane' : 'needs-human',
-      createdAtMs: Number(r.created_ms),
-    }));
+    if (rows.length === 0) return [];
+
+    const { explainIssueClaimFloors } = await import('../work-items');
+
+    // The oracle is per-harness, so ask it once per harness rather than once per row.
+    const byHarness = new Map<string, typeof rows>();
+    for (const r of rows) {
+      const harness = r.harness_slug ?? '';
+      if (!harness) continue; // no harness scope ⇒ the oracle cannot rule on it
+      const bucket = byHarness.get(harness);
+      if (bucket) bucket.push(r);
+      else byHarness.set(harness, [r]);
+    }
+
+    const stranded: UnservableItemRow[] = [];
+    for (const [harness, harnessRows] of byHarness) {
+      let verdicts;
+      try {
+        verdicts = await explainIssueClaimFloors(
+          harness,
+          harnessRows.map((r) => r.issue_id),
+        );
+      } catch (e) {
+        // One harness failing to resolve must not silence the whole sweep. Log and skip:
+        // under-reporting THIS tick is recoverable (the next one retries), whereas an
+        // exception here would take every other harness's stranded items down with it.
+        console.warn(
+          `[unservable-critical-watchdog] floor lookup failed for harness ${harness} (skipped this tick): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+        continue;
+      }
+      const floorById = new Map(verdicts.map((v) => [v.id, v.refusedBy]));
+      for (const r of harnessRows) {
+        const refusedBy = floorById.get(r.issue_id) ?? null;
+        // `null` here means ADMISSIBLE — a claimable-but-unclaimed critical item is a
+        // prioritisation problem, not a structural strand, and must stay silent. (5 of
+        // this workspace's aged criticals were exactly that when measured.)
+        if (!isStructurallyUnclaimable(refusedBy)) continue;
+        stranded.push({
+          itemId: r.issue_id,
+          workspaceId: r.workspace_id,
+          harnessSlug: harness,
+          title: r.title ?? '(untitled)',
+          severity: r.severity,
+          floor: refusedBy as string,
+          createdAtMs: Number(r.created_ms),
+          lastWriteAtMs: Number(r.last_write_ms),
+        });
+      }
+    }
+    return stranded;
   };
 }
 
@@ -201,19 +295,36 @@ function describeDays(ageMs: number): string {
   return `${Math.floor(ageMs / (24 * 60 * 60_000))}d`;
 }
 
+/** Remedy per structural floor. The floor names are the claim oracle's own `refusedBy`
+ *  labels, so this switch cannot drift from what every other claimability surface reports.
+ *  The default deliberately does NOT guess: it points at the oracle, which explains any
+ *  floor authoritatively — better than a plausible-sounding remedy for the wrong one. */
+function remedyFor(alert: UnservableAlert): string {
+  switch (alert.floor) {
+    case 'needs-owner-action':
+      return `work_items:update { id: '${alert.itemId}', needsHuman: false } if it should actually be worked`;
+    case 'observation-lane':
+      return `re-file/relocate it out of the observation lane (it was captured via improvements:capture { lane:'observation' }, which by design never enters the work queue)`;
+    case 'not-claimable-status':
+      return `its state is outside the claimable set (ISSUE_FAMILY_CLAIMABLE_STATES=['open']) — work_items:set_state { id: '${alert.itemId}', state:'open' } if it should be worked, or close it if it should not`;
+    case 'claim-hold':
+      return `it is on a durable claim hold — work_items:release { id: '${alert.itemId}', claimHold: true } to lift it, or record why the park should outlive this alert`;
+    default:
+      return `run work_items:observe { ids: ['${alert.itemId}'] } for the authoritative floor detail and its remedy`;
+  }
+}
+
 async function defaultEscalate(alert: UnservableAlert): Promise<void> {
-  const remedy =
-    alert.floor === 'needs-human'
-      ? `work_items:update { id: '${alert.itemId}', needsHuman: false } if it should actually be worked`
-      : `re-file/relocate it out of the observation lane (it was captured via improvements:capture { lane:'observation' }, which by design never enters the work queue)`;
+  const remedy = remedyFor(alert);
   await openEscalation(WATCHDOG_IDENTITY, {
     severity: 'advisory',
     summary:
-      `${alert.severity.toUpperCase()} item ${alert.itemId} has been structurally UNCLAIMABLE for ${describeDays(alert.ageMs)} ` +
+      `${alert.severity.toUpperCase()} item ${alert.itemId} is structurally UNCLAIMABLE and untouched for ${describeDays(alert.untouchedMs)} ` +
       `(${alert.floor}) — no claim path can serve it`,
     body:
-      `${alert.itemId} (${alert.harnessSlug}) is severity ${alert.severity} and has sat in the ` +
-      `${alert.floor} floor for ${describeDays(alert.ageMs)}: "${alert.title}"\n\n` +
+      `${alert.itemId} (${alert.harnessSlug}) is severity ${alert.severity}, sits behind the ` +
+      `${alert.floor} claim floor, and NOBODY HAS WRITTEN TO IT for ${describeDays(alert.untouchedMs)} ` +
+      `(the item itself is ${describeDays(alert.itemAgeMs)} old): "${alert.title}"\n\n` +
       `Those two facts are in conflict and nothing else reports it. The item is invisible to ` +
       `scheduler:get_next, work_items:claim_next and work_items:claimable, so raising its severity ` +
       `or setting a feature_order does NOT make it workable — those writes report ok:true and change ` +
@@ -234,7 +345,8 @@ async function defaultEscalate(alert: UnservableAlert): Promise<void> {
       harnessSlug: alert.harnessSlug,
       floor: alert.floor,
       severity: alert.severity,
-      ageMs: alert.ageMs,
+      untouchedMs: alert.untouchedMs,
+      itemAgeMs: alert.itemAgeMs,
     },
   });
 }

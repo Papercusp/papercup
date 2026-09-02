@@ -49,8 +49,86 @@ import {
   ISSUE_STATES,
   type ListIssuesFilter,
 } from '../../issues-engineer';
+import {
+  censusFromCounts,
+  describeCensus,
+  withShownCount,
+  type PopulationCensus,
+  type PopulationDenominator,
+  type PopulationMeta,
+} from '../../population-census';
 
 const DEFAULT_LIMIT = 30;
+
+/**
+ * THE DISCRIMINATING FILTERS — the ones that select WITHIN a corpus rather than
+ * choosing which corpus is read (P-021, silent-wrong-answers-2026-08-01).
+ *
+ * `scope`, `kinds` and `lane` say which population a call is ABOUT; these say
+ * which part of it the caller wanted. A base rate has to strip exactly these
+ * and no others, because the question a denominator answers is "is that many or
+ * few FOR THIS CORPUS?" — and stripping `lane` would answer it against a
+ * different corpus entirely: the observation lane outnumbers the work lane
+ * ~8:1 here, so a work-lane count divided by an all-lane denominator reads as
+ * an order-of-magnitude anomaly that is not one.
+ */
+const NARROWING_KEYS = ['state', 'severity', 'assignee', 'q', 'topic'] as const;
+
+/**
+ * Build the base-rate census for a filtered issue read.
+ *
+ * `counted` is exact here — a COUNT over the filter, never a page length. The
+ * base rate is the only measurement that can degrade, so it degrades IN-BAND
+ * (`not-measured`) rather than to a zero or a thrown error: "I could not size
+ * the corpus" changes what a reader may conclude, while a missing denominator
+ * just reads as a clean total.
+ *
+ * `countPopulation` is injected rather than called directly so the three
+ * denominator outcomes — measured, bounded, unmeasurable — are reachable in a
+ * test without a database, which is the only way the two degraded ones get
+ * exercised at all.
+ */
+export async function issueBaseRateCensus(
+  counted: number,
+  opts: {
+    narrowedBy: readonly string[];
+    meta: PopulationMeta;
+    countPopulation: () => Promise<number>;
+  },
+): Promise<PopulationCensus> {
+  let denominator: PopulationDenominator;
+  if (opts.narrowedBy.length === 0) {
+    // Nothing was narrowed, so the filtered count IS the population — measured
+    // by construction, and one query cheaper than proving it again.
+    denominator = { status: 'measured', candidates: counted };
+  } else {
+    try {
+      const candidates = await opts.countPopulation();
+      denominator =
+        candidates >= counted
+          ? { status: 'measured', candidates }
+          : {
+              // Two COUNTs at two instants. A corpus that moved between them can
+              // return a population SMALLER than the slice it contains, and
+              // publishing that as a total would print a negative `withheld` —
+              // the exact shape of confidently-wrong this guards against. The
+              // larger of the two is a floor, so say floor.
+              status: 'bounded',
+              atLeast: counted,
+              boundedBy:
+                'a concurrent write moved the corpus between the population query ' +
+                'and the filtered one, so this total is a lower bound',
+            };
+    } catch (err) {
+      denominator = {
+        status: 'not-measured',
+        reason: `base-rate probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        measureWith: 'issues:list with only scope/kinds/lane set',
+      };
+    }
+  }
+  return censusFromCounts(counted, denominator, opts.meta);
+}
 
 /**
  * The view's scope is 'operator' or 'harness:<slug>'. Agents reach for the
@@ -80,6 +158,7 @@ export default defineTool({
       '{ count, total, truncatedByLimit, issues } (or { rollup, counts, total } for rollup) — `issues` rows are { id, kind, scope, title, severity, state, assignee, createdAt, updatedAt, closedAt } plus `body` only when includeBody:true. (`lane` is a FILTER here, not a returned field.)',
       'For anything time-of-close read `closedAt`, not `updatedAt` — updatedAt moves on any write.',
       '`count` = rows returned; `total` = rows MATCHING the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
+      '`population` is the BASE RATE for `total` — the same corpus with state/severity/assignee/q/topic stripped, so you can tell whether the number is many or few. Read `candidatesStatus` before `candidates`: `not-measured` means the corpus could not be sized (never zero), `bounded` means it is a floor. `populationNote` states it in one sentence.',
       'rollup:"state" → { open, wip, done, … } counts. rollup:"observationKind" → counts by payload->observation->>kind. Both are computed over the whole filtered set, not the page.',
       'body is OMITTED by default: it is 76% of this read\'s bytes (measured 1607kB → 389kB with it dropped). Ask for it explicitly when you need it.',
       'Only bug|change are returned by default — `task` items are a work_item kind that the issues surface deliberately excludes; pass kinds to include them.',
@@ -130,6 +209,8 @@ export default defineTool({
       issues: z.array(z.unknown()).optional(),
       rollup: z.enum(['state', 'observationKind']).optional(),
       counts: z.record(z.string(), z.number()).optional(),
+      population: z.unknown().optional(),
+      populationNote: z.string().optional(),
     })
     .passthrough(),
   async handler(args: {
@@ -157,14 +238,52 @@ export default defineTool({
       ...(args.topic ? { topic: args.topic } : {}),
     } as ListIssuesFilter;
 
+    // The SAME read with the discriminating predicates stripped — the corpus
+    // this call is a slice OF. Built from `args`, not by deleting keys from
+    // `filter`, so a filter added later cannot silently join the denominator.
+    const populationFilter = {
+      ...(args.scope ? { scope: normalizeScope(args.scope) } : {}),
+      ...(args.kinds ? { kinds: args.kinds } : {}),
+      ...(args.lane ? { lane: args.lane } : {}),
+    } as ListIssuesFilter;
+    const narrowedBy = NARROWING_KEYS.filter((k) => args[k] != null);
+    const meta: PopulationMeta = {
+      population: 'issue-family rows',
+      basis:
+        `${(args.kinds ?? ['bug', 'change']).join('+')} rows in ` +
+        `${args.scope ? normalizeScope(args.scope) : 'every scope'}` +
+        `${args.lane ? ` on lane '${args.lane}'` : ''}`,
+      withheldReason: `narrowed by ${narrowedBy.join(', ')}`,
+      reveal: `re-run without ${narrowedBy.join('/')}`,
+    };
+
+    const censusFor = (counted: number): Promise<PopulationCensus> =>
+      issueBaseRateCensus(counted, {
+        narrowedBy,
+        meta,
+        countPopulation: () => countIssues(populationFilter),
+      });
+
     if (args.rollup === 'state') {
       const counts = await countIssuesByState(filter);
-      return { data: { rollup: 'state', counts, total: Object.values(counts).reduce((a, b) => a + b, 0) } };
+      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      const population = await censusFor(total);
+      return {
+        data: { rollup: 'state', counts, total, population, populationNote: describeCensus(population) },
+      };
     }
     if (args.rollup === 'observationKind') {
       const counts = await countObservationsByKind(filter);
+      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      const population = await censusFor(total);
       return {
-        data: { rollup: 'observationKind', counts, total: Object.values(counts).reduce((a, b) => a + b, 0) },
+        data: {
+          rollup: 'observationKind',
+          counts,
+          total,
+          population,
+          populationNote: describeCensus(population),
+        },
       };
     }
 
@@ -184,11 +303,19 @@ export default defineTool({
       countIssues(filter),
     ]);
 
+    // `shown` is the transport's verdict, `counted` the filter's. Keeping them
+    // as separate fields is what stops a page length being read as a total —
+    // the same distinction `truncatedByLimit` makes, carried in the shape the
+    // census renders from so the sentence and the booleans cannot disagree.
+    const population = withShownCount(await censusFor(total), rows.length, `limit ${limit}`);
+
     return {
       data: {
         count: rows.length,
         total,
         truncatedByLimit: total > rows.length,
+        population,
+        populationNote: describeCensus(population),
         issues: rows.map((r) => ({
           id: r.id,
           kind: r.kind,

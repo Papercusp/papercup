@@ -31,7 +31,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
@@ -199,6 +200,68 @@ const resolveFiles: DepResolver = async (refs, ctx) => {
   );
   return out;
 };
+
+/**
+ * EI-22169368425533789: the multi-checkout workspace (`~/papercupai-workspace/`)
+ * holds ~50 independent repos side by side. A repo-relative `file:` ref is only
+ * meaningful WITH its repo, and nothing forces a citation to say which one — so an
+ * accurate cross-repo pointer fails every same-repo probe (`ls`, `find`, `grep`)
+ * exactly like a fabricated one would, and reads as a hallucination to the next
+ * agent. Mirrors the workspace-root convention `resolveHostWorkspaceRoot()`
+ * (p2p/foreign-workspaces.ts) resolves for the P2P foreign-workspace registry —
+ * duplicated here as one env read rather than imported, to keep this hot
+ * checkpoint-write path out of that module's unrelated DB-backed import graph.
+ *
+ * Best-effort and NEVER throws: an unreadable workspace root, or any individual
+ * stat failure, is silently skipped. This only ever adds a HINT to an already-
+ * unresolved dependency — it never blocks or changes the checkpoint write itself.
+ */
+export function findFileInSiblingCheckouts(ref: string, opts: { workspaceRoot?: string } = {}): string | null {
+  // Same containment contract as containedFilePath: no absolute/escaping refs.
+  if (isAbsolute(ref) || normalize(ref).startsWith('..')) return null;
+  const workspaceRoot =
+    opts.workspaceRoot ?? process.env.PAPERCUSP_WORKSPACE_ROOT ?? `${process.env.HOME ?? ''}/papercupai-workspace`;
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(workspaceRoot, { withFileTypes: true });
+  } catch {
+    return null; // no such workspace root on this host ⇒ nothing to probe
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const full = containedFilePath(resolve(workspaceRoot, entry.name), ref);
+    if (!full) continue;
+    try {
+      if (statSync(full).isFile()) return entry.name;
+    } catch {
+      // absent in this sibling ⇒ keep scanning the rest
+    }
+  }
+  return null;
+}
+
+/**
+ * Compose the `depsWarnings` line for one unresolvable `file:` dependency,
+ * enriched with the sibling-checkout hint above when it finds a hit — turning
+ * "could not be resolved" (a dead end indistinguishable from a typo or a
+ * fabrication) into "wrong repo" (an actionable, corrected citation). Falls back
+ * to the original bare message when no sibling has the file either — the honest
+ * "may not exist anywhere in this workspace" case.
+ */
+export function describeUnresolvedFileDep(
+  dep: string,
+  opts: { workspaceRoot?: string; harness?: string | null } = {},
+): string {
+  const parts = splitDep(dep);
+  const ref = parts?.ref ?? dep;
+  const sibling = findFileInSiblingCheckouts(ref, { workspaceRoot: opts.workspaceRoot });
+  if (!sibling) return `"${dep}" could not be resolved right now and was not stamped`;
+  const here = opts.harness ? `harness "${opts.harness}"` : 'this harness';
+  return (
+    `"${dep}" not found in ${here}, but exists in sibling checkout "${sibling}" ` +
+    `(same workspace, different repo) — repo-qualify the citation so the next agent doesn't read it as fabricated`
+  );
+}
 
 /**
  * `work-item:<id>` → `<status>@<updated_ts>`.

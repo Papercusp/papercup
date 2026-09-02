@@ -33,7 +33,13 @@ import {
   type DepStamp,
   type FreshnessResult,
 } from './freshness';
-import { normalizeDep, resolveCurrentTokens, validateDep } from './freshness/resolvers';
+import {
+  describeUnresolvedFileDep,
+  normalizeDep,
+  resolveCurrentTokens,
+  splitDep,
+  validateDep,
+} from './freshness/resolvers';
 
 export interface WorkItemCheckpointRef {
   /**
@@ -226,7 +232,15 @@ export async function setWorkItemCheckpointWithPrior(
         if (token == null) {
           // Stamping an unresolvable dep would make it read as CHANGED the moment
           // it first resolves — a manufactured false stale. Drop it and say so.
-          warnings.push(`"${dep}" could not be resolved right now and was not stamped`);
+          // EI-22169368425533789: for a `file:` ref, "unresolvable" is ALSO the
+          // signature of an accurate citation into a sibling checkout in this
+          // multi-repo workspace — probe for that before reporting a dead end.
+          const parts = splitDep(dep);
+          warnings.push(
+            parts?.kind === 'file'
+              ? describeUnresolvedFileDep(dep, { harness: ref.harness })
+              : `"${dep}" could not be resolved right now and was not stamped`,
+          );
           continue;
         }
         stamps.push({ dep, token, at: now });

@@ -324,8 +324,14 @@ describe('dev:pg_query — P-005 guard wiring', () => {
   // WI-6674. NOTE the mock factory spreads importOriginal() before overriding,
   // so buildSilentNullPathAdvisory here is the REAL implementation — these pin
   // the handler wiring end-to-end rather than a stub agreeing with itself.
+  // ⚠ Repointed 2026-09-02 from the engineer_issues `_ei->>'severity'` form.
+  // Migration 1096 made that path resolve on the view, so its trap was retired
+  // (see SILENT_NULL_PATH_TRAPS) and this SQL would no longer raise ANY
+  // advisory — the wiring assertions below would fail. `_ei->>'lane'` on the
+  // work_items TABLE is still a live always-NULL trap, so it exercises the same
+  // handler wiring against a claim that is currently true.
   const NULL_PATH_SQL =
-    "SELECT count(*) FROM harness_shared.engineer_issues WHERE payload->'_ei'->>'severity' = 'critical'";
+    "SELECT count(*) FROM harness_shared.work_items WHERE payload->'_ei'->>'lane' <> 'observation'";
 
   it('attaches the always-NULL-accessor advisory to a successful result', async () => {
     const res = await pgQueryTool.handler({ sql: NULL_PATH_SQL, allowUnscoped: true } as never, {} as never);

@@ -7313,7 +7313,16 @@ export interface ClaimFloorAttribution {
 }
 
 /** The floors, in claim-path order, as (name, predicate-is-SATISFIED) pairs + why a miss means. */
-const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
+/**
+ * Every floor label `explainIssueClaimFloors` can report, mapped to what it means.
+ *
+ * EXPORTED (WI-2141964) so the structural/transient classification in
+ * `claim-floor-classification.ts` can be PINNED against this vocabulary rather than
+ * restating it: its guard test asserts every key here is classified, so a floor added to
+ * the claim path cannot silently reach consumers unclassified. Keep it the complete set —
+ * a floor with no entry here also reports `detail: null` to every caller.
+ */
+export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'not-found': 'no such work-item in this harness/workspace',
   'not-claimable-status': 'status is terminal or otherwise not in the claimable set',
   'already-taken': 'already claimed by another agent',

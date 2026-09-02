@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 301
-  corpus-blocks: 261
+  corpus-parts: 302
+  corpus-blocks: 262
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -541,6 +541,24 @@ The view's `issue_id` and the base table's `feature_id` are relation-specific;
 neither relation uses a generic `id` column for this check. Only call a
 citation fabricated after the family-correct lookup and a nearby-id sanity
 check both support genuine absence.
+
+
+When citing a repo-relative file path in a work-item comment or checkpoint that
+may be read from a DIFFERENT harness — this workspace holds ~50 independent
+checkouts side by side under `~/papercupai-workspace/` (portal, calendar,
+zero-harness, several papercup*/papercusp* trees, …) — REPO-QUALIFY the path:
+prefix it with the checkout directory name, e.g. `portal/packages/ui/src/shell.tsx`,
+not bare `packages/ui/src/shell.tsx`. A repo-relative path is only meaningful
+WITH its repo; an unqualified one that happens to live in a sibling checkout
+fails every same-repo probe (`ls`, `find`, `grep`) exactly like a fabricated
+path would, and reads as a hallucination to the next agent even when it is
+entirely accurate (EI-22169368425533789).
+
+`work_items:checkpoint { dependsOn: ['file:<path>'] }` now probes sibling
+checkouts automatically when a `file:` ref cannot be resolved in the item's own
+harness, and names the repo it actually lives in when it finds a hit — but that
+detector only fires for a `dependsOn` declaration, never for a plain path
+quoted in prose. Qualify it yourself; do not rely on the detector to catch it.
 
 
 ## Branch discipline: the shared tree stays on `staging`; `main` is automation-only

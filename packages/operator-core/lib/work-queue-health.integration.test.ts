@@ -43,9 +43,15 @@ const PLAN_ASSIGNMENTS_DDL = `
     workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL, item_id text NOT NULL,
     assignee_name text, assigned_by_user text, assigned_ts timestamptz, released_ts timestamptz,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id))`;
+// EI-22170050301427358: kept faithful to migration 140 (owner_user + adopted_at
+// included) — a narrower CREATE TABLE IF NOT EXISTS silently no-ops against the
+// real (wider) table when one already exists in the test database, and the
+// positional INSERT below would then under-supply owner_user (NOT NULL, no
+// default) against a table this fixture believes has only 3 columns.
 const AGENT_NAME_SESSIONS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.agent_name_sessions (
     workspace_id text NOT NULL, session_owner_id text NOT NULL, agent_name text NOT NULL,
+    owner_user text NOT NULL, adopted_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, session_owner_id))`;
 
 let db: FreshPgDb;
@@ -185,7 +191,9 @@ describe('readWorkQueueHealth — stuck-items metric (P-008)', () => {
 
   it('does NOT count an assignment whose name has a live ADOPTING session', async () => {
     await seedAssignment('P-002', 'builder-1', 30);
-    await sql`INSERT INTO harness_shared.agent_name_sessions VALUES (${WS}, 'su-live-asg', 'builder-1')`;
+    await sql`INSERT INTO harness_shared.agent_name_sessions
+      (workspace_id, session_owner_id, agent_name, owner_user)
+      VALUES (${WS}, 'su-live-asg', 'builder-1', 'su-live-asg')`;
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-live-asg', now())`;
     const h = await readWorkQueueHealth(sql, { workspaceId: WS, assignmentGraceMs: 10 * 60 * 1000 });
     expect(h.deadHeldAssignments).toBe(0);

@@ -1244,45 +1244,49 @@ interface SilentNullPathTrap {
  *
  * ⚠ THIS IS THE OPPOSITE FAILURE MODE TO DERIVED_COLUMN_REDIRECTS ABOVE. That
  * registry improves the RECOVERY from a loud 42703. This one exists because
- * there is no error at all: `payload->'_ei'->>'severity'` is a legal jsonb
+ * there is no error at all: `payload->'_ei'->>'lane'` is a legal jsonb
  * traversal, and a missing key yields NULL rather than raising. A
- * `WHERE payload->'_ei'->>'severity' = 'critical'` audit over engineer_issues
- * therefore returns zero rows, which reads exactly like "there are no
- * criticals" — measured 2026-08-01 as 0 of 13,711 open rows carrying a
- * severity, against 13,711 via the real column and 30 genuine criticals.
+ * `WHERE payload->'_ei'->>'lane' <> 'observation'` filter over work_items
+ * therefore silently classifies every observation as real work — measured
+ * 2026-08-02 as `payload ? 'lane'` true for 12,694 rows against
+ * `payload->'_ei' ? 'lane'` true for ZERO.
  *
- * ⚠ AND WHY THE VIEW IS NOT CHANGED TO MAKE BOTH PATHS WORK. The obvious
- * repair — stop subtracting `_ei` so `payload->'_ei'` resolves on the view too
- * — is declined for the same reason the redirect above is not a view. The view
- * deliberately EXPLODES `_ei` into real columns (severity, source,
- * found_during, linked_feature_id, created_by, assigned_by, signal_origin) and
- * then removes the raw nested copy (`payload - '_ei'`), so each value has
- * exactly ONE representation on the relation. Re-adding the blob would put all
- * seven fields on the view twice, change the payload shape every existing
- * reader of the view already sees, and make the wrong accessor silently
- * CORRECT — which teaches the wrong vocabulary rather than retiring it. The
- * accessor is not made to work; it is made to announce itself.
+ * ⚠ THE engineer_issues `payload->'_ei'` ENTRY WAS RETIRED (2026-09-02), and
+ * the reasoning is kept because a future migration could make it true again.
+ * That entry fired because the engineer_issues VIEW exploded `_ei` into real
+ * columns and then subtracted the blob (`payload - '_ei'`), so the nested path
+ * was NULL for every row. This comment used to argue the view should NOT be
+ * repaired — that re-adding the blob would carry seven fields twice and "make
+ * the wrong accessor silently CORRECT". Plan silent-wrong-answers-2026-08-01
+ * (P-003) overrode that and migration 1096 stopped the subtraction, on the
+ * ground that an advisory only reaches a reader who came through dev:pg_query
+ * while raw psql and code-embedded SQL stayed unguarded.
+ *
+ * Measured on the live view after 1096: the two accessors agree on 166,795 of
+ * 166,802 rows. The 7 exceptions have a NULL payload entirely, where the
+ * `severity` COLUMN reports its COALESCE default of 'minor' and the nested path
+ * honestly reports NULL — so there is no row on which the nested path is wrong.
+ *
+ * The entry was therefore removed rather than reworded: an advisory asserting
+ * "NULL for EVERY row" against a view where the path resolves is exactly the
+ * confidently-wrong answer this registry exists to prevent, and the note below
+ * on the `kind` trap is explicit that a FALSE advisory is worse than none
+ * because it teaches readers to stop trusting advisories. Its replacement is
+ * not another hardcoded claim but a PIN — see
+ * pg-read-query-engineer-issues-ei-pin.integration.test.ts, which reads the
+ * LIVE view definition and fails in BOTH directions: a view that subtracts
+ * `_ei` with no trap registered, and a trap registered while the view projects
+ * the full payload.
  *
  * Deliberately HARDCODED semantics, like the two registries above — update it
  * when a projection moves.
  */
 const SILENT_NULL_PATH_TRAPS: SilentNullPathTrap[] = [
-  {
-    relation: 'engineer_issues',
-    // payload -> '_ei'  (any spacing, single or double quoted key)
-    pathRe: /payload\s*->\s*['"]_ei['"]/i,
-    path: "payload->'_ei'",
-    why:
-      "this VIEW subtracts the blob (`payload - '_ei'`) after exploding every _ei sub-field " +
-      'into a real COLUMN, so the path resolves to NULL for EVERY row — the query succeeds and ' +
-      'returns a plausible wrong answer instead of an error',
-    useInstead:
-      'the columns on this view directly — severity · source · found_during · ' +
-      'linked_feature_id · created_by · assigned_by · signal_origin ' +
-      "(the payload->'_ei'->>'…' form is correct ONLY against the underlying " +
-      'harness_shared.work_items TABLE, which has no severity column). Or prefer ' +
-      'work_items:list { severity } / work_items:claimable',
-  },
+  // ⚠ NO engineer_issues `payload->'_ei'` ENTRY — deliberately retired by
+  // migration 1096 (2026-09-02); see the block comment above for the measured
+  // reason and for the live-view PIN that now guards this in both directions.
+  // Do not re-add one without first reading pg_get_viewdef: if the view still
+  // projects the full payload, the advisory would be false.
   {
     // `kind` vs `item_kind` on the TABLE. Both columns exist, so there is no
     // error — but `kind` is effectively dead: measured 2026-08-02 on

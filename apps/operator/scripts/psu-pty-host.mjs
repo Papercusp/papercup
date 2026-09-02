@@ -3587,7 +3587,18 @@ export function makeInjectMutex({
      *  Caller MUST call the returned release(). */
     async acquire() {
       const prev = tail;
-      let release;
+      /** The `resolve` of `tail`, captured synchronously by the executor below.
+       *  Annotated, and initialised to the explicit `undefined` that a bare
+       *  `let release;` already meant — so this is a ZERO runtime change. It
+       *  exists because declaration emit cannot see that a Promise executor
+       *  runs synchronously: without it `release` infers as `undefined`, this
+       *  method is emitted as `acquire(): Promise<undefined>`, and every
+       *  correct `const r = await m.acquire(); r();` caller is a type error
+       *  against code that works fine at runtime (17 such errors in
+       *  psu-pty-host.test.ts alone, which is what put apps/operator over its
+       *  tsc baseline and held the green-checkpoint gate red).
+       *  @type {(value?: any) => void} */
+      let release = /** @type {any} */ (undefined);
       tail = new Promise((resolve) => {
         release = resolve;
       });

@@ -1864,8 +1864,11 @@ export function evaluateServing(args: {
   // the untouched inference below.
   const reportedSha = normalizeSha(args.servingHealthSha);
   const deployedShaForCompare = normalizeSha(args.deployedSha);
-  if (reportedSha && deployedShaForCompare) {
-    const executing = shaPrefixMatches(reportedSha, deployedShaForCompare);
+  // `executing === null` means the two could not be compared at all, which is
+  // NOT a verdict — fall through to the inference rather than publish one.
+  const executing =
+    reportedSha && deployedShaForCompare ? compareShas(reportedSha, deployedShaForCompare) : null;
+  if (executing !== null) {
     return {
       ...base,
       startedSinceCodeChange: executing,
@@ -1961,21 +1964,25 @@ function normalizeSha(raw: string | null | undefined): string | null {
 }
 
 /**
- * Does the process's reported sha identify the same commit as the deployed one?
+ * Do the two shas identify the same commit? `null` means CANNOT COMPARE.
  *
  * A prefix compare, because the two are legitimately different LENGTHS: the
  * health endpoint reports `git rev-parse --short HEAD` (10 chars here) while the
  * deployed sha is the full 40. Comparing them with `===` would report a MISMATCH
  * for every healthy deploy — a confident false "restart required".
  *
- * The 7-char floor is the safety rail: a short-enough prefix matches unrelated
- * commits by coincidence, and the failure direction is the bad one (a false
- * "it's live"). Below the floor we refuse to conclude rather than guess.
+ * The three-valued return is the load-bearing part, and a two-valued one was
+ * WRONG here in a way a test caught: a prefix too short to be unique is not
+ * evidence of a MISMATCH, it is the absence of evidence. Returning `false` for it
+ * published a confident "stale, restart required" built on a comparison that was
+ * never valid; `null` falls through to the start-time inference instead. The
+ * 7-char floor is where a prefix stops colliding with unrelated commits by
+ * coincidence.
  */
-function shaPrefixMatches(a: string, b: string): boolean {
+function compareShas(a: string, b: string): boolean | null {
   const shorter = a.length <= b.length ? a : b;
   const longer = a.length <= b.length ? b : a;
-  if (shorter.length < 7) return false;
+  if (shorter.length < 7) return null;
   return longer.startsWith(shorter);
 }
 
@@ -4243,6 +4250,64 @@ const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlight
 const realProbeUnitStart = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
   resolveServiceStartMs(await probeServiceStart(unit), Date.now());
 
+/**
+ * WI-2141731 — the release operator's own `/api/health` origin.
+ *
+ * Scoped to `operator-release` ON PURPOSE, and it is the one host whose sha is
+ * real evidence:
+ *  - it is the host the `deploy.3070.sha` cell is ABOUT, so it is the only one
+ *    with a deployed sha to compare against; and
+ *  - `/api/health` is served by the non-bundled operator, whose entrypoint warms
+ *    `getBuildInfo()` at module load. A BUNDLED host (bg-host) deliberately
+ *    reports `sha: null` rather than the checkout's HEAD (EI-21647996938145436),
+ *    so probing one could only ever return null anyway.
+ * Probing the others would invent port mappings for no obtainable answer.
+ */
+const SERVING_HEALTH_URL = 'http://127.0.0.1:3070/api/health';
+/** Long enough for a healthy loopback answer, short enough that a wedged :3070
+ *  cannot become latency in every pipeline read. */
+const SERVING_HEALTH_TIMEOUT_MS = 1_000;
+/** Cheap in-process memo. The resolver is called repeatedly (often several times
+ *  per agent turn) and a deploy cannot land inside this window, so re-probing
+ *  buys nothing and only multiplies the failure surface. */
+const SERVING_HEALTH_TTL_MS = 5_000;
+let servingHealthCache: { atMs: number; sha: string | null } | null = null;
+
+/**
+ * Default health-sha probe. FAIL-SOFT IS THE WHOLE CONTRACT: every path —
+ * timeout, refused connection, non-200, unparseable body, missing field —
+ * resolves `null`, which the verdict reads as "no direct evidence" and falls
+ * back to the start-time inference. It must be impossible for this to throw or
+ * hang, because it sits under `state:read`, `dev:pipeline_position` and
+ * `release:trace`.
+ *
+ * (Not `probeHttpReachable`: that helper answers REACHABILITY and discards the
+ * body we need, and its escalating retries run to ~8.75s — the opposite of the
+ * bounded single attempt a hot resolver can afford.)
+ */
+const realProbeServingHealthSha = async (): Promise<string | null> => {
+  const now = Date.now();
+  if (servingHealthCache && now - servingHealthCache.atMs < SERVING_HEALTH_TTL_MS) return servingHealthCache.sha;
+  let sha: string | null = null;
+  try {
+    const res = await fetch(SERVING_HEALTH_URL, { signal: AbortSignal.timeout(SERVING_HEALTH_TIMEOUT_MS) });
+    if (res.ok) {
+      const body: unknown = await res.json();
+      const raw = (body as { sha?: unknown } | null)?.sha;
+      sha = typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+    }
+  } catch {
+    sha = null;
+  }
+  servingHealthCache = { atMs: now, sha };
+  return sha;
+};
+
+/** Test-only — drop the health-sha memo so a case cannot inherit a peer's probe. */
+export function _resetServingHealthCacheForTest(): void {
+  servingHealthCache = null;
+}
+
 /** Default file-mtime reader. Fail-soft: an unreadable path is UNKNOWN, never 0. */
 const realFileMtimeMs = async (absPath: string): Promise<number | null> => {
   try {
@@ -5501,7 +5566,28 @@ export async function gitPipelinePosition(
   // where the answer could not change the verdict.
   const deployInFlight =
     runtime?.host === 'operator-release' ? await (deps.readDeployInFlight ?? realReadDeployInFlight)() : null;
-  const serving = evaluateServing({ runtime, process: servingProcess, codeAsOfMs, codeAsOfSource, deployInFlight });
+  // WI-2141731: ask the release operator for its OWN sha — direct evidence of the
+  // code it is executing, where today's verdict can only INFER it from two
+  // timestamps. Gated to the cases where the answer can actually decide something:
+  //   - `operator-release` (the host the deployed sha describes), or
+  //   - a sha-only probe (`runtime === null`), which has no host to infer from and
+  //     is precisely the read that was structurally unanswerable before; and
+  //   - only when a deployed sha exists to compare against — otherwise the probe
+  //     could not change the verdict and is a round-trip for nothing.
+  const deployedShaForServing = deploy.deployed?.sha ?? null;
+  const servingHealthApplies = (runtime === null || runtime.host === 'operator-release') && !!deployedShaForServing;
+  const servingHealthSha = servingHealthApplies
+    ? await (deps.probeServingHealthSha ?? realProbeServingHealthSha)()
+    : null;
+  const serving = evaluateServing({
+    runtime,
+    process: servingProcess,
+    codeAsOfMs,
+    codeAsOfSource,
+    deployInFlight,
+    servingHealthSha,
+    deployedSha: deployedShaForServing,
+  });
 
   // Every long-lived host's own generation for this path — independent of the
   // ownership map, which cannot see the import graph (see RuntimeGeneration).

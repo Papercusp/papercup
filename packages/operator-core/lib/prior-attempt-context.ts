@@ -342,7 +342,19 @@ export function buildBoundedPriorAttemptBrief(
   budget: PriorAttemptBriefBudget = {},
 ): BoundedPriorAttemptBrief | null {
   if (!compilation.records.length) return null;
-  const maxChars = Math.max(2_000, budget.maxChars ?? 14_000);
+  // 50_000 CHARS (owner directive 2026-09-02, WI-2142006), up from 14_000.
+  // WI-40078 measured the 14k budget BINDING on 16 of 20 sampled live claims,
+  // dropping an average of 7.5 detail records each — i.e. the common case was a
+  // truncated brief, not a fitted one. No claim site passes a budget (claim.ts,
+  // claim_next.ts, scheduler/get_next.ts all call with none), so this default IS
+  // the live claim-time ceiling.
+  //
+  // ⚠ 50_000 will often NOT be the operative bound. A record costs up to
+  // maxTextChars (700) + approach (≤500) + outcome (≤500) + its ref arrays, so
+  // maxRecords (48) caps a brief around 34k–58k chars depending on content. Raise
+  // maxRecords too if you need the char budget to be the real limit; it was
+  // deliberately left alone here because it was not part of the directive.
+  const maxChars = Math.max(2_000, budget.maxChars ?? 50_000);
   const maxRecords = Math.max(1, budget.maxRecords ?? 48);
   const maxTextChars = Math.max(80, budget.maxTextChars ?? 700);
   const protectedRecords = compilation.records.filter(

@@ -1082,8 +1082,28 @@ export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 400_000;
  * This shapes the seeded DEFAULT (and, as the fleet-member ceiling in
  * clampCompactionLimit, caps a member's self-set) — a promotion to LEADER re-seeds
  * to COMPACTION_LIMIT_DEFAULT_1M_CAP (reseedLeaderCompactionLimit / P-009).
+ *
+ * 250k (owner directive 2026-09-02, WI-2142006): deliberate HEADROOM taken
+ * alongside the claim-time brief budget going 14k→50k chars in
+ * prior-attempt-context.ts, and explicitly framed as reversible — "we can always
+ * restrict it again later after testing".
+ *
+ * ⚠ This raise is NOT what the measured rule would have produced, and that is on
+ * purpose — do not "correct" it back by re-running the helper. WI-40078 measured
+ * live claim overhead at avg 2,922 / P95 3,482 tokens (1.46% / 1.74% of the 200k
+ * cap) and `recommendCapChange` in prior-attempt-measurement.ts returns `keep`
+ * until the AVERAGE reaches max(10_000, limit × 0.05). Restoring the records the
+ * 14k budget was cutting (16 of 20 sampled briefs truncated, avg 7.5 detail
+ * records omitted each) adds only ≈1.3k tokens to a truncated brief, so the
+ * measured average stays far under that bar. The headroom is an owner bet on the
+ * effort-scoped-continuity work landing, not a measurement.
+ *
+ * SECOND-ORDER EFFECT, deliberate: the role cap only binds when it is LOWER than
+ * the window derivation, so raising it un-pins backends whose real window derives
+ * between 200k and 250k. A Codex member on the measured 258_400 window now seeds
+ * 207_000 (its own derivation) instead of being held at 200_000 by this cap.
  */
-export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 200_000;
+export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 250_000;
 
 /** Derive the maximum safe limit for a DELIBERATE runtime override from a
  * measured effective model window. Unlike the seeded default, this deliberately

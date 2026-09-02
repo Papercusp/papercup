@@ -163,9 +163,9 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
     expect(clampCompactionLimit(900_000, 'opus[1m]', { selfSet: false })).toBe(400_000);
   });
 
-  it('fleet MEMBERS cannot self-raise past their 200k role cap — selfSet does not beat role', () => {
-    expect(selfSetCeilingForSpec('opus[1m]', { fleetMember: true })).toBe(200_000);
-    expect(clampCompactionLimit(900_000, 'opus[1m]', { fleetMember: true, selfSet: true })).toBe(200_000);
+  it('fleet MEMBERS cannot self-raise past their 250k role cap — selfSet does not beat role', () => {
+    expect(selfSetCeilingForSpec('opus[1m]', { fleetMember: true })).toBe(250_000);
+    expect(clampCompactionLimit(900_000, 'opus[1m]', { fleetMember: true, selfSet: true })).toBe(250_000);
   });
 
   it('a real small-window spec is unaffected — self-set still derives from ITS window', () => {
@@ -187,10 +187,10 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
     expect(defaultCompactionLimitForSpec('sonnet[1m]:medium')).toBe(400_000);
     expect(defaultCompactionLimitForSpec('haiku[1m]')).toBe(400_000);
   });
-  it('[1m] fleet MEMBERS default to the leaner 200k (owner 2026-07-19); role never touches a real-window derivation', () => {
-    expect(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP).toBe(200_000);
-    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: true })).toBe(200_000);
-    expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(200_000);
+  it('[1m] fleet MEMBERS default to the leaner 250k (owner 2026-09-02, up from 200k); role never touches a real-window derivation', () => {
+    expect(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP).toBe(250_000);
+    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: true })).toBe(250_000);
+    expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(250_000);
     // explicit non-member (leader/solo) keeps the full cap
     expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: false })).toBe(400_000);
     // a 200k-window member still derives from the REAL window, not the role
@@ -215,8 +215,8 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
     expect(defaultCompactionLimitForSpec(undefined)).toBe(400_000);
     expect(defaultCompactionLimitForSpec('')).toBe(400_000);
     expect(defaultCompactionLimitForSpec('   ')).toBe(400_000);
-    expect(defaultCompactionLimitForSpec(null, { fleetMember: true })).toBe(200_000);
-    expect(defaultCompactionLimitForSpec('', { fleetMember: true })).toBe(200_000);
+    expect(defaultCompactionLimitForSpec(null, { fleetMember: true })).toBe(250_000);
+    expect(defaultCompactionLimitForSpec('', { fleetMember: true })).toBe(250_000);
   });
 });
 
@@ -225,8 +225,11 @@ describe('defaultCompactionLimitForWindow (live backend window)', () => {
     expect(defaultCompactionLimitForWindow(258_400)).toBe(207_000);
   });
 
-  it('keeps a Codex fleet member at the leaner 200k role cap', () => {
-    expect(defaultCompactionLimitForWindow(258_400, { fleetMember: true })).toBe(200_000);
+  it('un-pins a Codex fleet member to its OWN 207k window derivation once the role cap rises above it', () => {
+    // The role cap only binds when it is LOWER than the window derivation. At the
+    // former 200k cap this member was held at 200_000; at the 250k cap (owner
+    // 2026-09-02) the 258_400 window's own (258_400 - 10_000) / 1.2 derivation wins.
+    expect(defaultCompactionLimitForWindow(258_400, { fleetMember: true })).toBe(207_000);
   });
 
   it('preserves the established 1M and 200k derivations', () => {
@@ -263,9 +266,9 @@ describe('codex extended-window specs seed the SAME role caps as claude [1m]', (
     }
   });
 
-  it('seeds 200k for a fleet member', () => {
+  it('seeds 250k for a fleet member', () => {
     for (const spec of ['gpt-5.6-sol:high', 'terra', 'gpt-5.4']) {
-      expect(defaultCompactionLimitForSpec(spec, { fleetMember: true }), spec).toBe(200_000);
+      expect(defaultCompactionLimitForSpec(spec, { fleetMember: true }), spec).toBe(250_000);
     }
   });
 

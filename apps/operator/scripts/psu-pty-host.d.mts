@@ -1355,7 +1355,7 @@ export function makeInjectMutex({ now, warnMs, forceReleaseMs, onStuck, }?: {
     /** Resolve to a release() fn once the lock is free (FIFO), or once the
      *  watchdog force-releases a wedged holder (see the doc block above).
      *  Caller MUST call the returned release(). */
-    acquire(): Promise<undefined>;
+    acquire(): Promise<(value?: any) => void>;
 };
 export function makeStaleFireGuard(): {
     /**

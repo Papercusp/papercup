@@ -35,6 +35,23 @@ describe('extractOffendingKey', () => {
     expect(extractOffendingKey(null)).toBeNull();
     expect(extractOffendingKey(undefined)).toBeNull();
   });
+
+  // EI-22170146677569151: define-tool.ts's dispatch-stack path prefixes the
+  // literal error CODE onto the message text (`invalid_args: ${formatIssues(...)}`),
+  // which the naive path regex mistook for the offending field (9 of the top
+  // 12 mined pairs in production carried this pseudo-key instead of a real one).
+  it('strips a leading "invalid_args:" code prefix and finds the real path underneath', () => {
+    expect(extractOffendingKey('invalid_args: coordNotes: Required')).toBe('coordNotes');
+    expect(extractOffendingKey('invalid_args: id: Expected string, received number; foo: Required')).toBe('id');
+  });
+
+  it('strips a leading "invalid_input:" code prefix and finds the real path underneath', () => {
+    expect(extractOffendingKey('invalid_input: threadLimit: Expected number, received string')).toBe('threadLimit');
+  });
+
+  it('returns null (not the code) when a code prefix has no real path underneath', () => {
+    expect(extractOffendingKey('invalid_args: totally free-form text with no colon-path')).toBeNull();
+  });
 });
 
 function row(overrides: Partial<InvalidArgsRow> = {}): InvalidArgsRow {

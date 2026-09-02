@@ -190,7 +190,9 @@ describe('the two functions AGREE — resolve is only ever reached past validate
   it('every input validate ACCEPTS resolves without falling through to the legacy default', () => {
     const accepted = [
       { key: 'k', kind: null, effectiveTtlSec: 3600 },
-      { key: 'k', kind: 'convention', effectiveTtlSec: null },
+      // `as const`: without it this literal widens to `string`, which no longer
+      // satisfies FactLifetimeInput['kind'] (FactKind | null) — see store.ts.
+      { key: 'k', kind: 'convention' as const, effectiveTtlSec: null },
       { key: 'wall:x', kind: null, effectiveTtlSec: null },
       { key: 'dead-end:x', kind: null, effectiveTtlSec: null },
       { key: 'guard-rail:x', kind: null, effectiveTtlSec: null },
