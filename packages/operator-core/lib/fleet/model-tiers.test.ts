@@ -35,10 +35,12 @@ describe('roleDefaultSpec — the floor input', () => {
     // The launch-fixer family's committed floors (git-sync-content-guard D-008
     // follow-up): the two fleet-blast-radius fixers pin opus:xhigh — merge-resolver
     // no longer silently downgrades on a host without AGENT_MODELS — and the bounded
-    // content repairer pins the sonnet execution tier.
+    // content repairer pinned the sonnet execution tier until 2026-09-02, when an owner
+    // directive (interactive) moved it — and every other role carrying an
+    // operator_agent_config roleBackends entry — onto opus:xhigh.
     expect(roleDefaultSpec('merge-resolver')).toBe('opus:xhigh');
     expect(roleDefaultSpec('release-fixer')).toBe('opus:xhigh');
-    expect(roleDefaultSpec('content-fixer')).toBe('sonnet');
+    expect(roleDefaultSpec('content-fixer')).toBe('opus:xhigh');
     // A role with neither an env entry nor a committed default → empty.
     expect(roleDefaultSpec('reviewer')).toBe('');
   });
@@ -214,12 +216,17 @@ describe('effectiveTierConfig — session override precedence (queen-steering D-
 
 describe('roleHomeTier — the default-menu tier a role runs at', () => {
   it('maps a committed default spec to its default-menu tier name', () => {
-    // WI-4623 revert: mug/cup's committed floor is the sonnet-5 trimmed spec
+    // WI-4623 revert: cup's committed floor is the sonnet-5 trimmed spec
     // (`sonnet[1m]:high`), which maps to the sonnet 'standard' tier — the same
     // home tier as worker (a pipeline execution role also on the sonnet family).
-    expect(roleHomeTier('mug')).toBe('standard'); // sonnet[1m]:high → standard
     expect(roleHomeTier('worker')).toBe('standard'); // sonnet → standard
     expect(roleHomeTier('cup')).toBe('standard'); // sonnet[1m]:high → standard
+    // ⚠ mug MOVED OUT of the standard tier on 2026-09-02 (owner directive, interactive):
+    // its committed default is now opus:xhigh, so its home tier is `deep`. Asserted
+    // explicitly because this is a real behavioural consequence, not a renamed constant —
+    // roleHomeTier is what the opus-budget downgrade (B-GW-4) and the queen own-model
+    // lever both key on, so mug/kettle/scanner now sit above the downgrade threshold.
+    expect(roleHomeTier('mug')).toBe('deep'); // opus:xhigh → deep
   });
 
   it('treats the current versioned Claude id and its stable menu alias as one family', () => {
@@ -233,39 +240,45 @@ describe('roleHomeTier — the default-menu tier a role runs at', () => {
 describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-steering-panel)', () => {
   it('returns null on the default menu (queen home=standard=sonnet family) — a marker-only difference is NOT an override; [1m] rides the exec boundary (applyRoleModel)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveRoleOwnModelSpec('mug', {})).toBeNull();
+    expect(resolveRoleOwnModelSpec('cup', {})).toBeNull();
   });
 
-  it('an owner menu override that raises the standard (mug home) tier MOVES the queen', () => {
+  // ⚠ FIXTURE NOTE (2026-09-02): these cases use `cup` as the standard-tier role. They
+  // used `mug` until an owner directive (interactive) moved mug/kettle/scanner to
+  // opus:xhigh, which lifted mug's home tier from `standard` to `deep`. The subject here
+  // is the OWN-MODEL LEVER against a standard-tier role, not mug specifically, so the
+  // fixture moved to a role still on `sonnet[1m]:high` rather than weakening the
+  // assertions. mug's new home tier is asserted directly in the roleHomeTier block above.
+  it('an owner menu override that raises the standard (cup home) tier MOVES the queen', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // WI-4623 revert: mug's home tier is `standard` (sonnet[1m]:high), not `luna`.
+    // WI-4623 revert: cup's home tier is `standard` (sonnet[1m]:high), not `luna`.
     const eff = { tiers: [{ name: 'standard', spec: 'opus:xhigh' }] };
-    expect(resolveRoleOwnModelSpec('mug', eff)).toBe('opus:xhigh');
+    expect(resolveRoleOwnModelSpec('cup', eff)).toBe('opus:xhigh');
   });
 
   it('same-family owner rows can raise effort but never weaken the committed role floor', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // WI-4623 revert: mug's committed default is now sonnet[1m]:high — a marker-only /
+    // WI-4623 revert: cup's committed default is sonnet[1m]:high — a marker-only /
     // identical-effort menu row is not an override; a raised effort is.
-    expect(resolveRoleOwnModelSpec('mug', { tiers: [{ name: 'standard', spec: 'sonnet:high' }] })).toBeNull();
-    expect(resolveRoleOwnModelSpec('mug', { tiers: [{ name: 'standard', spec: 'sonnet:xhigh' }] })).toBe('sonnet:xhigh');
+    expect(resolveRoleOwnModelSpec('cup', { tiers: [{ name: 'standard', spec: 'sonnet:high' }] })).toBeNull();
+    expect(resolveRoleOwnModelSpec('cup', { tiers: [{ name: 'standard', spec: 'sonnet:xhigh' }] })).toBe('sonnet:xhigh');
   });
 
   it('allows cross-provider own-model menu specs; invoke infers the backend from the model spec', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const eff = { tiers: [{ name: 'standard', spec: 'gpt-5.5:high' }] };
-    expect(resolveRoleOwnModelSpec('mug', eff)).toBe('gpt-5.5:high');
+    expect(resolveRoleOwnModelSpec('cup', eff)).toBe('gpt-5.5:high');
   });
 
   it('allows role-own tier rows that name a non-Claude backend', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const eff = { tiers: [{ name: 'standard', spec: 'gpt-5.5:high', backend: 'codex' as const }] };
-    expect(resolveRoleOwnModelSpec('mug', eff)).toBe('gpt-5.5:high');
+    expect(resolveRoleOwnModelSpec('cup', eff)).toBe('gpt-5.5:high');
   });
 
   it('a queen CEILING is her TARGET (a decider has no self-picker) — ceiling=max → opus:xhigh', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveRoleOwnModelSpec('mug', { tierCeilings: { mug: 'max' } })).toBe('opus[1m]:xhigh');
+    expect(resolveRoleOwnModelSpec('cup', { tierCeilings: { cup: 'max' } })).toBe('opus[1m]:xhigh');
   });
 
   it('a too-low ceiling NEVER downgrades the queen below her floor (EI-7/EI-286) → null (stays default; marker-only diff ≠ override)', () => {
