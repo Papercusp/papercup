@@ -299,7 +299,7 @@ export default defineTool({
     chaining:
       'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots } → scorecards:emit with the canonical result.',
     returns:
-      '`skeleton` is an ARRAY of criterion rows ({ key, title, instrumentKey, check, allowedRatings, rating:null, evidence:null, required }) — NOT an object keyed by criterion, so index it positionally or by `.key`. Beside it: `rubric` (summary incl. criteriaCount), `graderEligibility` (null unless the rubric is kind:acceptance), and `latest` — the newest ScorecardRow or null, whose `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars (`generationFreshness` is present only when the row carries a `gradedGeneration`), so a flat/CSV projection over a row fails on them. Passing `ratings` adds `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed`, and `delta.changedCriteria`.',
+      'Top level: { ok, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, changed, delta, error }. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
     seeAlso: ['scorecards:emit', 'scorecards:list', 'rubrics:get'],
   },
   // EI-21228209276284649: this is a correctness payload, not a browseable list.
@@ -318,6 +318,28 @@ export default defineTool({
   // COORD_ROLES (which would expose unrelated coordination writes).
   agentRoles: [...COORD_ROLES, 'judge'],
   args: scorecardEvaluateArgs,
+  // WI-2141200: the `outputJsonSchema` that guidance-output-schema-live-guard
+  // resolves an authored `guidance.returns` against is DERIVED from this `result:`
+  // declaration — there is no direct declaration site — so the prose above is only
+  // enforceable because this exists. Every field is optional: the branches differ
+  // (skeleton-only, validated, and the two error shapes). Nested payloads stay
+  // loose so the encoder never reshapes a correctness result the way the
+  // `ignoreSessionPayloadTier` declaration above exists to prevent.
+  result: z
+    .object({
+      ok: z.boolean().optional(),
+      error: z.string().optional(),
+      graderEligibility: z.record(z.string(), z.unknown()).nullable().optional(),
+      rubric: z.record(z.string(), z.unknown()).optional(),
+      skeleton: z.array(z.unknown()).optional(),
+      canonicalRatings: z.record(z.string(), z.unknown()).optional(),
+      evidenceFingerprint: z.string().optional(),
+      instrumentContract: z.record(z.string(), z.unknown()).optional(),
+      changed: z.boolean().optional(),
+      delta: z.record(z.string(), z.unknown()).optional(),
+      latest: z.record(z.string(), z.unknown()).nullable().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     // EI-21974075442192005: this identity used to be resolved and discarded, which
     // is why the pre-flight could not answer the one question that costs a whole
