@@ -52,6 +52,7 @@ import {
   presetsFromArgs,
   resumeArgsFor,
   resumeEnvFor,
+  contextTrimmingEnv,
   resumeAccountPlan,
   chooseResumeAccount,
   buildResumeEnv,
@@ -3984,7 +3985,35 @@ describe("psu-launcher arg parsing", () => {
       PAPERCUSP_AGENT_SESSION: "1",
       DISABLE_AUTO_COMPACT: "1",
       DISABLE_COMPACT: "1",
+      ...contextTrimmingEnv("claude"),
     });
+  });
+
+  it("buildResumeEnv: the context-trimming trio is re-stamped on a resume (WI-2140943 lane 2)", () => {
+    // A resume spawns a NEW CLI — without ENABLE_TOOL_SEARCH / PAPERCUSP_TOOLS /
+    // PAPERCUSP_CONTEXT_TIER a gateway-routed claude boots with the whole catalog
+    // inline (measured 756k first-turn tokens vs ~143k). Same rationale as P-022.
+    const claude = {
+      agent: "claude",
+      id: 7,
+      coordOwnerId: "su-abc",
+      workspaceId: "ws1",
+    };
+    const env = buildResumeEnv(claude) as Record<string, string>;
+    expect(env).toMatchObject(contextTrimmingEnv("claude"));
+    expect(env.ENABLE_TOOL_SEARCH).toBe("true");
+    expect(env.PAPERCUSP_CONTEXT_TIER).toBe("trimmed");
+    expect(env.PAPERCUSP_TOOLS).toContain("coord:orient");
+    // Non-claude agents get only the payload tier (no CC-specific keys).
+    const omp = buildResumeEnv({
+      agent: "omp",
+      id: 8,
+      coordOwnerId: "su-def",
+      workspaceId: "ws1",
+    }) as Record<string, string>;
+    expect(omp.PAPERCUSP_CONTEXT_TIER).toBe("trimmed");
+    expect(omp.ENABLE_TOOL_SEARCH).toBeUndefined();
+    expect(omp.PAPERCUSP_TOOLS).toBeUndefined();
   });
 
   it("buildResumeEnv: P-022 native-compaction retirement is re-stamped on Claude resumes only", () => {
@@ -4028,6 +4057,7 @@ describe("psu-launcher arg parsing", () => {
       PAPERCUSP_AGENT_SESSION: "1",
       DISABLE_AUTO_COMPACT: "1",
       DISABLE_COMPACT: "1",
+      ...contextTrimmingEnv("claude"),
     });
     // A resolved account env folds on top (the gateway pin the resume would otherwise lose).
     expect(
@@ -4049,6 +4079,7 @@ describe("psu-launcher arg parsing", () => {
       PAPERCUSP_AGENT_SESSION: "1",
       DISABLE_AUTO_COMPACT: "1",
       DISABLE_COMPACT: "1",
+      ...contextTrimmingEnv("claude"),
       ANTHROPIC_BASE_URL: "http://127.0.0.1:8788",
       ANTHROPIC_CUSTOM_HEADERS: "anthropic-account-id: aviynw6",
       PAPERCUSP_ACCOUNT_ID: "aviynw6",
@@ -4089,6 +4120,9 @@ describe("psu-launcher arg parsing", () => {
       // re-stamped here just like fresh launches and resumes.
       DISABLE_AUTO_COMPACT: "1",
       DISABLE_COMPACT: "1",
+      // WI-2140943 lane 2: so is the context-trimming trio (ENABLE_TOOL_SEARCH /
+      // PAPERCUSP_TOOLS / PAPERCUSP_CONTEXT_TIER) — the server envelope never carries it.
+      ...contextTrimmingEnv("claude"),
     });
     // Never trust the server envelope's own claim — the marker is asserted
     // client-side even if bootstrap-su starts sending something under the key.
