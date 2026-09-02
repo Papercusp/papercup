@@ -170,8 +170,16 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     await callGetNext({ metadata });
 
     expect(metadata).toHaveBeenCalledTimes(1);
+    // EI-7014: the mock's claimedUnder carries a specId/revision, so the enriched
+    // disposition now attributes the claim to the spec that produced it (see the
+    // dedicated attribution tests below) — this fixture's mock predates that field.
     expect(metadata).toHaveBeenCalledWith({
-      schedulerDisposition: { kind: 'claimed', workItemId: 'WI-38199' },
+      schedulerDisposition: {
+        kind: 'claimed',
+        workItemId: 'WI-38199',
+        specId: 'envelope-spec',
+        revision: 3,
+      },
     });
   });
 
@@ -183,6 +191,32 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
         message: 'nothing matched',
       }),
     ).toEqual({ kind: 'no-claim', reason: 'fleet_lane_drained' });
+  });
+
+  // EI-7014: the disposition attributes a claim/miss to the spec that produced it, when one
+  // is supplied — sourced from values the caller already had (res.claimedUnder /
+  // reconciliation.scope.record), never a new read performed by this pure function itself.
+  it('attributes a claimed disposition to the spec that produced it, when supplied', () => {
+    expect(
+      schedulerDispositionMetadata({ id: 'EI-9001' }, {}, { specId: 'nonp2p-bug-drain-kinds', revision: 3 }),
+    ).toEqual({ kind: 'claimed', workItemId: 'EI-9001', specId: 'nonp2p-bug-drain-kinds', revision: 3 });
+  });
+
+  it('omits spec identity entirely when none is supplied — never a guessed default', () => {
+    expect(schedulerDispositionMetadata({ id: 'EI-9002' }, {}, null)).toEqual({
+      kind: 'claimed',
+      workItemId: 'EI-9002',
+    });
+  });
+
+  it('attributes a no-claim disposition to the fleet-scoped spec that missed under it', () => {
+    expect(
+      schedulerDispositionMetadata(
+        null,
+        { ok: false, reason: 'fleet_lane_drained' },
+        { specId: 'nonp2p-bug-drain-kinds', revision: null },
+      ),
+    ).toEqual({ kind: 'no-claim', reason: 'fleet_lane_drained', specId: 'nonp2p-bug-drain-kinds', revision: null });
   });
 
   it('passes the claimed id to premise citation hydration and surfaces its advisory', async () => {
