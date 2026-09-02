@@ -14,8 +14,15 @@ import { resolvePremiseStamps, type PremiseProbes } from './premise-resolve';
 
 const getMessageById = vi.fn();
 const getWorkItem = vi.fn();
+// The escalations-surface fallback's seam (EI-22140375886110994). Mocked for the
+// same reason as the SQL deps below: the message probe now reads a SECOND store
+// on the miss path, and an unmocked leg here would reach real PG from the unit
+// tier — the exact escape the anti-escape pin at the bottom of this file exists
+// to catch, arriving through a leg that only runs when a lookup MISSES.
+const getEvent = vi.fn();
 
 vi.mock('./messages', () => ({ getMessageById: (...a: unknown[]) => getMessageById(...a) }));
+vi.mock('./log', () => ({ coordLog: { getEvent: (...a: unknown[]) => getEvent(...a) } }));
 vi.mock('../../work-items', () => ({ getWorkItem: (...a: unknown[]) => getWorkItem(...a) }));
 vi.mock('../../work-item-dispatch-states', () => ({
   ISSUE_TERMINAL_STATES: ['resolved', 'closed', 'deprecated', 'done'],
@@ -30,6 +37,7 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' 
 beforeEach(() => {
   getMessageById.mockReset();
   getWorkItem.mockReset();
+  getEvent.mockReset();
 });
 
 const FULL_ID = 'msas1j6h-0000-34bbe4b498e54dc68c9857c580f624e9';
@@ -55,6 +63,7 @@ describe('the false-accusation guard — a short-form msg id must never read as 
 
   it('reports a genuinely missing FULL-form id as absent — the guard is not a blanket excuse', async () => {
     getMessageById.mockResolvedValue(null);
+    getEvent.mockResolvedValue(null); // absent from the escalations surface too
     const probes = premiseProbes();
     await expect(probes.message!(FULL_ID)).resolves.toEqual({ exists: false });
   });
@@ -63,6 +72,88 @@ describe('the false-accusation guard — a short-form msg id must never read as 
     expect(isFullFormMsgId(FULL_ID)).toBe(true);
     expect(isFullFormMsgId('msas1j6h')).toBe(false);
     expect(isFullFormMsgId('')).toBe(false);
+  });
+});
+
+// EI-22140375886110994. The third false-accusation guard, and the one the other
+// two could not catch: this id is not malformed and not cross-harness, it is
+// correctly cited and simply lives on a DIFFERENT SURFACE of the same table.
+// `getMessageById` filters `coord_event_log` to `surface = 'messages'`; an
+// escalation is a `surface = 'escalations'` row there. Its id is full-form-shaped,
+// so it passes the guard above and lands on the messages-only lookup — meaning the
+// protection was defeated by a citation that was RIGHT about everything.
+describe('the escalation surface — a real escalation must not read as a dangling message', () => {
+  // The shape of the id actually reported on the item, reproduced live against
+  // the production tables on 2026-09-02: present as a kind:'escalation' row,
+  // absent from the messages surface.
+  const ESCALATION_ID = 'mtjobmgj-0000-adcb00778be547448a2cb37e15aa5d45';
+
+  it('resolves an escalation id that the messages surface does not carry', async () => {
+    getMessageById.mockResolvedValue(null);
+    getEvent.mockResolvedValue({ msg_id: ESCALATION_ID, kind: 'escalation' });
+    const probes = premiseProbes();
+    await expect(probes.message!(ESCALATION_ID)).resolves.toEqual({ exists: true });
+    expect(getEvent).toHaveBeenCalledWith('escalations', ESCALATION_ID);
+  });
+
+  it('stamps that escalation `holds` end-to-end, not `unresolvable`', async () => {
+    // The property that actually matters to a reader: the verdict premise-resolve
+    // stamps. Before the fix this whole path produced `no message <id>`.
+    // Cited in the `msg:` form a real premise uses — the resolver strips the
+    // prefix before the probe sees it (premise-resolve.ts 'peer-message').
+    getMessageById.mockResolvedValue(null);
+    getEvent.mockResolvedValue({ msg_id: ESCALATION_ID, kind: 'escalation' });
+    const [stamp] = await resolvePremiseStamps([`msg:${ESCALATION_ID}`], premiseProbes());
+    expect(stamp!.status).toBe('holds');
+  });
+
+  it('is the exact verdict flip — the same citation is `unresolvable` when neither surface has it', async () => {
+    // The negative control for the test above. Without it, that assertion could
+    // pass for a reason unrelated to the fallback (e.g. a classifier change),
+    // and this pins that the escalations read is what moves the verdict.
+    getMessageById.mockResolvedValue(null);
+    getEvent.mockResolvedValue(null);
+    const [stamp] = await resolvePremiseStamps([`msg:${ESCALATION_ID}`], premiseProbes());
+    expect(stamp!.status).toBe('unresolvable');
+    expect(stamp!.note).toBe(`no message ${ESCALATION_ID}`);
+  });
+
+  it('resolves a RESOLVED escalation too — the base log outlives the open projection', async () => {
+    // Why the fallback reads the append-only log rather than
+    // `coord_open_escalations`: migration 355's trigger DELETES from that
+    // projection on resolve, so a projection-backed fix would still have
+    // falsely accused every citation of an escalation that has since closed.
+    // The immutable raise event survives resolution, so this must hold.
+    getMessageById.mockResolvedValue(null);
+    getEvent.mockResolvedValue({ msg_id: ESCALATION_ID, kind: 'escalation', resolved_at: '2026-09-02T09:00:00Z' });
+    const probes = premiseProbes();
+    await expect(probes.message!(ESCALATION_ID)).resolves.toEqual({ exists: true });
+  });
+
+  it('does NOT pay the second lookup when the messages surface already answered', async () => {
+    // The fallback is a miss-path cost only; a normal message citation must keep
+    // its single indexed read.
+    getMessageById.mockResolvedValue({ msg_id: FULL_ID });
+    const probes = premiseProbes();
+    await expect(probes.message!(FULL_ID)).resolves.toEqual({ exists: true });
+    expect(getEvent).not.toHaveBeenCalled();
+  });
+
+  it('degrades to unknown — never a false accusation — when the escalations read throws', async () => {
+    // Same fail-soft contract as every other probe: a decorative stamp must not
+    // turn a store hiccup into "this message does not exist".
+    getMessageById.mockResolvedValue(null);
+    getEvent.mockRejectedValue(new Error('pg is down'));
+    const probes = premiseProbes();
+    await expect(probes.message!(ESCALATION_ID)).resolves.toBeNull();
+  });
+
+  it('still does ZERO IO on BOTH surfaces for a short-form id', async () => {
+    // The new leg must not sneak IO in behind the short-form guard.
+    const probes = premiseProbes();
+    await expect(probes.message!('mtjobmgj')).resolves.toBeNull();
+    expect(getMessageById).not.toHaveBeenCalled();
+    expect(getEvent).not.toHaveBeenCalled();
   });
 });
 

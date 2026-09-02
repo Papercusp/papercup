@@ -324,8 +324,49 @@ export function premiseProbes(scope: PremiseProbeScope = {}): PremiseProbes {
         // exact-match lookup, and reporting it as dangling would be a false
         // accusation (WI-6725). `unknown` is the honest verdict.
         if (!isFullFormMsgId(msgId)) return null;
+        const id = msgId.trim();
         const { getMessageById } = await import('./messages');
-        return { exists: (await getMessageById(msgId.trim())) != null };
+        if ((await getMessageById(id)) != null) return { exists: true };
+
+        // ⚠ SECOND SURFACE BEFORE DECLARING NON-EXISTENCE (EI-22140375886110994).
+        // `getMessageById` reads `coord_event_log` filtered to `surface =
+        // 'messages'`, but that table holds EVERY coord surface — escalations
+        // included (~20k rows). An escalation id is full-form-shaped
+        // (`mtjobmgj-0000-<32 hex>` matches `isFullFormMsgId`), so it sails past
+        // the short-form guard above, misses the messages-only lookup, and used
+        // to be stamped `unresolvable` — "no message X" about an escalation that
+        // demonstrably exists. That is precisely the false accusation this
+        // module is built to prevent, defeating the guard by being correctly
+        // shaped while living on another surface.
+        //
+        // Reproduced live on 2026-09-02 with the reported id: absent from the
+        // messages surface, present in `coord_event_log` as a `kind:'escalation'`
+        // row (operator-scope, `harness_slug IS NULL`).
+        //
+        // Read the append-only BASE log, not `coord_open_escalations`: that
+        // projection is DELETED from on resolve (migration 355's trigger), so it
+        // answers only for escalations that are still open and would leave every
+        // RESOLVED escalation citation drawing the same false accusation. The
+        // raise event is immutable and survives resolution, so the base log
+        // resolves both. `getEvent` is the targeted exact-id seam read — the
+        // sibling `getEscalation()` would fold the whole surface (the unbounded
+        // replay migration 355 exists to kill) to answer a mere existence
+        // question.
+        //
+        // Deliberately NOT filtered on `kind`: a resolution event carries its own
+        // msg_id, and a premise citing one still cites a real artifact.
+        //
+        // Residual, unchanged by this fix: `escalation-log-gc.ts` physically
+        // reaps resolved families older than ESCALATION_GC_RETENTION_DAYS (14),
+        // so a citation to a long-resolved escalation is genuinely unrecoverable
+        // and still reads absent. That is indistinguishable from a fabricated id
+        // by construction — no store retains it — so it is left as-is rather than
+        // widening every miss to `unknown`, which would gut the probe's ability
+        // to detect a truly dangling ref.
+        const { coordLog } = await import('./log');
+        if ((await coordLog.getEvent('escalations', id)) != null) return { exists: true };
+
+        return { exists: false };
       } catch {
         return null;
       }
