@@ -39,6 +39,8 @@ import {
   probeBudget,
   pollStopDecision,
   emptyAnswerBanner,
+  lspClientIdentity,
+  startedNewClient,
 } from './code-intel-bench.ts';
 import { corpusCase } from './acceptance-corpus.ts';
 import {
@@ -951,5 +953,70 @@ describe('emptyAnswerBanner — the PERMANENT false-empty was the silent one (EI
     const oldRule = (m: { emptyThenFilledMs: number | null }) =>
       m.emptyThenFilledMs !== null ? 'banner' : '';
     expect(oldRule({ emptyThenFilledMs: null })).toBe('');
+  });
+});
+
+describe('serverWasCold is read from the ADAPTER, not guessed from the extension (WI-2142383)', () => {
+  // WHY THESE ASSERT ON A KEY RATHER THAN ON THE LEG:
+  //
+  // The defect was never in the leg's control flow — it was in the KEY the leg
+  // used to answer "has this server already started?". `lsp-adapter` keys
+  // clients by `clientKey(language, rootPath)`; the leg keyed a private
+  // `languagesStarted` Set by file extension. One bucket per language against
+  // one client per project root: the disagreement IS the bug, and it can only
+  // be caught by a test that holds both keyings side by side.
+  //
+  // Each case therefore also evaluates the OLD extension rule where they
+  // differ, so a future reader can see that the two genuinely disagree — a
+  // regression test that only showed the new rule getting it right would pass
+  // just as happily if the new rule were never wired in.
+  const ts = (rootPath: string, taskId = 'task-1') =>
+    lspClientIdentity({ language: 'typescript', rootPath, taskId });
+
+  const extensionRule = (started: ReadonlySet<string>, ext: string) => !started.has(ext);
+
+  it('calls a SECOND project root for the SAME language a cold start', () => {
+    // Exactly the leg v6/v7 case: the anchor probe opened
+    // packages/operator-core, then shadowed-symbol cold-opened
+    // libs/generic/scheduled-registry and was recorded `warm-start`.
+    const before = new Set([ts('/repo/packages/operator-core')]);
+    const after = [
+      ts('/repo/packages/operator-core'),
+      ts('/repo/libs/generic/scheduled-registry'),
+    ];
+
+    expect(startedNewClient(before, after)).toBe(true);
+    // ...and the rule it replaced gets this exact case backwards.
+    expect(extensionRule(new Set(['.ts']), '.ts')).toBe(false);
+  });
+
+  it('does NOT call a re-query against an already-running client cold', () => {
+    const before = new Set([ts('/repo/packages/operator-core')]);
+    expect(startedNewClient(before, [ts('/repo/packages/operator-core')])).toBe(false);
+  });
+
+  it('calls a RESTARTED server at the same root a cold start', () => {
+    // A crashed server respawned at the same root is a new process that paid a
+    // new cold start. Keying on language+root alone would report it warm and
+    // hide that cost from coldStartMsMax.
+    const before = new Set([ts('/repo/packages/operator-core', 'task-1')]);
+    const after = [ts('/repo/packages/operator-core', 'task-2')];
+    expect(startedNewClient(before, after)).toBe(true);
+  });
+
+  it('reports warm when the probe started nothing at all', () => {
+    expect(startedNewClient(new Set<string>(), [])).toBe(false);
+  });
+
+  it('distinguishes two LANGUAGES sharing one root', () => {
+    // The mirror image of the first case: same root, different servers. The
+    // adapter runs one client per (language, root) pair, so a rust probe in a
+    // root where TypeScript is already up is still a cold start.
+    const before = new Set([ts('/repo')]);
+    const after = [
+      ts('/repo'),
+      lspClientIdentity({ language: 'rust', rootPath: '/repo', taskId: 'task-9' }),
+    ];
+    expect(startedNewClient(before, after)).toBe(true);
   });
 });

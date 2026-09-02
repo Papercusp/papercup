@@ -573,10 +573,14 @@ export const KNOWN_RSS_EXCEEDANCES: readonly {
  * The language a probe's cursor belongs to.
  *
  * Deliberately delegates to the adapter's own `languageForFile` rather than
- * re-deriving from the extension: the leg keys `serverWasCold` off the raw
- * extension, and a second, private extension→language table here would be free
- * to disagree with the one that actually chose the server. A probe must never
- * be graded against a language it was not answered by.
+ * re-deriving from the extension: a second, private extension→language table
+ * here would be free to disagree with the one that actually chose the server. A
+ * probe must never be graded against a language it was not answered by.
+ *
+ * The leg once made exactly that mistake one level up, keying `serverWasCold`
+ * off the raw extension while the adapter keys clients by project root
+ * (WI-2142383). It now reads the answer back from the adapter's own inventory —
+ * see `startedNewClient`.
  */
 export function probeLanguage(caseId: string): LspLanguage | null {
   const probe = BENCH_PROBES.find((p) => p.caseId === caseId);
@@ -879,12 +883,58 @@ export function pollStopDecision(args: {
 }
 
 /**
+ * The identity of one live LSP client, keyed the way the ADAPTER keys it.
+ *
+ * ⚠ THE KEY MUST MATCH THE ADAPTER'S, NOT THE PROBE'S FILE EXTENSION
+ * (WI-2142383). `lsp-adapter` keys clients by `clientKey(language, rootPath)`,
+ * so ONE language legitimately has SEVERAL servers — one per project root. The
+ * leg used to decide `serverWasCold` from `!languagesStarted.has(ext)`, which
+ * collapses every root into a single bucket: the second probe to touch a `.ts`
+ * file was recorded `warm-start` even when it cold-opened a completely
+ * different project. That is the false direction to be wrong in — a cold start
+ * mislabelled warm escapes `coldStartMsMax` entirely and is instead graded
+ * against `warmQueryMsMax`, which it will always blow, so the reader is sent
+ * to the wrong budget with the wrong number. MEASURED in leg v6/v7:
+ * `shadowed-symbol-no-cross-contamination` reported `warm-start` while opening
+ * `libs/generic/scheduled-registry` against a `packages/operator-core` anchor.
+ *
+ * `taskId` is in the key deliberately: a server that CRASHED and was restarted
+ * at the same root is a new process that paid a new cold start, and the probe
+ * that triggered it should be graded as cold.
+ */
+export function lspClientIdentity(client: {
+  language: string;
+  rootPath: string;
+  taskId: string;
+}): string {
+  return `${client.language}::${client.rootPath}::${client.taskId}`;
+}
+
+/**
+ * Did the adapter start a NEW language server between two inventory snapshots?
+ *
+ * This is the whole cold-start test: ASK THE ADAPTER what it did rather than
+ * predicting it from the probe's filename. It stays correct through any future
+ * change to how the adapter chooses a project root, because it never models
+ * that choice — it only observes the client set before and after.
+ */
+export function startedNewClient(
+  before: ReadonlySet<string>,
+  after: Iterable<string>,
+): boolean {
+  for (const id of after) if (!before.has(id)) return true;
+  return false;
+}
+
+/**
  * Run the in-operator LSP adapter across the probe set.
  *
  * Ordering matters: probes are grouped by file extension so each language
- * server pays exactly one cold start, and only the first probe for a language
- * is flagged `serverWasCold`. Reporting a warm query as a cold start would
- * flatter the backend by an order of magnitude.
+ * server pays exactly one cold start per PROJECT ROOT. Whether a probe paid one
+ * is not predicted from its filename — it is read back from the adapter's own
+ * client inventory once the probe has run (see `startedNewClient`). Reporting a
+ * warm query as a cold start would flatter the backend by an order of
+ * magnitude; reporting a cold start as warm hides it from its own budget.
  */
 export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegReport> {
   const {
@@ -903,7 +953,6 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
   const probes = BENCH_PROBES.filter((p) => !only || only.includes(p.caseId));
   const measurements: BenchMeasurement[] = [];
   const declinedIntents: { caseId: string; intent: CodeIntelIntent; error: string }[] = [];
-  const languagesStarted = new Set<string>();
   const legStarted = Date.now();
 
   // Every PROBE in the set is entitled to a FLOOR of the leg budget.
@@ -926,15 +975,12 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
   // it untouched. A budget that bounds an AGGREGATE converts "slow member" into
   // "later members never ran" at whatever granularity it is applied, so the
   // reservation has to sit on the atomic unit being measured.
-  const probeLanguage = (file: string): string => file.slice(file.lastIndexOf('.'));
 
   for (const [probeIndex, probe] of probes.entries()) {
     const kase = corpusCase(probe.caseId);
     if (!kase) throw new Error(`bench probe references unknown corpus case '${probe.caseId}'`);
 
     const cursor = resolveProbeCursor(probe, repoRoot);
-    const ext = probeLanguage(probe.file);
-    const serverWasCold = !languagesStarted.has(ext);
 
     // Bound this probe by whichever runs out first: its own deadline, or what is
     // left of the leg AFTER honouring the floor still owed to probes that have
@@ -992,7 +1038,11 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
       continue;
     }
     const probeDeadline = Math.min(deadlineMs, remaining);
-    languagesStarted.add(ext);
+
+    // The cold-start question, asked of the adapter rather than of the
+    // filename: snapshot its live client set now, and after the probe check
+    // whether a client appeared that was not here before (WI-2142383).
+    const clientsBefore = new Set(lspClientInventory().map(lspClientIdentity));
 
     const started = Date.now();
     let attempts = 0;
@@ -1074,6 +1124,14 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
     const warmQueryMaxMs = warmQuerySamplesMs.length
       ? Math.max(...warmQuerySamplesMs)
       : null;
+
+    // Read back what the adapter actually did. Sampled AFTER the warm
+    // re-queries so a client started by any query this probe made — not only
+    // the first — is counted.
+    const serverWasCold = startedNewClient(
+      clientsBefore,
+      lspClientInventory().map(lspClientIdentity),
+    );
 
     measurements.push({
       caseId: kase.id,
