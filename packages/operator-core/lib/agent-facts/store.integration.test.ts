@@ -1550,6 +1550,184 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   });
 });
 
+describe('P-002 / D-003 — the ORDINARY ceiling refuses the writer; it never destroys a stranger', () => {
+  const PEER = 'su-a-peer';
+  const ME = 'su-the-writer';
+
+  /**
+   * Saturate an ordinary scope to exactly `n` live cap-population rows.
+   *
+   * Direct INSERT rather than n asserts, deliberately: what these tests are
+   * about is the state of a FULL scope, not the path that filled it, and
+   * filling it through assertFact would make every test below quadratic in the
+   * cap for no added coverage. The rows are another author's `verified`
+   * findings because that is the population D-003 exists to protect — under the
+   * old cap these were exactly the rows an unrelated write destroyed.
+   */
+  async function saturate(scopeRef: string, n: number = CAP): Promise<void> {
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
+      SELECT ${WS}, 'owner', ${scopeRef}, 'incumbent-' || g::text,
+             'a peer finding ' || g::text, ${PEER},
+             now() + interval '30 days', 'verified'
+        FROM generate_series(1, ${n}) AS g`;
+  }
+
+  async function census(scopeRef: string): Promise<{ live: number; evicted: number; retracted: number }> {
+    const [row] = await db.sql<{ live: number; evicted: number; retracted: number }[]>`
+      SELECT count(*) FILTER (
+               WHERE superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
+             )::int AS live,
+             count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS evicted,
+             count(*) FILTER (WHERE retracted_at IS NOT NULL)::int AS retracted
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
+    return row;
+  }
+
+  const arriving = (scopeRef: string, key: string) => ({
+    scope: 'owner' as const,
+    scopeRef,
+    workspaceId: WS,
+    key,
+    body: 'an arriving finding',
+    createdBy: ME,
+    confidence: 'verified' as const,
+    ttlSec: 30 * 86400,
+  });
+
+  it('REFUSES a new key at the ceiling — and every incumbent is still alive afterwards', async () => {
+    const scopeRef = 'su-ceiling-refuses';
+    await saturate(scopeRef);
+
+    await expect(assertFact(arriving(scopeRef, 'arriving'), db.sql)).rejects.toThrow(/REFUSED/);
+
+    // The load-bearing half. A refusal that still destroyed something would be
+    // strictly worse than the eviction it replaced — the writer would pay AND a
+    // stranger would. `evicted: 0` is the D-003 invariant; `live: CAP` proves
+    // the population is intact rather than merely un-evicted-looking.
+    expect(await census(scopeRef)).toEqual({ live: CAP, evicted: 0, retracted: 0 });
+
+    // …and the refusal is not a silent no-op either: nothing was written.
+    const [{ n }] = await db.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef} AND key = 'arriving'`;
+    expect(n).toBe(0);
+  });
+
+  it('the refusal names the ceiling and says nothing died — a writer must not go hunting for a victim', async () => {
+    const scopeRef = 'su-ceiling-message';
+    await saturate(scopeRef);
+
+    // The old refusal named a victim and told the writer to coordinate with its
+    // owner. Under D-003 there is no victim, so a message shaped like the old
+    // one would send the writer looking for a peer who does not exist.
+    await expect(assertFact(arriving(scopeRef, 'arriving'), db.sql)).rejects.toThrow(
+      /NOTHING WAS WRITTEN AND NOTHING WAS DESTROYED/,
+    );
+    await expect(assertFact(arriving(scopeRef, 'arriving'), db.sql)).rejects.toThrow(
+      new RegExp(`${CAP}-fact ceiling`),
+    );
+  });
+
+  it('a RE-ASSERT of an existing key still succeeds at the ceiling — a full scope stays CORRECTABLE', async () => {
+    const scopeRef = 'su-ceiling-correctable';
+    await saturate(scopeRef);
+
+    // This is what makes a refusal recoverable rather than a deadlock: the
+    // population count excludes the incoming key, so revising a fact already
+    // here consumes no new seat. Without it, a saturated scope would freeze
+    // with its contents uncorrectable — including wrong ones.
+    const revised = await assertFact(
+      {
+        ...arriving(scopeRef, 'incumbent-1'),
+        createdBy: PEER,
+        body: 'the same fact, corrected',
+      },
+      db.sql,
+    );
+    expect(revised.body).toBe('the same fact, corrected');
+
+    // Superseding leaves the live population unchanged, and still destroys nothing.
+    const after = await census(scopeRef);
+    expect(after.live).toBe(CAP);
+    expect(after.evicted).toBe(0);
+
+    // A retraction must also remain possible — that is how a scope is DRAINED
+    // back below its ceiling by the author responsible for the pressure.
+    await retractFact(
+      { scope: 'owner', scopeRef, key: 'incumbent-2', workspaceId: WS, retractedBy: PEER, reason: 'no longer true' },
+      db.sql,
+    );
+    expect((await census(scopeRef)).live).toBe(CAP - 1);
+
+    // …and with a seat freed, the previously-refused write now lands.
+    await expect(assertFact(arriving(scopeRef, 'arriving'), db.sql)).resolves.toBeTruthy();
+  });
+
+  it('an EXEMPT key is still writable at the ceiling — a wall must never be un-recordable', async () => {
+    const scopeRef = 'su-ceiling-exempt';
+    await saturate(scopeRef);
+
+    // Exempt keys take no cap seat, so they are neither evicted nor refused.
+    // The failure this guards is the mirror of WI-6935's: that bug DESTROYED a
+    // wall under cap pressure, and a ceiling applied to exempt writes would
+    // instead make one impossible to RECORD — same outcome (no wall), arrived
+    // at from the opposite direction.
+    for (const key of ['wall:owner-must-ratify', 'dead-end:already-tried', 'guard-rail:do-not-widen']) {
+      await expect(assertFact({ ...arriving(scopeRef, key), body: 'safety slot' }, db.sql)).resolves.toBeTruthy();
+    }
+    await expect(
+      assertFact({ ...arriving(scopeRef, 'a-convention'), kind: 'convention', body: 'how we do it' }, db.sql),
+    ).resolves.toBeTruthy();
+
+    expect((await census(scopeRef)).evicted).toBe(0);
+  });
+
+  it('the dry run AGREES with the write: wouldRefuse ⇒ the write throws, and it forecasts no victim', async () => {
+    const scopeRef = 'su-ceiling-preview';
+    await saturate(scopeRef);
+
+    const preview = await previewFactCapImpact(arriving(scopeRef, 'arriving'), db.sql);
+    expect(preview.wouldRefuse).toBe(true);
+    expect(preview.atCap).toBe(true);
+    // A forecast that still named victims would be describing the mechanism
+    // this plan removed — and a caller reading it would decline a write for a
+    // cost that no longer exists.
+    expect(preview.wouldEvict).toEqual([]);
+    expect(preview.survival).toBeNull();
+
+    // Preview and write must not disagree about the same input.
+    await expect(assertFact(arriving(scopeRef, 'arriving'), db.sql)).rejects.toThrow(/REFUSED/);
+
+    // The re-assert case must forecast NO refusal, matching the write above.
+    const refresh = await previewFactCapImpact(
+      { ...arriving(scopeRef, 'incumbent-1'), createdBy: PEER },
+      db.sql,
+    );
+    expect(refresh.replacesExistingKey).toBe(true);
+    expect(refresh.wouldRefuse).toBe(false);
+  });
+
+  it('BELOW the ceiling nothing is refused and nothing is evicted — the control that keeps the guards above non-vacuous', async () => {
+    const scopeRef = 'su-below-ceiling';
+    // One seat short of the ceiling: the last legal new key.
+    await saturate(scopeRef, CAP - 1);
+
+    const preview = await previewFactCapImpact(arriving(scopeRef, 'arriving'), db.sql);
+    expect(preview.wouldRefuse).toBe(false);
+    await expect(assertFact(arriving(scopeRef, 'arriving'), db.sql)).resolves.toBeTruthy();
+
+    // Exactly at the ceiling now, having destroyed nothing on the way.
+    expect(await census(scopeRef)).toEqual({ live: CAP, evicted: 0, retracted: 0 });
+
+    // And the NEXT new key is refused — proving the bound still bites, which is
+    // what separates "backpressure" from "we removed the cap".
+    await expect(assertFact(arriving(scopeRef, 'one-too-many'), db.sql)).rejects.toThrow(/REFUSED/);
+  });
+});
+
 describe('EI-15900 cross-key supersession — one current conclusion replaces its siblings', () => {
   const scopeRef = 'su-cross-key-supersession';
   const base = {

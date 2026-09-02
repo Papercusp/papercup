@@ -1815,7 +1815,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       // silently ate strangers' facts instead of reporting anything at all.
       throw new InvalidInputError(
         `facts:assert — REFUSED before write: scope ${input.scope}${ref ? `:${ref}` : ''} is at its ` +
-          `${FACTS_PER_SCOPE_CAP}-fact ceiling (${incumbents} live facts, excluding this key). ` +
+          `${cap}-fact ceiling (${incumbents} live facts, excluding this key). ` +
           'NOTHING WAS WRITTEN AND NOTHING WAS DESTROYED — this ceiling refuses the incoming write ' +
           "rather than evicting another author's fact to seat it (D-003). " +
           `This ceiling is ~14x normal working demand, so reaching it usually means ONE writer is ` +
@@ -3178,8 +3178,11 @@ export async function listFactEvictionDisclosures(
       recentEvictedCount: n,
       latestEvictedAt: latest,
       meaning:
-        `${n} fact(s) were cap-evicted (FACTS_PER_SCOPE_CAP=${FACTS_PER_SCOPE_CAP}) from this scope in the ` +
-        `last ${windowHoursLabel}h. A standing fact you expect but don't see here may have been evicted, not ` +
+        `${n} fact(s) were cap-evicted from this scope's VOLATILE snapshot partition ` +
+        `(FACTS_VOLATILE_PER_SCOPE_CAP=${FACTS_VOLATILE_PER_SCOPE_CAP}) in the ` +
+        `last ${windowHoursLabel}h. Ordinary standing facts are never evicted — since D-003 an ` +
+        `over-ceiling ordinary write is REFUSED instead, so an ordinary fact missing here was not ` +
+        `destroyed to seat someone else's. A snapshot you expect but don't see may have been evicted, not ` +
         `never-asserted — facts:list only shows LIVE rows. Check with the scope's recent writers, or ` +
         `re-assert it yourself if the conclusion still holds.`,
     });
