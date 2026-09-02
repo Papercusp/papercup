@@ -104,13 +104,13 @@ export function indexPlansByHive(hiveOptions: readonly HiveOptionInput[], plans:
   planToHive: Map<string, string>;
   unassigned: string[];
 } {
-  const hiveSlugs = new Set(hiveOptions.map((h) => h.value));
+  const potSlugs = new Set(hiveOptions.map((h) => h.value));
   const hivePlans = new Map<string, string[]>();
   for (const h of hiveOptions) hivePlans.set(h.value, []);
   const planToHive = new Map<string, string>();
   const unassigned: string[] = [];
   for (const p of plans) {
-    if (p.harness && hiveSlugs.has(p.harness)) {
+    if (p.harness && potSlugs.has(p.harness)) {
       hivePlans.get(p.harness)!.push(p.slug);
       planToHive.set(p.slug, p.harness);
     } else {

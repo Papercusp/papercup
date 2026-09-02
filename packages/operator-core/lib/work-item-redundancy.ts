@@ -87,7 +87,7 @@ function replicaScopeOf(opts: { potSlug?: string | null; harnessSlug?: string; h
  * resolution failure (not part of a Hive / lookup error) → null = harness-scoped
  * fallback (single-box correct). Best-effort: never throws.
  */
-export async function resolveReplicaHiveSlug(workspaceId: string, harnessSlug: string): Promise<string | null> {
+export async function resolveReplicaPotSlug(workspaceId: string, harnessSlug: string): Promise<string | null> {
   try {
     return await potHomeSlugForHarness(workspaceId, harnessSlug);
   } catch {

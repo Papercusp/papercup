@@ -151,8 +151,8 @@ export async function isWorkspaceCoordinationOn(): Promise<boolean> {
  * value is passed in) so callers read the flag ONCE per operation and stay
  * deterministic + testable.
  */
-export function workspaceBrainScopeKey(workspaceId: string, perHiveSlug: string, on: boolean): string {
-  return on ? workspaceId : perHiveSlug;
+export function workspaceBrainScopeKey(workspaceId: string, perPotSlug: string, on: boolean): string {
+  return on ? workspaceId : perPotSlug;
 }
 
 /**
@@ -163,8 +163,8 @@ export function workspaceBrainScopeKey(workspaceId: string, perHiveSlug: string,
  * when the per-hive slug already equals the workspaceId (a workspace==hive shape).
  * A reader consumes these in order and takes the first that yields a value.
  */
-export function workspaceBrainReadKeys(workspaceId: string, perHiveSlug: string, on: boolean): string[] {
-  if (!on) return perHiveSlug ? [perHiveSlug] : [];
-  if (!perHiveSlug || perHiveSlug === workspaceId) return [workspaceId];
-  return [workspaceId, perHiveSlug];
+export function workspaceBrainReadKeys(workspaceId: string, perPotSlug: string, on: boolean): string[] {
+  if (!on) return perPotSlug ? [perPotSlug] : [];
+  if (!perPotSlug || perPotSlug === workspaceId) return [workspaceId];
+  return [workspaceId, perPotSlug];
 }

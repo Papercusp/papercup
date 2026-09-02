@@ -34,10 +34,10 @@ export interface WorkItemReplicaAuthority {
 
 /** The single-peer / single-box authority: this peer is always the authority. */
 export class LocalWorkItemReplicaAuthority implements WorkItemReplicaAuthority {
-  async isSelf(_hiveSlug: string): Promise<boolean> {
+  async isSelf(_potSlug: string): Promise<boolean> {
     return true;
   }
-  async route<T>(_hiveSlug: string, op: AuthorityOp<T>): Promise<T> {
+  async route<T>(_potSlug: string, op: AuthorityOp<T>): Promise<T> {
     return op.local();
   }
 }
