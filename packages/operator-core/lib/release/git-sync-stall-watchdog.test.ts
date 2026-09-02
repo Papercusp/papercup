@@ -14,7 +14,11 @@ import {
   decideHeadClock,
   shouldAlarmSustained,
   nextStallSweeps,
+  evaluateGitSyncEligibilityLoss,
+  gitSyncEligibilityLossDiagnosis,
+  gitSyncEligibilityLossEscalationBody,
   type GitSyncStallSnapshot,
+  type GitSyncEligibilityLossSnapshot,
 } from './git-sync-stall-watchdog';
 
 const NOW = 1_800_000_000_000;
@@ -698,5 +702,123 @@ describe('WI-41567 head-clock re-arm — the stranding clock measures time-since
     expect(isCommitNotAttemptableStatus('synced', 'nothing')).toBe(false); // local commit was attemptable
     expect(isCommitNotAttemptableStatus(null, 'skipped')).toBe(true); // pre-stage-record fallback
     expect(isCommitNotAttemptableStatus(null, null)).toBe(false);
+  });
+});
+
+// EI-1835: the pure eligibility-loss edge detector — the gap the stall detector above
+// deliberately never closes (a gated 'skipped' tick is explicitly EXEMPT from commit-staleness).
+// DB wiring (checkGitSyncStall's per-row eligibility block, the persisted wd_ineligible_sweeps /
+// eligibility_alerted metadata, and the escalation/broadcast plumbing) is integration-covered,
+// same split as the stall detector's own header comment.
+describe('evaluateGitSyncEligibilityLoss', () => {
+  const eligibleBase: GitSyncEligibilityLossSnapshot = {
+    currentlyIneligible: false,
+    everActive: true,
+    ineligibleSweeps: 0,
+    eligibilityAlerted: false,
+  };
+
+  it('healthy: currently eligible, never alerted ⇒ no alarm, no resolve', () => {
+    const v = evaluateGitSyncEligibilityLoss(eligibleBase);
+    expect(v.shouldAlarm).toBe(false);
+    expect(v.shouldResolve).toBe(false);
+  });
+
+  it('first ineligible sweep alone never alarms — not yet sustained (a registry blip self-heals silently)', () => {
+    const v = evaluateGitSyncEligibilityLoss({
+      currentlyIneligible: true,
+      everActive: true,
+      ineligibleSweeps: 1,
+      eligibilityAlerted: false,
+    });
+    expect(v.shouldAlarm).toBe(false);
+    expect(v.shouldResolve).toBe(false);
+  });
+
+  it('EI-1835 core case: sustained ineligible (2nd consecutive sweep) + prior-active evidence ⇒ ALARM', () => {
+    const v = evaluateGitSyncEligibilityLoss({
+      currentlyIneligible: true,
+      everActive: true,
+      ineligibleSweeps: 2,
+      eligibilityAlerted: false,
+    });
+    expect(v.shouldAlarm).toBe(true);
+    expect(v.shouldResolve).toBe(false);
+  });
+
+  it('a routine that NEVER committed going ineligible is not a regression ⇒ never alarms, however long it persists', () => {
+    const v = evaluateGitSyncEligibilityLoss({
+      currentlyIneligible: true,
+      everActive: false,
+      ineligibleSweeps: 50,
+      eligibilityAlerted: false,
+    });
+    expect(v.shouldAlarm).toBe(false);
+    expect(v.shouldResolve).toBe(false);
+  });
+
+  it('no per-tick spam: already alerted ⇒ never re-alarms while still ineligible (one-shot until recovery)', () => {
+    const v = evaluateGitSyncEligibilityLoss({
+      currentlyIneligible: true,
+      everActive: true,
+      ineligibleSweeps: 10,
+      eligibilityAlerted: true,
+    });
+    expect(v.shouldAlarm).toBe(false);
+    expect(v.shouldResolve).toBe(false); // still ineligible — nothing to resolve YET
+  });
+
+  it('recovery: eligible again after a prior alarm ⇒ resolve (and only then)', () => {
+    const v = evaluateGitSyncEligibilityLoss({
+      ...eligibleBase,
+      eligibilityAlerted: true,
+    });
+    expect(v.shouldAlarm).toBe(false);
+    expect(v.shouldResolve).toBe(true);
+  });
+
+  it('eligible again with no prior alarm ⇒ nothing to resolve (not every healthy sweep fires a recovery)', () => {
+    const v = evaluateGitSyncEligibilityLoss(eligibleBase);
+    expect(v.shouldResolve).toBe(false);
+  });
+
+  it('respects a custom sustain threshold', () => {
+    const snap: GitSyncEligibilityLossSnapshot = {
+      currentlyIneligible: true,
+      everActive: true,
+      ineligibleSweeps: 3,
+      eligibilityAlerted: false,
+    };
+    expect(evaluateGitSyncEligibilityLoss(snap, 4).shouldAlarm).toBe(false);
+    expect(evaluateGitSyncEligibilityLoss(snap, 3).shouldAlarm).toBe(true);
+    expect(evaluateGitSyncEligibilityLoss(snap, 1).shouldAlarm).toBe(true);
+  });
+
+  it('gitSyncEligibilityLossDiagnosis names the install + skip reason and never claims the routine is unrecoverable', () => {
+    const d = gitSyncEligibilityLossDiagnosis('papercusp', 'hive_home');
+    expect(d.summary).toContain('papercusp');
+    expect(d.summary).toContain('hive_home');
+    expect(d.title).toMatch(/ELIGIBILITY LOST/);
+    expect(d.why).toContain('INTENTIONAL');
+    expect(d.why).toContain('REGRESSION');
+  });
+
+  it('gitSyncEligibilityLossDiagnosis handles a null skip reason without throwing', () => {
+    const d = gitSyncEligibilityLossDiagnosis('papercusp', null);
+    expect(d.summary).toContain('unknown reason');
+  });
+
+  it('gitSyncEligibilityLossEscalationBody is valid JSON carrying the reason + sweep count', () => {
+    const body = gitSyncEligibilityLossEscalationBody({
+      installSlug: 'papercusp',
+      skipReason: 'no_path',
+      ineligibleSweeps: 3,
+      nowMs: 1_800_000_000_000,
+    });
+    const parsed = JSON.parse(body);
+    expect(parsed.harness_slug).toBe('papercusp');
+    expect(parsed.skipReason).toBe('no_path');
+    expect(parsed.ineligibleSweeps).toBe(3);
+    expect(parsed.kind).toBe('git-sync-eligibility-watchdog');
   });
 });

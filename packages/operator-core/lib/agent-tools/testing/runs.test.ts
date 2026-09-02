@@ -228,6 +228,70 @@ describe('testing:runs empty results', () => {
   });
 });
 
+/**
+ * EI-21669113109175663 / EI-21675813584516519 (`harness` rejected while its twin
+ * `workspace` was accepted) and EI-21677405671312383 (the 0.1h floor refused a
+ * legitimately tight poll).
+ */
+describe('testing:runs tenant scoping and window bounds', () => {
+  const sqlCalls: Array<{ strings: string[]; values: unknown[] }> = [];
+
+  beforeEach(() => {
+    sqlCalls.length = 0;
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      sqlCalls.push(call);
+      // The row-listing path maps over its result; the WHERE fragment is consumed as
+      // a nested fragment. Only the former is awaited as rows.
+      if (call.strings.some((part) => part.includes('FROM harness_shared.test_runs'))) {
+        return Promise.resolve([]);
+      }
+      return call;
+    });
+  });
+
+  function whereFragment(): string {
+    const call = sqlCalls.find((c) => c.strings.some((part) => part.includes('file_path')));
+    return renderSqlFragment(call);
+  }
+
+  it('applies a harness_slug predicate, symmetric with workspace_id', async () => {
+    await runsTool.handler({ harness: 'papercusp', limit: 1 } as never, {} as never);
+    const where = whereFragment();
+    expect(where).toContain('harness_slug');
+    const call = sqlCalls.find((c) => c.strings.some((part) => part.includes('file_path')));
+    expect(JSON.stringify(call?.values)).toContain('papercusp');
+  });
+
+  it('leaves harness_slug unconstrained when no harness is named — CI rows carry NULL', async () => {
+    // The trap this tool exists to avoid (EI-19324633485547042): scoping by a tenant
+    // column silently excludes every CI/gate row and reads as a clean "no failures".
+    // Declaring `harness` must not make that the default.
+    await runsTool.handler({ limit: 1 } as never, {} as never);
+    const call = sqlCalls.find((c) => c.strings.some((part) => part.includes('file_path')));
+    expect(call?.values).not.toContain('papercusp');
+  });
+
+  it('accepts a sub-0.1-hour window and still applies the time predicate', () => {
+    const parsed = runsTool.args.safeParse({ sinceHours: 0.05 });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('CONTROL: still refuses a zero window, which would silently drop the predicate', () => {
+    // 0 is falsy: admitting it would make `sinceHours != null` compute a bound of
+    // "now" while an earlier `args.sinceHours ?` guard would have dropped the filter
+    // entirely and returned the whole ledger. Refusing it keeps the two consistent.
+    expect(runsTool.args.safeParse({ sinceHours: 0 }).success).toBe(false);
+    expect(runsTool.args.safeParse({ sinceHours: -1 }).success).toBe(false);
+  });
+
+  it('CONTROL: the old 0.1 floor is genuinely gone, not merely unreachable', () => {
+    expect(runsTool.args.safeParse({ sinceHours: 0.099 }).success).toBe(true);
+    // and the upper bound is still enforced
+    expect(runsTool.args.safeParse({ sinceHours: 2161 }).success).toBe(false);
+  });
+});
+
 describe('testing:runs filePath matching', () => {
   const filePathSqlCalls: Array<{ strings: string[]; values: unknown[] }> = [];
 
