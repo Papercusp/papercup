@@ -584,28 +584,33 @@ describe('work_items:claim handler (keyed-array)', () => {
     // reproduces exactly what a silently-refused CAS looks like: claimWorkItem resolves null
     // while the holder never moved.
     it('reports force_blocked_by_claim_floor — not claim_conflict — when the authorized CAS still matched 0 rows', async () => {
-      getM.mockResolvedValue({
-        id: 'EI-STUCK',
-        assignee: 'dead-holder',
-        family: 'issue',
-        harness: 'papercup',
-        lastProgressAt: '2026-08-20T08:00:00.000Z',
-      } as never);
-      claimM.mockResolvedValue(null as never);
-      explainFloorsM.mockResolvedValue([
+      // `issueItem` is declared below (readiness-floor section) but in the SAME enclosing
+      // describe scope; by the time this `it` body actually runs (test-execution phase,
+      // strictly after the whole file's synchronous collection phase) it is fully assigned.
+      mockResolvedTyped(
+        getM,
+        issueItem({
+          id: 'EI-STUCK',
+          assignee: 'dead-holder',
+          harness: 'papercup',
+          lastProgressAt: '2026-08-20T08:00:00.000Z',
+        }),
+      );
+      mockResolvedTyped(claimM, null);
+      mockResolvedTyped(explainFloorsM, [
         {
           id: 'EI-STUCK',
           admissible: false,
           refusedBy: 'admission-pending',
           detail: 'duplicate screening is pending',
           retry: {
-            clearsOnItsOwn: true,
+            clearsOnItsOwn: true as const,
             expectedWithinSec: 300,
             guaranteedWithinSec: 900,
             basis: 'admission promoter tick',
           },
         },
-      ] as never);
+      ]);
 
       const b = await body({ id: 'EI-STUCK', force: true, reason: 'holder session ended; reclaiming for the drain' });
 
