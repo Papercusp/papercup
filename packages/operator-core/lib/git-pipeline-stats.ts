@@ -42,6 +42,7 @@ import {
 } from './release/frozen-candidate-repair-queue';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
+import { readFreezeAndConverge, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
 import { pipelineName } from './release/pipeline-name';
 import {
   projectCheckpointQualificationState,
@@ -267,6 +268,21 @@ export interface GitPipelineSnapshot {
     repairQueue?: FrozenRepairQueueDiagnostic | null;
     /** P-007: one typed, routine-owned logical qualification view. */
     qualification?: CheckpointQualificationState;
+    /**
+     * WI-2141736 P-004: what the gate last did with freeze-and-converge, and WHY.
+     *
+     * Sits BESIDE `repairQueue` rather than inside it, because the dispositions worth
+     * reading are exactly the ones with no queue: a retire clears the row and a
+     * flag-suppressed red never opens one, so `repairQueue: null` covers "the owner
+     * switched freeze-and-converge off", "the gate just discarded a frozen candidate" and
+     * "nothing was frozen, all is well" with one indistinguishable value. Measured
+     * 2026-09-02: 20 retirements and 0 resumes in a day, evidenced only by grepping
+     * per-run checkpoint logs.
+     *
+     * Null means the routine row carries no readable disposition — NOT that the freeze is
+     * healthy. Read `observedAtMs` before treating a value as current.
+     */
+    freezeAndConverge?: FreezeAndConvergeGateHealth['freezeAndConverge'] | null;
     /** Whether the sibling `failingTests` array came from a real code verdict.
      * `false` means the latest checkpoint ended before rendering one; `null` is a legacy or
      * malformed blob whose measurement state cannot be established. */
@@ -1442,6 +1458,10 @@ export async function gitPipelineSnapshot(
       inconclusive: gateInconclusive,
       repairQueue,
       qualification,
+      // P-004: shape-checked by the reader, never cast — a blob predating this field, or one
+      // written by a version that shaped it differently, must read as "not measured" rather
+      // than as a half-populated disposition a consumer would render as fact.
+      freezeAndConverge: readFreezeAndConverge(gateHealth),
     },
     openConflict,
     windows: { day, week },
