@@ -15150,7 +15150,7 @@ export function realCheckpointDeps(
       } catch (e) {
         // Never fatal: a held candidate that could not be routed is still correctly held.
         console.warn(
-          `[green-checkpoint] frozen-repair agent routing failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+          `${orchestratorStdoutTag()} frozen-repair agent routing failed (non-fatal): ${e instanceof Error ? e.message : e}`,
         );
       }
     },
