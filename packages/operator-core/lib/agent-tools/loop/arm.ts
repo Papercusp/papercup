@@ -46,6 +46,7 @@ import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
+import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import {
   admitMonitorArm,
   monitorPredicateDedupRefusal,
@@ -1155,11 +1156,44 @@ export default defineTool({
     // filed bug, not a hard refusal.
     let overwriteNote: LoopOverwriteNote | null = null;
     try {
-      overwriteNote = computeLoopOverwriteNote(prior, { goal, intervalSec: intervalSec, kickoff });
+      overwriteNote = computeLoopOverwriteNote(prior, {
+        goal,
+        intervalSec: intervalSec,
+        kickoff,
+        harnessSlug: harness,
+      });
     } catch (e) {
       console.warn(
         `[loop:arm] overwrite-note compute failed (loop still armed): ${e instanceof Error ? e.message : e}`,
       );
+    }
+
+    // EI-21542193720279374 part (b) — a COLD loop with NO existing carry-note is a
+    // guaranteed-blind wake: a cold wake rebuilds its entire context solely from the
+    // carry-note (loop:checkpoint), so arming cold with nothing there to rebuild from
+    // produces exactly the failure this item diagnosed even without a harness move (a
+    // fresh cold arm before the first checkpoint, or a carry-note that was cleared /
+    // evicted). Purely additive — mirrors the WI-5557 unboundedWarmLoopWarning pattern
+    // exactly (response field + note suffix, no behavior change) rather than a hard
+    // refusal: arm.ts never seeds an initial carry-note itself (confirmed via repo-wide
+    // grep — the standard bootstrap is "arm cold, then loop:checkpoint" as a SEPARATE
+    // later call), so refusing here would break that flow fleet-wide. Fail-soft, like
+    // the reachability probe below: a read failure never blocks the arm, and
+    // getLoopCarryNoteWithMeta itself already fails soft (readFailed:true) rather than
+    // throwing, so the try/catch here only guards an unexpected import/call-shape error.
+    let coldNoCarryNoteWarning: string | null = null;
+    if (carry === 'cold') {
+      try {
+        const existing = await getLoopCarryNoteWithMeta({ harness, ownerId });
+        if (!existing.readFailed && !existing.note) {
+          coldNoCarryNoteWarning =
+            'This loop is armed COLD with no existing carry-note for this harness/owner scope — a cold wake rebuilds solely from the carry-note, so the next wake will start BLIND with no prior context. Write one with loop:checkpoint before ending your turn.';
+        }
+      } catch (e) {
+        console.warn(
+          `[loop:arm] cold-carry-note check failed (loop still armed): ${e instanceof Error ? e.message : e}`,
+        );
+      }
     }
 
     const loop = await materializeLoop({
@@ -1245,6 +1279,8 @@ export default defineTool({
     // on it. A silently-capped interval would be worse than no cap at all.
     const backoffNote = backoff.note ? ` ${backoff.note}` : '';
     const warningNote = unboundedWarmLoopWarning ? ` ⚠ ${unboundedWarmLoopWarning}` : '';
+    // EI-21542193720279374 part (b) — see the coldNoCarryNoteWarning computation above.
+    const coldCarryNoteWarningText = coldNoCarryNoteWarning ? ` ⚠ ${coldNoCarryNoteWarning}` : '';
     // EI-18792078711601844: a RE-ARM that PRESERVED the prior loop's carry gets
     // an explicit disclosure, so an omitted carry is never mistaken for a fresh
     // default. Fresh arms are warm and need no exceptional lifecycle warning.
@@ -1273,7 +1309,14 @@ export default defineTool({
         ? ' 📡 Monitor loop armed — but prefer PUSH wherever the thing you are watching already emits. A fleet leader can park on fleet:member-dead · fleet:claim-released · fleet:item-completed · fleet:context-critical via events:await { event, timeout_sec, on_timeout:"wake" }, which wakes you ON the transition instead of N times between transitions. Keep THIS loop as the slow backstop (a longer intervalSec) rather than the primary watcher. events:catalog lists the full set.'
         : '';
     const note =
-      baseNote + overwriteNoteText + backoffNote + claimNote + warningNote + carryResolutionNote + monitorPushNote;
+      baseNote +
+      overwriteNoteText +
+      backoffNote +
+      claimNote +
+      warningNote +
+      coldCarryNoteWarningText +
+      carryResolutionNote +
+      monitorPushNote;
 
     return {
       content: [
@@ -1322,6 +1365,7 @@ export default defineTool({
             workItemClaim,
             reachability: reachabilityOut,
             unboundedWarmLoopWarning,
+            coldNoCarryNoteWarning,
             priorLoopOverwrite: overwriteNote,
             note,
           }),

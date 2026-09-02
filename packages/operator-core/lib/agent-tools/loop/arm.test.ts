@@ -47,6 +47,17 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../pot/_resolve', () => ({ resolveHomePotSlug: vi.fn(async () => 'papercusp') }));
 vi.mock('../../session-brief', () => ({ getSessionBrief: vi.fn(async () => null) }));
+// EI-21542193720279374 part (b): the cold-no-carry-note check. Defaults to an EXISTING
+// note (readFailed:false) so every pre-existing test — most of which never anticipate
+// this check — sees no unexpected coldNoCarryNoteWarning; per-test override simulates the
+// absent-note case to exercise the warning path.
+vi.mock('../../carry-note', () => ({
+  getLoopCarryNoteWithMeta: vi.fn(async () => ({
+    note: 'existing carry-note',
+    updatedAtMs: 1000,
+    readFailed: false,
+  })),
+}));
 vi.mock('../../harness/routines/loop', () => ({
   LOOP_INTERVAL_FLOOR_SEC: 60,
   buildLoopWakePrompt: vi.fn(() => 'kickoff-prompt'),
@@ -127,6 +138,7 @@ import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { resolveHomePotSlug } from '../pot/_resolve';
 import { admitMonitorArm, prepareMonitorConfig } from '../../harness/routines/monitor-policy';
 import { computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
+import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import {
   mockResolvedOnceTyped,
   mockResolvedTyped,
@@ -154,6 +166,7 @@ const exactAwaitM = vi.mocked((await import('../../events/await/store')).hasLive
 // EI-19966210024116714: hoisted to module scope — `await import` is illegal inside a
 // (non-async) describe callback, and this file's describes are synchronous.
 const resolveWsM = vi.mocked((await import('../../harness-core')).resolveWorkspaceForHarnessSlugIn);
+const carryNoteM = vi.mocked(getLoopCarryNoteWithMeta);
 const tool = (await import('./arm')).default;
 
 describe('loop:arm — ambient workspace transaction safety (EI-20224334803038640)', () => {
@@ -1055,6 +1068,22 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'papercusp' }));
   });
 
+  it('EI-21542193720279374 part (a): the resolved harness is now WIRED into computeLoopOverwriteNote — an explicit harness move, goal preserved, surfaces priorLoopOverwrite.harnessChanged through the handler', async () => {
+    priorLoopM.mockResolvedValueOnce({ ...priorLoop(), harnessSlug: 'sb-devboard-hive' } as never);
+
+    // This goal is verbatim-contained in priorLoop()'s default kickoff, so — unlike the
+    // test above — nothing but the harness move can trigger the note here.
+    const b = body(
+      await call({ harness: 'papercusp', goal: 'watch WI-5672 for the next live-fed-gate fire' }),
+    );
+
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
+    expect(b.priorLoopOverwrite).not.toBeNull();
+    expect(b.priorLoopOverwrite.harnessChanged).toBe(true);
+    expect(b.note).toContain("harness 'sb-devboard-hive' → 'papercusp'");
+    expect(b.note).not.toContain('whose goal DIFFERS');
+  });
+
   // EI-7734 regression: every superuser/operator-scope session sets ctx.harnessSlug='*'
   // (the wildcard sentinel, _harness-scope.ts). A raw `args.harness ?? ctx.harnessSlug ?? …`
   // chain would let that truthy '*' win outright — bypassing resolvePotHomeSlug's own
@@ -1214,6 +1243,46 @@ describe('loop:arm — WI-5557 TIER 1: unbounded warm-carry WORK loop warning (a
   });
 });
 
+describe('loop:arm — EI-21542193720279374 part (b): cold-with-no-carry-note warning (additive, no behavior change)', () => {
+  it('carry cold + no existing carry-note ⇒ warning present in both the note and the structured field', async () => {
+    carryNoteM.mockResolvedValueOnce({ note: null, updatedAtMs: null, readFailed: false });
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.ok).toBe(true); // purely additive — arming still succeeds
+    expect(b.coldNoCarryNoteWarning).toContain('COLD');
+    expect(b.coldNoCarryNoteWarning).toContain('BLIND');
+    expect(b.note).toContain('armed COLD with no existing carry-note');
+    expect(carryNoteM).toHaveBeenCalledWith({ harness: 'papercusp', ownerId: 'su-caller-own-id' });
+  });
+
+  it('carry cold + an EXISTING carry-note ⇒ no warning', async () => {
+    carryNoteM.mockResolvedValueOnce({ note: 'prior state', updatedAtMs: 1000, readFailed: false });
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.coldNoCarryNoteWarning).toBeNull();
+    expect(b.note).not.toContain('armed COLD with no existing carry-note');
+  });
+
+  it('carry warm ⇒ the carry-note store is never even consulted (the check is cold-only)', async () => {
+    const b = body(await call({ carry: 'warm' }));
+    expect(b.coldNoCarryNoteWarning).toBeNull();
+    expect(carryNoteM).not.toHaveBeenCalled();
+  });
+
+  it('a read failure (readFailed:true) is NOT treated as "no note" — no false-positive warning off a transient store error', async () => {
+    carryNoteM.mockResolvedValueOnce({ note: null, updatedAtMs: null, readFailed: true });
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.coldNoCarryNoteWarning).toBeNull();
+  });
+
+  it('a throw from the carry-note lookup is fail-soft — the loop still arms with no warning', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    carryNoteM.mockRejectedValueOnce(new Error('pg down'));
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.ok).toBe(true);
+    expect(b.coldNoCarryNoteWarning).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[loop:arm] cold-carry-note check failed'));
+  });
+});
+
 describe('loop:arm fresh carry default (EI-21424742792137469)', () => {
   it('a fresh caller with no explicit carry materializes the loop WARM', async () => {
     const b = body(await call({}));
@@ -1298,6 +1367,77 @@ describe('computeLoopOverwriteNote (pure EI-18221784742583615 decision)', () => 
     expect(note).not.toBeNull();
     expect(note!.intervalChanged).toBe(false);
     expect(note!.message).not.toContain('→');
+  });
+
+  // EI-21542193720279374 part (a): a same-goal harness MOVE used to pass both the
+  // identical-kickoff and goal-preserved shortcuts and skip the note entirely, because
+  // kickoff text never encodes harness. It must now surface a note of its own.
+  it('harness CHANGED with the goal PRESERVED ⇒ a note now fires (previously silently skipped)', () => {
+    const prior = priorLoop({
+      harnessSlug: 'papercusp',
+      kickoff: 'toward: watch WI-5672 for the next fire',
+      intervalSec: 1200,
+    });
+    const note = computeLoopOverwriteNote(prior, {
+      goal: 'watch WI-5672 for the next fire',
+      intervalSec: 1200,
+      kickoff: 'toward: watch WI-5672 for the next fire',
+      harnessSlug: 'sb-devboard-hive',
+    });
+    expect(note).not.toBeNull();
+    expect(note!.harnessChanged).toBe(true);
+    expect(note!.intervalChanged).toBe(false); // interval unchanged — isolate the harness clause
+    expect(note!.message).toContain("harness 'papercusp' → 'sb-devboard-hive'");
+    expect(note!.message).toContain('carry-note is');
+    expect(note!.message).toContain('resets BLIND');
+    // a preserved goal means no goal-differs clause, so the harness clause is legible alone
+    expect(note!.message).not.toContain('whose goal DIFFERS');
+  });
+
+  it('harness UNCHANGED (both concrete, identical) with the goal preserved ⇒ still no note', () => {
+    const prior = priorLoop({
+      harnessSlug: 'papercusp',
+      kickoff: 'toward: watch WI-5672 for the next fire',
+      intervalSec: 1200,
+    });
+    const note = computeLoopOverwriteNote(prior, {
+      goal: 'watch WI-5672 for the next fire',
+      intervalSec: 1200,
+      kickoff: 'toward: watch WI-5672 for the next fire',
+      harnessSlug: 'papercusp',
+    });
+    expect(note).toBeNull();
+  });
+
+  it('a `next` that omits harnessSlug (every pre-existing call shape) never reads as a harness change', () => {
+    const prior = priorLoop({ harnessSlug: 'papercusp', kickoff: 'same-kickoff-text' });
+    const note = computeLoopOverwriteNote(prior, { ...next, kickoff: 'same-kickoff-text' });
+    expect(note).toBeNull();
+  });
+
+  it("priorLoop()'s default harnessSlug:null is never concrete, so it never counts as a change even against a concrete next.harnessSlug", () => {
+    const prior = priorLoop(); // harnessSlug: null
+    const note = computeLoopOverwriteNote(prior, {
+      goal: 'watch WI-5672 for the next live-fed-gate fire',
+      intervalSec: 1200,
+      kickoff: prior.kickoff,
+      harnessSlug: 'papercusp',
+    });
+    expect(note).toBeNull();
+  });
+
+  it("the wildcard sentinel '*' on either side is never concrete, so it never counts as a harness change", () => {
+    const prior = priorLoop({
+      harnessSlug: '*',
+      kickoff: 'toward: watch WI-5672 for the next fire',
+    });
+    const note = computeLoopOverwriteNote(prior, {
+      goal: 'watch WI-5672 for the next fire',
+      intervalSec: prior.intervalSec,
+      kickoff: prior.kickoff,
+      harnessSlug: 'papercusp',
+    });
+    expect(note).toBeNull();
   });
 });
 
