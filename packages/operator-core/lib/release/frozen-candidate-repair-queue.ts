@@ -322,6 +322,19 @@ export interface FrozenRepairDispatchInfeasibleDecision {
   recordVerdict: false;
 }
 
+/**
+ * WI-2141347: the dispatch-infeasible retire, but for a queue whose movable `repairHead` has
+ * already CONVERGED past its frozen `candidate` (see `shouldConvergeRepairHead` — only ever an
+ * ancestor of staging, so already vetted, never unpushed fixer content). Retiring that queue and
+ * re-cutting at whatever staging tip happens to be NOW discards the converged lineage untested
+ * and re-admits the full last-green radius for no reason: the repairHead is itself a perfectly
+ * good candidate to test. The caller treats this exactly like a fresh `test-candidate` (abandon
+ * the old queue's bookkeeping, test this sha as if newly cut) — never like a repair-in-progress.
+ */
+export type FrozenRepairDispatchInfeasibleOutcome =
+  | FrozenRepairDispatchInfeasibleDecision
+  | Extract<FrozenRepairQueueDecision, { kind: 'test-candidate' }>;
+
 export interface FrozenRepairQueueObservation {
   nowMs: number;
   /** `null` means the liveness read failed; fail closed against duplicate dispatch. */
@@ -472,7 +485,7 @@ export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueu
 export function decideFrozenRepairDispatchInfeasible(
   queue: FrozenCandidateRepairQueue,
   observation: { nowMs: number; zeroAttemptStallMs?: number },
-): FrozenRepairDispatchInfeasibleDecision {
+): FrozenRepairDispatchInfeasibleOutcome {
   assertTimestamp(observation.nowMs, 'nowMs');
   const zeroAttemptStallMs = observation.zeroAttemptStallMs ?? FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS;
   if (!Number.isFinite(zeroAttemptStallMs) || zeroAttemptStallMs <= 0) {
@@ -480,6 +493,22 @@ export function decideFrozenRepairDispatchInfeasible(
   }
   if (queue.phase !== 'awaiting-fixer' || queue.fixerSpawnId !== null || queue.dispatchReservation !== undefined) {
     throw new Error('dispatch infeasibility requires an unassigned awaiting-fixer queue without a reservation');
+  }
+  // WI-2141347: a converged repairHead (only ever an ancestor of staging — see
+  // `shouldConvergeRepairHead` — so already vetted, never unpushed fixer content) is a
+  // structurally sound candidate to test even though no fixer can be dispatched right now.
+  // Retiring it here would discard that convergence untested and re-cut at whatever staging
+  // tip happens to be current, re-admitting the whole last-green radius for nothing. Test it
+  // instead, exactly like a fresh candidate — this queue's own bookkeeping is still abandoned
+  // by the caller (same as the recut-at-tip path), so no repair-queue continuity is implied.
+  if (queue.repairHead !== queue.candidate) {
+    return {
+      kind: 'test-candidate',
+      candidate: queue.repairHead,
+      gateDisposition: 'initial-candidate',
+      runSuite: true,
+      recordVerdict: true,
+    };
   }
   const ageMs = Math.max(0, observation.nowMs - queue.openedAtMs);
   return {
