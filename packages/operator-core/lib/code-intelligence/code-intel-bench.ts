@@ -398,6 +398,40 @@ export interface BenchMeasurement {
    */
   readonly emptyThenFilledMs: number | null;
   /**
+   * The health the FINAL answer claimed. Recorded because its absence is what
+   * forced WI-2142253 to be DEDUCED rather than read: a probe that polled 569
+   * times while holding eight sites could only have been non-healthy, since a
+   * healthy non-empty answer breaks the loop and a healthy empty one would have
+   * set `emptyThenFilledMs`. That chain of reasoning was sound but should never
+   * have been necessary — the health was right there and simply not kept.
+   */
+  readonly answerHealth: string | null;
+  /**
+   * How many times the returned site set actually CHANGED across the poll loop.
+   *
+   * This is the falsifier for the convergence cutoff. Polling a degraded
+   * non-empty answer is not inherently pointless — the measured cold-open
+   * failure returned two real sites while hundreds were still missing — so the
+   * question "does waiting ever add sites?" has to be measured, not assumed. A
+   * probe that stops on convergence with `siteSetChanges: 0` waited for nothing;
+   * one with a high count on a long-stable window says the window is too short.
+   */
+  readonly siteSetChanges: number;
+  /** How long the final site set had been unchanged when polling stopped. */
+  readonly sitesStableForMs: number | null;
+  /**
+   * WHY the poll loop stopped. A `toCorrect=NEVER` row is otherwise ambiguous
+   * between "the backend answered wrongly and settled" and "we ran out of time
+   * while it was still working" — and those two demand opposite responses.
+   */
+  readonly pollStoppedOn:
+    | 'correct'
+    | 'not-served'
+    | 'healthy-final'
+    | 'converged'
+    | 'deadline'
+    | 'never-queried';
+  /**
    * True when the leg budget ran out before this probe was tried. Recorded
    * EXPLICITLY rather than omitted: a probe that never ran must never be
    * mistaken for one that ran and passed, and a short report is otherwise
@@ -662,6 +696,25 @@ export interface LspLegOptions {
   readonly legBudgetMs?: number;
   readonly pollMs?: number;
   /**
+   * How long a NON-EMPTY answer's site set must stay unchanged before the poll
+   * loop accepts it as the backend's converged result (default 5000ms).
+   *
+   * This exists because the `healthy && sites.length > 0` break below could not
+   * fire for a DEGRADED answer, and there was no other exit but the deadline.
+   * Measured (leg v2, WI-2142253): `references-through-barrel-reexport` re-asked
+   * the same question 569 times over ~290s — about half the whole leg budget —
+   * and ended holding the eight sites it already had on attempt 1. That is the
+   * upstream cause of the budget pressure the per-probe reservation only shares
+   * out more fairly.
+   *
+   * EMPTY answers are deliberately NOT subject to this. An empty is
+   * byte-identical to "still loading", so elapsed time is the only evidence
+   * available about it and cutting the poll short would destroy the very
+   * false-empty detection the acceptance corpus exists to perform. Convergence
+   * is a claim you may only make about an answer that HAS content.
+   */
+  readonly stableForMs?: number;
+  /**
    * How many warm re-queries to sample per probe before taking the median.
    * Default 5 — enough that one post-answer indexing stall cannot BE the
    * reported steady state, cheap enough that it costs milliseconds on a hot
@@ -736,6 +789,7 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
     deadlineMs = 120_000,
     legBudgetMs = 600_000,
     pollMs = 250,
+    stableForMs = 5_000,
     warmSamples = 5,
     only,
   } = opts;
@@ -825,6 +879,10 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
             : `leg budget of ${legBudgetMs}ms exhausted before this probe ran`,
         returnedSites: [],
         emptyThenFilledMs: null,
+        answerHealth: null,
+        siteSetChanges: 0,
+        sitesStableForMs: null,
+        pollStoppedOn: 'never-queried',
         notAttempted: true,
       });
       continue;
@@ -837,22 +895,76 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
     let firstHealthyEmptyAt: number | null = null;
     let last: CodeIntelAnswer | null = null;
     let grade: GradeResult = { correct: false, missing: [], extra: [], reason: 'never queried' };
+    // Convergence tracking. The fingerprint is the SITE SET, not the whole
+    // answer: health and freshness metadata churn on their own while the actual
+    // result stands still, and it is the result we are waiting on.
+    let siteFingerprint: string | null = null;
+    let siteSetLastChangedAt = started;
+    let siteSetChanges = 0;
+    let pollStoppedOn: BenchMeasurement['pollStoppedOn'] = 'deadline';
 
     // Poll until CORRECT, not until answered — see the file header.
     while (Date.now() - started < probeDeadline) {
       attempts += 1;
       last = await lspQuery(kase.intent, cursor);
       grade = gradeSites(kase, last.sites);
-      if (grade.correct) break;
+
+      // Track whether the RESULT is still moving, independently of any break
+      // below, so `siteSetChanges` measures the backend rather than the loop's
+      // exit path — a probe that stops early must still be able to report how
+      // many times the answer actually changed before it did.
+      const fingerprint = last.sites.map((s) => `${s.path}:${s.line1 ?? '?'}`).join('|');
+      if (fingerprint !== siteFingerprint) {
+        if (siteFingerprint !== null) siteSetChanges += 1;
+        siteFingerprint = fingerprint;
+        siteSetLastChangedAt = Date.now();
+      }
+
+      if (grade.correct) {
+        pollStoppedOn = 'correct';
+        break;
+      }
       // An unserved intent will never become correct by waiting.
-      if (last.error && /not served/.test(last.error)) break;
+      if (last.error && /not served/.test(last.error)) {
+        pollStoppedOn = 'not-served';
+        break;
+      }
       // A HEALTHY answer WITH SITES is the server's FINAL word, right or wrong.
       // Polling past it cannot change the result — it only spins to the
       // deadline and then reports a TIMEOUT, which misattributes a correctness
       // failure as a latency failure. (Measured: this turned an 8s wrong answer
       // into a 420s fake hang, and sent me looking at the box and the language
       // server instead of at the answer I already had.)
-      if (last.freshness.health === 'healthy' && last.sites.length > 0) break;
+      if (last.freshness.health === 'healthy' && last.sites.length > 0) {
+        pollStoppedOn = 'healthy-final';
+        break;
+      }
+
+      // The same reasoning, one step weaker, for the answer this loop had no
+      // exit for at all: a NON-EMPTY answer that is not entitled to call itself
+      // healthy, but whose site set has stopped moving.
+      //
+      // A degraded non-empty is NOT final on arrival — `healthForAnswer`
+      // downgrades a non-empty answer whose intent readiness is unproven, and
+      // the measured cold-open failure returned two real sites while hundreds
+      // were still missing, so sites genuinely do arrive late. But "not final on
+      // arrival" is not "worth re-asking forever". Once the set has been
+      // unchanged for `stableForMs`, further polling is indistinguishable from
+      // waiting, and the loop was spending an entire probe deadline to learn it:
+      // measured at 569 attempts over ~290s, ending with the eight sites it held
+      // on attempt 1 (WI-2142253).
+      //
+      // Deliberately gated on `sites.length > 0`. An EMPTY answer never
+      // converges in this sense however long it sits still, because a stalled
+      // empty and a still-loading empty are the same bytes — that one is the
+      // false-empty the corpus exists to catch, and it keeps its full deadline.
+      if (
+        last.sites.length > 0 &&
+        Date.now() - siteSetLastChangedAt >= stableForMs
+      ) {
+        pollStoppedOn = 'converged';
+        break;
+      }
 
       // ...but a HEALTHY EMPTY is the single most dangerous answer in this
       // system, and it must NOT be taken as final. It is byte-identical to
@@ -910,6 +1022,10 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
         firstHealthyEmptyAt !== null && (last?.sites.length ?? 0) > 0
           ? Date.now() - firstHealthyEmptyAt
           : null,
+      answerHealth: last?.freshness.health ?? null,
+      siteSetChanges,
+      sitesStableForMs: last === null ? null : Date.now() - siteSetLastChangedAt,
+      pollStoppedOn,
       notAttempted: false,
     });
   }
@@ -1031,6 +1147,16 @@ export function formatLegReport(report: LspLegReport): string {
       m.emptyThenFilledMs !== null
         ? `⚠ FALSE-EMPTY: claimed healthy+empty, filled ${m.emptyThenFilledMs}ms later`
         : '',
+      // WHY the poll stopped, and what the answer claimed while it ran. Printed
+      // on every non-PASS row because their absence is what made WI-2142253 a
+      // deduction: `toCorrect=NEVER attempts=569` cannot, by itself, distinguish
+      // a backend that settled on a wrong answer from one still working when the
+      // clock ran out.
+      m.correct || m.notAttempted
+        ? ''
+        : `stoppedOn=${m.pollStoppedOn} health=${m.answerHealth ?? '?'}` +
+          ` siteSetChanges=${m.siteSetChanges}` +
+          (m.sitesStableForMs !== null ? ` stableFor=${m.sitesStableForMs}ms` : ''),
       m.correct ? '' : `(${m.grade.reason})`,
       divergence?.accounted ? `ACCOUNTED — ${divergence.reason}` : '',
       !m.correct && !m.notAttempted
