@@ -93,6 +93,77 @@ export interface HarnessPlanPartsProjectionOpts {
    *  op the guard drops ONLY because the author's hive_members row hasn't federated yet
    *  is buffered + re-applied on the onMemberApplied drain, not lost. */
   pendingMemberContent?: PendingMembershipContent;
+  /**
+   * WI-2142064: coalesce the per-op recompose across a merge pass. When set,
+   * `applyPart`/`deletePart` mark the plan DIRTY in this shared batch instead of
+   * recomposing immediately — the caller (boot's merge-pass loop) drains it ONCE
+   * after the pass's whole op loop finishes, so N part ops for the same plan cost
+   * one recompose instead of N. Undefined ⇒ today's behavior (recompose inline,
+   * every op) — every existing unit-test / direct caller is unaffected.
+   */
+  recomposeBatch?: PlanPartsRecomposeBatch;
+}
+
+/** One dirty-plan entry queued by `applyPart`/`deletePart` for a coalesced drain. */
+interface DirtyPlanEntry {
+  opts: HarnessPlanPartsProjectionOpts;
+  store: PlanPartsStore;
+  planSlug: string;
+  provenance?: ProvenanceContext;
+}
+
+/**
+ * WI-2142064: N part ops applied for the SAME plan within one merge pass used to
+ * cost N full recomposes (2x getParts + a 3-parse + a full harness_plans UPDATE
+ * each — ~380ms/op on a large plan, measured). `recompose()` always re-reads the
+ * CURRENT merged parts from `store`, so the LAST recompose in a run of same-plan
+ * ops already reflects every earlier one — coalescing to one drain per distinct
+ * (workspace, harness, planSlug) per pass is lossless, just deferred.
+ */
+export interface PlanPartsRecomposeBatch {
+  /** Register `planSlug` (under `opts.workspaceId`/`opts.harnessSlug`) as dirty;
+   *  repeated marks for the same plan within one drain cycle collapse to one entry
+   *  (last-writer's opts/store/provenance — recompose reads live state regardless,
+   *  so only the target row and the stamped fed_ts can differ, and both are
+   *  equivalent within one pass). */
+  markDirty(
+    opts: HarnessPlanPartsProjectionOpts,
+    store: PlanPartsStore,
+    planSlug: string,
+    provenance?: ProvenanceContext,
+  ): void;
+  /** Recompose every distinct dirty plan exactly once, then clear. Fail-soft per
+   *  plan (mirrors applyPart's own best-effort baseline seed): one plan's recompose
+   *  failure must not drop the rest of the batch, and this promise never rejects —
+   *  the caller drains it from a merge-pass `finally`, where a throw would mask the
+   *  pass's own success/failure. */
+  drain(): Promise<void>;
+}
+
+export function createPlanPartsRecomposeBatch(): PlanPartsRecomposeBatch {
+  const dirty = new Map<string, DirtyPlanEntry>();
+  const dirtyKey = (opts: HarnessPlanPartsProjectionOpts, planSlug: string): string =>
+    `${opts.workspaceId}::${opts.harnessSlug}::${planSlug}`;
+  return {
+    markDirty(opts, store, planSlug, provenance) {
+      dirty.set(dirtyKey(opts, planSlug), { opts, store, planSlug, provenance });
+    },
+    async drain() {
+      if (dirty.size === 0) return;
+      const entries = [...dirty.values()];
+      dirty.clear();
+      for (const entry of entries) {
+        try {
+          await recompose(entry.opts, entry.store, entry.planSlug, entry.provenance);
+        } catch (e) {
+          console.warn(
+            `[plan-parts] coalesced recompose failed for '${entry.planSlug}': ` +
+              (e instanceof Error ? e.message : String(e)),
+          );
+        }
+      }
+    },
+  };
 }
 
 function composeKey(row: PlanPartWireRow): string {
@@ -306,7 +377,15 @@ async function applyPart(
     ...(row.tombstone ? { tombstone: true as const } : {}),
   };
   await store.upsertPart(row.plan_slug, part, 'remote'); // origin='remote' → echo-guard skips re-federating our own apply
-  await recompose(effOpts, store, row.plan_slug, provenance);
+  // WI-2142064: with a recomposeBatch threaded in (the merge-pass path), coalesce
+  // N same-plan ops into ONE recompose drained after the pass's op loop — see
+  // PlanPartsRecomposeBatch. Without one (every existing direct/unit-test caller),
+  // recompose inline exactly as before.
+  if (effOpts.recomposeBatch) {
+    effOpts.recomposeBatch.markDirty(effOpts, store, row.plan_slug, provenance);
+  } else {
+    await recompose(effOpts, store, row.plan_slug, provenance);
+  }
 }
 
 async function deletePart(opts: HarnessPlanPartsProjectionOpts, key: string, delTs?: number): Promise<void> {
@@ -320,7 +399,12 @@ async function deletePart(opts: HarnessPlanPartsProjectionOpts, key: string, del
     { key: partKey, kind: 'item', text: '', order: 0, fedTs: delTs ?? 0, tombstone: true },
     'remote',
   );
-  await recompose(opts, store, planSlug);
+  // WI-2142064: same coalescing as applyPart — see PlanPartsRecomposeBatch.
+  if (opts.recomposeBatch) {
+    opts.recomposeBatch.markDirty(opts, store, planSlug);
+  } else {
+    await recompose(opts, store, planSlug);
+  }
 }
 
 export function buildHarnessPlanPartsProjection(
