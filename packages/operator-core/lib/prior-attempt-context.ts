@@ -23,10 +23,21 @@ import {
   listWorkItems,
   type WorkItem,
 } from './work-items';
-import { getWorkItemCheckpointWithMeta } from './work-item-checkpoint';
+import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointJournal } from './work-item-checkpoint';
 import { getWorkItemLifecycleHistory } from './work-item-lifecycle-history';
 import { getClaimTimePriorWorkHint } from './work-item-prior-work';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
+import { boundedLine, extractPriorAttemptRungs, retractionText } from './prior-attempt-rungs';
+import {
+  resolveContainmentTree,
+  type ContainmentDirection,
+  type ContainmentRef,
+  type ContainmentTree,
+} from './containment-tree';
+import { readEffortThread } from './effort-thread';
+
+export type { PriorAttemptRungs } from './prior-attempt-rungs';
+export { extractPriorAttemptRungs } from './prior-attempt-rungs';
 
 /**
  * DISTANCE FROM THE REQUESTED REF, nearest first (P-018 / D-007).
@@ -127,6 +138,10 @@ export interface PriorAttemptBriefRecord {
   /** P-017: length of the full normalized source text, so a reader can size the
    * drill-down before paying for it. */
   fullTextChars?: number;
+  /** D-008 rollup depth this record was rendered at. Absent/0 = full resolution;
+   * ≥1 means fields were dropped BY DESIGN, not by budget pressure, and `rawRef`
+   * still resolves to everything. */
+  depth?: number;
 }
 
 /** P-017: an omitted record, reduced to what makes it RETRIEVABLE. */
@@ -137,6 +152,15 @@ export interface PriorAttemptOmittedRef {
   workItemId?: string | null;
   specId?: string | null;
   at?: string | null;
+  /**
+   * WHY this record is not inline. `budget` = the brief ran out of room.
+   * `empty-at-depth` = D-010's explicit degradation — the record survives at its
+   * rollup depth only as rungs the writer never populated, so it would have been a
+   * hollow row. The distinction matters: `budget` says "raise the budget to see
+   * this", `empty-at-depth` says "there is nothing here to see at this resolution —
+   * read it at its own level."
+   */
+  reason?: 'budget' | 'empty-at-depth';
 }
 
 export interface BoundedPriorAttemptBrief {
@@ -212,14 +236,6 @@ const CANONICAL_AUTHORITY = new Set<PriorAttemptAuthority>([
   'retraction',
 ]);
 
-const FILE_RE = /(?:^|[\s`("'])([A-Za-z0-9_@.-]+(?:\/[A-Za-z0-9_@.+-]+)+\.[A-Za-z0-9_-]+)(?=$|[.\s`),:"'])/g;
-const TEST_RE = /(?:^|\s)((?:npm|pnpm|yarn)\s+(?:run\s+)?test[^\n;]*|(?:vitest|jest|pytest|cargo\s+test)\s+[^\n;]*)/gi;
-
-function boundedLine(text: string, max = 1200): string {
-  const one = text.replace(/\s+/g, ' ').trim();
-  return one.length <= max ? one : `${one.slice(0, max - 1)}…`;
-}
-
 function canonicalValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalValue);
   if (value && typeof value === 'object') {
@@ -230,61 +246,6 @@ function canonicalValue(value: unknown): unknown {
     );
   }
   return value;
-}
-
-function markedFragments(text: string, labels: RegExp): string[] {
-  const out: string[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    if (!labels.test(line)) continue;
-    labels.lastIndex = 0;
-    const value = boundedLine(line.replace(labels, '').replace(/^\s*[:—-]\s*/, ''), 500);
-    if (value) out.push(value);
-  }
-  return [...new Set(out)].slice(0, 12);
-}
-
-function filesIn(text: string): string[] {
-  const out: string[] = [];
-  FILE_RE.lastIndex = 0;
-  for (const match of text.matchAll(FILE_RE)) out.push(match[1]!);
-  return [...new Set(out)].slice(0, 40);
-}
-
-function testsIn(text: string): string[] {
-  TEST_RE.lastIndex = 0;
-  const commands = [...text.matchAll(TEST_RE)].map((match) => boundedLine(match[1]!, 500));
-  const namedFiles = filesIn(text).filter((path) => /(?:^|\/)(?:__tests__\/|[^/]+\.(?:test|spec)\.)/i.test(path));
-  return [...new Set([...commands, ...namedFiles])].slice(0, 30);
-}
-
-/** The rungs the reader derives from free prose. Exported so the WRITE side can run
- *  the SAME extractor (see {@link describeCaptureGaps}) — never a second copy of
- *  these patterns, which is precisely the drift the derived-truth ladder forbids. */
-export interface PriorAttemptRungs {
-  rootCauses: string[];
-  falsePremises: string[];
-  residue: string[];
-  touchedFiles: string[];
-  tests: string[];
-}
-
-/**
- * D-010: the compression ladder's fields are KEYWORD-MATCHED PROSE, not data supplied
- * by the writer — `rootCauses` is populated only when the author happened to write
- * "root cause" or "originates at". Measured 2026-09-02 against the live corpora:
- * 95.6% of work-item checkpoints yield NO rootCause and 97.5% no falsePremise.
- *
- * This is exported so the write path can show an author what its own note WILL and
- * WILL NOT yield, at the one moment that is actionable. One extractor, two callers.
- */
-export function extractPriorAttemptRungs(text: string): PriorAttemptRungs {
-  return {
-    rootCauses: markedFragments(text, /\b(?:root\s*cause|origin(?:ates|ated)?\s+at)\b/gi),
-    falsePremises: markedFragments(text, /\b(?:false\s+premise|retract(?:ed|ion)?|was\s+wrong|incorrect\s+assumption)\b/gi),
-    residue: markedFragments(text, /\b(?:residue|remaining|follow[- ]?up|still\s+open|deferred)\b/gi),
-    touchedFiles: filesIn(text),
-    tests: testsIn(text),
-  };
 }
 
 function normalizedRecord(source: PriorAttemptSource): PriorAttemptRecord {
@@ -363,6 +324,58 @@ export function compilePriorAttempts(sources: readonly PriorAttemptSource[]): Pr
   };
 }
 
+/**
+ * D-008's compression ladder, as a FIELD SELECTION per rollup depth.
+ *
+ * "A read of ANY level costs the same fixed budget. What changes with depth is
+ * RESOLUTION, not volume — zooming out on a map buys less detail per feature, not
+ * more ink."
+ *
+ * ⚠ D-010 corrects D-008 on one point and this function implements the correction:
+ * the deep rungs are keyword-derived and EMPTY in ~19 of every 20 records, so
+ * "keep only rootCauses + falsePremises" mostly keeps an empty record. A hollow
+ * record is worse than an omitted one — it spends bytes to tell the reader nothing
+ * while looking like history was delivered. So depth ≥ 2 with both rungs empty
+ * returns `null`, and the caller discloses it as an omission with a REASON.
+ */
+function briefRecordAtDepth(record: PriorAttemptRecord, maxTextChars: number): PriorAttemptBriefRecord | null {
+  const depth = record.depth ?? 0;
+  if (depth <= 0) return briefRecord(record, maxTextChars);
+  const base = {
+    authority: record.authority,
+    scope: record.scope,
+    rawRef: record.rawRef,
+    workItemId: record.workItemId,
+    specId: record.specId,
+    at: record.at,
+    depth,
+  };
+  if (depth === 1) {
+    // One level down: drop `text`, keep the summary pair. Both are themselves
+    // keyword/first-line derived, so an empty pair here still degrades to the
+    // ref-only shape rather than pretending to a summary it does not have.
+    const approach = record.approach ? boundedLine(record.approach, Math.min(maxTextChars, 500)) : null;
+    const outcome = record.outcome ? boundedLine(record.outcome, Math.min(maxTextChars, 500)) : null;
+    if (!approach && !outcome && !record.rootCauses.length && !record.falsePremises.length) return null;
+    return {
+      ...base,
+      text: '',
+      ...(approach ? { approach } : {}),
+      ...(outcome ? { outcome } : {}),
+      ...(record.rootCauses.length ? { rootCauses: record.rootCauses } : {}),
+      ...(record.falsePremises.length ? { falsePremises: record.falsePremises } : {}),
+    };
+  }
+  // Two or more levels down: only the fields that STOP A REPEAT survive.
+  if (!record.rootCauses.length && !record.falsePremises.length) return null;
+  return {
+    ...base,
+    text: '',
+    ...(record.rootCauses.length ? { rootCauses: record.rootCauses } : {}),
+    ...(record.falsePremises.length ? { falsePremises: record.falsePremises } : {}),
+  };
+}
+
 function briefRecord(record: PriorAttemptRecord, maxTextChars: number): PriorAttemptBriefRecord {
   const text = boundedLine(record.text, maxTextChars);
   const out: PriorAttemptBriefRecord = {
@@ -399,6 +412,46 @@ function briefSize(value: unknown): number {
  * truncate.  Deliberately generous relative to `maxRecords` — a ref costs ~100
  * bytes against a record's ~700, so retrievability is cheap next to detail. */
 const OMITTED_REF_CAP = 200;
+
+/**
+ * P-021 — THE CLAIM-TIME TOKEN CEILING. This plan named none anywhere, which is the
+ * gap D-008's "fixed budget" rule needed a number for. It is stated here, in code,
+ * beside the budget it governs, and asserted by a test.
+ *
+ * 12_500 tokens = the 50_000-char default at the ~4 chars/token estimate this module
+ * already uses. Against the 250_000-token fleet-member compaction cap (WI-2142006)
+ * that is 5% of a member's whole context spent at claim.
+ *
+ * BASELINE FOR THE NUMBER, measured: the budget was 14_000 chars (~3,500 tokens,
+ * ~1.75% of the then-200k cap) and WI-40078 measured live overhead at avg 2,922 /
+ * P95 3,482 tokens with 16 of 20 briefs TRUNCATED and ~7.5 detail records dropped
+ * each — i.e. the common case was a truncated brief, not a fitted one. WI-2142006
+ * then raised the budget to 50_000 and the member cap to 250_000.
+ */
+export const CLAIM_BRIEF_TOKEN_CEILING = 12_500;
+
+/**
+ * P-021 — THE ORPHAN CEILING, and the reason it is separate.
+ *
+ * 50_000 chars was inherited from a surface serving the 5.8% of items that carry a
+ * plan, where a brief legitimately compiles specs, decisions and 16 siblings. P-018
+ * extends delivery to the other 94%, whose measured history is far thinner: 1.38
+ * posts per issue thread, avg 962 chars, p90 2,705 (2026-09-02). Letting the orphan
+ * case inherit the plan-backed budget would hand 94% of claims a ceiling sized for a
+ * population they are not in — the exact mistake D-006 caught when the plan was
+ * keyed to plan slugs.
+ *
+ * 12_000 chars (~3,000 tokens, 1.2% of the member cap) is sized from what an orphan
+ * can actually hold: its own checkpoint, up to CARRY_JOURNAL_MAX_ENTRIES (15) ring
+ * entries capped at 600 chars each (9,000 worst case), its thread window, and its
+ * lifecycle. That covers the realistic worst orphan whole and is 4× smaller than the
+ * budget it must not inherit.
+ */
+export const ORPHAN_CLAIM_BRIEF_BUDGET: Required<PriorAttemptBriefBudget> = {
+  maxChars: 12_000,
+  maxRecords: 24,
+  maxTextChars: 700,
+};
 
 /**
  * Bounded claim-time projection.  Budgeting is deterministic and omission is
@@ -447,7 +500,7 @@ export function buildBoundedPriorAttemptBrief(
   // rawRef because a record can be rejected twice (budget, then envelope
   // overflow) and must not be double-counted as two distinct omissions.
   const omittedRefs = new Map<string, PriorAttemptOmittedRef>();
-  const dropRecord = (record: PriorAttemptRecord) => {
+  const dropRecord = (record: PriorAttemptRecord, reason: 'budget' | 'empty-at-depth' = 'budget') => {
     if (omittedRefs.has(record.rawRef)) return;
     omitted.set(record.authority, (omitted.get(record.authority) ?? 0) + 1);
     omittedRefs.set(record.rawRef, {
@@ -457,6 +510,7 @@ export function buildBoundedPriorAttemptBrief(
       workItemId: record.workItemId,
       specId: record.specId,
       at: record.at,
+      reason,
     });
   };
   let admitted = 0;
@@ -506,7 +560,13 @@ export function buildBoundedPriorAttemptBrief(
       dropRecord(record);
       continue;
     }
-    const projected = briefRecord(record, maxTextChars);
+    // D-008 ladder + D-010's honest degradation: a record whose rollup depth leaves
+    // it with nothing but empty rungs is DISCLOSED, never rendered hollow.
+    const projected = briefRecordAtDepth(record, maxTextChars);
+    if (!projected) {
+      dropRecord(record, 'empty-at-depth');
+      continue;
+    }
     attempts.push(projected);
     rawRefs.push(record.rawRef);
     admitted += 1;
@@ -556,6 +616,7 @@ export function buildBoundedPriorAttemptBrief(
         workItemId: entry.workItemId,
         specId: entry.specId,
         at: entry.at,
+        reason: 'budget',
       });
     }
   };
@@ -618,15 +679,40 @@ export function buildBoundedPriorAttemptBrief(
 
 export interface CollectPriorAttemptsOptions {
   harnessSlug?: string;
-  planSlug: string;
-  planItemId: string;
+  /**
+   * P-018: the ref this read is ABOUT. Defaults to `{ kind:'work_item', ref: workItemId }`,
+   * which is every existing caller. A plan or goal ref makes this a LEADER rollup read
+   * (see `direction`).
+   */
+  target?: ContainmentRef;
+  /** OPTIONAL since P-018 — resolved from the containment tree when absent, and simply
+   *  ABSENT for the 94% of items that carry no plan. Previously required, which is why
+   *  the whole surface returned null for them. */
+  planSlug?: string | null;
+  planItemId?: string | null;
   workItemId: string;
   /** Optional exact target specs.  When absent, derive them from the work-item
    * evidence edges, then from current clauses owned by the plan item. */
   specIds?: string[];
   maxPlanWorkItems?: number;
   maxThreadPosts?: number;
+  /**
+   * Containment direction (D-007). `up` (DEFAULT) is the member-safe read: the ref's
+   * own history plus its ancestors' rulings. `down`/`both` add the descendant rollup,
+   * which is a LEADER read — 94% of items have no plan and no goal, so a rollup can
+   * only ever fire for the 6%, and wiring one into a member's claim path would spend
+   * the member budget on it.
+   */
+  direction?: ContainmentDirection;
+  maxDescendants?: number;
+  /** How many ring entries of a checkpoint's trajectory to admit (P-003's journal). */
+  maxJournalEntries?: number;
 }
+
+/** How many prior checkpoint-ring entries a claim admits. The ring holds up to
+ *  CARRY_JOURNAL_MAX_ENTRIES (15); admitting the newest few is what turns P-003's
+ *  storage into delivered continuity without re-importing a transcript. */
+const DEFAULT_JOURNAL_ENTRIES = 4;
 
 export const PRIOR_ATTEMPT_CLAIM_BUDGET_MS = 2_500;
 
