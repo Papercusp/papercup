@@ -90,11 +90,34 @@ import { registerAwait, listParkedAwaitsForSubscribers } from '../../events/awai
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { listFleetAssignments, groupByAgent } from '../../fleet/assignments';
 import { deriveFleetMembership } from '../coordination/identity';
-import { listFleetsLedBy } from '../../agent-fleets-store';
+import { listFleetsLedBy, type AgentFleetRecord } from '../../agent-fleets-store';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { withBoundedTimeout } from '../../bounded-timeout';
+
+/** A complete AgentFleetRecord so listFleetsLedBy fixtures typecheck against the real
+ *  return type instead of hiding behind `as never` (check-mock-cast-escape). */
+const ledFleet = (fleetSlug: string): AgentFleetRecord => ({
+  workspaceId: 'ws-x',
+  fleetSlug,
+  title: null,
+  description: null,
+  owner: null,
+  leaderOwnerId: 'su-leader',
+  colorScheme: null,
+  controlState: 'active',
+  fleetType: 'single',
+  controlReason: null,
+  controlBy: null,
+  controlAt: null,
+  controlResumeGate: null,
+  controlExpiresAt: null,
+  controlNoResumePath: false,
+  lastLaunchTransaction: null,
+  createdAt: 0,
+  updatedAt: 0,
+});
 
 const lane = (claimable: number, matchedByFilter = claimable) => ({
   claimable,
@@ -154,7 +177,7 @@ describe('projectBenchRows (pure)', () => {
 
 describe('resolveBenchFleetTarget — durable leadership and presence fallback', () => {
   it('uses the sole durable led fleet before the latest presence label', async () => {
-    vi.mocked(listFleetsLedBy).mockResolvedValueOnce([{ fleetSlug: 'actually-led' }] as never);
+    vi.mocked(listFleetsLedBy).mockResolvedValueOnce([ledFleet('actually-led')]);
     vi.mocked(resolvePresenceFleet).mockResolvedValueOnce({
       fleetSlug: 'latest-joined',
       fleetRole: 'member',
@@ -168,10 +191,7 @@ describe('resolveBenchFleetTarget — durable leadership and presence fallback',
   });
 
   it('refuses an omitted target when the caller leads multiple fleets', async () => {
-    vi.mocked(listFleetsLedBy).mockResolvedValueOnce([
-      { fleetSlug: 'fleet-a' },
-      { fleetSlug: 'fleet-b' },
-    ] as never);
+    vi.mocked(listFleetsLedBy).mockResolvedValueOnce([ledFleet('fleet-a'), ledFleet('fleet-b')]);
     vi.mocked(resolvePresenceFleet).mockResolvedValueOnce({
       fleetSlug: 'fleet-b',
       fleetRole: 'leader',
@@ -524,7 +544,7 @@ describe('fleet:bench — list mode', () => {
   });
 
   it('errors clearly when no fleet is resolvable and none was passed', async () => {
-    vi.mocked(deriveFleetMembership).mockReturnValueOnce({ fleetSlug: null } as never);
+    vi.mocked(deriveFleetMembership).mockReturnValueOnce({ fleetSlug: null, fleetRole: null });
     vi.mocked(listFleetsLedBy).mockResolvedValueOnce([]);
     vi.mocked(resolvePresenceFleet).mockResolvedValueOnce({ fleetSlug: null, fleetRole: null });
     const out = await call({ list: true });
