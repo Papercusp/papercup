@@ -79,6 +79,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  vi.clearAllMocks();
   await db.sql`TRUNCATE harness_shared.plan_audits, harness_shared.harness_plans, harness_shared.plan_revisions RESTART IDENTITY`;
 });
 
@@ -164,6 +165,9 @@ describe('migration 938 activation-audit ledger', () => {
       harnessSlug: 'papercusp',
       planSlug: 'activation-target',
     });
+    // The control that makes the close CONDITIONAL rather than a sweep: a refused
+    // activation must never reconcile the very filing it just raised.
+    expect(reconcileActivationAuditRepairFiling).not.toHaveBeenCalled();
   });
 
   it('preserves completion defaults and reads each audit kind independently', async () => {
@@ -237,6 +241,18 @@ describe('migration 938 activation-audit ledger', () => {
       ok: true,
       auditedPlanRevision: { id: revision.id, seq: 9, contentHash: revision.contentHash },
       audit: { auditKind: 'activation', auditedPlanRevision: { id: revision.id, seq: 9 } },
+      repairReconciliation,
+    });
+    // A clean audit is the EVENT that clears the repair condition, so the close
+    // fires from here — with the audit_seq that cleared it as its evidence.
+    // Without this leg the filing outlives its condition until an agent notices
+    // by hand (EI-22090432802240306: 0 of 13 filings were ever machine-closed).
+    expect(reconcileActivationAuditRepairFiling).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(reconcileActivationAuditRepairFiling).mock.calls[0]?.[0]).toEqual({
+      workspaceId: 'activation-audit-test',
+      harnessSlug: 'papercusp',
+      planSlug: 'activation-target',
+      auditSeq: 1,
     });
   });
 

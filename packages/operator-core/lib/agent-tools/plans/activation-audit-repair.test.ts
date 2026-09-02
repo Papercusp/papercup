@@ -1,17 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockUpsertConditionWorkItem } = vi.hoisted(() => ({
-  mockUpsertConditionWorkItem: vi.fn(),
-}));
+const { mockUpsertConditionWorkItem, mockFindConditionKeyHolder, mockSetWorkItemState } = vi.hoisted(
+  () => ({
+    mockUpsertConditionWorkItem: vi.fn(),
+    mockFindConditionKeyHolder: vi.fn(),
+    mockSetWorkItemState: vi.fn(),
+  }),
+);
 
 vi.mock('../../coord/condition-upsert', () => ({
   upsertConditionWorkItem: mockUpsertConditionWorkItem,
 }));
+vi.mock('../../coord/condition-bridge', () => ({
+  findConditionKeyHolder: mockFindConditionKeyHolder,
+}));
+vi.mock('../../work-items', () => ({
+  setWorkItemState: mockSetWorkItemState,
+}));
 
 import {
+  ACTIVATION_AUDIT_REPAIR_ACTOR,
   activationAuditRepairConditionKey,
   activationAuditRepairSummary,
   ensureActivationAuditRepairFiling,
+  reconcileActivationAuditRepairFiling,
   type ActivationAuditRepairFilingInput,
 } from './activation-audit-repair';
 
@@ -104,5 +116,85 @@ describe('activation-audit repair filing', () => {
       created: false,
       error: 'condition store unavailable',
     });
+  });
+});
+
+/**
+ * The half that did not exist before EI-22090432802240306. condition-upsert
+ * deliberately has "no auto-settle marker", so a filing whose condition clears
+ * stays open forever unless its own filer closes it — measured: 0 machine
+ * closes across 13 activation-audit filings, against 72 for the sibling
+ * spec-triad lane that owns its close.
+ */
+describe('activation-audit repair reconciliation', () => {
+  const reconcileInput = {
+    workspaceId: 'workspace-a',
+    harnessSlug: 'papercusp',
+    planSlug: 'plan-a',
+    auditSeq: 4,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('closes the open filing through the lifecycle writer with real evidence', async () => {
+    mockFindConditionKeyHolder.mockResolvedValue('WI-REPAIR');
+    mockSetWorkItemState.mockResolvedValue({ id: 'WI-REPAIR' });
+
+    const result = await reconcileActivationAuditRepairFiling(reconcileInput);
+
+    expect(mockFindConditionKeyHolder).toHaveBeenCalledWith('activation-audit:papercusp/plan-a', {
+      workspaceId: 'workspace-a',
+    });
+    const [id, state, opts] = mockSetWorkItemState.mock.calls[0] ?? [];
+    expect(id).toBe('WI-REPAIR');
+    // `dropped` + by + completionRef, never skipCompletionGate — the spec-triad
+    // precedent: a machine close carries evidence and enters no completion bucket.
+    expect(state).toBe('dropped');
+    expect(opts).toMatchObject({ harness: 'papercusp', by: ACTIVATION_AUDIT_REPAIR_ACTOR });
+    expect(opts?.skipCompletionGate).toBeUndefined();
+    expect(opts?.completionRef).toContain('activation audit #4 recorded clean');
+    expect(opts?.completionRef).toContain("plan 'plan-a'");
+    expect(result).toEqual({ conditionKey: 'activation-audit:papercusp/plan-a', closed: 'WI-REPAIR' });
+  });
+
+  it('is idempotent under re-audit: no open filing owns the key, nothing is closed', async () => {
+    mockFindConditionKeyHolder.mockResolvedValue(null);
+
+    await expect(reconcileActivationAuditRepairFiling(reconcileInput)).resolves.toEqual({
+      conditionKey: 'activation-audit:papercusp/plan-a',
+      closed: null,
+    });
+    expect(mockSetWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('fails soft: a queue write that throws never unwinds the recorded audit', async () => {
+    mockFindConditionKeyHolder.mockResolvedValue('WI-REPAIR');
+    mockSetWorkItemState.mockRejectedValue(new Error('lifecycle writer unavailable'));
+
+    await expect(reconcileActivationAuditRepairFiling(reconcileInput)).resolves.toEqual({
+      conditionKey: 'activation-audit:papercusp/plan-a',
+      closed: null,
+      error: 'lifecycle writer unavailable',
+    });
+  });
+
+  it('closes exactly the key its own filing seam mints', async () => {
+    mockUpsertConditionWorkItem.mockResolvedValue({
+      conditionKey: 'activation-audit:papercusp/plan-a',
+      id: 'WI-REPAIR',
+      created: true,
+    });
+    mockFindConditionKeyHolder.mockResolvedValue('WI-REPAIR');
+    mockSetWorkItemState.mockResolvedValue({ id: 'WI-REPAIR' });
+
+    const filed = await ensureActivationAuditRepairFiling(input);
+    const reconciled = await reconcileActivationAuditRepairFiling(reconcileInput);
+
+    expect(reconciled.conditionKey).toBe(filed.conditionKey);
+    expect(mockFindConditionKeyHolder.mock.calls[0]?.[0]).toBe(
+      mockUpsertConditionWorkItem.mock.calls[0]?.[0],
+    );
   });
 });
