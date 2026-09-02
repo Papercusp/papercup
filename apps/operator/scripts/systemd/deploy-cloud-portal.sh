@@ -240,6 +240,35 @@ start_managed() {
   wait_for_health "$PORTAL_PORT"
 }
 
+# The release `current` names is launched by its own standalone-entry.mjs, which
+# embeds the SOURCE CHECKOUT it was built from. Sibling snapshot checkouts
+# (portal-p016-snap, portal-p018-snap, portal-checkpoint) publish into this SAME
+# production release root, so `current` can resolve to a perfectly valid
+# directory while naming a build of a throwaway tree. The pre-existing checks
+# above only prove `current` is *a directory*; nothing proved it was built from
+# $PORTAL_ROOT. Handing off onto a snapshot build restarts the owner's live
+# portal on a checkout that may be deleted underneath it (EI-22123385977067109,
+# observed twice on 2026-09-02 from independent lanes).
+current_release_entry_rel() {
+  sed -n 's/.*join(root, "\([^"]*\)").*/\1/p' "$CURRENT_STANDALONE_ENTRY" 2>/dev/null | head -1
+}
+
+require_production_current_release() {
+  local entry_rel
+  entry_rel="$(current_release_entry_rel)"
+  if [[ -z "$entry_rel" ]]; then
+    die "cannot determine which checkout $CURRENT_RELEASE_REAL was built from: no entry path in $CURRENT_STANDALONE_ENTRY; refusing handoff"
+  fi
+  if [[ "$HOME/$entry_rel" == "$PORTAL_ROOT/server.js" || "$entry_rel" == "${PORTAL_ROOT#/}/server.js" ]]; then
+    return 0
+  fi
+  log "refusing handoff: portal 'current' release was built from a NON-PRODUCTION checkout"
+  log "  current  -> $CURRENT_RELEASE_REAL"
+  log "  spawns   -> \$HOME/$entry_rel"
+  log "  expected -> $PORTAL_ROOT/server.js"
+  die "portal current release is a foreign-checkout build; re-point current at a release built from $PORTAL_ROOT, then retry (EI-22123385977067109)"
+}
+
 managed_unit_runs_current_artifact() {
   local main_pid arg current_real saw_launcher=0
   main_pid="$(systemctl_user show "$UNIT_NAME" --property=MainPID --value 2>/dev/null || true)"
@@ -340,6 +369,12 @@ restore_legacy_listener() {
 }
 
 handoff() {
+  # Checked BEFORE install_unit: this is the only mode that restarts the live
+  # :3801 listener, and the release it would restart onto is decided by whatever
+  # `current` names at this instant. Inspection modes stay usable on a foreign
+  # current; only the cutover refuses.
+  require_production_current_release
+
   install_unit
   reload_and_enable
 
