@@ -343,7 +343,7 @@ async function sessionArchiveReconcileTick(): Promise<void> {
           s.skippedDisk
         ) {
           console.log(
-            `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
+            `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbSkippedLive} live-skipped / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
           );
         }
         // INVARIANT (EI-20419472483823685) — always emitted, see the helper.

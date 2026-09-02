@@ -43,7 +43,7 @@ import {
   type SessionDirRoot,
 } from './session-dir-gc';
 import { ompSessionsRoot } from './omp-sessions';
-import { runArchiveForAdvSession, type ArchiveHookResult } from './session-archive-hook';
+import { isLiveSkipReason, runArchiveForAdvSession, type ArchiveHookResult } from './session-archive-hook';
 import {
   archiveAndDeleteSession,
   collectSessionFiles,
@@ -113,6 +113,12 @@ export interface ReconcileStats {
   dbArchived: number;
   /** Nothing-to-archive rows stamped out of the scan set (post-grace). */
   dbStampedEmpty: number;
+  /** Ended-but-unarchived rows whose session looked LIVE this tick
+   *  (`row_reopened` / `transcript_fresh` / `owner_live`, EI-22126624550252124)
+   *  — nothing touched, NOT stamped, retried next tick. Distinct from
+   *  `dbFailed`: this is the guard working, not an error. A row that stays here
+   *  for a long time is an adv row wrongly marked ended under a live owner. */
+  dbSkippedLive: number;
   dbFailed: number;
   diskDirsScanned: number;
   diskSessionsArchived: number;
@@ -215,11 +221,18 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
   const db = deps.db ?? pgReconcilerDb();
   const store = deps.store ?? pgSessionArchiveStore();
   const nowMs = deps.nowMs ?? Date.now();
-  const runAdv = deps.runAdvArchive ?? ((id: number) => runArchiveForAdvSession(id, { store }));
+  // The protected set is gathered ONCE per tick and shared by BOTH sides: the
+  // row-driven archive pass refuses a live owner with the same instrument the
+  // disk sweep uses (EI-22126624550252124), so the two paths cannot disagree
+  // about who is alive.
+  const prot = deps.protectedIdentity ?? (await gatherProtectedSessionIdentity());
+  const runAdv =
+    deps.runAdvArchive ?? ((id: number) => runArchiveForAdvSession(id, { store, protectedIdentity: prot, nowMs }));
   const stats: ReconcileStats = {
     dbScanned: 0,
     dbArchived: 0,
     dbStampedEmpty: 0,
+    dbSkippedLive: 0,
     dbFailed: 0,
     diskDirsScanned: 0,
     diskSessionsArchived: 0,
@@ -242,6 +255,10 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
       const r = await runAdv(row.id);
       if (r.ok) {
         stats.dbArchived++; // runArchiveForAdvSession stamps adv via the store
+      } else if (isLiveSkipReason(r.reason)) {
+        // Live session under an 'ended' row — never stamp it out (that would
+        // strand the transcript un-archived forever), never count it failed.
+        stats.dbSkippedLive++;
       } else if (
         (r.reason === 'no_files' || r.reason === 'unresolvable' || r.reason === 'row_not_found') &&
         nowMs - row.endedAtMs > NOTHING_TO_ARCHIVE_GRACE_MS
@@ -258,7 +275,6 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
   }
 
   // ── (b) disk-side: unprotected per-session dirs with un-archived files ──
-  const prot = deps.protectedIdentity ?? (await gatherProtectedSessionIdentity());
   // FAIL CLOSED (WI-3859 F3, mirrors runSessionDirGc): the protected-set reads
   // fail OPEN per-source, so a degraded set is INCOMPLETE — sweeping against it
   // with a working archive PG would archive and DELETE a live session's files
