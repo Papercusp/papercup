@@ -862,6 +862,10 @@ export const CC_HOOK_FILES = [
   // The incoming-content guard cannot see corruption introduced after dispatch;
   // this hook compares the requested UTF-8 bytes with the resulting file.
   'posttooluse-write-byte-integrity-guard.mjs',
+  // PostToolUse nudge: an Edit/Write after the last `lint:tsc` run invalidates that
+  // run's "clean" verdict, so the hook says so at the edit instead of hours later at
+  // the gate (the hook file shipped without this allowlist entry — install parity 3/3).
+  'posttooluse-tsc-verdict-stale-nudge.mjs',
   // Claude native edit batches defer the union-lock release until this
   // matcher-less PostToolBatch hook sees the complete batch.
   'posttoolbatch-locks-release.sh',

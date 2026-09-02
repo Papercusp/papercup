@@ -127,7 +127,10 @@ describe('release publication configuration and wiring', () => {
       path.resolve(__dirname, '../../../../papercusp-desktop/bin/upload-release.sh'),
       'utf8',
     );
-    const publicProbe = upload.indexOf('python3 - "$TMP_MANIFEST" <<\'PY\'');
+    // The public range-GET probe is `probe_public_manifest_artifacts` (defined once, called
+    // on the served manifest); pin its CALL SITE so "after the probe" means after the probe
+    // actually ran, not after the function body happened to be declared.
+    const publicProbe = upload.indexOf('probe_public_manifest_artifacts "$tmp_manifest"');
     const finalizer = upload.indexOf('finalize-release-publication.ts');
     expect(publicProbe).toBeGreaterThanOrEqual(0);
     expect(finalizer).toBeGreaterThan(publicProbe);

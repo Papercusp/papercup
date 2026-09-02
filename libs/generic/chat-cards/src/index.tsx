@@ -503,5 +503,11 @@ export function isUIResourceContent(content: unknown): content is { type: 'resou
   const record = content as Record<string, unknown>;
   if (record.type !== 'resource' || !record.resource || typeof record.resource !== 'object') return false;
   const resource = record.resource as Record<string, unknown>;
-  return typeof resource.uri === 'string' && typeof resource.mimeType === 'string';
+  // MCP-UI resources are `ui://` by spec; any other resource URI (a papercusp:// data
+  // resource, say) is ordinary content and must NOT be handed to the iframe renderer.
+  return (
+    typeof resource.uri === 'string' &&
+    resource.uri.startsWith('ui://') &&
+    typeof resource.mimeType === 'string'
+  );
 }

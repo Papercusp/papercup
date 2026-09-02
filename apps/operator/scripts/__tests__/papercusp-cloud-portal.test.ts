@@ -44,7 +44,16 @@ function fixture(): Fixture {
   writeFileSync(join(portalRoot, "package.json"), '{"name":"portal-fixture"}\n');
   writeFileSync(join(nextDir, "next"), "#!/usr/bin/env bash\nexit 0\n");
   chmodSync(join(nextDir, "next"), 0o755);
-  writeFileSync(join(releaseDir, "standalone-entry.mjs"), "export {};\n");
+  // deploy-cloud-portal.sh proves `current` was built from $PORTAL_ROOT by reading the
+  // `join(root, "<checkout-relative server.js>")` a real standalone entry embeds and
+  // refuses the handoff otherwise (EI-22123385977067109) — so the fixture's entry must
+  // name this fixture's own portal root, not be an empty module.
+  writeFileSync(
+    join(releaseDir, "standalone-entry.mjs"),
+    `import { join } from "node:path";\nconst root = "/";\nexport default join(root, ${JSON.stringify(
+      `${portalRoot.replace(/^\//, "")}/server.js`,
+    )});\n`,
+  );
   writeFileSync(join(portalRoot, "scripts", "start-web.mjs"), "export {};\n");
   writeFileSync(join(procRoot, "4242", "cmdline"), Buffer.from("node\0old-next-dev\0"));
   // `/proc/<pid>/task/<pid>/children` is newline-free on Linux. The handoff

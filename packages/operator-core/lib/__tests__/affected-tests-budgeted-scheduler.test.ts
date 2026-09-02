@@ -1194,7 +1194,10 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     const release = deferred<void>();
     const acquired = deferred<void>();
     const holder = withFsMutex(
-      'papercusp-test-process-admission',
+      // Hold the lane the scheduler will ACTUALLY queue on: under the gate
+      // (PC_HEAVY_RELEASE_GATE=1) that is the `-release-gate` lane (WI-1746759), so a
+      // hard-coded shared name never contends and the queued notice never arrives.
+      admissionMutexName(),
       async () => {
         acquired.resolve();
         await release.promise;
@@ -1223,7 +1226,10 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     const release = deferred<void>();
     const acquired = deferred<void>();
     const holder = withFsMutex(
-      'papercusp-test-process-admission',
+      // Hold the lane the scheduler will ACTUALLY queue on: under the gate
+      // (PC_HEAVY_RELEASE_GATE=1) that is the `-release-gate` lane (WI-1746759), so a
+      // hard-coded shared name never contends and the queued notice never arrives.
+      admissionMutexName(),
       async () => {
         acquired.resolve();
         await release.promise;
@@ -1322,7 +1328,10 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     const release = deferred<void>();
     const acquired = deferred<void>();
     const holder = withFsMutex(
-      'papercusp-test-process-admission',
+      // Hold the lane the scheduler will ACTUALLY queue on: under the gate
+      // (PC_HEAVY_RELEASE_GATE=1) that is the `-release-gate` lane (WI-1746759), so a
+      // hard-coded shared name never contends and the queued notice never arrives.
+      admissionMutexName(),
       async () => {
         acquired.resolve();
         await release.promise;

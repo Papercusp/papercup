@@ -4,8 +4,9 @@
  * per-harness Settings panel (whole-app-test-coverage-breadth). The panel
  * gates rendering behind `loaded` (config.json via useSyncQuery), so the test
  * feeds a config row to flip it loaded, then exercises: the loading gate, the
- * always-on sections (Workers / AI backend / chunk-loop knobs / debugger
- * threshold / Save bar), the testing-flag-gated controls (workers-per-feature
+ * always-on sections (Workers / AI backend / Discord / Save bar — the chunk-loop
+ * and debugger-threshold knobs were removed from the panel with the chunk
+ * loop itself), the testing-flag-gated controls (workers-per-feature
  * mode, tiers section), the tiers add/remove row flow, the Discord
  * shared/not-shared branch, and a successful Save (toast.success).
  *
@@ -103,8 +104,10 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
     expect(screen.getByText(/Settings — h/)).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'AI backend' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Discord' })).toBeTruthy();
-    // Chunk-loop checkbox + debugger-threshold input render.
-    expect(screen.getByRole('checkbox', { name: 'chunk loop enabled' })).toBeTruthy();
+    // The chunk-loop checkbox is gone with the chunk loop (HarnessSettingsPanel.tsx
+    // dropped `useChunkLoop` + the debugger threshold) — assert its absence so a
+    // resurrected knob is a reviewed diff, not a silent return.
+    expect(screen.queryByRole('checkbox', { name: 'chunk loop enabled' })).toBeNull();
     // Save bar present.
     expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
     // The flag-gated "workers / feature" mode control is hidden when the flag is off.
