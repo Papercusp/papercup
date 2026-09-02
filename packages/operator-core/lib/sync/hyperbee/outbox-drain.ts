@@ -32,7 +32,7 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
-import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
+import { CDC_CAPTURED_TABLES, outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
 import { recordLocalWrite } from './clobber-events';
 import { shouldEncryptOpForRekey } from './hive-epoch-content-ops';
 import { isSessionClosedError } from './own-log-fork-guard';
@@ -50,6 +50,74 @@ import { trackDetached } from '../../detached-imports';
  * threading would entangle author-provenance — out of P-007's scope.
  */
 const PLAN_TABLE_TAG = 'plans-by-slug';
+
+/**
+ * EI-22138988923269437 (WI-2141185's mitigation follow-up): `harness_shared.
+ * substrate_outbox` tables that carry cross-agent COORDINATION traffic —
+ * these must never be starved behind a bulk backfill of some other
+ * CDC-captured table. Kept intentionally small and coordination-specific
+ * (not "everything important") — extend by adding a table_name here if a
+ * new coordination-carrying table is federated through the outbox.
+ *
+ * Measured incident: a one-shot 142k-row `engineer_issues` backfill sat at
+ * the head of the id-ordered drain cursor for ~20h, during which
+ * `coord_event_log`'s oldest undrained row aged from fresh to 27.7k rows
+ * behind — cross-agent coordination (messages/handoffs/escalations) was
+ * effectively undelivered the whole time, even though nothing about
+ * coordination itself was unhealthy.
+ */
+export const OUTBOX_PRIORITY_TABLES: ReadonlySet<string> = new Set([
+  'coord_event_log',
+  'coord_conversations',
+  'coord_threads',
+  'coord_thread_posts',
+]);
+
+/** `OUTBOX_PRIORITY_TABLES` as a plain array — the shape `unnest()`/`= ANY()`
+ *  bind params need. Computed once at module scope (tiny, constant). */
+const OUTBOX_PRIORITY_TABLE_LIST: readonly string[] = Array.from(OUTBOX_PRIORITY_TABLES);
+
+/**
+ * EI-22138988923269437 durable fix (priority lane + starvation guard):
+ * `drainOutboxOnce`'s old SELECT was a flat `ORDER BY id LIMIT batch` over
+ * the WHOLE undrained backlog for this (workspace, harness) — so whichever
+ * table's rows happened to have the smallest ids (a bulk backfill, always,
+ * since it was enqueued in one shot long ago) filled EVERY single batch,
+ * head-of-line-blocking every other table for as long as that backlog took
+ * to clear. There was no notion of a table's FAIR SHARE of a pass, let alone
+ * of some tables mattering more than others.
+ *
+ * This computes, for one pass, a per-table_name CAP: each table in
+ * `priorityTables` gets a generous cap (the whole `batch` — pending priority
+ * rows are normally sparse, so in practice this just means "never capped");
+ * every OTHER known table shares the REMAINING capacity equally. The caller
+ * runs one bounded `ORDER BY id LIMIT <cap>` sub-scan PER table_name (a
+ * LATERAL join — see `drainOutboxOnce`) instead of one flat scan, so a
+ * single table can contribute AT MOST its cap to this pass regardless of how
+ * large its backlog is — the starvation guard — and the final result orders
+ * priority-table candidates first — the priority lane — so they are never
+ * displaced by a non-priority table's numerically-older rows.
+ *
+ * Pure + exported for unit testing without a live database.
+ */
+export function computeOutboxDrainCaps(
+  batch: number,
+  allTables: readonly string[] = CDC_CAPTURED_TABLES,
+  priorityTables: ReadonlySet<string> = OUTBOX_PRIORITY_TABLES,
+): { tableNames: string[]; caps: number[]; nonPriorityCap: number } {
+  const nonPriority = allTables.filter((t) => !priorityTables.has(t));
+  // A table with zero backlog costs an essentially-free empty LATERAL probe,
+  // so it is cheap to always list every known table rather than discover
+  // which ones actually have rows pending.
+  const nonPriorityCap = Math.max(1, Math.ceil(batch / Math.max(1, nonPriority.length)));
+  const tableNames: string[] = [];
+  const caps: number[] = [];
+  for (const t of allTables) {
+    tableNames.push(t);
+    caps.push(priorityTables.has(t) ? batch : nonPriorityCap);
+  }
+  return { tableNames, caps, nonPriorityCap };
+}
 
 /** Unmapped outbox table_names already logged (dedupe the forward-compat skip
  *  warning so an undrained unknown row doesn't spam the log every drain pass). */
