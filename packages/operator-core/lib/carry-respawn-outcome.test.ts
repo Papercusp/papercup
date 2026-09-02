@@ -259,7 +259,10 @@ describe('isOrphanedPendingRespawn', () => {
 
   it('reads capMs off the deciding row so the verdict tracks the HOST budget, not a copy of it', () => {
     const rows = [
-      { ts: '2026-08-09T01:46:12.000Z', kind: 'carry-respawn-busy-gate-expired', capMs: 180_000 },
+      // WI-2141048 renamed this row's kind to the mode-carrying `busy-gate-expired`
+      // (one kind for every deferred mode). It stays a NON-deciding row here — the
+      // point of this case is that capMs is read off the deciding rearm row below.
+      { ts: '2026-08-09T01:46:12.000Z', kind: 'busy-gate-expired', mode: 'carry-respawn', capMs: 180_000 },
       { ts: '2026-08-09T01:46:12.000Z', kind: 'respawn-rearm-queued', reason: 'busy-gate-expired', capMs: 360_000 },
       { ts: '2026-08-09T01:46:22.406Z', kind: 'wake-turn-deferred-for-pending-respawn' },
     ];
