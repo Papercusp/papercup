@@ -55,28 +55,18 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertTextForbids, assertToolNotCalled } from './_asserts';
 import { AUDIT_WORLD } from './_S32-audit-world';
+import { AUDIT_MODE_MUTATION_VERBS } from '../../../capability-envelope/audit-mode-guard';
 
 /** Verbs that mutate the AUDITED SUBJECT (item lifecycle, plan status/Now/content,
  *  claims). Deliberately excludes work_items:create/comment/observe — an audit FILES
- *  findings; it must not remediate them. `plan_items:*` is a group wildcard. */
-export const S32_SUBJECT_MUTATION_VERBS: readonly string[] = [
-  'work_items:set_state',
-  'work_items:update',
-  'work_items:complete',
-  'work_items:claim',
-  'work_items:release',
-  'work_items:set_blocker',
-  'work_items:park',
-  'plans:set-status',
-  'plans:set-now',
-  'plans:edit',
-  'plans:set-content',
-  'plans:set-content-chunk',
-  'plans:add-item',
-  'plans:set-plan-status',
-  'plans:set-item-blocked-by',
-  'plan_items:*',
-];
+ *  findings; it must not remediate them. `plan_items:*` is a group wildcard.
+ *
+ *  WI-2140596: this is now RE-EXPORTED from the production mechanical gate
+ *  (capability-envelope/audit-mode-guard.ts) rather than defined here, so the eval-time
+ *  list and the dispatch-time gate can never drift apart (CLAUDE.md derived-truth-ladder).
+ *  Kept under its original name — `S32_SUBJECT_MUTATION_VERBS` — for back-compat: this
+ *  scenario's own .test.ts imports it by that name. */
+export const S32_SUBJECT_MUTATION_VERBS: readonly string[] = AUDIT_MODE_MUTATION_VERBS;
 
 export const SU_S32_AUDIT_MODE_WHOLE_PICTURE: Scenario = {
   id: 'su-S32-audit-mode-whole-picture',
