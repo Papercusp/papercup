@@ -5,7 +5,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { bulkContent, runBulk } from '../_bulk';
-import { bindSpecEvidence, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
+import { ADHOC_WORK_ITEM_SPEC_SCOPE, bindSpecEvidence, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
 
 const fingerprint = z.string().trim().min(1).max(256);
 const bindingSchema = z
@@ -36,7 +36,14 @@ const bindingSchema = z
 const argsSchema = z
   .object({
     harness: harnessArg,
-    slug: z.string().min(1).describe('Plan owning the referenced spec revisions.'),
+    slug: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Plan owning the referenced spec revisions. Omit for an ad-hoc work-item that belongs to no plan; ' +
+          'its clauses are scoped to the harness-wide ad-hoc spec scope instead.',
+      ),
     binding: bindingSchema.optional().describe('Single-binding shorthand (n=1 of items).'),
     items: z.array(bindingSchema).min(1).max(500).optional(),
   })
@@ -67,20 +74,24 @@ export default defineTool({
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const actorId = resolveAgentIdentity(ctx).ownerId;
     const bindings = args.items ?? [args.binding!];
+    // P-022 / D-018: report the scope the binding ACTUALLY landed in, not the argument the
+    // caller passed. An omitted `slug` resolves to the ad-hoc scope inside the store, and a
+    // result echoing `slug: undefined` would hide which scope now owns the evidence.
+    const reportedSlug = args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE;
     const env = await runBulk(
       bindings,
       async (binding) => {
         const result = await bindSpecEvidence({
           ...binding,
-          planSlug: args.slug,
+          ...(args.slug ? { planSlug: args.slug } : {}),
           harnessSlug,
           actorId,
         });
         return OK.has(result.status)
-          ? { ok: true as const, slug: args.slug, ...result }
-          : { ok: false as const, slug: args.slug, error: result.status, ...result };
+          ? { ok: true as const, slug: reportedSlug, ...result }
+          : { ok: false as const, slug: reportedSlug, error: result.status, ...result };
       },
-      { keyOf: (binding) => ({ slug: args.slug, workItemId: binding.workItemId, evidenceRef: binding.evidenceRef }) },
+      { keyOf: (binding) => ({ slug: reportedSlug, workItemId: binding.workItemId, evidenceRef: binding.evidenceRef }) },
     );
     return bulkContent(env);
   },

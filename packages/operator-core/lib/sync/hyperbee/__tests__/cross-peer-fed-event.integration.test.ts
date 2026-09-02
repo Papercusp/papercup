@@ -64,9 +64,17 @@ vi.mock('@papercusp/flags/server', async () => {
 afterEach(rigAfterEach);
 
 // FAITHFUL to migrations 163 + 175 (once/min_sleep_sec/urgency/coalesced_count) +
-// 387 (source) + 533 (payload_filter, EI-8998) — the same hand-rolled subset
-// store.integration.test.ts stands up (no RLS/grants; a throwaway test DB has no
-// harness_app/harness_zero roles).
+// 387 (source) + 533 (payload_filter, EI-8998) + 572 (root_id — registerAwait's
+// exact-one-shot retire path filters on `root_id IS NULL`, so it's load-bearing
+// even though this suite never composes a tree) + 825 (producer_health —
+// registerAwait's INSERT always lists this column, boundTo or not) — the same
+// hand-rolled subset store.integration.test.ts stands up (no RLS/grants; a
+// throwaway test DB has no harness_app/harness_zero roles). This is a MINIMAL
+// subset, not a schema mirror: harness_shared.event_awaits carries 34 columns
+// in production (dev:pg_query { describe: 'harness_shared.event_awaits' }) —
+// add a column here ONLY when a code path this suite actually exercises reads
+// or writes it (mapAwait's plain `SELECT *` access is null-safe against an
+// absent column; only an explicit INSERT/WHERE reference breaks).
 const EVENT_AWAITS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.event_awaits (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -77,7 +85,7 @@ const EVENT_AWAITS_DDL = `
     expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
     fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
     once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
-    payload_filter jsonb
+    payload_filter jsonb, root_id bigint, producer_health jsonb
   );
   CREATE TABLE IF NOT EXISTS harness_shared.event_wake_deliveries (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

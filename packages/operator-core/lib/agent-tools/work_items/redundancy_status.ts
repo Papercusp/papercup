@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { getItemRedundancy, listReplicas, resolveReplicaHiveSlug, workItemRedundancyEnabled } from '../../work-item-redundancy';
+import { getItemRedundancy, listReplicas, resolveReplicaPotSlug, workItemRedundancyEnabled } from '../../work-item-redundancy';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 
@@ -38,7 +38,7 @@ export default defineTool({
     const ids = mergeIds(args.id, args.ids);
     // Shared harness ⇒ resolve the workspace + replica hive ONCE, not per item.
     const workspaceId = activeWorkspaceId();
-    const potSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
+    const potSlug = await resolveReplicaPotSlug(workspaceId, args.harness);
     const env = await runBulk(
       ids,
       async (id) => {

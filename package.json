@@ -207,6 +207,8 @@
     "lint:shell-syntax": "tsx scripts/check-shell-syntax.mjs",
     "lint:js-syntax": "node scripts/check-js-syntax.mjs",
     "lint:mac-bash-portability": "node scripts/check-mac-bash-portability.mjs",
+    "lint:pipefail-sigpipe": "node scripts/check-pipefail-sigpipe.mjs",
+    "lint:pipefail-sigpipe:census": "node scripts/check-pipefail-sigpipe.mjs --census",
     "lint:assert-integrity": "node scripts/check-assert-integrity.mjs",
     "lint:vacuous-negatives": "node scripts/check-vacuous-negative-assertions.mjs",
     "lint:vacuous-negatives:report": "node scripts/check-vacuous-negative-assertions.mjs --report",

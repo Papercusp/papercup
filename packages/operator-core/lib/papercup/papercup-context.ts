@@ -294,8 +294,8 @@ export function renderSentinelContext(input: SentinelContextInput): string {
  * unchanged; the deeper per-hive anomaly depth rides on the overwatch/queen re-key
  * (P-004/P-003), which the Sentinel inherits for free.
  */
-export function sentinelScopeLabel(workspaceId: string, primaryHiveSlug: string, workspaceCoordOn: boolean): string {
-  return workspaceCoordOn ? `workspace ${workspaceId} (all hives)` : primaryHiveSlug;
+export function sentinelScopeLabel(workspaceId: string, primaryPotSlug: string, workspaceCoordOn: boolean): string {
+  return workspaceCoordOn ? `workspace ${workspaceId} (all hives)` : primaryPotSlug;
 }
 
 /* ────────────────────────────────────────────────────────────────────────────

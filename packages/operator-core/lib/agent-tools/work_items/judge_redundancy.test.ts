@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../work-item-redundancy', () => ({
   judgeRedundancyGroup: vi.fn(),
-  resolveReplicaHiveSlug: vi.fn(async () => 'hive-x'),
+  resolveReplicaPotSlug: vi.fn(async () => 'hive-x'),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 vi.mock('../../llm-testing/llm-client', () => ({ llmCall: vi.fn() }));

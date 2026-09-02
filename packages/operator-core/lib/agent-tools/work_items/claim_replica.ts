@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { claimReplicaSlot, resolveReplicaHiveSlug } from '../../work-item-redundancy';
+import { claimReplicaSlot, resolveReplicaPotSlug } from '../../work-item-redundancy';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 const json = (o: unknown) => ({ data: o });
@@ -42,7 +42,7 @@ export default defineTool({
     const ident = resolveAgentIdentity(ctx);
     const owner = resolveSelfLiteral(args.owner, ident.ownerId) ?? ident.ownerId;
     const workspaceId = activeWorkspaceId();
-    const potSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
+    const potSlug = await resolveReplicaPotSlug(workspaceId, args.harness);
     const res = await claimReplicaSlot({
       workspaceId,
       harnessSlug: args.harness,

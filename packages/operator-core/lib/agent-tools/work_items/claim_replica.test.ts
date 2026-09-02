@@ -20,7 +20,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../work-item-redundancy', () => ({
   claimReplicaSlot: vi.fn(),
-  resolveReplicaHiveSlug: vi.fn(async () => 'hive-x'),
+  resolveReplicaPotSlug: vi.fn(async () => 'hive-x'),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 

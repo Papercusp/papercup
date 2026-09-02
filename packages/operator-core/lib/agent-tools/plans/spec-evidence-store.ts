@@ -2,7 +2,10 @@
 import { createHash } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
 import { pgTimestampToIso } from '../../pg-timestamp';
+import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
 import { resolvePlanScope } from './source';
+
+export { ADHOC_WORK_ITEM_SPEC_SCOPE };
 
 export const SPEC_EVIDENCE_KINDS = [
   'test',
@@ -26,7 +29,17 @@ export interface EvidenceFingerprints {
 
 export interface BindSpecEvidenceInput extends EvidenceFingerprints {
   harnessSlug?: string;
-  planSlug: string;
+  /**
+   * The plan whose spec clause this evidence binds to. OPTIONAL as of P-022: omit it for
+   * an ad-hoc work-item that belongs to no plan, and the binding is scoped to
+   * {@link ADHOC_WORK_ITEM_SPEC_SCOPE} instead.
+   *
+   * D-018 records why this is resolved rather than made nullable: `plan_slug` is a PRIMARY
+   * KEY column in all four tables of the spec chain and carries a composite FK that
+   * terminates at `harness_plans`, so it can never hold NULL. The blocker was never the
+   * column — it was that the API forced a caller with no plan to invent one.
+   */
+  planSlug?: string;
   workItemId: string;
   specId?: string;
   sourceValId?: string;
@@ -112,7 +125,11 @@ interface SpecRevisionRow {
 export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<BindSpecEvidenceResult> {
   const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
   return withWorkspace(scope.workspaceId, async (tx) => {
-    const lockKey = `${scope.workspaceId}:${scope.harnessSlug}:${input.workItemId}:${input.planSlug}:${input.specId ?? input.sourceValId}`;
+    // P-022 / D-018: a caller with no plan gets the harness's shared ad-hoc spec scope
+    // rather than being forced to invent a plan slug. Everything downstream then runs
+    // unchanged, which is the point: no PK, FK, index or freshness invariant moves.
+    const planSlug = await resolveSpecScopeSlug(tx, scope.workspaceId, scope.harnessSlug, input.planSlug);
+    const lockKey = `${scope.workspaceId}:${scope.harnessSlug}:${input.workItemId}:${planSlug}:${input.specId ?? input.sourceValId}`;
     await tx`SELECT pg_advisory_xact_lock(hashtext('spec_evidence_binding'), hashtext(${lockKey}))`;
 
     const workItems = await tx<{ feature_id: string }[]>`
@@ -128,7 +145,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         FROM harness_shared.plan_spec_clauses
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
-         AND plan_slug = ${input.planSlug}
+         AND plan_slug = ${planSlug}
          AND (${input.specId ?? null}::text IS NULL OR spec_id = ${input.specId ?? null})
          AND (${input.sourceValId ?? null}::text IS NULL OR source_val_id = ${input.sourceValId ?? null})`;
     const identity = identities[0];
@@ -146,7 +163,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         FROM harness_shared.plan_spec_clause_revisions
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
-         AND plan_slug = ${input.planSlug}
+         AND plan_slug = ${planSlug}
          AND spec_id = ${identity.spec_id}
          AND revision = ${specRevision}`;
     const revision = revisions[0];
@@ -177,7 +194,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       workspaceId: scope.workspaceId,
       harnessSlug: scope.harnessSlug,
       workItemId: input.workItemId,
-      planSlug: input.planSlug,
+      planSlug: planSlug,
       specId: identity.spec_id,
       specRevision,
       specFingerprint: revision.content_hash,
@@ -199,7 +216,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
         spec_revision, spec_fingerprint, created_by
       ) VALUES (
-        ${scope.workspaceId}, ${scope.harnessSlug}, ${input.workItemId}, ${input.planSlug},
+        ${scope.workspaceId}, ${scope.harnessSlug}, ${input.workItemId}, ${planSlug},
         ${identity.spec_id}, ${specRevision}, ${revision.content_hash}, ${input.actorId}
       ) ON CONFLICT DO NOTHING`;
 
@@ -212,7 +229,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         rubric_fingerprint, environment_fingerprint, coverage_evidence_ref,
         test_run_id, details, observed_at, binding_fingerprint, created_by
       ) VALUES (
-        ${scope.workspaceId}, ${scope.harnessSlug}, ${input.workItemId}, ${input.planSlug},
+        ${scope.workspaceId}, ${scope.harnessSlug}, ${input.workItemId}, ${planSlug},
         ${identity.spec_id}, ${specRevision}, ${revision.content_hash}, ${input.evidenceKind},
         ${canonical.evidenceRef}, ${canonical.sourceFingerprint}, ${canonical.testFingerprint},
         ${canonical.fixtureFingerprint}, ${canonical.rubricFingerprint},
@@ -233,7 +250,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
          AND work_item_id = ${input.workItemId}
-         AND plan_slug = ${input.planSlug}
+         AND plan_slug = ${planSlug}
          AND spec_id = ${identity.spec_id}
          AND spec_revision = ${specRevision}
          AND binding_fingerprint = ${bindingFingerprint}`
@@ -244,7 +261,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       status: inserted[0] ? 'created' : 'unchanged',
       id: Number(existing.id),
       workItemId: input.workItemId,
-      planSlug: input.planSlug,
+      planSlug: planSlug,
       specId: identity.spec_id,
       sourceValId: identity.source_val_id,
       specRevision,

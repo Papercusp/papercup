@@ -246,11 +246,11 @@ export async function listStartedWorkspaceOverwatches(): Promise<
   for (const r of rows) {
     if (seen.has(r.workspaceId)) continue;
     seen.add(r.workspaceId);
-    let registeredHiveSlugs: Set<string>;
+    let registeredPotSlugs: Set<string>;
     try {
       const { loadHarnessRegistry } = await import('../harness-registry');
       const registry = await loadHarnessRegistry(r.workspaceId);
-      registeredHiveSlugs = new Set(
+      registeredPotSlugs = new Set(
         registry.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug),
       );
     } catch {
@@ -264,7 +264,7 @@ export async function listStartedWorkspaceOverwatches(): Promise<
       ...rows
         .filter((candidate) => candidate.workspaceId === r.workspaceId)
         .map((candidate) => candidate.installSlug),
-    ].find((candidate) => candidate && registeredHiveSlugs.has(candidate));
+    ].find((candidate) => candidate && registeredPotSlugs.has(candidate));
     if (seatHome) out.push({ workspaceId: r.workspaceId, installSlug: seatHome });
   }
   return out;

@@ -850,6 +850,19 @@ fixer is dead AND the fixes are absent from the frozen candidate (verify per pat
 `git rev-parse <candidate>:<path>` vs `git rev-parse staging:<path>` — equal blobs mean the fix
 is NOT in it). Having retired one, let the next run re-freeze; do not start re-cutting.
 
+✅ **"Is the freeze ON, and if not WHY" is a READ — do not grep run logs for it.** The structured
+form is `gate_health.freezeAndConverge` (`{ enabled, state, reason, candidate }`); `release:deploy
+status` renders the same record as one prose line. `state` is one of **`off` · `none` · `held` ·
+`retired` · `converging`**, and **`reason` is the load-bearing field** — a state without its reason
+sends you straight back to the logs this read exists to replace.
+
+⚠ **`off` and `none` are NOT synonyms.** `off` = the owner switched the mechanism off, so reds do
+not freeze a candidate at all; `none` = it is ON and simply had no frozen candidate this tick, which
+is a green gate's normal state. Conflating them is precisely how freeze-and-converge sat off
+fleet-wide for a full day — 20 frozen candidates retired, 0 resumed — while looking like an ordinary
+week. A retire CLEARS the queue row, so `repairQueue` reads null exactly when it matters most; read
+the disposition, not the queue's absence.
+
 
 ✅ **It DOES answer *"which sha is the run judging right now"*, AND it now names its own
 provenance — read `source.authoritative` before you act on the sha.** The cell returns

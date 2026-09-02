@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { judgeRedundancyGroup, resolveReplicaHiveSlug } from '../../work-item-redundancy';
+import { judgeRedundancyGroup, resolveReplicaPotSlug } from '../../work-item-redundancy';
 import { activeWorkspaceId } from '../../workspace-registry';
 import type { JudgeLlmCall } from '../../gym/primitives';
 
@@ -61,7 +61,7 @@ export default defineTool({
     }
     try {
       const workspaceId = activeWorkspaceId();
-      const potSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
+      const potSlug = await resolveReplicaPotSlug(workspaceId, args.harness);
       const res = await judgeRedundancyGroup(
         { workspaceId, harness: args.harness, potSlug, workItemId: args.id, intent: args.intent, projectContext: args.projectContext, rubric: args.rubric },
         { llmCall },

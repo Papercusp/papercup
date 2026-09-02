@@ -1119,7 +1119,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   // into-hive create, or the new hive itself for a new-hive create. Per-harness
   // sharing is retired (comb-retire-per-harness-sharing-2026-06-11) — the
   // share offer is hive-publish or nothing.
-  const [createdHiveSlug, setCreatedHiveSlug] = useState<string | null>(null);
+  const [createdPotSlug, setCreatedPotSlug] = useState<string | null>(null);
   // P-012 (hive-from-github-url): the hive-native Create/Join layout + the
   // GitHub search entry go live behind this flag; off = the legacy
   // Local/Shared layout (coming-soon GitHub stub).
@@ -1133,7 +1133,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   const handleClose = () => {
     setMode(hiveScope ? 'into-hive' : 'standalone');
     setCreatedSlug(null);
-    setCreatedHiveSlug(null);
+    setCreatedPotSlug(null);
     // ATOMIC close: clear create AND picker in ONE useQueryStates write so the
     // adapter can't drop ?create=false (the stuck-modal bug). onOpenChange is no
     // longer used to close — AdvShell reads the same ?create and re-renders shut.
@@ -1156,7 +1156,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
     else onCreated?.(slug);
     setCreatedSlug(slug);
     // A root hive publishes itself; a member publishes its parent hive.
-    setCreatedHiveSlug(memberHive ?? slug);
+    setCreatedPotSlug(memberHive ?? slug);
     // into-hive: focus the new member via ?harness, keep ?slug on the hive;
     // new root: focus the new hive via ?slug. Both folded into one write.
     if (createdInto) void setNav({ picker: 'share-offer', harness: slug });
@@ -1171,7 +1171,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   const handleNewHiveSuccess = (slug: string) => {
     onCreated?.(slug);
     setCreatedSlug(slug);
-    setCreatedHiveSlug(slug);
+    setCreatedPotSlug(slug);
     void setNav({ picker: 'share-offer', slug, harness: null });
   };
 
@@ -1235,7 +1235,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
               // keeps ?slug on the hive; a new root focuses it via ?slug.
               onCreated?.(slug, opts);
               setCreatedSlug(null);
-              setCreatedHiveSlug(null);
+              setCreatedPotSlug(null);
               setMode(hiveScope ? 'into-hive' : 'standalone');
               if (opts?.hive) void setNav({ create: false, picker: null, harness: slug });
               else void setNav({ create: false, picker: null, slug, harness: null });
@@ -1250,7 +1250,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
         {showShareOffer && createdSlug && (
           <ShareOfferStep
             slug={createdSlug}
-            potSlug={createdHiveSlug}
+            potSlug={createdPotSlug}
             hiveLabel={hiveLabel}
             onDone={handleClose}
           />

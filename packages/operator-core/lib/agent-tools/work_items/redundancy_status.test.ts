@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../work-item-redundancy', () => ({
   getItemRedundancy: vi.fn(),
   listReplicas: vi.fn(),
-  resolveReplicaHiveSlug: vi.fn(async () => 'hive-x'),
+  resolveReplicaPotSlug: vi.fn(async () => 'hive-x'),
   workItemRedundancyEnabled: vi.fn(() => false),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
