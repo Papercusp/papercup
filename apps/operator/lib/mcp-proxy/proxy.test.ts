@@ -492,6 +492,38 @@ describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
     for (const t of READ_ONLY_TOOLS)
       expect(t).toMatch(/^[a-z0-9_-]+:[a-z0-9_-]+$/);
   });
+
+  // EI-21677017866028949 — EVERY entry must survive the normalized lookup. The classifier
+  // normalizes the incoming name (normalizeMcpName folds `[:_.-]+` to ':'), so an entry
+  // whose curated form carries an underscore used to normalize to a key absent from the
+  // set and could never match: work_items:get did not match itself, and 9 of 38 entries
+  // were silently unreachable, classifying 'keyed' and never replaying on a post-connect
+  // reset. It survived because the guard above validates the STORED form (its regex even
+  // allows `_`) while every classification test names an underscore-free verb.
+  //
+  // This iterates the WHOLE set in both forms a client actually sends, so a new entry that
+  // is unreachable — or a change to normalizeMcpName that strands existing ones — fails here.
+  it.each([...READ_ONLY_TOOLS])(
+    "%s classifies readonly in both canonical and mcp__-mangled form",
+    (verb) => {
+      for (const name of [verb, `mcp__papercusp-su__${verb.replace(/:/g, "_")}`]) {
+        const body = Buffer.from(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name, arguments: {} },
+          }),
+        );
+        expect(
+          prepareForward("POST", {}, body, {
+            keyingEnabled: true,
+            genKey: () => "00000000-0000-4000-8000-000000000000",
+          }).klass,
+        ).toBe("readonly");
+      }
+    },
+  );
 });
 
 // P-010: absorb an admission-control 429 (loop critically saturated → shed) by retrying.
