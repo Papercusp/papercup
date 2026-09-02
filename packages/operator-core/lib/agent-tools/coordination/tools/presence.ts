@@ -41,6 +41,51 @@ export default defineTool({
     notWhen:
       'Not for file ownership (locks:queue), historical ended-agent dumps, or every-turn polling when coord deltas suffice. Presence reports liveness, not file activity; use locks:queue plus git status/file mtimes to see who edits files.',
     chaining: 'Read once and follow coord deltas; if repolling, pass since:<etag> for a tiny unchanged stub.',
+    // EI-21482956761170053 / EI-21474470155153658: the description above already names these
+    // keys as invalid, but a description is not on the failure the agent is holding — the same
+    // lesson code:run's clamp disclosure records (agent-tools/code/run.ts). Both filings passed
+    // `harness` (one with `include_stale` + `limit`, one with `ownerIds`) and got back only the
+    // generic key list plus a string-distance guess of `scope` — which is WORSE than silence
+    // here: `scope` is an enum of hive|workspace|all, so a caller who follows it sends
+    // `scope:'papercusp'` and fails a SECOND time on the enum. An authored redirect outranks
+    // and suppresses that guess (invalidInputCorrections), so each key now answers with the
+    // remedy the description states in prose. Zero prompt weight — argRedirects is excluded
+    // from the projected tool text and is paid only on the failure path.
+    // ⚠ Measured 2026-09-02: this tool projects 1466 chars against a 1500 budget — 34 chars
+    // of headroom, after the same-day compression that already trimmed the description once.
+    // Adding a sentence up there will breach the gate; add it HERE instead, where it costs
+    // nothing and reaches the caller at the moment they actually get it wrong.
+    argRedirects: {
+      harness: {
+        tool: 'coord:presence',
+        args: { pot: '<hive-slug>' },
+        note: 'coord:presence scopes by HIVE, not harness — a harness slug is not a scope selector. `pot` takes the explicit hive slug (implies scope=hive); omit it entirely to use your own hive, which is already the default. Do NOT reach for `scope`: it is an enum of hive|workspace|all, not a slug',
+      },
+      // Exact synonyms of a declared key: the terse string form renders "pass it as `X` instead".
+      hive: 'pot',
+      agent: 'owner',
+      includeStale: 'owner',
+      include_stale: {
+        tool: 'coord:presence',
+        args: { owner: '<agent-id>' },
+        note: 'the full stale-roster dump was REMOVED, not renamed — `owner` (or `owners:[...]` for a bounded set) is its replacement and returns the row even when that agent is `ended`. Use it to inspect or wake ONE known-dead agent; there is no supported way to expand the whole stale roster',
+      },
+      limit: {
+        tool: 'coord:roster',
+        args: { view: 'live', project: 'ids' },
+        note: 'coord:presence is a scope-bounded VIEW, not a paged query surface — narrow it with owner/owners/pot rather than a row cap. A broad census belongs in coord:roster, which projects ids cheaply',
+      },
+      plan: {
+        tool: 'coord:roster',
+        args: { view: 'claims', plan: '<plan-slug>' },
+        note: 'presence reports liveness, not claims — plan-scoped claim ownership is coord:roster { view:\'claims\', plan } or fleet:assignments { plan }',
+      },
+      fleet: {
+        tool: 'fleet:assignments',
+        args: { fleet: '<fleet-slug>' },
+        note: 'fleet membership + per-member lanes live in fleet:assignments; coord:presence has no fleet selector',
+      },
+    },
     // EI-13298: the roster array lives at the TOP-LEVEL key `active` — an agent guessing
     // `p?.agents || p?.presence || (Array.isArray(p) ? p : [])` in a code:run script misses
     // it entirely and silently gets `[]` (a live incident: 35 active agents read back as

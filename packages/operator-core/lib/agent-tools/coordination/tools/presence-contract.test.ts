@@ -22,11 +22,35 @@
 import { describe, expect, it } from 'vitest';
 import tool from './presence';
 
+/**
+ * The surface a CALLER actually reads: the description, the guidance, AND the per-arg
+ * descriptions.
+ *
+ * 2026-09-02 (5ef04d2b48): the description was COMPRESSED for the prompt-weight gate and
+ * several facts this file pins moved onto the args where they belong — `owner` is singular
+ * became "`owner`/`ownerId` targets one agent", and the alias sentences moved onto `ownerId`
+ * and `ownerIds` themselves. Nothing was lost to the caller (an arg description is projected
+ * in the schema and printed in the rejection), but this guard concatenated only description +
+ * guidance, so it reported the move as a removal. That is a guard measuring the wrong surface,
+ * not a regression — widening it here keeps the assertions strict while letting a fact be
+ * documented wherever it is most useful, which is what the weight gate will keep forcing.
+ */
+function callerVisibleSurface(): string {
+  const shape = (tool as { args: { shape: Record<string, { description?: string }> } }).args.shape;
+  const argText = Object.entries(shape)
+    .map(([key, field]) => `${key}: ${field?.description ?? ''}`)
+    .join('\n');
+  return `${tool.description}\n${JSON.stringify(tool.guidance ?? {})}\n${argText}`;
+}
+
 describe('coord:presence argument discoverability (EI-20231966513487176)', () => {
   it('documents the singular owner lookup and the bounded multi-owner lens', () => {
-    const guidance = `${tool.description}\n${JSON.stringify(tool.guidance ?? {})}`;
+    const guidance = callerVisibleSurface();
 
-    expect(guidance).toMatch(/`owner` is singular/i);
+    // Both halves of the singular-vs-bounded contract, asserted separately so a wording
+    // change cannot satisfy one while silently dropping the other.
+    expect(guidance).toMatch(/`owner`(?:\/`ownerId`)? targets one agent/i);
+    expect(guidance).toMatch(/`owners`(?:\/`ownerIds`)? a bounded set/i);
     expect(guidance).toMatch(/coord:roster \{ view:'live', project:'ids' \}/i);
     expect(guidance).toMatch(/plan-scoped.*coord:roster \{ view:'claims', plan \}.*fleet:assignments \{ plan \}/i);
     expect(guidance).toMatch(/scope\/pot/i);
@@ -36,7 +60,7 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
     // ownerIds is an alias now, so a bare mention proves nothing — require the
     // guidance to actually introduce it as the alias of the bounded selector.
     expect(guidance, 'guidance must document ownerIds as the alias for owners').toMatch(
-      /ownerIds is its compatibility alias/i,
+      /ownerIds[^\n]*compatibility alias for `owners`/i,
     );
     for (const removed of ['harness', 'plan', 'includeStale', 'include_stale']) {
       expect(guidance, `guidance must name removed ${removed}`).toContain(removed);
@@ -59,11 +83,17 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
   });
 
   it('discloses the hive-scoped workspace clamp and targeted-owner alternative', () => {
-    const guidance = `${tool.description}\n${JSON.stringify(tool.guidance ?? {})}`;
+    const guidance = callerVisibleSurface();
 
     expect(guidance).toContain("scope:'workspace'");
     expect(guidance).toMatch(/hive-scoped SU session.*hive_forbidden/i);
-    expect(guidance).toMatch(/targeted.*owner.*workspace peer/i);
-    expect(guidance).toMatch(/unscoped\/admin session.*workspace-wide/i);
+    // Split from one cross-sentence regex into the two facts it was really asserting: the
+    // description states the redirect, and `scope`'s own arg description names the target.
+    // A single `.*` chain could not survive them landing on different lines.
+    expect(guidance).toMatch(/use targeted owner/i);
+    expect(guidance).toMatch(/use owner for one workspace peer/i);
+    // Order-independent: the compression flipped this clause to "workspace-wide browsing
+    // needs an unscoped/admin session", which an ordered `.*` chain reported as missing.
+    expect(guidance).toMatch(/workspace-wide browsing needs an unscoped\/admin session/i);
   });
 });

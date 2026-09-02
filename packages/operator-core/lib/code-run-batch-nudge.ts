@@ -505,7 +505,23 @@ function sameToolSkeleton(toolName: string, recent: RecentCall[], timeoutSec?: n
 }
 
 /** The fan-out skeleton: a Promise.all over the EXACT distinct tools just seen, each prefilled with
- *  its last call's args (P-003) — acting on it is a paste, not authoring from scratch. */
+ *  its last call's args (P-003) — acting on it is a paste, not authoring from scratch.
+ *
+ *  EI-21712103510622160 (independently corroborated by EI-21546546359149278): each branch is
+ *  wrapped so ONE bad call cannot discard the others. A bare `Promise.all` is fail-FAST, and this
+ *  skeleton is emitted for exactly the case where that is wrong — INDEPENDENT reads. The measured
+ *  filing: one branch omitted a required arg, the server returned a typed `invalid_input`, the
+ *  rejection propagated out of `Promise.all`, and every sibling read that had already SUCCEEDED
+ *  was discarded with it — the script never reached its `return`, and only the script's return
+ *  re-enters context. The agent then re-ran the whole batch to recover reads it had already paid
+ *  for. Independence is the argument FOR isolating branch failures, not against it.
+ *
+ *  Isolated per-branch rather than by switching to `Promise.allSettled`, deliberately: allSettled
+ *  would wrap every bind in a `{ status, value }` envelope the caller must then unwrap, changing
+ *  the destructuring shape of a skeleton whose whole value is that it is paste-ready. This keeps
+ *  `const [r0, r1] = await Promise.all([...])` intact — each bind is either the result or
+ *  `{ error }`. Nothing is hidden: a real child failure is still recorded as a `childFailure` on
+ *  the run envelope, so the typed rejection remains visible where triage reads it. */
 function fanoutSkeleton(distinctTools: string[], recent: RecentCall[], timeoutSec?: number): string {
   const lastRender = new Map<string, string>();
   for (const c of recent) {
@@ -513,7 +529,9 @@ function fanoutSkeleton(distinctTools: string[], recent: RecentCall[], timeoutSe
   }
   const shown = distinctTools.slice(0, MAX_SKELETON_TOOLS);
   const binds = shown.map((_t, i) => `r${i}`).join(', ');
-  const lines = shown.map((t) => `    ${facadeCall(t, lastRender.get(t) ?? '/* args */')},`).join('\n');
+  const lines = shown
+    .map((t) => `    ${facadeCall(t, lastRender.get(t) ?? '/* args */')}.catch((e) => ({ error: String(e) })),`)
+    .join('\n');
   const elided = distinctTools.length > shown.length ? `    /* …and ${distinctTools.length - shown.length} more */\n` : '';
   return codeRunCall(
     `  const [${binds}] = await Promise.all([\n` + lines + '\n' + elided + '  ]);\n' + `  return { ${binds} };\n`,

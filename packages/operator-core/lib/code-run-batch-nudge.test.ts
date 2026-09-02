@@ -118,6 +118,36 @@ describe('maybeBatchNudge — fan-out trigger (the ~70% the old nudge missed)', 
     expect(firstFire?.kind).toBe('fanout');
   });
 
+  it('isolates each fan-out branch so one bad call cannot discard the siblings', () => {
+    // EI-21712103510622160 (+ EI-21546546359149278): a bare Promise.all is fail-FAST, and this
+    // skeleton is emitted for INDEPENDENT reads — the case where that is wrong. One branch
+    // omitted a required arg, the typed invalid_input propagated out of Promise.all, and every
+    // sibling read that had ALREADY SUCCEEDED was discarded, because the script never reached
+    // its return and only the return re-enters context.
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (const toolName of fanTools) {
+      t += 1000;
+      const r = maybeBatchNudge({ sessionKey: 'fz-isolate', toolName, canCodeRun: true, now: t });
+      if (r && !firstFire) firstFire = r;
+    }
+    const script = firstFire?.suggestedScript ?? '';
+    expect(script).toContain('Promise.all');
+
+    // EVERY branch is isolated, not just the first — a per-branch guard that covers only some
+    // of them still loses the siblings of whichever call actually fails.
+    const branches = script.split('\n').filter((line) => line.includes('tools.'));
+    expect(branches.length).toBeGreaterThan(1);
+    for (const branch of branches) {
+      expect(branch, `unisolated fan-out branch: ${branch}`).toContain('.catch(');
+    }
+
+    // The paste-ready destructuring shape is preserved: isolation must not force the caller to
+    // unwrap an allSettled { status, value } envelope at every bind.
+    expect(script).toMatch(/const \[r0, r1/);
+    expect(script).not.toContain('allSettled');
+  });
+
   it('embeds a Promise.all skeleton over the EXACT distinct tools seen, in first-seen order', () => {
     let firstFire: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
