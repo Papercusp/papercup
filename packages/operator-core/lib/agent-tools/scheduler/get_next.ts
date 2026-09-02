@@ -910,9 +910,18 @@ export function assembleSchedulerClaimResult(legs: {
 // `structuredContent` even when the model-facing text is capped.
 const schedulerResultSchema = z.object({ ok: z.boolean() }).passthrough();
 
+/** The claim-spec identity (specId@revision) a disposition can be attributed to — present
+ *  whenever the caller's spec was actually resolved (fleet-scoped claim, or a fleet-scoped
+ *  miss diagnosed against a specific spec). Omitted rather than null when unresolved, so a
+ *  reader distinguishes "no spec identity" from "spec identity, but we don't know it". */
+export interface SchedulerDispositionSpecHead {
+  specId: string;
+  revision: number | null;
+}
+
 export type SchedulerDispositionMetadata =
-  | { kind: 'claimed'; workItemId: string }
-  | { kind: 'no-claim'; reason: string };
+  | ({ kind: 'claimed'; workItemId: string } & Partial<SchedulerDispositionSpecHead>)
+  | ({ kind: 'no-claim'; reason: string } & Partial<SchedulerDispositionSpecHead>);
 
 function compactSchedulerNoClaimReason(payload: Record<string, unknown>): string {
   const diagnosis = payload.diagnosis && typeof payload.diagnosis === 'object'
@@ -923,18 +932,37 @@ function compactSchedulerNoClaimReason(payload: Record<string, unknown>): string
   return (candidate?.trim() || 'no_claimable_work_item').slice(0, 500);
 }
 
+/**
+ * EI-7014: pull the `specId@revision` a disposition is attributable to, out of whichever
+ * source actually has it — a successful claim's own `claimedUnder` (the resolver's exact
+ * provenance, {@link import('../../scheduler/get-next').GetNextResult}), or a fleet-scoped
+ * miss's resolved `ClaimSpecRecord`. Neither is a NEW read: both are already computed on the
+ * hot path before this function runs, so recording them costs nothing extra per call — the
+ * whole reason `scheduler:pull_ledger` can be a cheap read over `tool_invocations` instead of
+ * a live re-resolution per row.
+ */
+function specHeadFrom(source: {
+  specId?: string | null;
+  revision?: number | null;
+} | null | undefined): SchedulerDispositionSpecHead | undefined {
+  const specId = source?.specId?.trim();
+  return specId ? { specId, revision: source?.revision ?? null } : undefined;
+}
+
 /** One durable outcome vocabulary for the invocation ledger's final branch. */
 export function schedulerDispositionMetadata(
   workItem: unknown,
   payload: Record<string, unknown>,
+  specHead?: { specId?: string | null; revision?: number | null } | null,
 ): SchedulerDispositionMetadata {
   const workItemRecord = workItem && typeof workItem === 'object'
     ? workItem as { id?: unknown }
     : null;
   const workItemId = typeof workItemRecord?.id === 'string' ? workItemRecord.id.trim() : '';
+  const head = specHeadFrom(specHead);
   return workItemId
-    ? { kind: 'claimed', workItemId }
-    : { kind: 'no-claim', reason: compactSchedulerNoClaimReason(payload) };
+    ? { kind: 'claimed', workItemId, ...head }
+    : { kind: 'no-claim', reason: compactSchedulerNoClaimReason(payload), ...head };
 }
 
 export default defineTool({
@@ -2098,8 +2126,16 @@ export default defineTool({
     // later launch verifier needs — claimed vs diagnosed no-claim — onto the
     // invocation's existing metadata writer. This is intentionally the only
     // ctx.metadata call on the final path: metadata is last-write-wins.
+    // EI-7014: attribute the disposition to the spec that produced it — a claim's own
+    // provenance (`res.claimedUnder`, the resolver's exact record) when one landed, else the
+    // fleet-scoped miss's resolved spec record. Both are already-computed values on this hot
+    // path (see specHeadFrom's doc comment) — no extra read.
+    const dispositionSpecHead = res?.claimedUnder
+      ?? (reconciliation.scope
+        ? { specId: reconciliation.scope.record.spec?.specId, revision: reconciliation.scope.record.revision }
+        : null);
     ctx.metadata?.({
-      schedulerDisposition: schedulerDispositionMetadata(res?.workItem, payload),
+      schedulerDisposition: schedulerDispositionMetadata(res?.workItem, payload, dispositionSpecHead),
     });
     // The claim committed before this response was rendered. Keep the existing
     // bounded text projection for ordinary model callers, but give programmatic
