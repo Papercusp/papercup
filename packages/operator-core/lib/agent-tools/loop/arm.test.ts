@@ -996,7 +996,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     // A tools:invoke re-dispatch can rebuild the target ctx with harnessSlug='*'.
     // When this is a re-arm of an existing routine, its install_slug is the
     // authoritative scope and must beat the missing workspace-home fallback.
-    priorLoopM.mockResolvedValueOnce({ ...priorLoop(), harnessSlug: 'papercusp' } as never);
+    mockPriorLoopOnce({ harnessSlug: 'papercusp' });
     briefM.mockResolvedValueOnce(null);
     homePotM.mockResolvedValueOnce(null);
     potHomeM.mockReturnValueOnce('papercusp').mockReturnValue(null as never);
@@ -1017,7 +1017,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     // from the loop it is retuning. Omitting args.harness is not an authorization to
     // migrate the durable routine (and strand its cold carry-note) into that transient
     // context; only an explicit harness request may change the installed scope.
-    priorLoopM.mockResolvedValueOnce({ ...priorLoop(), harnessSlug: 'sb-devboard-hive' } as never);
+    mockPriorLoopOnce({ harnessSlug: 'sb-devboard-hive' });
     potHomeM.mockImplementation((explicit, ctxSlug) => explicit ?? ctxSlug ?? 'home-hive');
 
     const out = (await tool.handler(
@@ -1036,11 +1036,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     // tools:invoke preserves the outer MCP request origin. That dispatch scope is
     // authoritative for a fresh arm, but it is not an explicit request to migrate
     // an already-active owner loop when the INNER loop:arm args omit `harness`.
-    priorLoopM.mockResolvedValueOnce({
-      ...priorLoop(),
-      harnessSlug: 'papercusp',
-      goal: 'continue the papercusp loop',
-    } as never);
+    mockPriorLoopOnce({ harnessSlug: 'papercusp', goal: 'continue the papercusp loop' });
     potHomeM.mockImplementation((explicit, ctxSlug) => explicit ?? ctxSlug ?? 'home-hive');
 
     const out = (await tool.handler(
@@ -1060,7 +1056,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   });
 
   it('EI-21481296218316052: an explicit harness still overrides the active routine scope', async () => {
-    priorLoopM.mockResolvedValueOnce({ ...priorLoop(), harnessSlug: 'sb-devboard-hive' } as never);
+    mockPriorLoopOnce({ harnessSlug: 'sb-devboard-hive' });
 
     const b = body(await call({ harness: 'papercusp', goal: 'explicitly migrate the loop' }));
 
@@ -1069,7 +1065,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   });
 
   it('EI-21542193720279374 part (a): the resolved harness is now WIRED into computeLoopOverwriteNote — an explicit harness move, goal preserved, surfaces priorLoopOverwrite.harnessChanged through the handler', async () => {
-    priorLoopM.mockResolvedValueOnce({ ...priorLoop(), harnessSlug: 'sb-devboard-hive' } as never);
+    mockPriorLoopOnce({ harnessSlug: 'sb-devboard-hive' });
 
     // This goal is verbatim-contained in priorLoop()'s default kickoff, so — unlike the
     // test above — nothing but the harness move can trigger the note here.
@@ -1321,6 +1317,13 @@ const priorLoop = (over: Partial<Parameters<typeof computeLoopOverwriteNote>[0] 
   armedAt: '2026-07-20T00:00:00.000Z',
   ...over,
 });
+
+// One typed seam for the readActiveLoopFacts mock, via the shared typed-mock helper — the
+// fixture is checked against the real signature instead of each call site spelling an
+// unchecked `as never`, so a new required field on that signature fails here at compile
+// time rather than silently going stale and erroring at runtime somewhere else.
+const mockPriorLoopOnce = (over: Parameters<typeof priorLoop>[0] = {}) =>
+  mockResolvedOnceTyped(priorLoopM, priorLoop(over));
 
 describe('computeLoopOverwriteNote (pure EI-18221784742583615 decision)', () => {
   const next = { goal: 'drain the generic bug backlog', intervalSec: 120, kickoff: 'new-generic-kickoff' };
