@@ -44,6 +44,8 @@ const MAXIMAL_ROW: RosterRow = {
   potSlug: 'papercup-hive',
   fleetSlug: 'ui-fleet',
   fleetRole: 'leader',
+  fleetControlState: 'active',
+  canAcquireWork: true,
   model: 'opus',
   userId: 'u1',
   federated: false,
