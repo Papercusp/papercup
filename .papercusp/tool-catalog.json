@@ -7026,7 +7026,7 @@
           "POST"
         ]
       },
-      "description": "What is BLOCKED ON THE OWNER right now — every agent parked on a decision, credential, or approval only a human can give. Unions the two surfaces where agents are already required to register owner-gated blockers: loop carry-note walls (loop:checkpoint { walls }) and work-items in needs-human. Each row carries the ask VERBATIM, how long it has been waiting, the re-check command, and — critically — whether the blocked agent is still ALIVE (waiting) or its session has died (stranded: answering will not resume it; it must be respawned). Ordered oldest-wait first.",
+      "description": "What is BLOCKED ON THE OWNER right now — every agent parked on a decision, credential, or approval only a human can give. Unions the two surfaces where agents are already required to register owner-gated blockers: loop carry-note walls (loop:checkpoint { walls }) and work-items in needs-human. Each row carries the ask VERBATIM, how long it has been waiting, the re-check command, and — critically — whether the blocked agent is still ALIVE (waiting) or its session has died (stranded: answering will not resume it; it must be respawned). Live asks rank first, then oldest-wait.",
       "capabilities": [
         "coord:read"
       ],

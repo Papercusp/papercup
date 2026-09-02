@@ -357,76 +357,170 @@ export async function runRefAnnounceReceiveTick(
 
 // ── Receive fed-event cursor decision ─────────────────────────────────────
 
+/**
+ * One announcement this install could not mirror yet, carried OUTSIDE the
+ * fed-event cursor (in the routine's `ref_announce.parked` metadata) so it is
+ * re-driven next tick WITHOUT pinning the cursor for every other announcer.
+ * Only the NEWEST un-mirrored announcement per device is kept: a device's
+ * later announcement supersedes its earlier one (the fetch it triggers brings
+ * everything the earlier one named), so an older parked version is dropped the
+ * moment a newer fresh row for the same device is read.
+ */
+export interface ParkedRefAnnouncement {
+  /** The coord_event_log row the announcement was read from (diagnostics). */
+  rowId: number;
+  announcement: SignedRefAnnouncement;
+  /** When this DEVICE first entered the parked set (survives version bumps). */
+  parkedSinceMs: number;
+  /** Consecutive ticks the device's newest announcement failed to mirror. */
+  attempts: number;
+}
+
+/** Keyed by announcing device pubkey (base64). */
+export type ParkedRefAnnouncements = Record<string, ParkedRefAnnouncement>;
+
+/** One row of a receive batch: a fresh fed-event row, or a parked announcement
+ *  re-driven from the previous tick (`parked: true`). */
+export interface RefAnnounceReceiveBatchRow {
+  rowId: number;
+  announcement: SignedRefAnnouncement;
+  parked?: boolean;
+}
+
 export interface RefAnnounceReceiveCursorDecision {
-  /** The fed-event cursor the caller MUST persist. Held BELOW the oldest
-   *  `fetch-failed` row (so the next tick re-reads AND re-dials it) whenever
-   *  any announcement's fetch failed; otherwise the full `fallbackCursor`
-   *  (advance past everything). */
+  /** The fed-event cursor the caller MUST persist — always the full
+   *  `fallbackCursor` (advance past everything read). Un-mirrored announcements
+   *  are carried in `parked`, never by holding this back. */
   cursor: number;
-  /** true when the cursor was held back for retry (≥1 fetch-failed). */
-  held: boolean;
   /** Ordered fetch-failed rows for the caller to LOG loudly — a transient
    *  transport failure that left the announced namespace UN-mirrored. */
   fetchFailed: { rowId: number; device: string; stderr: string; timedOut: boolean; code: number }[];
+  /** The parked set the caller MUST persist for the next tick. */
+  parked: ParkedRefAnnouncements;
+  /** Devices whose parked announcement SETTLED this tick (mirrored, stale, or
+   *  rejected) — so the operator line that opened the story can be closed. */
+  unparked: { device: string; rowId: number; version: number; attempts: number; parkedSinceMs: number; action: string }[];
 }
 
 /**
- * EI-15335 — decide the fed-event cursor after a receive tick.
+ * Build the receive batch: previously-parked announcements FIRST (oldest row
+ * first), then the fresh fed-event rows in id order. A parked entry whose
+ * device has a fresh row at the same or a higher version is superseded and
+ * dropped here — the fresh row will be driven instead. Pure.
+ */
+export function mergeParkedIntoReceiveBatch(
+  parked: Readonly<ParkedRefAnnouncements>,
+  fresh: readonly RefAnnounceReceiveBatchRow[],
+): RefAnnounceReceiveBatchRow[] {
+  const newestFreshVersion = new Map<string, number>();
+  for (const row of fresh) {
+    const d = row.announcement.device_pubkey;
+    newestFreshVersion.set(d, Math.max(newestFreshVersion.get(d) ?? -1, row.announcement.version));
+  }
+  const parkedRows: RefAnnounceReceiveBatchRow[] = [];
+  for (const p of Object.values(parked)) {
+    if (!p?.announcement) continue;
+    const superseding = newestFreshVersion.get(p.announcement.device_pubkey);
+    if (superseding !== undefined && superseding >= p.announcement.version) continue;
+    parkedRows.push({ rowId: p.rowId, announcement: p.announcement, parked: true });
+  }
+  parkedRows.sort((a, b) => a.rowId - b.rowId);
+  return [...parkedRows, ...fresh.map((r) => ({ rowId: r.rowId, announcement: r.announcement }))];
+}
+
+/**
+ * EI-15335 / P-203 Leg A — decide the fed-event cursor and the parked set after
+ * a receive tick.
  *
- * `results` are positionally aligned to the fed-event rows they were built
- * from (one result per pending announcement, in order — the receive tick
- * guarantees this even on a seam-bug throw), and `rowIds[i]` is the
- * `coord_event_log` id that produced `results[i]`.
+ * `results` are positionally aligned to `rows` (one result per driven
+ * announcement, in order — the receive tick guarantees this even on a seam-bug
+ * throw).
  *
- * A `fetch-failed` result means the announced namespace was NEVER mirrored (a
- * transient transport failure — e.g. no live swarm dial yet). Advancing the
- * cursor past it drops the announce forever, leaving a silent, permanent
- * namespace-mirror gap until the remote happens to announce again. So we HOLD
- * the cursor just below the OLDEST fetch-failed row: the next tick re-reads it
- * (and every later row) and re-dials. Re-reading later rows is cheap — an
- * already-mirrored success re-rejects as `stale-version` (before the budget is
- * charged), so only the genuinely-failed fetch actually re-dials.
+ * A `fetch-failed` result means the announced namespace was NEVER mirrored.
+ * Advancing the cursor past it and forgetting it would drop the announce
+ * forever — a silent, permanent namespace-mirror gap until the remote happens
+ * to announce again (the EI-15335 bug). The ORIGINAL repair held the cursor
+ * below the oldest failed row so the next tick re-read and re-dialed it. That
+ * hold is head-of-line blocking by construction: ONE announcer nobody can reach
+ * (live-caught 2026-09-02 on the two-machine rig — a pot member's device that
+ * never joins this pot's swarm topic, so every dial is "no live dial path"
+ * forever) pins the cursor for the whole pot, and once the bounded read window
+ * fills with rows behind that pin, every OTHER member's announcements are never
+ * read at all. The mirror is then stale for a peer that is perfectly reachable.
  *
- * Pure + never-throws — a missing/short `results[i]` (defensive) is skipped.
+ * So the cursor now ALWAYS advances, and an un-mirrored announcement is PARKED
+ * instead: carried by value (newest per device) and re-driven at the head of
+ * the next tick's batch. It stays parked until it mirrors, is superseded by a
+ * newer fresh announcement from the same device, or settles as `stale-version`
+ * / `rejected` — the announcement is never silently lost, and no announcer can
+ * starve another. `already-in-flight` (WI-6418) parks the same way: the
+ * announcement is genuinely not mirrored yet, but nothing went wrong, so it is
+ * NOT added to `fetchFailed` (never logged as a transport error).
+ *
+ * Pure + never-throws — a missing/short `results[i]` (defensive) is skipped,
+ * and such a row is re-parked so a seam bug cannot drop it either.
  */
 export function decideRefAnnounceReceiveCursor(
   results: readonly (RefAnnounceReceiveResult | undefined)[],
-  rowIds: readonly number[],
+  rows: readonly RefAnnounceReceiveBatchRow[],
   fallbackCursor: number,
+  priorParked: Readonly<ParkedRefAnnouncements> = {},
+  nowMs: number = Date.now(),
 ): RefAnnounceReceiveCursorDecision {
   const fetchFailed: RefAnnounceReceiveCursorDecision['fetchFailed'] = [];
-  let oldestFailedRowId: number | null = null;
-  for (let i = 0; i < rowIds.length; i++) {
+  // The LAST driven row per device decides that device's disposition: rows are
+  // in ascending order (parked first, then fresh by id), so the last one is the
+  // newest — and an older failure below a newer success is moot (the success
+  // brought the older refs too).
+  const lastByDevice = new Map<string, { row: RefAnnounceReceiveBatchRow; action: string | null }>();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row) continue;
     const res = results[i];
-    const rowId = rowIds[i];
-    if (!res || rowId === undefined) continue;
-    // WI-6418: an `already-in-flight` drive HOLDS the cursor exactly like a
-    // failure — the announcement genuinely has not been mirrored yet, and
-    // advancing past it would re-create the silent permanent namespace gap this
-    // function exists to prevent. But it is NOT added to `fetchFailed`: nothing
-    // went wrong, so it must not be logged as a transport error. That
-    // distinction is the whole fix — the re-read next tick is now cheap and
-    // side-effect-free (the coalescer refuses it without opening a session),
-    // instead of opening a rival session that destroyed the transfer already
-    // in progress.
-    if (res.result.action === 'already-in-flight') {
-      if (oldestFailedRowId === null || rowId < oldestFailedRowId) oldestFailedRowId = rowId;
-      continue;
-    }
-    if (res.result.action === 'fetch-failed') {
+    const device = row.announcement.device_pubkey;
+    const action = res?.result.action ?? null;
+    lastByDevice.set(device, { row, action });
+    if (res?.result.action === 'fetch-failed') {
       // WI-6277: carry the discriminators, not just stderr — a SIGKILLed git
       // (the ceiling path) writes no stderr, so stderr alone renders the one
       // positively-identifiable failure as an empty string.
       fetchFailed.push({
-        rowId,
+        rowId: row.rowId,
         device: res.device,
         stderr: res.result.stderr,
         timedOut: res.result.timedOut,
         code: res.result.code,
       });
-      if (oldestFailedRowId === null || rowId < oldestFailedRowId) oldestFailedRowId = rowId;
     }
   }
-  if (oldestFailedRowId === null) return { cursor: fallbackCursor, held: false, fetchFailed };
-  return { cursor: Math.min(fallbackCursor, oldestFailedRowId - 1), held: true, fetchFailed };
+  const parked: ParkedRefAnnouncements = {};
+  const unparked: RefAnnounceReceiveCursorDecision['unparked'] = [];
+  for (const [device, { row, action }] of lastByDevice) {
+    const prior = priorParked[device];
+    // `null` = no result for this row (a misaligned/short results array): the
+    // announcement was not driven, so it is not mirrored — keep it.
+    const unsettled = action === null || action === 'fetch-failed' || action === 'already-in-flight';
+    if (unsettled) {
+      parked[device] = {
+        rowId: row.rowId,
+        announcement: row.announcement,
+        parkedSinceMs: prior?.parkedSinceMs ?? nowMs,
+        attempts: (prior?.attempts ?? 0) + 1,
+      };
+    } else if (prior) {
+      unparked.push({
+        device,
+        rowId: row.rowId,
+        version: row.announcement.version,
+        attempts: prior.attempts,
+        parkedSinceMs: prior.parkedSinceMs,
+        action,
+      });
+    }
+  }
+  // A parked device that was superseded out of this batch (dropped by
+  // `mergeParkedIntoReceiveBatch`) always has its newer row IN the batch, so it
+  // is covered above; a device absent from the batch entirely cannot have been
+  // parked (parked rows are always driven). Nothing else to carry.
+  return { cursor: fallbackCursor, fetchFailed, parked, unparked };
 }

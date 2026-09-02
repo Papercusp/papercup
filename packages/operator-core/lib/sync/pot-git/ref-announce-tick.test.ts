@@ -1,24 +1,36 @@
 /**
- * ref-announce-tick.test.ts — EI-15335 regression: the receive-tick fed-event
- * cursor MUST hold below a failed device-fetch so the next tick re-dials,
- * instead of advancing past it and leaving a silent, permanent
- * namespace-mirror gap until the remote happens to announce again.
+ * ref-announce-tick.test.ts — EI-15335 + P-203 Leg A regression: an inbound
+ * ref-announcement whose device-fetch failed MUST be retried next tick (never
+ * silently dropped, which leaves a permanent namespace-mirror gap until the
+ * remote happens to announce again) — AND it must do so WITHOUT holding the
+ * fed-event cursor, because a held cursor is head-of-line blocking: one
+ * announcer nobody can reach (live-caught 2026-09-02 on the two-machine rig)
+ * pinned the cursor for the whole pot and starved a perfectly reachable peer.
  *
- * Pure unit test (no git, no PG) over `decideRefAnnounceReceiveCursor`.
+ * Pure unit test (no git, no PG) over `decideRefAnnounceReceiveCursor` +
+ * `mergeParkedIntoReceiveBatch`.
  *
  * Run: cd packages/operator-core && npx vitest run lib/sync/pot-git/ref-announce-tick.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { decideRefAnnounceReceiveCursor, type RefAnnounceReceiveResult } from './ref-announce-tick';
+import {
+  decideRefAnnounceReceiveCursor,
+  mergeParkedIntoReceiveBatch,
+  type ParkedRefAnnouncements,
+  type RefAnnounceReceiveBatchRow,
+  type RefAnnounceReceiveResult,
+} from './ref-announce-tick';
+import type { SignedRefAnnouncement } from './ref-announce';
 
-// The cursor decision only reads `result.action` (+ `stderr`/`timedOut`/`code`
-// for a failure). A non-failed stand-in uses `noop`, which avoids constructing a
-// full signed `fetched` snapshot.
+// The decision reads `result.action` (+ `stderr`/`timedOut`/`code` for a
+// failure) and the row's `announcement.{device_pubkey,version}`. A non-failed
+// stand-in uses `noop`, which avoids constructing a full signed `fetched`
+// snapshot.
 //
-// ⚠ There are now THREE dispositions, not two (WI-6418): `fetch-failed` holds
-// the cursor AND is reported; `already-in-flight` holds the cursor and is NOT
-// reported (nothing went wrong); everything else advances past. `noop` is a
-// stand-in for that third group only — do not read it as "all non-failures".
+// ⚠ THREE dispositions (WI-6418): `fetch-failed` PARKS the row AND is reported;
+// `already-in-flight` parks the row and is NOT reported (nothing went wrong);
+// everything else settles the device. `noop` stands in for that third group
+// only — do not read it as "all non-failures".
 const failed = (
   device: string,
   stderr = 'no live swarm dial yet',
@@ -46,61 +58,126 @@ const inFlight = (device: string): RefAnnounceReceiveResult => ({
   version: 1,
   result: { action: 'already-in-flight', budgetState: null },
 });
+const ann = (device: string, version = 1): SignedRefAnnouncement =>
+  ({ device_pubkey: device, version }) as unknown as SignedRefAnnouncement;
+const row = (rowId: number, device: string, version = 1): RefAnnounceReceiveBatchRow => ({
+  rowId,
+  announcement: ann(device, version),
+});
+const NOW = 1_700_000_000_000;
 
-describe('decideRefAnnounceReceiveCursor (EI-15335)', () => {
-  it('advances the cursor fully when every fetch succeeded', () => {
-    const d = decideRefAnnounceReceiveCursor([ok('A'), ok('B'), ok('C')], [10, 11, 12], 12);
-    expect(d).toEqual({ cursor: 12, held: false, fetchFailed: [] });
+describe('decideRefAnnounceReceiveCursor (EI-15335 → P-203 Leg A parking)', () => {
+  it('advances the cursor fully when every fetch succeeded, parking nothing', () => {
+    const d = decideRefAnnounceReceiveCursor([ok('A'), ok('B'), ok('C')], [row(10, 'A'), row(11, 'B'), row(12, 'C')], 12, {}, NOW);
+    expect(d).toEqual({ cursor: 12, fetchFailed: [], parked: {}, unparked: [] });
   });
 
-  it('HOLDS the cursor just below a failed fetch so the next tick re-dials', () => {
-    // rows 10,11,12 — row 11 failed. Cursor must stay at 10 (below 11), NOT
-    // advance to 12: this is the exact live regression — advancing past the
-    // failed announce leaves the mirror permanently stale.
-    const d = decideRefAnnounceReceiveCursor([ok('A'), failed('B', 'dial destroyed'), ok('C')], [10, 11, 12], 12);
-    expect(d.held).toBe(true);
-    expect(d.cursor).toBe(10);
-    expect(d.fetchFailed).toEqual([
-      { rowId: 11, device: 'B', stderr: 'dial destroyed', timedOut: false, code: 128 },
+  it('PARKS a failed fetch (by value, newest per device) and STILL advances the cursor past it', () => {
+    // rows 10,11,12 — row 11 failed. The announcement must survive for the
+    // next tick (EI-15335) — but as a parked entry, NOT by holding the cursor
+    // at 10: holding starved every announcer behind the miss (P-203 Leg A).
+    const d = decideRefAnnounceReceiveCursor(
+      [ok('A'), failed('B', 'dial destroyed'), ok('C')],
+      [row(10, 'A'), row(11, 'B', 7), row(12, 'C')],
+      12,
+      {},
+      NOW,
+    );
+    expect(d.cursor).toBe(12);
+    expect(d.fetchFailed).toEqual([{ rowId: 11, device: 'B', stderr: 'dial destroyed', timedOut: false, code: 128 }]);
+    expect(d.parked).toEqual({
+      B: { rowId: 11, announcement: ann('B', 7), parkedSinceMs: NOW, attempts: 1 },
+    });
+    expect(d.unparked).toEqual([]);
+  });
+
+  it('THE LIVE REGRESSION: one unreachable announcer never pins the cursor for the others', () => {
+    // Device U is a pot member that never joins this topic — every dial fails
+    // forever. Under the old hold, the cursor sat below U's oldest row for the
+    // life of the pair and R's announcements behind it were never fetched.
+    const d = decideRefAnnounceReceiveCursor(
+      [failed('U', 'no live dial path'), failed('U', 'no live dial path'), ok('R')],
+      [row(10, 'U', 1), row(11, 'U', 2), row(12, 'R', 9)],
+      12,
+      {},
+      NOW,
+    );
+    expect(d.cursor).toBe(12);
+    expect(Object.keys(d.parked)).toEqual(['U']);
+    // Only U's NEWEST announcement is kept — the fetch it would trigger brings
+    // everything the older one named.
+    expect(d.parked.U?.announcement.version).toBe(2);
+    expect(d.parked.U?.rowId).toBe(11);
+  });
+
+  it('a parked device that fails again keeps its original parkedSince and counts the attempt', () => {
+    const prior: ParkedRefAnnouncements = {
+      B: { rowId: 11, announcement: ann('B', 7), parkedSinceMs: NOW - 60_000, attempts: 3 },
+    };
+    const d = decideRefAnnounceReceiveCursor([failed('B')], [{ ...row(11, 'B', 7), parked: true }], 11, prior, NOW);
+    expect(d.parked.B).toEqual({ rowId: 11, announcement: ann('B', 7), parkedSinceMs: NOW - 60_000, attempts: 4 });
+  });
+
+  it('a parked device that SETTLES is unparked and reported with its history', () => {
+    const prior: ParkedRefAnnouncements = {
+      B: { rowId: 11, announcement: ann('B', 7), parkedSinceMs: NOW - 60_000, attempts: 3 },
+    };
+    const d = decideRefAnnounceReceiveCursor([ok('B')], [{ ...row(11, 'B', 7), parked: true }], 11, prior, NOW);
+    expect(d.parked).toEqual({});
+    expect(d.unparked).toEqual([
+      { device: 'B', rowId: 11, version: 7, attempts: 3, parkedSinceMs: NOW - 60_000, action: 'noop' },
     ]);
   });
 
-  it('a failure on the FIRST row holds the cursor at the row before it (no advance at all)', () => {
-    const d = decideRefAnnounceReceiveCursor([failed('A'), ok('B')], [10, 11], 11);
-    expect(d.held).toBe(true);
-    expect(d.cursor).toBe(9); // stays below the first failed row (10) — never past the miss
+  it('the LAST row per device decides: an older failure below a newer success is moot', () => {
+    // The success at 12 brought everything 11 named — B must not stay parked.
+    const d = decideRefAnnounceReceiveCursor(
+      [failed('B'), ok('B')],
+      [row(11, 'B', 1), row(12, 'B', 2)],
+      12,
+      {},
+      NOW,
+    );
+    expect(d.parked).toEqual({});
+    expect(d.fetchFailed.map((f) => f.rowId)).toEqual([11]); // still reported — it did fail
   });
 
-  it('holds below the OLDEST failed row when several fetches fail', () => {
-    const d = decideRefAnnounceReceiveCursor([ok('A'), failed('B'), failed('C')], [10, 11, 12], 12);
-    expect(d.cursor).toBe(10); // oldest failed (11) - 1
-    expect(d.fetchFailed.map((f) => f.rowId)).toEqual([11, 12]);
+  it('an older success below a newer failure parks the NEWER announcement', () => {
+    const d = decideRefAnnounceReceiveCursor(
+      [ok('B'), failed('B')],
+      [row(11, 'B', 1), row(12, 'B', 2)],
+      12,
+      {},
+      NOW,
+    );
+    expect(d.parked.B?.announcement.version).toBe(2);
   });
 
-  it('a later success does not let the cursor jump past an earlier failure', () => {
-    // success at 12 must not advance the cursor past the failure at 11 — the
-    // re-read of 12 next tick is cheap (already mirrored → stale-version).
-    const d = decideRefAnnounceReceiveCursor([ok('A'), failed('B'), ok('C')], [10, 11, 12], 12);
-    expect(d.cursor).toBe(10);
+  it('a `rejected` announcement settles the device — a decision, not a transient failure, is never parked', () => {
+    const rejected: RefAnnounceReceiveResult = {
+      device: 'X',
+      version: 1,
+      result: { action: 'rejected', reason: 'not-a-member', budgetState: null } as RefAnnounceReceiveResult['result'],
+    };
+    const prior: ParkedRefAnnouncements = { X: { rowId: 5, announcement: ann('X'), parkedSinceMs: NOW, attempts: 1 } };
+    const d = decideRefAnnounceReceiveCursor([rejected], [{ ...row(5, 'X'), parked: true }], 9, prior, NOW);
+    expect(d.parked).toEqual({});
+    expect(d.unparked[0]?.action).toBe('rejected');
   });
 
   it('empty batch advances to the fallback cursor', () => {
-    const d = decideRefAnnounceReceiveCursor([], [], 42);
-    expect(d).toEqual({ cursor: 42, held: false, fetchFailed: [] });
+    const d = decideRefAnnounceReceiveCursor([], [], 42, {}, NOW);
+    expect(d).toEqual({ cursor: 42, fetchFailed: [], parked: {}, unparked: [] });
   });
 
-  it('is defensive against a short/misaligned results array', () => {
-    // results shorter than rowIds (a dropped slot) — the missing index is
-    // skipped, never crashes, and does not spuriously hold the cursor.
-    const d = decideRefAnnounceReceiveCursor([ok('A')], [10, 11], 11);
-    expect(d).toEqual({ cursor: 11, held: false, fetchFailed: [] });
-  });
-
-  it('never advances the held cursor above the fallback', () => {
-    // A pathological rowId above the fallback still cannot push the cursor up.
-    const d = decideRefAnnounceReceiveCursor([failed('A')], [100], 5);
-    expect(d.cursor).toBe(5);
-    expect(d.held).toBe(true);
+  it('is defensive against a short/misaligned results array — the undriven row is parked, never lost', () => {
+    // results shorter than rows (a dropped slot): never crashes, the cursor
+    // still advances, and the row with no result is carried as parked so a
+    // seam bug cannot silently drop an announcement.
+    const d = decideRefAnnounceReceiveCursor([ok('A')], [row(10, 'A'), row(11, 'B')], 11, {}, NOW);
+    expect(d.cursor).toBe(11);
+    expect(d.fetchFailed).toEqual([]);
+    expect(Object.keys(d.parked)).toEqual(['B']);
   });
 
   it('WI-6277: carries timedOut/code through, so a SIGKILLed git is not reported as an empty string', () => {
@@ -112,14 +189,14 @@ describe('decideRefAnnounceReceiveCursor (EI-15335)', () => {
     //
     // stderr is deliberately EMPTY here: that is exactly what the kill produces,
     // and it is why `stderr` alone cannot carry this failure.
-    const d = decideRefAnnounceReceiveCursor([failed('B', '', { timedOut: true, code: -1 })], [11], 11);
+    const d = decideRefAnnounceReceiveCursor([failed('B', '', { timedOut: true, code: -1 })], [row(11, 'B')], 11, {}, NOW);
     expect(d.fetchFailed).toEqual([{ rowId: 11, device: 'B', stderr: '', timedOut: true, code: -1 }]);
   });
 
   it('WI-6277: a real git exit is distinguishable from a ceiling timeout', () => {
     // The other side of the discriminator — a non-zero exit with real stderr
     // must NOT be reported as a timeout, or the operator chases the wrong cause.
-    const d = decideRefAnnounceReceiveCursor([failed('C', 'fatal: bad object', { code: 128 })], [11], 11);
+    const d = decideRefAnnounceReceiveCursor([failed('C', 'fatal: bad object', { code: 128 })], [row(11, 'C')], 11, {}, NOW);
     expect(d.fetchFailed[0]?.timedOut).toBe(false);
     expect(d.fetchFailed[0]?.code).toBe(128);
     expect(d.fetchFailed[0]?.stderr).toBe('fatal: bad object');
@@ -129,13 +206,12 @@ describe('decideRefAnnounceReceiveCursor (EI-15335)', () => {
    * WI-6418 — the two halves of `already-in-flight`, which pull in opposite
    * directions and are why it could not reuse either existing disposition.
    */
-  it('WI-6418: `already-in-flight` HOLDS the cursor — the announce is not yet mirrored', () => {
-    // Advancing past it would drop the announcement forever and leave a silent,
-    // permanent namespace gap — the exact bug EI-15335 fixed. Holding was never
-    // the problem; the RE-DIAL that holding used to trigger was.
-    const d = decideRefAnnounceReceiveCursor([ok('A'), inFlight('B'), ok('C')], [10, 11, 12], 12);
-    expect(d.cursor).toBe(10);
-    expect(d.held).toBe(true);
+  it('WI-6418: `already-in-flight` PARKS the row — the announce is not yet mirrored', () => {
+    // Forgetting it would drop the announcement forever and leave a silent,
+    // permanent namespace gap — the exact bug EI-15335 fixed.
+    const d = decideRefAnnounceReceiveCursor([ok('A'), inFlight('B'), ok('C')], [row(10, 'A'), row(11, 'B'), row(12, 'C')], 12, {}, NOW);
+    expect(d.cursor).toBe(12);
+    expect(Object.keys(d.parked)).toEqual(['B']);
   });
 
   it('WI-6418: `already-in-flight` is NOT reported as a fetch failure', () => {
@@ -143,15 +219,48 @@ describe('decideRefAnnounceReceiveCursor (EI-15335)', () => {
     // fetchFailed would log a phantom transport error against a perfectly
     // healthy stream, which is precisely the false signal that made this
     // livelock read as ordinary noise for days.
-    const d = decideRefAnnounceReceiveCursor([inFlight('B')], [11], 11);
+    const d = decideRefAnnounceReceiveCursor([inFlight('B')], [row(11, 'B')], 11, {}, NOW);
     expect(d.fetchFailed).toEqual([]);
-    expect(d.held).toBe(true);
+    expect(d.parked.B).toBeDefined();
+  });
+});
+
+describe('mergeParkedIntoReceiveBatch', () => {
+  it('drives parked announcements FIRST (oldest row first), then the fresh rows in order', () => {
+    const parked: ParkedRefAnnouncements = {
+      B: { rowId: 30, announcement: ann('B', 2), parkedSinceMs: NOW, attempts: 1 },
+      A: { rowId: 20, announcement: ann('A', 5), parkedSinceMs: NOW, attempts: 2 },
+    };
+    const batch = mergeParkedIntoReceiveBatch(parked, [row(40, 'C', 1), row(41, 'D', 1)]);
+    expect(batch.map((r) => [r.rowId, r.announcement.device_pubkey, r.parked ?? false])).toEqual([
+      [20, 'A', true],
+      [30, 'B', true],
+      [40, 'C', false],
+      [41, 'D', false],
+    ]);
   });
 
-  it('WI-6418: a real failure still outranks an in-flight row for the cursor floor', () => {
-    // Both hold, so the cursor must sit below the OLDEST of either kind.
-    const d = decideRefAnnounceReceiveCursor([inFlight('A'), failed('B')], [10, 11], 11);
-    expect(d.cursor).toBe(9);
-    expect(d.fetchFailed.map((f) => f.device)).toEqual(['B']);
+  it('drops a parked entry superseded by a fresh row from the same device at the same or a higher version', () => {
+    const parked: ParkedRefAnnouncements = {
+      B: { rowId: 30, announcement: ann('B', 2), parkedSinceMs: NOW, attempts: 1 },
+      A: { rowId: 20, announcement: ann('A', 5), parkedSinceMs: NOW, attempts: 1 },
+    };
+    const batch = mergeParkedIntoReceiveBatch(parked, [row(40, 'B', 2), row(41, 'A', 4)]);
+    // B@2 superseded by fresh B@2; A@5 is NEWER than fresh A@4 so it stays.
+    expect(batch.map((r) => [r.rowId, r.announcement.device_pubkey, r.announcement.version])).toEqual([
+      [20, 'A', 5],
+      [40, 'B', 2],
+      [41, 'A', 4],
+    ]);
+  });
+
+  it('an empty parked set is the identity', () => {
+    const fresh = [row(1, 'A'), row(2, 'B')];
+    expect(mergeParkedIntoReceiveBatch({}, fresh)).toEqual(fresh);
+  });
+
+  it('tolerates a malformed parked entry (no announcement) instead of crashing the tick', () => {
+    const parked = { Z: { rowId: 1, parkedSinceMs: NOW, attempts: 1 } } as unknown as ParkedRefAnnouncements;
+    expect(mergeParkedIntoReceiveBatch(parked, [row(2, 'A')])).toEqual([row(2, 'A')]);
   });
 });

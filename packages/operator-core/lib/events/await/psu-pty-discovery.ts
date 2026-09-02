@@ -29,6 +29,7 @@ import {
   openSync,
   readSync,
   closeSync,
+  appendFileSync,
 } from 'node:fs';
 import net from 'node:net';
 import { managedSetInterval } from '@papercusp/scheduled-registry';

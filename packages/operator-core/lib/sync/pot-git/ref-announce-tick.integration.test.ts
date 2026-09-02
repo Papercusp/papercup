@@ -497,11 +497,14 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       // The mirror never gained the announced ref — the whole point of the bug.
       expect(await readNamespaceRef(repoA, devG.pubkeyBase64, 'refs/heads/work')).toBeNull();
 
-      // The caller's cursor decision must HOLD below this failed row (id 4321),
-      // not advance to the batch max — so the next tick re-reads + re-dials it.
-      const decision = decideRefAnnounceReceiveCursor(out.results, [4321], 4321);
-      expect(decision.held).toBe(true);
-      expect(decision.cursor).toBe(4320);
+      // The caller's cursor decision must PARK this failed announcement (P-203
+      // Leg A: carried by value for the next tick's re-dial) — and still advance
+      // the cursor past row 4321, never holding it (a held cursor head-of-line
+      // blocked every other announcer on the two-machine rig).
+      const decision = decideRefAnnounceReceiveCursor(out.results, [{ rowId: 4321, announcement }], 4321);
+      expect(decision.cursor).toBe(4321);
+      expect(decision.parked[devG.pubkeyBase64]).toMatchObject({ rowId: 4321, attempts: 1 });
+      expect(decision.parked[devG.pubkeyBase64]?.announcement).toEqual(announcement);
       // WI-6277 added `timedOut` + `code` to every fetchFailed row and this
       // assertion was never updated, so it has been red since (toEqual is exact
       // — extra keys fail). Asserting them is strictly better than loosening to
