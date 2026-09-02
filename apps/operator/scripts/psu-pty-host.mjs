@@ -850,6 +850,49 @@ export function handoffPathFor(ownerId) {
  * caller must then NOT exit: a successor with no orders would boot a bare
  * session and drop the carry).
  */
+/** WI-38292: the child env keys a host-code handoff carries to the re-exec'd successor.
+ *  The shim re-runs the launcher with its ORIGINAL environment, not the child environment
+ *  assembled after bootstrap, so everything the launch tail set for the child that the
+ *  successor must reproduce has to travel in the handoff. Deliberately NOT the whole child
+ *  env (it carries unrelated credentials) — but every key here is a copy of a truth the
+ *  launcher's fresh path owns, so it DRIFTS: the list predated the context-trimming trio
+ *  (ENABLE_TOOL_SEARCH / PAPERCUSP_TOOLS / PAPERCUSP_CONTEXT_TIER) and, on the first
+ *  adoption after a pty-host edit, every headless fleet member re-booted with the whole
+ *  ~581-tool catalog inline — 756k tokens on turn 1, respawned every ~10 min (WI-2140943
+ *  lane 2, 2026-09-02). Two rails keep it honest now: the launcher's handoff successor
+ *  re-derives that trio when absent (healContextTrimmingEnv), and
+ *  psu-host-handoff-env.test.ts pins this list ⊇ contextTrimmingEnv's keys. */
+export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
+  'PAPERCUSP_SID',
+  'PAPERCUSP_AGENT',
+  'PAPERCUSP_ADV_SESSION_ID',
+  'PAPERCUSP_WORKSPACE',
+  'PAPERCUSP_HARNESS_SLUG',
+  'PAPERCUSP_PROFILE',
+  'PAPERCUSP_FLEET_SLUG',
+  'PAPERCUSP_FLEET_ROLE',
+  'PAPERCUSP_ACCOUNT_ID',
+  'PAPERCUSP_ACCOUNT_ROUTING_MODE',
+  'PAPERCUSP_OPERATOR_URL',
+  'PAPERCUSP_AGENT_SESSION',
+  'PAPERCUSP_AUTO_MODE',
+  'PAPERCUSP_DRAIN_MODE',
+  'PAPERCUSP_MODEL',
+  // context-trimming trio (WI-2140943 lane 2) — see contextTrimmingEnv in psu-launcher.mjs.
+  'ENABLE_TOOL_SEARCH',
+  'PAPERCUSP_TOOLS',
+  'PAPERCUSP_CONTEXT_TIER',
+  'CODEX_HOME',
+  'CLAUDE_CONFIG_DIR',
+  'PI_CONFIG_DIR',
+  'PI_CODING_AGENT_DIR',
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  'DISABLE_AUTO_COMPACT',
+  'DISABLE_COMPACT',
+]);
+
 export function writeHostHandoff(ownerId, record) {
   try {
     ensureDir();
@@ -6539,32 +6582,7 @@ export function hostThroughPty(o) {
           // exact session; do not serialize the full environment (which may
           // contain unrelated credentials).
           const handoffEnv = {};
-          for (const key of [
-            'PAPERCUSP_SID',
-            'PAPERCUSP_AGENT',
-            'PAPERCUSP_ADV_SESSION_ID',
-            'PAPERCUSP_WORKSPACE',
-            'PAPERCUSP_HARNESS_SLUG',
-            'PAPERCUSP_PROFILE',
-            'PAPERCUSP_FLEET_SLUG',
-            'PAPERCUSP_FLEET_ROLE',
-            'PAPERCUSP_ACCOUNT_ID',
-            'PAPERCUSP_ACCOUNT_ROUTING_MODE',
-            'PAPERCUSP_OPERATOR_URL',
-            'PAPERCUSP_AGENT_SESSION',
-            'PAPERCUSP_AUTO_MODE',
-            'PAPERCUSP_DRAIN_MODE',
-            'PAPERCUSP_MODEL',
-            'CODEX_HOME',
-            'CLAUDE_CONFIG_DIR',
-            'PI_CONFIG_DIR',
-            'PI_CODING_AGENT_DIR',
-            'ANTHROPIC_BASE_URL',
-            'ANTHROPIC_AUTH_TOKEN',
-            'ANTHROPIC_CUSTOM_HEADERS',
-            'DISABLE_AUTO_COMPACT',
-            'DISABLE_COMPACT',
-          ]) {
+          for (const key of HOST_HANDOFF_ENV_KEYS) {
             const value = env[key];
             if (typeof value === 'string' && value.length > 0) handoffEnv[key] = value;
           }

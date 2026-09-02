@@ -194,14 +194,6 @@ export function metaPathFor(ownerId: any): string;
  *  orders. A FILE, not an env var: the successor is spawned by the shim's bash
  *  loop, not by us, so we cannot put anything in its environment. Pure. */
 export function handoffPathFor(ownerId: any): string;
-/**
- * WI-38292: persist the successor's marching orders — the child argv this host
- * had already minted (rotated native session id + the carry's
- * --append-system-prompt-file), so the carry survives the process swap without
- * riding memory. Returns the path, or null when it could not be written (the
- * caller must then NOT exit: a successor with no orders would boot a bare
- * session and drop the carry).
- */
 export function writeHostHandoff(ownerId: any, record: any): string | null;
 /**
  * WI-38292: read AND consume (unlink) this owner's handoff. Single-shot by
@@ -1650,6 +1642,27 @@ export const MAX_CONTROL_PAYLOAD_BYTES: number;
  * standalone ESM process and cannot import the TypeScript module. */
 export const KICKOFF_PROOF_PATH_ENV: "PAPERCUSP_KICKOFF_PROOF_PATH";
 export const KICKOFF_PROOF_TOKEN_ENV: "PAPERCUSP_KICKOFF_PROOF_TOKEN";
+/**
+ * WI-38292: persist the successor's marching orders — the child argv this host
+ * had already minted (rotated native session id + the carry's
+ * --append-system-prompt-file), so the carry survives the process swap without
+ * riding memory. Returns the path, or null when it could not be written (the
+ * caller must then NOT exit: a successor with no orders would boot a bare
+ * session and drop the carry).
+ */
+/** WI-38292: the child env keys a host-code handoff carries to the re-exec'd successor.
+ *  The shim re-runs the launcher with its ORIGINAL environment, not the child environment
+ *  assembled after bootstrap, so everything the launch tail set for the child that the
+ *  successor must reproduce has to travel in the handoff. Deliberately NOT the whole child
+ *  env (it carries unrelated credentials) — but every key here is a copy of a truth the
+ *  launcher's fresh path owns, so it DRIFTS: the list predated the context-trimming trio
+ *  (ENABLE_TOOL_SEARCH / PAPERCUSP_TOOLS / PAPERCUSP_CONTEXT_TIER) and, on the first
+ *  adoption after a pty-host edit, every headless fleet member re-booted with the whole
+ *  ~581-tool catalog inline — 756k tokens on turn 1, respawned every ~10 min (WI-2140943
+ *  lane 2, 2026-09-02). Two rails keep it honest now: the launcher's handoff successor
+ *  re-derives that trio when absent (healContextTrimmingEnv), and
+ *  psu-host-handoff-env.test.ts pins this list ⊇ contextTrimmingEnv's keys. */
+export const HOST_HANDOFF_ENV_KEYS: readonly string[];
 /**
  * How long a SHUTDOWN gives the child to exit on SIGHUP before the host escalates
  * to a whole-process-tree SIGKILL. A claude TUI flushes its transcript on SIGHUP,

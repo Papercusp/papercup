@@ -3494,6 +3494,52 @@ export function claudeSeedToolNames(env = process.env) {
   );
 }
 
+/** The context-trimming env trio (context-trimming-tiers D-004 / D-010 / P-031) — the keys
+ *  that keep a launched session's prompt at the ~143k trimmed baseline instead of the ~756k
+ *  whole-catalog boot. ONE derivation, spread by launchFreshSu AND re-applied by the host-code
+ *  handoff successor ({@link healContextTrimmingEnv}).
+ *  Why one place (WI-2140943 lane 2, 2026-09-02): the WI-38292 host-code handoff carried a
+ *  hand-kept allowlist of child env keys that predated all three, so every headless fleet
+ *  member that adopted updated host code re-booted with the whole ~581-tool papercusp-su
+ *  catalog INLINE — measured 756k tokens on the successor's FIRST turn (vs 143k before the
+ *  adoption), 12 native sessions in 2h per member as the compaction watchdog respawned it
+ *  against its 200k cap, 4 members re-reading ~800k cached tokens per turn.
+ *  - ENABLE_TOOL_SEARCH: claude silently disables ToolSearch deferral whenever
+ *    ANTHROPIC_BASE_URL is set (it can't assume a proxy forwards tool_reference blocks — both
+ *    of ours are pass-throughs), so every gateway-routed session must force it back on.
+ *  - PAPERCUSP_TOOLS: the core spine the user-level papercusp-su MCP url env-expands (D-010),
+ *    so the superuser MCP advertises ONLY the spine (~9k) and the tail stays reachable via
+ *    tools:find / tools:invoke.
+ *  - PAPERCUSP_CONTEXT_TIER: the payload tier the same url env-expands (`ctx_tier=`, P-009);
+ *    TRIMMED for EVERY launch, model window irrelevant [owner 2026-08-10]. Every agent. */
+export function contextTrimmingEnv(agent, env = process.env) {
+  return {
+    PAPERCUSP_CONTEXT_TIER: "trimmed",
+    ...(agent === "claude"
+      ? {
+          ENABLE_TOOL_SEARCH: "true",
+          PAPERCUSP_TOOLS: claudeSeedToolNames(env).join(","),
+        }
+      : {}),
+  };
+}
+
+/** Fill the trio into `env` wherever it is ABSENT (an explicitly carried value always wins)
+ *  and return the keys filled. A host-code handoff is written by the code the predecessor
+ *  has IN MEMORY — by definition the OLD code — so the successor cannot rely on it having
+ *  carried every key the fresh path sets; healing here is what makes a fix to the writer
+ *  land on the FIRST adoption instead of the second. */
+export function healContextTrimmingEnv(env, agent = env?.PAPERCUSP_AGENT) {
+  const filled = [];
+  for (const [k, v] of Object.entries(contextTrimmingEnv(agent))) {
+    if (env[k] === undefined || env[k] === "") {
+      env[k] = v;
+      filled.push(k);
+    }
+  }
+  return filled;
+}
+
 // weak-model-tool-tier: a model that runs LOCALLY (ollama/local provider prefix) is small
 // and weak for tool-use relative to a hosted frontier model. Mirror of the canonical
 // packages/operator-core/lib/model-tier.ts modelCapabilityTier heuristic (kept simple here
@@ -9138,6 +9184,17 @@ export function runWrapper(options) {
     // that IS the carry.
     args = hostHandoff.args;
     for (const [k, v] of Object.entries(hostHandoff.childEnv ?? {})) env[k] = v;
+    // WI-2140943 lane 2 (2026-09-02): the handoff was written by the code the predecessor
+    // has IN MEMORY — the old code, by definition — so never trust it to have carried every
+    // key the fresh path sets. Re-derive the context-trimming trio where absent (an
+    // explicitly carried value wins). Before this heal, the first adoption after a
+    // psu-pty-host.mjs edit re-booted every headless member at ~756k tokens (the whole
+    // tool catalog inline) and the compaction watchdog respawned it every ~10 min forever.
+    const healed = healContextTrimmingEnv(env, env.PAPERCUSP_AGENT);
+    if (healed.length > 0)
+      process.stderr.write(
+        `psu: host handoff carried no ${healed.join(", ")} — re-derived from contextTrimmingEnv (WI-2140943)\n`,
+      );
     // The successor's first turn is the carry, delivered through the argv above.
     // A kickoff from THIS process's own command line would be the ORIGINAL
     // launch's first prompt replayed into a session that is many turns past it.
@@ -12885,9 +12942,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // member was booting with ALL advertised schemas inline: 106–108k vs 60k measured
       // across the 2026-07-02 04:50 sonnet fleet (context-trimming-tiers P-031 gap 3).
       // Redundant-but-harmless on direct-API launches where deferral is already the default.
-      ...(res.agent === "claude"
-        ? { ENABLE_TOOL_SEARCH: "true" }
-        : {}),
+      // ENABLE_TOOL_SEARCH + PAPERCUSP_TOOLS (D-010 spine) + PAPERCUSP_CONTEXT_TIER (P-009
+      // tier) come from ONE helper so the host-code handoff successor re-derives the same
+      // trio (WI-2140943 lane 2) — see contextTrimmingEnv for the rationale of each key.
+      ...contextTrimmingEnv(res.agent),
       // P-014 (agent-managed-compaction): the MECHANICAL compaction backstop. For a
       // P-022: native auto-compact is retired — every Claude launch runs with
       // DISABLE_AUTO_COMPACT; the carry-respawn ladder owns the boundary
@@ -12913,9 +12971,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // papercusp-su MCP url env-expands ${PAPERCUSP_TOOLS} (see buildClaudeMcpEntry), so
       // exporting the CORE SPINE makes the superuser MCP advertise ONLY the spine (~9k). The
       // tail stays reachable via tools:find/tools:invoke (in the spine) + the capability map.
-      ...(res.agent === "claude"
-        ? { PAPERCUSP_TOOLS: claudeSeedToolNames().join(",") }
-        : {}),
+      // (PAPERCUSP_TOOLS itself is spread by contextTrimmingEnv above.)
       // context-trimming-tiers D-004/P-009: the session PAYLOAD tier. The claude MCP url
       // env-expands ${PAPERCUSP_CONTEXT_TIER} (buildClaudeMcpEntry `ctx_tier=`) so the
       // server shapes tool payloads (defineTool `shape` projections) per tier.
@@ -12927,7 +12983,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // useful — the same wasted tokens are still read, just without hitting a wall.
       // This now matches the tool-surface spine (D-010), which was already trimmed for
       // everyone. Historical full inputs are normalized before this point.
-      PAPERCUSP_CONTEXT_TIER: "trimmed",
+      // (PAPERCUSP_CONTEXT_TIER itself is spread by contextTrimmingEnv above.)
       // su-context-size-variants + weak-model-tool-tier: OMP runs against a per-session config
       // dir (home-relative) with the MCP surface trimmed to the core spine and discovery off
       // (materialized above; null for non-omp / frontier-model / failure).

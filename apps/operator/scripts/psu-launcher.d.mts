@@ -974,6 +974,35 @@ export function parkRoleScopedMcpJson(cwd: any): string | null;
  *  tools:invoke; only its up-front advertisement is dropped. Exported for tests. */
 export function ompCoreToolNames(env?: NodeJS.ProcessEnv): string[];
 export function claudeSeedToolNames(env?: NodeJS.ProcessEnv): string[];
+/** The context-trimming env trio (context-trimming-tiers D-004 / D-010 / P-031) — the keys
+ *  that keep a launched session's prompt at the ~143k trimmed baseline instead of the ~756k
+ *  whole-catalog boot. ONE derivation, spread by launchFreshSu AND re-applied by the host-code
+ *  handoff successor ({@link healContextTrimmingEnv}).
+ *  Why one place (WI-2140943 lane 2, 2026-09-02): the WI-38292 host-code handoff carried a
+ *  hand-kept allowlist of child env keys that predated all three, so every headless fleet
+ *  member that adopted updated host code re-booted with the whole ~581-tool papercusp-su
+ *  catalog INLINE — measured 756k tokens on the successor's FIRST turn (vs 143k before the
+ *  adoption), 12 native sessions in 2h per member as the compaction watchdog respawned it
+ *  against its 200k cap, 4 members re-reading ~800k cached tokens per turn.
+ *  - ENABLE_TOOL_SEARCH: claude silently disables ToolSearch deferral whenever
+ *    ANTHROPIC_BASE_URL is set (it can't assume a proxy forwards tool_reference blocks — both
+ *    of ours are pass-throughs), so every gateway-routed session must force it back on.
+ *  - PAPERCUSP_TOOLS: the core spine the user-level papercusp-su MCP url env-expands (D-010),
+ *    so the superuser MCP advertises ONLY the spine (~9k) and the tail stays reachable via
+ *    tools:find / tools:invoke.
+ *  - PAPERCUSP_CONTEXT_TIER: the payload tier the same url env-expands (`ctx_tier=`, P-009);
+ *    TRIMMED for EVERY launch, model window irrelevant [owner 2026-08-10]. Every agent. */
+export function contextTrimmingEnv(agent: any, env?: NodeJS.ProcessEnv): {
+    ENABLE_TOOL_SEARCH?: string | undefined;
+    PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_CONTEXT_TIER: string;
+};
+/** Fill the trio into `env` wherever it is ABSENT (an explicitly carried value always wins)
+ *  and return the keys filled. A host-code handoff is written by the code the predecessor
+ *  has IN MEMORY — by definition the OLD code — so the successor cannot rely on it having
+ *  carried every key the fresh path sets; healing here is what makes a fix to the writer
+ *  land on the FIRST adoption instead of the second. */
+export function healContextTrimmingEnv(env: any, agent?: any): string[];
 export function isWeakOmpModel(modelId: any): boolean;
 /** The registry-file form of an OMP model id: the provider prefix (`ollama-cc/…`) and any
  *  trailing reasoning-effort suffix (`:xhigh`) are launch-spec decoration — models.yml/models.json
