@@ -41,7 +41,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { hasValidGitEntry } from './agent-tools/locks/valid-git-entry';
 import { analyzeImageBlankness } from '@papercusp/image-blankness';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY, type CompletionVerificationEvidence } from './coord-lifecycle/records';
-import { COMPLETION_CLAIM_RECHECK_KEY } from './completion-claim-recheck';
+import { COMPLETION_CLAIM_RECHECK_KEY, COMPLETION_CLAIM_RECHECK_REGRESSED } from './completion-claim-recheck';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import {
   authorityForCompletion,
@@ -634,7 +634,7 @@ export function auditPredicateSql(sql: OrgSql, audit: WorkItemAudit) {
   if (audit === 'claim-since-falsified') {
     // WI-2142447: selects the sweep's own STAMP, not a re-derivation of it. See this
     // bucket's module-header paragraph for why the finding is not SQL-decidable.
-    return sql.unsafe(`payload->'${COMPLETION_CLAIM_RECHECK_KEY}'->>'verdict' = 'regressed'`);
+    return sql`${sql.unsafe(`payload->'${COMPLETION_CLAIM_RECHECK_KEY}'->>'verdict'`)} = ${COMPLETION_CLAIM_RECHECK_REGRESSED}`;
   }
   // 'reconciler-sourced' (EI-18677799334390930, rescued by D-012 from the deleted
   // `no-evidence` branch). Keyed on the ACTOR alone — never on an evidence key — so a
@@ -680,7 +680,7 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: WorkItemAudit, alias: s
   }
   if (audit === 'claim-since-falsified') {
     // Same stamp-reading rule as auditPredicateSql above, aliased.
-    return sql.unsafe(`${alias}.payload->'${COMPLETION_CLAIM_RECHECK_KEY}'->>'verdict' = 'regressed'`);
+    return sql`${sql.unsafe(`${alias}.payload->'${COMPLETION_CLAIM_RECHECK_KEY}'->>'verdict'`)} = ${COMPLETION_CLAIM_RECHECK_REGRESSED}`;
   }
   // 'reconciler-sourced': same actor-keyed rule as auditPredicateSql above.
   return sql`${owner} = ${RECONCILER_SYSTEM_ACTOR}`;

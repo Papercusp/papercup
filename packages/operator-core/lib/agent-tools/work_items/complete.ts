@@ -106,9 +106,14 @@ import {
   reconcileStampedAuthority,
   type CompletionEvidenceFindings,
 } from '../../work-item-completion-authority';
-import { evaluateCompletionClaims, repoSourceReader } from '../../completion-claims';
+import {
+  evaluateCompletionClaims,
+  repoSourceReader,
+  type CompletionClaimsReport,
+} from '../../completion-claims';
 import { completionClaimBaseline } from '../../completion-claim-recheck';
 import { fabricatedPathsInCompletion } from './fabricated-paths';
+import { untouchedPathsInCompletion } from './untouched-paths';
 import { requirementDispositionShortfall } from './requirement-disposition';
 import {
   MAX_TEST_BINDING_LOOKBACK_MS,
@@ -1695,6 +1700,34 @@ export function completionEvidenceFromRecord(
   return Object.keys(evidence).length > 0 ? evidence : undefined;
 }
 
+/**
+ * WI-2142447 — fold the CLOSE-TIME claim verdicts onto the record about to be persisted.
+ *
+ * The grade is already decided by the time this runs (the `claimsFalsified` finding); this
+ * is the RECORD that finding leaves behind, and it is the only thing that later lets the
+ * post-close sweep tell a claim that has GONE false from one that was already false when
+ * written and was already graded for it. Narrative-side, like `selfReviewJudgement`: it
+ * describes the close and never promotes one.
+ *
+ * EXPORTED, and applied through this function rather than inline at the persist site, for
+ * the reason `complete.claims-wiring.test.ts` exists: the `claims` feature shipped complete
+ * and correct on both sides of a mapping that never copied the field, and no test of either
+ * side could see it. A fold that only lives inside a 3,000-line function has the same
+ * shape — so it lives here, where a test can reach it.
+ *
+ * Deliberately preserves the persist site's invariant that a close carrying NO record at
+ * all never gains an `_completionEvidence` object whose only key came from the server.
+ */
+export function withClaimBaseline(
+  evidence: PersistedCompletionEvidence | undefined,
+  claimVerdicts: CompletionClaimsReport | undefined,
+  at: string,
+): PersistedCompletionEvidence | undefined {
+  if (!evidence || !claimVerdicts) return evidence;
+  const baseline = completionClaimBaseline(claimVerdicts, at);
+  return baseline ? { ...evidence, claimVerdicts: baseline } : evidence;
+}
+
 /** WI-37960: work whose title/metadata says it is a verification pass needs
  * population-aware completion evidence when it makes a universal claim. */
 const VERIFICATION_ITEM_MARKER_RE =
@@ -2696,6 +2729,32 @@ async function completeOne(
     ? fabricatedPathsInCompletion(completionEvidenceForGate, { repoRoots: registeredRepoRoots ?? [] })
     : undefined;
 
+  // P-005 / D-016: the next rung of the same ladder. Once a fabricated path costs a grade,
+  // the cheapest way to satisfy that check is to name a REAL file you did not touch — the
+  // gaming surface P-001 moved rather than removed. This probe judges the complementary
+  // population (paths that DO resolve) and clears a path on either proof of work: a dirty
+  // working tree, or a commit inside the work window.
+  //
+  // The window opens at the EARLIEST of created/claimed, because a wider window can only
+  // ever clear a path. `registeredRepoRoots` is only computed on the unresolved-path branch
+  // above, so fall back to the primary checkout the way `requirementDispositionShortfall`
+  // does — otherwise this would sit permanently unjudgeable on the closes whose paths all
+  // resolve, which is exactly its population.
+  //
+  // Gated on `authorityByEvidence === 'committed'` like the probes below: a close already
+  // landing `proposed` cannot be lowered further, so the git work buys nothing there.
+  const untouchedPaths =
+    authorityByEvidence === 'committed'
+      ? untouchedPathsInCompletion(
+          completionEvidenceForGate,
+          [existing.createdAt, existing.takenAt]
+            .map((value) => (value ? Date.parse(String(value)) : NaN))
+            .filter((ms) => Number.isFinite(ms))
+            .reduce<number | undefined>((earliest, ms) => (earliest === undefined ? ms : Math.min(earliest, ms)), undefined),
+          { repoRoots: registeredRepoRoots ?? [detectPapercupRoot()] },
+        )
+      : undefined;
+
   // P-002 / D-017: make `testResult` FALSIFIABLE against the run ledger.
   //
   // Gated on `authorityByEvidence === 'committed'` so the two queries are paid ONLY on a
@@ -2754,9 +2813,10 @@ async function completeOne(
     .map((r) => ({ claim: JSON.stringify(r.claim), reason: r.reason }));
 
   const completionEvidenceFindings: CompletionEvidenceFindings | undefined =
-    fabricatedPaths || testRunContradiction || requirementShortfall || claimsFalsified?.length
+    fabricatedPaths || untouchedPaths || testRunContradiction || requirementShortfall || claimsFalsified?.length
       ? {
           ...(fabricatedPaths ? { filesChangedNeverExisted: fabricatedPaths.neverExisted } : {}),
+          ...(untouchedPaths ? { filesChangedUntouched: untouchedPaths.untouched } : {}),
           ...(testRunContradiction ? { testRunContradictedByLedger: testRunContradiction } : {}),
           ...(requirementShortfall ? { requirementDispositionShortfall: requirementShortfall } : {}),
           ...(claimsFalsified?.length ? { claimsFalsified } : {}),
@@ -2770,6 +2830,27 @@ async function completeOne(
   // the agent sees `proposed`, cannot tell which of several gates produced it, and re-submits
   // the fields it already sent. Name the exact paths and the exact discriminator, and say
   // plainly what does NOT trigger it — deletion is legitimate and must not read as an accusation.
+  // Same anti-refusal-loop obligation as the fabricated-path message below: name the exact
+  // paths, name the discriminator, and say plainly what does NOT trigger it — an agent told
+  // only "your evidence was insufficient" re-sends the fields it already sent. Naming the
+  // last-commit time makes the verdict checkable by hand rather than taken on trust.
+  const untouchedPathsWarning =
+    untouchedPaths && authorityByEvidence === 'committed'
+      ? `completion for ${it.id} landed authority:'proposed' rather than 'committed': ` +
+        `${untouchedPaths.untouched.length} \`filesChanged\` path(s) exist in the tree but show no sign ` +
+        `this work changed them — the working tree is clean at each, and each was last committed before ` +
+        `this item began (${untouchedPaths.since}): ` +
+        `${untouchedPaths.untouched.map((u) => `${u.path} (last committed ${u.lastCommitAt})`).join(', ')}. ` +
+        `A path is CLEARED by either proof of work, so this does NOT fire on an edit git-sync has not ` +
+        `swept yet (an uncommitted change makes the tree dirty and is accepted), nor on one it already ` +
+        `swept (any commit inside the window is accepted); nor on a submodule path, a glob, an absolute ` +
+        `path, or unknown git history, all of which are silent. This is the successor to the ` +
+        `fabricated-path check: once a named path must exist, naming a real file you did not touch is the ` +
+        `cheapest way to satisfy it, which is the gaming surface that check moved rather than removed. ` +
+        `To fix: re-call work_items:complete with \`filesChanged\` naming the files this work actually ` +
+        `changed, and drop the ones it did not — an accurate short list grades better than a long one.`
+      : undefined;
+
   const fabricatedPathsWarning =
     fabricatedPaths && authorityByEvidence === 'committed'
       ? `completion for ${it.id} landed authority:'proposed' rather than 'committed': ` +
@@ -2885,25 +2966,12 @@ async function completeOne(
       ? completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
       : completionTreeStamp({ filesChanged: completionEvidenceBeforeStamp.filesChanged })
     : undefined;
-  // WI-2142447: record the CLOSE-TIME verdict for every declared claim, beside the claims
-  // it judged. The grade is already decided (the `claimsFalsified` finding above); this is
-  // the record that finding leaves behind, and it is what lets the post-close sweep tell a
-  // claim that has GONE false from one that was already false when written and was already
-  // graded for it. Narrative-side, like `selfReviewJudgement` — it never promotes a close.
-  //
-  // Folded in HERE rather than into `completionNarrative` because `claimVerdicts` is
-  // computed further down this function, after that object is assembled; this is the same
-  // seam `treeStamp` and `settlementManifest` already use for the same reason.
-  const claimBaseline = claimVerdicts
-    ? completionClaimBaseline(claimVerdicts, new Date().toISOString())
-    : undefined;
   const completionEvidenceToPersist: PersistedCompletionEvidence | undefined = (() => {
-    // Preserves the deliberate invariant above: a close carrying NO record at all never
-    // gains an `_completionEvidence` object whose only key came from the server.
-    const base =
-      completionEvidenceBeforeStamp && claimBaseline
-        ? { ...completionEvidenceBeforeStamp, claimVerdicts: claimBaseline }
-        : completionEvidenceBeforeStamp;
+    const base = withClaimBaseline(
+      completionEvidenceBeforeStamp,
+      claimVerdicts,
+      new Date().toISOString(),
+    );
     if (!base || !treeStamp) return base;
     const stamped = { ...base, treeStamp };
     const settlementManifest = completionSettlementManifest(stamped);
@@ -3661,6 +3729,7 @@ async function completeOne(
     ...(liveDriveEvidenceWarning ? { liveDriveEvidenceWarning } : {}),
     ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
     ...(fabricatedPathsWarning ? { fabricatedPathsWarning } : {}),
+    ...(untouchedPathsWarning ? { untouchedPathsWarning } : {}),
     ...(testRunContradictionWarning ? { testRunContradictionWarning } : {}),
     ...(requirementShortfallWarning ? { requirementShortfallWarning } : {}),
     ...(claimsFalsifiedWarning ? { claimsFalsifiedWarning } : {}),
