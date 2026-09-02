@@ -1931,8 +1931,9 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
   afterEach(() => {
     warn.mockRestore();
   });
+  type Deferred = Extract<GoalHolderLaunchCapacityVerdict, { kind: 'deferred' }>;
   const target = { provider: 'codex' as const, accountId: null, agent: 'codex' };
-  const walled = (untilMs: number | null = NOW + 5 * 24 * 3_600_000): GoalHolderLaunchCapacityVerdict => ({
+  const walled = (untilMs: number | null = NOW + 5 * 24 * 3_600_000): Deferred => ({
     kind: 'deferred',
     target,
     binding: 'usage-wall',
@@ -1952,11 +1953,13 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
       reason: 'walled',
     },
   });
-  const ratePaused = (): GoalHolderLaunchCapacityVerdict => ({
+  const ratePaused = (): Deferred => ({
     ...walled(NOW + 5 * 60_000),
     binding: 'rate-pause',
   });
   const clear: GoalHolderLaunchCapacityVerdict = { kind: 'clear', target, reason: '1 of 1 can serve' };
+  const escalationMock = () =>
+    vi.fn(async (_goal: GoalRowLike, _verdict: Deferred, _deferredForMs: number): Promise<void> => {});
   const liveButIdle = (ownerId: string): LivenessVerdict => ({
     ...verdict(ownerId, 'parked', 'none'),
     heartbeatFresh: true,
@@ -1966,7 +1969,7 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
     const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
     const rekick = vi.fn(async () => ({ woken: 1, staged: 0 }));
     const reserveRateSlot = vi.fn(async () => ({ kind: 'reserved' as const, attemptsInWindow: 1 }));
-    const escalateCapacityDeferral = vi.fn(async () => {});
+    const escalateCapacityDeferral = escalationMock();
     const states = new Map();
     const capacityDeferrals = new Map();
     let now = NOW;
@@ -2002,7 +2005,7 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
     expect(escalateCapacityDeferral).toHaveBeenCalledTimes(1);
     expect(capacityDeferrals.size).toBe(1);
     // The deferral is logged on entry and then at most once per log interval — not per tick.
-    const deferredLines = warn.mock.calls.filter((c) => String(c[0]).includes('recovery DEFERRED')).length;
+    const deferredLines = warn.mock.calls.filter((c: unknown[]) => String(c[0]).includes('recovery DEFERRED')).length;
     expect(deferredLines).toBe(1 + Math.floor((10 * 60_000) / GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS));
   });
 
@@ -2023,11 +2026,11 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
     expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 0, attempted: 1, respawned: 1 });
     expect(launch).toHaveBeenCalledTimes(1);
     expect(capacityDeferrals.size).toBe(0);
-    expect(warn.mock.calls.some((c) => String(c[0]).includes('capacity back'))).toBe(true);
+    expect(warn.mock.calls.some((c: unknown[]) => String(c[0]).includes('capacity back'))).toBe(true);
   });
 
   it('escalates a RATE PAUSE only once the deferral episode outlasts the budget', async () => {
-    const escalateCapacityDeferral = vi.fn(async () => {});
+    const escalateCapacityDeferral = escalationMock();
     let now = NOW;
     const deps = respawnDeps({
       resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
