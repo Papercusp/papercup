@@ -54,7 +54,13 @@ vi.mock('../adv-sessions', async (orig) => ({
   listStartingTerminalLaunches: (...a: unknown[]) => listStartingTerminalLaunches(...a),
 }));
 
-import { readAdvRoster, ROSTER_READ_BUDGET_MS } from './adv-roster-read';
+import {
+  readAdvRoster,
+  ROSTER_READ_BUDGET_MS,
+  ROSTER_CACHE_FRESH_MS,
+  ROSTER_CACHE_STALE_MS,
+  _resetRosterCacheForTests,
+} from './adv-roster-read';
 
 /**
  * Pay the real `../adv-sessions` module-load cost ONCE, outside any timed window.
@@ -229,4 +235,143 @@ describe('readAdvRoster — the read deadline (WI-39825)', () => {
       expect(degraded[0]?.reason).toContain('does not exist');
     });
   }
+});
+
+/**
+ * readAdvRoster — the stale-while-revalidate cache (EI-22091013068319789).
+ *
+ * MEASURED 2026-09-01: readAdvRosterUncached took 3.1-6.3s at 193 active rows
+ * on the green operator under load, and this is a POLLED query (the header
+ * pill's 5s interval, plus the cross-origin portal, the Sessions view, and
+ * every open tab) with no de-dup between callers hitting the same key — so
+ * that cost was paid on every tick, by every consumer. This describe block
+ * pins the cache LAYER (`readAdvRoster`) that wraps the deadline-bound read
+ * proven above; it never exercises the underlying legs' timeout behavior,
+ * which is what the describe block above already owns.
+ *
+ * Every case drives the cache with an injected `nowMs` rather than real or
+ * fake timers — same reasoning as `budgetMs`: `nowMs` is a FUNCTION parameter
+ * (see the module header), never a wire field, so a boundary can be crossed
+ * by moving a number instead of waiting or mocking the global clock. That
+ * matters doubly here because `readAdvRosterUncached`'s first await is a
+ * dynamic `import('node:os')`, which interacts unpredictably with
+ * `vi.useFakeTimers()` + `setSystemTime()` (see the module's `nowMs` doc).
+ */
+describe('readAdvRoster — the stale-while-revalidate cache (EI-22091013068319789)', () => {
+  beforeEach(() => {
+    // A module-scoped cache map outlives any one test; start every case cold
+    // so a passing assertion here can never be an artifact of another test's
+    // leftover entry under the same key.
+    _resetRosterCacheForTests();
+  });
+
+  it('a FRESH cache hit (age < ROSTER_CACHE_FRESH_MS) is served with NO extra read', async () => {
+    let now = 1_000;
+    const nowMs = () => now;
+    mergeRosterWithAssignments.mockResolvedValueOnce({ active: [{ id: 'v1' }], orphanedClaims: [] });
+
+    const first = await readAdvRoster({ workspaceId: 'ws-fresh', nowMs });
+    expect(first.active).toEqual([{ id: 'v1' }]);
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(1);
+
+    now += ROSTER_CACHE_FRESH_MS - 1; // still inside the fresh window
+    const second = await readAdvRoster({ workspaceId: 'ws-fresh', nowMs });
+    expect(second.active).toEqual([{ id: 'v1' }]); // the same cached snapshot
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(1); // no extra read
+  });
+
+  it('a STALE cache hit (FRESH_MS <= age < STALE_MS) is served IMMEDIATELY while ONE background refresh runs', async () => {
+    let now = 1_000;
+    const nowMs = () => now;
+    mergeRosterWithAssignments.mockResolvedValueOnce({ active: [{ id: 'v1' }], orphanedClaims: [] });
+
+    const first = await readAdvRoster({ workspaceId: 'ws-stale', nowMs });
+    expect(first.active).toEqual([{ id: 'v1' }]);
+
+    mergeRosterWithAssignments.mockResolvedValueOnce({ active: [{ id: 'v2' }], orphanedClaims: [] });
+    now += ROSTER_CACHE_FRESH_MS + 1; // stale, but not yet past STALE_MS
+    const second = await readAdvRoster({ workspaceId: 'ws-stale', nowMs });
+    // The OLD snapshot, served immediately — the caller never blocks on the refresh.
+    expect(second.active).toEqual([{ id: 'v1' }]);
+
+    // Let the fire-and-forget background refresh (readAdvRoster never awaits
+    // it) settle before inspecting its effect.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(2); // exactly one background refresh
+
+    // A later read, within FRESH_MS of the BACKGROUND refresh's own
+    // computedAt, observes the refreshed value with no further read.
+    now += 1;
+    const third = await readAdvRoster({ workspaceId: 'ws-stale', nowMs });
+    expect(third.active).toEqual([{ id: 'v2' }]);
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(2);
+  });
+
+  it('past STALE_MS the cache is NOT re-served — the caller blocks on a genuinely fresh read', async () => {
+    let now = 1_000;
+    const nowMs = () => now;
+    mergeRosterWithAssignments.mockResolvedValueOnce({ active: [{ id: 'v1' }], orphanedClaims: [] });
+    await readAdvRoster({ workspaceId: 'ws-verystale', nowMs });
+
+    mergeRosterWithAssignments.mockResolvedValueOnce({ active: [{ id: 'v-fresh' }], orphanedClaims: [] });
+    now += ROSTER_CACHE_STALE_MS + 1;
+    const result = await readAdvRoster({ workspaceId: 'ws-verystale', nowMs });
+
+    // The old value is gone entirely — a genuinely fresh read, not a stale re-serve.
+    expect(result.active).toEqual([{ id: 'v-fresh' }]);
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(2);
+  });
+
+  it('different cache keys (distinct workspaceId) never share an entry', async () => {
+    const nowMs = () => 1_000;
+    mergeRosterWithAssignments
+      .mockResolvedValueOnce({ active: [{ id: 'ws-a' }], orphanedClaims: [] })
+      .mockResolvedValueOnce({ active: [{ id: 'ws-b' }], orphanedClaims: [] });
+
+    const a = await readAdvRoster({ workspaceId: 'ws-A', nowMs });
+    const b = await readAdvRoster({ workspaceId: 'ws-B', nowMs });
+
+    expect(a.active).toEqual([{ id: 'ws-a' }]);
+    expect(b.active).toEqual([{ id: 'ws-b' }]);
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(2);
+
+    // Re-reading either, still fresh, hits its OWN entry — no cross-talk.
+    const aAgain = await readAdvRoster({ workspaceId: 'ws-A', nowMs });
+    const bAgain = await readAdvRoster({ workspaceId: 'ws-B', nowMs });
+    expect(aAgain.active).toEqual([{ id: 'ws-a' }]);
+    expect(bAgain.active).toEqual([{ id: 'ws-b' }]);
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(2); // still just the original two
+  });
+
+  it('an explicit budgetMs BYPASSES the cache even on a fresh hit — every call is a real read', async () => {
+    const nowMs = () => 1_000;
+    mergeRosterWithAssignments
+      .mockResolvedValueOnce({ active: [{ id: 'cached' }], orphanedClaims: [] })
+      .mockResolvedValueOnce({ active: [{ id: 'bypassed' }], orphanedClaims: [] });
+
+    const cached = await readAdvRoster({ workspaceId: 'ws-bypass', nowMs });
+    expect(cached.active).toEqual([{ id: 'cached' }]);
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(1);
+
+    // Same key, well within FRESH_MS — a normal call would hit the cache above.
+    const bypassed = await readAdvRoster({ workspaceId: 'ws-bypass', budgetMs: 25, nowMs });
+    expect(bypassed.active).toEqual([{ id: 'bypassed' }]); // a genuinely fresh, uncached read
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(2);
+  });
+
+  it('concurrent callers racing a COLD key share exactly ONE underlying read', async () => {
+    const nowMs = () => 1_000;
+    mergeRosterWithAssignments.mockResolvedValue({ active: [{ id: 'shared' }], orphanedClaims: [] });
+
+    // No await between the two calls: both must observe the cache as cold and
+    // race into the SAME dedupeInFlight entry, not each start their own read.
+    const [a, b] = await Promise.all([
+      readAdvRoster({ workspaceId: 'ws-race', nowMs }),
+      readAdvRoster({ workspaceId: 'ws-race', nowMs }),
+    ]);
+
+    expect(a.active).toEqual([{ id: 'shared' }]);
+    expect(b.active).toEqual([{ id: 'shared' }]);
+    expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(1); // one read, not two
+  });
 });
