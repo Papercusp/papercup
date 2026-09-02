@@ -178,6 +178,17 @@ import {
   withCarryNoteChecks,
 } from '../../carry-note';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
+import { postLearnedAtLevel, describeCaptureGaps } from '../../effort-thread';
+
+/**
+ * D-010: the note length below which the capture advisory stays SILENT.
+ *
+ * 400 chars is about a paragraph. Below it a checkpoint is a progress ping ("suite
+ * green, moving to P-004"), which has no root cause to omit — nagging it would make
+ * the advisory noise, and an advisory nobody reads is the exact D-004 failure mode
+ * this is trying to fix rather than reproduce.
+ */
+const CAPTURE_ADVISORY_MIN_CHARS = 400;
 import { continuityPredicateSchema, continuityProbeSchema } from '../../continuity-probes';
 
 /** First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
@@ -687,6 +698,42 @@ function checksSpec() {
     );
 }
 
+/**
+ * P-017 (effort-scoped-continuity-2026-09-02, D-007/D-009): the durable half of a
+ * checkpoint, posted to a THREAD in the same round-trip.
+ *
+ * A checkpoint is PRIVATE working state on a replace-on-write row. A lesson worth
+ * outliving this item's next holder belongs on an append-only, multi-author,
+ * attributed, federated surface — the object's own thread. One optional field means
+ * curation stays with the agent that holds the context, at zero extra round-trip.
+ *
+ * ⚠ THIS IS NOT A PROMOTION FIELD (D-009 deleted that). Nothing is copied or lifted
+ * between levels. The writer names the level the insight actually belongs to and it is
+ * written there once; a plan read includes it because a plan's history contains its own
+ * posts. Do not add a corrective for mis-levelled notes — D-009 leaves that open
+ * deliberately, and a mis-levelled note still reads at its own level and still rolls up.
+ */
+function learnedSpec() {
+  return z
+    .string()
+    .max(4000)
+    .optional()
+    .describe(
+      'a durable lesson to post on the effort thread in this same call — the part of your note a future ' +
+        'claimant needs. Defaults to this work-item; pass learnedLevel to attach it where it belongs.',
+    );
+}
+
+function learnedLevelSpec() {
+  return z
+    .enum(['work_item', 'plan', 'goal'])
+    .optional()
+    .describe(
+      "which level `learned` belongs to — write at the level you are working at. Default 'work_item' " +
+        '(the level 94% of items have); a level this item lacks falls back to the most specific one it has.',
+    );
+}
+
 const itemSpec = z.object({
   id: z.string().min(1).describe('the work-item id to checkpoint'),
   /** The compressed in-flight state. Null ⇒ CLEAR the checkpoint.
@@ -731,6 +778,8 @@ const itemSpec = z.object({
   retireIds: retireIdsSpec(),
   dependsOn: dependsOnSpec(),
   checks: checksSpec(),
+  learned: learnedSpec(),
+  learnedLevel: learnedLevelSpec(),
 });
 
 // EI-21035020852712365: a terminal work-item is no longer an active work lane.
@@ -831,6 +880,8 @@ export default defineTool({
       ),
       checks: checksSpec(),
       dependsOn: dependsOnSpec(),
+      learned: learnedSpec(),
+      learnedLevel: learnedLevelSpec(),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id, checkpoint? } for one, or items:[{ id, checkpoint? }] for many',
@@ -859,6 +910,8 @@ export default defineTool({
             rowsMode: args.rowsMode,
             confirmRetire: args.confirmRetire,
             dependsOn: args.dependsOn,
+            learned: args.learned,
+            learnedLevel: args.learnedLevel,
           },
         ];
     const env = await runBulk(
@@ -1829,6 +1882,33 @@ export default defineTool({
             };
           }
         }
+        // ── P-017: the durable half, posted to the effort thread in this same call ──
+        // Deliberately AFTER the read-back verify, and fail-soft: the checkpoint is the
+        // thing a successor cannot do without, so a thread that refuses a post must
+        // never fail the checkpoint that accompanied it. The result says what happened
+        // rather than swallowing it.
+        const learnedText = (it.learned ?? args.learned ?? '').trim();
+        let learnedResult: Awaited<ReturnType<typeof postLearnedAtLevel>> | null = null;
+        if (learnedText) {
+          learnedResult = await postLearnedAtLevel({
+            workItemId: it.id,
+            level: it.learnedLevel ?? args.learnedLevel,
+            text: learnedText,
+            harness,
+            authorId: ident.ownerId,
+            workspaceId,
+          }).catch(() => null);
+        }
+        // ── D-010: run the READER'S extractor at WRITE time and hand back what it
+        // found. No gate, no rejection, no new required args — the writer's inability
+        // to SEE the gap is the actual mechanism, and an agent re-reading its own note
+        // finds it clear because it still holds the context the note depends on.
+        //
+        // Fires only on a SUBSTANTIAL note. A two-line progress refresh has no root
+        // cause to omit, and an advisory that fires on every write is one nobody reads
+        // — which is the D-004 failure this is trying to avoid, not repeat.
+        const captureAdvisory =
+          stored !== null && stored.length >= CAPTURE_ADVISORY_MIN_CHARS ? describeCaptureGaps(stored) : null;
         return {
           ok: true as const,
           id: it.id,
@@ -1836,6 +1916,22 @@ export default defineTool({
           cleared: stored === null,
           length: stored?.length ?? 0,
           contentHash: stored !== null ? shortHash(stored) : null,
+          ...(learnedResult
+            ? {
+                learned: {
+                  posted: learnedResult.posted,
+                  level: learnedResult.level,
+                  ref: learnedResult.ref,
+                  ...(learnedResult.fellBack
+                    ? {
+                        note: `this item has no ${learnedResult.requestedLevel} ancestor — the lesson was written at ${learnedResult.level} instead (nothing was dropped)`,
+                      }
+                    : {}),
+                  ...(learnedResult.skipped ? { skipped: learnedResult.skipped } : {}),
+                },
+              }
+            : {}),
+          ...(captureAdvisory?.note ? { captureAdvisory: captureAdvisory.note } : {}),
           /** P-003: verified = the stored text READ BACK byte-identically via the reader
            *  path (null on a clear — nothing to verify). */
           verified: stored !== null ? (true as const) : null,

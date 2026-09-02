@@ -741,9 +741,18 @@ interface CollectorDeps {
   items: typeof listWorkItems;
   thread: typeof getWorkItemThreadWindow;
   checkpoint: typeof getWorkItemCheckpointWithMeta;
-  /** P-003's trajectory ring — the superseded checkpoints a replace-on-write slot
-   *  used to destroy. Injected like every other store so a test can supply one. */
-  journal: typeof getWorkItemCheckpointJournal;
+  /**
+   * P-003's trajectory ring — the superseded checkpoints a replace-on-write slot used
+   * to destroy. Injected like every other store so a test can supply one.
+   *
+   * OPTIONAL, unlike its siblings, because it was added to an interface that already
+   * had partial doubles in the wild: making it required turns "this double predates
+   * the ring" into a TypeError deep inside the collector, which surfaces as a
+   * fail-soft `null` brief rather than a legible failure. An absent ring is the same
+   * graceful degradation every other leg already has — and the honest one for the
+   * 10,326 rows written before P-003 turned journaling on.
+   */
+  journal?: typeof getWorkItemCheckpointJournal;
   lifecycle: typeof getWorkItemLifecycleHistory;
   priorWork: typeof getClaimTimePriorWorkHint;
 }
@@ -981,7 +990,7 @@ export async function collectPriorAttempts(
         // P-003's trajectory ring. Read ONLY for the requested ref: it is the one item
         // whose superseded reasoning a claimant is about to repeat, and admitting every
         // sibling's ring would multiply the deep-read cost the `deep` guard just bounded.
-        item.id === options.workItemId
+        item.id === options.workItemId && deps.journal
           ? deps.journal({ harness: item.harness, workItemId: item.id }).catch(() => [])
           : Promise.resolve([]),
       ]);

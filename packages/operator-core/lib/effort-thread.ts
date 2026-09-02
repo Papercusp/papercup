@@ -160,6 +160,50 @@ export async function readEffortThread(
 }
 
 /**
+ * P-017's tool-facing entry point: post a lesson at the level the agent is working at,
+ * resolving that level from the work-item it is checkpointing.
+ *
+ * `level` DEFAULTS to `work_item` — "the most specific object the caller holds, which
+ * for 94% of items is the item itself" (measured 2026-09-02: 15,791 of 16,792 open
+ * items carry neither a plan nor a goal). Asking for `plan` or `goal` resolves the
+ * item's ancestors through the containment tree; a level the item does not HAVE falls
+ * back to the most specific level it does, rather than silently dropping the note.
+ *
+ * ⚠ NOT a promotion (D-009). Nothing is copied or lifted between levels. The caller
+ * names the level its insight belongs to and the note is written there once.
+ */
+export async function postLearnedAtLevel(input: {
+  workItemId: string;
+  level?: ContainmentKind;
+  text: string;
+  harness?: string | null;
+  authorId?: string | null;
+  workspaceId?: string;
+}): Promise<EffortNoteResult & { requestedLevel: ContainmentKind; fellBack: boolean }> {
+  const requested: ContainmentKind = input.level ?? 'work_item';
+  let target: ContainmentRef = { kind: 'work_item', ref: input.workItemId, harness: input.harness ?? null };
+  let fellBack = false;
+  if (requested !== 'work_item') {
+    const { resolveContainmentTree } = await import('./containment-tree');
+    const tree = await resolveContainmentTree(target, {
+      workspaceId: input.workspaceId,
+      harness: input.harness ?? null,
+      direction: 'up',
+    }).catch(() => null);
+    const node = tree?.ancestors.find((a) => a.kind === requested) ?? null;
+    if (node) target = { kind: node.kind, ref: node.ref, harness: node.harness ?? input.harness ?? null };
+    else fellBack = true;
+  }
+  const result = await postEffortNote({
+    target,
+    text: input.text,
+    authorId: input.authorId,
+    workspaceId: input.workspaceId,
+  });
+  return { ...result, requestedLevel: requested, fellBack };
+}
+
+/**
  * D-010's WRITE-SIDE FIX, and the reason it is feedback rather than instruction.
  *
  * The compression ladder the READER depends on is keyword-matched prose, not data the

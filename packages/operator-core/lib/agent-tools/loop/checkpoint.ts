@@ -89,6 +89,7 @@ import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/store';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 import { continuityPredicateSchema, continuityProbeSchema } from '../../continuity-probes';
+import { postLearnedAtLevel } from '../../effort-thread';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
@@ -432,7 +433,38 @@ export default defineTool({
         .max(120)
         .optional()
         .describe(
-          'Compatibility metadata for an associated work-item id; accepted but does not change loop scope (ownerId remains authoritative).',
+          'Compatibility metadata for an associated work-item id; accepted but does not change loop scope (ownerId remains authoritative). Also the anchor `learned` writes from.',
+        ),
+      /**
+       * P-017 (effort-scoped-continuity-2026-09-02, D-003/D-007/D-009).
+       *
+       * This is the field D-003 argued for, on the corpus that motivated it: the loop
+       * carry-note scope holds the richest record of what agents actually learn —
+       * measured 2026-09-02, 4,795 rows carrying 29,377 journal entries and 12.5MB of
+       * note text — and it is STRUCTURALLY PRIVATE, keyed `loop:<harness>:<ownerId>`,
+       * so no other agent can address it. Not by policy; by key.
+       *
+       * D-003 rejected bulk-mining that corpus into a shared log, because most of a
+       * loop journal is one-wake bookkeeping whose value expires with the wake, and
+       * copying it wholesale would bury the fraction that matters. The agent writing
+       * the note is the only party that knows which part is durable. So: one optional
+       * field, written in the SAME call, with curation left where the judgement is.
+       */
+      learned: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe(
+          'a durable lesson to post on the effort thread in this same call — the part of this private loop note ' +
+            'a future agent needs. Requires `workItem` as the anchor; use learnedLevel to attach it at that ' +
+            "item's plan or goal instead.",
+        ),
+      learnedLevel: z
+        .enum(['work_item', 'plan', 'goal'])
+        .optional()
+        .describe(
+          "which level `learned` belongs to — write at the level you are working at. Default 'work_item'; a level " +
+            'the anchor item lacks falls back to the most specific one it has.',
         ),
       // WI-7264: walls deliberately get the cap RELAXATION but NOT the `{status,
       // evidence}` shape coercion that `checks` gets. A wall has no `verified` field,
@@ -1711,6 +1743,25 @@ export default defineTool({
                 precomputedStamp: preWriteStamp,
           })
         : {};
+    // P-017: the durable half of this private note, posted to the effort thread in the
+    // same round-trip. Fail-soft and AFTER the carry-note verify — the loop's own carry
+    // is what a cold wake cannot do without, so a refused thread post must never take
+    // it down. `workItem` is required as the anchor because the loop scope itself is
+    // keyed by ownerId and carries no object identity to attach a shared note to.
+    const learnedText = (args.learned ?? '').trim();
+    let learnedResult: Awaited<ReturnType<typeof postLearnedAtLevel>> | null = null;
+    let learnedSkippedNoAnchor = false;
+    if (learnedText) {
+      if (!args.workItem?.trim()) learnedSkippedNoAnchor = true;
+      else
+        learnedResult = await postLearnedAtLevel({
+          workItemId: args.workItem.trim(),
+          level: args.learnedLevel,
+          text: learnedText,
+          harness,
+          authorId: ownerId,
+        }).catch(() => null);
+    }
     return {
       content: [
         {
@@ -1718,6 +1769,30 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             harness,
+            ...(learnedResult
+              ? {
+                  learned: {
+                    posted: learnedResult.posted,
+                    level: learnedResult.level,
+                    ref: learnedResult.ref,
+                    ...(learnedResult.fellBack
+                      ? {
+                          note: `the anchor item has no ${learnedResult.requestedLevel} ancestor — the lesson was written at ${learnedResult.level} instead (nothing was dropped)`,
+                        }
+                      : {}),
+                    ...(learnedResult.skipped ? { skipped: learnedResult.skipped } : {}),
+                  },
+                }
+              : {}),
+            ...(learnedSkippedNoAnchor
+              ? {
+                  learned: {
+                    posted: false,
+                    skipped: 'no-anchor',
+                    note: 'a loop note is keyed by ownerId and has no object to attach a shared lesson to — pass `workItem` (the item this loop is driving) and the lesson lands on its thread.',
+                  },
+                }
+              : {}),
             // EI-21510951589801937: when the scope came from the owner's existing
             // carry-note rather than from the session, say so — the write succeeded,
             // but the caller should know which store it landed in.
