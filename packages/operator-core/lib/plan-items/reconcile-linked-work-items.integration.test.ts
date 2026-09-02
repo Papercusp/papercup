@@ -415,6 +415,7 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
       skippedInFlight: [],
       skippedAlreadyTerminal: [],
       skippedUnprovenLink: [],
+      skippedGatedState: [],
     });
   });
 
@@ -539,6 +540,7 @@ describe('reconcileLinkedWorkItemsForPlanItem — stale-read guard (EI-8970)', (
       skippedInFlight: [],
       skippedAlreadyTerminal: [],
       skippedUnprovenLink: [],
+      skippedGatedState: [],
     });
     expect(setWorkItemState).not.toHaveBeenCalled();
   });

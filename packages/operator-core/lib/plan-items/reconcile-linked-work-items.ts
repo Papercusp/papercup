@@ -118,6 +118,14 @@ export interface ReconcileLinkedWorkItemsResult {
    * see the guard below for why a bare stamp is not evidence of implementation.
    */
   skippedUnprovenLink: string[];
+  /**
+   * EI-22178190387074148: linked work-items sitting in `blocked`/`needs-human` —
+   * left alone rather than terminal-closed. That state IS the authority signal:
+   * an open owner-decision or external dependency the WORK-ITEM tracks, which a
+   * sibling plan item reaching done/dropped says nothing about resolving. See the
+   * guard below for the full rationale.
+   */
+  skippedGatedState: string[];
 }
 
 /**

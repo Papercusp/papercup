@@ -3491,6 +3491,11 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   "coord:inbox",
   "coord:send",
   "coord:glance",
+  // Added 2026-09-02 in lockstep with the canonical list (WI-2142095 / P-011): until
+  // then coord:dispatch sat only in the retired mug tier, so the P-013 falsifier would
+  // have read absence as rejection. Order matters — the drift guard compares this list
+  // to CORE_MCP_TOOL_NAMES element-by-element.
+  "coord:dispatch",
   // plans:new (P-002, cross-platform-hardening-and-agent-ergonomics-2026-07-05) authors a
   // whole plan in ONE call (P-001 `body` arg) so an agent never hunts for a create verb —
   // the Mac-app plan-authoring fumble (owner: "plans should be a core trimmed tool").

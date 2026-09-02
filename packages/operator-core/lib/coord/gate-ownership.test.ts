@@ -465,6 +465,31 @@ describe('readGateOwnership', () => {
     expect(ownershipNeedsLivenessConfirmation(own)).toBe(true);
   });
 
+  // RECURRENCE GUARD (EI-22177969873560474): this cell's `holderSessionState`
+  // is documented as "measured by the presence oracle" — the SAME oracle
+  // coord:presence's roster read uses. presence-snapshot.ts enables the
+  // psu-host positive-authority rescue leg (`{ positive: true }`) for every
+  // roster row; this call must pass the equivalent `psuHostPositiveAuthority`
+  // option, or a holder with a confirmed-live psu host but a base-derived
+  // 'suspect'/'ended' verdict reads 'suspect' HERE while coord:presence
+  // rescues the SAME owner to 'parked' — the exact two-surfaces-disagree bug.
+  it('requests the psu-host positive-authority rescue leg, matching coord:presence', async () => {
+    const seenOpts: Array<{ psuHostPositiveAuthority?: boolean; hydratePerId?: boolean }> = [];
+    await readGateOwnership({
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([['green-stall:papercusp', mkObj({ claimState: 'held', takenBy: 'su-parked' })]])) as never,
+      resolveSessionStates: (async (
+        subjects: readonly { ownerId: string }[],
+        opts: { psuHostPositiveAuthority?: boolean; hydratePerId?: boolean },
+      ) => {
+        seenOpts.push(opts);
+        return new Map(subjects.map((s) => [s.ownerId, { ownerId: s.ownerId, sessionState: 'parked' }]));
+      }) as never,
+    });
+    expect(seenOpts).toEqual([{ hydratePerId: true, psuHostPositiveAuthority: true }]);
+  });
+
   it('does NOT call the oracle when there is no holder to measure', async () => {
     let calls = 0;
     const own = await readGateOwnership({

@@ -513,6 +513,17 @@ export async function readGateOwnership(
       const resolve = opts.resolveSessionStates ?? resolveSessionStates;
       const verdicts = await resolve([{ ownerId: obj.takenBy, claimsHeld: obj.claimState === 'held' }], {
         hydratePerId: true,
+        // EI-22177969873560474: without this leg, a holder whose base derivation
+        // lands 'suspect'/'ended' (wakeAttemptMiss / activityDead / hardStale) but
+        // who has a confirmed-live psu-pty host read 'suspect' HERE while
+        // coord:presence's own oracle call (presence-snapshot.ts) rescues the SAME
+        // owner to 'parked' — the two surfaces disagreeing about one owner's
+        // liveness at one instant, which this field's own docstring above says
+        // must never happen ("measured by the presence oracle"). Matching
+        // presence-snapshot's `{ enabled: true, negative: false, positive: true }`
+        // psu-host leg restores the one-oracle invariant instead of leaving this
+        // the one caller that omits it.
+        psuHostPositiveAuthority: true,
       });
       holderSessionState = verdicts.get(obj.takenBy)?.sessionState ?? null;
     } catch {

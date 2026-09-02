@@ -224,6 +224,17 @@ export interface ResolveSessionStatesOpts {
     host: string | null;
     pid: number | null;
     source: string;
+    /**
+     * EI-22177969873560474: without this, `hydratePerId` had no way to fill
+     * `LivenessSubject.agentRole` from the store, which silently disables the
+     * psu-host authority leg (`psuHostAuthority` / `psuHostPositiveAuthority`)
+     * for EVERY bare-id caller — `deriveVerdict`'s `psuHostKnownRole` check
+     * requires a non-null agentRole, and a hydrated subject never had one.
+     * Optional so existing fixtures/DI seams that omit it keep compiling; a
+     * missing value degrades exactly like an unfetched leg (no rescue), never
+     * a throw.
+     */
+    agentRole?: string | null;
   } | null>;
 }
 
@@ -455,6 +466,13 @@ export async function resolveSessionStates(
             host: s.host ?? p.host,
             pid: s.pid ?? p.pid,
             source: s.source ?? p.source,
+            // EI-22177969873560474: was missing — every hydratePerId caller
+            // that also enables psuHostAuthority/psuHostPositiveAuthority
+            // (readGateOwnership, fleet/respawn-member's readMemberSessionState)
+            // had the leg silently disabled, since deriveVerdict's
+            // `psuHostKnownRole` requires a non-null agentRole and a bare-id
+            // subject never carried one through hydration.
+            agentRole: s.agentRole ?? p.agentRole,
           };
         } catch {
           return s; // hydration is best-effort — a store hiccup never blocks the verdict
