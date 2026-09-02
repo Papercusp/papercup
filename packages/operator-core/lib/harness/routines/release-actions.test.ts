@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } from 'vitest';
 import { describeGateRedOwnership } from '../../release/gate-red-ownership';
-import { resolveIntegrationRoot, integrationRootEvidence } from './release-actions';
+import { resolveIntegrationRoot, integrationRootEvidence, CHECKPOINT_SCOPE_RUNTIME_MAX_SEC } from './release-actions';
 import { pipelineName } from '../../release/pipeline-name';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -1843,6 +1843,37 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(buildIsolatedScopeArgv(['/x/tsx', '/x/suite.ts'], 16, 'deny')).toContain('--property=MemorySwapMax=0');
     // Payload appended verbatim, in order, at the end.
     expect(argv.slice(-2)).toEqual(['/x/tsx', '/x/suite.ts']);
+  });
+
+  // ── EI-22129539141207312: the systemd-enforced outer wall ──────────────────
+  // A crashed run sat resident 29h with zombie children and no terminal marker,
+  // having outlived its own 180m self-watchdog, because every bound on it lived in
+  // a process that could die (or wedge) before firing. systemd owns none of those
+  // failure modes, which is why the wall belongs on the scope.
+  it('a scoped checkpoint run carries a systemd RuntimeMaxSec wall, above the whole in-band chain', () => {
+    const argv = buildIsolatedScopeArgv(['/x/tsx', '/x/suite.ts'], 16, 'allow', CHECKPOINT_SCOPE_RUNTIME_MAX_SEC);
+    expect(argv).toContain(`--property=RuntimeMaxSec=${CHECKPOINT_SCOPE_RUNTIME_MAX_SEC}`);
+
+    // ORDERING IS THE SAFETY PROPERTY, not the presence of the flag. A wall at or
+    // below the in-band chain would kill healthy slow suites pre-verdict — the exact
+    // regression the 55m→115m timeout bump was made to stop — so assert the wall sits
+    // STRICTLY above every bound green-checkpoint.ts documents.
+    const SUITE_TIMEOUT_SEC = 115 * 60;
+    const SELF_WATCHDOG_SEC = 180 * 60;
+    const LOCK_STALE_SEC = 190 * 60; // CHECKPOINT_LOCK_STALE_MS
+    expect(CHECKPOINT_SCOPE_RUNTIME_MAX_SEC).toBeGreaterThan(SUITE_TIMEOUT_SEC);
+    expect(CHECKPOINT_SCOPE_RUNTIME_MAX_SEC).toBeGreaterThan(SELF_WATCHDOG_SEC);
+    expect(CHECKPOINT_SCOPE_RUNTIME_MAX_SEC).toBeGreaterThan(LOCK_STALE_SEC);
+  });
+
+  it('the wall is OPT-IN: a caller with its own supervision is unchanged (no RuntimeMaxSec)', () => {
+    // Deliberately-wrong control. If the default ever became a bound, the two other
+    // production callers (substrate sidecar, orchestrator runner) would silently
+    // acquire a kill deadline nobody chose for them — so pin the omission, not just
+    // the presence above.
+    for (const argv of [buildIsolatedScopeArgv(['/bin/false'], 6), buildIsolatedScopeArgv(['/bin/false'], 6, 'deny')]) {
+      expect(argv.some((a) => a.startsWith('--property=RuntimeMaxSec='))).toBe(false);
+    }
   });
 
   describe('scheduled checkpoint evidence wrapper', () => {

@@ -136,6 +136,25 @@ export function checkpointRunLogPaths(
   return { runId, logPath, terminalPath: `${logPath}.terminal.json` };
 }
 
+/**
+ * EI-22129539141207312 — the systemd-enforced outer wall on a scoped checkpoint run.
+ *
+ * 4h, chosen to sit STRICTLY ABOVE the whole in-band chain green-checkpoint.ts documents
+ * (suite timeout 115m < self-watchdog 180m < CHECKPOINT_LOCK_STALE_MS 190m). That ordering
+ * is the point: every in-band mechanism keeps its full chance, and this only ever fires for
+ * a run that has defeated ALL of them — so it can never preempt a healthy slow suite or
+ * manufacture the pre-verdict kills the 55m→115m bump was made to stop.
+ *
+ * Measured motivation: one crashed run sat resident 29h with two ZOMBIE esbuild children
+ * and no terminal marker, having outlived its 180m self-watchdog by an order of magnitude,
+ * because its Node main thread was blocked in a synchronous native call and no JS timer
+ * could run. When systemd stops the scope, the wrapper's EXIT trap DOES run and takes its
+ * `checkpoint_reached_exit=0` branch, writing the `"killed":true` marker that branch already
+ * exists for — so this one property also restores the missing terminal evidence and reaps
+ * the tree, without any new cleanup code on a thread that may never execute again.
+ */
+export const CHECKPOINT_SCOPE_RUNTIME_MAX_SEC = 4 * 60 * 60;
+
 /** Keep the scheduled wrapper's evidence directory aligned with the CLI's release config. */
 function scheduledCheckpointLogDir(): string {
   return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? path.join(homedir(), '.papercusp', 'checkpoint-logs');
@@ -479,7 +498,10 @@ function runScript(
       );
     });
   return wantScope
-    ? attempt(buildIsolatedScopeArgv(scopedPayload, isolate.memoryMaxG), () => attempt(base, null))
+    ? attempt(
+        buildIsolatedScopeArgv(scopedPayload, isolate.memoryMaxG, 'allow', CHECKPOINT_SCOPE_RUNTIME_MAX_SEC),
+        () => attempt(base, null),
+      )
     : attempt(base, null);
 }
 

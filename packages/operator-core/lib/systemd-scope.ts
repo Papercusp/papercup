@@ -269,7 +269,12 @@ export type ScopeSwapPolicy = 'allow' | 'deny';
  *  worker should page rather than be killed. A caller whose payload is a shared orchestrator —
  *  or a known leaker whose thrash would wedge the box — opts into 'deny' EXPLICITLY, so that
  *  choice is visible at the call site instead of silently inherited. */
-export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number, swap: ScopeSwapPolicy = 'allow'): string[] {
+export function buildIsolatedScopeArgv(
+  base: string[],
+  memoryMaxG: number,
+  swap: ScopeSwapPolicy = 'allow',
+  runtimeMaxSec: number | null = null,
+): string[] {
   return [
     'systemd-run',
     '--user',
@@ -278,6 +283,22 @@ export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number, swap:
     ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--property=MemoryMax=${memoryMaxG}G`,
     ...(swap === 'deny' ? ['--property=MemorySwapMax=0'] : []),
+    // EI-22129539141207312 — the LAST-RESORT wall. Every other bound on a scoped run
+    // lives inside a process that can die before it fires, which is not a theoretical
+    // ordering worry: all three were defeated at once by one run, measured resident 29h.
+    //   · the payload's in-process self-watchdog is a setTimeout on the Node event loop,
+    //     so a main thread blocked in a synchronous native call (futex) never runs it;
+    //   · the launching routine parent's kill-timer dies with that parent, and this
+    //     scope is DESIGNED to outlive it (see release-actions' own note);
+    //   · the bash wrapper's EXIT trap only runs once the payload exits, which is
+    //     exactly what a wedged payload never does.
+    // systemd owns none of those failure modes, which is the whole point — and this
+    // file already says so for the NAMED variant: a RuntimeMaxSec "is enforced by
+    // systemd even if the operator dies, which a timer of ours could never promise".
+    // Pass a bound STRICTLY ABOVE the caller's in-band chain so it can only ever catch
+    // a run that has defeated every in-band mechanism; null keeps the historical
+    // unbounded behaviour for callers with their own supervision.
+    ...(runtimeMaxSec != null ? [`--property=RuntimeMaxSec=${runtimeMaxSec}`] : []),
     ...base,
   ];
 }
