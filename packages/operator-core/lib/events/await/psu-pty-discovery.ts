@@ -693,11 +693,15 @@ let injectsMismatched = 0;
 let injectsUnlabelled = 0;
 
 /**
- * The owner a socket PATH belongs to, independent of what the caller asserted.
- * psu-pty-host.mjs writes its socket as `<PSU_PTY_DIR>/<ownerId>.sock`, so the
- * path is a second, caller-independent witness to the intended recipient.
- * Returns null when the path is not that shape (a test double, an injected
- * absolute path) — an indeterminate reading, never a mismatch.
+ * The owner KEY a socket PATH carries, independent of what the caller asserted.
+ *
+ * psu-pty-host.mjs writes its socket as `<PSU_PTY_DIR>/<sanitizeKey(ownerId)>.sock`,
+ * so this returns a SANITIZED KEY — compare it against `sanitizeKey(ownerId)`, never
+ * against a raw ownerId, or every owner id that sanitizes to something different
+ * reports a false mismatch.
+ *
+ * Returns null when the path is not that shape (a test double, an injected absolute
+ * path) — an indeterminate reading, never a mismatch.
  */
 export function sockOwnerIdFromPath(sock: string): string | null {
   if (typeof sock !== 'string' || sock.length === 0) return null;
@@ -705,6 +709,34 @@ export function sockOwnerIdFromPath(sock: string): string | null {
   if (!base.endsWith('.sock')) return null;
   const owner = base.slice(0, -'.sock'.length);
   return owner.length > 0 ? owner : null;
+}
+
+/**
+ * The ownerId the HOST ITSELF recorded for this socket — the authoritative binding,
+ * read from the discovery records rather than inferred from a filename.
+ *
+ * Only consulted when the cheap path check disagrees, because it costs a directory
+ * scan. A socket path is allowed to be non-canonical (a caller passes whatever
+ * `host.sock` the meta file holds), so a filename disagreement is a REASON TO LOOK,
+ * never a verdict on its own.
+ */
+function recordedOwnerIdForSock(sock: string): string | null {
+  try {
+    for (const f of readdirSync(PSU_PTY_DIR)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const h = JSON.parse(readFileSync(join(PSU_PTY_DIR, f), 'utf8')) as Partial<PsuPtyHost>;
+        if (h && h.sock === sock && typeof h.ownerId === 'string' && h.ownerId.length > 0) {
+          return h.ownerId;
+        }
+      } catch {
+        /* a corrupt/partial record is not evidence either way */
+      }
+    }
+  } catch {
+    /* no discovery dir — indeterminate */
+  }
+  return null;
 }
 
 function appendInjectAudit(row: Record<string, unknown>): void {
@@ -750,6 +782,46 @@ export function auditInjectOwnerBinding(
 
     injectsChecked += 1;
 
+    if (msg.ownerId !== undefined && sanitizeKey(msg.ownerId) !== sockOwner) {
+      // The two cheap witnesses disagree. That is a reason to LOOK, not a verdict:
+      // the socket filename is only a convention, and a caller legitimately passes
+      // whatever `sock` the discovery record holds. Consult the authoritative
+      // binding the host wrote before accusing anyone of a misroute — a detector
+      // that cries wolf on a rebound socket is one people learn to ignore.
+      const recorded = recordedOwnerIdForSock(sock);
+      if (recorded === null) return 'indeterminate';
+      if (recorded === msg.ownerId) {
+        if (injectsChecked % INJECT_AUDIT_HEARTBEAT_EVERY === 0) {
+          appendInjectAudit({
+            kind: 'inject-audit-heartbeat',
+            checked: injectsChecked,
+            mismatched: injectsMismatched,
+            unlabelled: injectsUnlabelled,
+            pid: process.pid,
+          });
+        }
+        return 'match';
+      }
+      injectsMismatched += 1;
+      appendInjectAudit({
+        kind: 'inject-owner-mismatch',
+        mode: msg.mode,
+        envelopeOwnerId: msg.ownerId,
+        sockOwnerId: sockOwner,
+        recordedOwnerId: recorded,
+        deliveryId: msg.deliveryId ?? null,
+        checked: injectsChecked,
+        pid: process.pid,
+      });
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[psu-pty] SENDER OWNER-BINDING MISMATCH: envelope ownerId=${msg.ownerId} but the host ` +
+          `that owns this socket recorded ${recorded} (mode=${msg.mode}, ` +
+          `deliveryId=${msg.deliveryId ?? 'none'}). Delivery NOT blocked (detector only) — WI-2140968.`,
+      );
+      return 'mismatch';
+    }
+
     if (msg.ownerId === undefined) {
       injectsUnlabelled += 1;
       // An unlabelled TURN-class inject is candidate (A): the guard's fail-open
@@ -765,26 +837,6 @@ export function auditInjectOwnerBinding(
         });
       }
       return 'unlabelled';
-    }
-
-    if (msg.ownerId !== sockOwner) {
-      injectsMismatched += 1;
-      appendInjectAudit({
-        kind: 'inject-owner-mismatch',
-        mode: msg.mode,
-        envelopeOwnerId: msg.ownerId,
-        sockOwnerId: sockOwner,
-        deliveryId: msg.deliveryId ?? null,
-        checked: injectsChecked,
-        pid: process.pid,
-      });
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[psu-pty] SENDER OWNER-BINDING MISMATCH: envelope ownerId=${msg.ownerId} but socket ` +
-          `belongs to ${sockOwner} (mode=${msg.mode}, deliveryId=${msg.deliveryId ?? 'none'}). ` +
-          `Delivery NOT blocked (detector only) — see WI-2140968.`,
-      );
-      return 'mismatch';
     }
 
     // POSITIVE CONTROL. A detector that writes only on a mismatch produces a zero

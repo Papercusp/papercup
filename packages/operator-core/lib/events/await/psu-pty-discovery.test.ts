@@ -2,7 +2,7 @@
  * psu-pty-discovery.test.ts — the operator's read side of the psu-hosted
  * managed-pty control socket (turn-lifecycle-control Phase 3, P-014).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   mkdirSync,
   mkdtempSync,
@@ -1000,20 +1000,48 @@ describe('hostCodeVersionMatches (WI-38292 — which build is this LIVE host run
 });
 
 describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI-2140968)', () => {
-  const OWNER_A = 'su-aaaaaaaa-0000-0000-0000-000000000000';
-  const OWNER_B = 'su-bbbbbbbb-1111-1111-1111-111111111111';
+  const OWNER_A = `su-aud-a-${process.pid}`;
+  const OWNER_B = `su-aud-b-${process.pid}`;
   let auditDir: string;
   let auditPath: string;
+  let warn: ReturnType<typeof vi.spyOn>;
+  const planted: string[] = [];
+
+  /** Plant the discovery record the host would have written, so the detector's
+   *  authoritative lookup has something real to read. */
+  const plantHost = (ownerId: string, sock?: string): string => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const key = sanitizeKey(ownerId);
+    const sockPath = sock ?? join(PSU_PTY_DIR, `${key}.sock`);
+    const metaPath = join(PSU_PTY_DIR, `${key}.json`);
+    writeFileSync(
+      metaPath,
+      JSON.stringify({
+        ownerId,
+        advSessionId: null,
+        pid: process.pid,
+        ptyPid: process.pid,
+        sock: sockPath,
+        command: 'claude-su',
+        startedAt: 1,
+      }),
+    );
+    planted.push(metaPath);
+    return sockPath;
+  };
 
   beforeEach(() => {
     auditDir = mkdtempSync(join(tmpdir(), 'inject-audit-'));
     auditPath = join(auditDir, 'audit.jsonl');
     process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = auditPath;
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH;
+    warn.mockRestore();
     rmSync(auditDir, { recursive: true, force: true });
+    for (const p of planted.splice(0)) if (existsSync(p)) unlinkSync(p);
   });
 
   const rows = (): Array<Record<string, unknown>> =>
@@ -1048,7 +1076,8 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
   // THE load-bearing case: the failure the receiving host's EI-153 guard structurally
   // cannot see, because envelope ownerId and socket owner agree from ITS point of view.
   it('catches text addressed to one owner being written to ANOTHER owner’s socket', () => {
-    const verdict = auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_B}.sock`), {
+    const sockB = plantHost(OWNER_B);
+    const verdict = auditInjectOwnerBinding(sockB, {
       mode: 'turn',
       ownerId: OWNER_A,
       deliveryId: '314514',
@@ -1060,9 +1089,32 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     expect(hits[0]).toMatchObject({
       mode: 'turn',
       envelopeOwnerId: OWNER_A,
-      sockOwnerId: OWNER_B,
+      recordedOwnerId: OWNER_B,
       deliveryId: '314514',
     });
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  // The false positive that would discredit the whole instrument. A socket path is a
+  // CONVENTION, not the binding: `interruptViaPty` legitimately retries against a
+  // rebound socket whose filename no longer matches its owner. The filename
+  // disagreeing is a reason to consult the host's own record — never a verdict.
+  it('does NOT accuse a correctly-bound delivery whose socket path is non-canonical', () => {
+    const reboundSock = join(PSU_PTY_DIR, `${sanitizeKey(OWNER_A)}-rebound.sock`);
+    plantHost(OWNER_A, reboundSock);
+
+    expect(auditInjectOwnerBinding(reboundSock, { mode: 'turn', ownerId: OWNER_A })).toBe('match');
+    expect(rows().filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('reports indeterminate when no discovery record explains the disagreement', () => {
+    // Filenames disagree and there is no record binding this socket to anyone. That is
+    // an ABSENCE of evidence; calling it a misroute would be inventing one.
+    const orphan = join(PSU_PTY_DIR, `${sanitizeKey(OWNER_B)}-orphan-${Date.now()}.sock`);
+    expect(auditInjectOwnerBinding(orphan, { mode: 'turn', ownerId: OWNER_A })).toBe('indeterminate');
+    expect(rows()).toHaveLength(0);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('records an unlabelled TURN-class inject — the guard’s fail-open exemption', () => {
@@ -1091,9 +1143,8 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
   });
 
   it('never throws, and never blocks a delivery, on a hostile audit path', () => {
+    const sockB = plantHost(OWNER_B);
     process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = join(auditDir, 'no', 'such', 'dir', 'a.jsonl');
-    expect(() =>
-      auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_B}.sock`), { mode: 'turn', ownerId: OWNER_A }),
-    ).not.toThrow();
+    expect(() => auditInjectOwnerBinding(sockB, { mode: 'turn', ownerId: OWNER_A })).not.toThrow();
   });
 });
