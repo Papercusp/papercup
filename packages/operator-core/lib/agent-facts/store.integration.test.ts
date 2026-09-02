@@ -25,6 +25,7 @@ import {
   findFactKeyMatches,
   findFactKeyElsewhere,
   foldFacts,
+  foldFactsWithCensus,
   countLiveFacts,
   listFacts,
   foldDeadEndFacts,
@@ -296,6 +297,97 @@ afterEach(async () => {
 // cursor to advance. This is the leg that would have silently no-op'd if the
 // trigger were stubbed: every fact would read cellVersion null and every delta
 // would be empty forever, with all unit tests still green.
+// P-004 / D-006. `foldFacts` is `ORDER BY updated_at DESC LIMIT n`, and it fed a
+// renderer whose header ("### Standing facts") presents the slice as the population.
+// Measured 2026-09-02 against the live table under the fold's own liveFactPredicate:
+// scope `workspace` held 495 fold-eligible facts and returned 12 (2.4%, 483 never
+// displayed); `harness:papercusp` held 366 and returned 12. P-002/D-003 stopped the
+// ordinary partition evicting and raised its ceiling 200 -> 5000, so that residue now
+// grows instead of being destroyed — which is what makes the missing disclosure
+// load-bearing rather than cosmetic.
+//
+// These pin the CENSUS, which is the half that can silently rot: the renderer test
+// in store.test.ts only proves the text renders once a census says `truncated`, and
+// would stay green if the window function reported the post-LIMIT count (always ==
+// shown ⇒ truncated always false ⇒ the disclosure never fires and nothing fails).
+describe('P-004 / D-006: the fold reports the population it is a slice OF', () => {
+  const SCOPE_REF = 'su-census';
+
+  it('reports the TRUE live total beyond the LIMIT, and marks the fold truncated', async () => {
+    for (let i = 0; i < 7; i++) {
+      await assertFact(
+        { ttlSec: 3600, scope: 'owner', scopeRef: SCOPE_REF, key: `census-${i}`, body: `b${i}`, createdBy: 'su-int', workspaceId: WS },
+        db.sql,
+      );
+    }
+    const { facts, census } = await foldFactsWithCensus(
+      [{ scope: 'owner', scopeRef: SCOPE_REF }],
+      { workspaceId: WS, limitPerSelector: 3, audiences: 'all' },
+      db.sql,
+    );
+    expect(facts).toHaveLength(3);
+    const c = census.find((x) => x.scopeRef === SCOPE_REF)!;
+    expect(c.shown).toBe(3);
+    // The whole point: 7, not 3. A window function is evaluated BEFORE the LIMIT,
+    // which is what makes this free — and what a naive `count(*)` after LIMIT
+    // would get wrong in the direction that reads as "nothing was dropped".
+    expect(c.total).toBe(7);
+    expect(c.truncated).toBe(true);
+  });
+
+  it('an UNtruncated scope reports truncated:false — silence must mean census, not unmeasured', async () => {
+    await assertFact(
+      { ttlSec: 3600, scope: 'owner', scopeRef: 'su-census-small', key: 'only', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    const { census } = await foldFactsWithCensus(
+      [{ scope: 'owner', scopeRef: 'su-census-small' }],
+      { workspaceId: WS, limitPerSelector: 12, audiences: 'all' },
+      db.sql,
+    );
+    const c = census.find((x) => x.scopeRef === 'su-census-small')!;
+    expect(c.shown).toBe(1);
+    expect(c.total).toBe(1);
+    expect(c.truncated).toBe(false);
+  });
+
+  it('counts the FOLD population, not the raw table — a superseded tail is not a shortfall', async () => {
+    const ref = 'su-census-superseded';
+    // Same key twice: the first row is superseded, and liveFactPredicate excludes
+    // it. If the census counted raw rows it would report total 2 of a 1-fact scope
+    // and cry truncation at a fold that showed everything there was.
+    await assertFact(
+      { ttlSec: 3600, scope: 'owner', scopeRef: ref, key: 'corrected', body: 'v1', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    await assertFact(
+      { ttlSec: 3600, scope: 'owner', scopeRef: ref, key: 'corrected', body: 'v2', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    const { facts, census } = await foldFactsWithCensus(
+      [{ scope: 'owner', scopeRef: ref }],
+      { workspaceId: WS, limitPerSelector: 12, audiences: 'all' },
+      db.sql,
+    );
+    expect(facts).toHaveLength(1);
+    const c = census.find((x) => x.scopeRef === ref)!;
+    expect(c.total).toBe(1);
+    expect(c.truncated).toBe(false);
+  });
+
+  it('an EMPTY scope reports total 0 — the one reading that IS a census', async () => {
+    const { facts, census } = await foldFactsWithCensus(
+      [{ scope: 'owner', scopeRef: 'su-census-empty' }],
+      { workspaceId: WS, audiences: 'all' },
+      db.sql,
+    );
+    expect(facts).toHaveLength(0);
+    const c = census.find((x) => x.scopeRef === 'su-census-empty')!;
+    expect(c.total).toBe(0);
+    expect(c.truncated).toBe(false);
+  });
+});
+
 describe('P-008 (c) cell version (fed_hlc, migration 693)', () => {
   it('a locally-asserted fact gets an HLC cell version, and the fold serves it', async () => {
     await assertFact(

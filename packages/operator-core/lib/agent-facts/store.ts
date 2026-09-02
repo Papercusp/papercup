@@ -2913,7 +2913,49 @@ export async function countLiveFacts(
   return Number(rows[0]?.n ?? 0);
 }
 
-export async function foldFacts(
+/**
+ * The per-selector CENSUS behind one fold: how many rows the selector actually
+ * holds live, versus how many the per-selector LIMIT let through.
+ *
+ * P-004 / D-006. The fold is `ORDER BY updated_at DESC LIMIT`
+ * {@link FACTS_FOLD_LIMIT}, and it rendered that slice under a header
+ * ("### Standing facts", see {@link renderFactsFold}) that presents it as the
+ * population. Measured 2026-09-02 against harness_shared.agent_facts under this
+ * fold's OWN {@link liveFactPredicate}: scope `workspace` held 495 fold-eligible
+ * facts and showed 12 (2.4% — 483 never displayed); `harness:papercusp` held 366
+ * and showed 12 (3.3%). P-002/D-003 raised the ordinary ceiling 200 -> 5000 and
+ * stopped evicting, so that residue now GROWS rather than being destroyed — which
+ * is what turns a cosmetic omission into a load-bearing one.
+ *
+ * This is the rule orient.ts already applies to a mode-NARROWED fold ("a bounded
+ * read rendered as a total"), extended to the truncation that fires on EVERY full
+ * fold rather than only on monitor ticks. D-006 deliberately does NOT re-rank the
+ * fold: recency is correct for a currency question, and value-ranking it would
+ * close it to fresh operational facts the way absolute-expiry once closed the cap
+ * (EI-19483432832662150). Disclosure is the fix; the ORDER BY is not the defect.
+ *
+ * `total` comes from a window function in the SAME statement as the rows, so
+ * disclosing it costs no extra round-trip — `count(*) OVER ()` is evaluated
+ * before LIMIT, which is exactly the property that makes this free.
+ */
+export interface FactFoldCensus {
+  scope: FactScope;
+  scopeRef: string | null;
+  /** Rows this selector contributed to the fold, after the per-selector LIMIT. */
+  shown: number;
+  /** Rows the selector holds LIVE under the same predicate — the whole population. */
+  total: number;
+  /** `total > shown` — the reader is holding a SAMPLE, not a census. */
+  truncated: boolean;
+}
+
+/**
+ * {@link foldFacts} plus the per-selector {@link FactFoldCensus} — the same rows,
+ * and the number that says whether they are all of them. Prefer this at any
+ * surface that RENDERS the fold to an agent; `foldFacts` remains for callers that
+ * only consume the rows.
+ */
+export async function foldFactsWithCensus(
   selectors: readonly FactSelector[],
   opts: {
     workspaceId?: string;
@@ -2928,8 +2970,8 @@ export async function foldFacts(
     keyPrefixes?: readonly string[];
   } = {},
   inject?: Sql,
-): Promise<AgentFact[]> {
-  if (selectors.length === 0) return [];
+): Promise<{ facts: AgentFact[]; census: FactFoldCensus[] }> {
+  if (selectors.length === 0) return { facts: [], census: [] };
   const sql = sqlOf(inject);
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const limit = opts.limitPerSelector ?? FACTS_FOLD_LIMIT;
@@ -2939,10 +2981,11 @@ export async function foldFacts(
       ? 'all'
       : (opts.audiences ?? []).map((a) => a.trim()).filter(Boolean);
   const out: AgentFact[] = [];
+  const census: FactFoldCensus[] = [];
   for (const sel of selectors) {
     const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
-    const rows = await sql<AgentFactRow[]>`
+    const rows = await sql<(AgentFactRow & { fold_total: string })[]>`
       SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
              -- P-002: settled_by rides the FOLD specifically. An undecidable whose exit
              -- is stored but never surfaced cannot stop re-derivation — the reader would
@@ -2951,14 +2994,44 @@ export async function foldFacts(
              confidence, measurement, recheck, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text,
              -- P-008 (c): the cell version, so the fold can mark what changed since
              -- the reader's cursor without a second query.
-             fed_hlc
+             fed_hlc,
+             -- P-004 / D-006: the population this LIMIT is a slice OF. A window
+             -- function is evaluated BEFORE the LIMIT, so this is the full live
+             -- count and it costs no second statement. Without it the fold cannot
+             -- tell a reader that 483 of 495 facts were dropped, and "### Standing
+             -- facts" reads as the corpus rather than the newest 12 of it.
+             count(*) OVER () AS fold_total
         FROM harness_shared.agent_facts
        WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences)}
        ORDER BY updated_at DESC
        LIMIT ${limit}`;
     out.push(...rows.map(rowToFact));
+    // No rows ⇒ no window row to read ⇒ the population is genuinely 0, which is
+    // the one reading a caller IS entitled to treat as a census.
+    const total = rows.length > 0 ? Number(rows[0]!.fold_total) : 0;
+    census.push({
+      scope: sel.scope,
+      scopeRef: sel.scope === 'workspace' ? null : ref,
+      shown: rows.length,
+      total,
+      truncated: total > rows.length,
+    });
   }
-  return out;
+  return { facts: out, census };
+}
+
+export async function foldFacts(
+  selectors: readonly FactSelector[],
+  opts: {
+    workspaceId?: string;
+    limitPerSelector?: number;
+    audiences?: readonly string[] | 'all';
+    /** See {@link foldFactsWithCensus}. */
+    keyPrefixes?: readonly string[];
+  } = {},
+  inject?: Sql,
+): Promise<AgentFact[]> {
+  return (await foldFactsWithCensus(selectors, opts, inject)).facts;
 }
 
 /**
@@ -3458,7 +3531,11 @@ const KIND_BADGE: Readonly<Record<FactKind, string>> = {
   undecidable: 'UNDECIDABLE',
 };
 
-export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.now()): string {
+export function renderFactsFold(
+  facts: readonly AgentFact[],
+  now: number = Date.now(),
+  census: readonly FactFoldCensus[] = [],
+): string {
   if (facts.length === 0) return '';
   const lines = facts.map((f) => {
     const scope = f.scopeRef ? `${f.scope}:${f.scopeRef}` : f.scope;
@@ -3493,7 +3570,22 @@ export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.
     const recheck = f.recheck ? ` — RECHECK: ${f.recheck.probe} — FALSIFIED IF: ${f.recheck.falsifier}` : '';
     return `• [${scope}${aud}] ${badge}${snapshot}${f.body}${settles}${recheck} (${expiry}, ${age}${src}${cite})`;
   });
-  return `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${lines.join('\n')}`;
+  // P-004 / D-006: the header above presents these as THE standing facts. When the
+  // per-selector LIMIT dropped some, say so with the numbers and name the read that
+  // returns the rest — otherwise a 2.4% sample is byte-indistinguishable from a
+  // complete corpus, and an agent concludes a fact does not exist because it was
+  // merely the 13th-newest. Same rule orient.ts applies to a mode-narrowed fold.
+  const truncated = census.filter((c) => c.truncated);
+  const note =
+    truncated.length === 0
+      ? ''
+      : `\n⚠ TRUNCATED — this is the NEWEST ${FACTS_FOLD_LIMIT} per scope, not the whole corpus: ` +
+        truncated
+          .map((c) => `${c.scope}${c.scopeRef ? `:${c.scopeRef}` : ''} showed ${c.shown} of ${c.total}`)
+          .join('; ') +
+        `. A fact's ABSENCE here is not evidence it does not exist — it may simply not be among the ` +
+        `most recently updated. Read the rest with facts:list { scope, scopeRef } (which reports its own total).`;
+  return `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${lines.join('\n')}${note}`;
 }
 
 interface AgentFactRow {
