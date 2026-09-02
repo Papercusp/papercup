@@ -135,6 +135,22 @@ export interface ReconcileStats {
   ompFilesArchived: number;
   /** Gauge after the tick — the P-007 watchdog reads this trend. */
   endedUnarchivedRemaining: number;
+  /** INVARIANT (EI-22126624550252124, fix direction 4): age of the OLDEST
+   *  ended-but-unarchived row at SCAN TIME, or null when the scan set was empty.
+   *
+   *  `dbSkippedLive` says the liveness guard refused a pass THIS tick, which is
+   *  the guard working and is expected. It cannot distinguish that from the one
+   *  shape it must not hide: a row wrongly marked `ended` under a still-live
+   *  owner, which is refused EVERY tick and so is never archived and never
+   *  stamped. That row is invisible in a per-tick count — it looks identical to
+   *  a different session being correctly protected each time — but it holds
+   *  `ended_at` old while `archived_at` stays NULL, so its AGE is the signal.
+   *
+   *  Read as a scan-time observation, not a post-tick gauge: a row counted here
+   *  may have been archived later in the same tick. Bounded by
+   *  MAX_DB_ROWS_PER_TICK, but the query is ORDER BY ended_at ASC, so the oldest
+   *  row is always in the window even when it truncates. */
+  oldestEndedUnarchivedAgeMs: number | null;
   /** INVARIANT (EI-20419472483823685): codex home dirs examined for the
    *  "every codex home contains a config.toml" property. Deliberately NOT
    *  `diskDirsScanned` — that counter is filtered by the protected set, by
@@ -242,13 +258,18 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
     diskSkippedFresh: 0,
     ompFilesArchived: 0,
     endedUnarchivedRemaining: 0,
+    oldestEndedUnarchivedAgeMs: null,
     codexHomesScanned: 0,
     codexHomesMissingConfig: 0,
     codexHomesMissingConfigDirs: [],
   };
 
   // ── (a) DB-side: ended-but-unarchived adv rows ──────────────────────────
-  for (const row of await db.listEndedUnarchived(MAX_DB_ROWS_PER_TICK)) {
+  const endedRows = await db.listEndedUnarchived(MAX_DB_ROWS_PER_TICK);
+  // ORDER BY ended_at ASC (see pgReconcilerDb), so row 0 is the oldest even when
+  // the window truncates at MAX_DB_ROWS_PER_TICK.
+  if (endedRows.length > 0) stats.oldestEndedUnarchivedAgeMs = Math.max(0, nowMs - endedRows[0]!.endedAtMs);
+  for (const row of endedRows) {
     if (stats.dbArchived >= MAX_DB_ARCHIVES_PER_TICK) break; // archive-work cap; stamps stay cheap
     stats.dbScanned++;
     try {
