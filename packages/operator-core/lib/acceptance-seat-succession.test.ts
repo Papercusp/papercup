@@ -32,7 +32,7 @@ function fakeSql(rows: Array<{ feature_id: string | null }>) {
     if (!text.includes('SELECT')) return { fragment: text, values };
     seen.push(text);
     return Promise.resolve(rows);
-  }) as unknown as Parameters<typeof resolveAcceptanceSeatBasis>[2]['sql'];
+  }) as unknown as NonNullable<Parameters<typeof resolveAcceptanceSeatBasis>[2]>['sql'];
   return { sql, seen };
 }
 

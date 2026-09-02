@@ -82,7 +82,7 @@ export async function resolveAcceptanceSeatBasis(
 ): Promise<AcceptanceSeatBasis | null> {
   const planSlug = typeof subjectPlan === 'string' ? subjectPlan.trim() : '';
   if (!planSlug || !callerId) return null;
-  const sql = opts.sql ?? (await getOrgPg());
+  const sql = opts.sql ?? getOrgPg().sql;
   const workspaceId = opts.workspaceId || activeWorkspaceId();
   const harness = typeof opts.harness === 'string' && opts.harness.trim() ? opts.harness.trim() : null;
   const rows = (await sql`
