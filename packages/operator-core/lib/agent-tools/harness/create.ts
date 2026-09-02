@@ -23,7 +23,7 @@ import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { resolveAndValidate } from '../blueprint/_resolve';
 import { DeploymentConfigSchema, parseDeploymentConfig } from '../../deployment/config-schema';
-import { resolveCreateHiveMembership } from './create-hive-membership';
+import { resolveCreatePotMembership } from './create-pot-membership';
 import { applyGenomeConfig, writeGenomePrompts } from '../../instance-spec/genome-storage';
 import type { InstanceConfigFields } from '../../deployment/instance-config';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -144,11 +144,11 @@ export default defineTool({
     // effect, like the deployment + dependency gates. No nesting guard needed —
     // harness:create never sets harness_kind, so the new harness is never a Hive
     // home (Hive homes come only from pot:create), so it cannot nest a Hive.
-    let hiveMembership: string | undefined;
+    let potMembership: string | undefined;
     if (args.pot != null) {
-      const membership = resolveCreateHiveMembership(reg, args.pot);
+      const membership = resolveCreatePotMembership(reg, args.pot);
       if (!membership.ok) return fail({ error: membership.error, message: membership.message });
-      hiveMembership = membership.hive_slug;
+      potMembership = membership.hive_slug;
     }
 
     // 1. Resolve + validate the blueprint FIRST — knobs.requiresRepo drives the
@@ -171,11 +171,11 @@ export default defineTool({
     // so a coding hive — acceptance defaults to 'none', output 'repo-commit' — overlays
     // NOTHING and its members are byte-identical. An explicitly-authored `blueprint` is
     // respected as-is (no overlay). See agent-insights/generic-hive-acceptance-propagation-gap.
-    if (hiveMembership && args.blueprint == null) {
-      const hivePath = reg.projects.find((p) => p.slug === hiveMembership)?.path;
-      if (hivePath) {
+    if (potMembership && args.blueprint == null) {
+      const potPath = reg.projects.find((p) => p.slug === potMembership)?.path;
+      if (potPath) {
         try {
-          const hiveBp = loadBlueprintFromFile(join(hivePath, '.papercusp', 'blueprint.yaml'), resolver).blueprint;
+          const hiveBp = loadBlueprintFromFile(join(potPath, '.papercusp', 'blueprint.yaml'), resolver).blueprint;
           const overlay = hiveMemberProfileOverlay(hiveBp);
           if (overlay.acceptance != null && childObj.acceptance == null) childObj.acceptance = overlay.acceptance;
           if (overlay.output != null && childObj.output == null) childObj.output = overlay.output;
@@ -351,7 +351,7 @@ export default defineTool({
     const newEntry = {
       slug: args.slug,
       path,
-      ...(hiveMembership ? { hive_slug: hiveMembership } : {}),
+      ...(potMembership ? { hive_slug: potMembership } : {}),
       ...(deployment.target !== 'local' ? { deployment } : {}),
       ...instanceFields,
     };
@@ -439,7 +439,7 @@ export default defineTool({
     //     untouched-coords-less carve-out — that's how the probed push +
     //     default branch win on the default path.
     let gitSync: import('../../harness/git-sync/git-sync-routine').SeedGitSyncRoutineOutcome | undefined;
-    if (hiveMembership) {
+    if (potMembership) {
       try {
         const { seedGitSyncRoutineForMember } = await import('../../harness/git-sync/git-sync-routine');
         gitSync = await seedGitSyncRoutineForMember({
@@ -463,7 +463,7 @@ export default defineTool({
     //     FLAG-GATED (PER_POT_RELEASE_GATE, default-OFF) + self-gating (seedHiveReleaseRoutines
     //     skips non-coding / repo-less / the operator-home), so a coding member gates by
     //     default once the flag is on. Best-effort — never fails the create.
-    if (hiveMembership) {
+    if (potMembership) {
       try {
         const { seedHiveReleaseRoutines } = await import('../../harness/routines/seed-hive-release-routines');
         const { getOrgPg } = await import('@papercusp/db-org');
@@ -513,7 +513,7 @@ export default defineTool({
             blueprintFile: bpFile,
             blueprint: { id: validation.blueprint!.id, version: validation.blueprint!.version },
             deployment,
-            ...(hiveMembership ? { pot: hiveMembership } : {}),
+            ...(potMembership ? { pot: potMembership } : {}),
             warnings: validation.validation!.warnings,
             provisioning,
             scheduledRoutines,

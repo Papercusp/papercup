@@ -40,9 +40,9 @@ vi.mock('../../work-items', () => ({
   ensureClaimHoldAttribution: (payload: unknown) => payload,
 }));
 vi.mock('./mirror-guard', () => ({ findMirroredOpenItem: vi.fn(async () => null) }));
-vi.mock('../_hive-scope', () => ({
-  resolveHiveScope: vi.fn(async () => ({ kind: 'hive', slug: 'papercusp' })),
-  HIVE_REQUIRED_DETAIL: 'hive required',
+vi.mock('../_pot-scope', () => ({
+  resolvePotScope: vi.fn(async () => ({ kind: 'pot', slug: 'papercusp' })),
+  POT_REQUIRED_DETAIL: 'hive required',
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../datatype-registry-store', () => ({ getGenericKindDatatype: vi.fn(async () => null) }));
