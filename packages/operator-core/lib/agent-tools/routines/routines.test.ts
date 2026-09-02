@@ -1367,6 +1367,47 @@ describe('routines:set', () => {
     expect(written.payload.n).toBe(9);
   });
 
+  // EI-22136767702523358: Postgres jsonb does NOT preserve JS object insertion order on a
+  // round-trip (it reorders object keys by length-then-lexical for its binary encoding). A
+  // payloadTemplate patch that ADDS a new (shorter) key — e.g. `model` — is appended LAST by
+  // deepMergePlain's in-memory merge, but comes back FIRST on the verify-phase re-read. The old
+  // `verify` compared `JSON.stringify(cur.payloadTemplate) === JSON.stringify(next.payloadTemplate)`
+  // directly, so this reordering alone (same keys, same values, different order) made a
+  // successful write misread as a mismatch — auto-reverting every additive override in
+  // production (confirmed live: both work-item-admission-promoter and -delta-sweep). The fix
+  // routes the comparison through `stableJson` (routine-snapshot.ts), the same order-independent
+  // primitive `routineSnapEqual` already uses for a whole-snapshot compare.
+  it('verify treats a payload_template equal after a simulated jsonb key-reorder round-trip — a successful additive patch is not misread as a mismatch', async () => {
+    const original = { trigger_config: { cron: '0 */30 * * * *' }, payload_template: { batchSize: 20, recentTerminalDays: 30 }, active: true, next_fire_at: null };
+    // Same content as `original`, but with the new `model` key (shorter than the other two)
+    // reordered to the FRONT — exactly what a real jsonb round-trip does, and the opposite of
+    // where deepMergePlain places a newly-added key (last).
+    const reordered = { trigger_config: { cron: '0 */30 * * * *' }, payload_template: { model: 'claude-opus-5:xhigh', batchSize: 20, recentTerminalDays: 30 }, active: true, next_fire_at: null };
+    sqlMock.mockResolvedValueOnce([original]); // capturePrev's read
+    sqlMock.mockResolvedValueOnce([original]); // apply()'s internal prev re-read
+    sqlMock.mockResolvedValueOnce([]); // the UPDATE write itself — return value unused
+    sqlMock.mockResolvedValueOnce([reordered]); // verify()'s cur re-read — simulated jsonb reorder
+    const b = body(
+      await setTool.handler(
+        { name: 'work-item-admission-promoter', payloadTemplate: { model: 'claude-opus-5:xhigh' } } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+    expect(b.verify).toMatchObject({ ok: true });
+  });
+
+  // CONTROL: proves the test above actually exercises the reordering bug rather than passing
+  // vacuously — with the PRE-FIX raw JSON.stringify comparison, the same reordered read fails.
+  it('CONTROL: the pre-fix raw JSON.stringify comparison DOES fail on the same reordering — proving the test above is falsifiable', () => {
+    // `next`: deepMergePlain's actual in-memory result — the new key `model` is APPENDED LAST.
+    const next: Record<string, unknown> = { batchSize: 20, recentTerminalDays: 30 };
+    next.model = 'claude-opus-5:xhigh';
+    // `cur`: the same content as read back from a real jsonb round-trip — Postgres reorders
+    // object keys by length-then-lexical, so the short `model` key comes back FIRST.
+    const cur = { model: 'claude-opus-5:xhigh', batchSize: 20, recentTerminalDays: 30 };
+    expect(JSON.stringify(cur) === JSON.stringify(next)).toBe(false);
+  });
+
   it('patches trigger_config (P-017) — merges the patch, preserves cron, ignores a cron key in the patch', async () => {
     sqlMock.mockResolvedValue([{ trigger_config: { cron: '0 */10 * * * *', throttle_min: 8 }, active: true, next_fire_at: null }]);
     const b = body(
