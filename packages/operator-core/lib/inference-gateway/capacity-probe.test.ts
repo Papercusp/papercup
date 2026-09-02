@@ -68,6 +68,12 @@ describe('parseCapacityHeaders', () => {
 });
 
 describe('provesUnwall', () => {
+  it('a Luna reserve-meter reading NEVER unwalls a premium wall — different meter (EI-22103680502746318)', () => {
+    expect(provesUnwall({ utilization7d: 1.0 }, { utilization7d: 0.04, bucket: 'base_model_inference' }, FULL)).toBe(false);
+    // The same numbers on the PREMIUM meter still unwall — the guard is about the meter, not the value.
+    expect(provesUnwall({ utilization7d: 1.0 }, { utilization7d: 0.04, bucket: 'premium' }, FULL)).toBe(true);
+  });
+
   it('is TRUE when a stored 7d wall reads materially lower upstream', () => {
     expect(provesUnwall({ utilization7d: 1.0 }, { utilization7d: 0.05 }, FULL)).toBe(true);
   });
@@ -396,6 +402,19 @@ const codexDeps = (headers: Record<string, string>, status = 200) => ({
 });
 
 describe('parseCapacityHeaders — codex dialect (WI-38582)', () => {
+  it('stamps the METER: a Luna reserve reading is bucket base_model_inference, never premium (EI-22103680502746318)', () => {
+    // The exact shape a `model:'gpt-reserve'` probe returns on a weekly-exhausted account: the
+    // reserve bucket has budget while the premium meter (not on this response) is at 1.00.
+    expect(
+      parseCapacityHeaders({
+        'x-codex-active-limit': 'base_model_inference',
+        'x-base-model-inference-primary-used-percent': '4',
+        'x-base-model-inference-primary-window-minutes': '10080',
+        'x-base-model-inference-primary-reset-at': '1787249088',
+      }),
+    ).toEqual({ utilization7d: 0.04, windowResetAt7d: 1787249088_000, bucket: 'base_model_inference' });
+  });
+
   it('maps a PRO plan (primary IS the weekly window, no secondary) into the 7d slot by window length', () => {
     expect(
       parseCapacityHeaders({
@@ -406,7 +425,7 @@ describe('parseCapacityHeaders — codex dialect (WI-38582)', () => {
         'x-codex-secondary-window-minutes': '0',
         'x-codex-secondary-reset-at': '',
       }),
-    ).toEqual({ utilization7d: 0.13, windowResetAt7d: 1787201493_000 });
+    ).toEqual({ utilization7d: 0.13, windowResetAt7d: 1787201493_000, bucket: 'premium' });
   });
 
   it('maps a PLUS-shaped plan (primary 5h, secondary weekly) into both slots', () => {
@@ -424,6 +443,7 @@ describe('parseCapacityHeaders — codex dialect (WI-38582)', () => {
       windowResetAt: 1787201493_000,
       utilization7d: 0.07,
       windowResetAt7d: 1787249088_000,
+      bucket: 'premium',
     });
   });
 

@@ -20,6 +20,7 @@ import {
   CodexNonStreamAggregateError,
   makeCodexNonStreamUpstreamBody,
   normalizeCodexChatGptResponsesBody,
+  parseCodexRateLimitHeaders,
   parseCodexRateReset,
   preflightCodexModel,
   jwtExpMs,
@@ -664,6 +665,43 @@ describe('parseCodexRateReset — the codex-dialect 429 reset parser (WI-2038027
     );
     expect(r.resetAt).toBe(NOW + 43_200_000);
     expect(r.transient).toBe(false);
+  });
+
+  it('parseCodexRateLimitHeaders stamps the METER: premium for x-codex-*, base_model_inference for the reserve family, nothing for {} (EI-22103680502746318)', () => {
+    expect(
+      parseCodexRateLimitHeaders({ 'x-codex-primary-used-percent': '100', 'x-codex-primary-window-minutes': '10080' }, NOW),
+    ).toEqual({ utilization7d: 1, bucket: 'premium' });
+    expect(
+      parseCodexRateLimitHeaders(
+        {
+          'x-codex-active-limit': 'base_model_inference',
+          'x-base-model-inference-primary-used-percent': '4',
+          'x-base-model-inference-primary-window-minutes': '10080',
+        },
+        NOW,
+      ),
+    ).toEqual({ utilization7d: 0.04, bucket: 'base_model_inference' });
+    // Reserve-only headers with NO active-limit marker are still the reserve meter — never premium.
+    expect(
+      parseCodexRateLimitHeaders(
+        { 'x-base-model-inference-primary-used-percent': '4', 'x-base-model-inference-primary-window-minutes': '10080' },
+        NOW,
+      ).bucket,
+    ).toBe('base_model_inference');
+    // Both families present + premium marked active ⇒ the premium family wins and is stamped premium.
+    expect(
+      parseCodexRateLimitHeaders(
+        {
+          'x-codex-active-limit': 'premium',
+          'x-codex-primary-used-percent': '100',
+          'x-codex-primary-window-minutes': '10080',
+          'x-base-model-inference-primary-used-percent': '4',
+          'x-base-model-inference-primary-window-minutes': '10080',
+        },
+        NOW,
+      ),
+    ).toEqual({ utilization7d: 1, bucket: 'premium' });
+    expect(parseCodexRateLimitHeaders({}, NOW)).toEqual({});
   });
 
   it('no rate headers at all → null reset, transient (caller falls back to its short backoff)', () => {

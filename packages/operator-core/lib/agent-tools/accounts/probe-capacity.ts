@@ -103,8 +103,18 @@ function reportRow(r: CapacityProbeResult) {
     ok: r.ok,
     status: r.status,
     before: { utilization: r.before.utilization, utilization7d: r.before.utilization7d },
-    upstream: { utilization: r.windows.utilization, utilization7d: r.windows.utilization7d },
-    verdict: !r.ok ? 'no-reading' : r.unwalls ? 'UNWALLED (stale projection)' : 'confirmed',
+    upstream: {
+      utilization: r.windows.utilization,
+      utilization7d: r.windows.utilization7d,
+      ...(r.windows.bucket ? { bucket: r.windows.bucket } : {}),
+    },
+    verdict: !r.ok
+      ? 'no-reading'
+      : r.windows.bucket === 'base_model_inference'
+        ? 'reserve-meter reading (Luna bucket) — NOT projected'
+        : r.unwalls
+          ? 'UNWALLED (stale projection)'
+          : 'confirmed',
     ...(r.error ? { error: r.error } : {}),
   };
 }
@@ -151,6 +161,15 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
   // recording it is never a "force". A failed probe writes nothing (we must not invent a window).
   const applied: string[] = [];
   const burnTransitions: import('../../deployment/account-pool').BurnTransition[] = [];
+  // EI-22103680502746318: a `model:'gpt-reserve'` probe reads the Luna RESERVE meter. The pool
+  // projection (`rate.utilization[7d]`) describes the PREMIUM meter — writing 0.04-of-reserve over a
+  // 1.00 premium reading un-walled 'aviynw5_codex' (2026-09-02 04:32Z + 05:49Z), the gateway readmitted
+  // it, live codex traffic burned terminal 429s on it (real caller stalls), the next premium reading
+  // re-walled it, and every flip asserted/retracted a fact + broadcast fleet-wide. Report the
+  // reading in rows[]; never project it, never unwall on it, never readmit on it.
+  const reserveNotProjected = results
+    .filter((r) => r.ok && r.windows.bucket === 'base_model_inference')
+    .map((r) => r.accountId);
   if (apply) {
     const t = Date.now();
     for (const r of results) {
@@ -164,6 +183,7 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
       }
       const w = r.windows;
       if (w.utilization === undefined && w.utilization7d === undefined) continue;
+      if (w.bucket === 'base_model_inference') continue; // reserve meter — reported, never projected
       // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
       // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
       // edge), so a probe that makes a wall VISIBLE is never silent about it.
@@ -192,8 +212,13 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
   // readmitIntoGateway). Only accounts that actually PROVED they serve are readmitted — a 429 reply
   // confirms a real wall, and readmitting that account would just send the fleet back to hammer it.
   const selectedAccountIds = new Set(accounts.map((account) => account.id));
+  // A reserve-meter (`gpt-reserve`) 200 proves the LUNA bucket serves — not that the premium meter
+  // the failover pool routes by has budget; readmitting on it sends premium traffic into the wall
+  // (EI-22103680502746318: the 05:49:49Z readmit → terminal 429s on 'aviynw5_codex').
   const serving = results
-    .filter((r) => selectedAccountIds.has(r.accountId) && r.ok && r.status !== 429)
+    .filter(
+      (r) => selectedAccountIds.has(r.accountId) && r.ok && r.status !== 429 && r.windows.bucket !== 'base_model_inference',
+    )
     .map((r) => r.accountId);
   const gateway = apply
     ? await readmitIntoGateway(serving, provider)
@@ -210,6 +235,10 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
     /** STATE, not delta: accounts that answered upstream RIGHT NOW without a 429. This is the field to
      *  gate a launch on. */
     serving,
+    /** Accounts whose reading came from the Luna RESERVE meter (`model:'gpt-reserve'`): visible in
+     *  rows[] but NEVER written to the premium projection, never counted as serving, never readmitted
+     *  (EI-22103680502746318). */
+    reserveNotProjected,
     confirmedWalled: results.filter((r) => r.ok && !r.unwalls && r.status === 429).map((r) => r.accountId),
     failed: results.filter((r) => !r.ok).map((r) => r.accountId),
     applied,

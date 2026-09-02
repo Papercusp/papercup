@@ -766,6 +766,15 @@ export interface CodexCapacityWindows {
   windowResetAt?: number;
   utilization7d?: number;
   windowResetAt7d?: number;
+  /** Which METER produced this reading (EI-22103680502746318). `premium` = the generic weekly/5h
+   *  windows (`x-codex-*`) — the meter the account-pool projection (`rate.utilization[7d]`)
+   *  describes. `base_model_inference` = the Luna reserve tier (`x-base-model-inference-*`) — a
+   *  DIFFERENT meter with its own budget. Writing it into the premium slots un-walls a
+   *  weekly-exhausted account (observed 2026-09-02: a `gpt-reserve` probe wrote 0.04 over a 1.00
+   *  premium reading, the gateway readmitted the account, live codex traffic burned terminal 429s,
+   *  and the next premium reading re-walled it — a burn-governor fact assert/retract + fleet-wide
+   *  broadcast on every flip). Absent when no family parsed, so `{}` stays `{}`. */
+  bucket?: CodexRateLimitBucket;
 }
 
 /** The upstream bucket selected for a Codex response. The backend currently
@@ -871,7 +880,12 @@ export function parseCodexRateLimitHeaders(
     bucket === 'base_model_inference' ? [reserve] : bucket === 'premium' ? [generic] : [generic, reserve];
   for (const family of families) {
     const parsed = parseCodexWindowFamily(lower, family, nowMs);
-    if (Object.keys(parsed).length > 0) return parsed;
+    // Stamp the METER the reading came from so projection writers can refuse to write the Luna
+    // reserve meter into the premium slots (EI-22103680502746318). Stamped only when a family
+    // actually parsed — an empty result stays `{}` so "saw a rate header at all" checks hold.
+    if (Object.keys(parsed).length > 0) {
+      return { ...parsed, bucket: family === reserve ? 'base_model_inference' : 'premium' };
+    }
   }
   return {};
 }

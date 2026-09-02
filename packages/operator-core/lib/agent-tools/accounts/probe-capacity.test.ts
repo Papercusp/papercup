@@ -12,7 +12,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/accounts/probe-capacity.test.ts
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { emptyPool, registerAccount, getAccount, type AccountPool } from '../../deployment/account-pool';
+import { emptyPool, registerAccount, getAccount, recordAccountWindow, type AccountPool } from '../../deployment/account-pool';
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 
@@ -155,5 +155,44 @@ describe('accounts:probe-capacity — failure persistence', () => {
     expect(gatewayFetchM.mock.calls[0]?.[0]).toBe(
       'http://127.0.0.1:8788/admin/readmit?account=codex-account&provider=codex',
     );
+  });
+
+  it('a Luna reserve-meter reading (model:gpt-reserve) is reported but NEVER projected, never serving, never readmitted (EI-22103680502746318)', async () => {
+    // The observed 2026-09-02 shape: 'aviynw5_codex' premium weekly at 1.00 (walled); a gpt-reserve
+    // probe returns 200 with the reserve bucket at 4%. Before the fix that 0.04 overwrote the 1.00,
+    // the gateway readmitted the account, live codex traffic burned terminal 429s on it, and the
+    // next premium reading re-walled it — a burn-governor fact flip + fleet broadcast every cycle.
+    pool = registerAccount(
+      pool,
+      { id: 'codex-account', provider: 'codex', credentialRef: 'codex-cli:/tmp/codex' },
+      T0 + 1,
+    );
+    pool = recordAccountWindow(pool, 'codex-account', { utilization7d: 1, windowResetAt7d: T0 + 5 * 86_400_000 }, T0 + 2);
+    probeM.mockResolvedValue([
+      {
+        accountId: 'codex-account',
+        ok: true,
+        status: 200,
+        windows: { utilization7d: 0.04, windowResetAt7d: T0 + 6 * 86_400_000, bucket: 'base_model_inference' },
+        before: { utilization7d: 1 },
+        unwalls: false,
+      },
+    ]);
+
+    const out = body((await tool.handler({ provider: 'codex', model: 'gpt-reserve' } as never, {} as never)) as Out);
+
+    expect(out.reserveNotProjected).toEqual(['codex-account']);
+    expect(out.applied).toEqual([]);
+    expect(out.serving).toEqual([]);
+    expect(out.unwalled).toEqual([]);
+    expect(out.rows[0].upstream.bucket).toBe('base_model_inference');
+    expect(out.rows[0].verdict).toContain('NOT projected');
+    // The premium projection is untouched — still walled at 1.00.
+    expect(getAccount(pool, 'codex-account')!.rate.utilization7d).toBe(1);
+    expect(getAccount(pool, 'codex-account')!.rate.windowResetAt7d).toBe(T0 + 5 * 86_400_000);
+    // And the live gateway was NOT told to readmit it.
+    expect(
+      gatewayFetchM.mock.calls.some((c) => String(c[0]).includes('readmit?account=codex-account')),
+    ).toBe(false);
   });
 });

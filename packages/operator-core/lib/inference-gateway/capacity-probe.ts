@@ -45,6 +45,7 @@ import {
   CODEX_ORIGINATOR,
   parseCodexRateLimitHeaders,
   resolveCodexAccessToken,
+  type CodexRateLimitBucket,
 } from './codex-oauth-proxy';
 import { describeFetchError } from '../loopback-fetch';
 
@@ -68,6 +69,10 @@ export interface CapacityWindows {
   windowResetAt?: number;
   utilization7d?: number;
   windowResetAt7d?: number;
+  /** Codex only: which METER the reading came from — `premium` (the meter the pool projection
+   *  describes) or `base_model_inference` (the Luna reserve tier, a separate budget that must
+   *  never be projected into the premium slots — EI-22103680502746318). Absent for Anthropic. */
+  bucket?: CodexRateLimitBucket;
 }
 
 export interface CapacityProbeResult {
@@ -139,6 +144,9 @@ export const UNWALL_EPSILON = 0.03;
  * conservative — a probe that merely FAILS never unwalls anything.
  */
 export function provesUnwall(before: CapacityWindows, now: CapacityWindows, fullUtil: number): boolean {
+  // EI-22103680502746318: a Luna reserve-meter reading (`gpt-reserve` probe) is NOT the meter the
+  // stored wall describes — 4% of the reserve bucket says nothing about the exhausted premium weekly.
+  if (now.bucket === 'base_model_inference') return false;
   const wasWalled = (before.utilization7d ?? 0) >= fullUtil || (before.utilization ?? 0) >= fullUtil;
   if (!wasWalled) return false;
   const u7 = now.utilization7d;
