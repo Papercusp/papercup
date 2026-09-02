@@ -160,6 +160,8 @@ export default defineTool({
       .max(20_000)
       .describe(
         'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
+          'No ambient `exec`/shell helper exists -- `tools` exposes ONLY `tools.ns.verb(args)` calls; ' +
+          'to run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
           'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +
           'media from intermediate tool calls is never emitted implicitly. ' +
           'Compatibility helpers are ambient: `notify(value)` and `yield_control()` stream through the current transport; ' +
@@ -168,7 +170,8 @@ export default defineTool({
           'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
           'short bounded delay (e.g. write-then-reverify) instead. sleep() caps at 10s and returns the ' +
           'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta. ' +
-          "Shell commands inside the JS body need JS escaping too: write `tr '\\\\0' ' ' </proc/self/cmdline` " +
+          "A shell-command STRING passed to `tools.capability.bash({ command })` needs JS escaping too: write " +
+          "`tr '\\\\0' ' ' </proc/self/cmdline` " +
           '(two backslashes in the script source); a single `\\0` JS escape becomes a NUL and is rejected before bash runs.',
       ),
     title: z
