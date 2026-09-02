@@ -241,6 +241,14 @@ describe('Kopia global backup guard', () => {
     expect(stdout).toContain('result=stopping-during-run reason=memory-pressure');
     expect(stdout).toContain('result=deferred-during-run reason=memory-pressure');
     expect(stdout).not.toContain('result=finished mode=scheduled');
+    // The grace must actually be HONOURED, not just configured. Asserting the absence of the
+    // escalation is what pins that: the guard computed its stop deadline with a bare awk
+    // `print`, whose default OFMT (%.6g) truncated the epoch to 1.78836e+09 — ~3700s in the
+    // past — so the grace loop exited on its first evaluation and every TERM'd child was
+    // SIGKILLed within ~50ms regardless of KOPIA_BACKUP_STOP_GRACE_SEC. The stderr assertion
+    // above only caught it as a side effect (bash's job-control notice) and read as a flake;
+    // this asserts the behaviour directly.
+    expect(stdout).not.toContain('result=killing-after-grace');
     // 30s, deliberately WIDER than the fixture's 20s KOPIA_BACKUP_STOP_GRACE_SEC. There is no
     // testTimeout in either vitest config, so the default is 5s — narrower than the grace the
     // guard is configured to honour. A child slow to be scheduled would then blow the test
