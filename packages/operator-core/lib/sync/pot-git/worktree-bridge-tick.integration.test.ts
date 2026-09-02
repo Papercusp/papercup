@@ -264,8 +264,12 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
     expect(await git(['rev-parse', 'HEAD'], wt)).toBe(s3);
   });
 
-  it('a fetch failure STOPS the batch — later pending items are not attempted this tick', async () => {
-    const deadOpenDuplex = (): Promise<Socket> => Promise.reject(new Error('swarm unreachable'));
+  it('a fetch failure does NOT stop the batch — later items are attempted, the dead device is dialed once, the cursor holds at the first failure (WI-2039873)', async () => {
+    let deadDials = 0;
+    const deadOpenDuplex = (): Promise<Socket> => {
+      deadDials++;
+      return Promise.reject(new Error('swarm unreachable'));
+    };
     const dialsBefore = dials;
     const priorWatermark = { epochSeq: { epoch: 1, seq: 3 }, stagingSha: s3 };
     // Two more (never-published) advances the dead transport would need to
@@ -283,10 +287,15 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       openDuplex: deadOpenDuplex,
     });
     expect(out.ran).toBe(true);
-    expect(out.stoppedOnFetchFailure).toBe(true);
-    expect(out.unprocessedFromIndex).toBe(0); // caller's cursor holds at the stopped item
-    expect(out.results).toHaveLength(1); // stopped after the first fetch-failed item
+    expect(out.stoppedOnFetchFailure).toBe(true); // a failure is HOLDING the cursor
+    expect(out.unprocessedFromIndex).toBe(0); // caller's cursor holds at the first un-superseded failure
+    expect(out.results).toHaveLength(2); // both were ATTEMPTED — no head-of-line block
     expect(out.results[0].bridge.outcome).toBe('fetch-failed');
+    expect(out.results[1].bridge).toMatchObject({
+      outcome: 'fetch-failed',
+      detail: expect.stringContaining('dial skipped'),
+    });
+    expect(deadDials).toBe(1); // the same dead device is not re-dialed within a tick
     expect(out.errors.length).toBeGreaterThan(0);
     // Watermark unchanged — nothing was accepted this tick.
     expect(out.watermark).toEqual(priorWatermark);
@@ -561,5 +570,46 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
     expect(completed.unprocessedFromIndex).toBe(null);
     expect(dials).toBe(dialsBefore + 1);
     expect(await git(['rev-parse', 'HEAD'], wt)).toBe(s5);
+  });
+
+  it('WI-2039873: a later ACCEPTED advance from a reachable device supersedes an earlier fetch failure from a dead one — the cursor consumes both', async () => {
+    // The measured P-203 Leg A shape: an advance signed by a device no peer
+    // holds a socket for sits AHEAD of a perfectly fetchable one in the log.
+    // Before the fix the dead one pinned the cursor and the live one was never
+    // attempted; now the live one is accepted and the dead one is overtaken.
+    const s5 = await git(['rev-parse', 'HEAD'], src);
+    await writeFile(join(src, 'f.txt'), 'v6\n');
+    await git(['add', '.'], src);
+    await git(['commit', '-q', '-m', 'S6'], src);
+    const s6 = await git(['rev-parse', 'HEAD'], src);
+    await publishToPeer(s6, s5);
+
+    const deadDevice = keypair();
+    const ghost = await signStagingAdvance(
+      { devicePubkeyBase64: deadDevice.pubkeyBase64, epoch: 2, seq: 9, stagingSha: 'f9'.repeat(20), nowMs: 1_000 },
+      deadDevice.sign,
+    );
+    const real = await announce(2, 10, s6);
+    const prior = { epochSeq: { epoch: 2, seq: 8 }, stagingSha: s5 };
+    const dialedDevices: string[] = [];
+    const out = await runWorktreeBridgeTick({
+      bareRepoPath: localMirror,
+      worktreePath: wt,
+      pending: [ghost, real],
+      prior,
+      accept: { allowedDevices: [integrator.pubkeyBase64, deadDevice.pubkeyBase64], maxGrantedEpoch: 2 },
+      openDuplex: (device: string) => {
+        dialedDevices.push(device);
+        return device === deadDevice.pubkeyBase64 ? Promise.reject(new Error('no live dial path')) : openDuplex();
+      },
+    });
+    expect(out.results.map((r) => r.bridge.outcome)).toEqual(['fetch-failed', 'accepted']);
+    expect(dialedDevices).toEqual([deadDevice.pubkeyBase64, integrator.pubkeyBase64]); // the live device WAS dialed
+    expect(out.acceptedCount).toBe(1);
+    expect(out.watermark).toEqual({ epochSeq: { epoch: 2, seq: 10 }, stagingSha: s6 });
+    expect(out.stoppedOnFetchFailure).toBe(false); // superseded — nothing is holding the cursor
+    expect(out.unprocessedFromIndex).toBeNull();
+    expect(out.errors.some((e) => e.includes('superseded'))).toBe(true);
+    expect(await git(['rev-parse', 'HEAD'], wt)).toBe(s6);
   });
 });

@@ -27,10 +27,26 @@
  *   - `rejected` (stale/malformed/forged/non-ff/unknown-sha) ⇒ skip it and
  *     continue — one bad/stale envelope in the batch must never starve the
  *     rest (mirrors `ref-announce-tick.ts`'s receive-tick contract).
- *   - `fetch-failed` / `already-in-flight` ⇒ STOP processing further pending
- *     items this tick and return what's been done so far. The latter is a
- *     healthy coalescer refusal, so it holds the cursor without adding an
- *     error; the in-flight driver will finish the shared mirror fetch.
+ *   - `fetch-failed` ⇒ CONTINUE to the next pending item (WI-2039873 / P-203
+ *     Leg A). A fetch failure is a fact about ONE announcing device's
+ *     reachability, not about the batch: stopping there was head-of-line
+ *     blocking by construction — one announcement from a device no peer holds
+ *     a socket for (measured: a staging-advance signed by a gh-login actor the
+ *     swarm never filed a hello for) pinned the VM at epoch=90,seq=315 for
+ *     hours while every later announcement, from reachable devices, sat
+ *     behind it unattempted. Staging advances are a total order on
+ *     (epoch, seq), so a LATER accepted announcement SUPERSEDES an earlier
+ *     failed one — on retry the failed one would reject `stale-epoch-seq`
+ *     anyway. The cursor therefore holds at the earliest fetch-failed item that
+ *     no later accept superseded (see `unprocessedFromIndex`), and only there.
+ *     Within one tick, a device whose fetch already failed is NOT re-dialed
+ *     (the dial seam short-circuits), so a dead device costs one dial per tick
+ *     rather than one per queued announcement — an item from that device whose
+ *     objects are already local still accepts, because it never dials.
+ *   - `already-in-flight` ⇒ STOP processing further pending items this tick
+ *     and return what's been done so far. It is a healthy coalescer refusal, so
+ *     it holds the cursor without adding an error; the in-flight driver will
+ *     finish the shared mirror fetch.
  *
  * The caller MUST persist the returned `watermark` (unconditionally — even
  * when nothing advanced this tick, so a resumed/retried caller doesn't
@@ -50,6 +66,7 @@ import {
   type AcceptStagingAdvanceOpts,
   type EpochSeq,
   type SignedStagingAdvance,
+  compareEpochSeq,
 } from './staging-advance';
 import { type StagingAdvanceBridgeResult, type WorktreeBridgeConfig, handleStagingAdvance } from './worktree-bridge';
 
@@ -89,6 +106,15 @@ export interface WorktreeBridgeTickInput {
   openDuplex?: (devicePubkeyBase64: string) => Promise<Duplex>;
   runGit?: RunGit;
   fetchTimeoutMs?: number;
+  /**
+   * TEST SEAM — the per-announcement handler, defaulting to
+   * `handleStagingAdvance`. Production never sets it. It exists so the batch
+   * policy this module owns (continue / hold / supersede / stop, and the
+   * cursor index it reports) can be unit-tested by scripting outcomes, without
+   * standing up the git repos, sockets and signatures the real handler needs
+   * (those live in worktree-bridge-tick.integration.test.ts).
+   */
+  handle?: typeof handleStagingAdvance;
 }
 
 export interface WorktreeBridgeTickResultEntry {
@@ -168,20 +194,23 @@ export interface WorktreeBridgeTickOutcome {
    *  batch was accepted. ALWAYS persist this (even when `ran: false` or
    *  unchanged) so a resumed caller has a stable value to thread back. */
   watermark: { epochSeq: EpochSeq | null; stagingSha: string | null };
-  /** True when a `fetch-failed` outcome stopped the batch before every
-   *  pending item was processed — the caller should NOT advance its
-   *  fed-event-log cursor past the un-processed tail (retry them next tick,
-   *  same `pending` order they'd be re-collected in). */
+  /** True when at least one `fetch-failed` item is HOLDING the cursor this
+   *  tick — i.e. its fetch failed AND no later announcement in the batch was
+   *  accepted past its (epoch, seq). A fetch-failed item that a later accept
+   *  superseded does not count: it was processed by being overtaken. The
+   *  batch itself is never stopped by a fetch failure (see module header). */
   stoppedOnFetchFailure: boolean;
   /**
    * Index into `input.pending` of the first item NOT durably processed this
-   * tick, or null when every item was (accepted or terminally rejected).
-   * Set by BOTH stop paths — a `fetch-failed` and a retryable rejection
-   * ({@link RETRYABLE_REJECT_REASONS}) — and it is the value the caller's
-   * cursor math needs: advance the fed-event cursor only past items BEFORE
-   * this index (the stopped item re-collects and retries next tick). The
-   * caller should age-bound the retry (a row stuck retryable for hours is a
-   * genuinely lost object, not a race) so one poisoned row can't wedge the
+   * tick, or null when every item was (accepted, terminally rejected, or
+   * fetch-failed-then-superseded). It is the value the caller's cursor math
+   * needs: advance the fed-event cursor only past items BEFORE this index (the
+   * held item re-collects and retries next tick). Three things set it, and the
+   * EARLIEST wins: the first fetch-failed item that no later accept superseded;
+   * a retryable rejection ({@link RETRYABLE_REJECT_REASONS}), which stops the
+   * batch; an `already-in-flight` refusal, which also stops it. The caller
+   * should age-bound the retry (a row stuck for hours is a genuinely lost
+   * object or a dead device, not a race) so one poisoned row can't wedge the
    * cursor forever.
    */
   unprocessedFromIndex: number | null;
@@ -242,20 +271,73 @@ export async function runWorktreeBridgeTick(
     };
   }
 
+  // WI-2039873 / P-203 Leg A — the head-of-line fix (module header). Fetch
+  // failures are recorded with the fence each item would still have to clear,
+  // and the cursor decision is made ONCE, at the end of the batch (or at an
+  // explicit stop), against the watermark the batch actually reached.
+  const fetchFailed: Array<{ index: number; epochSeq: EpochSeq }> = [];
+  // Devices whose fetch failed this tick. The dial seam refuses a second dial
+  // to any of them for the rest of the tick: the dial is per announcement, so
+  // without this a dead device with N queued advances costs N dial timeouts
+  // per tick. An announcement whose sha is already local never reaches the
+  // seam, so this cannot starve an acceptable item from that device.
+  const fetchFailedDevices = new Set<string>();
+  const upstreamOpenDuplex = input.openDuplex;
+  const openDuplex = upstreamOpenDuplex
+    ? async (devicePubkeyBase64: string): Promise<Duplex> => {
+        if (fetchFailedDevices.has(devicePubkeyBase64)) {
+          throw new Error(
+            `dial skipped: a fetch from ${devicePubkeyBase64.slice(0, 12)} already failed this tick — retrying next tick`,
+          );
+        }
+        return upstreamOpenDuplex(devicePubkeyBase64);
+      }
+    : undefined;
+  const handle = input.handle ?? handleStagingAdvance;
+
+  const settle = (stopIndex: number | null): WorktreeBridgeTickOutcome => {
+    // A fetch-failed item is SUPERSEDED once the watermark is at or past its
+    // fence: on retry it would reject `stale-epoch-seq`, so holding the cursor
+    // for it would only re-collect a dead row. Hold at the earliest one a later
+    // accept did NOT supersede — and never later than an explicit stop.
+    const held = fetchFailed.filter(
+      (f) => watermark.epochSeq === null || compareEpochSeq(f.epochSeq, watermark.epochSeq) > 0,
+    );
+    const superseded = fetchFailed.length - held.length;
+    if (superseded > 0) {
+      errors.push(
+        `${superseded} fetch-failed announcement(s) superseded by a later accepted advance this tick — not held`,
+      );
+    }
+    const heldIndex = held.length > 0 ? held[0]!.index : null;
+    const unprocessedFromIndex =
+      heldIndex === null ? stopIndex : stopIndex === null ? heldIndex : Math.min(heldIndex, stopIndex);
+    return {
+      ran: true,
+      results,
+      watermark,
+      stoppedOnFetchFailure: heldIndex !== null,
+      unprocessedFromIndex,
+      errors,
+      acceptedCount,
+      terminalRejections,
+    };
+  };
+
   for (const [index, incoming] of input.pending.entries()) {
     const cfg: WorktreeBridgeConfig = {
       bareRepoPath: input.bareRepoPath,
       worktreePath: input.worktreePath,
       prior: watermark,
       accept: input.accept,
-      ...(input.openDuplex ? { openDuplex: input.openDuplex } : {}),
+      ...(openDuplex ? { openDuplex } : {}),
       ...(input.runGit ? { runGit: input.runGit } : {}),
       ...(input.fetchTimeoutMs !== undefined ? { fetchTimeoutMs: input.fetchTimeoutMs } : {}),
     };
 
     let bridge: StagingAdvanceBridgeResult;
     try {
-      bridge = await handleStagingAdvance(cfg, incoming);
+      bridge = await handle(cfg, incoming);
     } catch (e) {
       // handleStagingAdvance is documented never-throw on runtime data (only a
       // gate-less config throws, which is a caller wiring bug we want loud —
@@ -277,53 +359,34 @@ export async function runWorktreeBridgeTick(
       continue;
     }
     if (bridge.outcome === 'fetch-failed') {
+      // Continue past it (module header): record the fence it would still have
+      // to clear, and let a later accepted announcement supersede it. The
+      // cursor decision is `settle`'s, made against the batch's final
+      // watermark. Its device is not re-dialed for the rest of this tick.
+      fetchFailedDevices.add(incoming.device_pubkey);
+      fetchFailed.push({ index, epochSeq: { epoch: incoming.epoch, seq: incoming.seq } });
       errors.push(
-        `fetch failed for epoch=${incoming.epoch},seq=${incoming.seq}: ${bridge.detail} — stopping this tick's batch, retrying next tick`,
+        `fetch failed for epoch=${incoming.epoch},seq=${incoming.seq}: ${bridge.detail} — continuing past it ` +
+          `(a later accepted advance supersedes it; otherwise it re-collects next tick)`,
       );
-      return {
-        ran: true,
-        results,
-        watermark,
-        stoppedOnFetchFailure: true,
-        unprocessedFromIndex: index,
-        errors,
-        acceptedCount,
-        terminalRejections,
-      };
+      continue;
     }
     if (bridge.outcome === 'already-in-flight') {
       // WI-6418: a sibling git-sync routine (or ref-announce) already owns the
       // shared repo+device fetch. The announcement is not durably processed,
-      // so hold the cursor at it; nothing failed, so keep `errors` empty.
-      return {
-        ran: true,
-        results,
-        watermark,
-        stoppedOnFetchFailure: false,
-        unprocessedFromIndex: index,
-        errors,
-        acceptedCount,
-        terminalRejections,
-      };
+      // so hold the cursor at it; nothing failed, so add no error.
+      return settle(index);
     }
     if (bridge.outcome === 'rejected' && RETRYABLE_REJECT_REASONS.has(bridge.reason)) {
       // P-505: transient-state rejection — the SAME envelope verifies once the
       // missing objects / granting token federate. Stop here so the caller's
-      // cursor holds at this item (mirrors the fetch-failed contract).
+      // cursor holds at this item (or at an earlier un-superseded fetch
+      // failure, whichever comes first).
       errors.push(
         `retryable rejection (${bridge.reason}) for epoch=${incoming.epoch},seq=${incoming.seq} — ` +
           `holding the batch here, retrying next tick`,
       );
-      return {
-        ran: true,
-        results,
-        watermark,
-        stoppedOnFetchFailure: false,
-        unprocessedFromIndex: index,
-        errors,
-        acceptedCount,
-        terminalRejections,
-      };
+      return settle(index);
     }
     // 'rejected' with a TERMINAL reason (stale/malformed/forged/wrong-device/
     // non-ff): skip, never starve the rest of the batch — but COUNT it
@@ -333,14 +396,5 @@ export async function runWorktreeBridgeTick(
     }
   }
 
-  return {
-    ran: true,
-    results,
-    watermark,
-    stoppedOnFetchFailure: false,
-    unprocessedFromIndex: null,
-    errors,
-    acceptedCount,
-    terminalRejections,
-  };
+  return settle(null);
 }
