@@ -30,7 +30,7 @@
 import * as net from 'node:net';
 import { Duplex } from 'node:stream';
 import type Corestore from 'corestore';
-import type { BootedHarnessHandle, LocalWriteOp } from './boot';
+import type { BootedAnnounceIdentity, BootedHarnessHandle, LocalWriteOp } from './boot';
 import type { OwnLog, PeerLogOp } from './peer-log';
 import type { ProduceSnapshotResult } from './log-snapshot';
 import type { AdmittedLog } from './read-merge';
@@ -309,6 +309,13 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
 
   get swarm(): SwarmHandle | null {
     // The swarm lives in the sidecar.
+    return null;
+  }
+
+  get announceIdentity(): BootedAnnounceIdentity | null {
+    // The swarm — and the identity it greets peers under — lives in the
+    // sidecar; the advertisement this handle is built from does not carry it.
+    // Callers (the git-sync hive legs) fall back to the gh-login actor.
     return null;
   }
 

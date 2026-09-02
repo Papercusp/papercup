@@ -81,6 +81,9 @@ import {
   runRefAnnouncePublishTick,
   runRefAnnounceReceiveTick,
   decideRefAnnounceReceiveCursor,
+  mergeParkedIntoReceiveBatch,
+  type ParkedRefAnnouncements,
+  type RefAnnounceReceiveBatchRow,
 } from '../../sync/pot-git/ref-announce-tick';
 import {
   REF_ANNOUNCE_EVENT_KEY,
@@ -157,6 +160,7 @@ import { Duplex } from 'node:stream';
 // (a no-op on an owner).
 import { listHiveMembersForLocalPot } from '../../federated-pot-scope';
 import { resolveUsageActor } from '../usage-actor';
+import { pickHiveGitActor, type HiveGitActor } from './hive-git-actor';
 import { loadCachedLocalAnnounceIdentity } from '../../sync/hyperbee/local-announce-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
@@ -3354,7 +3358,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
 
-    const actor = await resolveUsageActor();
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     if (!actor?.devicePubkey) return; // gh unauthenticated — no device identity to publish as
 
     const genesisBaselineSha = await deriveGenesisBaselineSha(entry, branch);
@@ -3517,6 +3521,39 @@ function hasRelocatedHiveGitDial(handle: unknown): handle is RelocatedHiveGitDia
     handle !== null &&
     typeof (handle as Partial<RelocatedHiveGitDialHandle>).openHiveGitDuplexToDevice === 'function'
   );
+}
+
+/**
+ * P-203 Leg A — the identity every hive-git leg of this pot signs, announces
+ * and dials as. Prefers the pot home harness's LIVE swarm announce identity
+ * (`BootedHarnessHandle.announceIdentity`: the device peers file our socket
+ * under, so the only device an announcement from us may name); falls back to
+ * the gh-login actor when no in-process swarm identity exists. Rationale and
+ * the live tower split that motivated it: `hive-git-actor.ts`.
+ *
+ * Looked up by the LOCAL install slug first (WI-3496: a joined member's harness
+ * is registered under its own install slug, and the pot-home slug need not
+ * exist here at all), then by the pot-home slug for a hive's submodule installs,
+ * which share the home harness's swarm join — and therefore its identity — and
+ * have no booted handle of their own.
+ */
+async function resolveHiveGitActor(
+  workspaceId: string,
+  installSlug: string,
+  potHomeSlug: string,
+): Promise<HiveGitActor | null> {
+  let booted: { devicePubkeyBase64: string; githubUserId: number; keychainId: string } | null = null;
+  try {
+    const { getBootedHarness } = await import('../../sync/hyperbee/boot-all');
+    const handle =
+      getBootedHarness(workspaceId, installSlug) ??
+      (installSlug === potHomeSlug ? null : getBootedHarness(workspaceId, potHomeSlug));
+    booted = handle?.announceIdentity ?? null;
+  } catch {
+    booted = null; // boot-all unavailable in this process — the gh-login fallback applies
+  }
+  const ghActor = booted ? null : await resolveUsageActor();
+  return pickHiveGitActor(booted, ghActor, resolveDeviceKeychainId);
 }
 
 async function resolveHiveGitDialContext(
@@ -3792,7 +3829,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       }
     }
 
-    const actor = await resolveUsageActor();
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     // Self-identification must NOT ride on gh reachability: resolveUsageActor
     // returns null whenever `gh` is unauthenticated or GET /user fails (rate
     // limit), and an undefined self here used to (a) let `find(d => d !==
@@ -4319,7 +4356,7 @@ async function runRefAnnounceLeg(
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
 
-    const actor = await resolveUsageActor();
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     if (!actor) return; // gh unauthenticated — no device identity to sign/announce as
 
     const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
@@ -4338,6 +4375,9 @@ async function runRefAnnounceLeg(
       lastEventId: number;
       budgetStates: Record<string, AnnounceBudgetState | null>;
       publishVersion?: number;
+      /** P-203 Leg A: announcements not yet mirrored, carried OUTSIDE the
+       *  cursor (newest per device) — see `decideRefAnnounceReceiveCursor`. */
+      parked?: ParkedRefAnnouncements;
     };
     const stateRows = await sql<{ ref_announce: RefAnnounceRoutineState | null }[]>`
       SELECT metadata->'ref_announce' AS ref_announce
@@ -4351,7 +4391,7 @@ async function runRefAnnounceLeg(
       : 0;
 
     const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
-    const keychainId = resolveDeviceKeychainId(actor.githubUserId);
+    const keychainId = actor.keychainId;
     const sign = (bytes: Buffer): Promise<Buffer> => signWithDeviceKey(keychainId, bytes);
 
     // 1. Publish: announce our own namespace advance, if any.
@@ -4405,6 +4445,7 @@ async function runRefAnnounceLeg(
           lastEventId: priorState?.lastEventId ?? 0,
           budgetStates: priorState?.budgetStates ?? {},
           publishVersion: Math.max(priorPublishVersion, announcement.version),
+          parked: priorState?.parked ?? {},
           at: Date.now(),
         },
       });
@@ -4416,9 +4457,12 @@ async function runRefAnnounceLeg(
     if (options.receive === false) return;
     if (memberDevicePubkeysBase64.length === 0) return; // no attested peers to receive from yet
 
-    // 2. Receive: pending peer ref-announce fed-events since our watermark.
+    // 2. Receive: pending peer ref-announce fed-events since our watermark —
+    // plus whatever last tick PARKED (read but could not mirror; P-203 Leg A).
     const lastEventId = priorState?.lastEventId ?? 0;
     const priorBudgetStates = new Map<string, AnnounceBudgetState | null>(Object.entries(priorState?.budgetStates ?? {}));
+    const priorParked: ParkedRefAnnouncements = priorState?.parked ?? {};
+    const hasParked = Object.keys(priorParked).length > 0;
 
     const feRows = await sql<{ id: number; body: Record<string, unknown> }[]>`
       SELECT id, body
@@ -4438,9 +4482,9 @@ async function runRefAnnounceLeg(
     // coord_event_log_fed_event_key_idx (migration 1038) is present to make it an index
     // probe; without that index this is a full parallel seq scan on every git-sync tick.
     // See EI-21893070865750886, which measured it at 1,408 buffers -> 3.
-    if (feRows.length === 0) return;
+    if (feRows.length === 0 && !hasParked) return;
 
-    const pending: { rowId: number; announcement: SignedRefAnnouncement }[] = [];
+    const pending: RefAnnounceReceiveBatchRow[] = [];
     let maxRowId = lastEventId;
     for (const row of feRows) {
       maxRowId = Math.max(maxRowId, row.id);
@@ -4451,14 +4495,19 @@ async function runRefAnnounceLeg(
       if (!refAnnounceTargetsRepo(fe, { slug, potHomeSlug })) continue;
       if (fe && isSignedRefAnnouncement(fe.payload)) pending.push({ rowId: row.id, announcement: fe.payload });
     }
-    if (pending.length === 0) {
+    // Parked announcements are driven at the HEAD of the batch (a parked entry
+    // superseded by a newer fresh row from its device is dropped here).
+    const batch = mergeParkedIntoReceiveBatch(priorParked, pending);
+    if (batch.length === 0) {
       // Rows existed (e.g. a malformed payload) but nothing usable — still
-      // advance the cursor past them so a bad row can't loop forever.
+      // advance the cursor past them so a bad row can't loop forever. Nothing
+      // was parked either (a parked row is always in the batch).
       await patchRoutineMetadata(slug, workspaceId, {
         ref_announce: {
           lastEventId: maxRowId,
           budgetStates: priorState?.budgetStates ?? {},
           publishVersion: Math.max(priorPublishVersion, publishOutcome.announcement?.version ?? 0),
+          parked: {},
           at: Date.now(),
         },
       });
@@ -4490,7 +4539,7 @@ async function runRefAnnounceLeg(
 
     const receiveOutcome = await runRefAnnounceReceiveTick({
       repoPath,
-      pending: pending.map((p) => p.announcement),
+      pending: batch.map((p) => p.announcement),
       selfDevice: actor.devicePubkey,
       allowedDevices: memberDevicePubkeysBase64,
       budgetStates: priorBudgetStates,
@@ -4536,17 +4585,19 @@ async function runRefAnnounceLeg(
       timeoutMs: 15_000,
     });
 
-    // EI-15335: the receive tick returns one result per pending announcement,
-    // positionally aligned. A `fetch-failed` result means the announced
-    // namespace was NEVER mirrored (a transient transport failure — e.g. no
-    // live swarm dial yet). Do NOT advance the fed-event cursor past it: hold
-    // the cursor below the oldest failed row so the next tick re-dials, rather
-    // than silently dropping the announce and leaving a permanent
-    // namespace-mirror gap until the remote happens to announce again.
+    // EI-15335 / P-203 Leg A: the receive tick returns one result per driven
+    // announcement, positionally aligned to `batch`. A `fetch-failed` result
+    // means the announced namespace was NEVER mirrored. The cursor still
+    // advances past everything read; the un-mirrored announcement is PARKED
+    // (newest per device, persisted below) and re-driven next tick — never
+    // silently dropped, and never allowed to pin the cursor for every other
+    // announcer (the head-of-line block that starved a reachable peer on the
+    // two-machine rig). See `decideRefAnnounceReceiveCursor`.
     const cursorDecision = decideRefAnnounceReceiveCursor(
       receiveOutcome.results,
-      pending.map((p) => p.rowId),
+      batch,
       maxRowId,
+      priorParked,
     );
 
     await patchRoutineMetadata(slug, workspaceId, {
@@ -4554,9 +4605,16 @@ async function runRefAnnounceLeg(
         lastEventId: cursorDecision.cursor,
         budgetStates: Object.fromEntries(receiveOutcome.budgetStates),
         publishVersion: Math.max(priorPublishVersion, publishOutcome.announcement?.version ?? 0),
+        parked: cursorDecision.parked,
         at: Date.now(),
       },
     });
+    for (const u of cursorDecision.unparked) {
+      console.info(
+        `[git-sync] ${slug}: parked ref-announce from ${u.device.slice(0, 12)} settled (${u.action}) at v${u.version} ` +
+          `after ${u.attempts} tick(s) parked since ${new Date(u.parkedSinceMs).toISOString()}`,
+      );
+    }
 
     // EI-15333 (second leg): arm the backoff for a pair that was ACTUALLY
     // DIALED this tick and came back with a definitive `no-such-repo`. The
@@ -4613,9 +4671,20 @@ async function runRefAnnounceLeg(
         rowIds.length === 1
           ? `event ${rowIds[0]}`
           : `${rowIds.length} announcements, events ${rowIds[0]}..${rowIds[rowIds.length - 1]}`;
+      // A device that stays parked re-fails every tick for as long as it is
+      // unreachable; log the first miss and then once every 6 ticks (~hourly at
+      // the 10-min rig cadence) so a permanent stall stays visible without
+      // burying the lines that distinguish a NEW failure.
+      const parkedEntry = cursorDecision.parked[device];
+      const attempts = parkedEntry?.attempts ?? 1;
+      if (parkedEntry && attempts !== 1 && attempts % 6 !== 0) continue;
       console.warn(
         `[git-sync] ${slug}: ref-announce receive fetch FAILED for ${device.slice(0, 12)} (${span}); ` +
-          `holding cursor at ${cursorDecision.cursor} to re-dial next tick: ${reason}` +
+          (parkedEntry
+            ? `parked v${parkedEntry.announcement.version} to re-dial next tick (attempt ${attempts}, ` +
+              `since ${new Date(parkedEntry.parkedSinceMs).toISOString()}); cursor advanced to ${cursorDecision.cursor}: `
+            : `superseded by a newer announcement from the same device this tick; cursor advanced to ${cursorDecision.cursor}: `) +
+          reason +
           (detail ? `: ${detail}` : ` (no stderr)`),
       );
     }
@@ -4719,7 +4788,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
 
-    const actor = await resolveUsageActor();
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     // gh unauthenticated — no device identity to sign/integrate as
     if (!actor) return void (await decline('no_device_identity'));
 
@@ -5010,7 +5079,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     const { epoch } = grant;
     const { priorSeq } = grant;
 
-    const keychainId = resolveDeviceKeychainId(actor.githubUserId);
+    const keychainId = actor.keychainId;
     const outcome = await runIntegratorTick({
       potHomeSlug,
       workspaceId,
@@ -5316,7 +5385,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // additionally per-announcement conditional inside handleStagingAdvance
     // (it only fires when the sha is genuinely missing), which is what makes it
     // safe to wire unconditionally on a self-announcing single-machine box.
-    const actor = await resolveUsageActor();
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     const dialContext = actor ? await resolveHiveGitDialContext(workspaceId, slug) : null;
     const openDuplex =
       actor && dialContext

@@ -731,6 +731,14 @@ export interface BootHarnessOpts {
   scopedInitWaitMs?: number;
 }
 
+/** The slice of a booted harness's resolved announce identity that peers can
+ *  observe (device + account) plus the keychain that signs as it. See
+ *  `BootedHarnessHandle.announceIdentity`. */
+export type BootedAnnounceIdentity = Pick<
+  LocalAnnounceIdentity,
+  'devicePubkeyBase64' | 'githubUserId' | 'githubLogin' | 'keychainId'
+>;
+
 export interface BootedHarnessHandle {
   workspaceId: string;
   harnessSlug: string;
@@ -838,6 +846,13 @@ export interface BootedHarnessHandle {
    *  (private harness OR swarmBinding omitted). A live getter — `rekey()`
    *  reassigns it, so always read the current value. */
   readonly swarm: SwarmHandle | null;
+  /** The device identity this harness's swarm announce and pot-git hello carry —
+   *  the device peers file our socket under, and therefore the ONLY device a
+   *  ref-announce / staging-advance from this harness may be signed as (a peer
+   *  dials `announcement.device_pubkey`). Null until the first join resolves
+   *  it, or when this boot never joined a swarm. Live getter, reassigned by
+   *  `rekey()`. P-203 Leg A. */
+  readonly announceIdentity: BootedAnnounceIdentity | null;
   /** Re-key onto a NEW swarm topic IN PLACE: leave the old topic, join the topic
    *  derived from `binding`, keeping the store + own log + admitted set + merge
    *  loop alive. The "go shared" primitive — used when a harness joins/publishes
@@ -4886,6 +4901,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // resolution failures don't fail the boot — the harness still works as a
   // single-peer substrate.
   let swarmHandle: SwarmHandle | null = null;
+  // P-203 Leg A (2026-09-02): the identity THIS harness's swarm announce + pot-git
+  // hello actually carry — the device every peer files our socket under. Exposed
+  // on the handle (`announceIdentity`) so the git-sync hive legs sign, announce
+  // and dial as the SAME device; resolving it independently (the gh-CLI login
+  // actor) split the two on the tower — gh=papercupai, announce=aviynw — so every
+  // ref-announce named a device no peer had a socket for. Reassigned by rekey().
+  let announceIdentity: LocalAnnounceIdentity | null = null;
   let writerProgressAnnounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
@@ -5009,6 +5031,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ...(opts.announceIdentityOverride?.resolveOpts ?? {}),
         logCoreKeyHex: ownLog.keyHex,
       }));
+      announceIdentity = identity;
       // WI-2039866: feed the EN-4 owner exemption (mergeOnePass) the identity peers
       // actually attribute this device to — the announce identity, NOT the gh-CLI login
       // (on the tower those differ: gh=papercupai, announce=aviynw, and the gap is what
@@ -5623,6 +5646,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // captured at boot return.
     get swarm(): SwarmHandle | null {
       return swarmHandle;
+    },
+    get announceIdentity(): BootedAnnounceIdentity | null {
+      if (!announceIdentity) return null;
+      const { devicePubkeyBase64, githubUserId, githubLogin, keychainId } = announceIdentity;
+      return { devicePubkeyBase64, githubUserId, githubLogin, keychainId };
     },
     async rekey(binding: SwarmBinding): Promise<void> {
       // EI-681: re-key onto a NEW swarm topic IN PLACE — leave the old topic and
