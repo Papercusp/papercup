@@ -69,6 +69,7 @@ import {
   isIssueLocallyClaimable,
   isIssueLocallyClaimableWhereSql,
   loadTrustedGithubUserIds,
+  STOP_THE_LINE_RED_HOURS,
   stopTheLineExclusionSql,
 } from './work-items-admission';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
@@ -7357,7 +7358,72 @@ export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
     '(mig 499 / EI-6956), or FILED BY SOMEONE ELSE within the filing-grace window (WI-5939: the filer ' +
     'gets a head start to claim their own file-then-fix). Both clear on their own; the filer can claim ' +
     'its own row immediately, and PAPERCUSP_FILING_GRACE_SEC=0 disables the grace leg.',
+  // EI-22172757071586188: the 4th floor (after WI-37356's ok_no_blocker/ok_cooldown/ok_origin)
+  // found missing from this oracle. Generic on purpose — unlike stopTheLineExplanation(harness),
+  // this static map has no harness in scope; a caller wanting the harness-named verdict text
+  // calls that function directly with refusedBy === 'stop-line'.
+  'stop-line':
+    `P-013/D-012 stop-the-line: this harness's release gate has been red for over ${STOP_THE_LINE_RED_HOURS}h ` +
+    '(an open gate-red-streak condition item older than the threshold), so non-repair issue-family work is ' +
+    'not served for self-select. Bugs and alarm-condition items stay exempt, and a leader/owner can still ' +
+    'dispatch this row by id. Clears on its own once the gate greens.',
 };
+
+/**
+ * The `ok_*` floor-boolean SELECT list shared by every candidate row {@link explainIssueClaimFloors}
+ * explains — factored out of that function so a test can read its LIVE result-column metadata
+ * (never a source-text scan — same reasoning as `get-next-exclusion-breakdown.integration.test.ts`'s
+ * identical technique for {@link issueClaimCandidateSubquery} in scheduler/get-next.ts) and assert
+ * it against {@link ALL_ISSUE_CLAIM_FLOORS_PASS} imported from there. `explainIssueClaimFloors` is
+ * the only other caller, so these booleans are computed in exactly one place.
+ *
+ * Deliberately EXCLUDES `ok_status`: that floor exists only in the oracle (a named id may be in
+ * any status, so "not-claimable-status" must be an explicit floor there), never in the claim
+ * path's own candidate population (which filters status via its base `WHERE` instead) — so it is
+ * correctly absent from {@link ALL_ISSUE_CLAIM_FLOORS_PASS} too, and the parity test asserts a
+ * SUPERSET relation (oracle ⊇ bar), not exact equality.
+ *
+ * EI-22172757071586188: `ok_stop_line` was the 4th floor found missing from this oracle (after
+ * WI-37356 fixed three siblings: `ok_no_blocker`, `ok_cooldown`, `ok_origin`) — the SET here had
+ * been hand-maintained separately from {@link ALL_ISSUE_CLAIM_FLOORS_PASS} with no guard, so a
+ * floor added to the real claim path silently never reached this oracle. This factoring plus its
+ * paired test is the recurrence guard that would have caught all four instances.
+ */
+export function issueClaimBarFloorColumnsSql(
+  sql: OrgSql,
+  opts: {
+    issueWs: string;
+    assignee: string;
+    cooldown: number;
+    rigAvailable?: boolean;
+    claimantFleetSlug?: string;
+    claimSpecReferencesFleet?: boolean;
+  },
+) {
+  const { issueWs, assignee, cooldown, rigAvailable, claimantFleetSlug, claimSpecReferencesFleet } = opts;
+  return sql`
+    (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
+    (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                     AS ok_origin,
+    (${admittedWhereSqlWi(sql)})                                           AS ok_admission,
+    (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
+    (${needsOwnerActionExclusionSql(sql)})                                 AS ok_needs_owner_action,
+    (${agentReviewNormalExclusionSql(sql)})                                AS ok_agent_review,
+    (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
+    (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
+    (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
+      claimantFleetSlug,
+      claimSpecReferencesFleet,
+    })})                                                                  AS ok_plan_lane,
+    (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
+    (${loopIterationNoiseExclusionSql(sql)})                               AS ok_loop_noise,
+    (${alreadyTerminallyCompletedExclusionSql(sql)})                       AS ok_completed,
+    (${watchdogRecoveryWindowExclusionSql(sql)})                           AS ok_watchdog_recovery,
+    (${crossMachineRigExclusionSql(sql, rigAvailable)})                    AS ok_rig,
+    (${depsBlockedExclusionSql(sql)})                                      AS ok_no_blocker,
+    (${issueCooldownExclusionSql(sql, assignee, cooldown)})                AS ok_cooldown,
+    (${stopTheLineExclusionSql(sql, 'issue-wi')})                          AS ok_stop_line
+  `;
+}
 
 /**
  * WI-4413: explain, PER NAMED ID, which claim floor refuses it — the missing half of
@@ -7416,30 +7482,20 @@ export async function explainIssueClaimFloors(
       ok_rig: boolean;
       ok_no_blocker: boolean;
       ok_cooldown: boolean;
+      ok_stop_line: boolean;
     }[]
   >`
     SELECT wi.feature_id AS id,
            wi.taken_by                                                            AS taken_by,
            (wi.status = ANY(${[...states]}::text[]))                              AS ok_status,
-           (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
-           (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                     AS ok_origin,
-           (${admittedWhereSqlWi(sql)})                                           AS ok_admission,
-           (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
-           (${needsOwnerActionExclusionSql(sql)})                                 AS ok_needs_owner_action,
-           (${agentReviewNormalExclusionSql(sql)})                                 AS ok_agent_review,
-           (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
-           (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
-           (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
+           ${issueClaimBarFloorColumnsSql(sql, {
+             issueWs,
+             assignee,
+             cooldown,
+             rigAvailable: opts.rigAvailable,
              claimantFleetSlug: opts.claimantFleetSlug,
              claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
-           })})                                                                  AS ok_plan_lane,
-           (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
-           (${loopIterationNoiseExclusionSql(sql)})                               AS ok_loop_noise,
-           (${alreadyTerminallyCompletedExclusionSql(sql)})                       AS ok_completed,
-           (${watchdogRecoveryWindowExclusionSql(sql)})                           AS ok_watchdog_recovery,
-           (${crossMachineRigExclusionSql(sql, opts.rigAvailable)})               AS ok_rig,
-           (${depsBlockedExclusionSql(sql)})                                      AS ok_no_blocker,
-           (${issueCooldownExclusionSql(sql, assignee, cooldown)})                AS ok_cooldown
+           })}
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${issueWs}
        AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
@@ -7491,7 +7547,9 @@ export async function explainIssueClaimFloors(
                                       ? 'blocked-dep'
                                       : !r.ok_cooldown
                                         ? 'cooldown'
-                                        : null;
+                                        : !r.ok_stop_line
+                                          ? 'stop-line'
+                                          : null;
     return {
       id,
       admissible: refusedBy === null,

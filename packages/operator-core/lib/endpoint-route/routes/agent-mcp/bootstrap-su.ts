@@ -3278,7 +3278,7 @@ const sessionResumed = defineTool({
         if (!isAdvSessionLocalLivenessEvidence(body.localLivenessEvidence)) {
           return jsonRes({
             error:
-              "localLivenessEvidence must be { version: 1, kind: 'no-live-codex-writer' | 'no-live-claude-process' }",
+              "localLivenessEvidence must be { version: 1, kind: 'no-live-codex-writer' | 'no-live-claude-process' | 'no-live-omp-process' }",
           }, 400);
         }
         localLivenessEvidence = body.localLivenessEvidence;

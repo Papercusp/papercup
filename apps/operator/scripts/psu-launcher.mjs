@@ -8510,11 +8510,18 @@ export function describeResumeClaimRefusal(
     );
   }
   if (outcome?.status === "live") {
-    // WI-2141892: for claude the local absence probe now runs BEFORE this check
-    // and, on a clean scan, reconciles the row outright — so reaching a `live`
-    // refusal means one of exactly two things, and saying WHICH is the
-    // difference between a route and a dead end.
-    const claudeContext = () => {
+    // WI-2141892 (claude) / WI-2142101 (omp): for an argv-probing backend the
+    // local absence probe now runs BEFORE this check and, on a clean scan,
+    // reconciles the row outright — so reaching a `live` refusal means one of
+    // exactly two things, and saying WHICH is the difference between a route and
+    // a dead end.
+    //
+    // Report only what the probe ACTUALLY returned. The omp branch used to assert
+    // "No live managed-PTY host was found" unconditionally, which was a claim
+    // about a check that had not run — and once claude and codex both reported
+    // real observations, omp was the only backend whose message could be false.
+    // A message asserting an unmade check is worse than no message at all.
+    const argvProbeContext = () => {
       if (processHolder?.held) {
         return (
           ` A live process (pid ${processHolder.pid}) still carries this session id in its argv — that agent ` +
@@ -8522,9 +8529,18 @@ export function describeResumeClaimRefusal(
           `wake:'required'), stop it first (processes:kill by taskId — never pkill -f), or branch alongside it with --fork.`
         );
       }
-      const why = processHolder?.reason
-        ? ` (${processHolder.reason})`
-        : "";
+      if (!processHolder) {
+        // The probe never ran for this resume — typically no coordOwnerId on the
+        // row, so the PTY-host registry (keyed by ownerId) could not be consulted
+        // and the witness was correctly withheld. Say that, rather than implying
+        // a host lookup happened and came back empty.
+        return (
+          ` The local liveness probe did not run for this resume, so nothing here observed whether an agent ` +
+          `process exists. Wait out the recent-active window, or use --fork (which mints a NEW identity and ` +
+          `abandons this coord ownerId).`
+        );
+      }
+      const why = processHolder.reason ? ` (${processHolder.reason})` : "";
       return (
         ` No live managed-PTY host was found, and the local process probe could not return a clean absence` +
         `${why}, so the guard stayed closed. Re-run psu --resume once the probe can complete, wait out the ` +
@@ -8534,11 +8550,9 @@ export function describeResumeClaimRefusal(
     const backendContext =
       agent === "codex"
         ? " Codex's native writer-lock guard ran before this database check; if it reported no holder, verify the adv-session row or use --fork."
-        : agent === "claude"
-          ? claudeContext()
-          : agent === "omp"
-            ? " No live managed-PTY host was found before this database check; verify the recorded OMP host/process or use --fork."
-            : "";
+        : agent === "claude" || agent === "omp"
+          ? argvProbeContext()
+          : "";
     return (
       `the tracked session row is already marked live; that database state alone ` +
       `does not prove an agent process exists.${backendContext}${detail}`
@@ -9994,6 +10008,12 @@ const readProcCmdlineText = (pid) =>
 /**
  * Is any live process (outside the caller's own ancestor chain) carrying this
  * native session id in its argv?
+ *
+ * BACKEND-NEUTRAL by construction, and used by two of them: the caller supplies
+ * whichever id its resume actually puts on the command line — claude's
+ * `--resume <session_id>` or omp's `-r <omp_thread_id>` (resumeArgsFor). It asks
+ * only "is this string in a live argv", so nothing here knows or cares which
+ * backend it is serving.
  * `{ held, pid, cmdline, reason }` — fail-CLOSED: `held` is false ONLY on a
  * complete, successful scan that found nothing.
  *
@@ -10002,7 +10022,7 @@ const readProcCmdlineText = (pid) =>
  * (`no-session-id`, `no-proc`, `scan-empty`) is unknown and must not relax the
  * guard. Pure apart from the injected readers — exported for tests.
  */
-export function claudeSessionProcessHolder(
+export function sessionProcessHolder(
   sessionId,
   {
     listProcPids = defaultListProcPids,
@@ -10073,9 +10093,28 @@ export const NO_LIVE_CLAUDE_PROCESS_EVIDENCE = Object.freeze({
   kind: "no-live-claude-process",
 });
 
+export const NO_LIVE_OMP_PROCESS_EVIDENCE = Object.freeze({
+  version: 1,
+  kind: "no-live-omp-process",
+});
+
 const RESUME_LOCAL_LIVENESS_EVIDENCE_KINDS = Object.freeze({
   "no-live-codex-writer": NO_LIVE_CODEX_WRITER_EVIDENCE,
   "no-live-claude-process": NO_LIVE_CLAUDE_PROCESS_EVIDENCE,
+  "no-live-omp-process": NO_LIVE_OMP_PROCESS_EVIDENCE,
+});
+
+/** Which witness an argv-probing backend mints, and which adv-row column carries
+ *  the id its resume actually puts on the command line (resumeArgsFor). */
+const ARGV_PROBE_BACKENDS = Object.freeze({
+  claude: {
+    evidence: NO_LIVE_CLAUDE_PROCESS_EVIDENCE,
+    idOf: (session) => session?.sessionId || null,
+  },
+  omp: {
+    evidence: NO_LIVE_OMP_PROCESS_EVIDENCE,
+    idOf: (session) => session?.ompThreadId || null,
+  },
 });
 
 /** Normalize a wire value to one canonical local-liveness witness. */
@@ -10128,26 +10167,35 @@ export function normalizeCodexResumeLocalLivenessEvidence({
 }
 
 /**
- * Build the positive witness for an exact Claude resume only when BOTH local
- * liveness oracles positively say no process owns this session: the psu PTY-host
- * registry found none, and a complete `/proc` scan found no live argv carrying
- * the native session id. Every other result — including a probe that could not
- * complete — stays unknown and returns null (fail closed).
+ * Build the positive witness for an exact CLAUDE or OMP resume only when BOTH
+ * local liveness oracles positively say no process owns this session: the psu
+ * PTY-host registry found none, and a complete `/proc` scan found no live argv
+ * carrying the id that backend's resume puts on the command line. Every other
+ * result — including a probe that could not complete — stays unknown and returns
+ * null (fail closed).
  *
- * `PSU_FORCE_RESUME=1` deliberately does NOT produce this witness. That variable
- * means "take over a host I can SEE is alive"; this witness means "I looked and
+ * `liveHost` must be exactly `null` — "the registry was consulted and answered
+ * no". `undefined` means the PTY-host block never ran (no coordOwnerId, or a
+ * force/fork path), and that is ONE ORACLE MISSING, not two oracles passing. The
+ * distinction is load-bearing: the registry is keyed by ownerId, so a row without
+ * one cannot be asked at all, and inferring absence from an unasked question is
+ * exactly the unearned liveness claim this whole mechanism exists to prevent.
+ *
+ * `PSU_FORCE_RESUME=1` deliberately does NOT produce a witness. That variable
+ * means "take over a host I can SEE is alive"; a witness means "I looked and
  * there is nothing alive". Letting a force manufacture an absence claim would
  * make the server's audit trail lie about what was actually observed.
  */
-export function normalizeClaudeResumeLocalLivenessEvidence({
+export function normalizeArgvProbeResumeLocalLivenessEvidence({
   agent,
   fork = false,
   forceResume = process.env.PSU_FORCE_RESUME,
   liveHost,
   processHolder,
 } = {}) {
+  const backend = ARGV_PROBE_BACKENDS[agent];
   if (
-    agent !== "claude" ||
+    !backend ||
     fork ||
     forceResume === "1" ||
     liveHost !== null ||
@@ -10158,7 +10206,15 @@ export function normalizeClaudeResumeLocalLivenessEvidence({
     processHolder.reason !== "clean-scan"
   )
     return null;
-  return normalizeResumeLocalLivenessEvidence(NO_LIVE_CLAUDE_PROCESS_EVIDENCE);
+  return normalizeResumeLocalLivenessEvidence(backend.evidence);
+}
+
+/** The id this session's resume will put on the command line, or null when the
+ *  backend does not probe argv (codex has its own flock oracle) or the row
+ *  records no id — psu then resumes with `--continue` / `-c`, which names
+ *  nothing to scan for. Pure — exported for tests. */
+export function argvProbeSessionId(session) {
+  return ARGV_PROBE_BACKENDS[session?.agent]?.idOf(session) ?? null;
 }
 
 /**
@@ -10261,7 +10317,7 @@ async function launchResume(
   // overrides for recovery of a wedged-but-technically-alive host.
   let liveHostForResume;
   let localLivenessEvidence = null;
-  let claudeProcessHolder = null;
+  let argvProbeHolder = null;
   if (!fork && session.coordOwnerId && process.env.PSU_FORCE_RESUME !== "1") {
     const live = findLiveHostFor(session.coordOwnerId);
     liveHostForResume = live;
@@ -10326,20 +10382,22 @@ async function launchResume(
       writerHolder: holder,
     });
   }
-  // WI-2141892: the same reconciliation for CLAUDE. The PTY-host guard above
-  // already returned null for this session (a found host exits before here), so
-  // the remaining question is whether a HEADLESS claude — invisible to that
-  // registry — still holds the native session id. Only a complete scan that
-  // finds nothing produces the witness; every failure mode leaves the server's
-  // recent-active guard closed exactly as it is today.
-  if (!fork && session.agent === "claude") {
-    claudeProcessHolder = claudeSessionProcessHolder(session.sessionId || null);
-    localLivenessEvidence = normalizeClaudeResumeLocalLivenessEvidence({
+  // WI-2141892 (claude) / WI-2142101 (omp): the same reconciliation for the two
+  // backends whose resume names the session on the COMMAND LINE. The PTY-host
+  // guard above already returned null for this session (a found host exits before
+  // here), so the remaining question is whether a HEADLESS agent — invisible to
+  // that registry — still holds the id. Only a complete scan that finds nothing
+  // produces the witness; every failure mode leaves the server's recent-active
+  // guard closed exactly as it is today. codex is absent by design: it has a
+  // better oracle (its own writer flock), handled above.
+  if (!fork && ARGV_PROBE_BACKENDS[session.agent]) {
+    argvProbeHolder = sessionProcessHolder(argvProbeSessionId(session));
+    localLivenessEvidence = normalizeArgvProbeResumeLocalLivenessEvidence({
       agent: session.agent,
       fork,
       forceResume: process.env.PSU_FORCE_RESUME,
       liveHost: liveHostForResume,
-      processHolder: claudeProcessHolder,
+      processHolder: argvProbeHolder,
     });
   }
   let resumeClaimed = false;
@@ -10424,7 +10482,7 @@ async function launchResume(
     });
     if (!claim.claimed) {
       console.error(
-        `psu: refusing to resume session #${session.id} — ${describeResumeClaimRefusal(claim, { agent: session.agent, processHolder: claudeProcessHolder })}; no agent process was spawned.`,
+        `psu: refusing to resume session #${session.id} — ${describeResumeClaimRefusal(claim, { agent: session.agent, processHolder: argvProbeHolder })}; no agent process was spawned.`,
       );
       // Headless revival runs this launcher beneath a detached, non-interactive
       // shell whose lifetime is the launcher's lifetime. Setting exitCode and

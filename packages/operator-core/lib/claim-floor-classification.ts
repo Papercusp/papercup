@@ -83,6 +83,10 @@ export const TRANSIENT_CLAIM_FLOORS: ReadonlySet<string> = new Set([
   'blocked-dep',
   // cleared by elapsed time; the oracle's own explanation says "Both clear on their own".
   'cooldown',
+  // EI-22172757071586188: cleared when the gate greens (the condition bridge settles the
+  // gate-red-streak item) — stopTheLineExplanation says so explicitly ("lifts on its own
+  // when the gate greens"). Nothing about a stranded row here; it is a system-wide throttle.
+  'stop-line',
 ]);
 
 /**

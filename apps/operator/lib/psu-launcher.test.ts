@@ -9341,10 +9341,12 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
 
     const clean = { held: false, reason: "clean-scan" };
     for (const value of [
-      // wrong backend — the oracles ask different questions and are not
-      // interchangeable, which the server re-checks independently
+      // wrong backend — codex does NOT probe argv: it has its own writer-lock
+      // oracle, and the two ask different questions. (omp was here until
+      // WI-2142101; it is now a legitimate argv-probe backend, asserted above.)
       { agent: "codex", liveHost: null, processHolder: clean },
-      { agent: "omp", liveHost: null, processHolder: clean },
+      { agent: "gemini", liveHost: null, processHolder: clean },
+      { agent: null, liveHost: null, processHolder: clean },
       // a fork needs no witness: it never reuses the identity
       { agent: "claude", fork: true, liveHost: null, processHolder: clean },
       // a force means "take over a host I can SEE" — it must not manufacture an

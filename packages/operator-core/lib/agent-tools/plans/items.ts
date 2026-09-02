@@ -40,6 +40,11 @@ import {
   planItemRef,
 } from "../../issue-blocks-merge";
 import {
+  extractWorkItemRefs,
+  getWorkItemRefStates,
+  type CitedWorkItemRefState,
+} from "./cited-work-item-refs";
+import {
   getAllPlanItemCoverage,
   compactCoverage,
   isCoverageDivergent,
@@ -192,6 +197,16 @@ interface ItemRow {
    *  for a plan that predates the requirement, which is what keeps the rule
    *  from freezing the existing corpus. See spec-triad-policy.ts. */
   specTriadMissing?: SpecTriadLegName[];
+  /** EI-22173576329267385: CURRENT state of any WI-/EI- refs cited in this
+   *  item's text — a work-item's title/citation is frozen at report time and
+   *  never rewritten on closure, so a nonzero-terminal ref here means
+   *  re-check the cited work-item before trusting this item's premise as
+   *  live. Computed OUTSIDE the plan-content cache (like `coverage`): a
+   *  cited work-item's state changes independently of the plan that quotes
+   *  it. Diagnostic only — never adjudicates whether the citation is
+   *  load-bearing or background; that stays a reading task. Present only
+   *  when ≥1 cited ref resolves. */
+  citedWorkItems?: CitedWorkItemRefState[];
 }
 
 export default defineTool({
@@ -498,22 +513,51 @@ export default defineTool({
         // Non-fatal — no coverage overlay.
       }
     }
+    // EI-22173576329267385: surface the CURRENT state of any WI-/EI- refs cited
+    // in item prose, computed live (outside the plan-content cache) for the same
+    // reason as coverage above — a cited work-item's state changes independently
+    // of the plan that quotes it. One batch query for every distinct ref across
+    // all rows; non-fatal on error (degrades to no citation overlay).
+    const refsByRow = new Map<number, string[]>();
+    let citedWorkItemStates = new Map<string, CitedWorkItemRefState>();
+    if (!uiDisplayRead && cached.rows.length > 0) {
+      const allRefs = new Set<string>();
+      cached.rows.forEach((row, i) => {
+        const refs = extractWorkItemRefs(row.item.text);
+        if (refs.length > 0) {
+          refsByRow.set(i, refs);
+          for (const ref of refs) allRefs.add(ref);
+        }
+      });
+      if (allRefs.size > 0) {
+        try {
+          citedWorkItemStates = await getWorkItemRefStates([...allRefs]);
+        } catch {
+          // Non-fatal — no citation overlay.
+        }
+      }
+    }
     // The cached plan read can only filter the plan item's own effective status.
     // Linked work-item state is live coverage, so apply this claimability floor
     // after refreshing coverage; otherwise a todo plan item linked to a blocked
     // work-item is returned by actionable=true before the coverage overlay exists.
-    const rows = cached.rows.flatMap((row) => {
+    const rows = cached.rows.flatMap((row, i) => {
       const cov = coverage.get(planItemRef(row.plan, row.item.id));
       if (args.actionable && cov?.links.some((link) => link.blocked === true)) return [];
       const freshRow = { ...row };
       delete freshRow.coverage;
       delete freshRow.coverageDivergence;
+      delete freshRow.citedWorkItems;
+      const citedWorkItems = (refsByRow.get(i) ?? [])
+        .map((ref) => citedWorkItemStates.get(ref))
+        .filter((s): s is CitedWorkItemRefState => s !== undefined);
       return [{
         ...freshRow,
         ...(cov ? { coverage: compactCoverage(cov) } : {}),
         ...(cov && isCoverageDivergent(row.item.effectiveStatus, cov.level)
           ? { coverageDivergence: true as const }
           : {}),
+        ...(citedWorkItems.length > 0 ? { citedWorkItems } : {}),
       }];
     });
 

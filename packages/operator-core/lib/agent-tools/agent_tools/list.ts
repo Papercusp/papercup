@@ -28,6 +28,19 @@ export default defineTool({
   guidance: {
     when: 'Your tools playbook didn\'t cover a user request and you need to discover what\'s callable. Returns the full catalog filtered by your role, with each tool\'s guidance — treat this as the runtime fallback playbook.',
     notWhen: 'Don\'t use as a fishing expedition. If your playbook covers it, just call the tool. `agent_tools:list` costs a tool call.',
+    // EI-21672500371422859: this tool narrows by `filter` (a literal substring over the
+    // catalog) while its sibling discovery verb tools:find narrows by `query` (an intent).
+    // A caller arriving from tools:find reaches for `query` here, and the bare
+    // unrecognized-key rejection ("accepts ONLY: filter, limit, onlyAllowed, asRole")
+    // named neither the local spelling nor the intent-search verb. Zero prompt weight
+    // (never rendered into the description); paid only on that failure path.
+    argRedirects: {
+      query: {
+        tool: 'tools:find',
+        args: { query: '<what you need the tool to DO>' },
+        note: 'agent_tools:list has no `query` — it is a permission-annotated catalog DUMP narrowed by `filter` (a literal substring over tool names). Searching by INTENT is tools:find { query }. If you meant the literal-substring narrowing, re-send as agent_tools:list { filter }',
+      },
+    },
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

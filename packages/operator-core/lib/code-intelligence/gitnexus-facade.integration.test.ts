@@ -187,13 +187,43 @@ describe.skipIf(!AVAILABLE)('gitnexus facade — live backend', () => {
   );
 
   it(
-    'callers returns real call sites, each one-indexed',
+    'callers returns real call sites, each one-indexed, and flags file-level edges',
     async () => {
       const a = await gitnexusFacade('callers', { name: 'pinModuleState' });
-      expect(a.error).toBeNull();
+
+      // Vacuity guard. `pinModuleState` is the module-singleton primitive and
+      // has real callers in this tree, so an empty answer is a FINDING, not a
+      // pass — without this every assertion below is trivially true on zero
+      // rows, which is the false-green this whole suite exists to prevent.
+      expect(a.sites.length).toBeGreaterThan(0);
+
+      const callSites = a.sites.filter((s) => s.line1 !== null);
+      const fileEdges = a.sites.filter((s) => s.line1 === null);
+
+      // WI-40206: a FILE-level edge is NOT a caller, and `line1: null` was the
+      // only tell — counting rows overstated real callers 3x. So a mixed answer
+      // must carry the caveat rather than pass silently. This assertion used to
+      // read `expect(a.error).toBeNull()`, which pinned the pre-fix contract and
+      // therefore failed against the corrected facade. Asserted against the ONE
+      // canonical notice rather than a hand-copied spelling of it.
+      if (fileEdges.length > 0) {
+        expect(a.error).toBe(
+          fileEdgeNotice('callers', callSites.length, fileEdges.length),
+        );
+      } else {
+        expect(a.error).toBeNull();
+      }
+
+      // Resolved call sites lead, so a `limit` cut keeps the answer to the
+      // question asked rather than the file rows.
+      expect(a.sites.slice(0, callSites.length)).toEqual(callSites);
+
       for (const s of a.sites) {
         expect(s.path).toBeTruthy();
-        if (s.line1 !== null) expect(s.line1).toBeGreaterThanOrEqual(1);
+        // A line-less row must self-identify as a file edge; an unlabelled one
+        // is exactly the row that reads as a caller.
+        if (s.line1 === null) expect(s.kind).toBe('file');
+        else expect(s.line1).toBeGreaterThanOrEqual(1);
       }
     },
     60_000,

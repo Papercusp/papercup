@@ -544,6 +544,20 @@ export default defineTool({
     when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercusp-staging-api"], scope:"user" }` (read unitsUnknown before unitStates, then probe :3170); diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
     notWhen:
       "File/lock contention — that is locks:queue. Migration drift — db:check_drift.",
+    // EI-21678459404022074: `target` is dev:restart's argument, not this tool's — and
+    // this tool's own `when` above puts `dev:restart { target:"staging" }` in the clause
+    // immediately before the verify call, so a caller reading it straight through carries
+    // `target` onto the wrong verb. The bare unrecognized-key rejection ("accepts ONLY:
+    // units, scope") never named where `target` actually lives. Same shape, and same fix,
+    // as coord:inbox's `since`/`q` redirects: zero prompt weight (never rendered into the
+    // description), paid only on the failure path.
+    argRedirects: {
+      target: {
+        tool: 'dev:restart',
+        args: { target: '<the service to restart>' },
+        note: 'dev:service_health probes a FIXED endpoint set and takes only `units` + `scope` — there is no `target` to aim it at. Restarting a named service is dev:restart { target }; to VERIFY that restart, call this tool with units:["papercusp-staging-api"], scope:"user" and read unitsUnknown before unitStates',
+      },
+    },
     returns:
       "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision }. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
     seeAlso: [

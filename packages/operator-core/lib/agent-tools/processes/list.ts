@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listTasks } from '../../task-manager/store';
+import { resolveTaskConfinement } from '../../task-manager/confinement';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick, type ReconcileTickResult } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
@@ -123,6 +124,17 @@ const taskResultSchema = z.object({
       pids: z.number().int().nonnegative().nullable(),
       confined: z.boolean(),
       scopeUnit: z.string().nullable().optional(),
+      // P-023/D-111. Flat here because a result schema describes the wire shape; the
+      // authority on which fields co-occur is the `TaskConfinement` union itself.
+      // `insideOperatorCgroup` is absent — never `false` — when it is unknown.
+      confinement: z.object({
+        confined: z.boolean(),
+        cgroupPath: z.string().nullable(),
+        scopeUnit: z.string().nullable(),
+        source: z.enum(['derived-from-scope-unit', 'not-derivable', 'recorded-at-spawn']),
+        insideOperatorCgroup: z.boolean().optional(),
+        reason: z.string().optional(),
+      }),
       memoryMaxMb: z.number().int().nonnegative().nullable(),
       deadlineAt: z.string().nullable().optional(),
       exitCode: z.number().int().nullable().optional(),
@@ -166,7 +178,7 @@ export default defineTool({
     chaining:
       'Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live.',
     returns:
-      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
+      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids, confined, scopeUnit, confinement, deadlineAt, logPath }], live? } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
   },
   requirePrincipal: false,
   // Release-fixer must inspect the managed task ledger when classifying a
@@ -177,6 +189,13 @@ export default defineTool({
     states: z.array(z.enum(TASK_STATES)).optional().describe('filter by one or more lifecycle states'),
     classes: z.array(z.string().min(1)).max(20).optional().describe('filter by task class'),
     launchedBy: z.string().max(120).optional().describe('only tasks this agent id launched'),
+    coordOwnerId: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'only tasks BELONGING to this coord owner id — pass your own to find your own row. Not `launchedBy`, which is whoever SPAWNED it (for a fleet member those differ, so launchedBy cannot answer "which row is me"). Recorded only when the spawn supplied it: ~70% of agent-session rows and none of bash-job/sidecar/test-run (measured 2026-09-02). So an empty result means "no row RECORDED this owner id", NOT "this agent has no task" — do not read it as absence.',
+      ),
     workItemId: z.string().max(120).optional().describe('only tasks attributed to this work-item'),
     rootTaskId: z.string().max(64).optional().describe('one task tree'),
     includeEnded: z.boolean().optional().describe('include finished tasks (the "what ran overnight" read)'),
@@ -227,6 +246,7 @@ export default defineTool({
       (args.states?.length ?? 0) > 0 ||
       (args.classes?.length ?? 0) > 0 ||
       args.launchedBy !== undefined ||
+      args.coordOwnerId !== undefined ||
       args.workItemId !== undefined ||
       args.rootTaskId !== undefined;
 
@@ -280,6 +300,7 @@ export default defineTool({
       states: args.states ?? (args.state == null ? undefined : [args.state]),
       classes: args.classes,
       launchedBy: args.launchedBy,
+      coordOwnerId: args.coordOwnerId,
       workItemId: args.workItemId,
       rootTaskId: args.rootTaskId,
       includeEnded: args.includeEnded,
@@ -326,6 +347,10 @@ export default defineTool({
                 pids: r.pidsCurrent,
                 confined: r.confined,
                 scopeUnit: r.scopeUnit,
+                // P-023: "what confines this, and therefore what can kill it" — DERIVED
+                // from scope_unit, never the stored cgroup_path, which holds the spawner's
+                // cgroup on ~1300 historical rows (D-111).
+                confinement: resolveTaskConfinement(r),
                 memoryMaxMb: mb(r.memoryMaxBytes),
                 deadlineAt: r.deadlineAt,
                 exitCode: r.exitCode,

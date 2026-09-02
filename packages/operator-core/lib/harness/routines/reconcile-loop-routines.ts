@@ -1620,24 +1620,31 @@ export async function reconcileLoopRoutines(
           completedAt = lastFiredMs;
           via = 'claim-dispatch-gap';
         } else {
-          // EI-22171105225585428: bound the "still recent" half of this OR the same way
-          // WI-2140827 bounded the sibling deliveredWakeWithoutLoopTurn() presence leg above.
-          // `lastActiveMs` is OWNER-WIDE presence — activity from ANYTHING the session does,
-          // not just this loop's woken turn — so measuring recency purely against it lets
-          // unrelated activity (a stray coord:glance, another loop's turn, an owner message)
-          // repeatedly refresh the clock and defer "stuck" recognition indefinitely, well past
-          // the intended stuckParkMs-from-FIRE bound (measured live 2026-09-02: two stray
-          // coord:glance calls 30min into a park re-based the dwell off themselves and pushed
-          // recovery to ~stuckParkMs after THEM instead of ~stuckParkMs after the fire).
-          // `stuckParkElapsed` — absolute time since the fire, independent of any presence
-          // beat — is hoisted here so it can cap the OR: once it elapses, treat the loop as
-          // looksDeadOrStuck regardless of how recent the last (possibly unrelated) beat was.
-          const stuckParkElapsed = nowMs - lastFiredMs >= stuckParkMs(intervalMs);
+          // EI-22171105225585428: disjunct 2 used to re-use `stuckParkMs` (30min-2h) as BOTH
+          // the overall dwell AND the "how stale can the last beat be" staleness bar. Those are
+          // different questions. `lastActiveMs` is OWNER-WIDE presence — activity from ANYTHING
+          // the session does, not just this loop's woken turn — so a SINGLE stray beat (a
+          // coord:glance on unrelated work) stays "fresh enough" by that same long bar for up to
+          // the FULL dwell, silently short-circuiting the early continue below and starving the
+          // quick-retry/stuck-park ladder from ever being consulted for as long as that one beat looks
+          // recent. Measured live 2026-09-02: a stray beat ~30min into a park kept `nowMs -
+          // lastActiveMs` under the 2h bar for the next ~100min, during which the loop's own
+          // quick-retry/stuck-park logic below was never even reached.
+          //
+          // Fix: use the SAME staleness bar `completionSignal`'s presence-quiescence leg already
+          // uses (FALLBACK_QUIET_MS, 60s) for "is this beat still fresh" — NOT the full dwell.
+          // By construction, if control reaches here at all, presence-quiescence did NOT already
+          // settle the fire (either the beat is still genuinely fresh, <60s old — the EI-7006
+          // "healthy long turn" case, correctly still exempt below — or presence-quiescence's own
+          // WI-6852 ingest-lag guard deferred a beat that IS already ≥60s stale by its own bar).
+          // So bounding disjunct 2 at 60s never disagrees with presence-quiescence's verdict; it
+          // just lets the pre-existing, already-tested quick-retry/stuck-park/dispatched-fire-in-
+          // flight/gate-backoff ladder actually run once a beat is stale by that bar, instead of
+          // an owner-wide-but-unrelated beat blocking it for up to the full dwell. The 30min-2h
+          // dwell is still enforced further down via stuckParkElapsed exactly as before — this
+          // only shortens how long a SINGLE stale beat can keep the row skipped "for free".
           const looksDeadOrStuck =
-            row.parked &&
-            (lastActiveMs <= lastFiredMs ||
-              nowMs - lastActiveMs >= stuckParkMs(intervalMs) ||
-              stuckParkElapsed);
+            row.parked && (lastActiveMs <= lastFiredMs || nowMs - lastActiveMs >= FALLBACK_QUIET_MS);
           if (deliveredWakeRetryAt == null && !looksDeadOrStuck) {
             continue; // still in flight (recent post-fire activity) / nothing to fold — leave it
           }
@@ -1649,6 +1656,7 @@ export async function reconcileLoopRoutines(
         ).catch(() => null);
         const consecutiveErrors = priorState?.consecutiveErrors ?? 0;
         const circuitOpen = consecutiveErrors >= circuitThreshold();
+        const stuckParkElapsed = nowMs - lastFiredMs >= stuckParkMs(intervalMs);
         // WI-2714 quick-retry leg: eligible ONLY before the classic dwell (stuckParkElapsed
         // already subsumes it), never once the circuit is open (that path is reserved for the
         // terminal guard's decoupled fast path below — quick-retrying a circuit-open loop would

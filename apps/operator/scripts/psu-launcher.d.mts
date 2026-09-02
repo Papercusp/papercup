@@ -2753,6 +2753,12 @@ export function procAncestorPids(startPid: any, { readStat, maxDepth }?: {
 /**
  * Is any live process (outside the caller's own ancestor chain) carrying this
  * native session id in its argv?
+ *
+ * BACKEND-NEUTRAL by construction, and used by two of them: the caller supplies
+ * whichever id its resume actually puts on the command line — claude's
+ * `--resume <session_id>` or omp's `-r <omp_thread_id>` (resumeArgsFor). It asks
+ * only "is this string in a live argv", so nothing here knows or cares which
+ * backend it is serving.
  * `{ held, pid, cmdline, reason }` — fail-CLOSED: `held` is false ONLY on a
  * complete, successful scan that found nothing.
  *
@@ -2761,7 +2767,7 @@ export function procAncestorPids(startPid: any, { readStat, maxDepth }?: {
  * (`no-session-id`, `no-proc`, `scan-empty`) is unknown and must not relax the
  * guard. Pure apart from the injected readers — exported for tests.
  */
-export function claudeSessionProcessHolder(sessionId: any, { listProcPids, readCmdline, readStat, selfPid, }?: {
+export function sessionProcessHolder(sessionId: any, { listProcPids, readCmdline, readStat, selfPid, }?: {
     listProcPids?: typeof defaultListProcPids | undefined;
     readCmdline?: ((pid: any) => string) | undefined;
     readStat?: ((pid: any) => string) | undefined;
@@ -2789,21 +2795,34 @@ export function normalizeCodexResumeLocalLivenessEvidence({ agent, fork, forceRe
     forceResume?: string | undefined;
 }): any;
 /**
- * Build the positive witness for an exact Claude resume only when BOTH local
- * liveness oracles positively say no process owns this session: the psu PTY-host
- * registry found none, and a complete `/proc` scan found no live argv carrying
- * the native session id. Every other result — including a probe that could not
- * complete — stays unknown and returns null (fail closed).
+ * Build the positive witness for an exact CLAUDE or OMP resume only when BOTH
+ * local liveness oracles positively say no process owns this session: the psu
+ * PTY-host registry found none, and a complete `/proc` scan found no live argv
+ * carrying the id that backend's resume puts on the command line. Every other
+ * result — including a probe that could not complete — stays unknown and returns
+ * null (fail closed).
  *
- * `PSU_FORCE_RESUME=1` deliberately does NOT produce this witness. That variable
- * means "take over a host I can SEE is alive"; this witness means "I looked and
+ * `liveHost` must be exactly `null` — "the registry was consulted and answered
+ * no". `undefined` means the PTY-host block never ran (no coordOwnerId, or a
+ * force/fork path), and that is ONE ORACLE MISSING, not two oracles passing. The
+ * distinction is load-bearing: the registry is keyed by ownerId, so a row without
+ * one cannot be asked at all, and inferring absence from an unasked question is
+ * exactly the unearned liveness claim this whole mechanism exists to prevent.
+ *
+ * `PSU_FORCE_RESUME=1` deliberately does NOT produce a witness. That variable
+ * means "take over a host I can SEE is alive"; a witness means "I looked and
  * there is nothing alive". Letting a force manufacture an absence claim would
  * make the server's audit trail lie about what was actually observed.
  */
-export function normalizeClaudeResumeLocalLivenessEvidence({ agent, fork, forceResume, liveHost, processHolder, }?: {
+export function normalizeArgvProbeResumeLocalLivenessEvidence({ agent, fork, forceResume, liveHost, processHolder, }?: {
     fork?: boolean | undefined;
     forceResume?: string | undefined;
 }): any;
+/** The id this session's resume will put on the command line, or null when the
+ *  backend does not probe argv (codex has its own flock oracle) or the row
+ *  records no id — psu then resumes with `--continue` / `-c`, which names
+ *  nothing to scan for. Pure — exported for tests. */
+export function argvProbeSessionId(session: any): any;
 /**
  * The CODEX_HOME a resume of `session` will run in — an explicit `codexHome`
  * (WI-3884: the home a rollout was actually FOUND in by disk scan) wins over the
@@ -3549,6 +3568,10 @@ export const NO_LIVE_CODEX_WRITER_EVIDENCE: Readonly<{
 export const NO_LIVE_CLAUDE_PROCESS_EVIDENCE: Readonly<{
     version: 1;
     kind: "no-live-claude-process";
+}>;
+export const NO_LIVE_OMP_PROCESS_EVIDENCE: Readonly<{
+    version: 1;
+    kind: "no-live-omp-process";
 }>;
 /**
  * WI-4889 (owner directive 2026-07-14): the resume "choose a different model"

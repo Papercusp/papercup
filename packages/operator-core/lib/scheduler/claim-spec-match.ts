@@ -179,9 +179,11 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
     // it here single-sources this evaluator with the rest of the codebase instead of
     // re-deriving a payload path — which is precisely the WI-6674 hazard, where severity
     // has two access paths (the TABLE keeps it at `payload._ei.severity`; the VIEW exposes
-    // a real column and DROPS the `_ei` blob) and using the wrong one for a relation
-    // returns NULL for every row WITHOUT erroring, yielding a well-formed, plausible,
-    // wrong answer. The `_ei`/top-level payload legs below are defense-in-depth for a
+    // a real column, and until migration 1096 also DROPPED the `_ei` blob) and using the
+    // wrong one for a relation returns NULL for every row WITHOUT erroring, yielding a
+    // well-formed, plausible, wrong answer. 1096 restored the blob, so on the VIEW both
+    // paths now resolve and agree except on NULL-payload rows — which makes the wrong
+    // accessor quieter, not safer, and is why this reads the typed accessor regardless. The `_ei`/top-level payload legs below are defense-in-depth for a
     // subject built from a raw row that never went through that mapping — the same shape
     // as FIELD_MAP's `COALESCE(item_kind, kind)` in get-next.ts, and deliberately in the
     // SAME precedence order as the SQL side so the two admission evaluators cannot

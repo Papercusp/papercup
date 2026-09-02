@@ -221,3 +221,70 @@ describe('INVARIANT: nothing advertised by admissibleOnly is refused by the clai
     expect(verdicts.filter((v) => v.admissible)).toEqual([]);
   });
 });
+
+/**
+ * EI-22172757071586188 — `explainIssueClaimFloors` had SILENTLY omitted `ok_stop_line`: the
+ * oracle could report `admissible: true` for a row the real claim path refused, exactly the
+ * shape WI-37356 already fixed three times over (ok_no_blocker/ok_cooldown/ok_origin) for this
+ * SAME oracle. This is the recurrence guard: a STRUCTURAL parity check (so a FIFTH floor added
+ * to the claim path and forgotten here fails a unit test, never live data), plus one behavioral
+ * case proving THIS fix works.
+ */
+describe('EI-22172757071586188 — the oracle floor set is a SUPERSET of the real claim bar', () => {
+  it('every floor ALL_ISSUE_CLAIM_FLOORS_PASS ANDs is decorated by the oracle (read from LIVE column metadata, never source text)', async () => {
+    const { ALL_ISSUE_CLAIM_FLOORS_PASS } = await import('./scheduler/get-next');
+    const sql = db.sql as unknown as Parameters<typeof wi.issueClaimBarFloorColumnsSql>[0];
+    const cols = wi.issueClaimBarFloorColumnsSql(sql, {
+      issueWs: WS,
+      assignee: 'su-probe',
+      cooldown: 0,
+      rigAvailable: true,
+    });
+    // WHERE false still forces Postgres to parse+plan the whole SELECT (a malformed floor
+    // fails loudly here), while postgres.js still populates `.columns` on the empty result.
+    const rows = await db.sql`SELECT ${cols} FROM harness_shared.work_items wi WHERE false`;
+    const decorated = ((rows.columns ?? []) as unknown as ReadonlyArray<{ name: string }>)
+      .map((c) => c.name)
+      .filter((n) => n.startsWith('ok_'));
+    // Guard the guard: an empty decorated set would make the superset assertion below
+    // vacuously true — the exact false-green this test exists to prevent.
+    expect(decorated.length, 'probe returned no ok_* columns — the probe is broken, not the oracle').toBeGreaterThan(0);
+
+    const barFloors = [...new Set(ALL_ISSUE_CLAIM_FLOORS_PASS.match(/ok_[a-z_]+/g) ?? [])];
+    expect(barFloors.length).toBeGreaterThan(0);
+    const missing = barFloors.filter((f) => !decorated.includes(f));
+    expect(
+      missing,
+      `ALL_ISSUE_CLAIM_FLOORS_PASS ANDs ${JSON.stringify(missing)} but explainIssueClaimFloors ` +
+        `never decorates it, so the per-id oracle can report admissible:true for a row the real ` +
+        `claim path refuses. Add it to issueClaimBarFloorColumnsSql AND the refusedBy ternary in ` +
+        `explainIssueClaimFloors.`,
+    ).toEqual([]);
+  });
+
+  it('a non-repair row is refused by stop-line once the harness gate-red-streak condition is >24h open', async () => {
+    const conditionKey = `gate-red-streak:${H}`;
+    const agedMs = Date.now() - 25 * 3_600_000; // 25h old — over STOP_THE_LINE_RED_HOURS
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, status, workspace_id, origin,
+         created_ts, updated_ts, title, condition_key)
+      VALUES (${H}, 'WI-STL-CONDITION', 'bug', 'open', ${WS}, 'local',
+              ${agedMs}, 0, 'gate red-streak condition', ${conditionKey})`;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, status, workspace_id, origin,
+         created_ts, updated_ts, title)
+      VALUES (${H}, 'WI-STL-CHANGE', 'change', 'open', ${WS}, 'local', 0, 0, 'ordinary change row')`;
+
+    const [conditionVerdict, changeVerdict] = await wi.explainIssueClaimFloors(H, [
+      'WI-STL-CONDITION',
+      'WI-STL-CHANGE',
+    ]);
+    // The condition item itself is a bug — exempt, still admissible (the throttle must not
+    // starve its own fix).
+    expect(conditionVerdict).toMatchObject({ admissible: true });
+    expect(changeVerdict).toMatchObject({ admissible: false, refusedBy: 'stop-line' });
+    expect(changeVerdict.detail).toContain('stop-the-line');
+  });
+});

@@ -38,6 +38,8 @@ import {
   parsePorcelainPaths,
   deriveBlocker,
   staleVerdictSafeLever,
+  frozenRepairQueueSafeLever,
+  safeGateLever,
   mainBufferIsStale,
   mainBufferStallReason,
   mapCheckpointRunInFlight,
@@ -5222,6 +5224,184 @@ describe('stage levers (P-005)', () => {
     expect(staleVerdictSafeLever('candidate-fossil', 'db:migrate')).toBe('db:migrate');
     expect(staleVerdictSafeLever(null, 'fix the reds')).toBe('fix the reds');
   });
+
+  /**
+   * EI-22173032622074833 — the frozen-repair-queue veto.
+   *
+   * `release:checkpoint-run` always cuts a FRESH candidate at tip, so recommending it while a
+   * repair queue is frozen discards that queue and restarts the treadmill freeze-and-converge
+   * exists to prevent. The lever ternary already had a `repairQueue.nextAction` arm, but only
+   * in the branch reached when the judged candidate ALREADY CONTAINS the change — and a frozen
+   * candidate necessarily ages behind the tree, so `notInCandidate` is the STEADY STATE of a
+   * live queue. These pin the arm that was actually reachable.
+   */
+  const FROZEN_QUEUE: NonNullable<PipelinePosition['gate']['repairQueue']> = {
+    phase: 'awaiting-fixer',
+    candidate: 'a'.repeat(40),
+    repairHead: 'b'.repeat(40),
+    attempts: 1,
+    openedAtMs: 1,
+    updatedAtMs: 2,
+    ageMs: 60_000,
+    maxAgeMs: 120_000,
+    ageExpired: false,
+    zeroAttemptStalled: false,
+    zeroAttemptStallMs: 15 * 60_000,
+    escapesUsed: 0,
+    maxCandidateEscapes: 0,
+    escapeAvailable: false,
+    fixerSpawnId: 'dead-fixer',
+    fixerAlive: false,
+    dispatchReservation: null,
+    sharedTreeCollision: {
+      measured: false,
+      repairInFlight: false,
+      collidingPaths: [],
+      collisionCount: 0,
+      truncated: false,
+      detail: null,
+    },
+    decision: 'recover-dead-fixer',
+    retireAllowed: true,
+    retireRefusal: null,
+    nextAction:
+      "decision 'recover-dead-fixer': this queue is still recoverable — do NOT retire it. Land your fix on the judged lineage with release:repair-queue { op: 'converge', paths: ['<your changed path>'] }.",
+  };
+
+  /** The judged candidate predates the commit — the exact arm that routed to
+   *  "wait out the quiet-cut window, then release:checkpoint-run". */
+  const PREDATES_COMMIT = {
+    ...NO_CANDIDATE,
+    judgingSha: 'lastjudged12',
+    judgingContainsPath: false,
+    missingReason: 'newer-commit' as const,
+  };
+
+  it('EI-22173032622074833: a live frozen repair queue vetoes the quiet-cut re-cut lever', () => {
+    const l = lever('gate', {
+      positions: NOT_IN_MAIN,
+      gate: { ...RED_GATE, checkpointRunInFlight: IDLE, repairQueue: FROZEN_QUEUE },
+      changeInCandidate: PREDATES_COMMIT,
+    });
+    expect(l).not.toMatch(/release:checkpoint-run/i);
+    expect(l).toBe(FROZEN_QUEUE.nextAction);
+  });
+
+  /**
+   * CALIBRATION for the assertion above. Without it, a guard that suppressed the re-cut lever
+   * UNCONDITIONALLY would pass that test while destroying a legitimate re-fire — the failure
+   * mode is a veto that looks like safety and is really a wedge.
+   */
+  it('EI-22173032622074833: CONTROL — with NO queue the same state still routes to the quiet-cut lever', () => {
+    const l = lever('gate', {
+      positions: NOT_IN_MAIN,
+      gate: { ...RED_GATE, checkpointRunInFlight: IDLE },
+      changeInCandidate: PREDATES_COMMIT,
+    });
+    expect(l).toMatch(/quiet-cut/);
+    expect(l).toMatch(/release:checkpoint-run/);
+  });
+
+  it('EI-22173032622074833: a queue held by a LIVE fixer has no nextAction — the veto still names why', () => {
+    const l = lever('gate', {
+      positions: NOT_IN_MAIN,
+      gate: {
+        ...RED_GATE,
+        checkpointRunInFlight: IDLE,
+        repairQueue: {
+          ...FROZEN_QUEUE,
+          fixerAlive: true,
+          decision: 'wait-for-fixer',
+          retireAllowed: false,
+          retireRefusal: 'live-fixer',
+          nextAction: null,
+        },
+      },
+      changeInCandidate: PREDATES_COMMIT,
+    });
+    expect(l).toMatch(/Do NOT cut a fresh candidate/);
+    expect(l).toMatch(/a live fixer holds it/);
+    expect(l).toMatch(/op: 'converge'/);
+  });
+
+  /**
+   * The two vetoes COMPOSE, and the order is load-bearing. Run the other way round, the stale
+   * guard rewrites a `release:checkpoint-run` lever into its own caution, which no longer
+   * matches the re-cut pattern — so the queue's concrete converge instruction would be
+   * swallowed exactly when both conditions hold. This also pins the wording constraint: the
+   * veto sentence must avoid the tokens `staleVerdictSafeLever` matches, or it rewrites itself.
+   */
+  it('EI-22173032622074833: a stale verdict does NOT swallow the repair-queue instruction', () => {
+    const l = lever('gate', {
+      positions: NOT_IN_MAIN,
+      gate: {
+        ...RED_GATE,
+        verdictStale: true,
+        verdictStaleReasonCode: 'candidate-fossil',
+        checkpointRunInFlight: IDLE,
+        repairQueue: FROZEN_QUEUE,
+      },
+      changeInCandidate: PREDATES_COMMIT,
+    });
+    expect(l).toBe(FROZEN_QUEUE.nextAction);
+    expect(l).not.toMatch(/Verify the CURRENT candidate before fixing anything/);
+
+    // …and the same must hold for the no-nextAction veto, whose text is the one at risk.
+    const held = safeGateLever(
+      {
+        ...RED_GATE,
+        verdictStaleReasonCode: 'candidate-fossil',
+        repairQueue: { ...FROZEN_QUEUE, retireAllowed: false, retireRefusal: 'live-fixer', nextAction: null },
+      } as PipelinePosition['gate'],
+      'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit',
+    );
+    expect(held).toMatch(/Do NOT cut a fresh candidate/);
+    expect(held).toMatch(/op: 'converge'/);
+  });
+
+  it('EI-22173032622074833: leaves null, unrelated and queue-less levers untouched', () => {
+    expect(frozenRepairQueueSafeLever(FROZEN_QUEUE, null)).toBeNull();
+    expect(frozenRepairQueueSafeLever(FROZEN_QUEUE, 'git-sync:run')).toBe('git-sync:run');
+    expect(frozenRepairQueueSafeLever(FROZEN_QUEUE, 'db:migrate')).toBe('db:migrate');
+    // No queue at all: every lever, including a re-cut, passes through unchanged.
+    expect(frozenRepairQueueSafeLever(null, 'release:checkpoint-run')).toBe('release:checkpoint-run');
+    expect(frozenRepairQueueSafeLever(undefined, 'release:checkpoint-run')).toBe('release:checkpoint-run');
+
+    // DELIBERATELY-WRONG CONTROL, kept permanently: the PRE-FIX composition was the stale
+    // guard alone, and it leaves the unsafe re-cut lever standing for a live queue (its
+    // trigger is `verdictStaleReasonCode`, which a frozen queue does not set). If this ever
+    // starts suppressing on its own, the assertions above stop measuring the new guard and
+    // would keep passing while it was deleted.
+    const QUIET_CUT =
+      'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit';
+    expect(staleVerdictSafeLever(null, QUIET_CUT)).toBe(QUIET_CUT);
+    expect(frozenRepairQueueSafeLever(FROZEN_QUEUE, QUIET_CUT)).toBe(FROZEN_QUEUE.nextAction);
+  });
+
+  /**
+   * A terminal decision is the one state where retiring/re-cutting is legitimately on the
+   * table, and the queue says so itself: `retirementIsTheDecision` renders the retire recipe
+   * as its `nextAction`. Deferring to it is still the right move — the veto must hand over the
+   * mechanism's own instruction rather than inventing a competing one.
+   */
+  it.each(['recut-at-tip', 'hold-exhausted'] as const)(
+    'EI-22173032622074833: a TERMINAL decision (%s) defers to the queue-authored retire recipe',
+    (decision) => {
+      const retire =
+        "release:repair-queue { op: 'retire', expectedCandidate: 'aaaa', expectedRepairHead: 'bbbb', expectedUpdatedAtMs: 2, reason: '<why>', confirm: true }";
+      const l = lever('gate', {
+        positions: NOT_IN_MAIN,
+        gate: {
+          ...RED_GATE,
+          checkpointRunInFlight: IDLE,
+          repairQueue: { ...FROZEN_QUEUE, decision, nextAction: retire },
+        },
+        changeInCandidate: PREDATES_COMMIT,
+      });
+      expect(l).toBe(retire);
+      expect(l).not.toMatch(/release:checkpoint-run/i);
+    },
+  );
 
   /**
    * Found by DOGFOODING this surface on a live stale red: the gate read 5 consecutive

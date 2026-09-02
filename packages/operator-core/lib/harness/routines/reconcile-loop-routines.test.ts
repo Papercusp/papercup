@@ -3033,16 +3033,33 @@ describe('reconcileLoopRoutines — looksDeadOrStuck stays bounded to the fire, 
     expect(recordFire).not.toHaveBeenCalled();
   });
 
-  it('past the dwell, a continuously-busy-on-OTHER-things session no longer wedges this loop forever', async () => {
-    // The bug: a stray presence beat unrelated to this loop, refreshed every few minutes,
-    // kept `nowMs - lastActiveMs` perpetually small — so `looksDeadOrStuck` stayed false
-    // no matter how long ago the fire itself was, and this loop was silently skipped
-    // (`continue`d) on every reconcile tick forever.
+  it('a stray beat that has since gone stale no longer blocks the quick-retry leg from ever running', async () => {
+    // The bug: disjunct 2 used the FULL dwell (30min here) as its staleness bar, so a single
+    // stray beat 4min after the fire stayed "fresh enough" for the next ~26min — well past the
+    // 10min quick-retry threshold — silently short-circuiting the early `continue` gate on every
+    // tick and starving the quick-retry leg below of ever being reached, even though the beat
+    // itself had gone quiet (>60s stale) minutes ago.
+    const beatAtMs = T0 + 4 * 60_000; // one isolated, unrelated beat 4min after the fire
+    const nowMs = T0 + 1_000 + 10 * 60_000; // just past quickRetryParkMs(60s)=10min — beat is ~6min stale
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([undeliveredRow({ presence_last_active_at: pgString(beatAtMs) })], []),
+      nowMs,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-undelivered', via: 'stuck-backstop' });
+  });
+
+  it('past the full dwell, the classic stuck-backstop still fires even with a somewhat-recent stray beat', async () => {
     const nowMs = T0 + 1_000 + DWELL_MS + 60_000; // past the dwell measured from the FIRE
     const recordFire = vi.fn(async () => {});
     const res = await reconcile({
-      // presence beat 5s ago — unrelated activity, the exact shape that used to defer forever
-      sql: fakeSql([undeliveredRow({ presence_last_active_at: pgString(nowMs - 5_000) })], []),
+      // beat is 2 minutes old — long stale by the new 60s bar, so this exercises the SAME path
+      // as before via disjunct 2, then falls through to the unchanged stuckParkElapsed dwell.
+      sql: fakeSql([undeliveredRow({ presence_last_active_at: pgString(nowMs - 2 * 60_000) })], []),
       nowMs,
       recordFire,
       readFireState: NO_PRIOR_ERRORS,

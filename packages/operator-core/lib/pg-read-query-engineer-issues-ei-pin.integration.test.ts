@@ -175,6 +175,7 @@ describe('SILENT_NULL_PATH_TRAPS agrees with the live engineer_issues view', () 
 const AGENT_FACING_SEVERITY_SURFACES = [
   './agent-tools/issues/list.ts',
   './scheduler/get-next.ts',
+  './scheduler/claim-spec-match.ts',
   './doc-projection/claude-md-corpus.generated.md',
 ] as const;
 
