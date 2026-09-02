@@ -88,6 +88,7 @@ import {
   registerAllHarnessProjections,
   buildHarnessProjectionApply,
 } from './projections/register-all';
+import { createPlanPartsRecomposeBatch } from './projections/harness-plan-parts';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
 import { recordBootEvent, type BootHistoryKind } from './boot-history';
 import {
@@ -1347,11 +1348,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const memoryFederationFlagSnapshot = async (): Promise<boolean> =>
     memoryFederationEnabledForPass;
 
+  // WI-2142064: one instance for this harness's whole boot lifetime (survives a
+  // rekey rebuild of `scopedApply` below — `buildHarnessProjectionApply` builds a
+  // FRESH set of projection instances each call, but the batch is threaded in by
+  // reference each time, so its dirty set carries across rebuilds). Drained once
+  // per merge pass in `mergeOnePass`'s `finally` — see there.
+  const planPartsRecomposeBatch = createPlanPartsRecomposeBatch();
+
   const buildScopedApply = (potHomeSlug: string | undefined) =>
     buildHarnessProjectionApply({
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       ownLogKeyHex: ownLog.keyHex,
+      recomposeBatch: planPartsRecomposeBatch,
       // WI-559/FED-1: fall back to the OWNER's own hive-home when the joiner rebind
       // (hiveHomeProjectionSlug) is null, so an owner's home harness engages the WI-259
       // membership guard instead of dropping every cross-member op (no-hiveHome). For a joiner
@@ -3985,6 +3994,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         );
       }
       return 0;
+    } finally {
+      // WI-2142064: drain whatever this pass (or an earlier pass that threw before
+      // its own drain ran — entries simply carry over) marked dirty. `drain()`
+      // never rejects (fail-soft per plan internally), so this can't turn a
+      // settled pass into a thrown/masked result; a `finally` guarantees it runs
+      // on every exit path (success, early return, or the catch above) without
+      // needing to duplicate the call at each one.
+      await planPartsRecomposeBatch.drain();
     }
   }
 
