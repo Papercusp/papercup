@@ -531,15 +531,16 @@ const expectsArg = z
     error:
       "coord:send needs `expects`: what you want back. 'ack' = confirm receipt · 'answer' = reply " +
       "with information · 'action' = do something (a reply is optional) · 'none' = FYI/status, " +
-      "nothing expected. There is deliberately NO default — an FYI must say 'none' explicitly. " +
-      'This replaces `expectsReply`, which is now DERIVED (anything but `none`).',
+      "nothing expected. There is deliberately NO default — an FYI must say 'none' explicitly.",
   })
   .describe(
     "REQUIRED — what you want back from the recipient: 'ack' (confirm receipt) | 'answer' (reply " +
       "with information) | 'action' (do something; a reply is optional) | 'none' (FYI/status, nothing " +
       "expected). No default and no inference from `wake`: an FYI must say 'none' explicitly. Anything " +
       'other than `none` marks the message unanswered-directed until the recipient threads a reply ' +
-      '(related_msg_id), which drives leader-brief / fleet:assignments.',
+      '(related_msg_id), which drives leader-brief / fleet:assignments. A DIRECTED ' +
+      "'action'/'answer' ALSO requires `forYouBecause` on at least one body section (state why it " +
+      "is THEM); broadcasts and 'ack' are exempt.",
   );
 
 const endTurnArg = z
