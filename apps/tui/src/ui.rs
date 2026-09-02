@@ -2959,8 +2959,28 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         // rail (68 content cols at width 100) a trailing `> draft` was
         // truncated clean off the screen. The title already says Read-only;
         // the note is the explanation, so it is the part allowed to truncate.
+        //
+        // The title also names the WAY FORWARD, because "you cannot send here"
+        // is only half an answer. It points at Sessions rather than offering an
+        // in-pane "new session" action: D-003 of
+        // pui-psu-exact-launch-and-task-latency-2026-09-01 is that navigation is
+        // literal — "the displayed `s:Sessions` mnemonic always navigates to
+        // Sessions; Agent Chat may not shadow it. New-session launch belongs to
+        // Sessions." So the fix for a dead-ended read-only conversation is to
+        // NAME the existing route, never to bind a competing `s` here (which is
+        // what EI-22067863854642076 literally asked for, and what D-003 forbids).
+        // "Read-only" leads so it survives title clipping on a narrow pane.
+        //
+        // It says "Esc, THEN s" and not bare "s" because the order is load-
+        // bearing: this branch renders while `chat_composing` is still true, and
+        // the composer captures every Char (app.rs `chat_input.push(c)`) so that
+        // the refused draft stays editable and copyable. A bare `s` there types
+        // an "s" into the draft instead of navigating — advertising it as a
+        // one-key action would replace the original dead-Enter confusion with a
+        // dead-`s` one. Esc leaves compose; `s` then reaches Sessions (app.rs
+        // `lowercase_s_reaches_sessions_from_agent_chat`).
         (
-            " Read-only — Esc close ",
+            " Read-only — Esc, then s:Sessions for a new session ",
             format!(
                 "> {} · {} · nothing typed here can be sent",
                 app.chat_input.replace('\n', "⏎"),
@@ -7241,6 +7261,17 @@ mod tests {
         assert!(text.contains("Read-only"), "{text}");
         assert!(text.contains("read-only history"), "{text}");
         assert!(!text.contains("Enter send"), "{text}");
+        // The refusal must also name the WAY FORWARD, or it is still a dead end
+        // — just a labelled one. Per D-003 of
+        // pui-psu-exact-launch-and-task-latency-2026-09-01 that route is the
+        // literal `s:Sessions` navigation, NOT an in-pane new-session action
+        // shadowing `s` (which is what EI-22067863854642076 asked for and what
+        // D-003 forbids), so this pins the pointer and not a competing binding.
+        // The "Esc, then" ordering is pinned too, not just the mnemonic: this
+        // branch renders while `chat_composing` holds, and the composer swallows
+        // every Char, so a bare `s` types into the draft. Advertising a one-key
+        // action there would just trade a dead Enter for a dead `s`.
+        assert!(text.contains("Esc, then s:Sessions"), "{text}");
         // The draft stays visible/editable — matches the app.rs Enter-key
         // contract that a refused turn is never silently discarded.
         assert!(text.contains("> hello"), "{text}");
