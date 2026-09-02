@@ -484,6 +484,50 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
       expect(row.taken_by).toBeNull();
     });
 
+    // EI-22074465800337362: a force-reclaim (work_items:claim { force:true }) already proved
+    // the dead holder is not live via assessForceRelease/release-force-guard.ts, then calls
+    // claimWorkItem with expectedAssignee = that exact holder. The `expectedAssignee` disjunct
+    // only widens the `assignee = …` leg of the WHERE clause — it does NOT bypass the
+    // unconditional `admittedWhereSql` gate below it (claimIssue has no expectedAssignee
+    // exception clause the way it has leaderDispatchAdmission/selfFiledFalloutAdmission). So a
+    // WIP item whose holder died BEFORE the admission promoter's tick admitted it (still
+    // admission='pending') is UNRECLAIMABLE by force, even though liveness authorization
+    // succeeded — the CAS silently matches 0 rows, claimWorkItem returns null, and the caller
+    // (work_items:claim) re-reads + reclassifies the unchanged row as an ordinary
+    // claim_conflict, masking the true cause (admission gate, not holder liveness).
+    it('EI-22074465800337362: expectedAssignee does NOT bypass the admission-pending gate (issue-family)', async () => {
+      await seedIssue('EI-dead-holder-pending', { admission: 'pending', takenBy: 'dead-holder' });
+
+      const claimed = await wi.claimWorkItem('EI-dead-holder-pending', 'rescuer', {
+        harness: H,
+        expectedAssignee: 'dead-holder',
+      });
+
+      // Documents the CURRENT (buggy) behavior: the force-authorized reclaim is silently
+      // refused. If/when this is fixed to bypass admittedWhereSql for a proven expectedAssignee
+      // match, this assertion is the one to flip.
+      expect(claimed).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission FROM harness_shared.work_items WHERE feature_id = 'EI-dead-holder-pending'`)[0];
+      expect(row).toEqual({ taken_by: 'dead-holder', admission: 'pending' });
+    });
+
+    it('EI-22074465800337362: expectedAssignee does NOT bypass the admission-pending gate (feature-family)', async () => {
+      await seedFeature('F-dead-holder-pending', { admission: 'pending', takenBy: 'dead-holder' });
+
+      const claimed = await wi.claimWorkItem('F-dead-holder-pending', 'rescuer', {
+        harness: H,
+        expectedAssignee: 'dead-holder',
+      });
+
+      expect(claimed).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission
+          FROM harness_shared.harness_features_consolidated
+         WHERE feature_id = 'F-dead-holder-pending'`)[0];
+      expect(row).toEqual({ taken_by: 'dead-holder', admission: 'pending' });
+    });
+
     it('caller can atomically transfer an issue-family claim to a named assignee', async () => {
       await seedIssue('EI-self-transfer', { takenBy: 'former-holder' });
 
