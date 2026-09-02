@@ -254,6 +254,11 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
   it('forwards filtered source-scan progress through the combined cutter', async () => {
     const { store, keyHex } = await makeHiveStore('cutter-progress-store-', 257);
     const onProgress = vi.fn();
+    // The projection report is emitted on EVERY filtered cut, and its default sink
+    // is a `console.warn` that `vitest-fail-on-console` reds. Take the report through
+    // the seam instead of mocking the console: silencing it would leave the drop
+    // counts — the whole point of the report — unasserted.
+    const onProjection = vi.fn();
 
     await cutHiveSeed({
       potId: 'papercusp',
@@ -267,6 +272,7 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
         coreKeys: [keyHex],
         filtered: true,
         onProgress,
+        onProjection,
       },
     });
 
@@ -279,6 +285,18 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
       phase: 'filtered-source-scan',
       processed: 257,
       total: 257,
+    });
+
+    // Reaching the sink at all is what proves the seam is threaded from here; the
+    // row counts pin that this unredacted fixture is carried rather than dropped.
+    expect(onProjection).toHaveBeenCalledTimes(1);
+    expect(onProjection.mock.calls[0]?.[0]).toMatchObject({
+      ownerKeyHex: keyHex,
+      rows: 257,
+      carried: 257,
+      droppedIdentityKey: 0,
+      droppedPrivateIngest: 0,
+      droppedIdentityContent: 0,
     });
   });
 

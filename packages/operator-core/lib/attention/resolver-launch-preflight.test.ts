@@ -208,7 +208,13 @@ describe('buildResolverLaunchCommand — threading the effective settings', () =
     expect(command).toContain('--account=auto');
     expect(command).toContain('--carry=cold');
     // effort rides the model spec; psu has no standalone --effort flag.
-    expect(command).toContain('--model=sol:high');
+    // `sol` is a PRODUCT-FACING ALIAS, not a native id, so a FRESH managed codex
+    // launch resolves it through `resolveCodexModel` — that is what stops the
+    // launch falling through to the Codex CLI's models_cache default (the
+    // retired-Spark incident). The surviving `:high` tail is the assertion that
+    // matters here: the effort must ride through that normalization rather than
+    // being dropped along with the alias.
+    expect(command).toContain('--model=gpt-5.6-sol:high');
     // 'sol' is a codex alias, so the agent is codex — NOT the hardcoded claude.
     expect(command).toContain('--agent=codex');
     // Fixed launch invariants survive configuration.

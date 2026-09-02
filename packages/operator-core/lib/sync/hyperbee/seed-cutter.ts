@@ -93,6 +93,13 @@ export interface CorestoreCutSpec {
   readonly onStall?: CorestoreCutContext['onStall'];
   /** Optional test/release override for the filtered-scan stall diagnostic. */
   readonly filteredScanStallMs?: CorestoreCutContext['filteredScanStallMs'];
+  /**
+   * Optional sink for the per-cut projection report. Omitted ⇒ the provider's
+   * default `console.warn` line. The seam exists on the provider but was not
+   * reachable from here, so every caller going through `cutHiveSeed` — the real
+   * entrypoint — was pinned to that default with no way to redirect the report.
+   */
+  readonly onProjection?: CorestoreCutContext['onProjection'];
 }
 
 export interface HiveSeedCutInputs {
@@ -220,6 +227,7 @@ export async function cutHiveSeed(inputs: HiveSeedCutInputs): Promise<HiveSeedCu
       ...(corestore.onProgress ? { onProgress: corestore.onProgress } : {}),
       ...(corestore.onStall ? { onStall: corestore.onStall } : {}),
       ...(corestore.filteredScanStallMs !== undefined ? { filteredScanStallMs: corestore.filteredScanStallMs } : {}),
+      ...(corestore.onProjection ? { onProjection: corestore.onProjection } : {}),
     });
     stores.push({ ...entry, source: { type: 'resource', path: CORESTORE_SUBDIR } });
     sizes.push({ kind: entry.kind, subdir: CORESTORE_SUBDIR, sizeBytes: entry.sizeBytes, encrypted: false });
