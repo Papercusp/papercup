@@ -390,6 +390,14 @@ export async function startColdBootDrill(
   const injected = await deps.inject(host.sock, {
     mode: 'carry-respawn',
     data: firstPrompt,
+    // EI-153 addressing: a carry-respawn RE-EXECS the receiving CLI on someone
+    // else's carry document, so an UNADDRESSED one is the highest-severity
+    // unowned write in this path — the host guard is predicated on `ownerId`
+    // being present and ABSTAINS (silently accepts) without it. The autorunner
+    // drives this over `listLiveHosts()` with the flag default ON, so every
+    // live host is reachable; naming the addressee lets a host that finds
+    // itself holding another agent's drill refuse it instead of respawning.
+    ownerId,
     systemPromptAddendum: spec.systemPromptAddendum,
     drillId,
     sessionClass,

@@ -73,6 +73,7 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
       sock: HOST.sock,
       msg: {
         mode: 'carry-respawn',
+        ownerId: 'su-1',
         drillId: 'drill-1',
         sessionClass: 'claude-su',
         systemPromptAddendum: SPEC.systemPromptAddendum,
@@ -85,6 +86,24 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
     expect(String(h.injected[0].msg.data)).toContain('exactly once only when the marker is absent');
     expect(String(h.injected[0].msg.data)).not.toContain('First run coord:orient');
     expect(String(h.injected[0].msg.data)).toContain('session:carry-drill { op: "grade"');
+  });
+
+  it('EI-153: the carry-respawn payload NAMES its addressee — an unaddressed one re-execs whatever host receives it', async () => {
+    // The receiving host's misdelivery guard is `msg.ownerId != null && msg.ownerId !== ownerId`,
+    // so a payload with NO ownerId makes it ABSTAIN and accept unconditionally. That is
+    // maximally severe for this mode specifically: carry-respawn RE-EXECS the CLI on the
+    // carried document, so an unaddressed one replaces a stranger's session with this
+    // drill. The autorunner drives this over listLiveHosts() with the flag default ON,
+    // so every live host is reachable. `toMatchObject` above cannot catch a MISSING field
+    // — this asserts presence and correctness directly, which is what regressed unnoticed.
+    const h = startHarness();
+    await startColdBootDrill(
+      { ownerId: 'su-1', ownerLabel: 'su · 1', workspaceId: 'ws', sessionClass: 'claude-su' },
+      h.deps,
+    );
+    expect(h.injected).toHaveLength(1);
+    expect(Object.keys(h.injected[0].msg)).toContain('ownerId');
+    expect(h.injected[0].msg.ownerId).toBe('su-1');
   });
 
   it('P-021: an OMITTED sessionClass defaults from the CANONICAL classifier (sessionClassForHost) — the drill ledger and live actuation share one vocabulary', async () => {

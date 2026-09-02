@@ -210,7 +210,14 @@ describe('PgGatewayPayloadStore.sweep — real Postgres', () => {
     expect(await exists(key)).toBe(true);
   });
 
-  it('THE FLOOR: never reclaims a still-referenced row even once its expiry has passed', async () => {
+  // ⚠ The floor is REFERENCED-AND-IN-USE, not referenced alone. Before WI-2141342 this
+  // case's title read "never reclaims a still-referenced row even once its expiry has
+  // passed", which is no longer true in general: a pin abandoned past pinnedGraceMs IS
+  // reclaimed (the two cases below). This one still passes unchanged — and still means
+  // something — because insertRow defaults last_accessed_at to now(), so its row is
+  // expired but ACTIVE. That distinction is the whole safety property, so keep these
+  // three cases adjacent: alone, any one of them reads as the complete contract.
+  it('THE FLOOR: never reclaims a still-referenced row that is still in use, even once its expiry has passed', async () => {
     const store = new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS });
     const key = await insertRow({ refCount: 1, expiresAt: new Date(Date.now() - 1_000) });
 
@@ -218,6 +225,56 @@ describe('PgGatewayPayloadStore.sweep — real Postgres', () => {
 
     expect(removed).toBe(0);
     expect(await exists(key)).toBe(true);
+  });
+
+  it('WI-2141342: reclaims a still-referenced row abandoned past the pinned grace', async () => {
+    // The leak: release() runs in a request-scoped `finally`, so a SIGKILLed gateway
+    // leaves ref_count > 0 forever. Without an age floor this row is immortal.
+    const store = new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS });
+    const key = await insertRow({
+      refCount: 1,
+      expiresAt: new Date(Date.now() - 3 * 3600_000),
+      lastAccessedAt: new Date(Date.now() - 3 * 3600_000),
+    });
+
+    const removed = await store.sweep(100);
+
+    expect(removed).toBe(1);
+    expect(await exists(key)).toBe(false);
+  });
+
+  it('THE BOUNDARY: does NOT reclaim a still-referenced row inside the pinned grace, even when expired', async () => {
+    // 1h idle against the 2h default. This is the case the production dry-run could not
+    // prove — no live row happened to sit between the two windows — so it is the one that
+    // would catch an interval-unit slip or an inverted comparison in the new branch.
+    const store = new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS });
+    const key = await insertRow({
+      refCount: 1,
+      expiresAt: new Date(Date.now() - 1_000),
+      lastAccessedAt: new Date(Date.now() - 3600_000),
+    });
+
+    const removed = await store.sweep(100);
+
+    expect(removed).toBe(0);
+    expect(await exists(key)).toBe(true);
+  });
+
+  it('honours an explicit pinnedGraceMs rather than only the 2h default', async () => {
+    // Guards the option wiring: a row 90m idle is INSIDE the default grace but past a
+    // 1h override, so this fails if pinnedGraceMs is dropped anywhere between the
+    // constructor and the SQL and the default silently applies instead.
+    const store = new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS, pinnedGraceMs: 3600_000 });
+    const key = await insertRow({
+      refCount: 2,
+      expiresAt: new Date(Date.now() - 1_000),
+      lastAccessedAt: new Date(Date.now() - 90 * 60_000),
+    });
+
+    const removed = await store.sweep(100);
+
+    expect(removed).toBe(1);
+    expect(await exists(key)).toBe(false);
   });
 
   it('bounds a single pass to `limit`, leaving the remainder for the next sweep', async () => {

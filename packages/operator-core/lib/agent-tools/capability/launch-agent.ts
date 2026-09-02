@@ -267,6 +267,22 @@ export default defineTool({
       "coord:presence (a launched/forked agent's identity + liveness)",
       'processes:list / processes:kill (returned tasks[].taskId handles; not tasks:get)',
     ],
+    // EI-22084251948568820 cluster (+ EI-22078751749824171, EI-21575773427457407,
+    // EI-21723773357897744): four independent reports of a top-level `carry` being
+    // rejected with an opaque "full anyOf schema, no field pointer" error — carry is
+    // genuinely NOT a top-level arg here (it lives on `members[i].carry`, and even
+    // there is only honored when the launch resolves a fleet), but this tool's
+    // union-shaped args schema previously left `unknownArgHint` unable to say so (see
+    // the `mergedSchemaProperties`/`leafIssueSummary` fix in tooldef/define-tool.ts).
+    // This redirect makes the failure self-correcting instead of a repeated filing.
+    argRedirects: {
+      carry:
+        "loop:arm { carry } — set on the LAUNCHED agent's own recurring wake once it starts. " +
+        'A bare ad-hoc capability:launch-agent call has no top-level `carry` (it launches once; ' +
+        "it isn't a loop). For a FLEET launch put it per-member via `members[i].carry`, honored " +
+        'only when this launch resolves a fleet (an explicit `fleet`, or a resume/fork whose ' +
+        'target already has one) — prefer fleet:launch-on-plan when carry is the point.',
+    },
   },
   capability: 'capability:terminal',
   requirePrincipal: false,

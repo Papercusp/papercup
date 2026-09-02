@@ -26058,7 +26058,7 @@
           "POST"
         ]
       },
-      "description": "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug` as compatibility aliases for one (`rubricRef` wins when both are supplied). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing ref never fails the rest.",
+      "description": "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug` as compatibility aliases for one (`rubricRef` wins when both are supplied). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
       "capabilities": [
         "coord:read"
       ],
@@ -26086,7 +26086,7 @@
       "guidance": {
         "when": "You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`.",
         "notWhen": "Scanning many — rubrics:list (summary rows).",
-        "chaining": "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest."
+        "chaining": "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest."
       }
     },
     {
@@ -26097,7 +26097,7 @@
           "POST"
         ]
       },
-      "description": "List rubrics (shared standards for a system characteristic) — active first, then proposed. Filter by status / characteristic. A rubric carries the model (how it should work), method, rating scale + drift markers, and per-characteristic criteria that agents grade STRUCTURED OBSERVATIONS against. Returns summary rows; use rubrics:get for full criteria.",
+      "description": "List rubrics (shared standards for a system characteristic) — active first, then proposed. Filter by status / characteristic / subjectPlan (the acceptance rubric for one plan). Workspace-global, NOT harness-scoped — there is no `harness` filter; a rubric applies across the whole workspace, or (kind:'acceptance') to exactly the one plan named by `subjectPlan`. A rubric carries the model (how it should work), method, rating scale + drift markers, and per-characteristic criteria that agents grade STRUCTURED OBSERVATIONS against. Returns summary rows; use rubrics:get for full criteria.",
       "capabilities": [
         "coord:read"
       ],
@@ -26122,8 +26122,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Overwatch/Blender: discover the rubric set to grade against.",
-        "notWhen": "You already have the rubric_id and want the full criteria — rubrics:get. Free-text keyword lookup — rubrics:search.",
+        "when": "Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Overwatch/Blender: discover the rubric set to grade against. Need the acceptance rubric for a specific plan? Pass `subjectPlan: \"<plan slug>\"` (implies kind:'acceptance').",
+        "notWhen": "You already have the rubric_id and want the full criteria — rubrics:get. Free-text keyword lookup — rubrics:search. Scoping to a harness/project — not supported: rubrics are workspace-global, never pass a `harness` key (rejected as an unrecognized key).",
         "chaining": "rubrics:list { status: \"active\" } → rubrics:get { rubricRef } → file a structured observation."
       }
     },
@@ -26173,7 +26173,7 @@
           "POST"
         ]
       },
-      "description": "Ratify one OR many proposed rubrics → status \"active\" (D-001: an independent reviewer gate — any coordination agent or owner/su may ratify after review, but never the proposer). Single: { rubricRef }. Many: { rubricRefs:[…] }. Returns { ok, results:[{ ok, rubricId, rubric?, completeness?, replicationSqlCheck? | error }], counts } — correlate by rubricId, not by position; a not-found ref never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only) — review the gaps before ratifying.",
+      "description": "Ratify one OR many proposed rubrics → status \"active\" (D-001: an independent reviewer gate — any coordination agent or owner/su may ratify after review, but never the proposer). Single: { rubricRef }. Many: { rubricRefs:[…] }. Returns { ok, results:[{ ok, rubricRef, rubric?, completeness?, replicationSqlCheck? | error }], counts } — correlate by rubricRef, not by position; a not-found ref never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only) — review the gaps before ratifying.",
       "capabilities": [
         "coord:write"
       ],
@@ -26200,7 +26200,7 @@
       "guidance": {
         "when": "You are an independent reviewer (or the owner/su) reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricRefs:[…].",
         "notWhen": "Authoring or revising content — rubrics:propose. If you are the proposer, leave it proposed for another reviewer; do not self-ratify.",
-        "chaining": "rubrics:list { status: \"proposed\" } → rubrics:get → review the criteria/method → rubrics:ratify { rubricRefs:[…] }. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest."
+        "chaining": "rubrics:list { status: \"proposed\" } → rubrics:get → review the criteria/method → rubrics:ratify { rubricRefs:[…] }. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest."
       }
     },
     {
@@ -26646,7 +26646,7 @@
           "POST"
         ]
       },
-      "description": "Has Overwatch emitted a COMPLETE scorecard for a rubric since a given time (its last wake)? The emission-freshness check (monitor-the-monitor): returns status = fresh (a COMPLETE scorecard landed in-window) | partial-only (scorecards landed but ALL incomplete — a silent truncation) | stale (NOTHING landed — a silent emission gap), plus emitted / complete / count / partialCount, lastEmittedAt, lastCompleteAt, and latestMissingKeys (what is unrated right now). Reads scorecards:list (P-013); a \"complete\" scorecard rates every rubric criterion.",
+      "description": "Has Overwatch emitted a COMPLETE scorecard for a rubric since a given time (its last wake)? The emission-freshness check (monitor-the-monitor): returns status = fresh (a COMPLETE scorecard landed in-window) | partial-only (scorecards landed but ALL incomplete — a silent truncation) | stale (NOTHING landed — a silent emission gap), plus emitted / complete / count / partialCount, lastEmittedAt, lastCompleteAt, and latestMissingKeys (what is unrated right now). Reads scorecards:list (P-013); a \"complete\" scorecard rates every rubric criterion. Pass `rubricRef` directly, or `subjectPlan` to auto-resolve its active acceptance rubric.",
       "capabilities": [
         "coord:read"
       ],

@@ -11,9 +11,11 @@
  * proposal-dwell watchdog so an independent reviewer can pick it up.
  *
  * Bulk by default (the house keyed-array contract): ratify ONE inline ({ rubricRef
- * }), MANY (rubricRefs:[…]) → { ok, results:[{ ok, rubricId, rubric? | error }],
- * counts }. Each result self-describes its rubricId; one not-found id never fails
- * the rest.
+ * }), MANY (rubricRefs:[…]) → { ok, results:[{ ok, rubricRef, rubric? | error }],
+ * counts }. Each result self-describes its rubricRef; one not-found ref never fails
+ * the rest. The result key is deliberately the SAME spelling the input accepts, so
+ * a ref read off a result can be passed straight back (P-005/EI-11400 retired
+ * `rubricId` as a public argument — EI-22084112133846580).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -28,11 +30,11 @@ export default defineTool({
   name: 'rubrics:ratify',
   profile: 'engineer',
   description:
-    'Ratify one OR many proposed rubrics → status "active" (D-001: an independent reviewer gate — any coordination agent or owner/su may ratify after review, but never the proposer). Single: { rubricRef }. Many: { rubricRefs:[…] }. Returns { ok, results:[{ ok, rubricId, rubric?, completeness?, replicationSqlCheck? | error }], counts } — correlate by rubricId, not by position; a not-found ref never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only) — review the gaps before ratifying.',
+    'Ratify one OR many proposed rubrics → status "active" (D-001: an independent reviewer gate — any coordination agent or owner/su may ratify after review, but never the proposer). Single: { rubricRef }. Many: { rubricRefs:[…] }. Returns { ok, results:[{ ok, rubricRef, rubric?, completeness?, replicationSqlCheck? | error }], counts } — correlate by rubricRef, not by position; a not-found ref never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only) — review the gaps before ratifying.',
   guidance: {
     when: 'You are an independent reviewer (or the owner/su) reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricRefs:[…].',
     notWhen: 'Authoring or revising content — rubrics:propose. If you are the proposer, leave it proposed for another reviewer; do not self-ratify.',
-    chaining: 'rubrics:list { status: "proposed" } → rubrics:get → review the criteria/method → rubrics:ratify { rubricRefs:[…] }. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.',
+    chaining: 'rubrics:list { status: "proposed" } → rubrics:get → review the criteria/method → rubrics:ratify { rubricRefs:[…] }. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest.',
     seeAlso: [
       'rubrics:propose (author or revise content, not activate)',
       'rubrics:list { status:"proposed" } (find rubrics awaiting ratification)',
@@ -54,10 +56,10 @@ export default defineTool({
     const ids = mergeIds(args.rubricRef, args.rubricRefs);
     const env = await runBulk(
       ids,
-      async (rubricId) => {
-        const rubric = await ratifyRubric(rubricId, id.ownerId);
+      async (rubricRef) => {
+        const rubric = await ratifyRubric(rubricRef, id.ownerId);
         if (!rubric) {
-          return { ok: false as const, rubricId, error: 'rubric not found' };
+          return { ok: false as const, rubricRef, error: 'rubric not found' };
         }
         // WI-4287: report testing-procedure completeness at the ratification gate —
         // criteria lacking their own replication drill + a missing rubric methodRef
@@ -75,9 +77,9 @@ export default defineTool({
             m.notifySyncInvalidate('learning.releaseReadiness');
           })
           .catch(() => {});
-        return { ok: true as const, rubricId, rubric, completeness, replicationSqlCheck };
+        return { ok: true as const, rubricRef, rubric, completeness, replicationSqlCheck };
       },
-      { keyOf: (rubricId) => ({ rubricId }) },
+      { keyOf: (rubricRef) => ({ rubricRef }) },
     );
     return bulkContent(env);
   },

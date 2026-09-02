@@ -5,8 +5,19 @@
 # discipline: validate inputs, render the checked-in template, verify the unit,
 # install it with an atomic rename. This script NEVER enables or starts the
 # unit — cut-over is a deliberate, separate step taken only once `--check-env`
-# reports every hosted reference present (D-037/D-044: never publish a
+# reports every hosted literal SET *and* every *_REF reference actually
+# RESOLVING against the encrypted store (D-037/D-044: never publish a
 # half-configured or local-memory profile behind app.papercusp.com).
+#
+# The reference half is not a formality. A `*_REF` value is the NAME of a
+# secret to look up, so a non-empty test proves only that a pointer string is
+# present — it was once possible for this gate to exit 0 with the WorkOS
+# secrets entirely absent from the store. Nothing dereferences the refs at
+# boot either (the resolver is injected per-request in bin/hosted-handler.ts),
+# so the unit would have started clean and passed /api/health while failing
+# every real request. --check-env therefore dereferences each reference
+# through resolveHostedSecretRef — the same resolver the runtime uses at point
+# of use — via bin/hosted-check-refs.ts. See WI-2141402.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,16 +35,31 @@ UNIT_DIR="${PAPERCUSP_HOSTED_CP_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/syst
 SYSTEMCTL_BIN="${PAPERCUSP_HOSTED_CP_SYSTEMCTL:-systemctl}"
 SYSTEMD_ANALYZE_BIN="${PAPERCUSP_HOSTED_CP_SYSTEMD_ANALYZE:-systemd-analyze}"
 
-# The seven names hosted-runtime.ts reads (readHostedRuntimeConfiguration).
-REQUIRED_NAMES=(
+# The seven names hosted-runtime.ts reads (readHostedRuntimeConfiguration),
+# split by what each name IS — because the correct check differs.
+#
+# LITERAL: the value is the configuration itself, so a non-empty test is both
+# correct and complete.
+LITERAL_NAMES=(
   PAPERCUSP_HOSTED_PUBLIC_ORIGIN
   PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID
-  PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF
   WORKOS_CLIENT_ID
+)
+# REFERENCE: the value NAMES a secret the runtime dereferences at point of use
+# (hosted-runtime.ts / hosted-auth-runtime.ts, via resolveHostedSecretRef). A
+# non-empty test here proves only that a pointer is present, so these are
+# RESOLVED against the encrypted store instead.
+REF_NAMES=(
+  PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF
   WORKOS_API_KEY_REF
   WORKOS_COOKIE_PASSWORD_REF
   WORKOS_WEBHOOK_SECRET_REF
 )
+# Dereferenced only when set (hosted-runtime.ts reads it conditionally).
+OPTIONAL_REF_NAMES=(
+  WORKOS_WEBHOOK_SECRET_KEY_REF
+)
+REQUIRED_NAMES=("${LITERAL_NAMES[@]}" "${REF_NAMES[@]}")
 
 MODE="render-only"
 
@@ -46,10 +72,14 @@ Usage: deploy-hosted-control-plane.sh [--render-only|--check-env|--install-only]
 
   --render-only  (default) validate inputs and print the rendered unit; do not
                  write or call systemd
-  --check-env    report which of the seven hosted configuration names are SET
-                 in the environment the unit would assemble (operator .env.local
-                 then the hosted env file). Exit 1 while any is unset. Prints
-                 names only — never values.
+  --check-env    report the seven hosted configuration names in the environment
+                 the unit would assemble (operator .env.local then the hosted
+                 env file): the three literals as set/UNSET, and the four *_REF
+                 references as resolved/UNRESOLVED — each dereferenced against
+                 the encrypted store through the runtime's own resolver, so a
+                 present-but-dangling pointer fails. Exit 1 while any is unset
+                 or unresolved, or if the reference check cannot run. Prints
+                 names and failure codes only — never values.
   --install-only atomically install + verify + daemon-reload the unit. Does NOT
                  enable or start it.
 
@@ -88,7 +118,12 @@ render() {
 check_env() {
   # Assemble exactly what the unit's ExecStart assembles, in a subshell, and
   # report presence only. Values are never printed.
-  local missing=0 name
+  #
+  # Literals get a non-empty test; references are dereferenced through the
+  # runtime's own resolver so that `set` can never stand in for `resolves`.
+  # Fails CLOSED: if the reference check cannot run at all, that is a failed
+  # gate, not a pass.
+  local status=0
   local report
   report="$(
     set +u
@@ -96,14 +131,28 @@ check_env() {
     [[ -f "$OPERATOR_ROOT/.env.local" ]] && . "$OPERATOR_ROOT/.env.local"
     [[ -f "$HOSTED_ENV_FILE" ]] && . "$HOSTED_ENV_FILE"
     set +a
-    for name in "${REQUIRED_NAMES[@]}"; do
-      if [[ -n "${!name:-}" ]]; then printf '%s\tset\n' "$name"; else printf '%s\tUNSET\n' "$name"; fi
+    # The resolver reads the encrypted store, so give it the same database
+    # handle and integration root the unit's ExecStart exports.
+    export HARNESS_ADMIN_DATABASE_URL="${HARNESS_ADMIN_DATABASE_URL:-${DATABASE_URL:-}}"
+    export PAPERCUSP_INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$REPO_ROOT}"
+
+    rc=0
+    for name in "${LITERAL_NAMES[@]}"; do
+      if [[ -n "${!name:-}" ]]; then printf '%s\tset\n' "$name"; else printf '%s\tUNSET\n' "$name"; rc=1; fi
     done
-  )"
+
+    if ! cd "$OPERATOR_ROOT" 2>/dev/null; then
+      printf 'REFERENCE_CHECK\tUNAVAILABLE\toperator_root_unreadable\n'
+      exit 1
+    fi
+    npx tsx bin/hosted-check-refs.ts \
+      --required "${REF_NAMES[@]}" \
+      --optional "${OPTIONAL_REF_NAMES[@]}" || rc=1
+    exit "$rc"
+  )" || status=$?
   printf '%s\n' "$report"
-  if grep -q $'\tUNSET$' <<<"$report"; then missing=1; fi
   [[ -f "$HOSTED_ENV_FILE" ]] || log "hosted env file absent: $HOSTED_ENV_FILE"
-  return "$missing"
+  return "$status"
 }
 
 case "$MODE" in

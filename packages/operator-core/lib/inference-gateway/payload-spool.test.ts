@@ -315,6 +315,13 @@ describe('PgGatewayPayloadStore — EI-21880026143110293 contention retry on the
   });
 });
 
+/**
+ * A pinned-grace value that collides with nothing else the sweep binds — deliberately not
+ * 2h, which is what ttlMs and legacyGraceMs both default to. Distinctness is what lets the
+ * assertions below attribute a bound value to a specific predicate leg.
+ */
+const PINNED_GRACE_PROBE_MS = 11 * 60_000;
+
 describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
   it('writes a finite default expiry for newly stored payloads', async () => {
     const now = Date.parse('2026-08-30T00:00:00.000Z');
@@ -341,6 +348,10 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
       workspaceId: 'ws-payload-test',
       ttlMs: DEFAULT_PAYLOAD_SPOOL_TTL_MS,
       legacyGraceMs: DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS,
+      // Deliberately NOT the 2h default: legacyGraceMs and the pinned default are both
+      // 7_200_000, so with the default the two branches bind an identical value and the
+      // assertions below could not tell them apart — dropping either leg would still pass.
+      pinnedGraceMs: PINNED_GRACE_PROBE_MS,
     });
 
     await expect(store.sweep(7.9)).resolves.toBe(1);
@@ -353,12 +364,25 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
     expect(backfill!.text).toContain('SET expires_at = blobs.created_at');
     expect(backfill!.values).toContain(7);
 
-    // The candidate predicate and the outer DELETE predicate must both require
-    // ref_count = 0: retain() can race after candidate selection.
+    // Both the candidate predicate and the outer DELETE must carry the UNREFERENCED
+    // branch's ref_count = 0, because retain() can race after candidate selection.
+    //
+    // ⚠ WI-2141342 narrowed what this means: ref_count = 0 is no longer required by the
+    // statement as a whole. The ABANDONED branch reclaims a row with ref_count > 0 that
+    // has sat untouched past pinnedGraceMs, and it is guarded by last_accessed_at rather
+    // than by the refcount — safely, because retain()/get() both refresh last_accessed_at
+    // and so push a re-adopted row back out of the window. Do not "restore" a top-level
+    // ref_count = 0 here; that is the bug (the leak was a refcount floor with no time
+    // dimension, so a pin that outlived its process was immortal).
     expect((deletion!.text.match(/ref_count = 0/g) ?? []).length).toBeGreaterThanOrEqual(2);
     expect(deletion!.text).toContain('last_accessed_at');
     expect(deletion!.text).toContain('expires_at IS NULL');
     expect(deletion!.values).toContain(7);
+    // The abandoned branch binds two values that exist ONLY if it is wired, so each leg
+    // fails closed independently if dropped — unlike a text match, which the surviving
+    // branch-1 text would still satisfy.
+    expect(deletion!.values).toContain(PINNED_GRACE_PROBE_MS); // expired-and-idle leg
+    expect(deletion!.values).toContain(DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS + PINNED_GRACE_PROBE_MS); // NULL-expiry leg
   });
 
   it('uses the bounded default sweep size when the caller passes a non-finite limit', async () => {

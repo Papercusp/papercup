@@ -740,7 +740,18 @@ export function fetchOverDuplex(
     // check such a fetch hangs the FULL outer ceiling (live-observed: every
     // G-8 cold-join burned 120s per tick instead of failing fast).
     if (duplex.destroyed) {
-      stderrOut.append('\nduplex already destroyed before fetch began (no live dial path)');
+      // Name WHICH fail-soft stub this was. Every caller destroys its stub with
+      // a distinct reason ("no live connection to device …", "no-such-repo
+      // backoff: …", "hive-git: no live swarm join for this harness yet",
+      // "substrate sidecar dial failed: …"), and `stream.errored` (Node ≥18)
+      // still holds it here. Flattening them all to "no live dial path" is what
+      // let a 210-minute VM→tower stall read as an ordinary transient dial miss
+      // on the P-203 rig — the one string in the log that could have said
+      // which leg was dead said nothing.
+      const why = (duplex as { errored?: Error | null }).errored?.message;
+      stderrOut.append(
+        `\nduplex already destroyed before fetch began (${why ? why : 'no live dial path'})`,
+      );
       finish(-1);
       return;
     }

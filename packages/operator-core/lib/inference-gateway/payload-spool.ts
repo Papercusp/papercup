@@ -68,6 +68,26 @@ export const DEFAULT_PAYLOAD_SPOOL_TTL_MS = 2 * 60 * 60 * 1000;
 export const DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT = 2_000;
 /** Legacy rows without an expiry are safe to collect after a short idle grace period. */
 export const DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS = 2 * 60 * 60 * 1000;
+/**
+ * How long a REFERENCED payload may sit untouched before the sweep reclaims it anyway.
+ *
+ * WI-2141342: `release()` runs in a request-scoped `finally`, so a gateway that is
+ * SIGKILLed mid-request never decrements. The pin then outlives its expiry with no
+ * reaper — `ref_count` is a safety floor with no time dimension, so nothing can ever
+ * collect it. Measured before this floor existed: 384 of 404 pinned rows idle past the
+ * TTL, the oldest by 80 hours, surviving many gateway restarts; unpinned rows over the
+ * same window topped out at exactly 2.00h, which is the rest of the sweep working
+ * correctly. Every restart stranded a new cohort and none ever drained.
+ *
+ * Two hours because a legitimate pin lives for the request/lease lifetime —
+ * seconds-to-minutes, bounded by a 30-minute durable lease (see the TTL note above) —
+ * so this is ~4x the longest honest hold. It is deliberately measured from
+ * `last_accessed_at`, NOT `expires_at`: `retain`/`release`/`get` all refresh
+ * last_accessed_at, while expires_at is stamped once in put() and never moved, making
+ * it a write-time stamp rather than a liveness signal. Keyed on expires_at this floor
+ * would measure the wrong dimension entirely.
+ */
+export const DEFAULT_PAYLOAD_SPOOL_PINNED_GRACE_MS = 2 * 60 * 60 * 1000;
 
 export interface GatewayPayloadSpoolOptions {
   /** Storage backend. Defaults to the Postgres-backed store. */
@@ -204,6 +224,8 @@ export interface PgGatewayPayloadStoreOptions {
   readonly workspaceId?: string;
   readonly ttlMs?: number;
   readonly legacyGraceMs?: number;
+  /** Idle window after which an expired but still-REFERENCED payload is reclaimed anyway. */
+  readonly pinnedGraceMs?: number;
   readonly now?: () => number;
   /** Injectable for tests; production defaults to the shared EI-1720 backoffs/sleep. */
   readonly contentionBackoffsMs?: readonly number[];
@@ -219,6 +241,7 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
   readonly #workspaceId: string;
   readonly #ttlMs: number;
   readonly #legacyGraceMs: number;
+  readonly #pinnedGraceMs: number;
   readonly #now: () => number;
   readonly #contentionBackoffsMs: readonly number[] | undefined;
   readonly #contentionSleep: ((ms: number) => Promise<void>) | undefined;
@@ -234,6 +257,10 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
       options.legacyGraceMs === undefined || !Number.isFinite(options.legacyGraceMs)
         ? DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS
         : Math.max(0, options.legacyGraceMs);
+    this.#pinnedGraceMs =
+      options.pinnedGraceMs === undefined || !Number.isFinite(options.pinnedGraceMs)
+        ? DEFAULT_PAYLOAD_SPOOL_PINNED_GRACE_MS
+        : Math.max(0, options.pinnedGraceMs);
     this.#now = options.now ?? (() => Date.now());
     this.#contentionBackoffsMs = options.contentionBackoffsMs;
     this.#contentionSleep = options.contentionSleep;
@@ -350,20 +377,75 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
          AND blobs.expires_at IS NULL`;
     }
 
+    // WI-2141342: the eligibility predicate is TWO branches, and it is repeated verbatim
+    // in the outer DELETE and the candidate subquery. Keep them in step — a row selected
+    // by the subquery but rejected by the outer predicate makes the sweep silently
+    // collect nothing, which is indistinguishable from having nothing to collect.
+    //
+    // Branch 1 (unchanged): unreferenced and past its retention window.
+    // Branch 2 (new): ABANDONED — past expiry AND untouched for pinnedGraceMs, regardless
+    // of ref_count. `release()` runs in a request-scoped `finally`, so a SIGKILLed gateway
+    // never decrements and the pin outlives its expiry with nothing able to collect it.
+    //
+    // Branch 2 deliberately omits a ref_count re-check, and the outer DELETE is still safe
+    // WITHOUT one: `retain()` and `get()` both set last_accessed_at = now(), so a request
+    // that adopts this payload between the subquery and the delete pushes the row OUT of
+    // the idle window, and READ COMMITTED re-evaluates the predicate against that updated
+    // row. The age test is self-guarding in exactly the way `ref_count = 0` was — which is
+    // only true because the floor is keyed on last_accessed_at rather than on expires_at,
+    // a write-time stamp that no access ever refreshes.
+    const legacyPlusPinnedMs = this.#legacyGraceMs + this.#pinnedGraceMs;
     const rows = await this.#sql<{ blob_key: string }[]>`
       DELETE FROM harness_shared.gateway_payload_blobs AS blobs
        WHERE blobs.workspace_id = ${this.#workspaceId}
-         AND blobs.ref_count = 0
+         AND (
+           (
+             blobs.ref_count = 0
+             AND (
+               (blobs.expires_at IS NOT NULL AND blobs.expires_at <= now())
+               OR (
+                 blobs.expires_at IS NULL
+                 AND blobs.last_accessed_at <= now() - (${this.#legacyGraceMs} * interval '1 millisecond')
+               )
+             )
+           )
+           OR (
+             (
+               blobs.expires_at IS NOT NULL
+               AND blobs.expires_at <= now()
+               AND blobs.last_accessed_at <= now() - (${this.#pinnedGraceMs} * interval '1 millisecond')
+             )
+             OR (
+               blobs.expires_at IS NULL
+               AND blobs.last_accessed_at <= now() - (${legacyPlusPinnedMs} * interval '1 millisecond')
+             )
+           )
+         )
          AND (blobs.workspace_id, blobs.blob_key) IN (
          SELECT candidate.workspace_id, candidate.blob_key
            FROM harness_shared.gateway_payload_blobs AS candidate
           WHERE candidate.workspace_id = ${this.#workspaceId}
-            AND candidate.ref_count = 0
             AND (
-              (candidate.expires_at IS NOT NULL AND candidate.expires_at <= now())
+              (
+                candidate.ref_count = 0
+                AND (
+                  (candidate.expires_at IS NOT NULL AND candidate.expires_at <= now())
+                  OR (
+                    candidate.expires_at IS NULL
+                    AND candidate.last_accessed_at <= now() - (${this.#legacyGraceMs} * interval '1 millisecond')
+                  )
+                )
+              )
               OR (
-                candidate.expires_at IS NULL
-                AND candidate.last_accessed_at <= now() - (${this.#legacyGraceMs} * interval '1 millisecond')
+                (
+                  candidate.expires_at IS NOT NULL
+                  AND candidate.expires_at <= now()
+                  AND candidate.last_accessed_at <= now() - (${this.#pinnedGraceMs} * interval '1 millisecond')
+                )
+                OR (
+                  candidate.expires_at IS NULL
+                  AND candidate.last_accessed_at <= now() - (${legacyPlusPinnedMs} * interval '1 millisecond')
+                )
               )
             )
           ORDER BY candidate.last_accessed_at, candidate.blob_key
@@ -383,6 +465,7 @@ export function createGatewayPayloadSpool(options: GatewayPayloadSpoolOptions & 
           ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
           ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
           ...(options.legacyGraceMs !== undefined ? { legacyGraceMs: options.legacyGraceMs } : {}),
+          ...(options.pinnedGraceMs !== undefined ? { pinnedGraceMs: options.pinnedGraceMs } : {}),
           ...(options.now ? { now: options.now } : {}),
           ...(options.contentionBackoffsMs ? { contentionBackoffsMs: options.contentionBackoffsMs } : {}),
           ...(options.contentionSleep ? { contentionSleep: options.contentionSleep } : {}),

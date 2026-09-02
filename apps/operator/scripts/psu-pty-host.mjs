@@ -5059,6 +5059,39 @@ export function hostThroughPty(o) {
         }
         return { ok: false, reason: 'ownerId-mismatch' };
       }
+      // WI-2141435: the guard above calls appendHostEvent ONLY on its reject path, so
+      // its silence cannot distinguish "no violations" from "structurally blind to this
+      // class" — an ownerId-less payload takes the documented no-op branch above and
+      // leaves NO trace at all. Measured on WI-2140968: control-payload-rejected had
+      // fired 128 times, EVERY one in an su-itest-misdeliver-* fixture and none in a
+      // real session, across a period in which 9 real cross-owner deliveries provably
+      // occurred. A firing count of zero was reporting blindness as cleanliness.
+      //
+      // DETECTOR ONLY — control flow is deliberately unchanged: an unaddressed payload
+      // is still accepted exactly as before. Refusing it is a separate, later step
+      // (WI-2141435 step 2), gated on this detector first showing a clean production
+      // population — an older still-running sender that omits ownerId would otherwise
+      // have every delivery refused fleet-wide, and host-code-stale is real and ongoing.
+      if (msg.ownerId == null) {
+        try {
+          let v1 = false;
+          try {
+            v1 = JSON.parse(payload.toString('utf8'))?.v === 1;
+          } catch {
+            /* not JSON at all — a genuinely legacy raw payload */
+          }
+          appendHostEvent(ownerId, 'control-payload-unaddressed', {
+            reason: 'no-ownerId',
+            mode: msg.mode,
+            bytes: payload.length,
+            // true  ⇒ a v1 envelope that simply OMITTED ownerId (a pre-EI-153 sender)
+            // false ⇒ decodeControl's legacy promotion of a NON-envelope payload
+            envelope: v1,
+          });
+        } catch {
+          /* a detector must never be able to affect delivery */
+        }
+      }
       // EI-19311270129974785: a RETRY of a delivery this host has already accepted
       // is short-circuited before any mode-specific state mutation. Pending means
       // the detached pipeline has not committed a write yet; completed means the

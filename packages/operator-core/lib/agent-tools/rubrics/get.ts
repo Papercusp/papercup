@@ -6,9 +6,13 @@
  * bulk-endpoint-standardization-2026-06-21).
  *
  * Bulk by default (the house keyed-array contract): pass `rubricRef` for one or
- * `rubricRefs` for several → { ok, results:[{ ok, rubricId, rubric? | error }],
- * counts } — each result self-describes its rubricId, so a not-found id never
- * poisons the rest and the agent correlates by id (not array position). The
+ * `rubricRefs` for several → { ok, results:[{ ok, rubricRef, rubric? | error }],
+ * counts } — each result self-describes its rubricRef, so a not-found ref never
+ * poisons the rest and the agent correlates by ref (not array position). The
+ * result key is deliberately the SAME spelling the input accepts, so a ref read
+ * off a result can be passed straight back (P-005/EI-11400 retired `rubricId`
+ * as a public argument; emitting it here re-taught the rejected key —
+ * EI-22084112133846580). The
  * generic read-tool `ref` and caller-natural `slug` spellings are accepted as
  * compatibility aliases for the single-rubric form. An optional `harness`
  * compatibility hint is accepted but does not filter this workspace-wide read.
@@ -24,11 +28,11 @@ export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug` as compatibility aliases for one (`rubricRef` wins when both are supplied). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing ref never fails the rest.",
+    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug` as compatibility aliases for one (`rubricRef` wins when both are supplied). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
   guidance: {
     when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
-    chaining: "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.",
+    chaining: "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest.",
     seeAlso: [
       'rubrics:list (scan summary rows to find an id)',
       'rubrics:search (keyword lookup)',
@@ -78,13 +82,13 @@ export default defineTool({
     const ids = mergeIds(args.rubricRef ?? args.ref ?? args.slug, args.rubricRefs);
     const env = await runBulk(
       ids,
-      async (rubricId) => {
-        const rubric = await getRubric(rubricId);
+      async (rubricRef) => {
+        const rubric = await getRubric(rubricRef);
         return rubric
-          ? { ok: true as const, rubricId, rubric }
-          : { ok: false as const, rubricId, error: 'rubric not found' };
+          ? { ok: true as const, rubricRef, rubric }
+          : { ok: false as const, rubricRef, error: 'rubric not found' };
       },
-      { keyOf: (rubricId) => ({ rubricId }) },
+      { keyOf: (rubricRef) => ({ rubricRef }) },
     );
     return bulkContent(env);
   },

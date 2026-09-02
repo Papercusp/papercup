@@ -40,6 +40,8 @@ import {
   CARRY_NOTE_CHECKS_LEGEND,
   coerceCarryRowShape,
   normalizeFlattenedContinuityProbeRow,
+  truncateCarryField,
+  CARRY_TRUNCATION_MARKER,
   type WallEntry,
   type CheckEntry,
   type CarryArgRepair,
@@ -1848,5 +1850,50 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
       const carried = mergeCarryRows({ priorNote: priorNoteWith([1].map(check)), baseNote: 'b', hasNoteWrite: true });
       expect(carried.overflowChecks).toEqual([]);
     });
+  });
+});
+
+describe('truncateCarryField — EI-22079495152196184: keep the TAIL, not just the head', () => {
+  it('returns the value untouched when within cap, with no repair recorded', () => {
+    const repairs: CarryArgRepair[] = [];
+    expect(truncateCarryField('short', 500, 'checks[0].claim', repairs)).toBe('short');
+    expect(repairs).toEqual([]);
+  });
+
+  it('preserves the tail — the trailing operative clause survives, not just the observation prefix', () => {
+    const repairs: CarryArgRepair[] = [];
+    const head = 'HEAD-OBSERVATION-'.repeat(20); // filler well past the cap on its own
+    const tail = 'TAIL-DO-NOT-FIX-HERE';
+    const value = head + tail;
+    const out = truncateCarryField(value, 200, 'checks[0].claim', repairs);
+    // The old implementation kept only a prefix and would never contain this.
+    expect(out).toContain(tail);
+    expect(out).toContain('HEAD-OBSERVATION-');
+    expect(out).toContain(CARRY_TRUNCATION_MARKER);
+    // The marker sits BETWEEN the two, not at the very end.
+    expect(out.endsWith(CARRY_TRUNCATION_MARKER)).toBe(false);
+    expect(out.endsWith(tail)).toBe(true);
+  });
+
+  it('emits exactly `cap` chars — the length contract every caller/schema relies on is unchanged', () => {
+    const repairs: CarryArgRepair[] = [];
+    const out = truncateCarryField('x'.repeat(900), 500, 'checks[0].recheck', repairs);
+    expect(out).toHaveLength(500);
+  });
+
+  it('reports a repair naming both the head and tail lengths kept', () => {
+    const repairs: CarryArgRepair[] = [];
+    truncateCarryField('y'.repeat(900), 300, 'checks[0].verified', repairs);
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0]).toMatchObject({ field: 'checks[0].verified', kind: 'truncated' });
+    expect(repairs[0]!.detail).toContain('900');
+    expect(repairs[0]!.detail).toMatch(/first \d+ \+ last \d+ chars/);
+  });
+
+  it('degrades to the old head-only shape when cap is too small to fit any tail (no crash, no negative slice)', () => {
+    const repairs: CarryArgRepair[] = [];
+    const out = truncateCarryField('x'.repeat(50), 5, 'checks[0].claim', repairs);
+    expect(out).toBe(CARRY_TRUNCATION_MARKER);
+    expect(() => truncateCarryField('x'.repeat(50), 0, 'checks[0].claim', [])).not.toThrow();
   });
 });

@@ -1123,7 +1123,13 @@ export async function injectKickoffAfterResume(
   for (;;) {
     const host = findHost(ownerId);
     if (host?.sock) {
-      const ok = await inject(host.sock, { mode: 'turn', data: kickoff });
+      // EI-153 addressing: currently zero production callers, but this is the
+      // closest shape-match in the tree to an observed cross-owner fan-out (a
+      // for(;;) re-resolving the host every pollMs=2_000) and has repeatedly
+      // read as the culprit during WI-2140968 triage. Addressing it removes the
+      // trap AND the latent hole: without `ownerId` the host's misdelivery
+      // guard abstains, so a stale/mis-resolved socket accepts the turn.
+      const ok = await inject(host.sock, { mode: 'turn', data: kickoff, ownerId });
       return ok
         ? { delivered: true, waitedMs: Date.now() - started }
         : {

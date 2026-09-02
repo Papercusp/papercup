@@ -670,9 +670,15 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
     });
 
     expect(r.delivered).toBe(true);
+    // EI-153 addressing: the payload must NAME its addressee. Without `ownerId`
+    // the receiving host's misdelivery guard abstains (its predicate is
+    // `msg.ownerId != null && msg.ownerId !== ownerId`), so a stale or
+    // mis-resolved socket silently accepts another agent's turn. Asserting the
+    // field here is what keeps this path from regressing back to unaddressed.
     expect(inject).toHaveBeenCalledWith(`/run/psu-pty/${OWNER}.sock`, {
       mode: 'turn',
       data: 'pick up where you left off',
+      ownerId: OWNER,
     });
     expect(sleep).toHaveBeenCalledTimes(1);
   });

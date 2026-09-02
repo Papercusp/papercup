@@ -140,6 +140,7 @@ import {
   noSuchRepoBackoffKey,
   noSuchRepoBackoffSecondsLeft,
 } from './no-such-repo-backoff';
+import { refAnnounceRepoEnvelope, refAnnounceTargetsRepo } from './ref-announce-repo-scope';
 import { runOwnHeadPublishTick, type OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
@@ -3588,6 +3589,10 @@ async function runConvergenceProbe(input: {
     const announced: AnnouncedSnapshot[] = [];
     for (const row of rows) {
       const fe = row.body?.fed_event as { payload?: unknown } | undefined;
+      // Same routing as the receive leg: judge THIS install only against
+      // announcements addressed to it, or a submodule install reads the
+      // superproject's counter as its own and latches NOT CONVERGED forever.
+      if (!refAnnounceTargetsRepo(fe, { slug, potHomeSlug })) continue;
       const payload = fe?.payload;
       if (!isSignedRefAnnouncement(payload)) continue;
       // ANYTHING can write a fed-event row, so an unverified one must never be
@@ -4334,7 +4339,14 @@ async function runRefAnnounceLeg(
         summary: `[fed-event] ${REF_ANNOUNCE_EVENT_KEY}`,
         harnessSlug: potHomeSlug,
         extra: {
-          fed_event: { key: REF_ANNOUNCE_EVENT_KEY, payload: announcement, source: identity.ownerId },
+          fed_event: {
+            key: REF_ANNOUNCE_EVENT_KEY,
+            payload: announcement,
+            source: identity.ownerId,
+            // Envelope tag naming WHICH install in this (multi-repo) hive
+            // announced — the readers route on it. See ref-announce-repo-scope.ts.
+            ...refAnnounceRepoEnvelope(slug),
+          },
         },
       });
       // Persist only after the signed snapshot + announcement exist. A crash
@@ -4385,6 +4397,10 @@ async function runRefAnnounceLeg(
     for (const row of feRows) {
       maxRowId = Math.max(maxRowId, row.id);
       const fe = row.body?.fed_event as { payload?: unknown } | undefined;
+      // A hive with many installs shares ONE announce stream; only rows
+      // addressed to THIS install are ours to fetch. A skipped row still
+      // advances the cursor above (it is another install's, not a failure).
+      if (!refAnnounceTargetsRepo(fe, { slug, potHomeSlug })) continue;
       if (fe && isSignedRefAnnouncement(fe.payload)) pending.push({ rowId: row.id, announcement: fe.payload });
     }
     if (pending.length === 0) {

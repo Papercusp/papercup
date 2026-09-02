@@ -2,7 +2,7 @@
  * rubrics-bulk.test.ts — rubrics:get (read) + rubrics:ratify (action) HANDLERS,
  * bulk keyed-array contract (bulk-endpoint-standardization-2026-06-21). The
  * rubrics engine + identity are mocked. Pins the inline single form, the
- * rubricRefs:[…] many form (per-item results keyed by rubricId), and a not-found
+ * rubricRefs:[…] many form (per-item results keyed by rubricRef), and a not-found
  * item failing only itself while the batch's top-level ok stays true.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/rubrics/rubrics-bulk.test.ts
@@ -64,7 +64,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     getM.mockResolvedValue({ id: 'r-1', criteria: [] } as never);
     const b = await body(getTool, { rubricRef: 'r-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(b.results[0]).toMatchObject({ ok: true, rubricId: 'r-1', rubric: { id: 'r-1' } });
+    expect(b.results[0]).toMatchObject({ ok: true, rubricRef: 'r-1', rubric: { id: 'r-1' } });
   });
 
   it('accepts generic { ref } at projected dispatch as a single-rubric alias', async () => {
@@ -95,8 +95,8 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     );
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
-    const payload = readJsonResult<{ results: Array<{ rubricId: string; ok: boolean }> }>(dispatched.result!);
-    expect(payload?.results).toEqual([{ ok: true, rubricId: 'r-1', rubric: { id: 'r-1', criteria: [] } }]);
+    const payload = readJsonResult<{ results: Array<{ rubricRef: string; ok: boolean }> }>(dispatched.result!);
+    expect(payload?.results).toEqual([{ ok: true, rubricRef: 'r-1', rubric: { id: 'r-1', criteria: [] } }]);
     expect(getM).toHaveBeenCalledWith('r-1');
   });
 
@@ -128,8 +128,8 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     );
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
-    const payload = readJsonResult<{ results: Array<{ rubricId: string; ok: boolean }> }>(dispatched.result!);
-    expect(payload?.results).toEqual([{ ok: true, rubricId: 'r-1', rubric: { id: 'r-1', criteria: [] } }]);
+    const payload = readJsonResult<{ results: Array<{ rubricRef: string; ok: boolean }> }>(dispatched.result!);
+    expect(payload?.results).toEqual([{ ok: true, rubricRef: 'r-1', rubric: { id: 'r-1', criteria: [] } }]);
     expect(getM).toHaveBeenCalledWith('r-1');
   });
 
@@ -161,15 +161,15 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     );
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
-    const payload = readJsonResult<{ results: Array<{ rubricId: string; ok: boolean }> }>(dispatched.result!);
-    expect(payload?.results).toEqual([{ ok: true, rubricId: 'r-1', rubric: RUBRIC_R1 }]);
+    const payload = readJsonResult<{ results: Array<{ rubricRef: string; ok: boolean }> }>(dispatched.result!);
+    expect(payload?.results).toEqual([{ ok: true, rubricRef: 'r-1', rubric: RUBRIC_R1 }]);
     expect(getM).toHaveBeenCalledWith('r-1');
   });
 
   it('prefers canonical rubricRef when ref is also supplied', async () => {
     getM.mockImplementation(async (id: string) => ({ id } as never));
     const b = await body(getTool, { rubricRef: 'canonical', ref: 'alias', slug: 'slug-alias' });
-    expect(b.results.map((r: { rubricId: string }) => r.rubricId)).toEqual(['canonical']);
+    expect(b.results.map((r: { rubricRef: string }) => r.rubricRef)).toEqual(['canonical']);
     expect(getM).toHaveBeenCalledWith('canonical');
     expect(getM).not.toHaveBeenCalledWith('alias');
     expect(getM).not.toHaveBeenCalledWith('slug-alias');
@@ -180,18 +180,18 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     const b = await body(getTool, { rubricRefs: ['r-1', 'gone', 'r-2'] });
     expect(b.ok).toBe(true);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
-    expect(b.results.map((r: { rubricId: string; ok: boolean }) => [r.rubricId, r.ok])).toEqual([
+    expect(b.results.map((r: { rubricRef: string; ok: boolean }) => [r.rubricRef, r.ok])).toEqual([
       ['r-1', true],
       ['gone', false],
       ['r-2', true],
     ]);
-    expect(b.results[1]).toMatchObject({ ok: false, rubricId: 'gone', error: 'rubric not found' });
+    expect(b.results[1]).toMatchObject({ ok: false, rubricRef: 'gone', error: 'rubric not found' });
   });
 
   it('dedups rubricRef + rubricRefs into one merged list', async () => {
     getM.mockImplementation(async (id: string) => ({ id } as never));
     const b = await body(getTool, { rubricRef: 'r-1', rubricRefs: ['r-1', 'r-2'] });
-    expect(b.results.map((r: { rubricId: string }) => r.rubricId)).toEqual(['r-1', 'r-2']);
+    expect(b.results.map((r: { rubricRef: string }) => r.rubricRef)).toEqual(['r-1', 'r-2']);
   });
 
   it('keeps every criterion through an ambient trimmed dispatch', async () => {
@@ -263,7 +263,7 @@ describe('rubrics:ratify handler (bulk keyed-array)', () => {
     ratifyM.mockResolvedValue({ id: 'r-1', status: 'active' } as never);
     const b = await body(ratifyTool, { rubricRef: 'r-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(b.results[0]).toMatchObject({ ok: true, rubricId: 'r-1', rubric: { status: 'active' } });
+    expect(b.results[0]).toMatchObject({ ok: true, rubricRef: 'r-1', rubric: { status: 'active' } });
     // WI-4287: each activated rubric reports its testing-procedure completeness.
     expect(b.results[0].completeness).toEqual({
       criteriaWithoutReplication: [],
@@ -277,7 +277,67 @@ describe('rubrics:ratify handler (bulk keyed-array)', () => {
     ratifyM.mockImplementation(async (id: string) => (id === 'gone' ? null : ({ id, status: 'active' } as never)));
     const b = await body(ratifyTool, { rubricRefs: ['r-1', 'gone'] });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
-    expect(b.results[0]).toMatchObject({ ok: true, rubricId: 'r-1' });
-    expect(b.results[1]).toMatchObject({ ok: false, rubricId: 'gone', error: 'rubric not found' });
+    expect(b.results[0]).toMatchObject({ ok: true, rubricRef: 'r-1' });
+    expect(b.results[1]).toMatchObject({ ok: false, rubricRef: 'gone', error: 'rubric not found' });
+  });
+});
+
+/**
+ * ROUND-TRIP GUARD (EI-22084112133846580) — the identifying key a bulk result row
+ * carries must be a key the SAME tool accepts as input.
+ *
+ * These two tools emitted `rubricId` while their schemas accept only
+ * rubricRef/rubricRefs/ref/slug — P-005/EI-11400 having retired `rubricId` as a
+ * public argument on purpose. The strict-args did-you-mean hint rescued each
+ * individual call, but the result key kept re-teaching the rejected spelling, so
+ * the failure recurred until the watchdog promoted it to a bug.
+ *
+ * Asserted as a PROPERTY (result key ∈ input keys), not as the literal string
+ * 'rubricRef', so it stays true if the canonical spelling is ever renamed again.
+ */
+describe('bulk result rows round-trip into the input schema', () => {
+  const NON_KEY_FIELDS = new Set(['ok', 'rubric', 'error', 'completeness', 'replicationSqlCheck']);
+
+  const inputKeys = (toolName: string): string[] => {
+    const tool = lookupByMcpName(toolName);
+    expect(tool, `${toolName} not registered`).toBeDefined();
+    const properties = (tool?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+    expect(properties, `${toolName} must publish an input schema`).toBeDefined();
+    return Object.keys(properties ?? {});
+  };
+
+  const identifyingKeys = (row: Record<string, unknown>): string[] =>
+    Object.keys(row).filter((k) => !NON_KEY_FIELDS.has(k));
+
+  it('rubrics:get echoes only keys its own schema accepts', async () => {
+    mockResolvedTyped(getM, RUBRIC_R1);
+    const b = await body(getTool, { rubricRef: 'r-1' });
+    const keys = identifyingKeys(b.results[0]);
+    expect(keys, 'a result row must identify itself by some key').not.toHaveLength(0);
+    for (const key of keys) {
+      expect(
+        inputKeys('rubrics:get'),
+        `rubrics:get emits \`${key}\` but will not accept it back as an argument`,
+      ).toContain(key);
+    }
+  });
+
+  it('rubrics:ratify echoes only keys its own schema accepts', async () => {
+    mockResolvedTyped(ratifyM, { ...RUBRIC_R1, status: 'active' });
+    const b = await body(ratifyTool, { rubricRef: 'r-1' });
+    const keys = identifyingKeys(b.results[0]);
+    expect(keys, 'a result row must identify itself by some key').not.toHaveLength(0);
+    for (const key of keys) {
+      expect(
+        inputKeys('rubrics:ratify'),
+        `rubrics:ratify emits \`${key}\` but will not accept it back as an argument`,
+      ).toContain(key);
+    }
+  });
+
+  it('neither tool re-admits the retired `rubricId` argument (P-005/EI-11400)', () => {
+    for (const toolName of ['rubrics:get', 'rubrics:ratify']) {
+      expect(inputKeys(toolName), `${toolName} must not re-admit rubricId`).not.toContain('rubricId');
+    }
   });
 });

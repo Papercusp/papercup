@@ -521,15 +521,36 @@ export function findVerificationConflict(evidence: string | null | undefined, cl
   return null;
 }
 
-/** Truncate `v` to `cap`, recording a repair. Returns `v` untouched when within cap. */
+/**
+ * Truncate `v` to `cap`, recording a repair. Returns `v` untouched when within cap.
+ *
+ * EI-22079495152196184: a carried check/wall claim is written as "observation +
+ * operative consequence", and the consequence sits at the END ("... do NOT fix
+ * here"). The original implementation kept only the PREFIX and cut everything
+ * after it, so an overlong claim silently lost exactly the instruction a reader
+ * most needs — and the surviving prefix still reads as a complete, plausible
+ * sentence, so the loss is invisible without diffing against the original. Keep
+ * BOTH ends instead: split the available budget roughly evenly between head and
+ * tail, with the marker sitting in the middle where the cut actually happened.
+ * The total emitted length is unchanged (still exactly `cap` once `cap >=
+ * CARRY_TRUNCATION_MARKER.length`), so every existing caller/schema length
+ * invariant still holds — only the SHAPE of what's kept changes.
+ */
 export function truncateCarryField(v: string, cap: number, field: string, repairs: CarryArgRepair[]): string {
   if (v.length <= cap) return v;
+  const budget = Math.max(0, cap - CARRY_TRUNCATION_MARKER.length);
+  const headLen = Math.ceil(budget / 2);
+  const tailLen = budget - headLen;
   repairs.push({
     field,
     kind: 'truncated',
-    detail: `${v.length} chars trimmed to ${cap} (${v.length - cap} over) — write it shorter to keep the full text`,
+    detail:
+      `${v.length} chars trimmed to ${cap} (${v.length - cap} over) — kept the first ${headLen} + last ${tailLen} ` +
+      `chars around the cut so a trailing clause is not silently dropped; write it shorter to keep the full text`,
   });
-  return v.slice(0, Math.max(0, cap - CARRY_TRUNCATION_MARKER.length)) + CARRY_TRUNCATION_MARKER;
+  const head = v.slice(0, headLen);
+  const tail = tailLen > 0 ? v.slice(v.length - tailLen) : '';
+  return head + CARRY_TRUNCATION_MARKER + tail;
 }
 
 /**
