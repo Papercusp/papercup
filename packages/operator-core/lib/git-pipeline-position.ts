@@ -1308,6 +1308,18 @@ export interface PipelinePosition {
     } | null;
     repairQueue?: GitPipelineSnapshot['gate']['repairQueue'];
     /**
+     * WI-2141736 P-004 — IS FREEZE-AND-CONVERGE ACTUALLY ON RIGHT NOW, AND IF NOT WHY NOT.
+     *
+     * The question `repairQueue` structurally cannot answer: a null queue is equally
+     * "the owner turned the freeze off", "the gate just retired a frozen candidate" and
+     * "nothing is frozen, all is well". `state` separates those (`off` / `retired` / `none`),
+     * and `reason` carries the sentence that previously existed only in a per-run log.
+     *
+     * ⚠ `null` means NOT MEASURED, not healthy — and check `observedAtMs` before treating a
+     * value as current: a `retired` left behind by a run hours ago describes history.
+     */
+    freezeAndConverge?: GitPipelineSnapshot['gate']['freezeAndConverge'];
+    /**
      * WI-1702869 — HOW MANY TEST FILES FAIL ON THE FROZEN CANDIDATE, and for each, whether
      * its fix is ALREADY contained in `repairHead`. The one number gate triage needs and the
      * one no instrument returned, which is why agents hand-wrote `test_runs` SQL and got it
@@ -5061,6 +5073,13 @@ export async function gitPipelinePosition(
     // (the surface every role is pointed at) reporting a stale red as the pipeline's blocker.
     inconclusive: snap.gate.inconclusive,
     repairQueue: snap.gate.repairQueue ?? null,
+    // WI-2141736 P-004. Also beside `repairQueue`, and for the opposite reason to
+    // candidateFailures below: this is the answer for when there IS no queue. `repairQueue:
+    // null` cannot distinguish "the owner switched the freeze off", "the gate just retired a
+    // frozen candidate" and "nothing is frozen, all is well" — and that is the exact
+    // ambiguity that let freeze-and-converge sit off fleet-wide for a day unnoticed.
+    // Null here means NOT MEASURED, never healthy.
+    freezeAndConverge: snap.gate.freezeAndConverge ?? null,
     // WI-1702869. Sits beside `repairQueue` because it is the same subject read one level
     // deeper: the queue says WHICH sha is frozen, this says WHAT IS FAILING on it and
     // whether each failure is already repaired at repairHead.
