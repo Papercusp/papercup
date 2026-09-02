@@ -47,6 +47,24 @@ describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
     expect(hit?.text).toContain('code:run');
   });
 
+  it('WI-2142449: the same-tool skeleton is Promise.all, not a sequential for-loop — its own "independent" claim must match the shape it hands back', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({ ...cap, now: t });
+    }
+    expect(hit?.suggestedScript).toContain('Promise.all');
+    // The exact bug: this text used to say "for (const a of inputs)" — strictly sequential — while
+    // the surrounding prose claimed the calls were independent. A sequential shape must never
+    // reappear here.
+    expect(hit?.suggestedScript).not.toMatch(/for\s*\(const \w+ of inputs\)/);
+    expect(hit?.text).toContain('independent');
+    // Isolated per-branch (EI-21712103510622160's pattern) so one bad input cannot discard results
+    // already fetched for the others — the same protection fanoutSkeleton already has.
+    expect(hit?.suggestedScript).toContain(".catch((e) => ({ error: String(e) }))");
+  });
+
   it('surfaces the FELT round-trip cost — the running count + the word round-trip', () => {
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
@@ -73,11 +91,15 @@ describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
       t += 1000;
       hit = maybeBatchNudge({ ...cap, now: t });
     }
-    expect(hit?.text).toContain('mechanically-chained'); // dependent-but-mechanical IS batchable
-    expect(hit?.text).toMatch(/read its result and DECIDE/); // the real cutoff is judgment
+    // WI-2142449: the old text claimed "independent or mechanically-chained" while handing back a
+    // serial for-loop that could not correctly express a mechanically-chained (result-dependent)
+    // call anyway — a static prefilled `inputs` list is incompatible with true runtime chaining
+    // either way. It now states the real boundary directly instead.
+    expect(hit?.text).toMatch(/args must come from one of these results/);
+    expect(hit?.text).toMatch(/read its result and DECIDE/); // the real cutoff is judgment (shared TRAILER)
   });
 
-  it('embeds a runnable list-then-loop skeleton over the EXACT repeated tool', () => {
+  it('embeds a runnable list-then-fold (Promise.all) skeleton over the EXACT repeated tool', () => {
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
@@ -86,7 +108,8 @@ describe('maybeBatchNudge — same-tool trigger (windowed)', () => {
     }
     expect(hit?.text).toContain('code:run { script:');
     expect(hit?.text).toContain('tools.workItems.get(a)'); // camelNamespace.camelVerb form, loop var
-    expect(hit?.text).toMatch(/for \(const a of inputs\) out\.push\(await /);
+    expect(hit?.text).toContain('Promise.all(');
+    expect(hit?.text).toContain('inputs.map((a) =>');
     expect(hit?.text).toContain('return out;');
   });
 
@@ -1079,11 +1102,13 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
     return hit;
   };
 
-  it('stays silent when the measured fold cannot finish even at the foreground ceiling', () => {
-    // 2 × 30s sequential = 60s, past the 50s ceiling. There is no timeoutSec that rescues this,
-    // so the honest move is to say nothing: a recommendation that cannot succeed is worse than
-    // none, because it spends a round-trip teaching the agent to distrust the hint.
-    expect(burst(30_000)).toBeNull();
+  it('stays silent when even the SLOWEST call cannot finish within the foreground ceiling', () => {
+    // WI-2142449: same-tool folds as Promise.all (max, not sum), so parallelism cannot rescue a
+    // single branch that is itself too slow — 55s alone is past the 50s ceiling. There is no
+    // timeoutSec that rescues this, so the honest move is to say nothing: a recommendation that
+    // cannot succeed is worse than none, because it spends a round-trip teaching the agent to
+    // distrust the hint.
+    expect(burst(55_000)).toBeNull();
   });
 
   it('CONTROL: the identical burst WITHOUT timing still fires — measurement is what suppresses it', () => {
@@ -1104,19 +1129,48 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
     expect(hit?.text).not.toContain('script budget');
   });
 
-  it('fires WITH a fitting timeoutSec when the fold overruns the default but not the ceiling', () => {
-    // 2 × 18s = 36s: past the 30s default, inside the 50s ceiling. The skeleton must carry the
-    // budget that makes it work, not be suppressed.
-    const hit = burst(18_000);
+  it('fires WITH a fitting timeoutSec when the SLOWEST call overruns the default but not the ceiling', () => {
+    // WI-2142449: same-tool folds as Promise.all (max, not sum) — a single 32s call alone (+2s fold
+    // overhead) pushes past the 30s default, well inside the 50s ceiling. The skeleton must carry
+    // the budget that makes it work, not be suppressed.
+    const hit = burst(32_000);
     expect(hit?.kind).toBe('same-tool');
-    expect(hit?.suggestedScript).toMatch(/code:run \{ timeoutSec: (3[89]|4\d), script:/);
+    expect(hit?.suggestedScript).toMatch(/code:run \{ timeoutSec: 34, script:/);
     expect(hit?.text).toContain('script budget');
+  });
+
+  it('WI-2142449 regression: the reported ~6s-per-call dev:pipeline_position shape fits by default as a max — it would have needed a raised budget as a sum', () => {
+    // The reported incident: 8 dev:pipeline_position calls at ~3-6s each, hand-looped SEQUENTIALLY,
+    // blew the 30s script_timeout. As a SEQUENTIAL sum over just the first two (the earliest point
+    // the trigger can fire) that is already 12s; over a realistic 6-call burst it would be 36s —
+    // past the 30s default, needing an explicit raised budget. As the Promise.all fold this
+    // skeleton now emits, the script waits only for the slowest branch: 6s, comfortably inside the
+    // default with no timeoutSec required at all. (Captures the FIRST fire, not `burst`'s last —
+    // continuing calls past the first trip the exponential backoff, which is a different guard.)
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < 8; i++) {
+      t += 1000;
+      const r = maybeBatchNudge({
+        sessionKey: 's-budget-8call',
+        toolName: 'dev:pipeline_position',
+        canCodeRun: true,
+        now: t,
+        durationMs: 6_000,
+      });
+      if (r && !hit) hit = r;
+    }
+    expect(hit?.kind).toBe('same-tool');
+    expect(hit?.suggestedScript).toContain('Promise.all');
+    expect(hit?.suggestedScript).toContain('code:run { script:');
+    expect(hit?.suggestedScript).not.toContain('timeoutSec');
+    expect(hit?.text).not.toContain('script budget');
   });
 
   it('declining to recommend does NOT consume the backoff — the next foldable burst still fires', () => {
     // The caller did nothing wrong. Burning their cooldown here would silence the NEXT burst,
     // which may well be foldable — turning one bad recommendation into a lasting blind spot.
-    expect(burst(30_000)).toBeNull();
+    expect(burst(55_000)).toBeNull();
     let t = 100_000; // a fresh window, same session
     let hit: ReturnType<typeof maybeBatchNudge> = null;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {

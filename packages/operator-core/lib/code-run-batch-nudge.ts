@@ -850,8 +850,12 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   const banner = escalationPrefix(st.nudgeCount);
   const activate = input.codeRunInSurface === false ? ACTIVATE_PATH_NOTE : '';
   // Named only when the measured burst forced it, so the reason the arg is there travels with it.
+  // WI-2142449: same-tool and fanout fold as Promise.all (max — the slowest branch), pipeline folds
+  // sequentially (sum) — the wording must match, or "measured together" reads as a sum when the
+  // skeleton it describes waits for only the slowest one.
+  const measuredAs = kind === 'pipeline' ? 'These calls measured' : 'The SLOWEST of these calls measured';
   const budgetNote = foldTimeoutSec
-    ? `\nThese calls measured ~${Math.round((budget.projectedMs ?? 0) / 1000)}s together, past code:run's ` +
+    ? `\n${measuredAs} ~${Math.round((budget.projectedMs ?? 0) / 1000)}s, past code:run's ` +
       `${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s default script budget — the skeleton carries the timeoutSec that fits. ` +
       `Adding more calls to it may not fit: split them across two code:run calls rather than raising it further ` +
       `(${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is the foreground ceiling).`
