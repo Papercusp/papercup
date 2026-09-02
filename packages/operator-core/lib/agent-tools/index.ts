@@ -362,6 +362,7 @@ import './loop/checkpoint';
 import './loop/end';
 import './loop/session_audit';
 import './loop/soak_report';
+import './loop/standdown-all';
 import './loop/status';
 import './loop/transfer';
 // bash-to-tool-substitution-2026-07-26 P-023 (D-027) — a systemd unit's journal,
