@@ -41,6 +41,7 @@ export type GateOwnerBriefAnswer =
   | 'green'
   | 'red-owned-remediating'
   | 'red-owned-stalled'
+  | 'red-owned-unconfirmed'
   | 'red-unowned'
   | 'not-judging'
   | 'unknown';
@@ -136,8 +137,35 @@ const vintage = (observedAtMs: number | null | undefined, source: string, nowMs:
   source,
 });
 
-/** The ownership-oracle codes that mean "a live session holds this incident". */
-const OWNED_LIVE_CODES = new Set(['held-live', 'held-needs-confirmation']);
+/**
+ * The ownership-oracle codes that mean "a POSITIVELY live session holds this incident".
+ *
+ * ⚠ `held-needs-confirmation` is deliberately NOT here, and putting it back re-creates
+ * EI-22123840107491540. The ownership oracle's own vocabulary is explicit that the code
+ * means "not a live holder and not a dead one" (`assessGateOwnership`: `draining` /
+ * `suspect` / unread), and `gate-ownership.ts` acts on it accordingly —
+ * `POSITIVELY_LIVE` marks both ambiguous states `false`, so `shouldStandDownForLivePeer`
+ * already FAILS OPEN for them. Counting the same code as a live hold HERE made the two
+ * modules contradict each other, and only this one could be read as "someone is on it":
+ * a gate whose holder went `suspect` could never reach {@link OWNED_UNCONFIRMED_CODES}'
+ * stranded answer, so it read as owned-and-remediating (or owned-and-stalled, whose
+ * safeAction ends at "tell the holder / escalate") no matter how long nobody moved.
+ * Measured cost: a gate red 89 consecutive runs / ~12 days behind a holder that had not
+ * taken a turn in 5h11m and had never dispatched a fixer.
+ */
+const OWNED_LIVE_CODES = new Set(['held-live']);
+
+/**
+ * The ownership-oracle codes that mean "a claim exists but its holder's liveness is
+ * AMBIGUOUS" — held, and neither confirmed alive nor confirmed dead.
+ *
+ * Separate from {@link OWNED_LIVE_CODES} because the two need different answers when
+ * remediation is not progressing: a live holder gets `red-owned-stalled` (coordinate
+ * with them — they can still act), an unconfirmed one gets `red-owned-unconfirmed`
+ * (the hold cannot be assumed to protect anything, so the answer must terminate in a
+ * reclaim rather than in another wake nobody will absorb).
+ */
+const OWNED_UNCONFIRMED_CODES = new Set(['held-needs-confirmation']);
 
 export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief {
   const unknownLegs: Array<{ leg: string; why: string }> = [];
@@ -168,6 +196,14 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
   // `assessment` is the ownership oracle's closed string union (GateOwnershipAssessment).
   const ownershipCode = inp.ownership?.assessment ?? null;
   const ownedLive = ownershipCode !== null && OWNED_LIVE_CODES.has(ownershipCode);
+  const ownedUnconfirmed = ownershipCode !== null && OWNED_UNCONFIRMED_CODES.has(ownershipCode);
+
+  // "Remediation is not visibly progressing" — one predicate, so the live and the
+  // unconfirmed answers can never disagree about what stalled means.
+  const remediationStalled =
+    inp.repairQueue != null &&
+    (inp.repairQueue.fixerAlive === false || inp.repairQueue.zeroAttemptStalled) &&
+    inp.repairQueue.fixerAlive !== true;
 
   const red = (reds ?? 0) > 0 || inp.inconclusive != null;
   const green = reds === 0 && !inp.verdictStale && inp.inconclusive == null;
@@ -182,13 +218,14 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
   } else if (!red) {
     // reds === 0 but the verdict is stale: judged state is green, subject may have moved.
     answer = 'green';
-  } else if (!ownedLive) {
+  } else if (!ownedLive && !ownedUnconfirmed) {
     answer = 'red-unowned';
-  } else if (
-    inp.repairQueue != null &&
-    (inp.repairQueue.fixerAlive === false || inp.repairQueue.zeroAttemptStalled) &&
-    inp.repairQueue.fixerAlive !== true
-  ) {
+  } else if (ownedUnconfirmed && remediationStalled) {
+    // An ambiguous holder AND nothing remediating: the stranded shape. An ambiguous
+    // holder with a LIVE fixer is genuinely being worked, so it falls through to
+    // `red-owned-remediating` — the new code stays narrowly reachable on purpose.
+    answer = 'red-owned-unconfirmed';
+  } else if (remediationStalled) {
     answer = 'red-owned-stalled';
   } else {
     answer = 'red-owned-remediating';
@@ -206,9 +243,15 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
     },
     'red-owned-stalled': {
       meaning:
-        'The gate is red and owned, but the dispatched fixer is dead or the queue shows zero-attempt stall — remediation is NOT visibly progressing. This is the shape that once idled ~5h before a human noticed.',
+        'The gate is red and owned by a POSITIVELY LIVE holder, but the dispatched fixer is dead or the queue shows zero-attempt stall — remediation is NOT visibly progressing. This is the shape that once idled ~5h before a human noticed.',
       safeAction:
         'Tell the holder their fixer is dead (coord:send with this read attached). If the holder does not respond, escalate — a dead fixer never resumes by itself.',
+    },
+    'red-owned-unconfirmed': {
+      meaning:
+        "The gate is red, a claim exists, and remediation is NOT visibly progressing — but the holder's liveness is AMBIGUOUS (draining/suspect/unread), so the claim is not evidence anyone is working it. The hold is stranded until proven otherwise.",
+      safeAction:
+        'Send ONE required wake to the holder, then STOP waiting on it: a missed wake is not proof of death, but it is also not a reason to keep the whole fleet blocked. If no turn follows and remediation.fixerSpawnId is still null (nobody was ever dispatched), treat the hold as stranded — reclaim the incident and work it. Waiting is not the safe action here; the coordination rail already fails open for this liveness verdict.',
     },
     'red-unowned': {
       meaning: 'The gate is red and NO live session owns the incident — the every-agent-waits / 37-agent-pileup shape.',

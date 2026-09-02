@@ -770,9 +770,15 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
       },
       'red-owned-stalled': {
         meaning:
-          'The gate is red and owned, but the dispatched fixer is dead or the queue shows zero-attempt stall — remediation is NOT visibly progressing. This is the shape that once idled ~5h before a human noticed.',
+          'The gate is red and owned by a POSITIVELY LIVE holder, but the dispatched fixer is dead or the queue shows zero-attempt stall — remediation is NOT visibly progressing. This is the shape that once idled ~5h before a human noticed.',
         safeAction:
           'Tell the holder their fixer is dead (coord:send with this read attached). If the holder does not respond, escalate — a dead fixer never resumes by itself.',
+      },
+      'red-owned-unconfirmed': {
+        meaning:
+          "The gate is red, a claim exists, and remediation is NOT visibly progressing — but the holder's liveness is AMBIGUOUS (draining/suspect/unread), so the claim is not evidence anyone is working it. The hold is stranded until proven otherwise.",
+        safeAction:
+          'Send ONE required wake to the holder, then STOP waiting on it: a missed wake is not proof of death, but it is also not a reason to keep the whole fleet blocked. If no turn follows and remediation.fixerSpawnId is still null (nobody was ever dispatched), treat the hold as stranded — reclaim the incident and work it. Waiting is not the safe action here; the coordination rail already fails open for this liveness verdict.',
       },
       'red-unowned': {
         meaning: 'The gate is red and NO live session owns the incident — the every-agent-waits / 37-agent-pileup shape.',
@@ -884,7 +890,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
         meaning:
           "Held by a session whose liveness is AMBIGUOUS — draining, suspect, or unresolved. This is not a live holder and not a dead one.",
         safeAction:
-          'Confirm with a required wake before acting. A delivered wake proves a coordination-live peer; a missed one does NOT prove a dead holder, so fail open rather than seizing the claim.',
+          'Send ONE required wake, then read `gate.greenCheckpoint.ownerBrief` — do NOT sit on this code waiting for the wake to be answered. A delivered wake proves a coordination-live peer; a missed one proves nothing either way, which is exactly why this code alone cannot end the question. The brief fuses this verdict with repair-queue liveness and terminates: `red-owned-unconfirmed` (ambiguous holder + nobody ever dispatched) says reclaim, `red-owned-remediating` says a fixer is actually running. Note "fail open" here means PROCEED, not wait — `shouldStandDownForLivePeer` already returns false for draining/suspect, so this verdict never reserves the lane on its own.',
       },
       'held-by-ended-session': {
         meaning:

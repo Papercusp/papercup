@@ -19,6 +19,19 @@ const heldLiveOwnership = {
   assessment: 'held-live',
 } as unknown as GateOwnerBriefInput['ownership'];
 
+/**
+ * The EI-22123840107491540 shape: held, but the presence oracle can only say
+ * `suspect`/`draining` — neither alive nor dead. `held-needs-confirmation` used to be
+ * counted as a live hold here, which is why a stranded gate could never surface as
+ * anything but owned-and-being-worked.
+ */
+const heldUnconfirmedOwnership = {
+  claimState: 'held',
+  takenBy: 'su-respawn-b353b06382f5752cbb0b9b781e91be86',
+  workItem: 'WI-212675',
+  assessment: 'held-needs-confirmation',
+} as unknown as GateOwnerBriefInput['ownership'];
+
 const claimableOwnership = {
   claimState: 'claimable',
   takenBy: null,
@@ -113,6 +126,77 @@ describe('composeGateOwnerBrief', () => {
     });
     expect(b.answer).toBe('red-owned-stalled');
     expect(b.unknownLegs.map((l) => l.leg)).toContain('remediation.fixerAlive');
+  });
+
+  // ── EI-22123840107491540: the cell must not report a live-looking hold for a
+  // stranded gate. The measured case is reproduced exactly: ownership resolved to
+  // `held-needs-confirmation` (holder `suspect`, no turn in 5h11m, two required wakes
+  // absorbed) while the repair queue had never dispatched a fixer at all.
+  it('an UNCONFIRMED holder with no fixer ever dispatched is red-owned-unconfirmed, not stalled or remediating', () => {
+    const b = composeGateOwnerBrief({
+      ...base,
+      consecutiveReds: 89,
+      failingTests: ['lint:tsc'],
+      ownership: heldUnconfirmedOwnership,
+      repairQueue: redQueue({ attempts: 0, fixerSpawnId: null, fixerAlive: null, zeroAttemptStalled: true }),
+    });
+    expect(b.answer).toBe('red-owned-unconfirmed');
+    // The two readings this used to collapse into. `red-owned-stalled` is the
+    // dangerous one: its safeAction ends at "tell the holder / escalate", which is
+    // exactly what the reporter did — twice — with no terminating branch left.
+    expect(b.answer).not.toBe('red-owned-stalled');
+    expect(b.answer).not.toBe('red-owned-remediating');
+    // The answer must name the reclaim, or it is the same dead end in a new code.
+    expect(b.assessment.safeAction).toMatch(/reclaim/i);
+  });
+
+  it('an UNCONFIRMED holder with a LIVE fixer still reads remediating — the new code stays narrow', () => {
+    const b = composeGateOwnerBrief({
+      ...base,
+      consecutiveReds: 4,
+      ownership: heldUnconfirmedOwnership,
+      repairQueue: redQueue({ fixerAlive: true }),
+    });
+    expect(b.answer).toBe('red-owned-remediating');
+  });
+
+  // Deliberately-wrong control: the ownership oracle's own liveness table
+  // (`POSITIVELY_LIVE`) marks draining/suspect false, so a brief that treats
+  // `held-needs-confirmation` as a live hold contradicts the module it reads from.
+  // Pin the two together rather than trusting the two files to stay in step.
+  it('does not treat an unconfirmed hold the same as a live one when remediation has stalled', () => {
+    const stalled = { ...base, consecutiveReds: 30, repairQueue: redQueue({ fixerAlive: false }) };
+    const live = composeGateOwnerBrief({ ...stalled, ownership: heldLiveOwnership });
+    const unconfirmed = composeGateOwnerBrief({ ...stalled, ownership: heldUnconfirmedOwnership });
+    expect(live.answer).not.toBe(unconfirmed.answer);
+  });
+
+  /*
+   * FALSIFIABILITY CONTROL — kept permanently, per the tier-1 rule for a subject you
+   * `import` (mutating the shared tree to prove a guard fails is the shape git-sync
+   * commits by accident). `OLD_OWNED_LIVE_CODES` is the pre-EI-22123840107491540
+   * classification verbatim; the control asserts it lands on the WRONG answer for the
+   * measured input, and the calibration asserts the REAL subject lands on the right
+   * one. Without the control, both tests above would also pass if the whole
+   * `red-owned-unconfirmed` branch were deleted and the code simply never reached.
+   */
+  describe('falsifiability control: the pre-fix classification', () => {
+    const OLD_OWNED_LIVE_CODES = new Set(['held-live', 'held-needs-confirmation']);
+    const strandedInput = {
+      ...base,
+      consecutiveReds: 89,
+      ownership: heldUnconfirmedOwnership,
+      repairQueue: redQueue({ attempts: 0, fixerSpawnId: null, fixerAlive: null, zeroAttemptStalled: true }),
+    };
+
+    it('the OLD rule classifies the stranded holder as a live hold — the defect', () => {
+      const code = (strandedInput.ownership as unknown as { assessment: string }).assessment;
+      expect(OLD_OWNED_LIVE_CODES.has(code)).toBe(true);
+    });
+
+    it('CALIBRATION: the real subject reaches the stranded answer on that same input', () => {
+      expect(composeGateOwnerBrief(strandedInput).answer).toBe('red-owned-unconfirmed');
+    });
   });
 
   it('an inconclusive record makes the answer a red-family one even at zero reds', () => {
