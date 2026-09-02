@@ -26,6 +26,7 @@ import {
   type ObservationRatings,
   type ScorecardVetting,
   type ScorecardAcceptance,
+  type AcceptanceSeatSuccession,
   type SpecTestAdequacyRerunRecipe,
   asStructuredObservation,
 } from '../../harness/improvements/observation-types';
@@ -83,6 +84,7 @@ import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records'
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
 import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
+import { acceptanceSeatRefusalHint, resolveAcceptanceSeatSuccession } from '../../acceptance-seat-succession';
 // TYPE-ONLY (erased at runtime) — see defaultResolveAuthorSessionState below,
 // which mirrors rebind-identity.ts's own dynamic-import discipline for the
 // same oracle so this write-path module never carries it on its static graph.
@@ -388,46 +390,19 @@ async function defaultResolveAuthorSessionState(
   }
 }
 
-/**
- * EI-21917534129987791: an acceptance rubric's recorded author's session can
- * genuinely end (die, get replaced by a carry-respawn under a fresh sid, …).
- * `isAcceptanceAuthorIdentity` already has a recovery path for exactly this —
- * it walks the audited `coord:rebind-identity` trail (acceptance-author-
- * identity.ts's header names rebind as "the canonical recovery operation" for
- * this precise case) — but the bare "not the author" refusal below never told
- * a caller that path exists, which is what turned a recoverable situation into
- * an apparent permanent dead-end (a filed bug, not a hypothetical).
- *
- * Surface the hint ONLY when the author's session is confirmed non-live
- * (not in `REBIND_BLOCKING_SESSION_STATES`): hinting rebind at a genuinely
- * live/parked/draining/recorded author would be actively wrong advice —
- * `coord:rebind-identity` itself refuses a live from-id (a caller reaching for
- * `force:true` to push through that refusal would be stealing a live peer's
- * identity, which is the exact hazard that guard exists to prevent). An
- * unknown verdict (probe fault, no signal) also omits the hint — silence is
- * safer than a confidently wrong one here.
+/*
+ * WI-2141007: `authorRebindHint` used to live here, appending "a legitimate
+ * successor may run coord:rebind-identity { from: <author> }" to the not-the-
+ * author refusal. It was removed, not moved: for the case that most often
+ * produced it — an unrelated live PEER holding the plan, not the same agent
+ * under a new sid — that advice was a footgun (EI-22135313244682666). Rebinding
+ * migrates the dead author's ENTIRE owner-keyed surface set (armed loops,
+ * claims, file locks, owner-scoped facts, fleet membership) merely to record one
+ * verdict, and using it to pass an independence control defeats the control.
+ * `acceptanceSeatRefusalHint` in acceptance-seat-succession.ts replaces it: it
+ * names the narrow seat-succession route, and still points a genuine
+ * same-agent-new-sid successor at rebind, which remains correct for them.
  */
-async function authorRebindHint(
-  authorId: string | null,
-  resolveState: (ownerId: string, opts: { workspaceId?: string }) => Promise<SessionState | null>,
-  opts: { workspaceId?: string },
-): Promise<string> {
-  if (!authorId) return '';
-  let state: SessionState | null;
-  try {
-    state = await resolveState(authorId, opts);
-  } catch {
-    return '';
-  }
-  if (state == null) return '';
-  const { REBIND_BLOCKING_SESSION_STATES } = await import('../coordination/rebind-identity');
-  if ((REBIND_BLOCKING_SESSION_STATES as readonly string[]).includes(state)) return '';
-  return (
-    ` — the recorded author's session appears to have ended (sessionState: '${state}'); ` +
-    `a legitimate successor may run coord:rebind-identity { from: '${authorId}' } to become the ` +
-    'recognized author (the audited rebind trail is what this guard walks), then emit the acceptance verdict'
-  );
-}
 
 export async function emitScorecard(
   args: z.infer<typeof scorecardEmitArgs>,
@@ -528,6 +503,11 @@ export async function emitScorecard(
     // WHAT changed). Same fail-open/unrecorded-on-failure contract as rubricRevision.
     const criteriaHash = await getRubricCriteriaHash(args.rubricRef);
     const acceptance = args.acceptance as ScorecardAcceptance | undefined;
+    // WI-2141007: set when this verdict is recorded by a SUCCESSOR to a dead
+    // rubric author rather than by the author themselves. Declared out here
+    // because it is stamped onto the persisted card below, outside the
+    // acceptance-kind guard block that resolves it.
+    let seatSuccession: AcceptanceSeatSuccession | undefined;
     // Acceptance authority belongs to the rubric author of record. A later
     // repair/re-propose records its actor in proposedBy, but must not transfer
     // the right to issue the plan verdict away from createdBy. Keep proposedBy
@@ -559,19 +539,34 @@ export async function emitScorecard(
         deps: { sameAcceptanceAuthor, lineageRelated },
       });
       if (eligibility.refusal) return { ok: false as const, ...eligibility.refusal };
-      const callerIsImplementer = eligibility.callerIsImplementer;
-      if (!callerIsImplementer && acceptance) {
+      // WI-2141007: the acceptance seat is INHERITABLE when its author is dead.
+      // Attempt succession before refusing — otherwise a plan whose implementer
+      // was reaped (the normal case on a fleet that reaps members) can never
+      // ship through any supported path. `callerIsImplementer` below therefore
+      // means "holds author authority", by identity OR by audited succession.
+      if (!eligibility.callerIsImplementer && acceptance) {
         const resolveAuthorSessionState = deps.resolveAuthorSessionState ?? defaultResolveAuthorSessionState;
-        const rebindHint = await authorRebindHint(implementer, resolveAuthorSessionState, {
+        const seat = await resolveAcceptanceSeatSuccession({
+          authorId: implementer,
+          callerId: input.createdBy,
+          subjectPlan: rubric.subjectPlan ?? null,
           workspaceId: identityWorkspace,
+          harness: input.ctxHarness ?? null,
+          resolveAuthorSessionState,
         });
-        return {
-          ok: false as const,
-          error:
-            `acceptance must be recorded by the acceptance-rubric author ('${implementer ?? 'unknown'}'), ` +
-            `not grader '${input.createdBy}' — independent graders emit ratings without acceptance${rebindHint}`,
-        };
+        if (seat.eligible) {
+          seatSuccession = seat.succession;
+        } else {
+          return {
+            ok: false as const,
+            error:
+              `acceptance must be recorded by the acceptance-rubric author ('${implementer ?? 'unknown'}'), ` +
+              `not grader '${input.createdBy}' — independent graders emit ratings without acceptance` +
+              acceptanceSeatRefusalHint(seat, implementer, rubric.subjectPlan ?? null),
+          };
+        }
       }
+      const callerIsImplementer = eligibility.callerIsImplementer || seatSuccession != null;
       if (callerIsImplementer && !acceptance) {
         return {
           ok: false as const,
@@ -592,17 +587,31 @@ export async function emitScorecard(
         for (const card of prior) {
           if (!card.rubricResolved || card.missingKeys.length !== 0 || card.synthesized || card.createdBy == null)
             continue;
-          if (!(await lineageRelated(implementer, card.createdBy, { workspaceId: identityWorkspace }))) {
-            independent = card;
-            break;
-          }
+          // Independence against the ORIGINAL author is unchanged — a seat
+          // succession must never launder a related grader into an independent one.
+          if (await lineageRelated(implementer, card.createdBy, { workspaceId: identityWorkspace })) continue;
+          // WI-2141007: a SUCCESSOR now holds author authority, so they may not
+          // accept a grading from their OWN lineage either. Without this the
+          // three-party chain (author -> critic -> grader) collapses into one
+          // session grading its own work and then accepting it — which is the
+          // hole the lineage rule exists to close, re-opened one level along.
+          if (
+            seatSuccession &&
+            (await lineageRelated(input.createdBy, card.createdBy, { workspaceId: identityWorkspace }))
+          )
+            continue;
+          independent = card;
+          break;
         }
         if (!independent) {
           return {
             ok: false as const,
             error:
-              `acceptance must follow a complete independent grading by someone other than '${implementer}' — ` +
-              `have a non-implementer emit ratings first, then record the implementer's verdict`,
+              `acceptance must follow a complete independent grading by someone other than '${implementer}'` +
+              (seatSuccession
+                ? ` (and, because you inherited this seat from that dead author, by someone outside YOUR lineage too)`
+                : '') +
+              ` — have a non-implementer emit ratings first, then record the implementer's verdict`,
           };
         }
       }
@@ -631,6 +640,17 @@ export async function emitScorecard(
     // on a standard rubric must carry `remediation` (WI-/EI-/F- ref) or an explicit
     // `disregard` — the agent-facing emit door enforces what the schema teaches.
     validateScorecardPoorRatingDisposition(observationForValidation, rubric);
+    // WI-2141007: the acceptance record as PERSISTED — the caller's verdict plus,
+    // when the seat was inherited from a dead author, the server-stamped audited
+    // succession. Computed once so the two persistence sites below cannot drift
+    // apart. Deliberately NOT used for `evidenceFingerprint` above: the seat
+    // carries a `succeededAt` timestamp, and folding a clock into the dedup
+    // fingerprint would make every re-emit look like new content.
+    const acceptanceRecord: ScorecardAcceptance | undefined = acceptance
+      ? seatSuccession
+        ? { ...acceptance, seat: seatSuccession }
+        : acceptance
+      : undefined;
     const instrumentSnapshots = args.instrumentSnapshots as Record<string, ScorecardInstrumentSnapshot> | undefined;
     const evidenceFingerprint = scorecardEvidenceFingerprint({
       rubricRef: args.rubricRef,
@@ -1227,7 +1247,7 @@ export async function emitScorecard(
           ...(rubricRevision != null ? { rubricRevision } : {}),
           ...(criteriaHash != null ? { criteriaHash } : {}),
           ratings,
-          ...(acceptance ? { acceptance } : {}),
+          ...(acceptanceRecord ? { acceptance: acceptanceRecord } : {}),
           ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe } : {}),
           ...(sourceHive ? { sourceHive } : {}),
           ...(args.targetHive ? { targetHive: args.targetHive } : {}),
@@ -1336,7 +1356,7 @@ export async function emitScorecard(
         : {}),
       ...(args.supersedes ? { supersedes: args.supersedes } : {}),
       canonicalRatings: ratings,
-      ...(acceptance ? { acceptance } : {}),
+      ...(acceptanceRecord ? { acceptance: acceptanceRecord } : {}),
       // P-008: surfaced loudly so the emitter knows this card is a working note — a
       // terminal re-emit (terminal:true, supersedes this issueId) finalizes it.
       ...(provisional ? { provisional } : {}),
