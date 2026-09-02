@@ -482,34 +482,40 @@ export function evaluateSpecTestAdequacy(input: {
         evidence: `No fixture binding or fixture fingerprint is present for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(evidence)}.`,
       };
 
-  const falsificationEvidence = evidence.some((row) => {
+  // EI-22128161413448729: a self-attested `adequacy.falsifiable=true` flag is a WEAKER claim
+  // than an actually-bound mutation/counterexample row with a killed/survived outcome — the two
+  // must never share one evidence sentence, or an auditor reads "bound negative control" when
+  // only an attestation exists. Branch the template on which basis is actually present.
+  const boundMutationOrCounterexample = evidence.filter((row) => {
     const details = detailsOf(row);
     return (
-      details.falsifiable === true ||
-      ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-        SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? ''))
+      (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
+      SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')
     );
   });
-  ratings.falsifiability = falsificationEvidence
-    ? {
-        rating: 'pass',
-        evidence: evidenceWithBindings(
-          `A bound negative control, counterexample, or killed mutant demonstrates red capability for ${clauseIdentity(clause)}.`,
-          evidence.filter((row) => {
-            const details = detailsOf(row);
-            return (
-              details.falsifiable === true ||
-              ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-                SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? ''))
-            );
-          }),
-        ),
-      }
-    : booleanRating(evidence, (d) => d.falsifiable, {
-        pass: `A bound proof explicitly demonstrates falsifiability for ${clauseIdentity(clause)}.`,
-        fail: `Bound metadata explicitly reports falsifiable=false for ${clauseIdentity(clause)}.`,
-        unknown: `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
-      });
+  const attestedFalsifiableOnly = evidence.filter((row) => detailsOf(row).falsifiable === true);
+  ratings.falsifiability =
+    boundMutationOrCounterexample.length > 0
+      ? {
+          rating: 'pass',
+          evidence: evidenceWithBindings(
+            `A bound mutation or counterexample binding demonstrates red capability for ${clauseIdentity(clause)}.`,
+            boundMutationOrCounterexample,
+          ),
+        }
+      : attestedFalsifiableOnly.length > 0
+        ? {
+            rating: 'pass',
+            evidence: evidenceWithBindings(
+              `Attested falsifiable by binder on ${attestedFalsifiableOnly.length} binding(s); no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`,
+              attestedFalsifiableOnly,
+            ),
+          }
+        : booleanRating(evidence, (d) => d.falsifiable, {
+            pass: `A bound proof explicitly demonstrates falsifiability for ${clauseIdentity(clause)}.`,
+            fail: `Bound metadata explicitly reports falsifiable=false for ${clauseIdentity(clause)}.`,
+            unknown: `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
+          });
 
   if (clause.requiredTestLayers.length === 0) {
     ratings['correct-layer'] = {
