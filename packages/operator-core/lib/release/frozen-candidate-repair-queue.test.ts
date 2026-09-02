@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
   FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+  FROZEN_REPAIR_CONVERGENCE_HOLD_MS,
   FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP,
   FROZEN_REPAIR_CONVERGENCE_ROUND_CAP,
   FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
@@ -194,6 +195,46 @@ describe('frozen-candidate repair queue', () => {
           capacityRetryAtMs: null,
         }),
       ).toMatchObject({ kind: 'recut-at-tip' });
+    });
+
+    it('WI-2141736 D-002: the convergence hold is materially LONGER than the stall window it gates', () => {
+      // The failure direction that passes every other test in this file. The long-wall hold
+      // only ever fires in the window between zeroAttemptStallMs and convergenceHoldMs, so a
+      // convergence bound shorter than (or comparable to) the stall window makes that branch
+      // UNREACHABLE in production while every fixture-driven test above still goes green —
+      // dead code that looks alive. D-002 makes the ordering binding; this asserts it.
+      expect(FROZEN_REPAIR_CONVERGENCE_HOLD_MS).toBeGreaterThan(
+        FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+      );
+      // Not merely greater — materially so, or the reachable window is a rounding error.
+      expect(FROZEN_REPAIR_CONVERGENCE_HOLD_MS).toBeGreaterThanOrEqual(
+        FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS * 4,
+      );
+    });
+
+    it('WI-2141736 D-001: the SAME predicate DISCRIMINATES a transient wall from a genuine dead end', () => {
+      // The vetting finding that the hold and the bound, graded apart, do not compose: an
+      // implementation can hold everything and separately retire dead ends while the combined
+      // predicate is wrong. This feeds both cases through ONE call site with everything else
+      // held identical — same queue, same age, same stall window — so the ONLY difference is
+      // whether a measured wall outlasts the stall window. The verdicts MUST differ.
+      const stalledQueue = fresh();
+      const at = T0 + FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS;
+      const transientWall = decideFrozenRepairDispatchInfeasible(stalledQueue, {
+        nowMs: at,
+        zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+        capacityRetryAtMs: at + SIX_DAYS,
+      });
+      const genuineDeadEnd = decideFrozenRepairDispatchInfeasible(stalledQueue, {
+        nowMs: at,
+        zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+        capacityRetryAtMs: null,
+      });
+      expect(transientWall.kind).toBe('wait-for-dispatch-capacity');
+      expect(genuineDeadEnd.kind).toBe('recut-at-tip');
+      // The discrimination itself is the property under test — a predicate that returned the
+      // same verdict for both would satisfy the hold test and the retire test separately.
+      expect(transientWall.kind).not.toBe(genuineDeadEnd.kind);
     });
 
     it('still prefers testing a CONVERGED repairHead over holding — convergence beats waiting', () => {
