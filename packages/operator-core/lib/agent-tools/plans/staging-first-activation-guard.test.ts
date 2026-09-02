@@ -93,6 +93,49 @@ describe('staging-first activation guard', () => {
     expect(problem!.detail).toContain('concrete reason: MISSING');
   });
 
+  // WI-2141652: a blocker in a domain unrelated to the release plane was refused
+  // BECAUSE its evidence disclaimed being a deployed-main wait. DEPLOYED_ENV_RE and
+  // STRONG_GATE_RE both match inside the disclaimer clause, and the appositive
+  // "NOT a <X> wait" form was the one negation shape the exemption did not cover.
+  it('does not read an unrelated-domain blocker as a deployed-main wait because its disclaimer names deployment', () => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'WI-3133',
+        itemText: 'Continuous Mac desktop E2E testing — repeatable battery + regression runs.',
+        blockerText:
+          'Peer su-0300ecfc holds physical Mac VM rig custody, so VM sidecar restarts are paused. ' +
+          'This is a physical-hardware custody wait between two agents, NOT a wait on main/:3070/green-checkpoint.',
+        kind: 'event',
+      }),
+    ).toBeNull();
+  });
+
+  // Containment for the above: the exemption is CLAUSE-scoped, so a disclaimer in its
+  // own sentence must never launder a genuine deployed-main park in a different clause.
+  it('still refuses a real deployed-main park when the disclaimer sits in its own clause', () => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'WI-2141652-a',
+        itemText: 'Implement fact-plane fairness.',
+        blockerText: 'Blocked until the fix is deployed to main. This is not a deployment wait.',
+        kind: 'event',
+      }),
+    ).toEqual(expect.objectContaining({ code: 'non_final_deployed_main_blocker' }));
+  });
+
+  // The appositive alternative was generalised from a literal 'not a prerequisite';
+  // pin that the original phrasing it replaced is still exempted.
+  it('keeps exempting the original appositive "not a prerequisite" phrasing', () => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'WI-2141652-b',
+        itemText: 'Implement fact-plane fairness.',
+        blockerText: 'Deployment to main is not a prerequisite for this item.',
+        kind: 'event',
+      }),
+    ).toBeNull();
+  });
+
   it('ignores unrelated runtime blockers even when the item is ordinary implementation', () => {
     expect(
       stagingFirstBlockerProblem({
