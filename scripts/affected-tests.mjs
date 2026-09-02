@@ -14,7 +14,9 @@
 //   --dry           print what would run, don't run
 //
 // Diagnostics:
-//   --print-affected                  print `AFFECTED_WS\t<name>` and matching
+//   --print-affected                  print `AFFECTED_WS\t<name>`, one runnable
+//                                      `AFFECTED_WS_CMD\t<workspace>\t<command>` per selected task,
+//                                      and matching
 //                                      `AFFECTED_GUARD\t<workspace>\t<script>\t<command>` lines, then exit
 //   --changed-paths a/b.ts,c/d.mjs    derive the affected set from these paths instead of a git diff
 //   --changed-paths=a/b.ts,c/d.mjs    equivalent `--flag=value` spelling
@@ -825,7 +827,8 @@ const dry = has("--dry") || has("--dry-run");
 // P-016 (release-pipeline-resilience-2026-06-09 D-010): range + print-only mode for the
 // green-checkpoint's longest-green-PREFIX salvage. With --range-from/--range-to, the
 // changed-file set is the two-dot diff of that commit range (NOT the working tree), and
-// --print-affected emits one `AFFECTED_WS\t<name>` line per affected workspace plus one
+// --print-affected emits one `AFFECTED_WS\t<name>` line per affected workspace, one
+// `AFFECTED_WS_CMD\t<workspace>\t<command>` line per selected task, plus one
 // `AFFECTED_GUARD\t<workspace>\t<script>\t<command>` line per attached repo-wide guard, then exits
 // WITHOUT running any tests — a cheap git+graph affected-set probe per candidate prefix.
 const rangeFrom = arg("--range-from", null);
@@ -1308,6 +1311,33 @@ function formatGuardCommand(guard) {
     guard.script,
     ...(forwardedArgs.length ? ["--", ...forwardedArgs] : []),
   ];
+  return argv.map(shellQuote).join(" ");
+}
+
+/**
+ * The exact runnable invocation for ONE workspace task — the AFFECTED_WS_CMD field.
+ *
+ * This MIRRORS spawnSpecFor()'s npm branch and must keep mirroring it: a STANDALONE
+ * package (STANDALONE_PACKAGE_DIRS) is not an npm workspace, so `--workspace` does not
+ * resolve for it — npm fails with "No workspaces found" and exits 1. Measured
+ * 2026-09-02 (EI-22152426246970496):
+ *
+ *   npm run --workspace @papercusp/desktop test   -> npm error No workspaces found (exit 1)
+ *   npm --prefix papercusp-desktop run test       -> runs the real suite  (exit 0)
+ *
+ * That matters because the exit-1 form measures ZERO tests while looking exactly like a
+ * failing suite — the same false-red class this runner exists to prevent.
+ *
+ * Emitted as its own line kind rather than a fourth AFFECTED_WS field ON PURPOSE:
+ * green-checkpoint.ts parses `AFFECTED_WS\t` with `.slice(...).trim()` into a Set of
+ * workspace NAMES for its targeted re-verdict, so widening that line would silently
+ * corrupt every name in the gate's own set. `AFFECTED_WS_CMD\t` does not match a
+ * `startsWith("AFFECTED_WS\t")` filter, so every existing consumer is unaffected.
+ */
+function formatWorkspaceCommand(ws, script) {
+  const argv = ws.standalone
+    ? ["npm", "--prefix", ws.dir, "run", "--silent", script]
+    : ["npm", "run", "--silent", "--workspace", ws.dir, script];
   return argv.map(shellQuote).join(" ");
 }
 
@@ -4180,6 +4210,16 @@ for (const line of derivationBannerLines(derivationSummary, {
 
 if (printAffected) {
   for (const ws of affected) outSync(`AFFECTED_WS\t${ws.name}`);
+  // One line per SELECTED TASK, carrying the command that actually runs it. A bare
+  // AFFECTED_WS name is not actionable: the obvious `npm run --workspace <name>` is
+  // wrong for standalone packages, and a consumer cannot tell which from the name.
+  // A workspace with no selected task emits no AFFECTED_WS_CMD line — that absence is
+  // itself the signal that running it would measure nothing.
+  for (const t of tasks) {
+    outSync(
+      `AFFECTED_WS_CMD\t${t.ws.name}\t${formatWorkspaceCommand(t.ws, t.script)}`,
+    );
+  }
   for (const guard of selectedInvariantGuards) {
     outSync(
       `AFFECTED_GUARD\t${guard.workspace}\t${guard.script}\t${formatGuardCommand(guard)}`,

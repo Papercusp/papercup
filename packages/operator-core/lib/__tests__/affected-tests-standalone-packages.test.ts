@@ -105,4 +105,71 @@ describe.skipIf(!submodulePresent)('affected-tests: standalone (non-workspace) p
         `own dependency graph — keep it in STANDALONE_PACKAGE_DIRS instead.`,
     ).toBe(false);
   });
+
+  // EI-22152426246970496. Being IN the universe is not enough: --print-affected has to
+  // tell a consumer how to RUN it. A bare `AFFECTED_WS\t@papercusp/desktop` invites the
+  // obvious `npm run --workspace @papercusp/desktop test`, which for a standalone package
+  // exits 1 having measured ZERO tests — indistinguishable from a failing suite.
+  describe('--print-affected emits a runnable command per selected task', () => {
+    const printAffected = (changedPaths: string) => {
+      const r = spawnSync(
+        'node',
+        [AFFECTED_TESTS, '--changed-paths', changedPaths, '--print-affected'],
+        { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 300_000, killSignal: 'SIGKILL' },
+      );
+      expect(r.status, `--print-affected failed:\n${r.stderr}`).toBe(0);
+      const lines = (r.stdout ?? '').split('\n');
+      return {
+        lines,
+        cmds: lines
+          .filter((l) => l.startsWith('AFFECTED_WS_CMD\t'))
+          .map((l) => l.split('\t'))
+          .map(([, workspace, command]) => ({ workspace, command })),
+      };
+    };
+
+    it('gives the standalone package a command that does NOT use --workspace', () => {
+      const { cmds } = printAffected(`${STANDALONE_DIR}/package.json`);
+      const mine = cmds.filter((c) => c.workspace === STANDALONE_PKG_NAME);
+      expect(mine.length, `no AFFECTED_WS_CMD line for ${STANDALONE_PKG_NAME}`).toBeGreaterThan(0);
+      for (const { command } of mine) {
+        // `npm run --workspace <standalone>` is the WRONG command: npm answers
+        // "No workspaces found" and exits 1 without running a single test.
+        expect(
+          command,
+          `suggested command for ${STANDALONE_PKG_NAME} uses --workspace, which cannot resolve a ` +
+            `standalone package — it exits 1 having measured zero tests: ${command}`,
+        ).not.toContain('--workspace');
+        expect(command).toContain(STANDALONE_DIR);
+      }
+    });
+
+    it('still uses --workspace for a genuine workspace (positive control)', () => {
+      // Without this control the assertion above also passes if the command field were
+      // empty, malformed, or never emitted for anyone.
+      const { cmds } = printAffected('libs/flags/src/types.ts');
+      const flags = cmds.filter((c) => c.workspace === '@papercusp/flags');
+      expect(flags.length, 'no AFFECTED_WS_CMD line for @papercusp/flags').toBeGreaterThan(0);
+      expect(flags[0]!.command).toContain('--workspace');
+    });
+
+    it('does not widen the AFFECTED_WS line that green-checkpoint parses', () => {
+      // green-checkpoint.ts does `.slice('AFFECTED_WS\t'.length).trim()` and puts the
+      // result in a Set of workspace NAMES. A tab appended to that line would corrupt
+      // every name in the gate's targeted re-verdict, so the command MUST live on its
+      // own line kind. (AFFECTED_WS_CMD deliberately fails a startsWith('AFFECTED_WS\t')
+      // filter: the 12th character is '_', not a tab.)
+      const { lines } = printAffected(`${STANDALONE_DIR}/package.json`);
+      const wsLines = lines.filter((l) => l.startsWith('AFFECTED_WS\t'));
+      expect(wsLines.length).toBeGreaterThan(0);
+      for (const line of wsLines) {
+        expect(
+          line.split('\t').length,
+          `AFFECTED_WS gained a field — green-checkpoint.ts would read "${line
+            .slice('AFFECTED_WS\t'.length)
+            .trim()}" as a workspace name.`,
+        ).toBe(2);
+      }
+    });
+  });
 });
