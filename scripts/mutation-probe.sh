@@ -657,44 +657,69 @@ if [ "$DELETES_ACK" -eq 1 ]; then
   log "sandbox: guard runs will execute under bwrap — / read-only; writable: $SANDBOX_ROOT + $SCRATCH"
 fi
 
+# EI-22133917471532652 (2026-09-02): pc-heavy allocates its after-ready
+# marker with a fresh `mktemp "$dir/ready.XXXXXX"` on EVERY invocation
+# (scripts/pc-heavy.sh), so a collision on it is never the live-owner case
+# the reclaim rule in scripts/lib/preempt-markers.mjs exists to arbitrate —
+# it is a rare harness-level clash on the shared /tmp marker directory
+# under heavy fleet load (observed once wrapping `npm run test:file` as
+# --test). It fails BEFORE a single test runs (TEST_FILE_ROUTE_ERROR exit
+# 75, zero tests measured), so it can never be mistaken for a real
+# assertion result, and a bare retry draws an entirely fresh random marker
+# path. Bounded to ONE retry so a subject that fails this way every time
+# still fails loudly. Do NOT "fix" this by weakening
+# createPreemptMarkerExclusive's live-owner refusal instead — that refusal
+# is deliberately conservative and protects a genuinely live peer's barrier.
+PC_HEAVY_MARKER_COLLISION_ERE='could not publish the pc-heavy after-ready marker: EEXIST'
+detect_pc_heavy_marker_collision() {
+  grep -Eq "$PC_HEAVY_MARKER_COLLISION_ERE" "$1" 2>/dev/null
+}
+
 # Run a guard in an interruptible child and preserve its output for the
 # machine-readable verdict below. The phase marker lets a guard's own test
 # fixture skip an intentionally slow baseline setup without weakening the
 # production command shape; it is also useful to test that the baseline and
 # mutant really went through the same invocation path.
 run_guard() {
-  local phase="$1" label="$2" cmd="$3" output="$4" rc
-  log "running $label: $cmd"
-  (
-    export PAPERCUSP_MUTATION_PHASE="$phase"
-    # A deliberate baseline/mutant result is falsifiability evidence, not a
-    # measurement of the repository's health. Keep the marker scoped to the
-    # supervised child so it reaches every test process without leaking into
-    # the caller's environment.
-    export PAPERCUSP_MUTATION_PROBE=1
-    export PAPERCUSP_MUTATION_MODE="$HISTORICAL_MODE"
-    if [ "$FAKE_DESTRUCTIVE" -eq 1 ]; then
-      # PATH-level interception, scoped to the supervised child only.
-      export PATH="$FAKE_BIN:$PATH"
-      export MUTATION_PROBE_DESTRUCTIVE_LOG="$DESTRUCTIVE_LOG"
+  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt
+  for attempt in 1 2; do
+    log "running $label: $cmd"
+    (
+      export PAPERCUSP_MUTATION_PHASE="$phase"
+      # A deliberate baseline/mutant result is falsifiability evidence, not a
+      # measurement of the repository's health. Keep the marker scoped to the
+      # supervised child so it reaches every test process without leaking into
+      # the caller's environment.
+      export PAPERCUSP_MUTATION_PROBE=1
+      export PAPERCUSP_MUTATION_MODE="$HISTORICAL_MODE"
+      if [ "$FAKE_DESTRUCTIVE" -eq 1 ]; then
+        # PATH-level interception, scoped to the supervised child only.
+        export PATH="$FAKE_BIN:$PATH"
+        export MUTATION_PROBE_DESTRUCTIVE_LOG="$DESTRUCTIVE_LOG"
+      fi
+      if [ "$DELETES_ACK" -eq 1 ]; then
+        # Real execution, walled in: / read-only, only the caller's declared
+        # sandbox root and the probe scratch dir writable. TMPDIR is pointed
+        # into scratch so well-behaved tools land their temp files inside the
+        # writable zone. Parent-held fds (the >"$output" redirect) pass through.
+        export TMPDIR="$SCRATCH"
+        printf '%s\n' "$cmd" >"$SCRATCH/guard-cmd.sh"
+        exec bwrap --ro-bind / / --dev /dev --proc /proc \
+          --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
+          --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
+      fi
+      eval "$cmd"
+    ) >"$output" 2>&1 &
+    CHILD=$!
+    wait "$CHILD"
+    rc=$?
+    CHILD=""
+    if [ "$attempt" -eq 1 ] && [ "$rc" -ne 0 ] && detect_pc_heavy_marker_collision "$output"; then
+      log "$label hit a transient pc-heavy after-ready marker EEXIST (harness noise on the shared /tmp marker dir, zero tests measured) — retrying once with a fresh marker path"
+      continue
     fi
-    if [ "$DELETES_ACK" -eq 1 ]; then
-      # Real execution, walled in: / read-only, only the caller's declared
-      # sandbox root and the probe scratch dir writable. TMPDIR is pointed
-      # into scratch so well-behaved tools land their temp files inside the
-      # writable zone. Parent-held fds (the >"$output" redirect) pass through.
-      export TMPDIR="$SCRATCH"
-      printf '%s\n' "$cmd" >"$SCRATCH/guard-cmd.sh"
-      exec bwrap --ro-bind / / --dev /dev --proc /proc \
-        --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
-        --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
-    fi
-    eval "$cmd"
-  ) >"$output" 2>&1 &
-  CHILD=$!
-  wait "$CHILD"
-  rc=$?
-  CHILD=""
+    break
+  done
   cat "$output"
   return "$rc"
 }

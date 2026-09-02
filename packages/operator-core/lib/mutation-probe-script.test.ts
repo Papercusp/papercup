@@ -166,6 +166,32 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('retries ONCE on a transient pc-heavy after-ready-marker EEXIST, then still reaches a genuine verdict (EI-22133917471532652)', () => {
+    // Simulates the observed harness noise: a --test wrapping `npm run
+    // test:file` can rarely fail with TEST_FILE_ROUTE_ERROR (EEXIST on the
+    // pc-heavy after-ready marker) before a single test runs, because pc-heavy
+    // allocates that marker with a fresh `mktemp` path per invocation and a
+    // rare clash on the shared /tmp marker directory is harness noise, not a
+    // test result. A fresh invocation gets a brand-new random marker path, so
+    // the probe's own bounded retry should absorb exactly one such failure per
+    // guard phase (baseline, copy-baseline, mutant) and still reach the
+    // correct MUTANT CAUGHT verdict — never mis-scoring it as a harness error.
+    const attemptDir = join(dir, 'attempts');
+    mkdirSync(attemptDir);
+    const cmd = [
+      `f="${attemptDir}/$PAPERCUSP_MUTATION_PHASE"`,
+      `n=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 ))`,
+      `echo "$n" > "$f"`,
+      `if [ "$n" -eq 1 ]; then echo "TEST_FILE_ROUTE_ERROR refusing execution phase: could not publish the pc-heavy after-ready marker: EEXIST: file already exists, open '/tmp/pc-heavy-ready/ready.FAKE01'" >&2; exit 75; fi`,
+      `grep -q "^beta$" {}`,
+    ].join('; ');
+    const { code, out } = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', cmd]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/retrying once with a fresh marker path/);
+    expect(out).not.toMatch(/verdict=harness-error/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('REFUSES a mutation that changed nothing (exit 2) instead of reporting a false weakness', () => {
     // A no-op mutation is the quiet killer of this technique: the "mutant" is
     // identical to the original, so any guard passes and the probe would
