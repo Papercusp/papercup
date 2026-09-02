@@ -25,7 +25,7 @@
  * closes the circuit by hand.
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
-import { and, eq, or, sql as dsql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
 
 const at = generated.autoloopStateInHarnessShared;
@@ -389,8 +389,40 @@ export function pruneMaxAgeDays(): number {
 }
 
 /**
+ * EI-22091466748669603 — fire-state roles belonging to the PERMANENTLY RETIRED Mug/Kettle/Cup
+ * tier. `agent-tools/_mug-kettle-gate.ts` makes every actuator refusal UNCONDITIONAL (P-068
+ * deleted `papercusp-mug-kettle-system`, so `mugKettleSystemEnabled()` is a permanent `false`),
+ * which means a row for one of these roles can never advance its watermark again.
+ *
+ * WHY THIS NEEDED A FOURTH CLASS RATHER THAN WIDENING AN EXISTING ONE. A retired-tier row that
+ * stopped WHILE ERRORING is reachable by none of classes 1–3: class 1 requires
+ * `consecutive_errors = 0`; class 2 requires the loop-terminal auto-pause marker AND a matching
+ * inactive `routines` row; class 3 is scoped to `role LIKE 'loop-%'`. Measured 2026-09-02: the
+ * two surviving `kettle` rows (`papercup`, dead since 2026-06-25 with 6 errors, and `*`, 2 errors
+ * — "HTTP 404 unknown project") had sat immortal for ~68 days, and a CORRECT silent-stop detector
+ * (`harness/routines/autoloop-chronic-failure.ts`) reported them as major bugs on schedule:
+ * EI-19370235414830628, EI-19463513273744786 and EI-22091466748669603 are the same finding filed
+ * three times, the last two closed as "retired-tier residue; no source fix is warranted". The
+ * detector is right and the data is wrong; this removes the data.
+ *
+ * ⛔ DO NOT "generalize" this by dropping the role list and keying class 3's structural test
+ * (no matching `routines` row) onto fixed system roles. For a fixed system role that absence is
+ * the NORMAL HEALTHY state, not evidence of death — `autoloop-chronic-failure.ts` says so
+ * explicitly ("a fixed system role — director/gym-cycle/overwatch/scout-cycle ... carry null").
+ * Such a widening would delete the fire-state of LIVE roles. Only a positively-known permanent
+ * retirement justifies deleting an error-carrying watermark, which is why this is an explicit
+ * allowlist tied to a gate that cannot be re-opened.
+ *
+ * `director` is deliberately ABSENT despite also being long dead: the source is self-contradictory
+ * about it (`autoloop-chronic-failure.ts` calls it "the retired `director` role" in one comment and
+ * lists it among the live fixed system roles the sweep is meant to watch in another), and an
+ * ambiguous retirement is not a licence to delete state.
+ */
+export const RETIRED_TIER_AUTOLOOP_ROLES: readonly string[] = ['kettle', 'mug', 'cup'];
+
+/**
  * Retire long-dead fire-state rows (autonomous-loop-hardening F6 — health-signal hygiene).
- * DELETEs rows matching EITHER of two classes:
+ * DELETEs rows matching ANY of four classes:
  *
  *  1. Have not fired for `maxAgeDays` AND carry no error signal (`consecutive_errors = 0`) —
  *     a role that fired once for a since-deleted harness and went quiet, leaving cruft that
@@ -453,6 +485,16 @@ export async function pruneStaleFireState(opts: { maxAgeDays?: number } = {}): P
              WHERE r.workspace_id = ${at.workspaceId}
                AND r.name = ${at.role}
           )`,
+        ),
+        // 4. Retired-tier rows (EI-22091466748669603): a Mug/Kettle/Cup role whose watermark is
+        //    stale beyond the age bound, REGARDLESS of `consecutive_errors`. The retirement is
+        //    unconditional and irreversible, so an error trail on these rows preserves nothing
+        //    investigable — it only keeps a permanently-frozen watermark alive for the
+        //    silent-stop detector to re-report forever. See RETIRED_TIER_AUTOLOOP_ROLES.
+        and(
+          inArray(at.role, RETIRED_TIER_AUTOLOOP_ROLES),
+          dsql`${at.lastFiredAt} IS NOT NULL`,
+          dsql`${at.lastFiredAt} < now() - (${maxAgeDays}::int * interval '1 day')`,
         ),
       ),
     );

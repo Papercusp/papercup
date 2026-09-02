@@ -282,6 +282,35 @@ describe('pruneStaleFireState hygiene (autonomous-loop-hardening F6)', () => {
     expect(remaining.map((r) => r.harness_slug)).toEqual(['dead-erroring', 'fresh']);
   });
 
+  it('EI-22091466748669603: retires stale RETIRED-TIER rows even with errors, but not a live fixed role', async () => {
+    const PW = 'ws-prune-retired-tier';
+    await rootSql`INSERT INTO harness_shared.autoloop_state
+        (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id) VALUES
+        ('papercup', 'kettle',      now() - interval '68 days', 'error: no complete scorecard', 6, ${PW}),
+        ('*',        'kettle',      now() - interval '68 days', 'error: HTTP 404',              2, ${PW}),
+        ('live',     'kettle',      now() - interval '1 hour',  'ok',                           0, ${PW}),
+        ('gymhost',  'gym-cycle',   now() - interval '68 days', 'error: x',                     3, ${PW}),
+        ('scouthost','scout-cycle', now() - interval '68 days', 'ok',                           1, ${PW})`;
+
+    const n = await pruneStaleFireState({ maxAgeDays: 7 });
+    expect(n).toBeGreaterThanOrEqual(2);
+
+    const remaining = await rootSql<{ harness_slug: string; role: string }[]>`
+      SELECT harness_slug, role FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${PW} ORDER BY harness_slug`;
+    // Both dead kettle rows are gone DESPITE their error counters — the retirement is
+    // unconditional, so the error trail preserves nothing investigable.
+    // The RECENT kettle row survives (age bound still applies), and the two long-dead
+    // error-carrying rows for LIVE fixed system roles survive untouched: that pair is the
+    // control proving this class discriminates on the retired-role allowlist and did not
+    // simply widen class 1 by dropping its `consecutive_errors = 0` requirement.
+    expect(remaining).toEqual([
+      { harness_slug: 'gymhost', role: 'gym-cycle' },
+      { harness_slug: 'live', role: 'kettle' },
+      { harness_slug: 'scouthost', role: 'scout-cycle' },
+    ]);
+  });
+
   it('is GLOBAL across workspaces, not scoped to the active one', async () => {
     const OTHER = 'ws-prune-other';
     await rootSql`INSERT INTO harness_shared.autoloop_state
