@@ -104,7 +104,11 @@ else
 
   # Verify message landed in business inbox
   sleep 1
-  MSG=$(curl -sS "$OPERATOR_BASE/api/harness/papercup-org-business/inbox?status=pending&limit=10" | jq -e '.messages[] | select(.from_slug=="papercup-org" and .subject == "smoke C: focus on auth")' 2>&1 | head -10)
+  MSG=$(curl -sS "$OPERATOR_BASE/api/harness/papercup-org-business/inbox?status=pending&limit=10" | jq -e '.messages[] | select(.from_slug=="papercup-org" and .subject == "smoke C: focus on auth")' 2>&1 | head -10 || true)
+  # `|| true`: head -10 can exit before curl finishes writing, SIGPIPEing it, and
+  # pipefail would report that as a failed fetch. Only $MSG's emptiness is tested here,
+  # so the status is deliberately discarded — stated rather than left implicit, because
+  # adding `set -e` to this script would otherwise make it fatal.
   [ -n "$MSG" ] && ok "C2 message landed in child inbox" || bad "C2 missing: $MSG"
 
   # Tier 2 substrate context for parent
