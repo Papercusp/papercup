@@ -40,6 +40,16 @@
  * a watchdog that throws into its caller guards nothing. DEFAULT-SAFE: when no draft is
  * stale it does nothing (no behavior change).
  *
+ * WI-2142684 (this backstop's own next-order gap, closed here): a recorded decision used
+ * to suppress the alarm PERMANENTLY, correct for a terminal ruling but wrong for a
+ * CONDITIONAL hold ("retry once WI-1234 backfills the plan") — a deferred disposition, not
+ * a parked one. When the named blocker resolved, nothing re-evaluated the hold and the
+ * plan stayed stranded forever (measured: both branches of one hold's own release
+ * condition were satisfied, one 69ms after the decision landed — 38h+ later, still
+ * unreviewed). `decisionStillSuppresses` now re-evaluates: an unconditional decision still
+ * suppresses forever (preserving the antecedent EI-20607516411048124's gain); a conditional
+ * one lifts once every WI-/EI- ref it cites has settled (terminal or absent).
+ *
  * Where the drafts live (storage, verified against LIVE data 2026-06-29): the DRAFT row
  * is `harness_shared.harness_plans` under the HIVE's OWN workspace_id (e.g.
  * 'papercusp-workspace' — NOT 'default'; the sweep passes the started-hive workspaceId),
@@ -61,6 +71,11 @@ import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire } from '../pot/watchdog';
 import { routineStorageSlug } from '../pot-membership';
 import { BLENDER_PLAN_SQL_PATTERN } from '../agent-tools/plans/plan-provenance';
+import {
+  extractWorkItemRefs,
+  getWorkItemRefStates,
+  type CitedWorkItemRefState,
+} from '../agent-tools/plans/cited-work-item-refs';
 
 // ── tunable (env-overridable, like the liveness-watchdog floor) ───────────────
 
@@ -90,6 +105,15 @@ export interface ScoutDraftCandidate {
  * `draft` by design, so `status + age` cannot answer whether the plan was seen.
  */
 export interface ScoutDraftReviewEvidence {
+  /**
+   * WI-2142684: true when at least one recorded decision still suppresses the
+   * alarm right now — NOT simply "a decision exists". An UNCONDITIONAL ruling
+   * (deprecated, not-ready) suppresses permanently, as before. A CONDITIONAL
+   * hold ("retry once WI-1234 backfills the plan") suppresses only while its
+   * cited WI-/EI- ref(s) remain open; once every cited ref settles (terminal
+   * or absent), the hold lifts and the plan becomes selectable again on the
+   * normal age deadline. See `decisionStillSuppresses`.
+   */
   hasDecision: boolean;
   hasNeedsHumanItem: boolean;
   hasRevisionHold: boolean;
@@ -99,6 +123,69 @@ const DECLARED_DECISION_RE =
   /^\s*(?:>\s*)?(?:(?:[-*+]\s+|\d+\.\s+)?(?:#{1,6}\s+D-\d{3,}\b|(?:\*\*|__)D-\d{3,}(?:\*\*|__)))/im;
 const NEEDS_HUMAN_ITEM_RE =
   /^\s*(?:[-*+]\s+|\d+\.\s+)?\*\*P-\d{3,}\*\*\s+`needs[-_]human`(?:\s|$)/im;
+
+/**
+ * WI-2142684: language marking a recorded decision as a DEFERRED/conditional
+ * hold ("retry once WI-1234 backfills the plan") rather than a terminal ruling
+ * (deprecated / not-ready / needs-human — the latter has its own, unrelated
+ * `hasNeedsHumanItem` signal and stays permanently suppressing). Requires BOTH
+ * a conditional/temporal cue (retry, once, after, until, when) AND a settling
+ * verb (backfills, repairs, resolves, lands, fixes, closes, completes, merges,
+ * ships, deploys) — either alone is too weak (a terminal ruling can casually
+ * use "after" in an unrelated clause), but the pair together is exactly the
+ * shape of a release-condition sentence. Measured against the filing's own
+ * example: "retry activation audit after this decision revision or that
+ * repair backfills the plan."
+ */
+const CONDITIONAL_TRIGGER_WORDS_RE = /\b(?:retry|re-try|once|after|until|when)\b/i;
+const CONDITIONAL_SETTLE_WORDS_RE =
+  /\b(?:backfill(?:s|ed)?|repair(?:s|ed)?|resolve[sd]?|land[sd]?|fix(?:es|ed)?|close[sd]?|complete[sd]?|merge[sd]?|ship(?:s|ped)?|deploy(?:s|ed)?)\b/i;
+const CONDITIONAL_DISPOSITION_RE = new RegExp(
+  `(?=[\\s\\S]*${CONDITIONAL_TRIGGER_WORDS_RE.source})(?=[\\s\\S]*${CONDITIONAL_SETTLE_WORDS_RE.source})`,
+  'i',
+);
+
+/**
+ * PURE: does this one recorded decision still suppress the staleness alarm
+ * right now? (WI-2142684 — see `ScoutDraftReviewEvidence.hasDecision`.)
+ *
+ * Suppression lifts only when BOTH: (a) the decision's own text reads as a
+ * deferred/conditional hold (`CONDITIONAL_DISPOSITION_RE`), not an
+ * unconditional ruling, AND (b) it cites at least one WI-/EI- ref, ALL of
+ * which have since settled — terminal, or ABSENT (no matching row; itself a
+ * "nothing left to wait on" signal, per `getWorkItemRefStates`'s contract). An
+ * unconditional decision, a conditional one citing no ref, or one citing a
+ * ref that is still open, is unchanged: it keeps suppressing (preserves the
+ * antecedent EI-20607516411048124's gain — a steward's terminal ruling must
+ * never be re-alarmed). A ref this evaluator expected to have been resolved
+ * but is missing from `refStates` fails toward SUPPRESS, not toward alarm.
+ *
+ * Deliberately NOT keyed on `decision.date` vs a ref's closed-timestamp:
+ * `date` is day-granularity only (a "Date: YYYY-MM-DD" line parsed by
+ * plan-parser), so a same-day terminal transition BEFORE the decision was
+ * written would falsely read as "after" it — a real false-positive risk.
+ * Language + citation is the safer two-signal gate, and avoids the exact
+ * false-positive class `cited-work-item-refs.ts`'s own docstring warns about
+ * (a bare citation of a terminal item is usually background, not a live
+ * premise) — that is exactly why citation ALONE is not enough here either.
+ */
+export function decisionStillSuppresses(
+  decision: unknown,
+  refStates: ReadonlyMap<string, CitedWorkItemRefState>,
+): boolean {
+  if (!decision || typeof decision !== 'object') return true;
+  const title = String((decision as { title?: unknown }).title ?? '');
+  const body = String((decision as { body?: unknown }).body ?? '');
+  const text = `${title}\n${body}`;
+  if (!CONDITIONAL_DISPOSITION_RE.test(text)) return true; // unconditional ruling: unchanged
+  const refs = extractWorkItemRefs(text);
+  if (refs.length === 0) return true; // conditional language, nothing to check against
+  return refs.some((ref) => {
+    const state = refStates.get(ref);
+    if (!state) return true; // not resolved — fail toward suppress, never toward a spurious lift
+    return state.state !== null && !state.terminal; // still open -> this ref keeps the hold live
+  });
+}
 
 function jsonArray(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
@@ -228,13 +315,36 @@ export async function readScoutDraftCandidates(
        AND content LIKE ${BLENDER_PLAN_SQL_PATTERN}
      ORDER BY updated_at ASC
      LIMIT ${limit}`;
+
+  // WI-2142684: only a decision that READS as a deferred/conditional hold (and
+  // cites a WI-/EI- ref) is even eligible for re-evaluation — batch-resolve
+  // every such ref ONCE across the whole page, so the common case (no
+  // conditional decision anywhere in this page) costs zero extra queries and
+  // the existing single-query assumption holds unchanged.
+  const candidateRefs = new Set<string>();
+  for (const r of rows) {
+    for (const decision of jsonArray(r.decisions)) {
+      if (!decision || typeof decision !== 'object') continue;
+      const title = String((decision as { title?: unknown }).title ?? '');
+      const body = String((decision as { body?: unknown }).body ?? '');
+      const text = `${title}\n${body}`;
+      if (!CONDITIONAL_DISPOSITION_RE.test(text)) continue;
+      for (const ref of extractWorkItemRefs(text)) candidateRefs.add(ref);
+    }
+  }
+  const refStates =
+    candidateRefs.size > 0
+      ? await getWorkItemRefStates([...candidateRefs], { sql, workspaceId: planWorkspaceId })
+      : new Map<string, CitedWorkItemRefState>();
+
   return rows.map((r) => ({
     planSlug: r.plan_slug,
     title: r.title,
     updatedAtMs: Number(r.updated_at_ms ?? 0),
     reviewEvidence: {
       hasDecision:
-        jsonArray(r.decisions).length > 0 || DECLARED_DECISION_RE.test(r.content ?? ''),
+        jsonArray(r.decisions).some((d) => decisionStillSuppresses(d, refStates)) ||
+        DECLARED_DECISION_RE.test(r.content ?? ''),
       hasNeedsHumanItem:
         hasNeedsHumanItem(r.items) || NEEDS_HUMAN_ITEM_RE.test(r.content ?? ''),
       hasRevisionHold: /\brev(?:ision)?\s+hold\b/i.test(r.content ?? ''),
