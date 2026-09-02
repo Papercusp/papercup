@@ -1,9 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { gitPipelinePosition } = vi.hoisted(() => ({ gitPipelinePosition: vi.fn() }));
 vi.mock('../../git-pipeline-position', () => ({ gitPipelinePosition }));
 
-import { deploymentPositionForEvidence, MAX_DEPLOYMENT_POSITION_PATHS } from './deployment-position';
+import {
+  deploymentPositionForEvidence,
+  DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS,
+  MAX_DEPLOYMENT_POSITION_PATHS,
+} from './deployment-position';
 
 function position(path: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -18,6 +22,10 @@ function position(path: string, overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   gitPipelinePosition.mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('deploymentPositionForEvidence', () => {
@@ -95,5 +103,39 @@ describe('deploymentPositionForEvidence', () => {
     expect(gitPipelinePosition).toHaveBeenCalledTimes(MAX_DEPLOYMENT_POSITION_PATHS);
     expect(result).toMatchObject({ totalPaths: filesChanged.length, truncated: true });
     expect(result?.paths).toHaveLength(MAX_DEPLOYMENT_POSITION_PATHS);
+  });
+
+  it('EI-21751879754001299: degrades to an honest "timeout" unknown instead of hanging when gitPipelinePosition never settles in time', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    // Simulates the real defect: gitPipelinePosition (many sequential git subprocess calls
+    // under fleet load) simply never resolves within this leg's budget.
+    gitPipelinePosition.mockImplementation(() => new Promise(() => {}));
+
+    const resultPromise = deploymentPositionForEvidence({ filesChanged: ['src/a.ts', 'src/b.ts'] });
+    await vi.advanceTimersByTimeAsync(DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS);
+    const result = await resultPromise;
+    warnSpy.mockRestore();
+
+    // Honest about WHICH paths went unresolved — never a bare totalPaths:0 that would read as
+    // "evidence named nothing" (that is the `no-filesChanged` case, a different fact).
+    expect(result).toEqual({
+      paths: [],
+      unknownPaths: ['src/a.ts', 'src/b.ts'],
+      totalPaths: 2,
+      truncated: false,
+      unknownReason: 'timeout',
+    });
+  });
+
+  it('resolves promptly (well inside the timeout) when gitPipelinePosition answers fast', async () => {
+    gitPipelinePosition.mockImplementation(async ({ path }: { path: string }) => position(path));
+    const start = Date.now();
+
+    const result = await deploymentPositionForEvidence({ filesChanged: ['src/a.ts'] });
+
+    expect(Date.now() - start).toBeLessThan(DEPLOYMENT_POSITION_EVIDENCE_TIMEOUT_MS);
+    expect(result?.unknownReason).toBeUndefined();
+    expect(result?.paths).toHaveLength(1);
   });
 });
