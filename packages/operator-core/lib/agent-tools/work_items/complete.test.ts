@@ -2899,6 +2899,35 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.addedTests).toBe(true);
     });
 
+    it.each(['none', 'None', 'NONE', 'n/a', 'N/A', 'na', 'nil', 'null', 'nothing', 'no files', 'no files changed', 'no changes', 'no change', '-', '  none  '])(
+      'EI-22166136861574482: normalizes the no-code-change sentinel %j to an empty filesChanged array, not a fabricated path',
+      (sentinel) => {
+        const out = coerceCompletionShape({ summary: 's', filesChanged: sentinel }) as { filesChanged: unknown };
+        expect(out.filesChanged).toEqual([]);
+      },
+    );
+
+    it('EI-22166136861574482: normalizes a sentinel wrapped in the documented array form the same way', () => {
+      const out = coerceCompletionShape({ summary: 's', filesChanged: ['none'] }) as { filesChanged: unknown };
+      expect(out.filesChanged).toEqual([]);
+    });
+
+    it('EI-22166136861574482: normalizes the sentinel under verification.filesChanged too', () => {
+      const out = coerceCompletionShape({
+        summary: 's',
+        verification: { filesChanged: 'n/a', testsRun: 'unit', testResult: 'passed' },
+      }) as { verification: { filesChanged: unknown } };
+      expect(out.verification.filesChanged).toEqual([]);
+    });
+
+    it('EI-22166136861574482: a real path is never mistaken for a sentinel (only an exact whole-string match qualifies)', () => {
+      const out = coerceCompletionShape({
+        summary: 's',
+        filesChanged: ['none.txt', 'src/na/config.ts', 'packages/operator-core/lib/none-of-the-above.ts'],
+      }) as { filesChanged: unknown };
+      expect(out.filesChanged).toEqual(['none.txt', 'src/na/config.ts', 'packages/operator-core/lib/none-of-the-above.ts']);
+    });
+
     it('accepts server-generated root treeStamp and settlementManifest on a read→retry (EI-21599866958764530)', () => {
       const treeStamp = {
         repositoryRoot: '/repo',
