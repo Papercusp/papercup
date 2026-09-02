@@ -128,13 +128,32 @@ describe('field-reliability registry — every registered site attaches its cave
 });
 
 describe('field-reliability registry — caveatForSite closes the code → registry direction', () => {
-  it('builds the registered caveat for a registered pair', () => {
-    const site = FIELD_RELIABILITY_SITES[0]!;
-    const built = caveatForSite(site.surface, site.field);
-    expect(built.field).toBe(site.field);
-    expect(built.reliability).toBe(site.reliability);
-    expect(built.cannotAnswer).toBe(site.cannotAnswer);
-    expect(built.insteadRead).toBe(site.insteadRead);
+  it('builds the registered caveat for EVERY registered pair, round-tripping every field', () => {
+    // Asserts the whole entry, not a sample: the registry is now the single source of a caveat's
+    // text, so a field silently dropped in transit would put different words in front of the reader
+    // than the registry (and the review of it) says are there.
+    for (const site of FIELD_RELIABILITY_SITES) {
+      const built = caveatForSite(site.surface, site.field);
+      expect(built.field).toBe(site.field);
+      expect(built.reliability).toBe(site.reliability);
+      expect(built.cannotAnswer).toBe(site.cannotAnswer);
+      expect(built.insteadRead).toBe(site.insteadRead);
+      expect(built.because).toBe(site.because);
+    }
+  });
+
+  it('omits `because` entirely when the entry has none (rather than emitting undefined)', () => {
+    // Mirrors caveat()'s conditional spread in field-reliability.ts. An explicit `because:
+    // undefined` key renders as a present-but-empty provenance, which reads as "no evidence was
+    // found" rather than "none was claimed" — a small instance of this plan's own bug.
+    const [first] = FIELD_RELIABILITY_SITES;
+    expect(first).toBeDefined();
+    // Registered entries currently all carry `because`; assert the invariant through the shared
+    // builder so it holds for the first entry added without one.
+    for (const site of FIELD_RELIABILITY_SITES) {
+      const built = caveatForSite(site.surface, site.field);
+      expect(Object.hasOwn(built, 'because')).toBe(site.because !== undefined);
+    }
   });
 
   it('THROWS on an unregistered pair rather than inventing a caveat', () => {
