@@ -240,7 +240,16 @@ describe('boot-e2e-pg-lock-guard', () => {
       // Spawn a real short-lived child, capture its pid, wait for it to
       // actually exit — guaranteeing this pid is genuinely dead, not merely
       // a large improbable number that happens to be unused right now.
-      const child = spawnSync(process.execPath, ['-e', 'process.exit(0)']);
+      //
+      // BOUNDED deliberately (WI-41180 ratchet): a sync spawn blocks the worker's event
+      // loop, so vitest cannot time it out, and the pure lane shares ONE fork across
+      // ~2,740 files — an unbounded call here wedges all of them until the batch watchdog
+      // kills the task 45 minutes later. 10s is ~3 orders of magnitude over what
+      // `node -e 'process.exit(0)'` needs, so it can only fire on a genuinely wedged host.
+      const child = spawnSync(process.execPath, ['-e', 'process.exit(0)'], {
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+      });
       const deadPid = child.pid;
       expect(typeof deadPid).toBe('number');
       writeFileSync(join(dir, 'postmaster.pid'), `${deadPid}\n`, 'utf8');
