@@ -226,8 +226,7 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
     const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(upsertHiveMember).not.toHaveBeenCalled();
     // The stored row IS what the upsert would have produced, so the caller still gets it.
-    expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
-    expect((out as { member: typeof memberRow }).member).toEqual(memberRow);
+    expect(out).toMatchObject({ action: 'admitted', reason: 'already_member', member: memberRow });
   });
 
   it('WI-2141185 M1: a CHANGED re-announce (new device) still writes — the skip is content-aware', async () => {
