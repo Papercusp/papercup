@@ -295,3 +295,83 @@ describe('facts:assert union branch selection on a private undecidable fact (EI-
     ).toBe(true);
   });
 });
+
+/**
+ * EI-22050255299103531 (legacy `ttlDays` on an owner-fact correction) and
+ * EI-22063684320590166 (documented `source_ref` on a workspace fact) are the SAME
+ * defect reported twice: a caller sends an otherwise-valid private fact carrying one
+ * key this schema does not have, and every branch of the 6-way union fails. The
+ * branch that matched everything except that key complains about exactly one thing —
+ * the key — but Zod records an `unrecognized_keys` name in `keys` and leaves `path`
+ * empty, so it scored path-depth 0 and the "deepest branch wins" rule discarded it in
+ * favour of the federation branch's own unmet requirements. Both reporters saw
+ * "harness: expected string; shareable: expected true; Unrecognized key: <theirs>" —
+ * which reads as an instruction to add federation fields they never wanted, with the
+ * one actionable word buried last. EI-22063684320590166 asked for precisely the
+ * outcome asserted here: "report only the unknown field". Fixed generally in
+ * @papercusp/tooldef's `bestUnionBranch` (standard-schema.ts) by scoring an
+ * unrecognized key at the depth of the key it names.
+ *
+ * NOTE the umbrella these were filed under (EI-22072457901556194) frames them as
+ * documented ALIASES that validators fail to implement. They are not: `source_ref`
+ * and `ttlDays` are genuinely not part of this schema, and the canonical `sourceRef`
+ * and `ttlSec` work. The defect was never the rejection — it was that the rejection
+ * pointed at the wrong branch. Adding the aliases would have been the wrong fix.
+ */
+describe('facts:assert reports a stray key instead of another branch (EI-22050255299103531, EI-22063684320590166)', () => {
+  it('names only the unrecognized source_ref on an otherwise valid workspace fact', () => {
+    const parsed = assertTool.args.safeParse({
+      scope: 'workspace',
+      key: 'p018-freeze',
+      body: 'the P-018 freeze conclusion',
+      source_ref: 'wi:EI-22063684320590166',
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const msg = formatIssues(parsed.error.issues);
+      expect(msg).toContain('source_ref');
+      // The regression both reports named: unrelated required fields from a
+      // federation branch the caller never asked for.
+      expect(msg).not.toContain('harness');
+      expect(msg).not.toContain('shareable');
+      expect(msg).not.toContain('settledBy');
+    }
+  });
+
+  it('names only the unrecognized legacy ttlDays on an owner-fact correction', () => {
+    const parsed = assertTool.args.safeParse({
+      scope: 'owner',
+      key: 'launch-provenance',
+      body: 'a settled conclusion',
+      ttlDays: 7,
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const msg = formatIssues(parsed.error.issues);
+      expect(msg).toContain('ttlDays');
+      expect(msg).not.toContain('shareable');
+      expect(msg).not.toContain('kind');
+    }
+  });
+
+  it('accepts the canonical spellings the reports were reaching for', () => {
+    // Calibration: proves each rejection above is about the KEY NAME and not
+    // about some other defect in the surrounding fact.
+    expect(
+      assertTool.args.safeParse({
+        scope: 'workspace',
+        key: 'p018-freeze',
+        body: 'the P-018 freeze conclusion',
+        sourceRef: 'wi:EI-22063684320590166',
+      }).success,
+    ).toBe(true);
+    expect(
+      assertTool.args.safeParse({
+        scope: 'owner',
+        key: 'launch-provenance',
+        body: 'a settled conclusion',
+        ttlSec: 604800,
+      }).success,
+    ).toBe(true);
+  });
+});
