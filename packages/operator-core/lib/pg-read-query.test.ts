@@ -2919,3 +2919,82 @@ describe('buildEventFireWindowAdvisory — an aggregate latch cannot answer a wi
     ).toBeNull();
   });
 });
+
+/**
+ * EI-21338326327553651 — the tenant-population cache must be keyed by the SCOPE the
+ * verdict was computed for, not by the table alone.
+ *
+ * `probeTenantPopulation` answers a scope-relative question ("does THIS caller's
+ * resolved workspace match at least one row"), but cached it under `table`. So for the
+ * 60s TTL, the FIRST caller's verdict was replayed to every other scope. The reported
+ * symptom is the dangerous direction: rows legitimately pinned to another workspace
+ * (loop carry notes pin to DEFAULT_COORD_WORKSPACE) were advertised as matching the
+ * ACTIVE workspace, so the advisory prescribed a predicate that matches nothing —
+ * verify-before-prescribe silently degraded back into prescribe-without-verifying, which
+ * is precisely what that machinery exists to prevent.
+ *
+ * The two calls below deliberately do NOT clear the cache between them: the second call
+ * being served the first's verdict IS the bug. Keyed by table alone, call 2 inherits call
+ * 1's `ws_hit: true` and prescribes; keyed by scope, it probes again and refutes.
+ */
+describe('EI-21338326327553651 — tenant population cache is scope-keyed, not table-keyed', () => {
+  const ROWS = [
+    { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'workspace_id' },
+    { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'plan_slug' },
+  ];
+  const QUERY = "SELECT * FROM harness_shared.harness_plans WHERE plan_slug = 'my-plan'";
+
+  /** A client whose POPULATION probe answers differently per resolved workspace. */
+  function popStub(hitFor: string) {
+    const probedWorkspaces: string[] = [];
+    const sql = (async () => ROWS) as unknown as ((...a: unknown[]) => Promise<unknown>) & {
+      unsafe: (text: string, params?: string[]) => Promise<unknown>;
+    };
+    sql.unsafe = async (_text: string, params: string[] = []) => {
+      probedWorkspaces.push(params[0]!);
+      return [{ has_rows: true, ws_hit: params[0] === hitFor, ws_vals: [hitFor] }];
+    };
+    return { sql: sql as never, probedWorkspaces };
+  }
+
+  beforeEach(() => clearTenantScopeSchemaCache());
+
+  it('does not replay one workspace’s population verdict to a different workspace', async () => {
+    // Call 1 — the scope that DOES match rows. Warms the cache with ws_hit:true.
+    const a = popStub('default');
+    const first = await buildTenantScopeAdvisory(QUERY, {
+      client: a.sql,
+      workspaceId: 'default',
+    });
+    expect(first, 'sanity: the matching scope should get a normal advisory').toBeTruthy();
+
+    // Call 2 — SAME table, DIFFERENT resolved workspace, cache deliberately NOT cleared.
+    // Its rows are all 'default', so prescribing 'papercusp-workspace' matches nothing
+    // and the advisory must REFUTE, naming the value the rows actually carry.
+    const b = popStub('default');
+    const second = await buildTenantScopeAdvisory(QUERY, {
+      client: b.sql,
+      workspaceId: 'papercusp-workspace',
+    });
+
+    expect(
+      b.probedWorkspaces,
+      'the second scope must be PROBED, not served the first scope’s cached verdict',
+    ).toContain('papercusp-workspace');
+    expect(
+      second,
+      'the advisory must refute the prescription by naming the workspace the rows actually carry',
+    ).toContain('default');
+  });
+
+  it('still caches WITHIN one scope — the fix must not turn the cache off', async () => {
+    const c = popStub('default');
+    await buildTenantScopeAdvisory(QUERY, { client: c.sql, workspaceId: 'default' });
+    const afterFirst = c.probedWorkspaces.length;
+    await buildTenantScopeAdvisory(QUERY, { client: c.sql, workspaceId: 'default' });
+    expect(
+      c.probedWorkspaces.length,
+      'a repeat call in the SAME scope must be served from cache, not re-probed',
+    ).toBe(afterFirst);
+  });
+});
